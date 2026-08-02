@@ -1,0 +1,4 @@
+module wasm-callbacks
+
+link all search "native"
+link all library "wasm_callback_helper"

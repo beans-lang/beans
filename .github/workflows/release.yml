@@ -1,0 +1,690 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  package-windows:
+    name: package (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            triple: x86_64-pc-windows-gnu
+            toolchain: mingw
+            crt: msvcrt
+            runner: windows-latest
+            name: windows-x86_64
+          - arch: x86_64
+            triple: x86_64-pc-windows-gnullvm
+            toolchain: mingw
+            crt: ucrt
+            runner: windows-latest
+            name: windows-x86_64-gnullvm
+          - arch: i686
+            triple: i686-pc-windows-gnu
+            toolchain: mingw
+            crt: msvcrt
+            runner: windows-latest
+            name: windows-i686
+          - arch: aarch64
+            triple: aarch64-pc-windows-gnullvm
+            toolchain: mingw
+            crt: ucrt
+            runner: windows-11-arm
+            name: windows-arm64
+          - arch: x86_64
+            triple: x86_64-pc-windows-msvc
+            toolchain: msvc
+            msvc_arch: x64
+            runner: windows-latest
+            name: windows-x86_64-msvc
+          - arch: i686
+            triple: i686-pc-windows-msvc
+            toolchain: msvc
+            msvc_arch: x86
+            runner: windows-latest
+            name: windows-i686-msvc
+          - arch: aarch64
+            triple: aarch64-pc-windows-msvc
+            toolchain: msvc
+            msvc_arch: arm64
+            runner: windows-11-arm
+            name: windows-arm64-msvc
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install LLVM-MinGW
+        if: matrix.toolchain == 'mingw'
+        shell: bash
+        env:
+          BEANS_LLVM_MINGW_CRT: ${{ matrix.crt }}
+        run: bash test/windows_toolchain.sh >> "$GITHUB_PATH"
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: matrix.toolchain == 'msvc'
+        with:
+          arch: ${{ matrix.msvc_arch }}
+
+      - name: Check tag and bootstrap from C++ source
+        shell: bash
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          declared=$(sed -n \
+            's/.*char version\[\] = "\([^"]*\)".*/\1/p' compiler/bootstrap/version.h)
+          test "$version" = "$declared"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          bash test/windows_source_bootstrap.sh \
+            ${{ matrix.triple }} build/windows_source_bootstrap
+
+      - name: Create deterministic Windows archive
+        shell: bash
+        run: |
+          tools/package_windows_release.sh \
+            "$VERSION" "${{ matrix.name }}" "$GITHUB_WORKSPACE/dist"
+          asset=$(find "$GITHUB_WORKSPACE/dist" -name '*.zip')
+          echo "ASSET=$asset" >> "$GITHUB_ENV"
+          echo "CHECKSUM=$asset.sha256" >> "$GITHUB_ENV"
+
+      - name: Clean-directory package smoke
+        shell: pwsh
+        run: |
+          Expand-Archive -Path $env:ASSET -DestinationPath "$env:RUNNER_TEMP\beans-install"
+          $root = Get-ChildItem "$env:RUNNER_TEMP\beans-install" -Directory | Select-Object -First 1
+          & "$($root.FullName)\bin\beansc.cmd" --version
+          Push-Location $env:RUNNER_TEMP
+          & "$($root.FullName)\bin\beansc.cmd" build `
+            "$($root.FullName)\examples\hello.b" -o hello.exe
+          if ((& .\hello.exe) -ne "hello from beans") { throw "hello smoke failed" }
+          Pop-Location
+
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: ${{ env.ASSET }}
+          format: spdx-json
+          output-file: ${{ env.ASSET }}.spdx.json
+
+      - name: Attest archive and SBOM
+        uses: actions/attest@v4
+        with:
+          subject-path: ${{ env.ASSET }}
+          sbom-path: ${{ env.ASSET }}.spdx.json
+
+      - name: Attach signed assets to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.ASSET }}
+            ${{ env.CHECKSUM }}
+            ${{ env.ASSET }}.spdx.json
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+
+  package:
+    name: package (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            name: macos-arm64
+          - os: ubuntu-24.04
+            name: linux-x86_64
+          - os: ubuntu-24.04-arm
+            name: linux-arm64
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Linux release tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang lld dpkg-dev ripgrep
+
+      - name: Check tag and build compiler
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          declared=$(sed -n \
+            's/.*char version\[\] = "\([^"]*\)".*/\1/p' compiler/bootstrap/version.h)
+          test "$version" = "$declared"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          make -j2
+
+      - name: Run release gate
+        run: make test
+
+      - name: Build pinned Linux sysroot
+        if: runner.os == 'Linux'
+        run: |
+          tools/make_linux_sysroot.sh "$RUNNER_TEMP/beans-sysroot"
+          echo "BEANS_RELEASE_SYSROOT=$RUNNER_TEMP/beans-sysroot" \
+            >> "$GITHUB_ENV"
+
+      - name: Create deterministic archive
+        run: |
+          tools/package_release.sh \
+            "$VERSION" "${{ matrix.name }}" "$GITHUB_WORKSPACE/dist"
+          asset=$(find "$GITHUB_WORKSPACE/dist" -name '*.tar.gz')
+          echo "ASSET=$asset" >> "$GITHUB_ENV"
+          echo "CHECKSUM=$asset.sha256" >> "$GITHUB_ENV"
+
+      - name: Clean-machine package smoke
+        run: |
+          mkdir "$RUNNER_TEMP/beans-install"
+          tar xzf "$ASSET" -C "$RUNNER_TEMP/beans-install"
+          root=$(find "$RUNNER_TEMP/beans-install" \
+            -mindepth 1 -maxdepth 1 -type d)
+          "$root/bin/beansc" --version
+          PATH="$root/bin:$PATH" beansc build "$root/examples/hello.b" \
+            -o "$RUNNER_TEMP/hello"
+          test "$("$RUNNER_TEMP/hello")" = "hello from beans"
+
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: ${{ env.ASSET }}
+          format: spdx-json
+          output-file: ${{ env.ASSET }}.spdx.json
+
+      - name: Attest archive and SBOM
+        uses: actions/attest@v4
+        with:
+          subject-path: ${{ env.ASSET }}
+          sbom-path: ${{ env.ASSET }}.spdx.json
+
+      - name: Attach signed assets to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.ASSET }}
+            ${{ env.CHECKSUM }}
+            ${{ env.ASSET }}.spdx.json
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+
+  package-musl:
+    name: package (${{ matrix.name }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            triple: x86_64-unknown-linux-musl
+            platform: linux/amd64
+            name: linux-x86_64-musl
+            image: alpine:3.22
+            packages: clang lld llvm
+          - arch: aarch64
+            triple: aarch64-unknown-linux-musl
+            platform: linux/arm64
+            name: linux-arm64-musl
+            image: alpine:3.22
+            packages: clang lld llvm
+          - arch: riscv64
+            triple: riscv64-unknown-linux-musl
+            platform: linux/riscv64
+            name: linux-riscv64-musl
+            image: alpine:3.22
+            packages: clang lld llvm
+          - arch: ppc64le
+            triple: powerpc64le-unknown-linux-musl
+            platform: linux/ppc64le
+            name: linux-ppc64le-musl
+            image: alpine:3.22
+            packages: clang lld llvm
+          - arch: loongarch64
+            triple: loongarch64-unknown-linux-musl
+            platform: linux/loong64
+            name: linux-loongarch64-musl
+            image: loongarch64/alpine@sha256:ba4698dc340db5079eea01b7ea3488452a9a1c3cb8aad11033ea2cc978f49ffc
+            packages: clang19 lld llvm19
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: all
+
+      - name: Check tag
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          declared=$(sed -n \
+            's/.*char version\[\] = "\([^"]*\)".*/\1/p' compiler/bootstrap/version.h)
+          test "$version" = "$declared"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Build, gate, package and smoke-test on the musl host
+        run: |
+          mkdir -p release-output
+          docker run --rm --platform '${{ matrix.platform }}' \
+            -v "$PWD:/src:ro" -v "$PWD/release-output:/artifacts" \
+            '${{ matrix.image }}' sh -lc '
+              set -eu
+              apk add --no-cache bash build-base ${{ matrix.packages }} git file
+              cp -a /src/. /work
+              cd /work
+              BEANS_MUSL_REQUIRE=1 bash test/musl_hosted.sh ${{ matrix.arch }}
+              BEANS_RELEASE_CROSS=${{ matrix.triple }} \
+              BEANS_RELEASE_BEANSC=$PWD/build/beansc \
+                tools/package_release.sh \
+                  "${{ env.VERSION }}" "${{ matrix.name }}" /artifacts/dist
+              asset=$(find /artifacts/dist -name "*.tar.gz")
+              mkdir /tmp/beans-install
+              tar xzf "$asset" -C /tmp/beans-install
+              root=$(find /tmp/beans-install -mindepth 1 -maxdepth 1 -type d)
+              "$root/bin/beansc" --version
+              PATH="$root/bin:$PATH" beansc build \
+                "$root/examples/hello.b" -o /tmp/hello
+              test "$(/tmp/hello)" = "hello from beans"
+            '
+          asset=$(find "$PWD/release-output/dist" -name '*.tar.gz')
+          echo "ASSET=$asset" >> "$GITHUB_ENV"
+          echo "CHECKSUM=$asset.sha256" >> "$GITHUB_ENV"
+
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: ${{ env.ASSET }}
+          format: spdx-json
+          output-file: ${{ env.ASSET }}.spdx.json
+
+      - name: Attest archive and SBOM
+        uses: actions/attest@v4
+        with:
+          subject-path: ${{ env.ASSET }}
+          sbom-path: ${{ env.ASSET }}.spdx.json
+
+      - name: Attach signed assets to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.ASSET }}
+            ${{ env.CHECKSUM }}
+            ${{ env.ASSET }}.spdx.json
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+
+  package-powerpc64-musl:
+    name: package (linux-powerpc64-musl)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang lld llvm file binutils qemu-user-static
+
+      - name: Check tag and build the packaging compiler
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          declared=$(sed -n \
+            's/.*char version\[\] = "\([^"]*\)".*/\1/p' compiler/bootstrap/version.h)
+          test "$version" = "$declared"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          make -j2
+
+      - name: Install pinned PowerPC64 musl C++ sysroot
+        env:
+          TOOLCHAIN_SHA512: 882e17b3a664f735dc37882a240aa352b3a01014fb8b40d1ffecb09573cdd9472bdaa7a10830be6d2e82e4b7ac4438c55ce5ac882e04a24f7d45a9f03ac922de
+        run: |
+          set -euo pipefail
+          curl -fL --retry 5 --retry-all-errors --connect-timeout 20 \
+            https://skarnet.org/toolchains/cross/powerpc64-linux-musl_talos-14.2.0.tar.xz \
+            -o "$RUNNER_TEMP/powerpc64-linux-musl.tar.xz"
+          echo "$TOOLCHAIN_SHA512  $RUNNER_TEMP/powerpc64-linux-musl.tar.xz" \
+            | sha512sum -c -
+          mkdir "$RUNNER_TEMP/powerpc64-linux-musl"
+          tar xJf "$RUNNER_TEMP/powerpc64-linux-musl.tar.xz" \
+            -C "$RUNNER_TEMP/powerpc64-linux-musl" --strip-components=1
+          ln -sfn libc.so \
+            "$RUNNER_TEMP/powerpc64-linux-musl/powerpc64-linux-musl/lib/ld-musl-powerpc64.so.1"
+          echo "PPC64_MUSL_ROOT=$RUNNER_TEMP/powerpc64-linux-musl" \
+            >> "$GITHUB_ENV"
+          echo "PPC64_MUSL_SYSROOT=$RUNNER_TEMP/powerpc64-linux-musl/powerpc64-linux-musl" \
+            >> "$GITHUB_ENV"
+
+      - name: Hosted compiler gate under qemu
+        env:
+          BEANS_LINUX_ARCH_REQUIRE: "1"
+        run: |
+          BEANS_CROSS_CXX="$PPC64_MUSL_ROOT/bin/powerpc64-linux-musl-g++" \
+          BEANS_CROSS_SYSROOT="$PPC64_MUSL_SYSROOT" \
+            bash test/linux_hosted.sh ppc64musl
+
+      - name: Build, package and smoke-test the archive
+        run: |
+          export BEANS_CLANG_TARGET=powerpc64-unknown-linux-musl
+          export BEANS_CLANG_SYSROOT="$PPC64_MUSL_SYSROOT"
+          export BEANS_CLANG_GCC_TOOLCHAIN="$PPC64_MUSL_ROOT"
+          ./build/beansc build --target powerpc64-unknown-linux-musl \
+            --sysroot "$PPC64_MUSL_SYSROOT" \
+            --cc "$GITHUB_WORKSPACE/tools/target_clang.sh" --linker lld \
+            compiler/beans/main.b -o build/beansc-powerpc64-musl
+          readelf -h build/beansc-powerpc64-musl | grep -q 'big endian'
+          BEANS_RELEASE_CROSS=powerpc64-unknown-linux-musl \
+          BEANS_RELEASE_BEANSC="$GITHUB_WORKSPACE/build/beansc-powerpc64-musl" \
+            tools/package_release.sh \
+              "$VERSION" linux-powerpc64-musl "$GITHUB_WORKSPACE/dist"
+          asset=$(find "$GITHUB_WORKSPACE/dist" -name '*.tar.gz')
+          echo "ASSET=$asset" >> "$GITHUB_ENV"
+          echo "CHECKSUM=$asset.sha256" >> "$GITHUB_ENV"
+          mkdir "$RUNNER_TEMP/beans-install"
+          tar xzf "$asset" -C "$RUNNER_TEMP/beans-install"
+          root=$(find "$RUNNER_TEMP/beans-install" \
+            -mindepth 1 -maxdepth 1 -type d)
+          export QEMU_LD_PREFIX="$PPC64_MUSL_SYSROOT"
+          export BEANS_RUNTIME="$root/bin/beans_rt.c"
+          export BEANS_STDLIB="$root/lib/std"
+          export BEANS_CC=clang
+          export BEANS_CLANG_TARGET=powerpc64-unknown-linux-musl
+          export BEANS_CLANG_SYSROOT="$PPC64_MUSL_SYSROOT"
+          export BEANS_CLANG_GCC_TOOLCHAIN="$PPC64_MUSL_ROOT"
+          qemu-ppc64-static "$root/bin/beansc.real" build \
+            --target powerpc64-unknown-linux-musl \
+            --sysroot "$PPC64_MUSL_SYSROOT" \
+            --cc "$GITHUB_WORKSPACE/tools/target_clang.sh" --linker lld \
+            "$root/examples/hello.b" -o "$RUNNER_TEMP/hello"
+          test "$(qemu-ppc64-static "$RUNNER_TEMP/hello")" = \
+            "hello from beans"
+
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: ${{ env.ASSET }}
+          format: spdx-json
+          output-file: ${{ env.ASSET }}.spdx.json
+
+      - name: Attest archive and SBOM
+        uses: actions/attest@v4
+        with:
+          subject-path: ${{ env.ASSET }}
+          sbom-path: ${{ env.ASSET }}.spdx.json
+
+      - name: Attach signed assets to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.ASSET }}
+            ${{ env.CHECKSUM }}
+            ${{ env.ASSET }}.spdx.json
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+
+  package-armv6hf:
+    name: package (linux-armv6hf)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm
+
+      - name: Check tag
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          declared=$(sed -n \
+            's/.*char version\[\] = "\([^"]*\)".*/\1/p' compiler/bootstrap/version.h)
+          test "$version" = "$declared"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Build, gate, package and smoke-test on ARMv6 hard-float
+        run: |
+          mkdir -p release-output
+          docker run --rm --platform linux/arm/v6 \
+            -v "$PWD:/src:ro" -v "$PWD/release-output:/artifacts" \
+            balenalib/raspberry-pi-debian@sha256:5e44b1697cd34bac1eaf43fbadab44c54d25246ff0b57144b054b8039d85141a sh -lc '
+              set -eu
+              apt-get update
+              DEBIAN_FRONTEND=noninteractive apt-get install -y \
+                --no-install-recommends bash g++ clang-16 lld-16 llvm-16 git file make
+              mkdir -p /work/beans
+              tar -cf - -C /src --exclude=./build --exclude=./.git \
+                --exclude=./toolchains . | tar -xf - -C /work/beans
+              cd /work/beans
+              BEANS_ARMV6HF_REQUIRE=1 bash test/armv6hf_hosted.sh
+              BEANS_RELEASE_CROSS=arm-unknown-linux-gnueabihf \
+              BEANS_RELEASE_BEANSC=$PWD/build/beansc \
+                tools/package_release.sh \
+                  "${{ env.VERSION }}" linux-armv6hf /artifacts/dist
+              asset=$(find /artifacts/dist -name "*.tar.gz")
+              mkdir /tmp/beans-install
+              tar xzf "$asset" -C /tmp/beans-install
+              root=$(find /tmp/beans-install -mindepth 1 -maxdepth 1 -type d)
+              "$root/bin/beansc" --version
+              BEANS_CC=clang-16 "$root/bin/beansc" build \
+                "$root/examples/hello.b" -o /tmp/hello
+              test "$(/tmp/hello)" = "hello from beans"
+            '
+          asset=$(find "$PWD/release-output/dist" -name '*.tar.gz')
+          echo "ASSET=$asset" >> "$GITHUB_ENV"
+          echo "CHECKSUM=$asset.sha256" >> "$GITHUB_ENV"
+
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: ${{ env.ASSET }}
+          format: spdx-json
+          output-file: ${{ env.ASSET }}.spdx.json
+
+      - name: Attest archive and SBOM
+        uses: actions/attest@v4
+        with:
+          subject-path: ${{ env.ASSET }}
+          sbom-path: ${{ env.ASSET }}.spdx.json
+
+      - name: Attach signed assets to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.ASSET }}
+            ${{ env.CHECKSUM }}
+            ${{ env.ASSET }}.spdx.json
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+
+  # The hosted cross targets have no native GitHub runner, so their archives are
+  # cross-built on x86-64 and proven under qemu-user rather than natively. They
+  # are slim — no bundled toolchain, since the packaged clang is the wrong
+  # architecture — and rely on the clang already on the target machine.
+  package-cross:
+    name: package (${{ matrix.name }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - triple: riscv64-unknown-linux-gnu
+            name: linux-riscv64
+            arch: riscv64
+            cross: gcc-riscv64-linux-gnu g++-riscv64-linux-gnu libc6-dev-riscv64-cross
+            qemu: qemu-riscv64-static
+            sysroot: /usr/riscv64-linux-gnu
+            machine: RISC-V
+          - triple: powerpc64le-unknown-linux-gnu
+            name: linux-ppc64le
+            arch: ppc64le
+            cross: gcc-powerpc64le-linux-gnu g++-powerpc64le-linux-gnu libc6-dev-ppc64el-cross
+            qemu: qemu-ppc64le-static
+            sysroot: /usr/powerpc64le-linux-gnu
+            machine: PowerPC64
+          - triple: i686-unknown-linux-gnu
+            name: linux-i686
+            arch: i686
+            cross: gcc-i686-linux-gnu g++-i686-linux-gnu libc6-dev-i386-cross
+            qemu: qemu-i386-static
+            sysroot: /usr/i686-linux-gnu
+            machine: Intel 80386
+          - triple: armv7-unknown-linux-gnueabihf
+            name: linux-armv7
+            arch: armv7
+            cross: gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf libc6-dev-armhf-cross
+            qemu: qemu-arm-static
+            sysroot: /usr/arm-linux-gnueabihf
+            machine: ARM
+          - triple: arm-unknown-linux-gnueabi
+            name: linux-armv6
+            arch: armv6
+            cross: gcc-arm-linux-gnueabi g++-arm-linux-gnueabi libc6-dev-armel-cross
+            qemu: qemu-arm-static
+            qemu_args: -cpu arm1176
+            sysroot: /usr/arm-linux-gnueabi
+            machine: ARM
+          - triple: loongarch64-unknown-linux-gnu
+            name: linux-loongarch64
+            arch: loongarch64
+            cross: gcc-14-loongarch64-linux-gnu g++-14-loongarch64-linux-gnu libc6-dev-loong64-cross
+            qemu: qemu-loongarch64-static
+            sysroot: /usr/loongarch64-linux-gnu
+            machine: LoongArch
+          - triple: powerpc-unknown-linux-gnu
+            name: linux-powerpc
+            arch: ppc
+            cross: gcc-powerpc-linux-gnu g++-powerpc-linux-gnu libc6-dev-powerpc-cross
+            qemu: qemu-ppc-static
+            sysroot: /usr/powerpc-linux-gnu
+            machine: PowerPC
+          - triple: powerpc64-unknown-linux-gnu
+            name: linux-powerpc64
+            arch: ppc64
+            cross: gcc-powerpc64-linux-gnu g++-powerpc64-linux-gnu libc6-dev-ppc64-cross
+            qemu: qemu-ppc64-static
+            sysroot: /usr/powerpc64-linux-gnu
+            machine: PowerPC64
+            linker: /usr/bin/powerpc64-linux-gnu-ld
+          - triple: s390x-unknown-linux-gnu
+            name: linux-s390x
+            arch: s390x
+            cross: gcc-s390x-linux-gnu g++-s390x-linux-gnu libc6-dev-s390x-cross
+            qemu: qemu-s390x-static
+            sysroot: /usr/s390x-linux-gnu
+            machine: IBM S/390
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm
+
+      - name: Install cross toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang lld llvm file binutils ripgrep dpkg-dev \
+            qemu-user-static ${{ matrix.cross }}
+
+      - name: Check tag and build the packaging compiler
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          declared=$(sed -n \
+            's/.*char version\[\] = "\([^"]*\)".*/\1/p' compiler/bootstrap/version.h)
+          test "$version" = "$declared"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          make -j2
+
+      - name: Hosted gate under qemu
+        env:
+          BEANS_LINUX_ARCH_REQUIRE: "1"
+        run: |
+          if [[ '${{ matrix.arch }}' == armv6hf ]]; then
+            docker run --rm --platform linux/arm/v6 \
+              -v "$PWD:/src:ro" \
+              balenalib/raspberry-pi-debian@sha256:5e44b1697cd34bac1eaf43fbadab44c54d25246ff0b57144b054b8039d85141a sh -lc '
+                set -eu
+                apt-get update
+                DEBIAN_FRONTEND=noninteractive apt-get install -y \
+                  --no-install-recommends bash clang-16 lld-16 llvm-16 git file make
+                mkdir -p /work/beans
+                tar -cf - -C /src --exclude=./build --exclude=./.git \
+                  --exclude=./toolchains . | tar -xf - -C /work/beans
+                cd /work/beans
+                BEANS_ARMV6HF_REQUIRE=1 bash test/armv6hf_hosted.sh
+              '
+          else
+            bash test/linux_hosted.sh '${{ matrix.arch }}'
+          fi
+
+      - name: Cross-build beansc for the target
+        run: |
+          linker='${{ matrix.linker }}'
+          linker=${linker:-lld}
+          ./build/beansc build --target ${{ matrix.triple }} --linker "$linker" \
+            compiler/beans/main.b -o "$GITHUB_WORKSPACE/build/beansc-cross"
+
+      - name: Create deterministic cross archive
+        env:
+          BEANS_RELEASE_CROSS: ${{ matrix.triple }}
+          BEANS_RELEASE_BEANSC: ${{ github.workspace }}/build/beansc-cross
+        run: |
+          tools/package_release.sh \
+            "$VERSION" "${{ matrix.name }}" "$GITHUB_WORKSPACE/dist"
+          asset=$(find "$GITHUB_WORKSPACE/dist" -name '*.tar.gz')
+          echo "ASSET=$asset" >> "$GITHUB_ENV"
+          echo "CHECKSUM=$asset.sha256" >> "$GITHUB_ENV"
+
+      - name: qemu smoke — the packaged compiler builds and runs hello
+        run: |
+          mkdir "$RUNNER_TEMP/inst"
+          tar xzf "$ASSET" -C "$RUNNER_TEMP/inst"
+          root=$(find "$RUNNER_TEMP/inst" -mindepth 1 -maxdepth 1 -type d)
+          readelf -h "$root/bin/beansc.real" | grep -q "${{ matrix.machine }}"
+          # On real hardware the bin/beansc wrapper sets these and execs
+          # beansc.real; under qemu the wrapper's exec can't cross-run, so set
+          # the same env and drive beansc.real through the emulator. --linker
+          # lld is the one qemu-only flag (the host ld is single-target).
+          export QEMU_LD_PREFIX=${{ matrix.sysroot }}
+          export BEANS_RUNTIME="$root/bin/beans_rt.c"
+          export BEANS_STDLIB="$root/lib/std"
+          export BEANS_CC=clang
+          linker='${{ matrix.linker }}'
+          linker=${linker:-lld}
+          qemu_args='${{ matrix.qemu_args }}'
+          ${{ matrix.qemu }} $qemu_args "$root/bin/beansc.real" build \
+            --target ${{ matrix.triple }} --linker "$linker" \
+            "$root/examples/hello.b" -o "$RUNNER_TEMP/hello"
+          out=$(${{ matrix.qemu }} $qemu_args "$RUNNER_TEMP/hello")
+          test "$out" = "hello from beans"
+
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: ${{ env.ASSET }}
+          format: spdx-json
+          output-file: ${{ env.ASSET }}.spdx.json
+
+      - name: Attest archive and SBOM
+        uses: actions/attest@v4
+        with:
+          subject-path: ${{ env.ASSET }}
+          sbom-path: ${{ env.ASSET }}.spdx.json
+
+      - name: Attach signed assets to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.ASSET }}
+            ${{ env.CHECKSUM }}
+            ${{ env.ASSET }}.spdx.json
+          generate_release_notes: true
+          fail_on_unmatched_files: true

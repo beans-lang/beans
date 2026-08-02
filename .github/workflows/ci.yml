@@ -1,0 +1,290 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Native Linux/x86-64 is split by failure area too. The compiler build is
+  # cheap compared with the gates, and three parallel jobs report a frontend,
+  # sanitizer/ABI, or bootstrap/target failure much sooner than one long chain.
+  linux-x86_64:
+    name: core gate (linux/x86-64, native)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang lld llvm file binutils ripgrep
+
+      - name: Toolchain versions
+        run: |
+          clang++ --version
+          ld.lld --version
+          make --version | head -1
+
+      - name: Build the compiler
+        run: make
+
+      - name: Smoke — parse the examples
+        run: make run
+
+      - name: Differential test suite
+        run: make test
+
+  linux-x86_64-safety:
+    name: safety + ABI gate (linux/x86-64, native)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang lld llvm file binutils ripgrep
+
+      - name: Build the compiler
+        run: make
+
+      - name: Sanitizers (ASan, TSan)
+        run: make test-sanitize
+
+      - name: Tier-1 C ABI (stage 0 and self-hosted, native)
+        run: make test-c-abi-tier1
+
+      - name: Frontend fuzz smoke
+        env:
+          FUZZ_SECONDS: "15"
+        run: make fuzz-smoke
+
+      - name: Systems-access score
+        run: make access-score
+
+  linux-x86_64-bootstrap:
+    name: bootstrap + targets gate (linux/x86-64, native)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang lld llvm file binutils ripgrep \
+            gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
+            qemu-user-static
+
+      - name: Build the compiler
+        run: make
+
+      # the self-host suite already ran inside `make test`; only the
+      # bootstrap fixed point is extra here
+      - name: Bootstrap fixed point (stage 1 and stage 2 emit identically)
+        run: make test-bootstrap
+
+      - name: Target model and settings validation
+        run: bash test/targets.sh
+
+      - name: Cross link to aarch64 and run under qemu
+        run: bash test/cross_link.sh
+
+  # Each architecture reports on its own. The old single x86-64 job ran these
+  # 18 gates in sequence, so an i686 failure appeared almost an hour after the
+  # run began and hid which other architectures were already sound.
+  linux-cross:
+    name: linux cross + hosted (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: riscv64
+            packages: gcc-riscv64-linux-gnu g++-riscv64-linux-gnu libc6-dev-riscv64-cross
+          - arch: ppc64le
+            packages: gcc-powerpc64le-linux-gnu g++-powerpc64le-linux-gnu libc6-dev-ppc64el-cross
+          - arch: i686
+            packages: gcc-i686-linux-gnu g++-i686-linux-gnu libc6-dev-i386-cross
+          - arch: armv7
+            packages: gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf libc6-dev-armhf-cross
+          - arch: armv6
+            packages: gcc-arm-linux-gnueabi g++-arm-linux-gnueabi libc6-dev-armel-cross
+          - arch: loongarch64
+            packages: gcc-14-loongarch64-linux-gnu g++-14-loongarch64-linux-gnu libc6-dev-loong64-cross
+          - arch: ppc
+            packages: gcc-powerpc-linux-gnu g++-powerpc-linux-gnu libc6-dev-powerpc-cross
+          - arch: ppc64
+            packages: gcc-powerpc64-linux-gnu g++-powerpc64-linux-gnu libc6-dev-ppc64-cross
+          - arch: s390x
+            packages: gcc-s390x-linux-gnu g++-s390x-linux-gnu libc6-dev-s390x-cross
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install ${{ matrix.arch }} toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang lld llvm file binutils qemu-user-static \
+            ${{ matrix.packages }}
+
+      - name: Build the compiler
+        run: make -j2
+
+      - name: Cross-build and run examples under qemu
+        env:
+          BEANS_LINUX_ARCH_REQUIRE: "1"
+        run: bash test/linux_arch.sh "${{ matrix.arch }}"
+
+      - name: Hosted compiler self-build under qemu
+        env:
+          BEANS_LINUX_ARCH_REQUIRE: "1"
+        run: bash test/linux_hosted.sh "${{ matrix.arch }}"
+
+  linux-armv6hf:
+    name: hosted gate (linux/armv6 hard-float, Raspbian)
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm
+
+      - name: Source bootstrap and differential loop on ARMv6 hard-float
+        run: |
+          docker run --rm --platform linux/arm/v6 \
+            -v "$PWD:/src:ro" \
+            balenalib/raspberry-pi-debian@sha256:5e44b1697cd34bac1eaf43fbadab44c54d25246ff0b57144b054b8039d85141a sh -lc '
+              set -eu
+              apt-get update
+              DEBIAN_FRONTEND=noninteractive apt-get install -y \
+                --no-install-recommends bash clang-16 lld-16 llvm-16 git file make
+              mkdir -p /work/beans
+              tar -cf - -C /src --exclude=./build --exclude=./.git \
+                --exclude=./toolchains . | tar -xf - -C /work/beans
+              cd /work/beans
+              BEANS_ARMV6HF_REQUIRE=1 bash test/armv6hf_hosted.sh
+            '
+
+  # This is separate from the score and normal local work. Barq Core is a
+  # pinned real-product check, and its network-heavy C++ build must not make
+  # the small local ABI fixtures depend on an external repository.
+  barq-core:
+    name: Barq Core C API (linux/x86-64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Beans and Barq build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang cmake ninja-build git libssl-dev libuv1-dev zlib1g-dev
+
+      - name: Build Beans
+        run: make -j2
+
+      - name: Generate bindings and run against pinned Barq Core
+        run: make test-barq-core
+
+  # Linux/arm64 gets the same required gate as x86-64.
+  linux-arm64:
+    name: full gate (linux/arm64, native)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang lld llvm file binutils ripgrep \
+            gcc-x86-64-linux-gnu libc6-dev-amd64-cross qemu-user-static
+
+      - name: Build the compiler
+        run: make
+
+      - name: Differential test suite
+        run: make test
+
+      - name: Sanitizers (ASan, TSan)
+        run: make test-sanitize
+
+      - name: Tier-1 C ABI (stage 0 and self-hosted, native)
+        run: make test-c-abi-tier1
+
+      - name: Systems-access score
+        run: make access-score
+
+      # the self-host suite already ran inside `make test`; only the
+      # bootstrap fixed point is extra
+      - name: Bootstrap fixed point (stage 1 and stage 2 emit identically)
+        run: make test-bootstrap
+
+      - name: Target model and settings validation
+        run: bash test/targets.sh
+
+      - name: Cross link to x86-64 and run under qemu
+        run: bash test/cross_link.sh
+
+  # macOS owns the kqueue backend, so its full differential suite must gate too.
+  macos-arm64:
+    name: differential gate (macos/arm64)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install test tools
+        run: brew install ripgrep
+
+      - name: Toolchain versions
+        run: |
+          clang++ --version
+          clang --print-targets | sed -n '1,20p'
+
+      - name: Build the compiler
+        run: make
+
+      - name: Smoke — parse the examples
+        run: make run
+
+      - name: Native backend smoke (build + run hello)
+        run: |
+          ./build/beansc build examples/hello.b -o hello_smoke
+          out=$(./hello_smoke)
+          echo "native output: $out"
+          test "$out" = "hello from beans"
+
+      - name: Differential test suite
+        run: make test
+
+      - name: Tier-1 C ABI (stage 0 and self-hosted, native)
+        run: make test-c-abi-tier1
+
+      - name: Target model and settings validation
+        run: bash test/targets.sh
+
+  # The native and per-architecture jobs above own correctness. This job proves
+  # the reproducible image builds, its entrypoint builds Beans, and its target
+  # model works. Repeating every native, cross and hosted gate in one container
+  # used to hide a late architecture failure behind about an hour of duplicates.
+  docker-linux:
+    name: docker container gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build image and run its focused gate
+        run: bash test/linux_docker.sh -- bash test/targets.sh

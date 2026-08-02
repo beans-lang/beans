@@ -1,0 +1,17 @@
+# key	value
+schema	1
+max_cv_percent	3.0
+max_noise_retries	4
+tuned_overall_floor	0.90
+tuned_group_floor	0.80
+tuned_workload_floor	0.75
+tuned_memory_ceiling	1.25
+matched_overall_floor	0.80
+matched_group_floor	0.70
+matched_workload_floor	0.70
+matched_memory_ceiling	1.50
+compare_overall_regression	0.02
+compare_group_regression	0.03
+compare_workload_regression	0.05
+compare_memory_regression	0.05
+expected_improvement	0.02

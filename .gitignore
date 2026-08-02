@@ -1,0 +1,7 @@
+build/
+.DS_Store
+.idea/
+report.md
+# A repo-local LLVM-MinGW lives here (test/windows_toolchain.sh puts it there).
+# It is a downloaded toolchain, not source, and it is gigabytes.
+toolchains/

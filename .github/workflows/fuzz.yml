@@ -1,0 +1,49 @@
+name: Frontend fuzz
+
+on:
+  workflow_dispatch:
+    inputs:
+      aggregate_seconds:
+        description: Aggregate fuzz time in seconds
+        required: true
+        default: "86400"
+  schedule:
+    - cron: "29 2 * * 0"
+
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    name: lexer, parser and checker (${{ matrix.shard }}/8)
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Clang
+        run: sudo apt-get update && sudo apt-get install -y clang
+
+      - name: Build fuzz target
+        run: make build/fuzz-frontend
+
+      - name: Run
+        env:
+          AGGREGATE_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.aggregate_seconds || '86400' }}
+          FUZZ_SEED: ${{ matrix.shard }}
+        run: |
+          FUZZ_SECONDS=$(( (AGGREGATE_SECONDS + 7) / 8 ))
+          export FUZZ_SECONDS
+          bash test/fuzz.sh "$FUZZ_SECONDS"
+
+      - name: Upload crash inputs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-fuzz-crashes-${{ matrix.shard }}
+          path: build/fuzz-artifacts/
+          if-no-files-found: ignore

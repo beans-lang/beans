@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Beans programming language coffee bean mark</title>
+  <desc id="desc">A dark, faceted coffee bean with a copper center groove.</desc>
+  <defs>
+    <clipPath id="bean-clip">
+      <path d="M273 34C360 39 414 121 412 247C410 377 350 467 259 478C169 475 105 389 101 262C98 139 154 50 238 34C251 32 263 32 273 34Z"/>
+    </clipPath>
+  </defs>
+
+  <path fill="#3A211A" stroke="#1B0E0C" stroke-width="8" stroke-linejoin="round"
+        d="M273 34C360 39 414 121 412 247C410 377 350 467 259 478C169 475 105 389 101 262C98 139 154 50 238 34C251 32 263 32 273 34Z"/>
+
+  <g clip-path="url(#bean-clip)">
+    <path fill="#6B3928" d="M238 31L151 110L181 209L258 133Z"/>
+    <path fill="#4B281F" d="M273 31L368 108L329 199L258 133Z"/>
+    <path fill="#512A20" d="M151 110L98 258L181 209L258 133Z"/>
+    <path fill="#301914" d="M368 108L415 247L329 199L258 133Z"/>
+    <path fill="#5A3024" d="M98 258L130 374L228 326L181 209Z"/>
+    <path fill="#422219" d="M181 209L228 326L279 248L258 133Z"/>
+    <path fill="#512B21" d="M258 133L279 248L329 199Z"/>
+    <path fill="#2C1712" d="M329 199L415 247L379 369L279 248Z"/>
+    <path fill="#44231B" d="M130 374L201 458L228 326Z"/>
+    <path fill="#2A1511" d="M228 326L201 458L259 484L279 248Z"/>
+    <path fill="#3B1E18" d="M279 248L259 484L327 449L379 369Z"/>
+    <path fill="#23120F" d="M201 458L259 484L327 449Z"/>
+    <path fill="#82472F" d="M155 102L238 34L203 95L181 209Z" opacity=".55"/>
+  </g>
+
+  <path fill="none" stroke="#B86F3C" stroke-width="18" stroke-linecap="round"
+        d="M272 43C217 120 224 181 276 248C316 300 287 382 239 469"/>
+  <path fill="none" stroke="#180D0B" stroke-width="10" stroke-linecap="round"
+        d="M272 43C217 120 224 181 276 248C316 300 287 382 239 469"/>
+</svg>

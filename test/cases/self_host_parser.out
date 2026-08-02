@@ -1,0 +1,20 @@
+(module
+  (import "std.io")
+  (fn "main"
+    (params)
+    (block
+      (let "name"
+        (type "string")
+        (literal "\"beans\"")
+      )
+      (expression
+        (call
+          (field "println"
+            (name "io")
+          )
+          (literal "\"hello from {name}\"")
+        )
+      )
+    )
+  )
+)

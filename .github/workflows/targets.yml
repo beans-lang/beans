@@ -1,0 +1,565 @@
+name: Cross targets
+
+# WebAssembly and the two embedded boards need toolchains the normal CI job does
+# not have. WASM uses a pinned WASI SDK and Wasmtime directly. The embedded boards
+# use the Docker image for lld, bare-metal libgcc and qemu-system.
+#
+# It is not on every push on purpose. The image is large and slow to build, and the
+# code these tests cover changes rarely — but leaving them to run only on one
+# developer's laptop would mean the WebAssembly and embedded claims had no CI behind
+# them at all. `test/wasm.sh` and `test/embedded.sh` skip themselves when the image
+# is missing, which is exactly why their absence would otherwise be silent.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+  # Also on pull requests that touch the compiler, runtime, target model or the
+  # cross-target tests. Without this the matrix that builds and runs the Windows,
+  # wasm and embedded targets never sees a change before it merges, so a break in
+  # any of them stays green on the normal CI workflow, which builds none of them.
+  pull_request:
+    paths:
+      - "compiler/bootstrap/**"
+      - "compiler/**"
+      - "runtime/**"
+      - "stdlib/std/**"
+      - "test/windows*.sh"
+      - "test/linux*.sh"
+      - "test/musl*.sh"
+      - "test/wasm.sh"
+      - "test/embedded.sh"
+      - "test/armv6hf_hosted.sh"
+      - "test/docker/**"
+      - "targets/**"
+      - ".github/workflows/targets.yml"
+  schedule:
+    - cron: "23 4 * * 2"
+
+concurrency:
+  group: targets-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  musl-hosts:
+    name: musl host (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            platform: linux/amd64
+            image: alpine:3.22
+            packages: clang lld llvm
+          - arch: aarch64
+            platform: linux/arm64
+            image: alpine:3.22
+            packages: clang lld llvm
+          - arch: riscv64
+            platform: linux/riscv64
+            image: alpine:3.22
+            packages: clang lld llvm
+          - arch: ppc64le
+            platform: linux/ppc64le
+            image: alpine:3.22
+            packages: clang lld llvm
+          - arch: loongarch64
+            platform: linux/loong64
+            image: loongarch64/alpine@sha256:ba4698dc340db5079eea01b7ea3488452a9a1c3cb8aad11033ea2cc978f49ffc
+            packages: clang19 lld llvm19
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: all
+
+      - name: Source bootstrap and hosted differential loop on Alpine
+        run: |
+          docker run --rm --platform '${{ matrix.platform }}' \
+            -v "$PWD:/src:ro" '${{ matrix.image }}' sh -lc '
+              set -eu
+              apk add --no-cache bash build-base ${{ matrix.packages }} git file
+              cp -a /src/. /work
+              cd /work
+              BEANS_MUSL_REQUIRE=1 bash test/musl_hosted.sh ${{ matrix.arch }}
+            '
+
+  musl-powerpc64:
+    name: musl host (powerpc64 big-endian)
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang lld llvm file qemu-user-static
+
+      - name: Build the packaging compiler
+        run: make -j2
+
+      - name: Install pinned PowerPC64 musl C++ sysroot
+        env:
+          TOOLCHAIN_SHA512: 882e17b3a664f735dc37882a240aa352b3a01014fb8b40d1ffecb09573cdd9472bdaa7a10830be6d2e82e4b7ac4438c55ce5ac882e04a24f7d45a9f03ac922de
+        run: |
+          set -euo pipefail
+          curl -fL --retry 5 --retry-all-errors --connect-timeout 20 \
+            https://skarnet.org/toolchains/cross/powerpc64-linux-musl_talos-14.2.0.tar.xz \
+            -o "$RUNNER_TEMP/powerpc64-linux-musl.tar.xz"
+          echo "$TOOLCHAIN_SHA512  $RUNNER_TEMP/powerpc64-linux-musl.tar.xz" \
+            | sha512sum -c -
+          mkdir "$RUNNER_TEMP/powerpc64-linux-musl"
+          tar xJf "$RUNNER_TEMP/powerpc64-linux-musl.tar.xz" \
+            -C "$RUNNER_TEMP/powerpc64-linux-musl" --strip-components=1
+          ln -sfn libc.so \
+            "$RUNNER_TEMP/powerpc64-linux-musl/powerpc64-linux-musl/lib/ld-musl-powerpc64.so.1"
+
+      - name: Source bootstrap and hosted differential loop
+        env:
+          BEANS_LINUX_ARCH_REQUIRE: "1"
+        run: |
+          BEANS_CROSS_CXX="$RUNNER_TEMP/powerpc64-linux-musl/bin/powerpc64-linux-musl-g++" \
+          BEANS_CROSS_SYSROOT="$RUNNER_TEMP/powerpc64-linux-musl/powerpc64-linux-musl" \
+            bash test/linux_hosted.sh ppc64musl
+
+  cross-targets:
+    name: wasm + embedded boards
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install host toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang lld llvm binutils file
+
+      # The module is built in the container and run here, so wasmtime is a host
+      # tool. Pinned rather than tracking latest: a runtime that changed under the
+      # test would make a green run mean less, not more.
+      - name: Install wasmtime
+        env:
+          WASMTIME_VERSION: v41.0.3
+        run: |
+          set -euo pipefail
+          url="https://github.com/bytecodealliance/wasmtime/releases/download"
+          file="wasmtime-${WASMTIME_VERSION}-x86_64-linux.tar.xz"
+          curl -fsSL "$url/${WASMTIME_VERSION}/$file" -o /tmp/wasmtime.tar.xz
+          tar -xJf /tmp/wasmtime.tar.xz -C /tmp
+          sudo install -m 0755 "/tmp/wasmtime-${WASMTIME_VERSION}-x86_64-linux/wasmtime" \
+            /usr/local/bin/wasmtime
+          wasmtime --version
+
+      - name: Install WASI SDK
+        env:
+          WASI_SDK_VERSION: "33"
+        run: |
+          set -euo pipefail
+          base="https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-${WASI_SDK_VERSION}"
+          file="wasi-sdk-${WASI_SDK_VERSION}.0-x86_64-linux.tar.gz"
+          curl -fsSL "$base/$file" -o /tmp/wasi-sdk.tar.gz
+          sudo mkdir -p /opt/wasi-sdk
+          sudo tar -xzf /tmp/wasi-sdk.tar.gz -C /opt/wasi-sdk --strip-components=1
+          /opt/wasi-sdk/bin/clang --version
+
+      - name: Build the compiler
+        run: make
+
+      - name: Build the cross-toolchain image
+        run: |
+          docker build --platform linux/amd64 \
+            -f test/docker/linux.Dockerfile \
+            -t beans-linux-test:linux-arm64 .
+
+      # The tag above is the one both scripts look for. It says arm64 because that is
+      # the developer default; here the image is amd64 and the scripts do not care —
+      # they only ever ask the container to compile and to run an emulator.
+      # Both scripts skip themselves when the toolchain is missing, and a skip is a
+      # pass as far as the shell is concerned. The log is checked for that, because a
+      # silently skipped suite on the one runner that covers these targets would mean
+      # the WebAssembly and embedded claims had nothing behind them.
+      - name: WebAssembly — WASIp1, browser modules, SIMD, and self-host
+        env:
+          BEANS_WASM_CC: /opt/wasi-sdk/bin/clang
+          BEANS_WASM_AR: /opt/wasi-sdk/bin/llvm-ar
+          BEANS_WASM_NM: /opt/wasi-sdk/bin/llvm-nm
+        run: |
+          set -euo pipefail
+          bash test/wasm.sh 2>&1 | tee /tmp/wasm.log
+          if grep -q "^skipping" /tmp/wasm.log; then
+            echo "test/wasm.sh skipped its real work on a runner with WASI SDK" >&2
+            exit 1
+          fi
+
+      - name: Embedded — Cortex-M4 and RV32 under qemu-system
+        run: |
+          set -euo pipefail
+          bash test/embedded.sh 2>&1 | tee /tmp/embedded.log
+          if grep -q "^skipping" /tmp/embedded.log; then
+            echo "test/embedded.sh skipped its emulator half on a runner with the image" >&2
+            exit 1
+          fi
+
+  # Windows is its own job: the MinGW + Wine image is separate from the Linux
+  # cross image, and on this amd64 runner Wine executes the PE binaries at full
+  # speed — the same gate a developer runs emulated through
+  # `test/windows_docker.sh`. Wine is the fast loop, not the final word; the
+  # two jobs after this one run the same binaries on genuine Windows.
+  windows-gate:
+    name: windows x86-64 under Wine
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Windows — MinGW cross build, Wine execution, differential gate
+        run: |
+          set -euo pipefail
+          bash test/windows_docker.sh 2>&1 | tee /tmp/windows.log
+          if grep -q "^skipping" /tmp/windows.log; then
+            echo "test/windows.sh skipped its real work on a runner with Docker" >&2
+            exit 1
+          fi
+
+      - name: Windows — C++ stage 0 builds and runs under Wine
+        run: |
+          set -euo pipefail
+          bash test/windows_docker.sh -- \
+            bash -lc 'BEANS_WINDOWS_REQUIRE=1 bash test/windows_stage0.sh'
+
+  # The native pair: an ubuntu job cross-compiles every eligible example and
+  # records the interpreter's verdicts; a real Windows runner then executes
+  # the binaries and diffs. Until beansc itself runs on Windows this split is
+  # the strongest possible claim — the machine that runs the code is genuine
+  # Windows, and the interpreter stays the referee.
+  # One staging job per Windows host target. The toolchain is LLVM-MinGW rather
+  # than the distro's mingw-w64, because Debian and Ubuntu ship
+  # no aarch64 MinGW at all — Windows on ARM cannot be linked without it. Using
+  # it for every architecture and for both MSVCRT GNU and UCRT gnullvm.
+  windows-stage:
+    name: stage windows binaries (${{ matrix.id }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: x86_64-gnu
+            arch: x86_64
+            triple: x86_64-pc-windows-gnu
+            crt: msvcrt
+            hosted: true
+          - id: x86_64-gnullvm
+            arch: x86_64
+            triple: x86_64-pc-windows-gnullvm
+            crt: ucrt
+            hosted: true
+          # WOW64 runs the 32-bit compiler on the x64 Windows runner. Decimal
+          # uses portable limbs, so i686 is a full compiler host now.
+          - id: i686-gnu
+            arch: i686
+            triple: i686-pc-windows-gnu
+            crt: msvcrt
+            hosted: true
+          - id: aarch64-gnullvm
+            arch: aarch64
+            triple: aarch64-pc-windows-gnullvm
+            crt: ucrt
+            hosted: true
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install host toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang lld llvm binutils file
+
+      - name: Install LLVM-MinGW (covers all three Windows architectures)
+        env:
+          BEANS_LLVM_MINGW_CRT: ${{ matrix.crt }}
+        run: |
+          bash test/windows_toolchain.sh >> "$GITHUB_PATH"
+
+      - name: Toolchain versions
+        run: |
+          clang --version | head -1
+          ld.lld --version
+
+      - name: Build the compiler
+        run: make
+
+      - name: Stage the differential bundle
+        run: |
+          bash test/windows_native_stage.sh \
+            --target ${{ matrix.triple }} build/windows_native
+
+      # beansc.exe for this architecture, so the hosted gate below runs the
+      # compiler itself on the machine rather than only programs it produced.
+      - name: Cross-build beansc.exe (the compiler hosted on Windows)
+        if: matrix.hosted
+        run: |
+          ./build/beansc build --target ${{ matrix.triple }} --linker lld \
+            compiler/beans/main.b -o build/windows_native/beansc.exe
+
+      - name: Confirm every artifact is really ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          for exe in build/windows_native/*.exe; do
+            file -b "$exe" | grep -qi "for MS Windows" || {
+              echo "$exe is not a PE binary" >&2; exit 1; }
+          done
+          # Every registered Windows architecture now carries beansc.exe.
+          if [ "${{ matrix.hosted }}" = "true" ]; then
+            file -b build/windows_native/beansc.exe
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-native-bundle-${{ matrix.id }}
+          path: build/windows_native
+          if-no-files-found: error
+
+  windows-native:
+    name: run on real Windows (${{ matrix.id }})
+    needs: windows-stage
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # x86-64 and i686 both execute on an x64 runner; the 32-bit binaries
+          # go through WOW64, which is the compatibility path real users are on.
+          - id: x86_64-gnu
+            arch: x86_64
+            triple: x86_64-pc-windows-gnu
+            crt: msvcrt
+            runner: windows-latest
+            host_arch: AMD64
+            hosted: true
+          - id: x86_64-gnullvm
+            arch: x86_64
+            triple: x86_64-pc-windows-gnullvm
+            crt: ucrt
+            runner: windows-latest
+            host_arch: AMD64
+            hosted: true
+          - id: i686-gnu
+            arch: i686
+            triple: i686-pc-windows-gnu
+            crt: msvcrt
+            runner: windows-latest
+            host_arch: AMD64
+            hosted: true
+          # Native Windows on ARM. Nothing here is emulated, and the step below
+          # refuses to continue if the runner turns out to be x64.
+          - id: aarch64-gnullvm
+            arch: aarch64
+            triple: aarch64-pc-windows-gnullvm
+            crt: ucrt
+            runner: windows-11-arm
+            host_arch: ARM64
+            hosted: true
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-native-bundle-${{ matrix.id }}
+          path: build/windows_native
+
+      # The claim is "this ran natively on this architecture", so the machine is
+      # checked before anything is believed. On the ARM64 runner an x64 host
+      # would mean the whole job was measuring emulation.
+      - name: Confirm the runner is ${{ matrix.host_arch }}
+        shell: pwsh
+        run: |
+          $actual = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToUpperInvariant()
+          $expected = if ('${{ matrix.host_arch }}' -eq 'AMD64') { 'X64' } else { '${{ matrix.host_arch }}' }
+          Write-Host "OSArchitecture=$actual"
+          Write-Host "PROCESSOR_IDENTIFIER=$env:PROCESSOR_IDENTIFIER"
+          if ($actual -ne $expected) {
+            throw "expected a $expected runner, got $actual"
+          }
+
+      - name: Execute every example natively and diff
+        shell: bash
+        run: |
+          bash test/windows_native_run.sh build/windows_native ${{ matrix.arch }}
+
+      # The hosted gate needs a clang that targets the -gnu environment, and a
+      # matching CRT. Chocolatey's llvm+mingw pair only ever covered x86-64 —
+      # there is no aarch64 MinGW there, and the sysroot probe below was written
+      # around an x86_64-w64-mingw32 directory that does not exist on the other
+      # two architectures. LLVM-MinGW carries clang, lld and all three CRTs in
+      # one archive and needs no sysroot hunting, so it replaces both installs.
+      - name: Install LLVM-MinGW for the hosted gate
+        if: matrix.hosted
+        shell: bash
+        env:
+          BEANS_LLVM_MINGW_CRT: ${{ matrix.crt }}
+        run: |
+          set -euo pipefail
+          bash test/windows_toolchain.sh >> "$GITHUB_PATH"
+
+      - name: Toolchain versions
+        if: matrix.hosted
+        shell: bash
+        run: |
+          clang --version | head -2
+          echo "default target: $(clang -print-target-triple)"
+
+      - name: Bootstrap from the C++ source compiler to a fixed point
+        if: matrix.hosted
+        shell: bash
+        run: |
+          bash test/windows_source_bootstrap.sh \
+            ${{ matrix.triple }} build/windows_source_bootstrap
+
+      # The final claim: beansc.exe itself, on genuine Windows, running the
+      # same interpret-compile-diff loop make test runs everywhere else. A
+      # skip here means the runner lost its toolchain, not that the claim
+      # holds — fail loudly.
+      #
+      # This now runs on all three architectures. On windows-11-arm it is an
+      # ARM64 compiler compiling and interpreting on an ARM64 machine, with no
+      # emulation anywhere in the chain — the runner check above already
+      # refused to continue if the host were x64.
+      - name: beansc.exe runs its own differential loop
+        if: matrix.hosted
+        shell: bash
+        run: |
+          set -euo pipefail
+          file build/windows_native/beansc.exe || true
+          BEANSC=build/windows_native/beansc.exe \
+            TRIPLE=${{ matrix.triple }} \
+            bash test/windows_hosted.sh 2>&1 | tee hosted.log
+          if grep -q "^skipping" hosted.log; then
+            echo "the hosted gate skipped on the one runner that carries the claim" >&2
+            exit 1
+          fi
+
+      # A compiler that can compile itself on the machine it runs on. This is
+      # the fixed-point half of the self-hosting claim, per architecture: the
+      # PE linkers stamp image metadata, so executable bytes are not a compiler
+      # fixed point. The compiler IR is: both executables must emit exactly the
+      # same module for compiler/beans/main.b.
+      - name: beansc.exe reaches the compiler IR fixed point
+        if: matrix.hosted
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ matrix.arch }}" in
+            x86_64) target_cc=x86_64-w64-mingw32-clang.exe ;;
+            i686) target_cc=i686-w64-mingw32-clang.exe ;;
+            aarch64) target_cc=aarch64-w64-mingw32-clang.exe ;;
+          esac
+          # Git Bash sees GITHUB_PATH through MSYS. The native compiler does
+          # not, so hand CreateProcess the resolved Windows path explicitly.
+          target_cc=$(cygpath -w "$(command -v "$target_cc")")
+          ./build/windows_native/beansc.exe build \
+            --cc "$target_cc" --linker lld \
+            compiler/beans/main.b -o build/rebuilt.exe
+          ./build/windows_native/beansc.exe llvm compiler/beans/main.b \
+            > build/hosted-stage2.ll
+          ./build/rebuilt.exe llvm compiler/beans/main.b > build/hosted-stage3.ll
+          if cmp -s build/hosted-stage2.ll build/hosted-stage3.ll; then
+            echo "fixed point: the hosted compiler reproduces its compiler IR"
+          else
+            echo "the hosted ${{ matrix.arch }} compiler does not reproduce itself" >&2
+            ls -l build/hosted-stage2.ll build/hosted-stage3.ll >&2
+            exit 1
+          fi
+
+  windows-msvc:
+    name: MSVC host (${{ matrix.arch }})
+    needs: windows-stage
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            triple: x86_64-pc-windows-msvc
+            bootstrap: x86_64-gnullvm
+            runner: windows-latest
+            msvc_arch: x64
+          - arch: i686
+            triple: i686-pc-windows-msvc
+            bootstrap: i686-gnu
+            runner: windows-latest
+            msvc_arch: x86
+          - arch: aarch64
+            triple: aarch64-pc-windows-msvc
+            bootstrap: aarch64-gnullvm
+            runner: windows-11-arm
+            msvc_arch: arm64
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-native-bundle-${{ matrix.bootstrap }}
+          path: build/bootstrap
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.msvc_arch }}
+
+      - name: Confirm LLVM and MSVC tools
+        shell: bash
+        run: |
+          clang --version | head -2
+          lld-link --version
+          test -n "${INCLUDE:-}"
+          test -n "${LIB:-}"
+
+      - name: Build and run the MSVC differential bundle
+        shell: bash
+        run: |
+          chmod +x build/bootstrap/beansc.exe
+          BEANSC=build/bootstrap/beansc.exe \
+            bash test/windows_native_stage.sh \
+              --target ${{ matrix.triple }} build/windows_msvc
+          bash test/windows_native_run.sh build/windows_msvc ${{ matrix.arch }}
+
+      - name: Build an MSVC-hosted compiler and run its differential loop
+        shell: bash
+        run: |
+          build/bootstrap/beansc.exe build \
+            --target ${{ matrix.triple }} --linker lld \
+            compiler/beans/main.b -o build/windows_msvc/beansc.exe
+          BEANSC=build/windows_msvc/beansc.exe \
+            TRIPLE=${{ matrix.triple }} \
+            bash test/windows_hosted.sh 2>&1 | tee hosted-msvc.log
+          if grep -q '^skipping' hosted-msvc.log; then
+            echo "MSVC hosted gate skipped" >&2
+            exit 1
+          fi
+
+      - name: MSVC compiler reaches the IR fixed point
+        shell: bash
+        run: |
+          build/windows_msvc/beansc.exe build \
+            --target ${{ matrix.triple }} --linker lld \
+            compiler/beans/main.b -o build/msvc-rebuilt.exe
+          build/windows_msvc/beansc.exe llvm compiler/beans/main.b \
+            > build/msvc-stage2.ll
+          build/msvc-rebuilt.exe llvm compiler/beans/main.b > build/msvc-stage3.ll
+          cmp build/msvc-stage2.ll build/msvc-stage3.ll
+
+      # The shipped Beans compiler above owns the full hosted loop and fixed
+      # point. Stage 0 is the bootstrap/reference compiler; on MSVC it still
+      # has to be a real native program, but it need not bootstrap itself again.
+      - name: C++ stage 0 runs natively on MSVC
+        shell: bash
+        run: |
+          BEANS_SOURCE_SMOKE_ONLY=1 bash test/windows_source_bootstrap.sh \
+            ${{ matrix.triple }} build/windows_source_msvc
