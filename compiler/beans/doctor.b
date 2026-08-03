@@ -59,8 +59,9 @@ fn doctor_resolve(program: string) -> string {
     return ""
 }
 
-// First line of `<program> <flag>`, or "" when the tool cannot be started. A
-// tool that exists but refuses the flag is still reported as present.
+// First line of `<program> <flag>`, or "" when the tool could not be started or
+// refused the flag. Presence is decided by doctor_resolve, not by this: a tool
+// whose version cannot be read is still reported, just without a version.
 fn doctor_tool_line(program: string, flag: string) -> string {
     if program == "" { return "" }
     let command: process.Command =

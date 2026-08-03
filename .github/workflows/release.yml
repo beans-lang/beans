@@ -628,40 +628,37 @@ jobs:
           cp tools/install-release.ps1 assets/beans-install.ps1
           chmod +x assets/beans-install.sh
 
-      - name: Write the checksum list
-        run: |
-          # Covers the exact files a user downloads, the installers included.
-          (cd assets && find . -maxdepth 1 -type f ! -name 'beans-release-checksums.txt' \
-            -printf '%P\n' | LC_ALL=C sort | xargs sha256sum) \
-            >assets/beans-release-checksums.txt
-          cat assets/beans-release-checksums.txt
-
+      # Built before the checksum list so the SBOM is itself covered by it. It is
+      # written outside assets/ first, because a scan of assets/ must not have to
+      # describe its own output.
       - name: Generate SPDX SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:
           path: assets
           format: spdx-json
-          output-file: beans-v${{ env.VERSION }}.spdx.json
+          output-file: sbom/beans-v${{ env.VERSION }}.spdx.json
+
+      - name: Write the checksum list
+        run: |
+          cp "sbom/beans-v$VERSION.spdx.json" assets/
+          # Covers the exact set of files a user can download, and nothing else.
+          (cd assets && find . -maxdepth 1 -type f \
+            ! -name 'beans-release-checksums.txt' -printf '%P\n' |
+            LC_ALL=C sort | xargs sha256sum) \
+            >assets/beans-release-checksums.txt
+          cat assets/beans-release-checksums.txt
 
       - name: Attest every published file
         uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4
         with:
-          subject-path: |
-            assets/*.tar.gz
-            assets/*.zip
-            assets/beans-install.sh
-            assets/beans-install.ps1
-            assets/beans-release-manifest.tsv
-            assets/beans-release-checksums.txt
-          sbom-path: beans-v${{ env.VERSION }}.spdx.json
+          subject-path: assets/*
+          sbom-path: sbom/beans-v${{ env.VERSION }}.spdx.json
 
       - name: Upload every asset to the GitHub Release
         if: github.event_name == 'push' || inputs.publish
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
-          files: |
-            assets/*
-            beans-v${{ env.VERSION }}.spdx.json
+          files: assets/*
           generate_release_notes: true
           fail_on_unmatched_files: true
 

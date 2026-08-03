@@ -67,7 +67,10 @@ esac
 
 # ---------------------------------------------------------------- temporaries
 work=
-cleanup() { [ -n "$work" ] && rm -rf "$work"; }
+# The trailing `:` matters. An EXIT trap whose last command fails replaces the
+# script's exit status with that failure, so a cleanup that finds nothing to
+# clean must not be the thing that decides what the installer returned.
+cleanup() { [ -n "$work" ] && rm -rf "$work"; :; }
 trap cleanup EXIT HUP INT TERM
 work=$(mktemp -d "${TMPDIR:-/tmp}/beans-install.XXXXXX") ||
     die "cannot create a temporary directory"
