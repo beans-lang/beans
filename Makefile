@@ -99,6 +99,7 @@ test: $(BIN) build/bench/compare
 	./test/docs.sh
 	./test/version.sh
 	./test/cli_parity.sh
+	bash ./test/package_semantics.sh
 	./test/dependencies.sh
 	./test/self_host.sh
 	./test/deterministic_build.sh

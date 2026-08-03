@@ -9,6 +9,7 @@ class HirNode {
     children: List<HirNode>
     binding_id: int
     argument_passing: List<string>
+    dispatch_slot: string
 
     fn init(kind: string, value: string, type: HirType,
             file: string, line: int, col: int) {
@@ -22,6 +23,7 @@ class HirNode {
         self.children = []
         self.binding_id = -1
         self.argument_passing = []
+        self.dispatch_slot = ""
     }
 }
 
@@ -64,6 +66,29 @@ class BuiltinSignature {
             self.parameters.push(parameter)
         }
         self.result = result
+    }
+}
+
+class ResolvedField {
+    owner: HirDeclaration
+    field: HirField
+    type: HirType
+
+    fn init(owner: HirDeclaration, field: HirField,
+            type: HirType) {
+        self.owner = owner
+        self.field = field
+        self.type = type
+    }
+}
+
+class ResolvedSuperMethod {
+    owner: HirType
+    function: HirFunction
+
+    fn init(owner: HirType, function: HirFunction) {
+        self.owner = owner
+        self.function = function
     }
 }
 
@@ -602,25 +627,14 @@ class ExpressionChecker {
                 continue
             }
             self.functions[function.qualified] = function
-            if !self.functions.contains(function.name) {
-                self.functions[function.name] = function
-            }
         }
         for declaration: HirDeclaration in self.program.declarations {
             self.declarations[declaration.qualified] = declaration
-            if !self.declarations.contains(declaration.name) {
-                self.declarations[declaration.name] = declaration
-            }
         }
         for global: HirCGlobal in
             self.program.c_globals {
             self.c_globals[
                 global.qualified] = global
-            if !self.c_globals.contains(
-                   global.name) {
-                self.c_globals[
-                    global.name] = global
-            }
         }
         for package: LoadedPackage in
             signature.resolver.loader.packages {
@@ -1222,6 +1236,101 @@ class ExpressionChecker {
         return self.declarations.get(type.name)
     }
 
+    fn declaration_instance(
+        declaration: HirDeclaration) -> HirType {
+        let type: HirType =
+            new HirType(declaration.qualified)
+        for generic: string in declaration.generics {
+            type.args.push(new HirType(generic))
+        }
+        return type
+    }
+
+    fn parent_class_type(type: HirType) -> Option<HirType> {
+        match self.declaration_for(type) {
+            some(declaration) => {
+                for relation: HirType in declaration.relations {
+                    let resolved: HirType =
+                        self.substitute_owner_type(
+                            relation, declaration, type)
+                    match self.declaration_for(resolved) {
+                        some(parent) => {
+                            if parent.kind == "class" {
+                                return some(resolved)
+                            }
+                        }
+                        none => {}
+                    }
+                }
+            }
+            none => {}
+        }
+        return none
+    }
+
+    fn super_method(name: string) -> Option<ResolvedSuperMethod> {
+        match self.declarations.get(self.current.owner) {
+            some(declaration) => {
+                var parent: Option<HirType> =
+                    self.parent_class_type(
+                        self.declaration_instance(declaration))
+                for parent.is_some() {
+                    let owner: HirType =
+                        parent.expect("parent class")
+                    match self.methods.get(
+                        "{owner.name}.{name}") {
+                        some(function) => {
+                            if !function.is_static &&
+                               function.has_body {
+                                return some(
+                                    new ResolvedSuperMethod(
+                                        owner, function))
+                            }
+                        }
+                        none => {}
+                    }
+                    parent = self.parent_class_type(owner)
+                }
+            }
+            none => {}
+        }
+        return none
+    }
+
+    fn package_prefix_for_file(file_path: string) -> string {
+        for package: LoadedPackage in
+            self.signature.resolver.loader.packages {
+            for file: ParsedModuleFile in package.files {
+                if file.path == file_path {
+                    return package.prefix
+                }
+            }
+        }
+        return ""
+    }
+
+    fn current_qualified(name: string) -> string {
+        let prefix: string =
+            self.package_prefix_for_file(self.current.file)
+        if prefix == "" { return name }
+        return "{prefix}.{name}"
+    }
+
+    fn current_declaration(name: string) -> Option<HirDeclaration> {
+        return self.declarations.get(
+            self.current_qualified(name))
+    }
+
+    fn current_function(name: string) -> Option<HirFunction> {
+        return self.functions.get(
+            self.current_qualified(name))
+    }
+
+    fn current_c_global(name: string) -> Option<HirCGlobal> {
+        return self.c_globals.get(
+            self.current_qualified(name))
+    }
+
     fn is_move_only_seen(
         type: HirType,
         inout seen: Map<string, bool>) -> bool {
@@ -1326,7 +1435,8 @@ class ExpressionChecker {
         }
     }
 
-    fn field_type(receiver: HirType, name: string) -> Option<HirType> {
+    fn field_for(receiver: HirType,
+                 name: string) -> Option<ResolvedField> {
         var pending: List<HirType> = [receiver]
         var seen: Map<string, bool> = {}
         for pending.len() != 0 {
@@ -1339,8 +1449,11 @@ class ExpressionChecker {
                 some(declaration) => {
                     for field: HirField in declaration.fields {
                         if field.name == name {
-                            return some(self.substitute_owner_type(
-                                field.type, declaration, current))
+                            return some(new ResolvedField(
+                                declaration, field,
+                                self.substitute_owner_type(
+                                    field.type, declaration,
+                                    current)))
                         }
                     }
                     for relation: HirType in declaration.relations {
@@ -1353,6 +1466,13 @@ class ExpressionChecker {
             }
         }
         return none
+    }
+
+    fn field_type(receiver: HirType, name: string) -> Option<HirType> {
+        match self.field_for(receiver, name) {
+            some(field) => { return some(field.type) }
+            none => { return none }
+        }
     }
 
     fn variant_for(declaration: HirDeclaration,
@@ -1434,7 +1554,15 @@ class ExpressionChecker {
                     match self.methods.get(
                         "{declaration.qualified}.{name}") {
                         some(function) => {
-                            if !function.is_static {
+                            let caller_package: string =
+                                self.package_path_for_file(
+                                    self.current.file)
+                            let owner_package: string =
+                                self.package_path_for_file(
+                                    function.file)
+                            if !function.is_static &&
+                               (function.is_public ||
+                                caller_package == owner_package) {
                                 return some(function)
                             }
                         }
@@ -1451,11 +1579,54 @@ class ExpressionChecker {
         return none
     }
 
-    fn validate_override_ownership(function: HirFunction) {
-        if function.owner == "" ||
-           function.name == "init" ||
-           function.name == "deinit" ||
-           function.is_static {
+    fn add_dispatch_slots(function: HirFunction,
+                          parent: HirFunction) {
+        for slot: string in parent.dispatch_slots {
+            if !function.dispatch_slots.contains(slot) {
+                function.dispatch_slots.push(slot)
+            }
+        }
+    }
+
+    fn same_method_signature(left: HirFunction,
+                             right: HirFunction) -> bool {
+        if left.parameters.len() != right.parameters.len() ||
+           !hir_types_equal(left.result, right.result) {
+            return false
+        }
+        for index: int in 0..left.parameters.len() {
+            if !hir_types_equal(
+                   left.parameters[index].type,
+                   right.parameters[index].type) {
+                return false
+            }
+        }
+        return true
+    }
+
+    fn method_signature(function: HirFunction) -> string {
+        var parameters: List<string> = []
+        for parameter: HirParameter in function.parameters {
+            parameters.push(render_hir_type(parameter.type))
+        }
+        return "fn({parameters.join(", ")}) -> {render_hir_type(function.result)}"
+    }
+
+    fn validate_override(function: HirFunction) {
+        if function.owner == "" || function.is_static {
+            return
+        }
+        if function.name == "init" ||
+           function.name == "deinit" {
+            if function.is_override {
+                self.fail(
+                    function.syntax,
+                    if function.name == "init" {
+                        "init can't be marked override"
+                    } else {
+                        "deinit chains to the parent automatically — drop the override"
+                    })
+            }
             return
         }
         match self.inherited_method(
@@ -1476,8 +1647,39 @@ class ExpressionChecker {
                             "override of '{function.name}' changes ownership mode of argument {index + 1}")
                     }
                 }
+                if parent.has_body {
+                    if !function.is_override {
+                        self.fail(
+                            function.syntax,
+                            "'{function.name}' hides an inherited method — mark it override")
+                    } else {
+                        self.add_dispatch_slots(
+                            function, parent)
+                        if !self.same_method_signature(
+                               function, parent) {
+                            self.fail(
+                                function.syntax,
+                                "override of '{function.name}' changes the signature: parent has {self.method_signature(parent)}, this is {self.method_signature(function)}")
+                        }
+                    }
+                } else {
+                    self.add_dispatch_slots(
+                        function, parent)
+                    if !self.same_method_signature(
+                           function, parent) {
+                        self.fail(
+                            function.syntax,
+                            "'{function.name}' doesn't match the interface: expected {self.method_signature(parent)}, this is {self.method_signature(function)}")
+                    }
+                }
             }
-            none => {}
+            none => {
+                if function.is_override {
+                    self.fail(
+                        function.syntax,
+                        "'{function.name}' is marked override but no parent has it")
+                }
+            }
         }
     }
 
@@ -1543,28 +1745,45 @@ class ExpressionChecker {
         return ""
     }
 
-    fn check_initializer_visibility(
-        node: AstNode, declaration: HirDeclaration,
-        initializer: HirFunction) {
-        if initializer.is_public { return }
+    fn require_visible(node: AstNode, is_public: bool,
+                       owner_file: string, what: string,
+                       shown: string) -> bool {
         let caller_package: string =
             self.package_path_for_file(self.current.file)
         let owner_package: string =
-            self.package_path_for_file(initializer.file)
-        if caller_package != owner_package {
-            let owner_label: string =
-                self.package_label_for_file(
-                    initializer.file)
-            self.fail(
-                node,
-                "init of '{declaration.qualified}' isn't pub in package '{owner_label}'")
+            self.package_path_for_file(owner_file)
+        if caller_package == owner_package || is_public {
+            return true
         }
+        let owner_label: string =
+            self.package_label_for_file(owner_file)
+        self.fail(
+            node,
+            "{what} '{shown}' isn't pub in package '{owner_label}'")
+        return false
+    }
+
+    fn check_initializer_visibility(
+        node: AstNode, declaration: HirDeclaration,
+        initializer: HirFunction) {
+        self.require_visible(
+            node, initializer.is_public,
+            initializer.file, "init of",
+            declaration.qualified)
+    }
+
+    fn static_syntax_name(syntax: AstNode) -> string {
+        if syntax.kind == "field" &&
+           syntax.children.len() == 1 {
+            return "{syntax.children[0].value}.{syntax.value}"
+        }
+        return syntax.value
     }
 
     fn static_declaration(
         syntax: AstNode) -> Option<HirDeclaration> {
         if syntax.kind == "name" {
-            return self.declarations.get(syntax.value)
+            return self.current_declaration(syntax.value)
         }
         if syntax.kind == "field" &&
            syntax.children.len() == 1 &&
@@ -1577,8 +1796,17 @@ class ExpressionChecker {
                 self.signature.resolver.package_prefix_for(
                     import_path)
             if prefix == "" { return none }
-            return self.declarations.get(
-                "{prefix}.{syntax.value}")
+            match self.declarations.get(
+                "{prefix}.{syntax.value}") {
+                some(declaration) => {
+                    self.require_visible(
+                        syntax, declaration.is_public,
+                        declaration.file, "type",
+                        self.static_syntax_name(syntax))
+                    return some(declaration)
+                }
+                none => { return none }
+            }
         }
         return none
     }
@@ -3039,7 +3267,7 @@ class ExpressionChecker {
             }
             none => {}
         }
-        match self.c_globals.get(node.value) {
+        match self.current_c_global(node.value) {
             some(global) => {
                 self.require_unsafe(
                     node,
@@ -3056,7 +3284,7 @@ class ExpressionChecker {
             }
             none => {}
         }
-        match self.functions.get(node.value) {
+        match self.current_function(node.value) {
             some(function) => {
                 if function.is_extern_c {
                     self.fail(
@@ -3459,7 +3687,7 @@ class ExpressionChecker {
                     poison_hir_type())
                 return result
             }
-            match self.declarations.get(receiver_syntax.value) {
+            match self.current_declaration(receiver_syntax.value) {
                 some(declaration) => {
                     if declaration.kind == "enum" {
                         match self.variant_for(
@@ -3504,8 +3732,12 @@ class ExpressionChecker {
             result.children.push(receiver)
             return result
         }
-        match self.field_type(receiver.type, node.value) {
-            some(type) => {
+        match self.field_for(receiver.type, node.value) {
+            some(field) => {
+                self.require_visible(
+                    node, field.field.is_public,
+                    field.field.file, "field",
+                    "{render_hir_type(receiver.type)}.{node.value}")
                 match self.declaration_for(receiver.type) {
                     some(declaration) => {
                         if declaration.kind == "union" {
@@ -3516,9 +3748,10 @@ class ExpressionChecker {
                     }
                     none => {}
                 }
-                self.expect_type(node, type, expected)
+                self.expect_type(node, field.type, expected)
                 let result: HirNode =
-                    self.make_node(node, "field", node.value, type)
+                    self.make_node(
+                        node, "field", node.value, field.type)
                 result.children.push(receiver)
                 return result
             }
@@ -4306,6 +4539,10 @@ class ExpressionChecker {
         if prefix != "" {
             match self.functions.get("{prefix}.{callee.value}") {
                 some(function) => {
+                    self.require_visible(
+                        node, function.is_public,
+                        function.file, "function",
+                        "{node.children[0].children[0].value}.{callee.value}")
                     self.require_function_feature(
                         node, function, "the call")
                     if function.is_extern_c &&
@@ -4803,69 +5040,111 @@ class ExpressionChecker {
         if callee.kind == "field" {
             let receiver_syntax: AstNode = callee.children[0]
             if receiver_syntax.kind == "name" &&
-               receiver_syntax.value == "super" &&
-               callee.value == "init" {
-                let result: HirNode =
-                    self.make_node(
-                        node, "super_init", "init",
-                        new HirType("unit"))
-                if self.current.name != "init" ||
-                   self.current.owner == "" {
-                    self.fail(
-                        node,
-                        "super.init can only be called from init")
+               receiver_syntax.value == "super" {
+                if callee.value == "init" {
+                    let result: HirNode =
+                        self.make_node(
+                            node, "super_init", "init",
+                            new HirType("unit"))
+                    if self.current.name != "init" ||
+                       self.current.owner == "" {
+                        self.fail(
+                            node,
+                            "super.init can only be called from init")
+                        return result
+                    }
+                    match self.super_method("init") {
+                        some(target) => {
+                            self.require_visible(
+                                node,
+                                target.function.is_public,
+                                target.function.file,
+                                "init of", target.owner.name)
+                            result.resolved =
+                                target.function.qualified
+                            self.check_arguments(
+                                node, 1, target.function,
+                                target.owner, result)
+                        }
+                        none => {
+                            self.fail(
+                                node,
+                                "no parent constructor to call")
+                        }
+                    }
                     return result
                 }
-                var base: Option<HirDeclaration> = none
+
+                if self.current.owner == "" ||
+                   self.current.is_static {
+                    self.fail(
+                        node,
+                        "super.{callee.value} can only be called from an instance method")
+                    return self.make_node(
+                        node, "error", callee.value,
+                        poison_hir_type())
+                }
+                if callee.value == "deinit" {
+                    self.fail(
+                        node,
+                        "deinit is automatic and cannot be called with super")
+                    return self.make_node(
+                        node, "error", callee.value,
+                        poison_hir_type())
+                }
+                var has_parent: bool = false
                 match self.declarations.get(
                     self.current.owner) {
                     some(owner) => {
-                        for relation: HirType in
-                            owner.relations {
-                            match self.declaration_for(
-                                relation) {
-                                some(candidate) => {
-                                    if candidate.kind ==
-                                       "class" {
-                                        base = some(candidate)
-                                    }
-                                }
-                                none => {}
-                            }
-                            if base.is_some() { break }
-                        }
+                        has_parent =
+                            self.parent_class_type(
+                                self.declaration_instance(owner)).is_some()
                     }
                     none => {}
                 }
-                match base {
-                    some(parent) => {
-                        match self.methods.get(
-                            "{parent.qualified}.init") {
-                            some(initializer) => {
-                                result.resolved =
-                                    initializer.qualified
-                                self.check_arguments(
-                                    node, 1, initializer,
-                                    new HirType(
-                                        parent.qualified),
-                                    result)
-                            }
-                            none => {
-                                if node.children.len() != 1 {
-                                    self.fail(
-                                        node,
-                                        "{parent.name} has no initializer")
-                                }
-                            }
-                        }
+                if !has_parent {
+                    self.fail(
+                        node,
+                        "super.{callee.value} needs a parent class")
+                    return self.make_node(
+                        node, "error", callee.value,
+                        poison_hir_type())
+                }
+                match self.super_method(callee.value) {
+                    some(target) => {
+                        self.require_visible(
+                            node, target.function.is_public,
+                            target.function.file, "method",
+                            "{target.owner.name}.{callee.value}")
+                        let owner: HirDeclaration =
+                            self.declaration_for(target.owner).expect(
+                                "super method owner")
+                        let result_type: HirType =
+                            self.substitute_owner_type(
+                                target.function.result,
+                                owner, target.owner)
+                        let result: HirNode =
+                            self.make_node(
+                                node, "super_call",
+                                callee.value, result_type)
+                        result.resolved =
+                            target.function.qualified
+                        self.check_arguments(
+                            node, 1, target.function,
+                            target.owner, result)
+                        self.expect_type(
+                            node, result.type, expected)
+                        return result
                     }
                     none => {
                         self.fail(
                             node,
-                            "super.init needs a parent class")
+                            "no parent implementation of '{callee.value}'")
+                        return self.make_node(
+                            node, "error", callee.value,
+                            poison_hir_type())
                     }
                 }
-                return result
             }
             match self.static_declaration(
                 receiver_syntax) {
@@ -4926,6 +5205,10 @@ class ExpressionChecker {
                         "{declaration.qualified}.{callee.value}") {
                         some(function) => {
                             if function.is_static {
+                                self.require_visible(
+                                    node, function.is_public,
+                                    function.file, "static",
+                                    "{self.static_syntax_name(receiver_syntax)}.{callee.value}")
                                 let result: HirNode =
                                     self.make_node(
                                         node, "static_call",
@@ -4970,7 +5253,7 @@ class ExpressionChecker {
                 none => {}
             }
             if receiver_syntax.kind == "name" {
-                match self.declarations.get(
+                match self.current_declaration(
                     receiver_syntax.value) {
                     some(declaration) => {
                         if declaration.kind == "enum" {
@@ -5632,6 +5915,10 @@ class ExpressionChecker {
             }
             match self.method_for(receiver.type, callee.value) {
                 some(function) => {
+                    self.require_visible(
+                        node, function.is_public,
+                        function.file, "method",
+                        "{render_hir_type(receiver.type)}.{callee.value}")
                     var owner: Option<HirDeclaration> =
                         self.declaration_for(receiver.type)
                     if function.owner != "" {
@@ -5654,6 +5941,11 @@ class ExpressionChecker {
                                     node, "method_call",
                                     function.name, result_type)
                             result.resolved = function.qualified
+                            result.dispatch_slot =
+                                hir_method_slot(
+                                    function.owner,
+                                    function.name,
+                                    function.is_public)
                             result.children.push(receiver)
                             self.check_arguments(
                                 node, 1, function,
@@ -5792,7 +6084,7 @@ class ExpressionChecker {
             self.expect_type(node, type, expected)
             return result
         }
-        match self.functions.get(callee.value) {
+        match self.current_function(callee.value) {
             some(function) => {
                 self.require_function_feature(
                     node, function, "the call")
@@ -5820,7 +6112,7 @@ class ExpressionChecker {
                 return result
             }
             none => {
-                match self.declarations.get(callee.value) {
+                match self.current_declaration(callee.value) {
                     some(declaration) => {
                         if declaration.kind == "class" {
                             self.fail(
@@ -5991,16 +6283,28 @@ class ExpressionChecker {
     fn check_initializer(node: AstNode,
                          expected: HirType) -> HirNode {
         let written: AstNode = node.children[0]
-        if written.kind != "name" {
-            self.fail(node, "initializer needs a struct or enum name")
-            return self.make_node(
-                node, "error", "initializer", poison_hir_type())
+        var declared: Option<HirDeclaration> =
+            self.static_declaration(written)
+        var type: HirType = expected
+        if type.name == "" {
+            match declared {
+                some(declaration) => {
+                    type = new HirType(declaration.qualified)
+                }
+                none => {
+                    self.fail(
+                        node,
+                        "initializer needs a struct or enum name")
+                    return self.make_node(
+                        node, "error", "initializer",
+                        poison_hir_type())
+                }
+            }
         }
-        var type: HirType = new HirType(written.value)
-        if expected.name != "" {
-            type = expected
+        if declared.is_none() {
+            declared = self.declaration_for(type)
         }
-        match self.declaration_for(type) {
+        match declared {
             some(declaration) => {
                 if declaration.kind != "struct" &&
                    declaration.kind != "union" {
@@ -6043,18 +6347,22 @@ class ExpressionChecker {
                             "field '{entry.value}' is initialized twice")
                     }
                     seen[entry.value] = true
-                    match self.field_type(type, entry.value) {
-                        some(field_type) => {
+                    match self.field_for(type, entry.value) {
+                        some(field) => {
+                            self.require_visible(
+                                entry, field.field.is_public,
+                                field.field.file, "field",
+                                "{declaration.qualified}.{entry.value}")
                             let value: HirNode =
                                 self.check_expression(
-                                    entry.children[0], field_type)
+                                    entry.children[0], field.type)
                             self.require_move_source(
                                 entry.children[0], value.type,
                                 "field '{entry.value}'")
                             let field: HirNode =
                                 self.make_node(
                                     entry, "field_init",
-                                    entry.value, field_type)
+                                    entry.value, field.type)
                             field.children.push(value)
                             result.children.push(field)
                         }
@@ -6092,7 +6400,7 @@ class ExpressionChecker {
             none => {
                 self.fail(
                     node,
-                    "unknown struct '{written.value}'")
+                    "unknown struct '{self.static_syntax_name(written)}'")
                 return self.make_node(
                     node, "error", "initializer", poison_hir_type())
             }
@@ -7104,7 +7412,7 @@ class ExpressionChecker {
                 result.children.push(value)
             }
             none => {
-                match self.c_globals.get(
+                match self.current_c_global(
                     target.value) {
                     some(global) => {
                         if !global.is_var {
@@ -7426,7 +7734,7 @@ class ExpressionChecker {
 
     fn check_function(function: HirFunction) {
         self.current = function
-        self.validate_override_ownership(function)
+        self.validate_override(function)
         self.unsafe_depth = 0
         self.defer_depth = 0
         self.feature_guards = []

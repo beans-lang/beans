@@ -645,8 +645,11 @@ class Dog extends Animal {
   init may be about to overwrite them). Assigning one is an error; `super.init` owns them.
 - `super.init` runs exactly once, as a top-level statement, only inside `init`, and it is
   mandatory whenever a class above declares an init. `return` before it is an error.
-- `super` is contextual: the checker recognizes only the exact form
-  `super.init(...)`. General `super.method()` calls: later.
+- `super` is contextual. `super.method(...)` calls the nearest parent class
+  implementation directly on the current object, bypassing virtual dispatch.
+  It is only valid in an instance method and follows normal package visibility.
+  Interfaces are not searched. `init` keeps the stricter constructor rules
+  above, and `deinit` is always automatic.
 - A subclass whose added fields all have defaults inherits the nearest ancestor
   initializer — `new Pup(args)` runs it on a Pup. A subclass that adds a required
   field must declare its own init.

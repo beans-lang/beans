@@ -43,11 +43,22 @@ class HirGeneric {
     }
 }
 
+fn hir_method_slot(owner: string, name: string,
+                   is_public: bool) -> string {
+    if is_public { return "pub:{name}" }
+    let parts: List<string> = owner.split(".")
+    let package: string =
+        if parts.len() > 1 { parts[0] } else { "" }
+    return "pkg:{package}:{name}"
+}
+
 class HirFunction {
     name: string
     qualified: string
     owner: string
     is_public: bool
+    is_override: bool
+    dispatch_slots: List<string>
     generics: List<string>
     generic_constraints: List<HirGeneric>
     parameters: List<HirParameter>
@@ -71,6 +82,13 @@ class HirFunction {
         self.qualified = qualified
         self.owner = owner
         self.is_public = is_public
+        self.is_override = false
+        self.dispatch_slots = []
+        if owner != "" && name != "init" &&
+           name != "deinit" {
+            self.dispatch_slots.push(
+                hir_method_slot(owner, name, is_public))
+        }
         self.generics = []
         self.generic_constraints = []
         self.parameters = []
@@ -615,6 +633,8 @@ class SignatureChecker {
             node.value.contains("extern \"C\"")
         function.is_static =
             module_words(node.value).contains("static")
+        function.is_override =
+            module_words(node.value).contains("override")
         function.required_feature =
             required_feature_from_value(node.value)
         for child: AstNode in node.children {
@@ -817,8 +837,10 @@ class SignatureChecker {
                             "struct methods are not available yet"
                         })
                 }
-                self.lower_function(child, file, node.resolved,
-                                    node.kind == "interface")
+                self.lower_function(
+                    child, file, node.resolved,
+                    node.kind == "interface" &&
+                    declaration.is_public)
             }
         }
         if (node.kind == "struct" ||

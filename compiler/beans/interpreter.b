@@ -2273,12 +2273,17 @@ class TreeInterpreter {
     }
 
     fn dynamic_method(type_name: string,
-                      method: string) ->
+                      method: string,
+                      dispatch_slot: string) ->
         Option<HirFunction> {
         match self.find_function(
             "{type_name}.{method}") {
             some(function) => {
-                return some(function)
+                if dispatch_slot == "" ||
+                   function.dispatch_slots.contains(
+                       dispatch_slot) {
+                    return some(function)
+                }
             }
             none => {}
         }
@@ -2296,7 +2301,7 @@ class TreeInterpreter {
                        "extends" {
                     return self.dynamic_method(
                         declaration.relations[index].name,
-                        method)
+                        method, dispatch_slot)
                 }
             }
         }
@@ -7206,7 +7211,8 @@ class TreeInterpreter {
             some(value) => {
                 if value.kind == "object" {
                     match self.dynamic_method(
-                        value.text, node.value) {
+                        value.text, node.value,
+                        node.dispatch_slot) {
                         some(function) => {
                             target = function.qualified
                         }
@@ -7645,7 +7651,8 @@ class TreeInterpreter {
         if node.kind == "new" {
             return self.new_object(node, frame)
         }
-        if node.kind == "super_init" {
+        if node.kind == "super_init" ||
+           node.kind == "super_call" {
             var arguments: List<TreeValue> = []
             for child: HirNode in node.children {
                 let value: TreeValue =
@@ -7667,14 +7674,14 @@ class TreeInterpreter {
                         none => {
                             return self.fail(
                                 node,
-                                "super.init has no self")
+                                "super.{node.value} has no self")
                         }
                     }
                 }
                 none => {
                     return self.fail(
                         node,
-                        "unknown parent initializer '{node.resolved}'")
+                        "unknown parent method '{node.resolved}'")
                 }
             }
         }

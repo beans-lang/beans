@@ -520,6 +520,7 @@ class LlvmTextEmitter {
     sort_key_thunks: Map<string, string>
     selector_indices: Map<string, int>
     selector_order: List<string>
+    method_dispatch_slots: Map<string, bool>
     generic_templates: Map<string, MirFunction>
     generic_queue: List<MirFunction>
     generic_count: int
@@ -579,6 +580,7 @@ class LlvmTextEmitter {
         self.sort_key_thunks = {}
         self.selector_indices = {}
         self.selector_order = []
+        self.method_dispatch_slots = {}
         self.generic_templates = {}
         self.generic_queue = []
         self.generic_count = 0
@@ -619,6 +621,12 @@ class LlvmTextEmitter {
                 self.record_ids[
                     declaration.qualified] = record_id
                 record_id += 1
+            }
+        }
+        for function: MirFunction in program.functions {
+            for slot: string in function.dispatch_slots {
+                self.method_dispatch_slots[
+                    "{function.name}|{slot}"] = true
             }
         }
         self.class_id_count = class_id
@@ -1674,6 +1682,7 @@ class LlvmTextEmitter {
         }
         clone.capture_value_mask =
             instruction.capture_value_mask
+        clone.dispatch_slot = instruction.dispatch_slot
         clone.ownership = instruction.ownership
         clone.effects = instruction.effects
         clone.last_use = instruction.last_use
@@ -1704,6 +1713,9 @@ class LlvmTextEmitter {
         clone.c_export = template.c_export
         clone.required_feature =
             template.required_feature
+        for slot: string in template.dispatch_slots {
+            clone.dispatch_slots.push(slot)
+        }
         clone.entry = template.entry
         clone.fallthrough_block =
             template.fallthrough_block
@@ -1976,9 +1988,23 @@ class LlvmTextEmitter {
     // the implementation a class's descriptor publishes for one
     // selector: its own method wins, then the nearest ancestor's,
     // then an implemented interface's default body, else null
+    fn dispatch_method(slot: string) -> string {
+        if slot == "deinit" { return slot }
+        let parts: List<string> = slot.split(":")
+        if parts.len() == 0 { return slot }
+        return parts[parts.len() - 1]
+    }
+
+    fn function_has_dispatch_slot(name: string,
+                                  slot: string) -> bool {
+        return self.method_dispatch_slots.contains(
+            "{name}|{slot}")
+    }
+
     fn method_slot_symbol(
         declaration: HirDeclaration,
-        method: string) -> string {
+        slot: string) -> string {
+        let method: string = self.dispatch_method(slot)
         let chain: List<HirDeclaration> =
             self.class_chain(declaration)
         var nearest: int = chain.len()
@@ -1987,7 +2013,9 @@ class LlvmTextEmitter {
             let owner: HirDeclaration = chain[nearest]
             let key: string =
                 "{owner.qualified}.{method}"
-            if self.function_symbols.contains(key) {
+            if self.function_symbols.contains(key) &&
+               (slot == "deinit" ||
+                self.function_has_dispatch_slot(key, slot)) {
                 return self.function_symbols[key]
             }
         }
@@ -2006,7 +2034,7 @@ class LlvmTextEmitter {
                 let found: string =
                     self.interface_default_symbol(
                         owner.relations[index],
-                        method, 0)
+                        slot, 0)
                 if found != "" { return found }
             }
         }
@@ -2052,7 +2080,7 @@ class LlvmTextEmitter {
     // the default body
     fn interface_default_symbol(
         type: HirType,
-        method: string,
+        slot: string,
         depth: int) -> string {
         if depth > 32 { return "" }
         match self.declaration_for(type) {
@@ -2060,16 +2088,19 @@ class LlvmTextEmitter {
                 if declaration.kind != "interface" {
                     return ""
                 }
+                let method: string =
+                    self.dispatch_method(slot)
                 let key: string =
                     "{declaration.qualified}.{method}"
-                if self.function_symbols.contains(key) {
+                if self.function_symbols.contains(key) &&
+                   self.function_has_dispatch_slot(key, slot) {
                     return self.function_symbols[key]
                 }
                 for relation: HirType in
                     declaration.relations {
                     let found: string =
                         self.interface_default_symbol(
-                            relation, method,
+                            relation, slot,
                             depth + 1)
                     if found != "" { return found }
                 }
@@ -2469,19 +2500,12 @@ class LlvmTextEmitter {
                     function.name] = true
             }
         }
-        // every dispatchable method name gets one selector slot, in
+        // Every checked dispatch identity gets one selector slot. Public
+        // APIs share `pub:name`; package-private APIs carry their package so
+        // an unrelated subclass cannot replace a hidden base method.
         // first-encounter order over the program so stage 1 and
         // stage 2 number identically. init never dispatches and
         // deinit's slot is what @beans_deinit_sel publishes.
-        var method_owners: Map<string, bool> = {}
-        for declaration: HirDeclaration in
-            self.program.declarations {
-            if declaration.kind == "class" ||
-               declaration.kind == "interface" {
-                method_owners[
-                    declaration.qualified] = true
-            }
-        }
         for function: MirFunction in
             self.program.functions {
             if function.declaration ||
@@ -2492,28 +2516,20 @@ class LlvmTextEmitter {
                function.closure_id >= 0 {
                 continue
             }
-            var split: int = -1
-            for index: int in 0..function.name.len() {
-                if function.name.byte_at(index) == 46 {
-                    split = index
+            for slot: string in function.dispatch_slots {
+                if self.selector_indices.contains(slot) {
+                    continue
                 }
+                self.selector_indices[slot] =
+                    self.selector_order.len()
+                self.selector_order.push(slot)
             }
-            if split <= 0 { continue }
-            let owner: string =
-                function.name.slice(0, split)
-            let method: string =
-                function.name.slice(
-                    split + 1, function.name.len())
-            if !method_owners.contains(owner) {
-                continue
+            if function.name.ends_with(".deinit") &&
+               !self.selector_indices.contains("deinit") {
+                self.selector_indices["deinit"] =
+                    self.selector_order.len()
+                self.selector_order.push("deinit")
             }
-            if method == "init" { continue }
-            if self.selector_indices.contains(method) {
-                continue
-            }
-            self.selector_indices[method] =
-                self.selector_order.len()
-            self.selector_order.push(method)
         }
     }
 
@@ -2558,7 +2574,9 @@ class LlvmTextEmitter {
             var count: int = self.selector_order.len()
             if count == 0 { count = 1 }
             var slots: List<string> = []
-            for method: string in self.selector_order {
+            for slot: string in self.selector_order {
+                let method: string =
+                    self.dispatch_method(slot)
                 if layout.declaration.generics.len() !=
                        0 {
                     // instantiated methods register under the
@@ -2574,7 +2592,7 @@ class LlvmTextEmitter {
                     continue
                 }
                 slots.push(
-                    "ptr {self.method_slot_symbol(layout.declaration, method)}")
+                    "ptr {self.method_slot_symbol(layout.declaration, slot)}")
             }
             if slots.len() == 0 {
                 slots.push("ptr null")
@@ -15597,7 +15615,11 @@ class LlvmTextEmitter {
             let symbol: string =
                 self.method_slot_symbol(
                     declaration,
-                    instruction.text)
+                    if instruction.dispatch_slot != "" {
+                        instruction.dispatch_slot
+                    } else {
+                        "pub:{instruction.text}"
+                    })
             if symbol == "null" { continue }
             candidates.push(declaration)
             symbols.push(symbol)
@@ -15685,8 +15707,14 @@ class LlvmTextEmitter {
         }
 
         var slot: int = -1
+        let dispatch_slot: string =
+            if instruction.dispatch_slot != "" {
+                instruction.dispatch_slot
+            } else {
+                "pub:{instruction.text}"
+            }
         match self.selector_indices.get(
-                  instruction.text) {
+                  dispatch_slot) {
             some(found) => { slot = found }
             none => {}
         }
@@ -15809,8 +15837,14 @@ class LlvmTextEmitter {
         instruction: MirInstruction,
         values: Map<int, string>) -> string {
         var slot: int = -1
+        let dispatch_slot: string =
+            if instruction.dispatch_slot != "" {
+                instruction.dispatch_slot
+            } else {
+                "pub:{instruction.text}"
+            }
         match self.selector_indices.get(
-                  instruction.text) {
+                  dispatch_slot) {
             some(index) => { slot = index }
             none => {}
         }
@@ -15878,10 +15912,10 @@ class LlvmTextEmitter {
         return "{output}  {result} = call {result_type} %dispatch.fn{id}({arguments.join(", ")})\n"
     }
 
-    // super.init runs the parent's initializer on the same object; the
-    // instruction carries the arguments, self is the enclosing init's
-    // own first parameter
-    fn emit_super_init(
+    // A super call runs one checked parent implementation on the live self.
+    // It is direct by design: virtual lookup here would call the override
+    // again. super.init uses this same path with a unit result.
+    fn emit_super_call(
         function: MirFunction,
         instruction: MirInstruction,
         values: Map<int, string>) -> string {
@@ -15889,7 +15923,7 @@ class LlvmTextEmitter {
                instruction.resolved) {
             self.fail(
                 instruction,
-                "LLVM emitter cannot find parent initializer '{instruction.resolved}'")
+                "LLVM emitter cannot find parent method '{instruction.resolved}'")
             return ""
         }
         var self_slot: string = ""
@@ -15902,7 +15936,7 @@ class LlvmTextEmitter {
         if self_slot == "" {
             self.fail(
                 instruction,
-                "LLVM emitter cannot find self behind super.init")
+                "LLVM emitter cannot find self behind super.{instruction.text}")
             return ""
         }
         let id: int = self.fresh()
@@ -15915,23 +15949,45 @@ class LlvmTextEmitter {
                 self.value_type(
                     function,
                     instruction.operands[index])
-            let llvm: string =
-                self.type_text(operand_type)
-            if llvm == "" || llvm == "void" {
-                self.fail(
-                    instruction,
-                    "LLVM emitter does not support super.init argument type '{render_hir_type(operand_type)}' yet")
-                return ""
-            }
             let operand: string =
                 self.value(
                     function, values,
                     instruction.operands[index],
                     instruction)
+            if index <
+                   instruction.argument_passing.len() &&
+               instruction.argument_passing[index] ==
+                   "inout" {
+                arguments.push("ptr {operand}")
+                continue
+            }
+            let llvm: string =
+                self.type_text(operand_type)
+            if llvm == "" || llvm == "void" {
+                self.fail(
+                    instruction,
+                    "LLVM emitter does not support super call argument type '{render_hir_type(operand_type)}' yet")
+                return ""
+            }
             argument_setup =
                 "{argument_setup}{self.append_internal_argument(operand_type, operand, arguments)}"
         }
-        return "  %super.self{id} = load ptr, ptr {self_slot}\n{argument_setup}  call void {self.function_symbols[instruction.resolved]}({arguments.join(", ")})\n"
+        let result_type: string =
+            self.type_text(instruction.type)
+        if result_type == "" {
+            self.fail(
+                instruction,
+                "LLVM emitter does not support super call result type '{render_hir_type(instruction.type)}' yet")
+            return ""
+        }
+        let prefix: string =
+            "  %super.self{id} = load ptr, ptr {self_slot}\n{argument_setup}"
+        if result_type == "void" {
+            return "{prefix}  call void {self.function_symbols[instruction.resolved]}({arguments.join(", ")})\n"
+        }
+        let result: string = "%v{instruction.result}"
+        values[instruction.result] = result
+        return "{prefix}  {result} = call {result_type} {self.function_symbols[instruction.resolved]}({arguments.join(", ")})\n"
     }
 
     // Pushes one value stored at an address onto the iterative show
@@ -16851,9 +16907,10 @@ class LlvmTextEmitter {
             output =
                 self.emit_closure_call(
                     function, instruction, values)
-        } else if instruction.op == "super_init" {
+        } else if instruction.op == "super_init" ||
+                  instruction.op == "super_call" {
             output =
-                self.emit_super_init(
+                self.emit_super_call(
                     function, instruction, values)
         } else if instruction.op == "static_call" {
             if self.function_symbols.contains(

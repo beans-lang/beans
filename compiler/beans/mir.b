@@ -43,6 +43,7 @@ class MirInstruction {
     type: HirType
     text: string
     resolved: string
+    dispatch_slot: string
     operands: List<int>
     consumes: List<bool>
     releases: List<int>
@@ -70,6 +71,7 @@ class MirInstruction {
         self.type = type
         self.text = text
         self.resolved = resolved
+        self.dispatch_slot = ""
         self.operands = []
         self.consumes = []
         self.releases = []
@@ -171,6 +173,7 @@ class MirFunction {
     external_name: string
     c_export: bool
     required_feature: string
+    dispatch_slots: List<string>
     entry: int
     fallthrough_block: int
     closure_id: int
@@ -196,6 +199,7 @@ class MirFunction {
         self.external_name = name
         self.c_export = false
         self.required_feature = ""
+        self.dispatch_slots = []
         self.entry = -1
         self.fallthrough_block = -1
         self.closure_id = -1
@@ -411,7 +415,7 @@ fn mir_effects_for(kind: string, resolved: string) -> string {
     if kind == "call" || kind == "method_call" ||
        kind == "static_call" || kind == "builtin_call" ||
        kind == "builtin_method" || kind == "closure_call" ||
-       kind == "super_init" {
+       kind == "super_init" || kind == "super_call" {
         if resolved.starts_with("std.atomic.") {
             return "mutate"
         }
@@ -636,6 +640,7 @@ class MirLowerer {
             new MirInstruction(
                 op, result, type, text, node.resolved,
                 node.file, node.line, node.col)
+        instruction.dispatch_slot = node.dispatch_slot
         for operand: int in operands {
             instruction.operands.push(operand)
             instruction.consumes.push(false)
@@ -655,6 +660,7 @@ class MirLowerer {
             new MirInstruction(
                 op, -1, new HirType("unit"), text,
                 node.resolved, node.file, node.line, node.col)
+        instruction.dispatch_slot = node.dispatch_slot
         for operand: int in operands {
             instruction.operands.push(operand)
             instruction.consumes.push(false)
@@ -1883,6 +1889,9 @@ class MirLowerer {
         self.current.c_export = function.is_c_export
         self.current.required_feature =
             function.required_feature
+        for slot: string in function.dispatch_slots {
+            self.current.dispatch_slots.push(slot)
+        }
         self.current_block = -1
         self.scopes = []
         self.break_blocks = []
