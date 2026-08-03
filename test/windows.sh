@@ -516,6 +516,9 @@ if command -v python3 >/dev/null 2>&1; then
     if python3 tools/differential_fuzz.py --corpus "$corpus2" \
             --seed 47 --cases 6 --groups classes,packages >/dev/null 2>&1; then
         while read -r cname; do
+            # Generated file, so .gitattributes cannot pin its endings, and
+            # `read -r` keeps a carriage return.
+            cname=${cname%$'\r'}
             [[ -n "$cname" ]] || continue
             if [[ -f "$corpus2/$cname.b" ]]; then
                 csrc="$corpus2/$cname.b"

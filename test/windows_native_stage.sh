@@ -167,6 +167,10 @@ if command -v python3 >/dev/null 2>&1; then
     python3 tools/differential_fuzz.py --corpus "$dfuzz_corpus" \
         --seed "$dfuzz_seed" --cases "$dfuzz_cases" --groups classes,packages >/dev/null
     while read -r cname; do
+        # A generated file, so .gitattributes cannot pin its endings. `read -r`
+        # keeps a carriage return, and a case name ending in \r names a path
+        # that does not exist.
+        cname=${cname%$'\r'}
         [[ -n "$cname" ]] || continue
         if [[ -f "$dfuzz_corpus/$cname.b" ]]; then
             csrc="$dfuzz_corpus/$cname.b"

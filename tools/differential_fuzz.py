@@ -3728,10 +3728,14 @@ def make_runner(args, workdir):
 
 
 def write_case_files(case_dir, files):
+    # newline="\n" on every corpus file: these are generated, so .gitattributes
+    # cannot pin their endings, and the gates compare program output against
+    # them byte for byte. A CRLF corpus staged on Windows fails against the very
+    # output it was generated from.
     for rel, text in files.items():
         path = os.path.join(case_dir, rel)
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w") as f:
+        with open(path, "w", newline="\n") as f:
             f.write(text)
 
 
@@ -3987,12 +3991,15 @@ def emit_corpus(args):
             raise SystemExit("generator bug: corpus case has no meaning")
         name = "case_{}_{}".format(args.seed, case)
         if len(files) == 1:
-            with open(os.path.join(args.corpus, name + ".b"), "w") as f:
+            with open(os.path.join(args.corpus, name + ".b"), "w",
+                      newline="\n") as f:
                 f.write(files["main.b"])
             with open(os.path.join(args.corpus,
-                                   name + ".stdout"), "w") as f:
+                                   name + ".stdout"), "w",
+                      newline="\n") as f:
                 f.write(expected[0])
-            with open(os.path.join(args.corpus, name + ".exit"), "w") as f:
+            with open(os.path.join(args.corpus, name + ".exit"), "w",
+                      newline="\n") as f:
                 f.write(str(expected[1]) + "\n")
         else:
             case_dir = os.path.join(args.corpus, name)
@@ -4001,13 +4008,19 @@ def emit_corpus(args):
             os.makedirs(case_dir)
             write_case_files(case_dir, files)
             with open(os.path.join(case_dir,
-                                   "expected_stdout.txt"), "w") as f:
+                                   "expected_stdout.txt"), "w",
+                      newline="\n") as f:
                 f.write(expected[0])
             with open(os.path.join(case_dir, "expected_exit.txt"),
-                      "w") as f:
+                      "w", newline="\n") as f:
                 f.write(str(expected[1]) + "\n")
         manifest.append(name)
-    with open(os.path.join(args.corpus, "MANIFEST"), "w") as f:
+    # newline="\n": the shell gates read this file with `read -r`, which strips
+    # the newline but keeps a carriage return. On Windows, Python's default text
+    # mode would write CRLF and every case name would end in \r, turning a path
+    # into one that does not exist.
+    with open(os.path.join(args.corpus, "MANIFEST"), "w",
+              newline="\n") as f:
         f.write("\n".join(manifest) + "\n")
     print("wrote {} corpus cases (seed {}) to {}".format(
         args.cases, args.seed, args.corpus))
