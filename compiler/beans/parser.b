@@ -906,12 +906,20 @@ class Parser {
             return literal
         }
         if token.kind == "(" {
+            // inside parentheses a '{' can only start an initializer or
+            // map, never an if/for body, so initializers come back on —
+            // the same rule as stage 0's StructGuard
+            let saved: bool = self.allow_initializer
+            self.allow_initializer = true
             let expression: AstNode = self.parse_expression()
+            self.allow_initializer = saved
             self.expect(")", "expected ')'")
             expression.parenthesized = true
             return expression
         }
         if token.kind == "[" {
+            let saved: bool = self.allow_initializer
+            self.allow_initializer = true
             let list: AstNode = self.node("list", "", token)
             self.skip_newlines()
             for !self.check("]") && !self.at_end() {
@@ -922,10 +930,13 @@ class Parser {
                 }
                 self.skip_newlines()
             }
+            self.allow_initializer = saved
             self.expect("]", "expected ']'")
             return list
         }
         if token.kind == "\{" {
+            let saved: bool = self.allow_initializer
+            self.allow_initializer = true
             let map: AstNode = self.node("map", "", token)
             self.skip_newlines()
             for !self.check("\}") && !self.at_end() {
@@ -941,6 +952,7 @@ class Parser {
                 }
                 self.skip_newlines()
             }
+            self.allow_initializer = saved
             self.expect("\}", "expected '\}'")
             return map
         }
@@ -1022,6 +1034,8 @@ class Parser {
     }
 
     fn parse_arguments(target: AstNode) {
+        let saved: bool = self.allow_initializer
+        self.allow_initializer = true
         self.skip_newlines()
         for !self.check(")") && !self.at_end() {
             target.add(self.parse_expression())
@@ -1031,6 +1045,7 @@ class Parser {
             }
             self.skip_newlines()
         }
+        self.allow_initializer = saved
         self.expect(")", "expected ')'")
     }
 
@@ -1038,6 +1053,8 @@ class Parser {
         let start: Token = self.advance()
         let result: AstNode = self.node("initializer", "", start)
         result.add(type_name)
+        let saved: bool = self.allow_initializer
+        self.allow_initializer = true
         self.skip_newlines()
         for !self.check("\}") && !self.at_end() {
             let name: Token = self.expect("ident", "expected field name")
@@ -1051,6 +1068,7 @@ class Parser {
             }
             self.skip_newlines()
         }
+        self.allow_initializer = saved
         self.expect("\}", "expected '\}'")
         return result
     }

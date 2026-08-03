@@ -6728,6 +6728,23 @@ class ExpressionChecker {
                 wrapped.children.push(value)
                 result.children.push(wrapped)
                 result.type = value.type
+            } else if index + 1 == block.children.len() &&
+                      statement.kind == "if" &&
+                      expected.name != "" &&
+                      expected.name != "unit" &&
+                      self.if_chain_has_else(statement) {
+                // a value is demanded, so a trailing if whose chain
+                // ends in an else is the value, the same as a
+                // trailing match
+                let value: HirNode =
+                    self.check_if_expression(statement, expected)
+                let wrapped: HirNode =
+                    self.make_node(
+                        statement, "expression", "",
+                        new HirType("unit"))
+                wrapped.children.push(value)
+                result.children.push(wrapped)
+                result.type = value.type
             } else {
                 result.children.push(
                     self.check_statement(statement))
@@ -6737,11 +6754,22 @@ class ExpressionChecker {
         return result
     }
 
+    fn if_chain_has_else(node: AstNode) -> bool {
+        if node.children.len() < 3 { return false }
+        if node.children[2].kind == "block" { return true }
+        return self.if_chain_has_else(node.children[2])
+    }
+
     fn check_if_expression(node: AstNode,
                            expected: HirType) -> HirNode {
         let result: HirNode =
             self.make_node(
                 node, "if_expression", "", expected)
+        if node.children.len() < 3 {
+            self.fail(
+                node, "if in value position needs an else branch")
+            return result
+        }
         result.children.push(self.check_expression(
             node.children[0], new HirType("bool")))
         let guard_mark: int =
@@ -7104,6 +7132,15 @@ class ExpressionChecker {
             lowered.children.push(
                 self.check_pattern(
                     arm.children[0], subject.type))
+            if !discard && expected.name != "" &&
+               expected.name != "unit" &&
+               arm.children[1].kind == "block" {
+                // a demanded value cannot come out of a block arm; the
+                // trailing-statement case (expected "") stays a statement
+                self.fail(
+                    arm,
+                    "a block arm doesn't produce a value — this match is used as one. use `pattern => expression` arms here")
+            }
             let value: HirNode =
                 if arm.children[1].kind == "block" {
                     self.check_expression_block(
@@ -7292,8 +7329,7 @@ class ExpressionChecker {
             let value: HirNode = self.check_expression(
                 node.children[1], place.type)
             if target.kind == "field" &&
-               target.children.len() != 0 &&
-               target.children[0].kind == "name" {
+               target.children.len() != 0 {
                 match self.declaration_for(
                     place.children[0].type) {
                     some(declaration) => {
@@ -7305,16 +7341,25 @@ class ExpressionChecker {
                                     target,
                                     "union fields only support direct assignment for now")
                             }
-                            match self.find_local(
-                                target.children[0].value) {
-                                some(binding) => {
-                                    if !binding.mutable {
-                                        self.fail(
-                                            target,
-                                            "'{binding.name}' is a let — its fields can't be reassigned. use var")
+                            if target.children[0].kind != "name" {
+                                // no backend stores through a nested
+                                // record place yet; stage 0 rejects this
+                                // at check time and so does this checker
+                                self.fail(
+                                    target,
+                                    "struct field assignment needs a local variable for now")
+                            } else {
+                                match self.find_local(
+                                    target.children[0].value) {
+                                    some(binding) => {
+                                        if !binding.mutable {
+                                            self.fail(
+                                                target,
+                                                "'{binding.name}' is a let — its fields can't be reassigned. use var")
+                                        }
                                     }
+                                    none => {}
                                 }
-                                none => {}
                             }
                         }
                     }

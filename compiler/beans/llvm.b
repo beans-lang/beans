@@ -15997,6 +15997,11 @@ class LlvmTextEmitter {
         type: HirType,
         pointer: string,
         tag: string) -> string {
+        // every non-empty result below calls beans_show_push_val, so the
+        // declaration belongs here rather than in each caller
+        self.require_declare(
+            "beans_show_push_val",
+            "void @beans_show_push_val(ptr, ptr, i64)")
         if self.wide_inline_value(type) {
             let step: string =
                 self.request_show_wide_step(type)

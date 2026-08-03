@@ -296,22 +296,7 @@ fn cli_ast_expression(node: AstNode, depth: int) -> string {
         return "fn{parameters}{result} {block}"
     }
     if node.kind == "if_expression" {
-        if node.children.len() < 3 {
-            return "if ? \{ ? \} else \{ ? \}"
-        }
-        let condition: string =
-            cli_ast_expression(node.children[0], depth)
-        let then_value: string =
-            cli_ast_expression_block_value(
-                node.children[1], depth)
-        let otherwise: AstNode = node.children[2]
-        let else_value: string =
-            if otherwise.kind == "if_expression" {
-                cli_ast_expression(otherwise, depth)
-            } else {
-                "\{ {cli_ast_expression_block_value(otherwise, depth)} \}"
-            }
-        return "if {condition} \{ {then_value} \} else {else_value}"
+        return cli_ast_if_value(node, depth)
     }
     if node.kind == "match" {
         if node.children.len() == 0 { return "match ? \{\n\}" }
@@ -341,6 +326,26 @@ fn cli_ast_expression(node: AstNode, depth: int) -> string {
     return "?"
 }
 
+fn cli_ast_if_value(node: AstNode, depth: int) -> string {
+    if node.children.len() < 3 {
+        return "if ? \{ ? \} else \{ ? \}"
+    }
+    let condition: string =
+        cli_ast_expression(node.children[0], depth)
+    let then_value: string =
+        cli_ast_expression_block_value(
+            node.children[1], depth)
+    let otherwise: AstNode = node.children[2]
+    let else_value: string =
+        if otherwise.kind == "if_expression" ||
+           otherwise.kind == "if" {
+            cli_ast_if_value(otherwise, depth)
+        } else {
+            "\{ {cli_ast_expression_block_value(otherwise, depth)} \}"
+        }
+    return "if {condition} \{ {then_value} \} else {else_value}"
+}
+
 fn cli_ast_expression_block_value(
     block: AstNode, depth: int) -> string {
     if block.children.len() == 0 { return "?" }
@@ -349,6 +354,12 @@ fn cli_ast_expression_block_value(
        statement.children.len() != 0 {
         return cli_ast_expression(
             statement.children[0], depth)
+    }
+    if statement.kind == "if" &&
+       statement.children.len() > 2 {
+        // a nested if in value position is the branch's value; print it
+        // the way the C++ dump does, as an if expression
+        return cli_ast_if_value(statement, depth)
     }
     return "?"
 }

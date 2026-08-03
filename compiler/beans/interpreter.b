@@ -2546,7 +2546,7 @@ class TreeInterpreter {
             if node.value == "/" {
                 if rhs == 0 {
                     return self.fail(
-                        node, "division by zero")
+                        node, "divide by zero")
                 }
                 return TreeValue.unsigned_integer(
                     lhs / rhs, bits)
@@ -2554,7 +2554,7 @@ class TreeInterpreter {
             if node.value == "%" {
                 if rhs == 0 {
                     return self.fail(
-                        node, "division by zero")
+                        node, "modulo by zero")
                 }
                 return TreeValue.unsigned_integer(
                     lhs % rhs, bits)
@@ -2572,12 +2572,13 @@ class TreeInterpreter {
                     lhs ^ rhs, bits)
             }
             if node.value == "<<" {
+                // the count is masked by the operand width, not by 64
                 return TreeValue.unsigned_integer(
-                    lhs << rhs, bits)
+                    lhs << (rhs & ((bits - 1) as u64)), bits)
             }
             if node.value == ">>" {
                 return TreeValue.unsigned_integer(
-                    lhs >> rhs, bits)
+                    lhs >> (rhs & ((bits - 1) as u64)), bits)
             }
             if node.value == "<" {
                 return TreeValue.boolean(lhs < rhs)
@@ -2623,14 +2624,14 @@ class TreeInterpreter {
         }
         if node.value == "/" {
             if rhs == 0 {
-                return self.fail(node, "division by zero")
+                return self.fail(node, "divide by zero")
             }
             return TreeValue.signed_integer(
                 lhs / rhs, bits)
         }
         if node.value == "%" {
             if rhs == 0 {
-                return self.fail(node, "division by zero")
+                return self.fail(node, "modulo by zero")
             }
             return TreeValue.signed_integer(
                 lhs % rhs, bits)
@@ -2648,12 +2649,13 @@ class TreeInterpreter {
                 lhs ^ rhs, bits)
         }
         if node.value == "<<" {
+            // the count is masked by the operand width, not by 64
             return TreeValue.signed_integer(
-                lhs << rhs, bits)
+                lhs << (rhs & (bits - 1)), bits)
         }
         if node.value == ">>" {
             return TreeValue.signed_integer(
-                lhs >> rhs, bits)
+                lhs >> (rhs & (bits - 1)), bits)
         }
         if node.value == "==" {
             return TreeValue.boolean(lhs == rhs)
@@ -2899,6 +2901,11 @@ class TreeInterpreter {
                 !self.truth(node, value))
         }
         if node.value == "-" && value.kind == "int" {
+            if value.int_unsigned {
+                return TreeValue.unsigned_integer(
+                    (0 as u64) - value.uint_data,
+                    value.int_bits)
+            }
             return TreeValue.signed_integer_bits(
                 (0 as u64) - value.uint_data,
                 value.int_bits)
@@ -7589,6 +7596,47 @@ class TreeInterpreter {
         return self.fail(node, "non-exhaustive match")
     }
 
+    fn match_statement(node: HirNode,
+                       frame: TreeFrame) -> TreeExec {
+        if node.children.len() == 0 {
+            self.fail(node, "match has no subject")
+            return TreeExec.next()
+        }
+        let subject: TreeValue =
+            self.expression(node.children[0], frame)
+        if subject.kind == "propagate" &&
+           subject.items.len() == 1 {
+            return TreeExec.returned(subject.items[0])
+        }
+        for index: int in 1..node.children.len() {
+            let arm: HirNode = node.children[index]
+            if arm.children.len() != 2 {
+                continue
+            }
+            let arm_frame: TreeFrame =
+                TreeFrame.scope(frame)
+            if self.pattern_matches(
+                   arm.children[0], subject,
+                   arm_frame) {
+                if arm.children[1].kind == "block" {
+                    return self.block(
+                        arm.children[1], arm_frame)
+                }
+                let value: TreeValue =
+                    self.expression(
+                        arm.children[1], arm_frame)
+                if value.kind == "propagate" &&
+                   value.items.len() == 1 {
+                    return TreeExec.returned(
+                        value.items[0])
+                }
+                return TreeExec.next()
+            }
+        }
+        self.fail(node, "non-exhaustive match")
+        return TreeExec.next()
+    }
+
     fn expression(node: HirNode,
                   frame: TreeFrame) -> TreeValue {
         if self.failed { return TreeValue.unit() }
@@ -8358,6 +8406,15 @@ class TreeInterpreter {
                 node.binding_id,
                 tree_value_copy(value))
             return TreeExec.next()
+        }
+        if node.kind == "expression" &&
+           node.children.len() == 1 &&
+           node.children[0].kind == "match" {
+            // a statement match runs its arm as statements, so break and
+            // continue inside an arm reach the enclosing loop instead of
+            // being swallowed by expression evaluation
+            return self.match_statement(
+                node.children[0], frame)
         }
         if node.kind == "expression" {
             if node.children.len() != 0 {

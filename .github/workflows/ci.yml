@@ -67,6 +67,11 @@ jobs:
           FUZZ_SECONDS: "15"
         run: make fuzz-smoke
 
+      # Deterministic: seed 1, cases 0..14, plus the fuzzer's own
+      # self-tests and pinned checker/panic parity.
+      - name: Semantic differential fuzz smoke
+        run: make fuzz-differential-smoke
+
       - name: Systems-access score
         run: make access-score
 
@@ -269,6 +274,11 @@ jobs:
 
       - name: Differential test suite
         run: make test
+
+      # The same seeds as the Linux smoke: generation is byte-identical
+      # across hosts, so macOS runs the very same programs.
+      - name: Semantic differential fuzz smoke
+        run: make fuzz-differential-smoke
 
       - name: Tier-1 C ABI (stage 0 and self-hosted, native)
         run: make test-c-abi-tier1

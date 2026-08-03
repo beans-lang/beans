@@ -70,7 +70,7 @@ $(STAGE3_BIN): $(STAGE2_BIN) $(SELF_HOST_SRC)
 $(BIN): $(STAGE3_BIN)
 	rm -f $(BIN) && cp $(STAGE3_BIN) $(BIN)
 
-.PHONY: stage0 run clean install test platform-status test-platform-manifest test-portable-int128 test-compiler-arch-objects test-stage0-windows test-windows-source-bootstrap test-musl-hosted test-armv6hf-hosted test-sanitize test-release-package test-clean-bootstrap test-c-abi-tier1 test-mir-stage0 test-barq-core fuzz-smoke test-linux test-linux-arch test-linux-hosted test-windows test-windows-native test-windows-native-i686 test-windows-native-arm64 test-windows-arch test-windows-hosted access-score self-host-next test-self-host test-self-host-full test-bootstrap bench-compiler bench-quick bench-full bench-verify bench-profile bench-compare
+.PHONY: stage0 run clean install test platform-status test-platform-manifest test-portable-int128 test-compiler-arch-objects test-stage0-windows test-windows-source-bootstrap test-musl-hosted test-armv6hf-hosted test-sanitize test-release-package test-clean-bootstrap test-c-abi-tier1 test-mir-stage0 test-barq-core fuzz-smoke fuzz-differential fuzz-differential-smoke test-linux test-linux-arch test-linux-hosted test-windows test-windows-native test-windows-native-i686 test-windows-native-arm64 test-windows-arch test-windows-hosted access-score self-host-next test-self-host test-self-host-full test-bootstrap bench-compiler bench-quick bench-full bench-verify bench-profile bench-compare
 stage0: $(BOOTSTRAP_BIN)
 
 run: $(BIN)
@@ -219,6 +219,17 @@ build/fuzz-frontend: test/fuzz_frontend.cpp $(FRONTEND_FUZZ_SRC) $(HDR)
 
 fuzz-smoke: build/fuzz-frontend
 	bash ./test/fuzz.sh "$${FUZZ_SECONDS:-15}"
+
+# Semantic differential fuzzing: generated typed programs with an
+# independent expected-output oracle, compared across both compilers'
+# interpreters and native debug/release/LTO builds. Configure the long
+# run with FUZZ_SEED / FUZZ_CASES / FUZZ_LANES / FUZZ_GROUPS (see
+# test/differential_fuzz.sh).
+fuzz-differential: $(BIN) $(BOOTSTRAP_BIN)
+	bash ./test/differential_fuzz.sh run
+
+fuzz-differential-smoke: $(BIN) $(BOOTSTRAP_BIN)
+	bash ./test/differential_fuzz.sh smoke
 
 # rm before cp: overwriting a signed binary in place leaves macOS's signature
 # cache stale, and the kernel then kills the new binary on exec with SIGKILL

@@ -1,0 +1,72 @@
+name: Semantic differential fuzz
+
+# Long, sharded runs of tools/differential_fuzz.py. Each shard fuzzes a
+# recorded, deterministic seed range; Linux and macOS run the same seeds,
+# and generation is byte-identical across hosts, so a divergence on one OS
+# reproduces from its seed and case number anywhere. The short smoke run
+# lives in normal CI (make fuzz-differential-smoke).
+
+on:
+  workflow_dispatch:
+    inputs:
+      cases:
+        description: Cases per shard
+        required: true
+        default: "400"
+      start_seed:
+        description: First shard's seed (shard N uses start_seed + N - 1)
+        required: true
+        default: "100"
+  schedule:
+    - cron: "47 3 * * 0"
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: seed sweep (${{ matrix.os }}, shard ${{ matrix.shard }}/4)
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install toolchain
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang lld llvm
+
+      - name: Build the compilers
+        run: make
+
+      - name: Fuzz one recorded seed
+        env:
+          INPUT_CASES: ${{ github.event_name == 'workflow_dispatch' && inputs.cases || '400' }}
+          INPUT_START_SEED: ${{ github.event_name == 'workflow_dispatch' && inputs.start_seed || '100' }}
+          SHARD: ${{ matrix.shard }}
+        run: |
+          case "$INPUT_CASES" in ''|*[!0-9]*)
+            echo "cases must be a whole number" >&2; exit 2 ;; esac
+          case "$INPUT_START_SEED" in ''|*[!0-9]*)
+            echo "start_seed must be a whole number" >&2; exit 2 ;; esac
+          FUZZ_SEED=$(( INPUT_START_SEED + SHARD - 1 ))
+          echo "shard $SHARD runs seed $FUZZ_SEED, cases 0..$(( INPUT_CASES - 1 ))"
+          export FUZZ_SEED
+          export FUZZ_CASES="$INPUT_CASES"
+          export FUZZ_LANES=all
+          export FUZZ_REDUCE=1
+          make fuzz-differential
+
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: differential-fuzz-failures-${{ matrix.os }}-shard-${{ matrix.shard }}
+          path: build/differential-fuzz/failures/
+          if-no-files-found: ignore

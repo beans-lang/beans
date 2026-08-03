@@ -475,6 +475,43 @@ if [[ $ran -lt 30 ]]; then
     fail "only $ran examples ran under wine; the discovery loop is broken"
 fi
 
+# ---- differential fuzz corpus: oracle-checked execution under wine ----------
+# The same fixed corpus the Linux qemu gates run (seed 42, cases 0..5, byte
+# identical on every OS): generated programs whose expected output comes from
+# the generator's independent oracle, so wine execution is compared against a
+# lane no compiler produced.
+if command -v python3 >/dev/null 2>&1; then
+    corpus=build/windows_gate/dfuzz-corpus
+    rm -rf "$corpus"
+    if python3 tools/differential_fuzz.py --corpus "$corpus" \
+            --seed 42 --cases 6 >/dev/null 2>&1; then
+        for src in "$corpus"/case_*.b; do
+            cname=$(basename "$src" .b)
+            if ! "$BEANSC" build --target $TRIPLE --linker lld "$src" \
+                    -o "$corpus/$cname.exe" > "$corpus/$cname.buildlog" 2>&1; then
+                fail "differential corpus $cname does not build for $TRIPLE"
+                continue
+            fi
+            "$WINE" "$corpus/$cname.exe" > "$corpus/$cname.out" 2> "$corpus/$cname.err"
+            corpus_code=$?
+            want_exit=$(cat "$corpus/$cname.exit")
+            if [[ $corpus_code -ne $want_exit ]]; then
+                fail "differential corpus $cname: wine exit $corpus_code, oracle exit $want_exit"
+            elif ! cmp -s "$corpus/$cname.stdout" "$corpus/$cname.out"; then
+                fail "differential corpus $cname: wine output differs from the oracle"
+                diff "$corpus/$cname.stdout" "$corpus/$cname.out" | head -8 >&2
+            elif [[ -s "$corpus/$cname.err" ]]; then
+                fail "differential corpus $cname: unexpected stderr under wine"
+            fi
+        done
+        echo "differential corpus: 6 oracle-checked programs executed under wine"
+    else
+        fail "differential corpus generation failed"
+    fi
+else
+    echo "differential corpus skipped: python3 is not installed" >&2
+fi
+
 echo "windows gate: $ran examples byte-identical under wine, $refused refused by capability:"
 printf '  %s\n' "${refused_names[@]}"
 

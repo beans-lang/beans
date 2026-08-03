@@ -402,6 +402,41 @@ if [ "$ran" -lt "$floor" ]; then
     fail=1
 fi
 
+# ---- 4. semantic differential fuzz corpus: oracle-checked execution -------
+# A small fixed corpus of generated programs (seed recorded here, identical
+# bytes on every OS and architecture) is cross-built and executed on the
+# emulated machine, and its output is held to the generator's independent
+# oracle — not merely to the host interpreter.
+if command -v python3 >/dev/null 2>&1; then
+    echo "== $arch: differential fuzz corpus (seed 42, cases 0..5) =="
+    corpus="$tmp/dfuzz-corpus"
+    if python3 tools/differential_fuzz.py --corpus "$corpus" \
+        --seed 42 --cases 6 >/dev/null 2>"$tmp/corpus.err"; then
+        for src in "$corpus"/case_*.b; do
+            name=$(basename "$src" .b)
+            if ! cross_build "$src" "$corpus/$name.bin"; then
+                echo "  FAIL corpus build: $name"; tail -3 "$tmp/build.log"; fail=1; continue
+            fi
+            verify_elf "$corpus/$name.bin" || { echo "  FAIL corpus elf: $name"; fail=1; continue; }
+            run_qemu "$corpus/$name.bin" >"$corpus/$name.out" 2>"$corpus/$name.errout"; q=$?
+            want_exit=$(cat "$corpus/$name.exit")
+            if [ "$q" != "$want_exit" ] ||
+               ! diff -q "$corpus/$name.stdout" "$corpus/$name.out" >/dev/null ||
+               [ -s "$corpus/$name.errout" ]; then
+                echo "  FAIL corpus diff: $name (qemu exit $q, oracle exit $want_exit)"
+                diff "$corpus/$name.stdout" "$corpus/$name.out" | head -6
+                head -3 "$corpus/$name.errout"
+                fail=1; continue
+            fi
+        done
+        echo "  ok: corpus output matched the oracle on the emulated machine"
+    else
+        echo "  FAIL: corpus generation failed"; head -3 "$tmp/corpus.err"; fail=1
+    fi
+else
+    echo "== $arch: differential fuzz corpus skipped: python3 is not installed =="
+fi
+
 if [ "$fail" != "0" ]; then
     echo "linux_arch($arch): FAIL"
     exit 1
