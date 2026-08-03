@@ -41,6 +41,15 @@ jobs:
       - name: Differential test suite
         run: make test
 
+      # The release archive and the real installer, on every change rather than
+      # only on a tag: a packaging regression found at release time is found too
+      # late. This is the full-package path, so it also proves the bundled
+      # toolchain builds with every system C tool hidden.
+      - name: Release package and installer
+        run: |
+          make test-release-package
+          make test-install-release
+
   linux-x86_64-safety:
     name: safety + ABI gate (linux/x86-64, native)
     runs-on: ubuntu-latest
@@ -244,6 +253,11 @@ jobs:
       - name: Cross link to x86-64 and run under qemu
         run: bash test/cross_link.sh
 
+      - name: Release package and installer
+        run: |
+          make test-release-package
+          make test-install-release
+
   # macOS owns the kqueue backend, so its full differential suite must gate too.
   macos-arm64:
     name: differential gate (macos/arm64)
@@ -285,6 +299,13 @@ jobs:
 
       - name: Target model and settings validation
         run: bash test/targets.sh
+
+      # macOS is the slim-package path, including the missing-Command-Line-Tools
+      # diagnostic that a user must never have to decode from a linker error.
+      - name: Release package and installer
+        run: |
+          make test-release-package
+          make test-install-release
 
   # The native and per-architecture jobs above own correctness. This job proves
   # the reproducible image builds, its entrypoint builds Beans, and its target

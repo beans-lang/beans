@@ -698,6 +698,27 @@ class ModuleLoader {
         }
     }
 
+    // Report an import problem at the import statement that asked for
+    // it, matching the stage-0 loader's positions.
+    fn import_error_at(package: LoadedPackage, imported: string,
+                       message: string) {
+        for file: ParsedModuleFile in package.files {
+            for declaration: AstNode in file.ast.children {
+                if declaration.kind != "import" { continue }
+                var value: string = declaration.value
+                if value.starts_with("pub ") {
+                    value = value.slice(4, value.len())
+                }
+                if value == imported {
+                    self.fail(file.path, declaration.line,
+                              declaration.col, message)
+                    return
+                }
+            }
+        }
+        self.fail(package.dir, 0, 0, message)
+    }
+
     fn resolve_package_imports(package: LoadedPackage, dir: string,
                                context_name: string, context_root: string,
                                context_canon: string) {
@@ -730,6 +751,12 @@ class ModuleLoader {
                 let relative: string =
                     imported.slice(context_name.len() + 1,
                                    imported.len()).replace(".", "/")
+                if !Dir.exists(imported_dir) {
+                    self.import_error_at(
+                        package, imported,
+                        "package directory {relative} doesn't exist")
+                    continue
+                }
                 let canonical: string =
                     if context_canon == "" {
                         imported

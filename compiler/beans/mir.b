@@ -2489,9 +2489,15 @@ class MirLowerer {
                 match self.definition_for(
                     function, initializer.operands[0]) {
                     some(allocation) => {
+                        // the constructed class must be the local's own
+                        // class: `let b: Base = new Child()` builds a
+                        // Child whose deinit and layout the base-typed
+                        // scalar replacement would silently drop
                         if allocation.op != "new" ||
                            primary.parameter ||
                            primary.captured ||
+                           allocation.type.name !=
+                               primary.type.name ||
                            !self.scalarizable_class(
                                primary.type.name) {
                             continue
@@ -3207,6 +3213,56 @@ class MirLowerer {
         return result
     }
 
+    // Returning a subclass where the declared result is its base class
+    // is an ordinary upcast; walk the extends chain the same way the
+    // stage-0 verifier does.
+    fn class_return_upcast(got: HirType, want: HirType) -> bool {
+        if got.args.len() != 0 || want.args.len() != 0 {
+            return false
+        }
+        var walk: string = got.name
+        var guard: int = 0
+        for guard < 64 {
+            guard += 1
+            var parent: string = ""
+            for declaration: HirDeclaration in
+                self.source.declarations {
+                if declaration.qualified != walk &&
+                   declaration.name != walk {
+                    continue
+                }
+                if declaration.kind != "class" {
+                    return false
+                }
+                for index: int in
+                    0..declaration.relations.len() {
+                    if index <
+                           declaration.relation_kinds.len() &&
+                       declaration.relation_kinds[index] ==
+                           "extends" &&
+                       parent == "" {
+                        parent =
+                            declaration.relations[index].name
+                    }
+                }
+                break
+            }
+            if parent == "" { return false }
+            if parent == want.name { return true }
+            match parent.rfind(".") {
+                some(dot) => {
+                    if parent.slice(dot + 1, parent.len()) ==
+                           want.name {
+                        return true
+                    }
+                }
+                none => {}
+            }
+            walk = parent
+        }
+        return false
+    }
+
     fn verify_local_ownership(function: MirFunction) {
         if function.declaration ||
            function.external ||
@@ -3721,9 +3777,12 @@ class MirLowerer {
                     }
                 } else if value >=
                               function.value_types.len() ||
-                          !hir_types_equal(
-                              function.value_types[value],
-                              function.result) {
+                          (!hir_types_equal(
+                               function.value_types[value],
+                               function.result) &&
+                           !self.class_return_upcast(
+                               function.value_types[value],
+                               function.result)) {
                     self.fail(
                         block.terminator.file,
                         block.terminator.line,

@@ -1233,7 +1233,32 @@ class ExpressionChecker {
     }
 
     fn declaration_for(type: HirType) -> Option<HirDeclaration> {
-        return self.declarations.get(type.name)
+        match self.declarations.get(type.name) {
+            some(declaration) => { return some(declaration) }
+            none => {}
+        }
+        // a re-parsed interpolation segment never went through the
+        // resolver, so a bare package-local name or an import alias can
+        // survive here; qualify it the way resolved code would be
+        if !type.name.contains(".") {
+            return self.declarations.get(
+                self.current_qualified(type.name))
+        }
+        let parts: List<string> = type.name.split(".")
+        if parts.len() == 2 {
+            let import_path: string =
+                self.imported_path(parts[0])
+            if import_path != "" {
+                let prefix: string =
+                    self.signature.resolver.package_prefix_for(
+                        import_path)
+                if prefix != "" {
+                    return self.declarations.get(
+                        "{prefix}.{parts[1]}")
+                }
+            }
+        }
+        return none
     }
 
     fn declaration_instance(
@@ -5321,8 +5346,8 @@ class ExpressionChecker {
                         some(result) => { return result }
                         none => {
                             self.fail(
-                                callee,
-                                "package '{receiver_syntax.value}' has no function '{callee.value}'")
+                                node,
+                                "package '{receiver_syntax.value}' ({import_path}) has no function '{callee.value}'")
                             return self.make_node(
                                 node, "error", "call",
                                 poison_hir_type())
@@ -6236,6 +6261,12 @@ class ExpressionChecker {
                         node,
                         "new needs a class, got {render_hir_type(type)}")
                 }
+                // a segment-parsed type may still spell an import
+                // alias; the constructed value's type uses the
+                // declaration's canonical name, like resolved code
+                if declaration.generics.len() == 0 {
+                    type.name = declaration.qualified
+                }
                 let result: HirNode =
                     self.make_node(node, "new", declaration.name, type)
                 result.resolved = declaration.qualified
@@ -6714,24 +6745,40 @@ class ExpressionChecker {
             self.make_node(
                 block, "block", "", new HirType("unit"))
         self.push_scope()
+        // in a discarded block (a statement match's arm) a trailing
+        // expression is an ordinary statement: only a trailing match
+        // keeps the discard demand, so its own arms stay statements too
+        let discard_block: bool = expected.name == "discard"
         for index: int in 0..block.children.len() {
             let statement: AstNode = block.children[index]
             if index + 1 == block.children.len() &&
                statement.kind == "expression" {
                 let value: HirNode =
                     self.check_expression(
-                        statement.children[0], expected)
+                        statement.children[0],
+                        if discard_block &&
+                           statement.children[0].kind != "match" {
+                            no_hir_type()
+                        } else {
+                            expected
+                        })
                 let wrapped: HirNode =
                     self.make_node(
                         statement, "expression", "",
                         new HirType("unit"))
                 wrapped.children.push(value)
                 result.children.push(wrapped)
-                result.type = value.type
+                result.type =
+                    if discard_block {
+                        new HirType("unit")
+                    } else {
+                        value.type
+                    }
             } else if index + 1 == block.children.len() &&
                       statement.kind == "if" &&
                       expected.name != "" &&
                       expected.name != "unit" &&
+                      expected.name != "discard" &&
                       self.if_chain_has_else(statement) {
                 // a value is demanded, so a trailing if whose chain
                 // ends in an else is the value, the same as a
@@ -7141,10 +7188,18 @@ class ExpressionChecker {
                     arm,
                     "a block arm doesn't produce a value — this match is used as one. use `pattern => expression` arms here")
             }
+            // a statement match discards arm values, and its block arms
+            // must keep discarding: a trailing call or nested match in
+            // the block is a statement, never the arm's value
             let value: HirNode =
                 if arm.children[1].kind == "block" {
                     self.check_expression_block(
-                        arm.children[1], arm_type)
+                        arm.children[1],
+                        if discard {
+                            new HirType("discard")
+                        } else {
+                            arm_type
+                        })
                 } else {
                     self.check_expression(
                         arm.children[1], arm_type)

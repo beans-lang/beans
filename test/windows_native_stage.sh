@@ -154,6 +154,41 @@ if buildable examples/shop/main.b; then
     stage examples/shop/main.b shop
 fi
 
+# The classes,packages differential-fuzz corpus (seed 47): class dispatch,
+# super calls, ARC drop order, and multi-package projects. Expectations come
+# from the generator's independent oracle — not from any compiler — so the
+# Windows machine executes against the same answers the qemu and wine gates
+# use. Directory cases carry beans.pot; the entry point is always main.b.
+if command -v python3 >/dev/null 2>&1; then
+    dfuzz_corpus="$OUT/../dfuzz-corpus-classes"
+    rm -rf "$dfuzz_corpus"
+    python3 tools/differential_fuzz.py --corpus "$dfuzz_corpus" \
+        --seed 47 --cases 6 --groups classes,packages >/dev/null
+    while read -r cname; do
+        [[ -n "$cname" ]] || continue
+        if [[ -f "$dfuzz_corpus/$cname.b" ]]; then
+            csrc="$dfuzz_corpus/$cname.b"
+            cexpect="$dfuzz_corpus/$cname.stdout"
+            cexit=$(cat "$dfuzz_corpus/$cname.exit")
+        else
+            csrc="$dfuzz_corpus/$cname/main.b"
+            cexpect="$dfuzz_corpus/$cname/expected_stdout.txt"
+            cexit=$(cat "$dfuzz_corpus/$cname/expected_exit.txt")
+        fi
+        "$BEANSC" build --target $TRIPLE --linker lld "$csrc" \
+            -o "$OUT/dfuzz_$cname.exe"
+        cp "$cexpect" "$OUT/dfuzz_$cname.expected"
+        printf '%s\t%s\n' "dfuzz_$cname" "$cexit" >> "$OUT/manifest.tsv"
+    done < "$dfuzz_corpus/MANIFEST"
+    echo "staged 6 oracle-checked differential corpus cases (seed 47)"
+else
+    echo "differential corpus not staged: python3 is not installed" >&2
+fi
+
+# The exact target this bundle was staged for, so the Windows side can
+# report the architecture and toolchain it really executed.
+echo "$TRIPLE" > "$OUT/triple"
+
 # target_info runs on the Windows side as a positive golden: the facts a
 # running PE binary reports must be the Windows target's, not the build host's.
 "$BEANSC" build --target $TRIPLE --linker lld examples/target_info.b \

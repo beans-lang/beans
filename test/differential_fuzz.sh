@@ -112,6 +112,314 @@ EOF
         }
     done
 
+    # an object with an inheritance chain releases fields in one order
+    # everywhere: deinit bodies child first, then each class's fields in
+    # reverse declaration order walking up. The self-hosted interpreter
+    # used to release parent fields before the child's own.
+    cat >"$tmp/drop_order.b" <<'EOF'
+import std.io
+
+class Leaf {
+    id: int
+    pub fn init(id: int) {
+        self.id = id
+    }
+    fn deinit() {
+        io.println("drop leaf {self.id}")
+    }
+}
+
+class Base {
+    pa: Leaf
+    pb: Leaf
+    pub fn init() {
+        self.pa = new Leaf(10)
+        self.pb = new Leaf(20)
+    }
+    fn deinit() {
+        io.println("base deinit")
+    }
+}
+
+class Kid extends Base {
+    own: Leaf
+    pub fn init() {
+        self.own = new Leaf(30)
+        super.init()
+    }
+    fn deinit() {
+        io.println("kid deinit")
+    }
+}
+
+fn main() {
+    if true {
+        let k: Kid = new Kid()
+        io.println("alive")
+    }
+    io.println("done")
+}
+EOF
+    cat >"$tmp/drop_order.expected" <<'EOF'
+alive
+kid deinit
+base deinit
+drop leaf 30
+drop leaf 20
+drop leaf 10
+done
+EOF
+
+    # a temporary object made for a call argument or interpolation piece
+    # dies when that call returns, newest first — the stage-0 native
+    # backend used to defer every temp to the end of the statement
+    cat >"$tmp/temp_timing.b" <<'EOF'
+import std.io
+
+class Leaf {
+    id: int
+    pub fn init(id: int) {
+        self.id = id
+    }
+    fn deinit() {
+        io.println("drop {self.id}")
+    }
+}
+
+fn use2(a: Leaf, b: Leaf) -> int {
+    return a.id * 10 + b.id
+}
+
+fn peek(t: Leaf) -> int {
+    return t.id + 100
+}
+
+fn main() {
+    let n: int = use2(new Leaf(1), new Leaf(2)) + use2(new Leaf(3), new Leaf(4))
+    io.println("n {n}")
+    io.println("a {peek(new Leaf(7))} b {peek(new Leaf(8))}")
+    io.println("done")
+}
+EOF
+    cat >"$tmp/temp_timing.expected" <<'EOF'
+drop 2
+drop 1
+drop 4
+drop 3
+n 46
+drop 7
+drop 8
+a 107 b 108
+done
+EOF
+
+    for case in drop_order temp_timing; do
+        for cc in build/beansc0 build/beansc; do
+            "$cc" run "$tmp/$case.b" >"$tmp/$case.out" 2>&1 || {
+                echo "  FAIL: $cc run $case exited nonzero" >&2
+                return 1
+            }
+            cmp -s "$tmp/$case.expected" "$tmp/$case.out" || {
+                echo "  FAIL: $cc run $case output" >&2
+                diff "$tmp/$case.expected" "$tmp/$case.out" >&2
+                return 1
+            }
+            "$cc" build "$tmp/$case.b" -o "$tmp/$case.bin" \
+                >/dev/null 2>&1 || {
+                echo "  FAIL: $cc build $case" >&2
+                return 1
+            }
+            "$tmp/$case.bin" >"$tmp/$case.out" 2>&1 || {
+                echo "  FAIL: $case native exited nonzero ($cc)" >&2
+                return 1
+            }
+            cmp -s "$tmp/$case.expected" "$tmp/$case.out" || {
+                echo "  FAIL: $case native output ($cc)" >&2
+                diff "$tmp/$case.expected" "$tmp/$case.out" >&2
+                return 1
+            }
+        done
+    done
+
+    # a statement match's block arm may end in a call whose value is
+    # discarded — there is no implicit tail expression anywhere. The
+    # self-hosted checker used to type the arm from that trailing call
+    # and reject the match with "match arms have different types".
+    cat >"$tmp/discard_arm.b" <<'EOF'
+import std.io
+
+enum Toggle {
+    on
+    off
+}
+
+class Counter {
+    hits: int = 0
+
+    fn bump() -> int {
+        self.hits = self.hits + 1
+        return self.hits
+    }
+}
+
+fn main() {
+    let c: Counter = new Counter()
+    let t: Toggle = Toggle.on
+    match t {
+        on => {
+            c.bump()
+        }
+        off => {
+            io.println("off")
+        }
+    }
+    match t {
+        on => {
+            match Toggle.off {
+                on => { io.println("inner on") }
+                off => { c.bump() }
+            }
+        }
+        off => {}
+    }
+    io.println("hits {c.hits}")
+}
+EOF
+    for cc in build/beansc0 build/beansc; do
+        "$cc" run "$tmp/discard_arm.b" >"$tmp/da.out" 2>&1 || {
+            echo "  FAIL: $cc rejected a discarded trailing call in a match arm" >&2
+            head -3 "$tmp/da.out" >&2
+            return 1
+        }
+        printf 'hits 2\n' >"$tmp/da.expected"
+        cmp -s "$tmp/da.expected" "$tmp/da.out" || {
+            echo "  FAIL: $cc discard-arm output" >&2
+            diff "$tmp/da.expected" "$tmp/da.out" >&2
+            return 1
+        }
+    done
+
+    # a base-typed local holding `new Child()` must not be scalar-
+    # replaced from the base's shape: the child's deinit and layout ride
+    # the object. The self-hosted native backend used to stack-allocate
+    # it through the base class and silently skip the child's deinit.
+    mkdir -p "$tmp/upleak/pka"
+    cat >"$tmp/upleak/beans.pot" <<'EOF'
+module upleak
+EOF
+    cat >"$tmp/upleak/pka/pka.b" <<'EOF'
+import std.io
+
+pub class Plain {
+    g: int = 2
+
+    pub fn init() {
+    }
+
+    pub fn get() -> int {
+        return self.g
+    }
+}
+
+pub class Loud extends Plain {
+    pub tag: int = 9
+
+    pub fn init() {
+        super.init()
+    }
+
+    fn deinit() {
+        io.println("loud deinit {self.tag}")
+    }
+}
+EOF
+    cat >"$tmp/upleak/main.b" <<'EOF'
+import std.io
+import upleak.pka
+
+fn main() {
+    let quiet: pka.Plain = new pka.Loud()
+    io.println("made {quiet.get()}")
+}
+EOF
+    cat >"$tmp/upleak.expected" <<'EOF'
+made 2
+loud deinit 9
+EOF
+
+    # an import alias inside a re-parsed interpolation segment resolves
+    # like any other package reference; the self-hosted checker used to
+    # report "unknown class 'al.K'" for `new al.K(...)` in a segment
+    mkdir -p "$tmp/segalias/pka"
+    cat >"$tmp/segalias/beans.pot" <<'EOF'
+module segalias
+EOF
+    cat >"$tmp/segalias/pka/pka.b" <<'EOF'
+import std.io
+
+pub class Crate {
+    pub v: int
+
+    pub fn init(v: int) {
+        self.v = v
+    }
+}
+
+fn grab(c: Crate) -> int {
+    return c.v
+}
+
+pub fn local_seg() {
+    io.println("in {grab(new Crate(6))}")
+}
+EOF
+    cat >"$tmp/segalias/main.b" <<'EOF'
+import std.io
+import segalias.pka as al1
+
+fn peek(b: al1.Crate) -> int {
+    return b.v + 1
+}
+
+fn main() {
+    io.println("seg {peek(new al1.Crate(4))}")
+    al1.local_seg()
+}
+EOF
+    cat >"$tmp/segalias.expected" <<'EOF'
+seg 5
+in 6
+EOF
+
+    for case in upleak segalias; do
+        for cc in build/beansc0 build/beansc; do
+            "$cc" run "$tmp/$case/main.b" >"$tmp/$case.out" 2>&1 || {
+                echo "  FAIL: $cc run $case exited nonzero" >&2
+                head -3 "$tmp/$case.out" >&2
+                return 1
+            }
+            cmp -s "$tmp/$case.expected" "$tmp/$case.out" || {
+                echo "  FAIL: $cc run $case output" >&2
+                diff "$tmp/$case.expected" "$tmp/$case.out" >&2
+                return 1
+            }
+            "$cc" build "$tmp/$case/main.b" -o "$tmp/$case.bin" \
+                >/dev/null 2>&1 || {
+                echo "  FAIL: $cc build $case" >&2
+                return 1
+            }
+            "$tmp/$case.bin" >"$tmp/$case.out" 2>&1 || {
+                echo "  FAIL: $case native exited nonzero ($cc)" >&2
+                return 1
+            }
+            cmp -s "$tmp/$case.expected" "$tmp/$case.out" || {
+                echo "  FAIL: $case native output ($cc)" >&2
+                diff "$tmp/$case.expected" "$tmp/$case.out" >&2
+                return 1
+            }
+        done
+    done
+
     # divide/modulo panic messages agree between the two interpreters;
     # the self-hosted one used to say "division by zero" for both
     cat >"$tmp/div0.b" <<'EOF'
@@ -164,6 +472,17 @@ case "$mode" in
         echo "== differential fuzz: smoke sweep (seed 1, all lanes) =="
         "$python3" tools/differential_fuzz.py \
             --seed 1 --start 12 --cases 3 --lanes all --keep-going
+        echo "== differential fuzz: classes sweep (seed 1, debug lanes) =="
+        "$python3" tools/differential_fuzz.py \
+            --seed 1 --cases 8 --groups core,classes --lanes debug \
+            --keep-going
+        echo "== differential fuzz: packages sweep (seed 1, debug lanes) =="
+        "$python3" tools/differential_fuzz.py \
+            --seed 1 --cases 6 --groups classes,packages --lanes debug \
+            --keep-going
+        echo "== differential fuzz: checker parity (negative cases) =="
+        "$python3" tools/differential_fuzz.py \
+            --negative --seed 1 --cases 13 --keep-going
         echo "ok semantic differential fuzz smoke"
         ;;
     run)
@@ -176,8 +495,15 @@ case "$mode" in
         [ -n "${FUZZ_STMTS:-}" ] && args+=(--max-stmts "$FUZZ_STMTS")
         [ -n "${FUZZ_TIMEOUT:-}" ] && args+=(--timeout-run "$FUZZ_TIMEOUT")
         [ -n "${FUZZ_TIMEOUT_BUILD:-}" ] && args+=(--timeout-build "$FUZZ_TIMEOUT_BUILD")
+        [ -n "${FUZZ_JOBS:-}" ] && args+=(--jobs "$FUZZ_JOBS")
         [ "${FUZZ_REDUCE:-0}" = 1 ] && args+=(--reduce-failures)
         "$python3" tools/differential_fuzz.py "${args[@]}"
+        # negative checker-parity sweep rides along; FUZZ_NEGATIVE=0 skips
+        if [ "${FUZZ_NEGATIVE:-1}" = 1 ]; then
+            "$python3" tools/differential_fuzz.py \
+                --negative --seed "${FUZZ_SEED:-1}" \
+                --cases "${FUZZ_NEGATIVE_CASES:-26}" --keep-going
+        fi
         ;;
     *)
         echo "usage: test/differential_fuzz.sh [smoke|run]" >&2

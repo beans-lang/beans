@@ -1,13 +1,13 @@
-// Typed atomics with explicit memory orders.
-//
-// `Atomic<T>` is a shared cell holding one integer or bool that several threads
-// may touch at once. Every operation names the order it needs, because the order
-// is the whole point: it says what else the processor and compiler may move
-// across this access.
-//
-// The order is written at the call site and cannot be a variable. LLVM puts the
-// ordering inside the instruction, so one call site is one instruction — and that
-// is also what lets the compiler reject a combination that makes no sense.
+/// Typed atomics with explicit memory orders.
+///
+/// `Atomic<T>` is a shared cell holding one integer or bool that several threads
+/// may touch at once. Every operation names the order it needs, because the order
+/// is the whole point: it says what else the processor and compiler may move
+/// across this access.
+///
+/// The order is written at the call site and cannot be a variable. LLVM puts the
+/// ordering inside the instruction, so one call site is one instruction — and that
+/// is also what lets the compiler reject a combination that makes no sense.
 
 import std.io
 import std.thread

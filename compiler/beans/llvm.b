@@ -16042,6 +16042,28 @@ class LlvmTextEmitter {
         return ""
     }
 
+    // A boxed enum stores every non-wide payload in a full eight-byte
+    // slot (references arrive ptrtoint-extended, narrow scalars arrive
+    // zext/sext-extended). The reader must load that whole slot: a
+    // narrow typed load reads the slot's first bytes, which on a
+    // big-endian target hold the high half — a bool payload came back
+    // false and a reference payload came back wild on ppc32.
+    fn show_step_push_slot(
+        type: HirType,
+        pointer: string,
+        tag: string) -> string {
+        if self.wide_inline_value(type) {
+            return self.show_step_push_at(type, pointer, tag)
+        }
+        self.require_declare(
+            "beans_show_push_val",
+            "void @beans_show_push_val(ptr, ptr, i64)")
+        let step: string = self.request_show_step(type)
+        if step == "" { return "" }
+        let id: int = self.fresh()
+        return "  %show.slot.{tag}{id} = load i64, ptr {pointer}\n  call void @beans_show_push_val(ptr %c, ptr @{step}, i64 %show.slot.{tag}{id})\n"
+    }
+
     // Wide values are passed to the iterative driver by address. This is
     // needed for typed list storage such as List<Option<int>>: loading one
     // eight-byte runtime slot would lose half of the inline value.
@@ -16283,7 +16305,7 @@ class LlvmTextEmitter {
                                 body =
                                     "{body}  {payload_pointer} = getelementptr i8, ptr %show.enum{id}, i64 {offsets[payload_index]}\n"
                                 let pushed: string =
-                                    self.show_step_push_at(
+                                    self.show_step_push_slot(
                                         payloads[payload_index],
                                         payload_pointer,
                                         "enum{id}.{index}.{payload_index}")

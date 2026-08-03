@@ -8,6 +8,7 @@ fn print_usage() {
     io.eprintln("       beansc build [options] <file.b> [-o out]")
     io.eprintln("       beansc bindgen <header.h> -o <bindings.b> [options] [-- clang-options]")
     io.eprintln("       beansc mod <tidy|update [module]>")
+    io.eprintln("       beansc doctor")
     io.eprintln("       beansc lsp-probe <file.b>:<line>:<col>")
     io.eprintln("       beansc lsp   (language server on stdio)")
     io.eprintln("       beansc --version")
@@ -143,6 +144,15 @@ fn main() {
     }
 
     let command: string = args[0]
+    if command == "doctor" {
+        if args.len() != 1 {
+            io.eprintln("usage: beansc doctor")
+            os.exit(2)
+        }
+        let status: int = run_doctor()
+        if status != 0 { os.exit(status) }
+        return
+    }
     if command == "lsp" {
         if args.len() != 1 {
             io.eprintln("usage: beansc lsp")

@@ -129,4 +129,13 @@ if [[ $fails -ne 0 ]]; then
     echo "windows native gate: $fails failure(s) across $ran examples" >&2
     exit 1
 fi
+# The exact machine and staged toolchain this run proved, for the record: the
+# oracle-checked differential corpus rows (dfuzz_case_*) executed on this
+# architecture, not merely compiled for it.
+staged_triple=""
+[[ -f "$BUNDLE/triple" ]] && staged_triple=$(tr -d ' \r\n' < "$BUNDLE/triple")
+corpus_ran=$(grep -c '^dfuzz_case_' "$BUNDLE/manifest.tsv" || true)
 echo "ok windows native gate: $ran examples byte-identical on real Windows"
+if [[ -n "$staged_triple" ]]; then
+    echo "   target ${staged_triple}, machine $(uname -m 2>/dev/null || echo unknown), ${corpus_ran} oracle-checked corpus cases executed"
+fi

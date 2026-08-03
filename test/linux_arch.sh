@@ -433,6 +433,46 @@ if command -v python3 >/dev/null 2>&1; then
     else
         echo "  FAIL: corpus generation failed"; head -3 "$tmp/corpus.err"; fail=1
     fi
+
+    # the classes,packages corpus: class dispatch, super calls, ARC drop
+    # order, and multi-package projects, executed and held to the same
+    # oracle. Directory cases carry beans.pot and their packages; the
+    # entry point is always main.b.
+    echo "== $arch: differential fuzz corpus (classes,packages, seed 47) =="
+    corpus2="$tmp/dfuzz-corpus-classes"
+    if python3 tools/differential_fuzz.py --corpus "$corpus2" \
+        --seed 47 --cases 6 --groups classes,packages \
+        >/dev/null 2>"$tmp/corpus2.err"; then
+        for name in $(cat "$corpus2/MANIFEST"); do
+            if [ -f "$corpus2/$name.b" ]; then
+                src="$corpus2/$name.b"
+                want_out="$corpus2/$name.stdout"
+                want_exit_file="$corpus2/$name.exit"
+            else
+                src="$corpus2/$name/main.b"
+                want_out="$corpus2/$name/expected_stdout.txt"
+                want_exit_file="$corpus2/$name/expected_exit.txt"
+            fi
+            if ! cross_build "$src" "$corpus2/$name.bin"; then
+                echo "  FAIL corpus build: $name"; tail -3 "$tmp/build.log"; fail=1; continue
+            fi
+            verify_elf "$corpus2/$name.bin" || { echo "  FAIL corpus elf: $name"; fail=1; continue; }
+            run_qemu "$corpus2/$name.bin" >"$corpus2/$name.out" 2>"$corpus2/$name.errout"; q=$?
+            want_exit=$(cat "$want_exit_file")
+            if [ "$q" != "$want_exit" ] ||
+               ! diff -q "$want_out" "$corpus2/$name.out" >/dev/null ||
+               [ -s "$corpus2/$name.errout" ]; then
+                echo "  FAIL corpus diff: $name (qemu exit $q, oracle exit $want_exit)"
+                diff "$want_out" "$corpus2/$name.out" | head -6
+                head -3 "$corpus2/$name.errout"
+                fail=1; continue
+            fi
+        done
+        echo "  ok: classes,packages corpus matched the oracle on the emulated machine"
+    else
+        echo "  FAIL: classes,packages corpus generation failed"
+        head -3 "$tmp/corpus2.err"; fail=1
+    fi
 else
     echo "== $arch: differential fuzz corpus skipped: python3 is not installed =="
 fi

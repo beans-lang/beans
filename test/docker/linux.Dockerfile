@@ -52,8 +52,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         gcc-powerpc-linux-gnu \
         g++-powerpc-linux-gnu \
         libc6-dev-powerpc-cross \
-        gcc-powerpc64-linux-gnu \
-        g++-powerpc64-linux-gnu \
         libc6-dev-ppc64-cross \
         gcc-s390x-linux-gnu \
         g++-s390x-linux-gnu \
@@ -75,6 +73,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         qemu-system-misc \
         gcc-arm-none-eabi \
         gcc-riscv64-unknown-elf \
+    # The big-endian PowerPC64 cross compiler only exists in Ubuntu's
+    # amd64 archive; the arm64 ports archive has never carried it. The
+    # default gate never uses it — only the explicit ppc64 arch/hosted
+    # gates do, and those fail by name if the tool is absent — so an
+    # arm64 host still runs the full default gate.
+    && if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
+        apt-get install -y --no-install-recommends \
+            gcc-powerpc64-linux-gnu \
+            g++-powerpc64-linux-gnu; \
+    fi \
     && rm -rf /var/lib/apt/lists/*
 
 # Fail the image build rather than a test run if the toolchain is not what the
@@ -109,7 +117,8 @@ RUN clang --version \
     && powerpc64le-linux-gnu-gcc --version >/dev/null \
     && powerpc64le-linux-gnu-g++ --version >/dev/null \
     && powerpc-linux-gnu-g++ --version >/dev/null \
-    && powerpc64-linux-gnu-g++ --version >/dev/null \
+    && { [ "$(dpkg --print-architecture)" != "amd64" ] || \
+         powerpc64-linux-gnu-g++ --version >/dev/null; } \
     && s390x-linux-gnu-g++ --version >/dev/null \
     && i686-linux-gnu-gcc --version >/dev/null \
     && i686-linux-gnu-g++ --version >/dev/null \

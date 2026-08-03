@@ -508,6 +508,45 @@ if command -v python3 >/dev/null 2>&1; then
     else
         fail "differential corpus generation failed"
     fi
+
+    # classes,packages corpus: dispatch, super, ARC drop order, and
+    # multi-package projects run under wine against the same oracle.
+    corpus2=build/windows_gate/dfuzz-corpus-classes
+    rm -rf "$corpus2"
+    if python3 tools/differential_fuzz.py --corpus "$corpus2" \
+            --seed 47 --cases 6 --groups classes,packages >/dev/null 2>&1; then
+        while read -r cname; do
+            [[ -n "$cname" ]] || continue
+            if [[ -f "$corpus2/$cname.b" ]]; then
+                csrc="$corpus2/$cname.b"
+                cwant_out="$corpus2/$cname.stdout"
+                cwant_exit_file="$corpus2/$cname.exit"
+            else
+                csrc="$corpus2/$cname/main.b"
+                cwant_out="$corpus2/$cname/expected_stdout.txt"
+                cwant_exit_file="$corpus2/$cname/expected_exit.txt"
+            fi
+            if ! "$BEANSC" build --target $TRIPLE --linker lld "$csrc" \
+                    -o "$corpus2/$cname.exe" > "$corpus2/$cname.buildlog" 2>&1; then
+                fail "classes corpus $cname does not build for $TRIPLE"
+                continue
+            fi
+            "$WINE" "$corpus2/$cname.exe" > "$corpus2/$cname.out" 2> "$corpus2/$cname.err"
+            corpus_code=$?
+            want_exit=$(cat "$cwant_exit_file")
+            if [[ $corpus_code -ne $want_exit ]]; then
+                fail "classes corpus $cname: wine exit $corpus_code, oracle exit $want_exit"
+            elif ! cmp -s "$cwant_out" "$corpus2/$cname.out"; then
+                fail "classes corpus $cname: wine output differs from the oracle"
+                diff "$cwant_out" "$corpus2/$cname.out" | head -8 >&2
+            elif [[ -s "$corpus2/$cname.err" ]]; then
+                fail "classes corpus $cname: unexpected stderr under wine"
+            fi
+        done < "$corpus2/MANIFEST"
+        echo "classes,packages corpus: 6 oracle-checked programs executed under wine"
+    else
+        fail "classes,packages corpus generation failed"
+    fi
 else
     echo "differential corpus skipped: python3 is not installed" >&2
 fi

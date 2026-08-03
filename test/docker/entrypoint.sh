@@ -32,6 +32,14 @@ case "${1:-gate}" in
         # Real cross-execution for the Linux architectures whose sysroot and
         # qemu-user this image carries. REQUIRE=1: a missing tool fails the gate
         # here rather than skipping, because the image is built to have them.
+        # Exception: Ubuntu ships the powerpc64 (big-endian) cross toolchain
+        # only in the amd64 archive, so the image installs it only there and
+        # the ppc64 lanes are required only where the image can carry them.
+        if [ "$(dpkg --print-architecture)" = "amd64" ]; then
+            ppc64_require=1
+        else
+            ppc64_require=0
+        fi
         BEANS_LINUX_ARCH_REQUIRE=1 bash test/linux_arch.sh riscv64
         BEANS_LINUX_ARCH_REQUIRE=1 bash test/linux_arch.sh ppc64le
         BEANS_LINUX_ARCH_REQUIRE=1 bash test/linux_arch.sh i686
@@ -39,7 +47,7 @@ case "${1:-gate}" in
         BEANS_LINUX_ARCH_REQUIRE=1 bash test/linux_arch.sh armv6
         BEANS_LINUX_ARCH_REQUIRE=1 bash test/linux_arch.sh loongarch64
         BEANS_LINUX_ARCH_REQUIRE=1 bash test/linux_arch.sh ppc
-        BEANS_LINUX_ARCH_REQUIRE=1 bash test/linux_arch.sh ppc64
+        BEANS_LINUX_ARCH_REQUIRE=$ppc64_require bash test/linux_arch.sh ppc64
         BEANS_LINUX_ARCH_REQUIRE=1 bash test/linux_arch.sh s390x
         # Hosted gates: beansc itself, as that architecture's binary under
         # qemu-user, reaches its self-compile fixed point and drives the
@@ -51,7 +59,7 @@ case "${1:-gate}" in
         BEANS_LINUX_ARCH_REQUIRE=1 bash test/linux_hosted.sh armv6
         BEANS_LINUX_ARCH_REQUIRE=1 bash test/linux_hosted.sh loongarch64
         BEANS_LINUX_ARCH_REQUIRE=1 bash test/linux_hosted.sh ppc
-        BEANS_LINUX_ARCH_REQUIRE=1 bash test/linux_hosted.sh ppc64
+        BEANS_LINUX_ARCH_REQUIRE=$ppc64_require bash test/linux_hosted.sh ppc64
         BEANS_LINUX_ARCH_REQUIRE=1 bash test/linux_hosted.sh s390x
         ;;
     shell)

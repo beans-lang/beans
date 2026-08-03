@@ -70,13 +70,15 @@ $(STAGE3_BIN): $(STAGE2_BIN) $(SELF_HOST_SRC)
 $(BIN): $(STAGE3_BIN)
 	rm -f $(BIN) && cp $(STAGE3_BIN) $(BIN)
 
-.PHONY: stage0 run clean install test platform-status test-platform-manifest test-portable-int128 test-compiler-arch-objects test-stage0-windows test-windows-source-bootstrap test-musl-hosted test-armv6hf-hosted test-sanitize test-release-package test-clean-bootstrap test-c-abi-tier1 test-mir-stage0 test-barq-core fuzz-smoke fuzz-differential fuzz-differential-smoke test-linux test-linux-arch test-linux-hosted test-windows test-windows-native test-windows-native-i686 test-windows-native-arm64 test-windows-arch test-windows-hosted access-score self-host-next test-self-host test-self-host-full test-bootstrap bench-compiler bench-quick bench-full bench-verify bench-profile bench-compare
+.PHONY: stage0 run clean install test platform-status test-platform-manifest test-portable-int128 test-compiler-arch-objects test-stage0-windows test-windows-source-bootstrap test-musl-hosted test-armv6hf-hosted test-sanitize test-release-package test-install-release test-release-completeness test-clean-bootstrap test-c-abi-tier1 test-mir-stage0 test-barq-core fuzz-smoke fuzz-differential fuzz-differential-smoke test-linux test-linux-arch test-linux-hosted test-windows test-windows-native test-windows-native-i686 test-windows-native-arm64 test-windows-arch test-windows-hosted access-score self-host-next test-self-host test-self-host-full test-bootstrap bench-compiler bench-quick bench-full bench-verify bench-profile bench-compare
 stage0: $(BOOTSTRAP_BIN)
 
 run: $(BIN)
 	./$(BIN) parse examples/hello.b examples/tour.b
 
-install: $(BIN) $(BOOTSTRAP_BIN)
+# Installs the self-hosted compiler only. beansc0 is internal bootstrap code and
+# stays in build/, where bootstrap development needs it.
+install: $(BIN)
 	PREFIX="$(PREFIX)" DESTDIR="$(DESTDIR)" bash ./tools/install.sh
 
 test: $(BIN) build/bench/compare
@@ -97,6 +99,7 @@ test: $(BIN) build/bench/compare
 	./test/embedded.sh
 	./test/asm.sh
 	./test/docs.sh
+	bash ./test/release_completeness.sh --self-test
 	./test/version.sh
 	./test/cli_parity.sh
 	bash ./test/package_semantics.sh
@@ -185,6 +188,16 @@ test-sanitize: $(BIN)
 
 test-release-package: $(BIN)
 	bash ./test/release_package.sh
+
+# The contract the publish job enforces: a release is every target in
+# targets/release_assets.tsv, or it is not a release.
+test-release-completeness:
+	bash ./test/release_completeness.sh --self-test
+
+# Drives tools/install-release.sh end to end against a locally built package:
+# same detection, checksum, staging and PATH handling as a real release.
+test-install-release: $(BIN)
+	bash ./test/install_release.sh
 
 test-clean-bootstrap:
 	bash ./test/clean_bootstrap.sh

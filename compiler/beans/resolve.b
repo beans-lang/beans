@@ -204,8 +204,16 @@ class Resolver {
         }
         if symbol.package_path != package.import_path &&
            !symbol.is_public {
+            var pkg_name: string = symbol.package_path
+            match pkg_name.rfind(".") {
+                some(dot) => {
+                    pkg_name = pkg_name.slice(
+                        dot + 1, pkg_name.len())
+                }
+                none => {}
+            }
             self.fail(file.path, node,
-                      "type '{resolved}' is private to {symbol.package_path}")
+                      "type '{resolved}' isn't pub in package '{pkg_name}'")
             return ""
         }
         return resolved
@@ -216,7 +224,8 @@ class Resolver {
                     aliases: Map<string, string>,
                     inherited_generics: Map<string, bool>,
                     inherited_self: string,
-                    generic_bound: bool) {
+                    generic_bound: bool,
+                    anchor: Option<AstNode>) {
         var generics: Map<string, bool> =
             copy_names(inherited_generics)
         var self_type: string = inherited_self
@@ -235,15 +244,25 @@ class Resolver {
             }
         }
         if node.kind == "type" {
+            // a `new T(...)` visibility error anchors at the whole
+            // expression, matching the stage-0 checker's position
+            let position: AstNode = match anchor {
+                some(outer) => outer,
+                none => node,
+            }
             node.resolved =
                 self.resolve_type_name(node.value, package, file,
-                                       aliases, generics, self_type, node,
-                                       generic_bound)
+                                       aliases, generics, self_type,
+                                       position, generic_bound)
         }
         for child: AstNode in node.children {
+            var child_anchor: Option<AstNode> = none
+            if node.kind == "new" && child.kind == "type" {
+                child_anchor = some(node)
+            }
             self.resolve_node(child, package, file, aliases,
                               generics, self_type,
-                              node.kind == "generic")
+                              node.kind == "generic", child_anchor)
         }
     }
 
@@ -255,7 +274,7 @@ class Resolver {
                 var generics: Map<string, bool> = {}
                 for declaration: AstNode in file.ast.children {
                     self.resolve_node(declaration, package, file,
-                                      aliases, generics, "", false)
+                                      aliases, generics, "", false, none)
                 }
             }
         }

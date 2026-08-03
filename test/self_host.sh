@@ -3219,7 +3219,7 @@ if ./build/beansc-next resolve "$tmp/private/main.b" \
     echo "private imported type was accepted" >&2
     exit 1
 fi
-grep -q "type 'dep.Hidden' is private to private.dep" "$tmp/private.out"
+grep -q "type 'dep.Hidden' isn't pub in package 'dep'" "$tmp/private.out"
 
 mkdir -p "$tmp/locked"
 printf 'module locked\n' >"$tmp/locked/beans.pot"

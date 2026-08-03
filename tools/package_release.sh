@@ -1,24 +1,45 @@
 #!/usr/bin/env bash
+# Build one public Beans release archive.
+#
+#   tools/package_release.sh <version> <beans-target-triple> <output-directory>
+#
+# The archive is exactly what a user downloads and unpacks. It carries the final
+# self-hosted compiler, the standard library, the C runtime sources, a
+# relocatable launcher and — for a `full` package — a complete native C
+# toolchain. It never carries beansc0: stage 0 is internal bootstrap code, it is
+# the packaging host's architecture, and nobody installing Beans has any use
+# for it.
+#
+# Environment:
+#   BEANS_RELEASE_BEANSC     compiler binary to ship (default build/beansc)
+#   BEANS_RELEASE_CLASS      full | slim (default: full when this host can
+#                            bundle a native toolchain for the target)
+#   BEANS_RELEASE_SYSROOT    target sysroot, required for a full Linux package
+#   BEANS_RELEASE_CLANG      clang to bundle (default: clang on PATH)
+#   BEANS_RELEASE_LLD        ld.lld to bundle (default: ld.lld on PATH)
+#   BEANS_RELEASE_AR         llvm-ar to bundle (default: llvm-ar on PATH)
 set -euo pipefail
 export COPYFILE_DISABLE=1
 
 if [[ $# -ne 3 ]]; then
-    echo "usage: $0 <version> <platform> <output-directory>" >&2
+    echo "usage: $0 <version> <beans-target-triple> <output-directory>" >&2
     exit 2
 fi
 
 version=$1
-platform=$2
+target=$2
 output=$3
-case "$version:$platform" in
+case "$version:$target" in
     *[!A-Za-z0-9._:-]*|*:*:*)
-        echo "version and platform may contain only letters, digits, dot, dash and underscore" >&2
+        echo "version and target may contain only letters, digits, dot, dash and underscore" >&2
         exit 2
         ;;
 esac
+
 repo=$(cd "$(dirname "$0")/.." && pwd -P)
 output_parent=$(cd "$(dirname "$output")" && pwd -P)
 output="$output_parent/$(basename "$output")"
+
 declared=$(sed -n 's/.*char version\[\] = "\([^"]*\)".*/\1/p' \
     "$repo/compiler/bootstrap/version.h")
 language=$(sed -n 's/.*language_version\[\] = "\([^"]*\)".*/\1/p' \
@@ -30,159 +51,240 @@ if [[ "$declared" != "$version" ]]; then
     echo "release version $version does not match compiler/bootstrap/version.h ($declared)" >&2
     exit 2
 fi
-# A cross archive ships beansc built for a host we have no native runner for.
-# It cannot bundle the runner's clang — that binary is the
-# wrong architecture — so it stays slim: the compiler, runtime, stdlib and
-# examples, and it uses the clang already on the target machine. BEANS_RELEASE_CROSS
-# is the target triple; BEANS_RELEASE_BEANSC points at the cross-built binary.
-cross="${BEANS_RELEASE_CROSS:-}"
-beansc_bin="${BEANS_RELEASE_BEANSC:-$repo/build/beansc}"
+
+# The triple is the single source of truth for the platform columns the release
+# manifest publishes and the installers match on. Parsing it here keeps the
+# packaging step from having to run a compiler that may be cross-built.
+arch=${target%%-*}
+after_arch=${target#*-}
+os_and_env=${after_arch#*-}
+os=${os_and_env%%-*}
+if [[ "$os_and_env" == *-* ]]; then
+    env=${os_and_env#*-}
+else
+    env=none
+fi
+case "$os" in
+    darwin) os=macos ;;
+esac
+case "$os" in
+    linux|macos|windows|wasi|none) ;;
+    *)
+        echo "unsupported release OS '$os' in target $target" >&2
+        exit 2
+        ;;
+esac
+
+beansc_bin=${BEANS_RELEASE_BEANSC:-$repo/build/beansc}
 if [[ ! -x "$beansc_bin" ]]; then
     echo "$beansc_bin is missing; run make (or a cross build) first" >&2
     exit 2
 fi
-if [[ -z "$cross" && ! -x "$repo/build/beansc0" ]]; then
-    echo "build/beansc0 is missing; run make first" >&2
+if [[ -e "$output/beans-v${version}-${target}.tar.gz" ]]; then
+    echo "release output already exists: $output" >&2
     exit 2
 fi
-if [[ -e "$output" ]]; then
-    echo "release output already exists: $output" >&2
+
+# A full package bundles a target-native toolchain so `beansc build` works with
+# nothing else installed. That is only possible when the packaging host can run
+# the tools it is bundling, which means the archive's target must be this host.
+# Everything else is slim: real, useful, and honest about needing a clang.
+class=${BEANS_RELEASE_CLASS:-auto}
+if [[ "$class" == auto ]]; then
+    if [[ "$os" == linux && "$(uname -s)" == Linux ]]; then
+        class=full
+    else
+        class=slim
+    fi
+fi
+case "$class" in
+    full|slim) ;;
+    *)
+        echo "BEANS_RELEASE_CLASS must be full or slim, not '$class'" >&2
+        exit 2
+        ;;
+esac
+if [[ "$class" == full && "$os" != linux ]]; then
+    echo "this script only builds full packages for Linux; Windows uses tools/package_windows_release.sh" >&2
     exit 2
 fi
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/beans-release.XXXXXX")
 trap 'rm -rf "$work"' EXIT
-name="beans-v${version}-${platform}"
+name="beans-v${version}-${target}"
 root="$work/$name"
-mkdir -p "$root/bin" "$root/lib" "$root/toolchain/bin" \
-    "$root/toolchain/lib/clang"
+mkdir -p "$root/bin" "$root/lib"
 
 cp "$beansc_bin" "$root/bin/beansc.real"
-# beansc0 is the C++ stage-0 bootstrap, the packaging host's architecture; it is
-# useless on a cross target, so a cross archive leaves it out.
-[[ -z "$cross" ]] && cp "$repo/build/beansc0" "$root/bin/"
+chmod 0755 "$root/bin/beansc.real"
 cp "$repo/runtime/beans_rt.c" "$root/bin/"
 cp "$repo/runtime/wasm_host.c" "$root/bin/"
 cp -R "$repo/stdlib/std" "$root/lib/std"
-cp -R "$repo/examples" "$root/examples"
-cp "$repo/README.md" "$repo/ROADMAP.md" "$repo/LICENSE" "$root/"
-cp "$repo/spec/SYNTAX.md" "$root/SYNTAX.md"
-printf 'compiler=%s\nlanguage=%s\nruntime_abi=%s\nlicense=Apache-2.0\n' \
-    "$version" "$language" "$runtime_abi" >"$root/VERSION"
-if [[ -n "$cross" ]]; then
-    printf 'cross_target=%s\ntoolchain=system\n' "$cross" >>"$root/VERSION"
-    cat >"$root/CROSS.md" <<EOF
-# Cross-built archive for $cross
+cp "$repo/LICENSE" "$root/LICENSE"
 
-This build of \`beansc\` runs natively on $cross. It is slim on purpose: it does
-**not** bundle a C toolchain, because the one used to package it is the wrong
-architecture. \`beansc build\` shells out to the \`clang\` already on your PATH,
-which on a $cross machine targets $cross by default — no extra flags. Install
-clang and lld (e.g. your distro's \`clang\`/\`lld\` packages) and you are set.
+# Copy a dynamically linked tool together with the shared objects it needs that
+# the target system will not already have. libc and its siblings stay out: they
+# must come from the machine the archive runs on, never from an archive built
+# against a different kernel.
+copy_linux_tool() {
+    local source=$1 destination=$2
+    cp -L "$source" "$destination"
+    chmod 0755 "$destination"
+    ldd "$source" >"$work/ldd.out" 2>/dev/null || return 0
+    awk '
+        /=> \// { print $3 }
+        /^[[:space:]]*\// { sub(/^[[:space:]]*/, ""); print $1 }
+    ' "$work/ldd.out" | LC_ALL=C sort -u >"$work/ldd.libs"
+    while IFS= read -r library; do
+        case "$(basename "$library")" in
+            libc.so.*|libm.so.*|libpthread.so.*|libdl.so.*|librt.so.*|\
+            ld-linux*.so.*|libgcc_s.so.*)
+                continue
+                ;;
+        esac
+        if [[ -f "$library" ]]; then
+            cp -L "$library" "$root/toolchain/lib/"
+        fi
+    done <"$work/ldd.libs"
+}
 
-It was built for $cross and verified on that architecture, either on a native
-runner or under qemu-user emulation: the compiler reaches its own self-compile
-fixed point and runs the example suite byte-identical to the interpreter. See
-SYNTAX.md for the target's capabilities; decimal uses the portable runtime,
-while SIMD/asm follow the CPU baseline.
-EOF
-fi
-
-if [[ -z "$cross" ]]; then
-    clang_path=$(command -v clang)
-    if [[ "$(uname -s)" == Darwin ]]; then
-        # /usr/bin/clang is an xcrun shim. It cannot be moved into an archive.
-        clang_path=$(xcrun --find clang)
+resource_version=""
+if [[ "$class" == full ]]; then
+    if [[ -z "${BEANS_RELEASE_SYSROOT:-}" ]]; then
+        echo "a full Linux package needs BEANS_RELEASE_SYSROOT" >&2
+        exit 2
     fi
+    clang_path=${BEANS_RELEASE_CLANG:-$(command -v clang || true)}
+    lld_path=${BEANS_RELEASE_LLD:-$(command -v ld.lld || true)}
+    ar_path=${BEANS_RELEASE_AR:-$(command -v llvm-ar || true)}
+    for tool in "$clang_path" "$lld_path" "$ar_path"; do
+        if [[ -z "$tool" || ! -x "$tool" ]]; then
+            echo "a full Linux package needs clang, ld.lld and llvm-ar on PATH" >&2
+            exit 2
+        fi
+    done
     resource_dir=$("$clang_path" --print-resource-dir)
     resource_version=$(basename "$resource_dir")
-    cp -L "$clang_path" "$root/toolchain/bin/clang.real"
-    cp -R "$resource_dir" "$root/toolchain/lib/clang/$resource_version"
 
-    if [[ "$(uname -s)" == Linux ]]; then
-        if [[ -z "${BEANS_RELEASE_SYSROOT:-}" ]]; then
-            echo "Linux release packaging needs BEANS_RELEASE_SYSROOT" >&2
-            exit 2
-        fi
-        cp -R "$BEANS_RELEASE_SYSROOT" "$root/toolchain/sysroot"
-        ldd "$clang_path" >"$work/clang.ldd"
-        awk '
-            /=> \// { print $3 }
-            /^[[:space:]]*\// { sub(/^[[:space:]]*/, ""); print $1 }
-        ' "$work/clang.ldd" | LC_ALL=C sort -u >"$work/clang.libs"
-        while IFS= read -r library; do
-            base=$(basename "$library")
-            case "$base" in
-                libc.so.*|libm.so.*|libpthread.so.*|libdl.so.*|librt.so.*|ld-linux*.so.*)
-                    continue
-                    ;;
-            esac
-            [[ -f "$library" ]] && cp -L "$library" "$root/toolchain/lib/"
-        done <"$work/clang.libs"
-        if command -v ld.lld >/dev/null 2>&1; then
-            cp -L "$(command -v ld.lld)" "$root/toolchain/bin/ld.lld"
-        else
-            echo "Linux release packaging needs ld.lld" >&2
-            exit 2
+    mkdir -p "$root/toolchain/bin" "$root/toolchain/lib/clang"
+    cp -R "$resource_dir" "$root/toolchain/lib/clang/$resource_version"
+    cp -R "$BEANS_RELEASE_SYSROOT" "$root/toolchain/sysroot"
+    copy_linux_tool "$clang_path" "$root/toolchain/bin/clang.real"
+    copy_linux_tool "$lld_path" "$root/toolchain/bin/ld.lld"
+    copy_linux_tool "$ar_path" "$root/toolchain/bin/llvm-ar"
+    ln -s llvm-ar "$root/toolchain/bin/ar"
+    ln -s ld.lld "$root/toolchain/bin/lld"
+
+    # Every path this wrapper hands to clang is derived from its own location,
+    # so the installation stays movable after extraction.
+    cat >"$root/toolchain/bin/clang" <<EOF
+#!/bin/sh
+set -eu
+toolchain=\$(CDPATH= cd -- "\$(dirname -- "\$0")/.." && pwd -P)
+LD_LIBRARY_PATH="\$toolchain/lib\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
+export LD_LIBRARY_PATH
+PATH="\$toolchain/bin:\$PATH"
+export PATH
+exec "\$toolchain/bin/clang.real" \\
+    -resource-dir "\$toolchain/lib/clang/$resource_version" \\
+    --sysroot "\$toolchain/sysroot" \\
+    -B "\$toolchain/bin" \\
+    -fuse-ld=lld -Wno-unused-command-line-argument "\$@"
+EOF
+    chmod 0755 "$root/toolchain/bin/clang"
+    ln -s clang "$root/toolchain/bin/clang++"
+fi
+
+if [[ "$class" == full ]]; then
+    native_build=self-contained
+else
+    native_build=external-clang
+fi
+printf 'compiler=%s\nlanguage=%s\nruntime_abi=%s\nlicense=Apache-2.0\ntarget=%s\nos=%s\narch=%s\nlibc=%s\npackage=%s\nnative_build=%s\n' \
+    "$version" "$language" "$runtime_abi" "$target" "$os" "$arch" "$env" \
+    "$class" "$native_build" >"$root/VERSION"
+
+# The launcher is POSIX sh, not bash: a slim archive has to start on a machine
+# that has no bash. It resolves every path from its own location so the whole
+# installation can be moved.
+cat >"$root/bin/beansc" <<'EOF'
+#!/bin/sh
+set -eu
+# Only shell built-ins are used to find the installation. A launcher that calls
+# dirname cannot start on a machine whose PATH is empty or broken, which is
+# exactly the situation a user is in when they are trying to fix their PATH.
+case $0 in
+    */*) bin=${0%/*} ;;
+    *)   bin=. ;;
+esac
+bin=$(CDPATH= cd -- "$bin" && pwd -P)
+root=$(CDPATH= cd -- "$bin/.." && pwd -P)
+BEANS_HOME=${BEANS_HOME:-$root}
+BEANS_RUNTIME=${BEANS_RUNTIME:-$bin/beans_rt.c}
+BEANS_WASM_HOST=${BEANS_WASM_HOST:-$bin/wasm_host.c}
+BEANS_STDLIB=${BEANS_STDLIB:-$root/lib/std}
+export BEANS_HOME BEANS_RUNTIME BEANS_WASM_HOST BEANS_STDLIB
+if [ -x "$root/toolchain/bin/clang" ]; then
+    BEANS_CC=${BEANS_CC:-$root/toolchain/bin/clang}
+    BEANS_AR=${BEANS_AR:-$root/toolchain/bin/llvm-ar}
+    export BEANS_CC BEANS_AR
+fi
+exec "$bin/beansc.real" "$@"
+EOF
+chmod 0755 "$root/bin/beansc"
+
+install_doc="$root/INSTALL.md"
+{
+    printf '# Beans %s for %s\n\n' "$version" "$target"
+    printf 'Unpack anywhere and add `bin` to your PATH:\n\n'
+    printf '```sh\nexport PATH="$PWD/%s/bin:$PATH"\nbeansc --version\nbeansc doctor\n```\n\n' \
+        "$name"
+    printf 'The one-line installer does this for you:\n\n'
+    printf '```sh\ncurl -fsSL https://github.com/beans-lang/beans/releases/latest/download/beans-install.sh | sh\n```\n\n'
+    printf '## What this package can do\n\n'
+    if [[ "$class" == full ]]; then
+        printf 'This is a **full** package. It bundles Clang, LLD and llvm-ar under\n'
+        printf '`toolchain/`, so `beansc build` produces native executables with no other\n'
+        printf 'software installed.\n\n'
+    else
+        printf 'This is a **slim** package. `beansc --version`, `beansc doctor`,\n'
+        printf '`beansc check`, `beansc run`, `beansc llvm` and `beansc build --emit ir`\n'
+        printf 'need nothing but this archive. A native `beansc build` needs Clang on your\n'
+        printf 'PATH, because Beans emits LLVM IR and GCC cannot compile it.\n\n'
+        if [[ "$os" == macos ]]; then
+            printf 'On macOS install Apple Command Line Tools for native builds:\n\n'
+            printf '```sh\nxcode-select --install\n```\n\n'
         fi
     fi
+    printf 'Run `beansc doctor` to see exactly which commands are ready.\n\n'
+    printf 'Beans is Apache-2.0 licensed; see LICENSE.\n'
+} >"$install_doc"
 
-    cat >"$root/toolchain/bin/clang" <<EOF
-#!/usr/bin/env bash
-set -euo pipefail
-toolchain=\$(cd "\$(dirname "\$0")/.." && pwd -P)
-export PATH="\$toolchain/bin:\$PATH"
-if [[ "\$(uname -s)" == Linux ]]; then
-    export LD_LIBRARY_PATH="\$toolchain/lib\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
-    exec "\$toolchain/bin/clang.real" \
-        -resource-dir "\$toolchain/lib/clang/$resource_version" \
-        --sysroot "\$toolchain/sysroot" \
-        -fuse-ld=lld -Wno-unused-command-line-argument "\$@"
+# Nothing named or shaped like the bootstrap compiler leaves this script. The
+# gate lives here rather than only in CI so a local package is wrong the same
+# way a published one would be.
+if find "$root" -name '*beansc0*' -print -quit | grep -q .; then
+    echo "packaging bug: the archive contains a beansc0 path" >&2
+    exit 1
 fi
-sdk=\$(xcrun --show-sdk-path)
-exec "\$toolchain/bin/clang.real" \
-    -resource-dir "\$toolchain/lib/clang/$resource_version" \
-    -isysroot "\$sdk" "\$@"
-EOF
-    chmod +x "$root/toolchain/bin/clang"
-    ln -s clang "$root/toolchain/bin/clang++"
-    cc_default='$root/toolchain/bin/clang'
-else
-    # Cross archive: no bundled toolchain, so drop the empty scaffold and let
-    # the wrapper fall through to the clang already on the target's PATH.
-    rmdir "$root/toolchain/lib/clang" "$root/toolchain/lib" \
-        "$root/toolchain/bin" "$root/toolchain" 2>/dev/null || true
-    cc_default='clang'
-fi
-
-cat >"$root/bin/beansc" <<EOF
-#!/usr/bin/env bash
-set -euo pipefail
-bin=\$(cd "\$(dirname "\$0")" && pwd -P)
-root=\$(cd "\$bin/.." && pwd -P)
-export BEANS_RUNTIME="\${BEANS_RUNTIME:-\$bin/beans_rt.c}"
-export BEANS_STDLIB="\${BEANS_STDLIB:-\$root/lib/std}"
-export BEANS_CC="\${BEANS_CC:-$cc_default}"
-exec "\$bin/beansc.real" "\$@"
-EOF
-chmod +x "$root/bin/beansc"
 
 mkdir -p "$output"
 epoch=${SOURCE_DATE_EPOCH:-946684800}
 find "$root" -exec touch -h -d "@$epoch" {} + 2>/dev/null || \
     find "$root" -exec touch -h -t 200001010000 {} +
 (
+    # --no-recursion: the sorted list already names every directory and every
+    # file in it, so letting tar descend as well would archive each member
+    # twice. It must precede -T for both GNU tar and bsdtar to honour it.
     cd "$work"
     find "$name" -print | LC_ALL=C sort >"$work/files"
-    tar -cf "$output/$name.tar" -T "$work/files"
+    tar -cf "$output/$name.tar" --no-recursion -T "$work/files"
 )
 gzip -n "$output/$name.tar"
 asset="$output/$name.tar.gz"
 if command -v sha256sum >/dev/null 2>&1; then
-    (cd "$output" && sha256sum "$(basename "$asset")") \
-        >"$asset.sha256"
+    (cd "$output" && sha256sum "$(basename "$asset")") >"$asset.sha256"
 else
-    (cd "$output" && shasum -a 256 "$(basename "$asset")") \
-        >"$asset.sha256"
+    (cd "$output" && shasum -a 256 "$(basename "$asset")") >"$asset.sha256"
 fi
 printf '%s\n' "$asset"

@@ -47,6 +47,33 @@ diff -u test/cases/ffi.out "$tmp/ffi.native.out"
 diff -u test/cases/ffi_scalars.out "$tmp/ffi-scalars.interp"
 diff -u test/cases/ffi_scalars.out "$tmp/ffi-scalars.native.out"
 
+# An aggregate signature is what forces both interpreters to compile a C
+# bridge, and that helper has to come from the same driver selection as a
+# build: BEANS_CC first, the platform clang otherwise. A literal "clang" in
+# either interpreter would let an installation that names its compiler
+# through BEANS_CC build programs and still fail the first FFI run.
+echo "checking the interpreter C ABI bridge honors BEANS_CC"
+./build/beansc run test/cases/ffi_aggregate.b >"$tmp/agg.interp"
+./build/beansc0 run test/cases/ffi_aggregate.b >"$tmp/agg.interp0"
+./build/beansc build test/cases/ffi_aggregate.b \
+    -o "$tmp/agg.native" >"$tmp/agg.build" 2>&1
+"$tmp/agg.native" >"$tmp/agg.native.out"
+diff -u test/cases/ffi_aggregate.out "$tmp/agg.interp"
+diff -u test/cases/ffi_aggregate.out "$tmp/agg.interp0"
+diff -u test/cases/ffi_aggregate.out "$tmp/agg.native.out"
+if BEANS_CC="$tmp/absent-cc" ./build/beansc run test/cases/ffi_aggregate.b \
+    >"$tmp/agg.bad" 2>&1; then
+    echo "beansc ignored BEANS_CC for the C ABI bridge" >&2
+    exit 1
+fi
+grep -q "absent-cc could not build the C ABI bridge" "$tmp/agg.bad"
+if BEANS_CC="$tmp/absent-cc" ./build/beansc0 run test/cases/ffi_aggregate.b \
+    >"$tmp/agg0.bad" 2>&1; then
+    echo "beansc0 ignored BEANS_CC for the C ABI bridge" >&2
+    exit 1
+fi
+grep -q "absent-cc could not build the C ABI bridge" "$tmp/agg0.bad"
+
 echo "checking unsafe compile failures and emitted IR"
 if ./build/beansc check test/cases/unsafe_raw_bad.b >"$tmp/bad" 2>&1; then
     echo "unsafe_raw_bad.b unexpectedly passed" >&2

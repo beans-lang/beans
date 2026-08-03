@@ -28,26 +28,91 @@ tracked at the top of [ROADMAP.md](ROADMAP.md).
 
 ## Install
 
-Install Beans from source for now; the release packaging exists, but no binary
-release has been published yet. The exact Windows/Linux host status is in
-[`targets/support.tsv`](targets/support.tsv), checked by `make platform-status`.
+One command. No other software required on the platforms that ship a full
+package.
 
-On macOS, install Apple's command-line tools:
+**macOS and Linux**
+
+```bash
+curl -fsSL https://github.com/beans-lang/beans/releases/latest/download/beans-install.sh | sh
+```
+
+**Windows (PowerShell)**
+
+```powershell
+irm https://github.com/beans-lang/beans/releases/latest/download/beans-install.ps1 | iex
+```
+
+Open a new terminal, then:
+
+```bash
+beansc --version
+beansc doctor
+beansc run hello.b
+```
+
+The installer detects your OS, CPU and libc, picks the right package, verifies
+its SHA-256 before unpacking, installs under your home directory without sudo or
+administrator rights, and adds `bin` to your PATH. Running it again is safe. If a
+download, checksum or unpack fails, an existing installation is left untouched.
+
+Default locations, overridable with `BEANS_HOME` or `--prefix`:
+
+| platform | path |
+|---|---|
+| macOS, Linux | `$HOME/.beans` |
+| Windows | `%LOCALAPPDATA%\Beans` |
+
+The layout inside is stable: `bin/`, `lib/`, `toolchain/` and `VERSION`.
+
+Pick a version, a location, or a target:
+
+```bash
+curl -fsSL .../beans-install.sh | sh -s -- --version 0.9.0 --prefix /opt/beans
+BEANS_TARGET=x86_64-unknown-linux-musl curl -fsSL .../beans-install.sh | sh
+```
+
+Other options: `--force`, `--no-modify-path`, `--help`. To uninstall, delete the
+install directory and remove the PATH line the installer added to your shell
+profile:
+
+```bash
+rm -rf "$HOME/.beans"
+```
+
+Full details, including the command-by-command dependency table, are in
+[docs/INSTALL.md](docs/INSTALL.md).
+
+### Full and slim packages
+
+A **full** package bundles Clang, LLD and llvm-ar, so `beansc build` produces
+native executables with nothing else installed. Full packages ship for Linux
+x86-64 and ARM64 (GNU), and for Windows x64, ARM64 and x86 (LLVM-MinGW).
+
+A **slim** package ships everywhere else — macOS, musl, and the less common
+Linux and Windows ABIs. `beansc --version`, `doctor`, `check`, `run`, `llvm` and
+`build --emit ir` need nothing but the package. A native `build` needs Clang on
+your PATH, because Beans emits LLVM IR and GCC cannot compile it. When a tool is
+missing, Beans says which one and how to install it instead of leaking a Clang or
+linker error.
+
+On macOS, native builds need Apple's Command Line Tools — Apple's SDK is not ours
+to redistribute. `beansc check` and `beansc run` work without them:
 
 ```bash
 xcode-select --install
 ```
 
-On Ubuntu or Debian, install the build tools:
+Git is needed only to download Git-based package dependencies. Nothing else in
+the toolchain requires Python, Node, jq or a package manager.
+
+`beansc0` is the internal C++ stage-0 bootstrap. It is never installed, never
+packaged, and never on your PATH.
+
+### From source
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y clang lld make git
-```
-
-Then build Beans:
-
-```bash
+sudo apt-get update && sudo apt-get install -y clang lld make git   # Debian/Ubuntu
 git clone https://github.com/beans-lang/beans.git
 cd beans
 make
@@ -56,46 +121,27 @@ make
 ```
 
 `make` first builds the C++ bootstrap as `build/beansc0`. Stage 0 builds the
-Beans-written stage 1, then stage 1 builds stage 2 and stage 2 builds stage 3.
-The final self-hosted stage is copied to `build/beansc`. To rebuild only the
-stage-0 compiler while debugging bootstrap code, run:
+Beans-written stage 1, stage 1 builds stage 2, and stage 2 builds stage 3. The
+final self-hosted stage is copied to `build/beansc`. To rebuild only the stage-0
+compiler while debugging bootstrap code, run `make stage0`.
 
-```bash
-make stage0
-```
-
-To install both commands under a prefix:
+To install the compiler under a prefix:
 
 ```bash
 sudo make install PREFIX=/usr/local
 ```
 
-The installed `beansc` is self-hosted. `beansc0` remains available only for
-bootstrap work and compatibility checks. Normal check, run, build, bindgen,
-module, and LSP paths never call it.
+That installs the self-hosted `beansc` only. `build/beansc0` stays in the build
+directory, where bootstrap development needs it.
 
-To use `beansc` from any directory, add this checkout's absolute `build`
-directory to your shell's `PATH`:
+To use the checkout's compiler directly, add its absolute `build` directory to
+your PATH and keep the checkout in place — `build/beans_rt.c` and `stdlib/std/`
+are part of that development installation.
 
-```bash
-export PATH="/absolute/path/to/beans/build:$PATH"
-```
-
-Put that line in `~/.zshrc` or `~/.bashrc` to keep it after a restart. Keep the
-checkout in place: `build/beans_rt.c` and `stdlib/std/` are part of the development
-installation.
-
-`beansc run`, `check`, `parse`, and `lex` need only the `beansc` executable and
-standard library. `beansc build` also needs Clang because Beans emits LLVM IR.
-Normal GCC cannot compile that IR.
-
-Release archives for the native hosts (macOS arm64, Linux x86-64, Linux arm64)
-bundle Clang; the Linux ones also include LLD and a pinned sysroot, and macOS uses
-the Apple SDK and linker from Command Line Tools. Hosts without a native runner
-use slim cross-built archives verified under QEMU: they do not bundle the
-packaging host's wrong-architecture Clang and use the `clang` installed on the
-target machine. Windows release jobs cover all seven Rust host ABIs across x64,
-x86 and ARM64. The six musl archive runs are still pending.
+The exact Windows/Linux host status is in
+[`targets/support.tsv`](targets/support.tsv), checked by `make platform-status`.
+The packages a complete release must contain are listed in
+[`targets/release_assets.tsv`](targets/release_assets.tsv).
 
 ## Use
 
@@ -131,6 +177,7 @@ The subcommands:
 | command | what it does |
 |---|---|
 | `beansc --version` | print compiler, language, and runtime ABI versions |
+| `beansc doctor` | report what this installation can build, and how to fix what it cannot |
 | `beansc lex file.b` | dump the token stream |
 | `beansc parse file.b` | parse and print the AST |
 | `beansc check file.b` | type-check; prints `ok` or `file:line:col: error: …` |

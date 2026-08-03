@@ -95,4 +95,85 @@ fn main() {
     if ((Pair { a: 1, b: (2 as u16) }).b as int) == 2 {
         io.println("parenthesized literal")
     }
+
+    // an object with an inheritance chain drops its deinit bodies child
+    // first, then releases fields — own class first, reverse declaration
+    // order within each class. The self-hosted interpreter used to
+    // release parent fields before the child's own.
+    if true {
+        let kid: RKid = new RKid()
+        io.println("kid alive")
+    }
+
+    // a temporary object made for a call argument or an interpolation
+    // piece dies when that call returns, newest first; the stage-0
+    // native backend used to keep every temp until the statement ended
+    let timing: int = rboth(new RLeaf(1), new RLeaf(2)) +
+        rboth(new RLeaf(3), new RLeaf(4))
+    io.println("timing {timing}")
+    io.println("p {rpeek(new RLeaf(7))} q {rpeek(new RLeaf(8))}")
+
+    // returning a subclass where the base class is declared is an
+    // ordinary upcast; both MIR verifiers used to reject it
+    let upcast: RBase = rmake()
+    io.println("upcast {upcast.tag()}")
+}
+
+class RLeaf {
+    id: int
+
+    pub fn init(id: int) {
+        self.id = id
+    }
+
+    fn deinit() {
+        io.println("drop leaf {self.id}")
+    }
+}
+
+class RBase {
+    pa: RLeaf
+    pb: RLeaf
+
+    pub fn init() {
+        self.pa = new RLeaf(10)
+        self.pb = new RLeaf(20)
+    }
+
+    fn deinit() {
+        io.println("base deinit")
+    }
+
+    pub fn tag() -> int {
+        return 1
+    }
+}
+
+class RKid extends RBase {
+    own: RLeaf
+
+    pub fn init() {
+        self.own = new RLeaf(30)
+        super.init()
+    }
+
+    fn deinit() {
+        io.println("kid deinit")
+    }
+
+    pub override fn tag() -> int {
+        return super.tag() + 1
+    }
+}
+
+fn rboth(a: RLeaf, b: RLeaf) -> int {
+    return a.id * 10 + b.id
+}
+
+fn rpeek(t: RLeaf) -> int {
+    return t.id + 100
+}
+
+fn rmake() -> RBase {
+    return new RKid()
 }

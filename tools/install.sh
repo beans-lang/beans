@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# Install the self-hosted compiler from a source checkout.
+#
+# Only `beansc` is installed. build/beansc0 is the C++ stage-0 bootstrap: it is
+# internal, it exists so a clean machine can build the compiler at all, and it
+# stays in the build directory where bootstrap work needs it. Installing it
+# would put a second, older compiler on a user's PATH for no reason.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd -P)
@@ -13,27 +19,26 @@ lib_dir="$destdir$prefix/lib/beans"
 share_dir="$destdir$prefix/share/beans"
 
 test -x "$root/build/beansc"
-test -x "$root/build/beansc0"
 
 mkdir -p "$bin_dir" "$lib_dir" "$share_dir/lib"
 install -m 0755 "$root/build/beansc" "$lib_dir/beansc"
-install -m 0755 "$root/build/beansc0" "$lib_dir/beansc0"
 install -m 0644 "$root/runtime/beans_rt.c" "$lib_dir/beans_rt.c"
+install -m 0644 "$root/runtime/wasm_host.c" "$lib_dir/wasm_host.c"
 rm -rf "$share_dir/lib/std"
 cp -R "$root/stdlib/std" "$share_dir/lib/std"
 install -m 0644 "$root/LICENSE" "$share_dir/LICENSE"
 
+# An older install may have left the stage-0 compiler here. Remove it rather
+# than leave a stale beansc0 on PATH after an upgrade.
+rm -f "$bin_dir/beansc0" "$lib_dir/beansc0"
+
 cat >"$bin_dir/beansc" <<EOF
-#!/usr/bin/env bash
-set -euo pipefail
-export BEANS_RUNTIME="\${BEANS_RUNTIME:-$prefix/lib/beans/beans_rt.c}"
-export BEANS_STDLIB="\${BEANS_STDLIB:-$prefix/share/beans/lib/std}"
+#!/bin/sh
+set -eu
+BEANS_RUNTIME="\${BEANS_RUNTIME:-$prefix/lib/beans/beans_rt.c}"
+BEANS_WASM_HOST="\${BEANS_WASM_HOST:-$prefix/lib/beans/wasm_host.c}"
+BEANS_STDLIB="\${BEANS_STDLIB:-$prefix/share/beans/lib/std}"
+export BEANS_RUNTIME BEANS_WASM_HOST BEANS_STDLIB
 exec "$prefix/lib/beans/beansc" "\$@"
 EOF
-cat >"$bin_dir/beansc0" <<EOF
-#!/usr/bin/env bash
-set -euo pipefail
-export BEANS_RUNTIME="\${BEANS_RUNTIME:-$prefix/lib/beans/beans_rt.c}"
-exec "$prefix/lib/beans/beansc0" "\$@"
-EOF
-chmod 0755 "$bin_dir/beansc" "$bin_dir/beansc0"
+chmod 0755 "$bin_dir/beansc"

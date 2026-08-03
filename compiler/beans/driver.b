@@ -3,6 +3,7 @@ import std.io
 import std.os
 import std.path
 import std.process
+import std.random
 
 class NativeBuildDriver {
     target: TargetDescription
@@ -60,6 +61,44 @@ class NativeBuildDriver {
             none => {}
         }
         return fallback
+    }
+
+    // A native build is the one command that needs software Beans does not
+    // ship in every package. When it is missing, say so before Clang is
+    // started: a user should never have to read "cannot start Clang: No such
+    // file or directory" — or worse, a linker error about a missing SDK — to
+    // learn that they need one command.
+    fn check_toolchain(source: string,
+                       compiler: string) -> bool {
+        if doctor_resolve(compiler) == "" {
+            let fix: string =
+                if host_target_name().contains("darwin") {
+                    "install Apple Command Line Tools: xcode-select --install"
+                } else if host_target_name().contains("windows") {
+                    "install Clang, or install the full Beans package that bundles it"
+                } else {
+                    "install clang and lld (Debian/Ubuntu: sudo apt-get install clang lld), or install the full Beans package that bundles them"
+                }
+            self.fail(
+                source,
+                "cannot find the C compiler '{compiler}'. Beans emits LLVM IR, so it needs Clang; GCC cannot compile it. To fix: {fix}. Run 'beansc doctor' for the full report.")
+            return false
+        }
+        // Apple's SDK cannot be bundled, so a macOS package always links
+        // against the one on the machine. Ask for it by name rather than let
+        // the user meet a missing-header error.
+        if self.target.os == "macos" &&
+           host_target_name().contains("darwin") {
+            let developer: string =
+                doctor_tool_line("xcode-select", "-p")
+            if developer == "" || !Dir.exists(developer) {
+                self.fail(
+                    source,
+                    "the macOS Command Line Tools are not installed, so there is no SDK to link against. To fix: xcode-select --install. Run 'beansc doctor' for the full report.")
+                return false
+            }
+        }
+        return true
     }
 
     fn add_target_flags(command: process.Command) {
@@ -204,11 +243,66 @@ class NativeBuildDriver {
         let object: string =
             self.runtime_cache_path(runtime, pic)
         if File.exists(object) { return object }
+        // Compile to a per-invocation name and rename into the cache:
+        // two concurrent cold-cache builds must not interleave writes
+        // into one object the linker is about to read.
+        var staging: string = object
+        match random.bytes(8) {
+            ok(seed) => {
+                staging = "{object}.{seed.get_u64(0)}"
+            }
+            err(_) => {
+                staging = "{object}.{os.now_ms()}"
+            }
+        }
         if !self.compile_object(
-               compiler, runtime, object, pic, true) {
+               compiler, runtime, staging, pic, true) {
             return ""
         }
+        match File.rename(staging, object) {
+            ok(_) => {}
+            err(_) => {
+                // a concurrent build already published the same content
+                match File.remove(staging) {
+                    ok(_) => {}
+                    err(_) => {}
+                }
+            }
+        }
         return object
+    }
+
+    // Concurrent lanes of one build configuration share identical IR
+    // and therefore one scratch path; write through a private tmp and
+    // rename so a racing reader always sees whole content.
+    fn publish_scratch(target: string, text: string) -> bool {
+        var tmp: string = "{target}.tmp"
+        match random.bytes(8) {
+            ok(seed) => {
+                tmp = "{target}.tmp{seed.get_u64(0)}"
+            }
+            err(_) => {
+                tmp = "{target}.tmp{os.now_ms()}"
+            }
+        }
+        match fs.write(tmp, text) {
+            ok(_) => {}
+            err(error) => {
+                self.fail(
+                    tmp,
+                    "cannot write build scratch: {error.msg}")
+                return false
+            }
+        }
+        match File.rename(tmp, target) {
+            ok(_) => { return true }
+            err(_) => {}
+        }
+        match File.remove(tmp) {
+            ok(_) => {}
+            err(_) => {}
+        }
+        return File.exists(target)
     }
 
     fn build(source: string, llvm: string,
@@ -274,17 +368,40 @@ class NativeBuildDriver {
                 return false
             }
         }
+        // Concurrent builds of entries sharing a stem — every project's
+        // main.b, say — must not share scratch files, or interleaved
+        // writes hand Clang a torn module. The transient name is
+        // addressed by the IR's own content: deterministic for
+        // identical builds (ELF objects embed the input filename as an
+        // STT_FILE symbol, so a random name would break byte-identical
+        // rebuilds) and distinct for concurrent different builds.
+        // `--emit ir` keeps the stable spelling.
+        var scratch_tag: string = ""
+        if emit != "ir" {
+            var ir_hash: int = 0
+            for index: int in 0..llvm.len() {
+                ir_hash =
+                    (ir_hash * 131 + llvm.byte_at(index)) %
+                    2147483647
+            }
+            scratch_tag = ".{ir_hash}x{llvm.len()}"
+        }
         let ir_path: string =
             path.join(
                 "build",
-                "{artifact_name}.ll")
-        match fs.write(ir_path, llvm) {
-            ok(_) => {}
-            err(error) => {
-                self.fail(
-                    ir_path,
-                    "cannot write LLVM IR: {error.msg}")
-                return false
+                "{artifact_name}{scratch_tag}.ll")
+        if !self.publish_scratch(ir_path, llvm) {
+            return false
+        }
+        // the stable spelling persists as an inspectable copy — tests
+        // and humans read build/<name>.ll after a build — while Clang
+        // always compiles the content-addressed file above, so
+        // concurrent builds can tear this copy without tearing a compile
+        if scratch_tag != "" {
+            match fs.write(
+                path.join("build", "{artifact_name}.ll"), llvm) {
+                ok(_) => {}
+                err(_) => {}
             }
         }
         // extern "C" wrappers ride as generated C so Clang owns the
@@ -294,14 +411,17 @@ class NativeBuildDriver {
             ffi_path =
                 path.join(
                     "build",
-                    "{artifact_name}_ffi.c")
-            match fs.write(ffi_path, ffi) {
-                ok(_) => {}
-                err(error) => {
-                    self.fail(
-                        ffi_path,
-                        "cannot write FFI wrappers: {error.msg}")
-                    return false
+                    "{artifact_name}{scratch_tag}_ffi.c")
+            if !self.publish_scratch(ffi_path, ffi) {
+                return false
+            }
+            if scratch_tag != "" {
+                match fs.write(
+                    path.join(
+                        "build",
+                        "{artifact_name}_ffi.c"), ffi) {
+                    ok(_) => {}
+                    err(_) => {}
                 }
             }
         }
@@ -345,6 +465,9 @@ class NativeBuildDriver {
             } else {
                 self.configured_program("BEANS_CC", "clang")
             }
+        if !self.check_toolchain(source, compiler) {
+            return false
+        }
 
         if emit == "obj" {
             if !self.compile_object(
@@ -387,9 +510,11 @@ class NativeBuildDriver {
                     return false
                 }
             }
+            // A full release package bundles llvm-ar and its launcher names it
+            // through BEANS_AR, the same way BEANS_CC names the bundled clang.
             let archiver: string =
                 if written_archiver == "" {
-                    "ar"
+                    self.configured_program("BEANS_AR", "ar")
                 } else {
                     written_archiver
                 }

@@ -2255,11 +2255,81 @@ class TreeInterpreter {
         }
     }
 
+    // A field whose type is a class or interface reference can hold the
+    // last reference to an object with observable teardown, so the order
+    // this object releases its fields is program-visible.
+    fn chain_frees_objects(name: string) -> bool {
+        match self.declaration(name) {
+            some(declaration) => {
+                for field: HirField in declaration.fields {
+                    match self.declaration(field.type.name) {
+                        some(field_decl) => {
+                            if field_decl.kind == "class" ||
+                               field_decl.kind ==
+                                   "interface" {
+                                return true
+                            }
+                        }
+                        none => {}
+                    }
+                }
+                for index: int in
+                    0..declaration.relations.len() {
+                    if index <
+                           declaration.relation_kinds.len() &&
+                       declaration.relation_kinds[index] ==
+                           "extends" &&
+                       self.chain_frees_objects(
+                           declaration.relations[index].name) {
+                        return true
+                    }
+                }
+            }
+            none => {}
+        }
+        return false
+    }
+
+    // Canonical field release order shared with the stage-0 interpreter
+    // and both native backends: the object's own class first, fields in
+    // reverse declaration order, then each base class up the chain.
+    fn release_fields(name: string,
+                      object: TreeValue) {
+        match self.declaration(name) {
+            some(declaration) => {
+                var index: int =
+                    declaration.fields.len() - 1
+                for index >= 0 {
+                    object.fields.remove(
+                        declaration.fields[index].name)
+                    index -= 1
+                }
+                for rel: int in
+                    0..declaration.relations.len() {
+                    if rel <
+                           declaration.relation_kinds.len() &&
+                       declaration.relation_kinds[rel] ==
+                           "extends" {
+                        self.release_fields(
+                            declaration.relations[rel].name,
+                            object)
+                        return
+                    }
+                }
+            }
+            none => {}
+        }
+    }
+
     fn deinit_object(object: TreeValue) {
         if self.failed || object.kind != "object" {
             return
         }
         self.deinit_chain(object.text, object)
+        if self.failed {
+            return
+        }
+        self.release_fields(object.text, object)
     }
 
     fn map_key(map: TreeValue,
@@ -7314,7 +7384,8 @@ class TreeInterpreter {
     }
 
     fn object_value(name: string) -> TreeValue {
-        if self.needs_deinit(name) {
+        if self.needs_deinit(name) ||
+           self.chain_frees_objects(name) {
             return (new TreeObjectValue(self)) as TreeValue
         }
         return new TreeValue("object")
@@ -8988,6 +9059,19 @@ class TreeInterpreter {
         packed.push(0)
     }
 
+    // The bridge has to be built by the same C driver `beansc build` would
+    // select, so an installation that names its compiler through BEANS_CC
+    // cannot build programs and still fail the moment one is interpreted.
+    fn ffi_c_driver() -> string {
+        match host_os.env("BEANS_CC") {
+            some(value) => {
+                if value != "" { return value }
+            }
+            none => {}
+        }
+        return "clang"
+    }
+
     // Forward one host environment variable into a packed "NAME=value" block,
     // dropping it silently when the host does not set it.
     fn ffi_forward_env(
@@ -9031,8 +9115,10 @@ class TreeInterpreter {
                     "cannot write C ABI bridge: {error.msg}").int_data
             }
         }
+        let c_driver: string =
+            self.ffi_c_driver()
         let argv: Bytes = new Bytes(0)
-        self.ffi_pack_argument(argv, "clang")
+        self.ffi_pack_argument(argv, c_driver)
         self.ffi_pack_argument(argv, "-O2")
         if self.program.target.os == "macos" {
             self.ffi_pack_argument(
@@ -9109,7 +9195,7 @@ class TreeInterpreter {
             File.remove(library_path)
             return self.fail_extern(
                 function,
-                "clang could not build the C ABI bridge: {compiler_error}").int_data
+                "{c_driver} could not build the C ABI bridge: {compiler_error}").int_data
         }
         var handle: int = 0
         match host_dl.open(library_path) {
