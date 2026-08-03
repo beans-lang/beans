@@ -24,6 +24,12 @@ jobs:
         shard: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The stage-0 submodule is private. Secrets are withheld from fork
+          # pull requests, so those check out without it and run the
+          # bootstrap-free gate rather than failing on a clone they cannot do.
+          submodules: ${{ secrets.BOOTSTRAP_TOKEN != '' && 'recursive' || '' }}
+          token: ${{ secrets.BOOTSTRAP_TOKEN || github.token }}
 
       - name: Install Clang
         run: sudo apt-get update && sudo apt-get install -y clang
