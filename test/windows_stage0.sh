@@ -41,7 +41,7 @@ if ! wine "$tmp/beansc0.exe" check compiler/beans/main.b \
     exit 1
 fi
 tr -d '\r' <"$tmp/check.raw" >"$tmp/check.out"
-if ! grep -q '^compiler/main\.b: ok$' "$tmp/check.out"; then
+if ! grep -q '^compiler/beans/main\.b: ok$' "$tmp/check.out"; then
     echo "unexpected checker output:" >&2
     sed -n '1,20p' "$tmp/check.out" >&2
     cat "$tmp/check.err" >&2
