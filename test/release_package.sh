@@ -4,9 +4,9 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-version=$(sed -n 's/.*char version\[\] = "\([^"]*\)".*/\1/p' compiler/bootstrap/version.h)
+version=$(sed -n 's/.*char version\[\] = "\([^"]*\)".*/\1/p' compiler/version.h)
 runtime_abi=$(sed -n \
-    's/.*runtime_abi_version = \([0-9][0-9]*\).*/\1/p' compiler/bootstrap/version.h)
+    's/.*runtime_abi_version = \([0-9][0-9]*\).*/\1/p' compiler/version.h)
 target=$(./build/beansc doctor | sed -n 's/^host target: *//p')
 test -n "$target"
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/beans-package.XXXXXX")

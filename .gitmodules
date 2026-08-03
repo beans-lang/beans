@@ -1,0 +1,3 @@
+[submodule "compiler/bootstrap"]
+	path = compiler/bootstrap
+	url = https://github.com/beans-lang/bootstrap.git

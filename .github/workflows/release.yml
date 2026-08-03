@@ -39,11 +39,11 @@ jobs:
         shell: bash
         run: |
           declared=$(sed -n \
-            's/.*char version\[\] = "\([^"]*\)".*/\1/p' compiler/bootstrap/version.h)
+            's/.*char version\[\] = "\([^"]*\)".*/\1/p' compiler/version.h)
           if [[ "$GITHUB_REF_TYPE" == tag ]]; then
             tagged=${GITHUB_REF_NAME#v}
             if [[ "$tagged" != "$declared" ]]; then
-              echo "tag v$tagged does not match compiler/bootstrap/version.h ($declared)" >&2
+              echo "tag v$tagged does not match compiler/version.h ($declared)" >&2
               exit 1
             fi
           fi

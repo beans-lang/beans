@@ -41,14 +41,14 @@ output_parent=$(cd "$(dirname "$output")" && pwd -P)
 output="$output_parent/$(basename "$output")"
 
 declared=$(sed -n 's/.*char version\[\] = "\([^"]*\)".*/\1/p' \
-    "$repo/compiler/bootstrap/version.h")
+    "$repo/compiler/version.h")
 language=$(sed -n 's/.*language_version\[\] = "\([^"]*\)".*/\1/p' \
-    "$repo/compiler/bootstrap/version.h")
+    "$repo/compiler/version.h")
 runtime_abi=$(sed -n \
     's/.*runtime_abi_version = \([0-9][0-9]*\).*/\1/p' \
-    "$repo/compiler/bootstrap/version.h")
+    "$repo/compiler/version.h")
 if [[ "$declared" != "$version" ]]; then
-    echo "release version $version does not match compiler/bootstrap/version.h ($declared)" >&2
+    echo "release version $version does not match compiler/version.h ($declared)" >&2
     exit 2
 fi
 

@@ -9,7 +9,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 repo=$PWD
-version=$(sed -n 's/.*char version\[\] = "\([^"]*\)".*/\1/p' compiler/bootstrap/version.h)
+version=$(sed -n 's/.*char version\[\] = "\([^"]*\)".*/\1/p' compiler/version.h)
 target=${BEANS_INSTALL_TEST_TARGET:-$(./build/beansc doctor | sed -n 's/^host target: *//p')}
 test -n "$target"
 

@@ -111,8 +111,13 @@ packaged, and never on your PATH.
 
 ### From source
 
+Beans is self-hosted: the compiler is written in Beans, so building it from
+source needs a Beans compiler. Install one first — that is what the one-line
+installer above is for — then build with it.
+
 ```bash
 sudo apt-get update && sudo apt-get install -y clang lld make git   # Debian/Ubuntu
+curl -fsSL https://github.com/beans-lang/beans/releases/latest/download/beans-install.sh | sh
 git clone https://github.com/beans-lang/beans.git
 cd beans
 make
@@ -120,10 +125,15 @@ make
 ./build/beansc run examples/hello.b
 ```
 
-`make` first builds the C++ bootstrap as `build/beansc0`. Stage 0 builds the
-Beans-written stage 1, stage 1 builds stage 2, and stage 2 builds stage 3. The
-final self-hosted stage is copied to `build/beansc`. To rebuild only the stage-0
-compiler while debugging bootstrap code, run `make stage0`.
+`make` compiles `compiler/beans/` with the `beansc` already on your PATH and
+writes `build/beansc`. Point it somewhere else with
+`make BEANSC_BOOT=/path/to/beansc`.
+
+Test what you changed:
+
+```bash
+make test-core
+```
 
 To install the compiler under a prefix:
 
@@ -131,8 +141,25 @@ To install the compiler under a prefix:
 sudo make install PREFIX=/usr/local
 ```
 
-That installs the self-hosted `beansc` only. `build/beansc0` stays in the build
-directory, where bootstrap development needs it.
+### The stage-0 bootstrap
+
+`beansc0` is a C++ compiler for Beans that exists only so the compiler can be
+built on a machine that has no Beans at all. It is internal: never installed,
+never packaged, never on your PATH, and not needed to build or test Beans.
+
+It lives in a separate private repository, mounted here as the
+`compiler/bootstrap` submodule. Without it everything above works. With it,
+`make` runs the full stage 0 → 1 → 2 → 3 chain and `make test` adds the gates
+that compare the two implementations against each other:
+
+```bash
+git submodule update --init compiler/bootstrap
+make
+make test
+```
+
+`compiler/version.h` is the one source of the compiler, language and runtime-ABI
+versions, and stays in this repository so every checkout can read it.
 
 To use the checkout's compiler directly, add its absolute `build` directory to
 your PATH and keep the checkout in place — `build/beans_rt.c` and `stdlib/std/`

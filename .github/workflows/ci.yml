@@ -19,6 +19,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The stage-0 submodule is private. Secrets are withheld from fork
+          # pull requests, so those check out without it and run the
+          # bootstrap-free gate rather than failing on a clone they cannot do.
+          submodules: ${{ secrets.BOOTSTRAP_TOKEN != '' && 'recursive' || '' }}
+          token: ${{ secrets.BOOTSTRAP_TOKEN || github.token }}
 
       - name: Install toolchain
         run: |
@@ -39,7 +45,7 @@ jobs:
         run: make run
 
       - name: Differential test suite
-        run: make test
+        run: make test-ci
 
       # The release archive and the real installer, on every change rather than
       # only on a tag: a packaging regression found at release time is found too
@@ -55,6 +61,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The stage-0 submodule is private. Secrets are withheld from fork
+          # pull requests, so those check out without it and run the
+          # bootstrap-free gate rather than failing on a clone they cannot do.
+          submodules: ${{ secrets.BOOTSTRAP_TOKEN != '' && 'recursive' || '' }}
+          token: ${{ secrets.BOOTSTRAP_TOKEN || github.token }}
 
       - name: Install toolchain
         run: |
@@ -89,6 +101,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The stage-0 submodule is private. Secrets are withheld from fork
+          # pull requests, so those check out without it and run the
+          # bootstrap-free gate rather than failing on a clone they cannot do.
+          submodules: ${{ secrets.BOOTSTRAP_TOKEN != '' && 'recursive' || '' }}
+          token: ${{ secrets.BOOTSTRAP_TOKEN || github.token }}
 
       - name: Install toolchain
         run: |
@@ -143,6 +161,12 @@ jobs:
             packages: gcc-s390x-linux-gnu g++-s390x-linux-gnu libc6-dev-s390x-cross
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The stage-0 submodule is private. Secrets are withheld from fork
+          # pull requests, so those check out without it and run the
+          # bootstrap-free gate rather than failing on a clone they cannot do.
+          submodules: ${{ secrets.BOOTSTRAP_TOKEN != '' && 'recursive' || '' }}
+          token: ${{ secrets.BOOTSTRAP_TOKEN || github.token }}
 
       - name: Install ${{ matrix.arch }} toolchain
         run: |
@@ -170,6 +194,12 @@ jobs:
     timeout-minutes: 240
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The stage-0 submodule is private. Secrets are withheld from fork
+          # pull requests, so those check out without it and run the
+          # bootstrap-free gate rather than failing on a clone they cannot do.
+          submodules: ${{ secrets.BOOTSTRAP_TOKEN != '' && 'recursive' || '' }}
+          token: ${{ secrets.BOOTSTRAP_TOKEN || github.token }}
 
       - uses: docker/setup-qemu-action@v3
         with:
@@ -200,6 +230,12 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The stage-0 submodule is private. Secrets are withheld from fork
+          # pull requests, so those check out without it and run the
+          # bootstrap-free gate rather than failing on a clone they cannot do.
+          submodules: ${{ secrets.BOOTSTRAP_TOKEN != '' && 'recursive' || '' }}
+          token: ${{ secrets.BOOTSTRAP_TOKEN || github.token }}
 
       - name: Install Beans and Barq build tools
         run: |
@@ -219,6 +255,12 @@ jobs:
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The stage-0 submodule is private. Secrets are withheld from fork
+          # pull requests, so those check out without it and run the
+          # bootstrap-free gate rather than failing on a clone they cannot do.
+          submodules: ${{ secrets.BOOTSTRAP_TOKEN != '' && 'recursive' || '' }}
+          token: ${{ secrets.BOOTSTRAP_TOKEN || github.token }}
 
       - name: Install toolchain
         run: |
@@ -231,7 +273,7 @@ jobs:
         run: make
 
       - name: Differential test suite
-        run: make test
+        run: make test-ci
 
       - name: Sanitizers (ASan, TSan)
         run: make test-sanitize
@@ -264,6 +306,12 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The stage-0 submodule is private. Secrets are withheld from fork
+          # pull requests, so those check out without it and run the
+          # bootstrap-free gate rather than failing on a clone they cannot do.
+          submodules: ${{ secrets.BOOTSTRAP_TOKEN != '' && 'recursive' || '' }}
+          token: ${{ secrets.BOOTSTRAP_TOKEN || github.token }}
 
       - name: Install test tools
         run: brew install ripgrep
@@ -287,7 +335,7 @@ jobs:
           test "$out" = "hello from beans"
 
       - name: Differential test suite
-        run: make test
+        run: make test-ci
 
       # The same seeds as the Linux smoke: generation is byte-identical
       # across hosts, so macOS runs the very same programs.
@@ -316,6 +364,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The stage-0 submodule is private. Secrets are withheld from fork
+          # pull requests, so those check out without it and run the
+          # bootstrap-free gate rather than failing on a clone they cannot do.
+          submodules: ${{ secrets.BOOTSTRAP_TOKEN != '' && 'recursive' || '' }}
+          token: ${{ secrets.BOOTSTRAP_TOKEN || github.token }}
 
       - name: Build image and run its focused gate
         run: bash test/linux_docker.sh -- bash test/targets.sh

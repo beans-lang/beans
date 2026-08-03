@@ -184,10 +184,12 @@ sha256sum -c beans-release-checksums.txt --ignore-missing
 
 ## Installing from source
 
-See [the README](../README.md#from-source). `make install` installs the
-self-hosted `beansc` only.
+See [the README](../README.md#from-source). Beans is self-hosted, so building it
+needs a Beans compiler: install a release first, then `make` uses it.
+`make install` installs the self-hosted `beansc` only.
 
 `beansc0` is the internal C++ stage-0 bootstrap compiler. It is never installed,
 never packaged, never listed in a checksum file or SBOM, and never placed on your
-PATH. It exists so a clean machine can build the compiler at all, and it stays in
-the build directory.
+PATH. It exists so the compiler can be built on a machine that has no Beans at
+all, and it lives in a separate private repository mounted as the
+`compiler/bootstrap` submodule. Nothing in this guide needs it.

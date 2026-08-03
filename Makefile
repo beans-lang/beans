@@ -1,7 +1,17 @@
 CXX      := clang++
 CXXFLAGS := -std=c++20 -Wall -Wextra -O2 -pthread
-CPPFLAGS :=
+# compiler/version.h is the one source of the compiler, language and runtime-ABI
+# versions. It lives beside the two compilers rather than inside either, so the
+# public tree can read it without the private stage-0 submodule.
+CPPFLAGS := -Icompiler
 LDLIBS   :=
+
+# The C++ stage 0 lives in a separate private repository, mounted here as a
+# submodule. It is bootstrap-only code that is never shipped, and Beans builds
+# without it: with the submodule you get the full stage0 -> 1 -> 2 -> 3 chain and
+# the differential gates against stage 0; without it, an already-installed
+# `beansc` builds the self-hosted compiler from source.
+HAVE_BOOTSTRAP := $(wildcard compiler/bootstrap/main.cpp)
 
 # musl has no reliable predefined C/C++ macro. Its dynamic-loader name is the
 # native-host fact Make can test without compiling or executing a probe.
@@ -19,7 +29,7 @@ endif
 endif
 
 SRC := compiler/bootstrap/token.cpp compiler/bootstrap/lexer.cpp compiler/bootstrap/parser.cpp compiler/bootstrap/ast_print.cpp compiler/bootstrap/process.cpp compiler/bootstrap/loader.cpp compiler/bootstrap/target.cpp compiler/bootstrap/mir.cpp compiler/bootstrap/c_abi.cpp compiler/bootstrap/checker.cpp compiler/bootstrap/builtins.cpp compiler/bootstrap/codegen.cpp compiler/bootstrap/interp.cpp compiler/bootstrap/lsppos.cpp compiler/bootstrap/json.cpp compiler/bootstrap/bindgen.cpp compiler/bootstrap/lsp.cpp compiler/bootstrap/lspserver.cpp compiler/bootstrap/main.cpp
-HDR := compiler/bootstrap/token.h compiler/bootstrap/lexer.h compiler/bootstrap/ast.h compiler/bootstrap/parser.h compiler/bootstrap/types.h compiler/bootstrap/process.h compiler/bootstrap/target.h compiler/bootstrap/host_target.h compiler/bootstrap/int128.h compiler/bootstrap/mir.h compiler/bootstrap/hir.h compiler/bootstrap/c_abi.h compiler/bootstrap/loader.h compiler/bootstrap/checker.h compiler/bootstrap/value.h compiler/bootstrap/builtins.h compiler/bootstrap/interp.h compiler/bootstrap/codegen.h compiler/bootstrap/lsppos.h compiler/bootstrap/json.h compiler/bootstrap/bindgen.h compiler/bootstrap/lsp.h compiler/bootstrap/rounding.h compiler/bootstrap/version.h
+HDR := compiler/bootstrap/token.h compiler/bootstrap/lexer.h compiler/bootstrap/ast.h compiler/bootstrap/parser.h compiler/bootstrap/types.h compiler/bootstrap/process.h compiler/bootstrap/target.h compiler/bootstrap/host_target.h compiler/bootstrap/int128.h compiler/bootstrap/mir.h compiler/bootstrap/hir.h compiler/bootstrap/c_abi.h compiler/bootstrap/loader.h compiler/bootstrap/checker.h compiler/bootstrap/value.h compiler/bootstrap/builtins.h compiler/bootstrap/interp.h compiler/bootstrap/codegen.h compiler/bootstrap/lsppos.h compiler/bootstrap/json.h compiler/bootstrap/bindgen.h compiler/bootstrap/lsp.h compiler/bootstrap/rounding.h compiler/version.h
 BOOTSTRAP_BIN := build/beansc0
 STAGE1_BIN := build/beansc-stage1
 STAGE2_BIN := build/beansc-stage2
@@ -52,6 +62,8 @@ $(RUNTIME_COPY): $(RUNTIME_SRC)
 	@mkdir -p build
 	cp $(RUNTIME_SRC) $(RUNTIME_COPY)
 
+ifneq ($(HAVE_BOOTSTRAP),)
+
 $(BOOTSTRAP_BIN): $(SRC) $(HDR) $(RUNTIME_COPY)
 	@mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(SRC) $(LDLIBS) -o $(BOOTSTRAP_BIN)
@@ -70,7 +82,37 @@ $(STAGE3_BIN): $(STAGE2_BIN) $(SELF_HOST_SRC)
 $(BIN): $(STAGE3_BIN)
 	rm -f $(BIN) && cp $(STAGE3_BIN) $(BIN)
 
-.PHONY: stage0 run clean install test platform-status test-platform-manifest test-portable-int128 test-compiler-arch-objects test-stage0-windows test-windows-source-bootstrap test-musl-hosted test-armv6hf-hosted test-sanitize test-release-package test-install-release test-release-completeness test-clean-bootstrap test-c-abi-tier1 test-mir-stage0 test-barq-core fuzz-smoke fuzz-differential fuzz-differential-smoke test-linux test-linux-arch test-linux-hosted test-windows test-windows-native test-windows-native-i686 test-windows-native-arm64 test-windows-arch test-windows-hosted access-score self-host-next test-self-host test-self-host-full test-bootstrap bench-compiler bench-quick bench-full bench-verify bench-profile bench-compare
+else
+
+# No stage 0 here, so the compiler is built the way a self-hosted language is
+# normally built once it has shipped: with a released copy of itself. Install one
+# with the one-line installer, or point BEANSC_BOOT at any working beansc.
+BEANSC_BOOT ?= $(shell command -v beansc 2>/dev/null || \
+	ls "$${BEANS_HOME:-$$HOME/.beans}/bin/beansc" 2>/dev/null)
+
+$(BIN): $(SELF_HOST_SRC) $(RUNTIME_COPY)
+	@mkdir -p build
+	@test -n "$(BEANSC_BOOT)" || { \
+	  echo "no Beans compiler found to build with."; \
+	  echo ""; \
+	  echo "This checkout has no stage-0 bootstrap: compiler/bootstrap is a"; \
+	  echo "private submodule and building it is not required. Install a"; \
+	  echo "released beansc and build with that instead:"; \
+	  echo ""; \
+	  echo "  curl -fsSL https://github.com/beans-lang/beans/releases/latest/download/beans-install.sh | sh"; \
+	  echo ""; \
+	  echo "or point BEANSC_BOOT at an existing one:"; \
+	  echo ""; \
+	  echo "  make BEANSC_BOOT=/path/to/beansc"; \
+	  echo ""; \
+	  exit 1; \
+	}
+	$(BEANSC_BOOT) build compiler/beans/main.b -o $(BIN).new
+	rm -f $(BIN) && mv $(BIN).new $(BIN)
+
+endif
+
+.PHONY: stage0 run clean install test test-ci test-core test-stage0 platform-status test-platform-manifest test-portable-int128 test-compiler-arch-objects test-stage0-windows test-windows-source-bootstrap test-musl-hosted test-armv6hf-hosted test-sanitize test-release-package test-install-release test-release-completeness test-clean-bootstrap test-c-abi-tier1 test-mir-stage0 test-barq-core fuzz-smoke fuzz-differential fuzz-differential-smoke test-linux test-linux-arch test-linux-hosted test-windows test-windows-native test-windows-native-i686 test-windows-native-arm64 test-windows-arch test-windows-hosted access-score self-host-next test-self-host test-self-host-full test-bootstrap bench-compiler bench-quick bench-full bench-verify bench-profile bench-compare
 stage0: $(BOOTSTRAP_BIN)
 
 run: $(BIN)
@@ -81,54 +123,71 @@ run: $(BIN)
 install: $(BIN)
 	PREFIX="$(PREFIX)" DESTDIR="$(DESTDIR)" bash ./tools/install.sh
 
-test: $(BIN) build/bench/compare
-	./test/differential.sh
-	./test/panic.sh
+# The whole gate. `test-core` is everything that needs only the self-hosted
+# compiler; `test-stage0` is the scripts that compare it against the C++ stage 0
+# and therefore need the private bootstrap submodule.
+test: test-core test-stage0
+
+# What CI runs. Identical to `test` where stage 0 is checked out; on a fork pull
+# request, which is not given the secret that can clone the private submodule,
+# it is the bootstrap-free gate instead of a guaranteed failure.
+test-ci: test-core
+ifneq ($(HAVE_BOOTSTRAP),)
+	$(MAKE) test-stage0
+else
+	@echo ""
+	@echo "stage 0 is not checked out, so the differential gates against it did"
+	@echo "not run. This is expected on a fork pull request."
+endif
+
+test-stage0: $(BIN)
+ifeq ($(HAVE_BOOTSTRAP),)
+	@echo "make test needs the stage-0 bootstrap compiler, which is not in this checkout."
+	@echo ""
+	@echo "  With access to it:  git submodule update --init compiler/bootstrap"
+	@echo "  Without access:     make test-core"
+	@echo ""
+	@echo "test-core runs every gate that does not compare against stage 0."
+	@exit 1
+else
 	./test/targets.sh
 	./test/platform_manifest.sh
-	./test/portable_int128.sh
-	./test/profiles.sh
-	./test/freestanding.sh
 	./test/object_abi.sh
-	bash ./test/compiler_arch_objects.sh
 	bash ./test/runtime_abi.sh
-	bash ./test/abi_probe.sh
 	bash ./test/decimal_align.sh
+	./test/cli_parity.sh
+	bash ./test/package_semantics.sh
+	./test/self_host.sh
+	bash ./test/unsafe.sh
+	bash ./test/bench_compare.sh
+	bash ./test/compiler_arch_objects.sh
+endif
+
+test-core: $(BIN)
+	./test/differential.sh
+	./test/panic.sh
+	./test/freestanding.sh
+	bash ./test/abi_probe.sh
 	./test/wasm_matrix.sh
 	./test/wasm.sh
 	./test/embedded.sh
-	./test/asm.sh
 	./test/docs.sh
 	bash ./test/release_completeness.sh --self-test
 	./test/version.sh
-	./test/cli_parity.sh
-	bash ./test/package_semantics.sh
-	./test/dependencies.sh
-	./test/self_host.sh
 	./test/deterministic_build.sh
 	./test/numerics.sh
 	./test/moves.sh
 	./test/maps.sh
 	./test/traits.sh
 	bash ./test/syntax_v07.sh
-	bash ./test/unsafe.sh
 	./test/fixed_arrays.sh
-	./test/layout_introspect.sh
 	./test/packed_layout.sh
-	./test/atomics.sh
 	bash ./test/thread_cleanup.sh
 	./test/simd.sh
-	./test/cpu_features.sh
 	./test/intrinsics.sh
 	./test/resources.sh
-	./test/clocks_random.sh
 	./test/shm.sh
 	./test/process.sh
-	./test/net.sh
-	./test/poll.sh
-	./test/signals.sh
-	./test/dylib.sh
-	./test/child.sh
 	./test/raw_slices.sh
 	./test/c_layout_structs.sh
 	./test/c_layout_unions.sh
@@ -147,7 +206,6 @@ test: $(BIN) build/bench/compare
 	./test/parse_recovery.sh
 	bash ./test/mir.sh
 	bash ./test/devirtualize.sh
-	bash ./test/bench_compare.sh
 	bash ./test/default_eval_order.sh
 	./test/lsp_probe.sh
 	./test/lsp_server.sh
@@ -162,11 +220,56 @@ test: $(BIN) build/bench/compare
 	bash ./test/wide_sync.sh
 	bash ./test/wide_concurrency.sh
 
+# Behavioural suites that each also assert something about the stage-0 C++
+# sources (a grep for the implementation that backs the behaviour). The
+# behaviour is portable; the assertion needs the private submodule, so a
+# public checkout runs everything above and skips these.
+ifneq ($(HAVE_BOOTSTRAP),)
+	./test/portable_int128.sh
+	./test/profiles.sh
+	./test/asm.sh
+	./test/dependencies.sh
+	./test/layout_introspect.sh
+	./test/atomics.sh
+	./test/cpu_features.sh
+	./test/clocks_random.sh
+	./test/net.sh
+	./test/poll.sh
+	./test/signals.sh
+	./test/dylib.sh
+	./test/child.sh
+else
+	@echo "skipped 13 suites whose implementation assertions read the stage-0 sources"
+endif
+
+# Everything below needs the C++ stage 0. It lives in a private submodule, so a
+# public checkout gets one clear message instead of a missing-file error from
+# make, the C++ compiler, or a test script halfway through a run.
+ifeq ($(HAVE_BOOTSTRAP),)
+
+BOOTSTRAP_ONLY := stage0 platform-status test-platform-manifest \
+	test-compiler-arch-objects test-windows-source-bootstrap \
+	test-musl-hosted test-armv6hf-hosted test-stage0-windows test-sanitize \
+	test-clean-bootstrap test-c-abi-tier1 test-mir-stage0 fuzz-smoke \
+	fuzz-differential fuzz-differential-smoke test-bootstrap test-self-host \
+	test-self-host-full bench-compare
+
+$(BOOTSTRAP_ONLY):
+	@echo "'$@' needs the stage-0 bootstrap compiler, which is not in this checkout."
+	@echo ""
+	@echo "compiler/bootstrap is a private submodule. Stage 0 exists only to build"
+	@echo "the compiler on a machine that has none; it is never shipped, and Beans"
+	@echo "builds and tests without it."
+	@echo ""
+	@echo "  With access to it:  git submodule update --init compiler/bootstrap"
+	@echo "  Without access:     make test-core"
+	@echo ""
+	@exit 1
+
+else
+
 platform-status test-platform-manifest: $(BIN) $(BOOTSTRAP_BIN)
 	bash ./test/platform_manifest.sh
-
-test-portable-int128:
-	bash ./test/portable_int128.sh
 
 test-compiler-arch-objects: $(BIN) $(BOOTSTRAP_BIN)
 	bash ./test/compiler_arch_objects.sh
@@ -186,6 +289,11 @@ test-stage0-windows:
 test-sanitize: $(BIN)
 	bash ./test/sanitize.sh
 
+endif
+
+test-portable-int128:
+	bash ./test/portable_int128.sh
+
 test-release-package: $(BIN)
 	bash ./test/release_package.sh
 
@@ -199,6 +307,8 @@ test-release-completeness:
 test-install-release: $(BIN)
 	bash ./test/install_release.sh
 
+ifneq ($(HAVE_BOOTSTRAP),)
+
 test-clean-bootstrap:
 	bash ./test/clean_bootstrap.sh
 
@@ -207,6 +317,8 @@ test-c-abi-tier1: $(BIN) $(BOOTSTRAP_BIN)
 
 test-mir-stage0: $(BOOTSTRAP_BIN)
 	BEANSC="./$(BOOTSTRAP_BIN)" bash ./test/mir_stage0.sh
+
+endif
 
 # Network-heavy real-product integration. Kept out of `make test` and the
 # scorecard so local C interop work depends only on the small fixtures.
@@ -229,6 +341,8 @@ build/fuzz-frontend: test/fuzz_frontend.cpp $(FRONTEND_FUZZ_SRC) $(HDR)
 	$(CXX) -std=c++20 -O1 -g -pthread -Icompiler/bootstrap \
 		$(FUZZ_FLAGS) \
 		test/fuzz_frontend.cpp $(FRONTEND_FUZZ_SRC) -o $@
+
+ifneq ($(HAVE_BOOTSTRAP),)
 
 fuzz-smoke: build/fuzz-frontend
 	bash ./test/fuzz.sh "$${FUZZ_SECONDS:-15}"
@@ -265,6 +379,10 @@ test-bootstrap: $(BOOTSTRAP_BIN) $(STAGE1_BIN)
 test-self-host-full: $(BIN) $(BOOTSTRAP_BIN)
 	bash ./test/self_host_full.sh
 
+endif
+
+# Both sides of this comparison are the self-hosted compiler, so it needs no
+# stage 0.
 bench-compiler: $(BIN) build/beansc-next
 	bash ./bench/compiler.sh
 
@@ -350,6 +468,9 @@ bench-profile: $(BIN)
 	@test -n "$(NAME)" || { echo "usage: make bench-profile NAME=trees"; exit 2; }
 	./bench/profile.sh "$(NAME)"
 
+# The benchmark comparator reuses the stage-0 JSON reader, so it is bootstrap-only.
+ifneq ($(HAVE_BOOTSTRAP),)
+
 build/bench/compare: bench/compare.cpp compiler/bootstrap/json.cpp compiler/bootstrap/json.h
 	@mkdir -p build/bench
 	$(CXX) -std=c++20 -Wall -Wextra -O2 bench/compare.cpp compiler/bootstrap/json.cpp -o $@
@@ -360,6 +481,8 @@ bench-compare: build/bench/compare
 	@test -n "$(EXPECT)" || { echo "usage: make bench-compare BEFORE=before AFTER=after EXPECT=workload"; exit 2; }
 	./build/bench/compare "build/bench/results-full-$(BEFORE).json" \
 	    "build/bench/results-full-$(AFTER).json" $(EXPECT)
+
+endif
 
 clean:
 	rm -rf build
