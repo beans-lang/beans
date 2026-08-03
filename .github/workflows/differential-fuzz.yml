@@ -69,7 +69,10 @@ jobs:
           case "$INPUT_START_SEED" in ''|*[!0-9]*)
             echo "start_seed must be a whole number" >&2; exit 2 ;; esac
           FUZZ_SEED=$(( INPUT_START_SEED + SHARD - 1 ))
-          echo "shard $SHARD runs seed $FUZZ_SEED, cases 0..$(( INPUT_CASES - 1 ))"
+          # The recorded, non-overlapping seed range this shard owns — in the
+          # job summary so a failure names its reproducer without log digging.
+          echo "shard $SHARD: seed $FUZZ_SEED, cases 0..$(( INPUT_CASES - 1 )), groups $FUZZ_GROUPS" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
           export FUZZ_SEED
           export FUZZ_CASES="$INPUT_CASES"
           export FUZZ_LANES=all

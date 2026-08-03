@@ -11,11 +11,70 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Fails in minutes for the mistakes that dominate real breakage: parser,
+  # checker, CLI and compiler parity, the reserved-name and BEANS_CC
+  # regressions, deterministic output, the bootstrap fixed point, and the
+  # semantic-fuzzer smoke — plus the coverage map that keeps every suite
+  # assigned to exactly one CI slice. Everything else fans out only after
+  # this gate, so a red run points at the cheapest reproducer first.
+  preflight:
+    name: preflight (fast gate)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The stage-0 submodule is private. Secrets are withheld from fork
+          # pull requests, so those check out without it and run the
+          # bootstrap-free gate rather than failing on a clone they cannot do.
+          submodules: ${{ secrets.BOOTSTRAP_TOKEN != '' && 'recursive' || '' }}
+          token: ${{ secrets.BOOTSTRAP_TOKEN || github.token }}
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang lld llvm file binutils ripgrep
+
+      - name: Build the compiler
+        run: make -j4
+
+      # On a fork pull request the private stage 0 is absent and test-quick
+      # cannot compare against it; the map check still runs, and the full
+      # bootstrap-free gate runs in the fan-out jobs.
+      - name: Quick gate
+        run: |
+          if [ -f compiler/bootstrap/main.cpp ]; then
+            make test-quick
+          else
+            bash test/ci_coverage.sh
+            echo "stage 0 absent (fork PR): ran the coverage map check only"
+          fi
+
+      - name: Failure pointer
+        if: failure()
+        run: |
+          {
+            echo "### preflight failed"
+            echo "- host: $(uname -sm)"
+            echo "- reproduce with: \`make test-quick\` (each failing script names itself in the log)"
+            echo "- fuzz failures carry their seed and case in build/differential-fuzz/failures/"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload fuzz failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: preflight-fuzz-failures
+          path: build/differential-fuzz/failures/
+          if-no-files-found: ignore
+
   # Native Linux/x86-64 is split by failure area too. The compiler build is
   # cheap compared with the gates, and three parallel jobs report a frontend,
   # sanitizer/ABI, or bootstrap/target failure much sooner than one long chain.
   linux-x86_64:
     name: core gate (linux/x86-64, native)
+    needs: preflight
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -58,6 +117,7 @@ jobs:
 
   linux-x86_64-safety:
     name: safety + ABI gate (linux/x86-64, native)
+    needs: preflight
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -96,8 +156,17 @@ jobs:
       - name: Systems-access score
         run: make access-score
 
+      - name: Upload fuzz failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: safety-fuzz-failures
+          path: build/differential-fuzz/failures/
+          if-no-files-found: ignore
+
   linux-x86_64-bootstrap:
     name: bootstrap + targets gate (linux/x86-64, native)
+    needs: preflight
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -135,6 +204,7 @@ jobs:
   # run began and hid which other architectures were already sound.
   linux-cross:
     name: linux cross + hosted (${{ matrix.arch }})
+    needs: preflight
     runs-on: ubuntu-latest
     timeout-minutes: 180
     strategy:
@@ -190,6 +260,7 @@ jobs:
 
   linux-armv6hf:
     name: hosted gate (linux/armv6 hard-float, Raspbian)
+    needs: preflight
     runs-on: ubuntu-latest
     timeout-minutes: 240
     steps:
@@ -226,6 +297,7 @@ jobs:
   # the small local ABI fixtures depend on an external repository.
   barq-core:
     name: Barq Core C API (linux/x86-64)
+    needs: preflight
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -252,6 +324,7 @@ jobs:
   # Linux/arm64 gets the same required gate as x86-64.
   linux-arm64:
     name: full gate (linux/arm64, native)
+    needs: preflight
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
@@ -303,6 +376,7 @@ jobs:
   # macOS owns the kqueue backend, so its full differential suite must gate too.
   macos-arm64:
     name: differential gate (macos/arm64)
+    needs: preflight
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
@@ -342,6 +416,14 @@ jobs:
       - name: Semantic differential fuzz smoke
         run: make fuzz-differential-smoke
 
+      - name: Upload fuzz failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-fuzz-failures
+          path: build/differential-fuzz/failures/
+          if-no-files-found: ignore
+
       - name: Tier-1 C ABI (stage 0 and self-hosted, native)
         run: make test-c-abi-tier1
 
@@ -361,6 +443,7 @@ jobs:
   # used to hide a late architecture failure behind about an hour of duplicates.
   docker-linux:
     name: docker container gate
+    needs: preflight
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

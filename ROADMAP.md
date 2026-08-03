@@ -33,7 +33,7 @@ compiler remains as the `beansc0` stage-0 bootstrap and comparison compiler.
   evaluated by a shell.
 - [x] Complete the promised safe C-import ABI fixtures on all tier-1 targets.
   Exported libraries, header generation, stored callbacks, and TLS stay later.
-- [x] Use `compiler/bootstrap/version.h` for the CLI, LSP, language version, and runtime ABI.
+- [x] Use `compiler/version.h` for the CLI, LSP, language version, and runtime ABI.
 - [ ] Pass every existing speed and memory floor on clean Linux and macOS runs.
 - [x] Add compiler ASan/UBSan, interpreter TSan, malformed frontend fuzzing,
   dependency lock tests, deterministic archives, and clean archive build tests.

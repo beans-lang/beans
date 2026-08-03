@@ -518,6 +518,22 @@ fn simd_description(name: string) -> Option<SimdDescription> {
     return none
 }
 
+// Arity of the builtin generic containers, -1 for everything else. The HIR
+// lowering validates signature and field types; statement annotations reach
+// validate_target_type instead, and both have to refuse a builtin generic
+// spelled without its type arguments.
+fn builtin_generic_arity(name: string) -> int {
+    if name == "Map" || name == "OrderedMap" { return 2 }
+    if name == "List" || name == "Thread" || name == "Mutex" ||
+       name == "Channel" || name == "Box" || name == "Arena" ||
+       name == "Shared" || name == "Weak" || name == "RawPtr" ||
+       name == "Slice" || name == "Atomic" ||
+       name == "StoredCallback" {
+        return 1
+    }
+    return -1
+}
+
 fn builtin_class_name(name: string) -> bool {
     return name == "Bytes" || name == "File" ||
            name == "Dir" || name == "MMap" ||
@@ -3003,6 +3019,31 @@ class ExpressionChecker {
         }
     }
 
+    // Statement annotations never reach the HIR lowering's validate_arity,
+    // so a builtin generic spelled without its type arguments has to be
+    // refused here; new-expressions stay exempt because `new Box(7)` may
+    // take its type argument from the declared result type. False means the
+    // caller must poison the annotation, so one arity mistake reports once
+    // instead of cascading into mismatch and missing-method errors.
+    fn validate_annotation_arity(node: AstNode, type: HirType) -> bool {
+        var ok: bool = true
+        let generic_arity: int =
+            builtin_generic_arity(type.name)
+        if generic_arity >= 0 &&
+           type.args.len() != generic_arity {
+            self.fail(
+                node,
+                "{type.name} needs {generic_arity} type argument(s), got {type.args.len()}")
+            ok = false
+        }
+        for argument: HirType in type.args {
+            if !self.validate_annotation_arity(node, argument) {
+                ok = false
+            }
+        }
+        return ok
+    }
+
     fn validate_target_type(node: AstNode, type: HirType) {
         if type.name == "StoredCallback" &&
            type.args.len() == 1 &&
@@ -3781,9 +3822,11 @@ class ExpressionChecker {
                 return result
             }
             none => {
-                self.fail(
-                    node,
-                    "{render_hir_type(receiver.type)} has no field '{node.value}'")
+                if receiver.type.name != "poison" {
+                    self.fail(
+                        node,
+                        "{render_hir_type(receiver.type)} has no field '{node.value}'")
+                }
                 return self.make_node(
                     node, "error", node.value, poison_hir_type())
             }
@@ -5984,6 +6027,12 @@ class ExpressionChecker {
                 }
                 none => {}
             }
+            // A poison receiver already reported its own error; a second
+            // "poison has no method" line would only bury it.
+            if receiver.type.name == "poison" {
+                return self.make_node(
+                    node, "error", "call", poison_hir_type())
+            }
             self.fail(
                 callee,
                 "{render_hir_type(receiver.type)} has no method '{callee.value}'")
@@ -7334,6 +7383,10 @@ class ExpressionChecker {
         match type_child(node) {
             some(type_node) => {
                 declared = hir_type_from_ast(type_node)
+                if !self.validate_annotation_arity(
+                        type_node, declared) {
+                    declared = poison_hir_type()
+                }
                 self.validate_target_type(
                     type_node, declared)
             }

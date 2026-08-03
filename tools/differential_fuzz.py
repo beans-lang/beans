@@ -4027,7 +4027,15 @@ NEGATIVE_KINDS = (
     "through_value", "private_override", "super_private",
     "super_outside", "super_static", "super_no_parent",
     "super_unknown", "unknown_import", "unknown_member",
-    "private_fn",
+    "private_fn", "builtin_reuse",
+)
+
+# Names the language reserves for its own types: redeclaring one anywhere is
+# "type name '<name>' already taken" from both compilers.
+RESERVED_TYPE_NAMES = (
+    "Box", "List", "Map", "OrderedMap", "Option", "Result", "Error",
+    "Mutex", "Channel", "Arena", "Shared", "Weak", "Slice", "Atomic",
+    "int", "string", "bool", "f64", "u16",
 )
 
 
@@ -4161,6 +4169,22 @@ def negative_case_files(seed, case):
     elif kind == "unknown_member":
         main += ["fn main() {",
                  "    let got: int = pkx.absent{}()".format(n),
+                 "}"]
+    elif kind == "builtin_reuse":
+        taken = rng.choice(RESERVED_TYPE_NAMES)
+        shape = rng.choice(("class", "struct", "enum"))
+        if shape == "class":
+            base += ["", "pub class {} {{".format(taken),
+                     "    pub fn init() {}", "}"]
+        elif shape == "struct":
+            base += ["", "pub struct {} {{".format(taken),
+                     "    x: i32", "}"]
+        else:
+            base += ["", "pub enum {} {{".format(taken),
+                     "    one", "    two", "}"]
+        base_text = "\n".join(base) + "\n"
+        main += ["fn main() {",
+                 "    let got: int = pkx.make{}().open{}".format(n, n),
                  "}"]
     else:  # private_fn
         main += ["fn main() {",

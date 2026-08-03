@@ -129,13 +129,24 @@ if [[ $fails -ne 0 ]]; then
     echo "windows native gate: $fails failure(s) across $ran examples" >&2
     exit 1
 fi
-# The exact machine and staged toolchain this run proved, for the record: the
-# oracle-checked differential corpus rows (dfuzz_case_*) executed on this
-# architecture, not merely compiled for it.
+# The exact machine, OS, and staged toolchain this run proved, for the
+# record: the oracle-checked differential corpus rows (dfuzz_case_*) executed
+# on this architecture, not merely compiled for it. A bundle with no corpus
+# rows fails here — a compile-only pass is not this gate's claim.
 staged_triple=""
 [[ -f "$BUNDLE/triple" ]] && staged_triple=$(tr -d ' \r\n' < "$BUNDLE/triple")
+staged_toolchain=""
+[[ -f "$BUNDLE/toolchain" ]] && \
+    staged_toolchain=$(tr -d '\r' < "$BUNDLE/toolchain" | paste -sd ';' -)
+corpus_meta=""
+[[ -f "$BUNDLE/corpus_meta" ]] && corpus_meta=$(tr -d '\r\n' < "$BUNDLE/corpus_meta")
 corpus_ran=$(grep -c '^dfuzz_case_' "$BUNDLE/manifest.tsv" || true)
-echo "ok windows native gate: $ran examples byte-identical on real Windows"
-if [[ -n "$staged_triple" ]]; then
-    echo "   target ${staged_triple}, machine $(uname -m 2>/dev/null || echo unknown), ${corpus_ran} oracle-checked corpus cases executed"
+if [[ "$corpus_ran" -eq 0 ]]; then
+    echo "FAIL: the bundle carries no differential corpus rows; stage with python3 available" >&2
+    exit 1
 fi
+os_ver=$( (cmd.exe /c ver 2>/dev/null || uname -sr) | tr -d '\r' | grep -v '^$' | head -1 )
+echo "ok windows native gate: $ran examples byte-identical on real Windows"
+echo "   os ${os_ver:-unknown}, machine $(uname -m 2>/dev/null || echo unknown), execution native (PE machine asserted before any run)"
+echo "   target ${staged_triple:-unknown}, staged by ${staged_toolchain:-unknown}"
+echo "   corpus ${corpus_meta:-unknown}: ${corpus_ran} oracle-checked cases executed"
