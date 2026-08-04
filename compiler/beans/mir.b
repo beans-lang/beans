@@ -2131,12 +2131,16 @@ class MirLowerer {
         }
     }
 
+    // On success, returns the parameter's single retain so the caller can
+    // mark it as an ownership transfer: the sink initializer stores the
+    // caller's reference without adding one of its own.
     fn initializer_sink(function: MirFunction,
-                        parameter: MirLocal) -> bool {
+                        parameter: MirLocal) ->
+        Option<MirInstruction> {
         if function.blocks.len() != 1 ||
            parameter.ownership != "borrowed" ||
            !parameter.parameter {
-            return false
+            return none
         }
         var borrow: Option<MirInstruction> = none
         var borrow_count: int = 0
@@ -2149,21 +2153,21 @@ class MirLowerer {
                 borrow_count += 1
             }
         }
-        if borrow_count != 1 { return false }
+        if borrow_count != 1 { return none }
         match borrow {
             some(read) => {
                 let read_uses: List<MirPosition> =
                     self.uses_for(function, read.result)
                 if read_uses.len() != 1 ||
                    read_uses[0].instruction.op != "retain" {
-                    return false
+                    return none
                 }
                 let retained: MirInstruction =
                     read_uses[0].instruction
                 let retained_uses: List<MirPosition> =
                     self.uses_for(function, retained.result)
                 if retained_uses.len() != 1 {
-                    return false
+                    return none
                 }
                 let assignment: MirPosition =
                     retained_uses[0]
@@ -2174,7 +2178,7 @@ class MirLowerer {
                    assignment.block != read_uses[0].block ||
                    read_uses[0].index + 1 !=
                        assignment.index {
-                    return false
+                    return none
                 }
                 let receiver: int =
                     self.local_for_value(
@@ -2184,7 +2188,7 @@ class MirLowerer {
                    receiver >= function.locals.len() ||
                    function.locals[receiver].name != "self" ||
                    !function.locals[receiver].parameter {
-                    return false
+                    return none
                 }
                 for index: int in
                     assignment.index + 1..
@@ -2195,12 +2199,12 @@ class MirLowerer {
                        later.op == "assign" &&
                        later.text ==
                            assignment.instruction.text {
-                        return false
+                        return none
                     }
                 }
-                return true
+                return some(retained)
             }
-            none => { return false }
+            none => { return none }
         }
     }
 
@@ -2211,16 +2215,25 @@ class MirLowerer {
                 continue
             }
             for parameter: MirLocal in function.locals {
-                if self.initializer_sink(
-                       function, parameter) {
-                    parameter.ownership_sink = true
+                match self.initializer_sink(
+                          function, parameter) {
+                    some(sink_retain) => {
+                        parameter.ownership_sink = true
+                        // the emitter drops this retain: the sink
+                        // stores the caller's reference directly
+                        sink_retain.local = parameter.id
+                    }
+                    none => {}
                 }
             }
         }
         for function: MirFunction in self.mir.functions {
             for block: MirBlock in function.blocks {
-                for instruction: MirInstruction in
-                    block.instructions {
+                var index: int = 0
+                for index < block.instructions.len() {
+                    let instruction: MirInstruction =
+                        block.instructions[index]
+                    index += 1
                     if instruction.removed ||
                        instruction.op != "new" {
                         continue
@@ -2250,6 +2263,21 @@ class MirLowerer {
                                        operand] == "owned" {
                                     instruction.consumes[
                                         argument] = true
+                                } else if operand >= 0 &&
+                                          operand <
+                                              function.value_ownership.len() &&
+                                          function.value_ownership[
+                                              operand] ==
+                                              "borrowed" {
+                                    // the sink initializer stores
+                                    // without retaining, so a borrowed
+                                    // argument must bring its own
+                                    // reference to the call
+                                    self.insert_owned_retain(
+                                        function, block,
+                                        index - 1,
+                                        instruction, argument)
+                                    index += 1
                                 }
                             }
                             argument += 1
@@ -2258,6 +2286,39 @@ class MirLowerer {
                 }
             }
         }
+    }
+
+    // Insert a retain immediately before `consumer`, rewiring its
+    // argument to the retained value and marking it consumed. Used when
+    // an ownership-sink call needs a borrowed operand to arrive with its
+    // own reference.
+    fn insert_owned_retain(function: MirFunction,
+                           block: MirBlock,
+                           position: int,
+                           consumer: MirInstruction,
+                           argument: int) {
+        let operand: int =
+            consumer.operands[argument]
+        let type: HirType =
+            function.value_types[operand]
+        let result: int =
+            function.value_types.len()
+        function.value_types.push(type)
+        function.value_ownership.push("owned")
+        function.value_alias.push(-1)
+        let retain: MirInstruction =
+            new MirInstruction(
+                "retain", result, type, "", "",
+                consumer.file, consumer.line,
+                consumer.col)
+        retain.operands.push(operand)
+        retain.consumes.push(false)
+        retain.ownership = "owned"
+        retain.effects =
+            mir_effects_for("retain", "")
+        block.instructions.insert(position, retain)
+        consumer.operands[argument] = result
+        consumer.consumes[argument] = true
     }
 
     fn scalar_field_type(type: HirType) -> bool {
@@ -2758,6 +2819,193 @@ class MirLowerer {
                 }
             }
         }
+    }
+
+    // Backward local-liveness transfer for one instruction: the incoming
+    // set is "live after", the outgoing set is "live before". Kills are
+    // applied before uses so a read-and-overwrite (move, compound assign)
+    // stays live above the instruction and dead below it.
+    fn transfer_liveness(instruction: MirInstruction,
+                         live: MirValueSet) {
+        if instruction.op == "local_init" ||
+           instruction.op == "pattern_bind" ||
+           instruction.op == "drop_local" ||
+           instruction.op == "move" {
+            live.remove(instruction.local)
+        }
+        if instruction.op == "assign" &&
+           instruction.local >= 0 {
+            live.remove(instruction.local)
+            if instruction.text != "=" {
+                live.add(instruction.local)
+            }
+        }
+        if instruction.op == "borrow" ||
+           instruction.op == "move" {
+            live.add(instruction.local)
+        }
+        for capture: int in instruction.capture_locals {
+            live.add(capture)
+        }
+    }
+
+    // Last-use ownership transfer: a borrow of an owned local that is dead
+    // on every path afterwards, feeding exactly one retain, hands the
+    // local's reference to the retain's consumer instead of adding one.
+    // The retain is marked with the source local; the emitter drops the
+    // runtime count bump and clears the local's live flag so the guarded
+    // scope drop skips its release. Liveness makes the mark safe on every
+    // path, and the flag keeps unrelated paths releasing normally.
+    fn analyze_ownership_transfers(function: MirFunction) {
+        if function.declaration || function.external ||
+           function.blocks.len() == 0 ||
+           function.locals.len() == 0 {
+            return
+        }
+        let local_count: int = function.locals.len()
+        var live_in: List<MirValueSet> = []
+        var live_out: List<MirValueSet> = []
+        for unused: MirBlock in function.blocks {
+            live_in.push(new MirValueSet(local_count))
+            live_out.push(new MirValueSet(local_count))
+        }
+        var changed: bool = true
+        for changed {
+            changed = false
+            var block_index: int = function.blocks.len()
+            for block_index > 0 {
+                block_index -= 1
+                let block: MirBlock =
+                    function.blocks[block_index]
+                var next_out: MirValueSet =
+                    new MirValueSet(local_count)
+                for target: int in
+                    block.terminator.targets {
+                    if target >= 0 &&
+                       target < live_in.len() {
+                        next_out.merge(live_in[target])
+                    }
+                }
+                var next_in: MirValueSet = next_out.copy()
+                var instruction_index: int =
+                    block.instructions.len()
+                for instruction_index > 0 {
+                    instruction_index -= 1
+                    let instruction: MirInstruction =
+                        block.instructions[
+                            instruction_index]
+                    if instruction.removed { continue }
+                    self.transfer_liveness(
+                        instruction, next_in)
+                }
+                if !next_in.equals(live_in[block_index]) ||
+                   !next_out.equals(live_out[block_index]) {
+                    live_in[block_index] = next_in
+                    live_out[block_index] = next_out
+                    changed = true
+                }
+            }
+        }
+        var value_uses: List<int> = []
+        for unused: HirType in function.value_types {
+            value_uses.push(0)
+        }
+        for block: MirBlock in function.blocks {
+            for instruction: MirInstruction in
+                block.instructions {
+                if instruction.removed { continue }
+                for operand: int in instruction.operands {
+                    if operand >= 0 &&
+                       operand < value_uses.len() {
+                        value_uses[operand] =
+                            value_uses[operand] + 1
+                    }
+                }
+            }
+            let terminator_value: int =
+                block.terminator.value
+            if terminator_value >= 0 &&
+               terminator_value < value_uses.len() {
+                value_uses[terminator_value] =
+                    value_uses[terminator_value] + 1
+            }
+        }
+        var alias_owner: MirValueSet =
+            new MirValueSet(local_count)
+        for local: MirLocal in function.locals {
+            if local.borrows_from >= 0 {
+                alias_owner.add(local.borrows_from)
+            }
+        }
+        for block: MirBlock in function.blocks {
+            var live: MirValueSet =
+                live_out[block.id].copy()
+            var index: int = block.instructions.len()
+            for index > 0 {
+                index -= 1
+                let instruction: MirInstruction =
+                    block.instructions[index]
+                if instruction.removed { continue }
+                if instruction.op == "borrow" &&
+                   instruction.result >= 0 &&
+                   instruction.local >= 0 &&
+                   instruction.local < local_count &&
+                   !live.contains(instruction.local) {
+                    self.try_mark_transfer(
+                        function, block, index,
+                        value_uses, alias_owner)
+                }
+                self.transfer_liveness(
+                    instruction, live)
+            }
+        }
+    }
+
+    fn try_mark_transfer(function: MirFunction,
+                         block: MirBlock, index: int,
+                         value_uses: List<int>,
+                         alias_owner: MirValueSet) {
+        let read: MirInstruction =
+            block.instructions[index]
+        let local: MirLocal =
+            function.locals[read.local]
+        // Cells are shared with closures and defers, scalar-replaced
+        // locals have no slot or flag, borrow aliases share the owner's
+        // reference invisibly to local liveness, and parameters keep the
+        // caller's calling convention untouched.
+        if local.ownership != "owned" ||
+           local.parameter || local.captured ||
+           local.scalar_replaced ||
+           local.borrows_from >= 0 ||
+           alias_owner.contains(local.id) ||
+           mir_type_is_trivial(local.type) {
+            return
+        }
+        // The transferred reference belongs to the value loaded by this
+        // exact read: the retain must directly follow it, with no chance
+        // for a write to slip in between.
+        var next_index: int = index + 1
+        for next_index < block.instructions.len() &&
+            block.instructions[next_index].removed {
+            next_index += 1
+        }
+        if next_index >= block.instructions.len() {
+            return
+        }
+        let retain: MirInstruction =
+            block.instructions[next_index]
+        if retain.op != "retain" ||
+           retain.local >= 0 ||
+           retain.operands.len() != 1 ||
+           retain.operands[0] != read.result {
+            return
+        }
+        if read.result >= value_uses.len() ||
+           value_uses[read.result] != 1 {
+            return
+        }
+        retain.local = read.local
+        local.needs_live_flag = true
     }
 
     fn canonical_value(function: MirFunction,
@@ -3863,6 +4111,7 @@ class MirLowerer {
         for function: MirFunction in self.mir.functions {
             self.mark_reachable(function)
             self.mark_last_uses(function)
+            self.analyze_ownership_transfers(function)
             self.plan_value_lifetimes(function)
             self.verify_function(function)
             self.verify_local_ownership(function)
@@ -4045,6 +4294,11 @@ fn render_mir(program: MirProgram) -> string {
                 }
                 if instruction.last_use {
                     detail = "{detail} last-use"
+                }
+                if instruction.op == "retain" &&
+                   instruction.local >= 0 {
+                    detail =
+                        "{detail} transfer=l{instruction.local}"
                 }
                 if instruction.scalar_materialize {
                     detail =

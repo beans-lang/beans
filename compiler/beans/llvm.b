@@ -4645,48 +4645,16 @@ class LlvmTextEmitter {
                     }
                     output =
                         "{output}{argument_setup}  call void {initializer}({arguments.join(", ")})\n"
-                    // a borrow-passed consumed operand's reference
-                    // dies with this call: the ownership-sink
-                    // contraction had the initializer retain what
-                    // it stores, MIR schedules nothing for consumed
-                    // values, and skipping this release leaked every
-                    // owned argument (a Tracer passed into new
-                    // Holder<T> never saw its deinit). A declared
-                    // move parameter is different — the init takes
-                    // the count with it, so releasing here freed
-                    // stage 2's token list under the parser.
-                    for index: int in
-                        0..instruction.operands.len() {
-                        if index >=
-                               instruction.consumes.len() ||
-                           !instruction.consumes[index] {
-                            continue
-                        }
-                        if index <
-                               instruction.argument_passing.len() &&
-                           instruction.argument_passing[
-                               index] != "" &&
-                           instruction.argument_passing[
-                               index] != "borrow" {
-                            // borrow rides as the empty string
-                            continue
-                        }
-                        let operand_type: HirType =
-                            self.value_type(
-                                function,
-                                instruction.operands[index])
-                        if !self.type_has_owned_refs(
-                               operand_type) {
-                            continue
-                        }
-                        let operand: string =
-                            self.value(
-                                function, values,
-                                instruction.operands[index],
-                                instruction)
-                        output =
-                            "{output}{self.emit_arc_value(operand_type, operand, false)}"
-                    }
+                    // A borrow-passed consumed operand is an
+                    // ownership-sink argument: the contraction makes
+                    // every such call site pass its own reference
+                    // (owned values hand theirs over, borrowed ones get
+                    // a retain inserted in MIR), and the sink
+                    // initializer stores it without retaining. The
+                    // reference now lives in the constructed object's
+                    // field, so there is nothing to release here. A
+                    // declared move parameter never reaches this point:
+                    // its passing is not "borrow".
                 }
                 values[instruction.result] = result
                 return output
@@ -16717,6 +16685,31 @@ class LlvmTextEmitter {
                 }
             }
             none => {}
+        }
+        if instruction.local >= 0 &&
+           instruction.local < function.locals.len() {
+            let source: MirLocal =
+                function.locals[instruction.local]
+            if source.parameter {
+                // ownership-sink initializer parameter: every call site
+                // passes its own reference in, so storing the value is
+                // the transfer and no count changes hands here
+                return ""
+            }
+            // ownership transfer: the marked source local is dead after
+            // this read, so its reference moves to the retain's consumer.
+            // Clearing the live flag makes the guarded scope drop skip the
+            // release this retain would otherwise have to balance. The
+            // store is only valid when the flag alloca exists — the same
+            // conditions the prologue uses. Otherwise fall through to a
+            // plain retain: for types without owned references both the
+            // retain and the scope release are no-ops anyway.
+            if self.type_has_owned_refs(source.type) &&
+               source.needs_live_flag &&
+               !source.scalar_replaced &&
+               !self.cell_local(source) {
+                return "  store i1 false, ptr %l{source.id}.live\n"
+            }
         }
         let type: HirType =
             self.value_type(function, id)
