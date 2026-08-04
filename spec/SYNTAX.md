@@ -1158,6 +1158,79 @@ hits.add(1)
   This makes `class` a local ARC reference by default; wrap shared mutable data
   in Mutex instead of silently racing it.
 
+### async and await (v0.9, first version implemented)
+
+Stackless cooperative tasks on the thread that polls them. No green threads,
+no stack switching: `thread.spawn` stays the tool for CPU-heavy or blocking
+work, and a `Task` never crosses a thread.
+
+```beans
+import std.async as aio
+import std.io
+
+async fn fetch_size(a: int) -> Result<int> {
+    let doubled: int = await double_later(a)
+    return ok(doubled)
+}
+
+async fn double_later(a: int) -> int {
+    return a * 2
+}
+
+fn main() {
+    let task: aio.Task<Result<int>> = fetch_size(21)   // cold: nothing ran
+    io.println("{aio.run(move task).or(-1)}")           // 42
+}
+```
+
+- **`async` and `await` are not keywords.** `async` means something only
+  immediately before `fn` — at the top level, in class and enum bodies, and in
+  interfaces — and `await` only inside an async body. Everywhere else both stay
+  ordinary identifiers, so existing functions, locals, fields, and methods by
+  those names keep working, as do user classes named `Task` or `Future`.
+  Inside an async body `await` is a prefix operator over one postfix chain: it
+  binds tighter than every binary operator and looser than call, field, index,
+  `?`, and `as` — `await t?` awaits `t?`, and `(await op())?` awaits first,
+  then examines the `Result`.
+- **The declared type is what the body returns.** `async fn f() -> R` has body
+  result `R`; a call to `f` has type `aio.Task<R>`. `return`, `?`, and
+  missing-return checking use `R`. Overrides and interface implementations
+  must match asyncness — a sync method never silently satisfies an async
+  declaration or the other way around.
+- **A task is cold and single-use.** Calling an async fn evaluates the
+  arguments into the task (retaining ARC references; `move` parameters are
+  moved in) and runs nothing. `std.async.run(move task)` drives it to
+  completion from synchronous code. `await` consumes one task: a fresh result
+  can be awaited directly, a stored task needs `await move task` — `Task` is a
+  `unique class` like every other single-owner resource.
+- **Dropping a task cancels it.** A never-polled task drops its captured
+  arguments without entering the body. A task dropped mid-flight runs its
+  armed `defer`s newest-first, then drops every live value exactly once —
+  and tasks it was awaiting cancel in cascade. A finished task just drops.
+- **Cleanup stays synchronous.** `await` is refused inside `defer` and inside
+  closures; `init` and `deinit` cannot be async. A `defer` armed before a
+  suspension survives any number of them and runs exactly once on return, `?`
+  propagation, or cancellation. A panic inside a task stops the program at the
+  poll site with the original position, like every other panic — it is never
+  swallowed, and (the base rule) defers do not run on a panic.
+- **What an async fn cannot do:** take `inout` parameters (the call returns
+  before the body runs), be `extern "C"` (expose a sync wrapper that calls
+  `run`), be `feature`-gated, or be an instance method on a `unique class`
+  (the frame cannot borrow the receiver; statics are fine). `await` cannot sit
+  inside string interpolation — bind the value to a local first — and cannot
+  suspend while a `for` element or `match` payload borrows a move-only value.
+- **The protocol is public.** `aio.Task<T>` is three closures —
+  `poll_fn: fn() -> int` advances one step and reports 0 (pending) or
+  1 (ready), `take_fn: fn() -> T` moves the finished value out exactly once,
+  `cancel_fn: fn()` runs the cleanup completion would have run — plus
+  `poll_once()`, which memoizes readiness. `new aio.Task<T>(poll, take,
+  cancel)` builds a hand-rolled awaitable; an `async fn` is sugar the compiler
+  expands into exactly this triple, with the body's locals captured by the
+  closures. Keep the contract: take only after ready, at most once.
+- **Not yet in this first version:** `spawn` and `yield_now` (the local
+  executor queue), readiness-based socket awaits, and async closures. Awaiting
+  an unspawned task drives it inline, one step per `poll_once`.
+
 ## Targets and the build (v0.8, implemented)
 
 `beansc build` compiles for one **selected target**, described completely by the
@@ -2286,10 +2359,22 @@ self true false unique
 ```
 
 `some none ok err` are ordinary names. `super` is contextual. `spawn` is a
-library function, not a keyword.
+library function, not a keyword. `async` and `await` are contextual too:
+`async` only immediately before `fn`, `await` only inside an async body.
 
 ## Decided
 
+- async/await v0.9 (first version implemented): contextual words, never
+  keywords, so every existing use of the names keeps parsing; the declared
+  type is the body's, a call gets `std.async.Task` of it, and the split never
+  leaks into `return` or `?`; a task is a cold, single-use, move-only value
+  whose drop cancels it — armed defers newest-first, then every live value
+  exactly once, children in cascade; a task panic stops the program at the
+  poll site because panics never unwind in Beans; the poll/take/cancel
+  closure triple is the public awaitable protocol and the compiler's own
+  lowering target — the expander rewrites an async body into a synchronous
+  maker over ordinary closures, so both executors, the ownership passes, and
+  the verifiers run unchanged
 - Layout introspection v0.8 (implemented): `size_of(T)`, `align_of(T)` and
   `offset_of(T, field)` as contextual forms taking a type, folded to constants
   of the selected target; class and interface references report one pointer;
