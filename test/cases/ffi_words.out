@@ -1,0 +1,3 @@
+abs 5
+strcmp true true true
+strchr 88 true

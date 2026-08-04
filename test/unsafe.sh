@@ -47,6 +47,18 @@ diff -u test/cases/ffi.out "$tmp/ffi.native.out"
 diff -u test/cases/ffi_scalars.out "$tmp/ffi-scalars.interp"
 diff -u test/cases/ffi_scalars.out "$tmp/ffi-scalars.native.out"
 
+# Multi-argument externs with narrow (pointer or i32) parameters: the
+# interpreter's word path can only pass those narrow in the final position,
+# so on a 32-bit host these signatures must take the C ABI bridge with their
+# declared widths. A regression here reads shifted argument slots and
+# answers silently wrong rather than crashing.
+./build/beansc run test/cases/ffi_words.b >"$tmp/ffi-words.interp"
+./build/beansc build test/cases/ffi_words.b \
+    -o "$tmp/ffi-words.native" >"$tmp/ffi-words.build" 2>&1
+"$tmp/ffi-words.native" >"$tmp/ffi-words.native.out"
+diff -u test/cases/ffi_words.out "$tmp/ffi-words.interp"
+diff -u test/cases/ffi_words.out "$tmp/ffi-words.native.out"
+
 # An aggregate signature is what forces both interpreters to compile a C
 # bridge, and that helper has to come from the same driver selection as a
 # build: BEANS_CC first, the platform clang otherwise. A literal "clang" in

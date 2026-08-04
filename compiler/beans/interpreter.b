@@ -9370,10 +9370,39 @@ class TreeInterpreter {
             var result: TreeValue =
                 TreeValue.unit()
             if function.result.name != "unit" {
-                result =
-                    self.ffi_read_host_storage(
-                        function, function.result,
-                        result_storage)
+                if canonical_hir_name(
+                       function.result.name) ==
+                   "RawPtr" {
+                    // A returned pointer can land inside one of the host
+                    // copies made for the pointer arguments. Map it back to
+                    // the interpreter memory the copy mirrors — exactly what
+                    // the direct word path does — before ffi_sync_and_free
+                    // frees the copy and the address dangles.
+                    var raw_address: u64 = 0
+                    if self.program.target.pointer_size() ==
+                       8 {
+                        let slot: RawPtr<u64> =
+                            RawPtr.from_address(
+                                result_storage.address())
+                        raw_address = slot.read()
+                    } else {
+                        let slot: RawPtr<u32> =
+                            RawPtr.from_address(
+                                result_storage.address())
+                        raw_address =
+                            slot.read() as u64
+                    }
+                    result =
+                        self.ffi_pointer_result(
+                            function.result,
+                            raw_address as int,
+                            pointer_bridges)
+                } else {
+                    result =
+                        self.ffi_read_host_storage(
+                            function, function.result,
+                            result_storage)
+                }
                 result_storage.free()
             }
             for argument: RawPtr<u8> in storage {
@@ -9676,18 +9705,40 @@ class TreeInterpreter {
         }
         if called { return result }
 
+        // host_dl.callN passes every argument as one 8-byte word. A 64-bit
+        // host gives each word its own argument slot, so a narrower integer
+        // still lands where the callee reads it. A 32-bit host splits the
+        // word across two native slots (i386 stack halves, EABI register
+        // pairs): a parameter narrower than the word leaves a stray
+        // high-half slot that shifts every argument after it, so only the
+        // final parameter may be narrow there. Anything else routes to the
+        // Clang-classified bridge, which marshals by declared width.
+        let host_pointer_bytes: int =
+            self.program.target.pointer_size()
         var direct_words: bool =
             arguments.len() <= 3
-        for parameter: HirParameter in
-            function.parameters {
+        for index: int in
+            0..function.parameters.len() {
+            let parameter_type: HirType =
+                function.parameters[index].type
             let name: string =
                 canonical_hir_name(
-                    parameter.type.name)
+                    parameter_type.name)
+            var native_bytes: int = 0
             if name == "RawPtr" {
+                native_bytes = host_pointer_bytes
             } else if hir_is_integer(
-                          parameter.type) &&
+                          parameter_type) &&
                       tree_integer_bits(name) >= 32 {
+                native_bytes =
+                    tree_integer_bits(name) / 8
             } else {
+                direct_words = false
+            }
+            if host_pointer_bytes < 8 &&
+               native_bytes < 8 &&
+               index + 1 <
+                   function.parameters.len() {
                 direct_words = false
             }
         }
