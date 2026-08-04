@@ -36,10 +36,25 @@ fn main() {
         unsigned_sum += value as int
     }
 
+    var near_maximum: int = 0
+    for value: int in
+        9223372036854775806..=9223372036854775807 {
+        near_maximum += 1
+    }
+
+    let wide_low: u64 = 18446744073709551614
+    let wide_high: u64 = 18446744073709551615
+    var wide_count: int = 0
+    for value: u64 in wide_low..=wide_high {
+        wide_count += 1
+    }
+
     io.println(inclusive_sum)
     io.println(exclusive_sum)
     io.println(empty_count)
     io.println(maximum_count)
     io.println(unsigned_sum)
+    io.println(near_maximum)
+    io.println(wide_count)
     io.println(fib(10))
 }

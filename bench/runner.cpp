@@ -363,7 +363,28 @@ static RunResult run_process(const std::vector<std::string>& command,
     close(pipe_fd[0]);
 
     if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-        throw std::runtime_error("command failed: " + join_command(command));
+        // Name the exact way the child died: a signal number separates a
+        // crash (SIGSEGV) from a bad instruction (SIGILL) from a runtime
+        // panic's exit code, which is the first thing a CI log needs.
+        std::string reason;
+        if (WIFSIGNALED(status)) {
+            const int sig = WTERMSIG(status);
+            reason = "killed by signal " + std::to_string(sig) + " (" +
+                     strsignal(sig) + ")";
+        } else if (WIFEXITED(status)) {
+            reason = "exit code " + std::to_string(WEXITSTATUS(status));
+        } else {
+            reason = "wait status " + std::to_string(status);
+        }
+        if (!output.empty()) {
+            const std::size_t keep = 512;
+            const std::string tail = output.size() > keep
+                                         ? output.substr(output.size() - keep)
+                                         : output;
+            reason += "; captured output tail: " + tail;
+        }
+        throw std::runtime_error("command failed (" + reason + "): " +
+                                 join_command(command));
     }
     Sample sample;
     sample.wall = std::chrono::duration<double>(after - before).count();

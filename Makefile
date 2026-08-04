@@ -219,6 +219,7 @@ else
 	./test/panic.sh
 	./test/numerics.sh
 	./test/moves.sh
+	bash ./test/borrowed_iteration.sh
 	./test/maps.sh
 	./test/traits.sh
 	./test/fixed_arrays.sh
@@ -319,6 +320,7 @@ test-core: $(BIN)
 	./test/deterministic_build.sh
 	./test/numerics.sh
 	./test/moves.sh
+	bash ./test/borrowed_iteration.sh
 	./test/maps.sh
 	./test/traits.sh
 	bash ./test/syntax_v07.sh

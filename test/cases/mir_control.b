@@ -273,6 +273,21 @@ fn scalar_no_escape(value: int) -> int {
     return item.value
 }
 
+// A list walk keeps the iterator protocol in the dump: ranges lower
+// to counted loops now, so this is what still owns a cursor and
+// releases it on the loop's exit edge.
+fn sum_items(limit: int) -> int {
+    var items: List<Item> = []
+    for i: int in 0..limit {
+        items.push(new Item(i))
+    }
+    var total: int = 0
+    for item: Item in items {
+        total += item.value
+    }
+    return total
+}
+
 fn scalar_default_order() -> int {
     let item: DefaultScalar =
         new DefaultScalar(scalar_arg(4))
@@ -354,7 +369,8 @@ fn main() {
         item.value, sink.label.len(), conditional.label.len(),
         doubled.first.len(), overwritten.label.len(), walk(8),
         optimized_value(), scalar_partial_escape(5),
-        scalar_no_escape(3), scalar_default_order(),
+        scalar_no_escape(3), sum_items(4),
+        scalar_default_order(),
         scalar_fixed_array(4),
         scalar_deinit_fallback(1), scalar_effect_fallback(2),
         scalar_owned_field_fallback(), scalar_write_fallback(3),

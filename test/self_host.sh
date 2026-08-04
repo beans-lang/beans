@@ -273,18 +273,44 @@ diff -u "$tmp/hello.expected" "$tmp/hello.actual"
     test/cases/self_host_llvm_range.b \
     >"$tmp/range.second.ll"
 cmp "$tmp/range.first.ll" "$tmp/range.second.ll"
+# ranges lower to direct counted loops: guard compares stay typed and
+# the old spilled done flag must be gone from every loop
 grep -q 'icmp sle i64' "$tmp/range.first.ll"
 grep -q 'icmp ule i8' "$tmp/range.first.ll"
-grep -q 'store i1 true, ptr %spill.iter.done' \
-    "$tmp/range.first.ll"
+grep -q 'icmp eq i64' "$tmp/range.first.ll"
+if grep -q 'spill.iter.done' "$tmp/range.first.ll"; then
+    echo "range loops still spill an iterator done flag" >&2
+    exit 1
+fi
 clang -O1 -pthread -Wno-override-module \
     "$tmp/range.first.ll" build/beans_rt.c -lm \
     -o "$tmp/range-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_range.b \
     >"$tmp/range.expected"
-"$tmp/range-native" >"$tmp/range.actual"
+# maximum endpoints once hung native builds: a wrapped increment loops
+# forever, so a stuck binary must fail the test instead of wedging it
+perl -e 'alarm 60; exec @ARGV or die "exec: $!"' \
+    "$tmp/range-native" >"$tmp/range.actual"
 diff -u "$tmp/range.expected" "$tmp/range.actual"
+# both compilers must produce natives that agree on every range shape
+# neither has trouble with; inclusive tops at a type's maximum stay
+# self-hosted-only above until the stage-0 counted loop stops wrapping
+./build/beansc-next build \
+    test/cases/self_host_llvm_range_native.b \
+    -o "$tmp/range-native-next" >/dev/null
+"$reference_compiler" build \
+    test/cases/self_host_llvm_range_native.b \
+    -o "$tmp/range-native-stage0" >/dev/null
+"$reference_compiler" run \
+    test/cases/self_host_llvm_range_native.b \
+    >"$tmp/range-native.expected"
+perl -e 'alarm 60; exec @ARGV or die "exec: $!"' \
+    "$tmp/range-native-next" >"$tmp/range-native.next"
+perl -e 'alarm 60; exec @ARGV or die "exec: $!"' \
+    "$tmp/range-native-stage0" >"$tmp/range-native.stage0"
+diff -u "$tmp/range-native.expected" "$tmp/range-native.next"
+diff -u "$tmp/range-native.next" "$tmp/range-native.stage0"
 ./build/beansc-next llvm \
     test/cases/self_host_llvm_list.b \
     >"$tmp/list.first.ll"
@@ -1684,10 +1710,11 @@ BEANS_NO_POOL=1 "$tmp/option-drop-native" \
     >"$tmp/option-drop.actual"
 diff -u "$tmp/option-drop.expected" \
     "$tmp/option-drop.actual"
-# a consumed constructor operand dies with the init call: the
-# caller releases its count right after (the initializer retained
-# what it stored), and a borrowed site keeps the argument alive —
-# deinit order proves both directions
+# a consumed constructor operand hands its reference to the sink
+# initializer's field: the caller releases nothing after the call
+# and the initializer retains nothing — the object's death is what
+# frees the argument. Deinit order under the interpreter diff plus
+# the sanitized build proves both directions
 ./build/beansc-next llvm \
     test/cases/self_host_llvm_ctor_ownership.b \
     >"$tmp/ctor-ownership.first.ll"
@@ -1696,14 +1723,17 @@ diff -u "$tmp/option-drop.expected" \
     >"$tmp/ctor-ownership.second.ll"
 cmp "$tmp/ctor-ownership.first.ll" \
     "$tmp/ctor-ownership.second.ll"
-# the generic instance's init call must be followed by the
-# consumed argument's release; matching from a dumped window
-# because grep -q on a pipe dies of EPIPE under pipefail
+# no release may follow the generic instance's init call; matching
+# from a dumped window because grep -q on a pipe dies of EPIPE
+# under pipefail
 grep -A1 'call void @.next.gen' \
     "$tmp/ctor-ownership.first.ll" \
     >"$tmp/ctor-ownership.window"
-grep -q 'call void @beans_release(ptr %v' \
-    "$tmp/ctor-ownership.window"
+if grep -q 'call void @beans_release(ptr %v' \
+    "$tmp/ctor-ownership.window"; then
+    echo "sink init call still releases its consumed argument" >&2
+    exit 1
+fi
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
