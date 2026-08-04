@@ -484,6 +484,9 @@ class LlvmRecordLayout {
 class LlvmTextEmitter {
     program: MirProgram
     errors: List<Diagnostic>
+    // qualified name -> encoding intrinsic id, filled once by
+    // resolve_encoding_intrinsics after full validation
+    encoding_intrinsics: Map<string, int>
     strings: List<string>
     string_ids: Map<string, int>
     function_symbols: Map<string, string>
@@ -544,6 +547,7 @@ class LlvmTextEmitter {
     fn init(program: MirProgram) {
         self.program = program
         self.errors = []
+        self.encoding_intrinsics = {}
         self.strings = []
         self.string_ids = {}
         self.function_symbols = {}
@@ -15505,93 +15509,233 @@ class LlvmTextEmitter {
         return ""
     }
 
-    // The std.encoding packages marshal payloads through two private
-    // helpers with a fixed shape. Their Beans bodies are the reference
-    // definition — the interpreters run them, and they must keep agreeing —
-    // but a byte loop is the wrong instruction sequence for a bulk copy, so
-    // native code lowers a call to the same bounds check followed by one
-    // @llvm.memcpy. Recognised by exact qualified name; a package that
-    // renames or reshapes them simply keeps the loop.
-    fn encoding_copy_direction(name: string) -> int {
-        for package: string in ["json", "xml", "base64"] {
-            if name == "{package}.enc_copy_to_raw" { return 1 }
-            if name == "{package}.enc_copy_from_raw" { return 2 }
-        }
+    // ---- compiler-shipped encoding intrinsics ----
+    //
+    // The std.encoding packages marshal payloads through a small set of
+    // private helpers with fixed shapes. Their Beans bodies are the
+    // reference definition — both interpreters run them, and every backend
+    // must keep agreeing — but a byte loop is the wrong instruction sequence
+    // for a bulk copy, and no Beans expression can name a heap buffer's
+    // address at all. Native code therefore lowers calls to these helpers
+    // directly.
+    //
+    // Eligibility is decided once, in resolve_encoding_intrinsics, and is
+    // deliberately not name-based alone. A function qualifies only when all
+    // of these hold:
+    //
+    //   1. its unqualified name is one of the reserved names below;
+    //   2. it was loaded from the compiler-shipped standard library — the
+    //      package's source file sits under the stdlib root that this same
+    //      compiler resolves imports against;
+    //   3. its declaring package is one of std.encoding.{json,xml,base64};
+    //   4. its parameter count, every parameter type, and its result type
+    //      match the intrinsic's signature exactly.
+    //
+    // Rule 2 is what makes a user package harmless: a module of its own
+    // named json, xml or base64 produces the same MIR name, but its source
+    // lives outside the stdlib root, so it is compiled as an ordinary call
+    // and runs its own Beans body. test/cases/encoding_shadow/ is the
+    // negative proof.
+    //
+    // Intrinsic ids:
+    //   1 copy_to_raw    (Bytes, int, int, int) -> unit
+    //   2 copy_from_raw  (int, Bytes, int, int) -> unit
+    //   3 bytes_address  (Bytes) -> int
+    //   4 string_address (string) -> int
+    fn encoding_intrinsic_id(short_name: string) -> int {
+        if short_name == "enc_copy_to_raw" { return 1 }
+        if short_name == "enc_copy_from_raw" { return 2 }
+        if short_name == "enc_bytes_address" { return 3 }
+        if short_name == "enc_string_address" { return 4 }
         return 0
     }
 
-    fn emit_encoding_copy(function: MirFunction,
-                          instruction: MirInstruction,
-                          values: Map<int, string>,
-                          direction: int) -> string {
-        if instruction.operands.len() != 4 { return "" }
+    fn encoding_intrinsic_signature(id: int) -> List<string> {
+        // parameter types followed by the result type
+        if id == 1 {
+            return ["Bytes", "int", "int", "int", "unit"]
+        }
+        if id == 2 {
+            return ["int", "Bytes", "int", "int", "unit"]
+        }
+        if id == 3 { return ["Bytes", "int"] }
+        return ["string", "int"]
+    }
+
+    // True when `file` sits under `root`, comparing whole path segments so
+    // "stdlibx/std" can never pass for "stdlib/std".
+    fn path_is_under(file: string, root: string) -> bool {
+        if root == "" { return false }
+        var prefix: string = root
+        if !prefix.ends_with("/") { prefix = "{prefix}/" }
+        if file.starts_with(prefix) { return true }
+        // Accept a leading "./" on either side, which the loader can produce.
+        var plain: string = file
+        if plain.starts_with("./") { plain = plain.slice(2, plain.len()) }
+        var bare: string = prefix
+        if bare.starts_with("./") { bare = bare.slice(2, bare.len()) }
+        return plain.starts_with(bare)
+    }
+
+    fn resolve_encoding_intrinsics() {
+        let root: string = stdlib_root()
+        for function: MirFunction in self.program.functions {
+            if function.declaration || function.external { continue }
+            let dot: int = function.name.rfind(".").or(-1)
+            if dot <= 0 { continue }
+            let package: string = function.name.slice(0, dot)
+            let short_name: string =
+                function.name.slice(dot + 1, function.name.len())
+            let id: int = self.encoding_intrinsic_id(short_name)
+            if id == 0 { continue }
+            // 3. only the three shipped encoding packages
+            if package != "json" && package != "xml" &&
+               package != "base64" {
+                continue
+            }
+            // 2. and only when the source really is the shipped library
+            var expected: string = root
+            if !expected.ends_with("/") { expected = "{expected}/" }
+            expected = "{expected}encoding/{package}"
+            if !self.path_is_under(function.file, expected) {
+                continue
+            }
+            // 4. exact signature, parameters and result
+            let signature: List<string> =
+                self.encoding_intrinsic_signature(id)
+            var parameters: List<HirType> = []
+            for local: MirLocal in function.locals {
+                if local.parameter { parameters.push(local.type) }
+            }
+            if parameters.len() != signature.len() - 1 { continue }
+            var matched: bool = true
+            for index: int in 0..parameters.len() {
+                if canonical_hir_name(parameters[index].name) !=
+                   signature[index] {
+                    matched = false
+                }
+                if parameters[index].args.len() != 0 { matched = false }
+            }
+            if canonical_hir_name(function.result.name) !=
+               signature[signature.len() - 1] {
+                matched = false
+            }
+            if !matched { continue }
+            self.encoding_intrinsics[function.name] = id
+        }
+    }
+
+    fn encoding_intrinsic_of(name: string) -> int {
+        return self.encoding_intrinsics.get(name).or(0)
+    }
+
+    // A bounds check that cannot be defeated by overflow: each term is
+    // compared against the length on its own, and the sum is only formed
+    // after both have been proven non-negative and individually in range.
+    // `from + count` can then never wrap a 64-bit signed value, because
+    // both are at most the length of a live allocation.
+    fn emit_encoding_bounds(id: int, bytes_value: string,
+                            offset: string, count: string,
+                            instruction: MirInstruction) -> string {
+        let id_tag: int = self.fresh()
+        let message: string =
+            self.string_pointer("encoding raw copy out of range")
+        var output: string =
+            "  %enc.len{id_tag} = call i64 @beans_bytes_len(ptr {bytes_value})\n"
+        output =
+            "{output}  %enc.negoff{id_tag} = icmp slt i64 {offset}, 0\n"
+        output =
+            "{output}  %enc.negcnt{id_tag} = icmp slt i64 {count}, 0\n"
+        output =
+            "{output}  %enc.offbig{id_tag} = icmp sgt i64 {offset}, %enc.len{id_tag}\n"
+        output =
+            "{output}  %enc.cntbig{id_tag} = icmp sgt i64 {count}, %enc.len{id_tag}\n"
+        output =
+            "{output}  %enc.bad0{id_tag} = or i1 %enc.negoff{id_tag}, %enc.negcnt{id_tag}\n"
+        output =
+            "{output}  %enc.bad1{id_tag} = or i1 %enc.offbig{id_tag}, %enc.cntbig{id_tag}\n"
+        output =
+            "{output}  %enc.bad2{id_tag} = or i1 %enc.bad0{id_tag}, %enc.bad1{id_tag}\n"
+        output =
+            "{output}  br i1 %enc.bad2{id_tag}, label %enc.panic{id_tag}, label %enc.sum{id_tag}\n"
+        // Both operands are now known to be in [0, len], so the sum is at
+        // most 2*len and cannot overflow.
+        output =
+            "{output}enc.sum{id_tag}:\n  %enc.end{id_tag} = add nsw i64 {offset}, {count}\n"
+        output =
+            "{output}  %enc.over{id_tag} = icmp sgt i64 %enc.end{id_tag}, %enc.len{id_tag}\n"
+        output =
+            "{output}  br i1 %enc.over{id_tag}, label %enc.panic{id_tag}, label %enc.ok{id_tag}\n"
+        output =
+            "{output}enc.panic{id_tag}:\n  call void @beans_panic(ptr {message}, i64 {instruction.line}, i64 {instruction.col})\n  unreachable\nenc.ok{id_tag}:\n"
+        return output
+    }
+
+    fn emit_encoding_intrinsic(function: MirFunction,
+                               instruction: MirInstruction,
+                               values: Map<int, string>,
+                               id: int) -> string {
         var operands: List<string> = []
-        for index: int in 0..4 {
+        for index: int in 0..instruction.operands.len() {
             operands.push(
                 self.value(
                     function, values,
                     instruction.operands[index], instruction))
         }
+        // The payload address of a Bytes or a string. Both are runtime
+        // objects whose first word is the data pointer for Bytes, and whose
+        // own pointer is the data for a string. Returned as an integer so
+        // no Beans-visible pointer type is created.
+        if id == 3 || id == 4 {
+            if operands.len() != 1 { return "" }
+            let result: string = "%v{instruction.result}"
+            values[instruction.result] = result
+            let id_tag: int = self.fresh()
+            if id == 3 {
+                return "  %enc.data{id_tag} = load ptr, ptr {operands[0]}\n  {result} = ptrtoint ptr %enc.data{id_tag} to i64\n"
+            }
+            return "  {result} = ptrtoint ptr {operands[0]} to i64\n"
+        }
+        if operands.len() != 4 { return "" }
         // to_raw:   (Bytes data, i64 from, i64 address, i64 count)
         // from_raw: (i64 address, Bytes target, i64 at, i64 count)
         let bytes_value: string =
-            if direction == 1 { operands[0] } else { operands[1] }
+            if id == 1 { operands[0] } else { operands[1] }
         let offset: string =
-            if direction == 1 { operands[1] } else { operands[2] }
+            if id == 1 { operands[1] } else { operands[2] }
         let address: string =
-            if direction == 1 { operands[2] } else { operands[0] }
+            if id == 1 { operands[2] } else { operands[0] }
         let count: string = operands[3]
         self.require_declare(
             "llvm.memcpy.p0.p0.i64",
             "void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)")
-        // beans_panic and beans_bytes_len are already declared by the
-        // module's runtime prelude; re-declaring them is an LLVM error.
-        let id: int = self.fresh()
-        let message: string =
-            self.string_pointer(
-                "encoding raw copy out of range")
-        // The same three conditions the Beans body checks, in the same
-        // order, so a violation panics identically in both backends.
+        // beans_panic and beans_bytes_len come from the runtime prelude;
+        // re-declaring either is an LLVM error.
         var output: string =
-            "  %enc.len{id} = call i64 @beans_bytes_len(ptr {bytes_value})\n"
+            self.emit_encoding_bounds(
+                id, bytes_value, offset, count, instruction)
+        let id_tag: int = self.fresh()
         output =
-            "{output}  %enc.neg{id} = icmp slt i64 {offset}, 0\n"
+            "{output}  %enc.data{id_tag} = load ptr, ptr {bytes_value}\n"
         output =
-            "{output}  %enc.negn{id} = icmp slt i64 {count}, 0\n"
+            "{output}  %enc.at{id_tag} = getelementptr i8, ptr %enc.data{id_tag}, i64 {offset}\n"
         output =
-            "{output}  %enc.end{id} = add i64 {offset}, {count}\n"
-        output =
-            "{output}  %enc.over{id} = icmp sgt i64 %enc.end{id}, %enc.len{id}\n"
-        output =
-            "{output}  %enc.bad0{id} = or i1 %enc.neg{id}, %enc.negn{id}\n"
-        output =
-            "{output}  %enc.bad{id} = or i1 %enc.bad0{id}, %enc.over{id}\n"
-        output =
-            "{output}  br i1 %enc.bad{id}, label %enc.panic{id}, label %enc.ok{id}\nenc.panic{id}:\n"
-        output =
-            "{output}  call void @beans_panic(ptr {message}, i64 {instruction.line}, i64 {instruction.col})\n  unreachable\nenc.ok{id}:\n"
-        output =
-            "{output}  %enc.data{id} = load ptr, ptr {bytes_value}\n"
-        output =
-            "{output}  %enc.at{id} = getelementptr i8, ptr %enc.data{id}, i64 {offset}\n"
-        output =
-            "{output}  %enc.raw{id} = inttoptr i64 {address} to ptr\n"
-        if direction == 1 {
-            return "{output}  call void @llvm.memcpy.p0.p0.i64(ptr %enc.raw{id}, ptr %enc.at{id}, i64 {count}, i1 false)\n"
+            "{output}  %enc.raw{id_tag} = inttoptr i64 {address} to ptr\n"
+        if id == 1 {
+            return "{output}  call void @llvm.memcpy.p0.p0.i64(ptr %enc.raw{id_tag}, ptr %enc.at{id_tag}, i64 {count}, i1 false)\n"
         }
-        return "{output}  call void @llvm.memcpy.p0.p0.i64(ptr %enc.at{id}, ptr %enc.raw{id}, i64 {count}, i1 false)\n"
+        return "{output}  call void @llvm.memcpy.p0.p0.i64(ptr %enc.at{id_tag}, ptr %enc.raw{id_tag}, i64 {count}, i1 false)\n"
     }
 
     fn emit_call(function: MirFunction,
                  instruction: MirInstruction,
                  values: Map<int, string>) -> string {
-        let encoding_copy: int =
-            self.encoding_copy_direction(instruction.resolved)
-        if encoding_copy != 0 {
+        let encoding_id: int =
+            self.encoding_intrinsic_of(instruction.resolved)
+        if encoding_id != 0 {
             let lowered: string =
-                self.emit_encoding_copy(
-                    function, instruction, values,
-                    encoding_copy)
+                self.emit_encoding_intrinsic(
+                    function, instruction, values, encoding_id)
             if lowered != "" { return lowered }
         }
         if !self.function_symbols.contains(
@@ -19066,6 +19210,7 @@ class LlvmTextEmitter {
 
     fn emit(require_main: bool) -> string {
         self.index_functions()
+        self.resolve_encoding_intrinsics()
         for function: MirFunction in self.program.functions {
             if function.c_export {
                 self.emit_c_export(function)

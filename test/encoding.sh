@@ -29,20 +29,33 @@ fn main() {
 }
 EOF
 ./build/beansc build "$tmp/hello.b" -o "$tmp/hello" >/dev/null
-if nm "$tmp/hello" 2>/dev/null | grep -Eq "beans_enc_|yyjson|pugi|simdutf"; then
+# nm's output is captured before grepping: `grep -q` exits on its first
+# match, which SIGPIPEs nm, and `set -o pipefail` would report that as a
+# failed check rather than a found symbol.
+symbols_of() { # <binary> -> file of symbol names
+    nm "$1" >"$tmp/symbols.txt" 2>/dev/null || true
+}
+symbols_of "$tmp/hello"
+if grep -Eq "beans_enc_|yyjson|pugi|simdutf" "$tmp/symbols.txt"; then
     echo "hello world contains encoding symbols" >&2
     exit 1
 fi
-if nm "$tmp/encoding_json" 2>/dev/null | grep -q "beans_enc_xml_parse"; then
+symbols_of "$tmp/encoding_json"
+if grep -q "beans_enc_xml_parse" "$tmp/symbols.txt"; then
     echo "the JSON binary pulled in the XML bridge" >&2
     exit 1
 fi
-if nm "$tmp/encoding_base64" 2>/dev/null | grep -q "beans_enc_json_parse"; then
+if ! grep -q "beans_enc_json_parse" "$tmp/symbols.txt"; then
+    echo "the JSON binary is missing its own bridge" >&2
+    exit 1
+fi
+symbols_of "$tmp/encoding_base64"
+if grep -q "beans_enc_json_parse" "$tmp/symbols.txt"; then
     echo "the base64 binary pulled in the JSON bridge" >&2
     exit 1
 fi
-if ! nm "$tmp/encoding_json" 2>/dev/null | grep -q "beans_enc_json_parse"; then
-    echo "the JSON binary is missing its own bridge" >&2
+if ! grep -q "beans_enc_b64_encode" "$tmp/symbols.txt"; then
+    echo "the base64 binary is missing its own bridge" >&2
     exit 1
 fi
 hello_size=$(wc -c <"$tmp/hello")
@@ -102,6 +115,21 @@ for case_name in encoding_json encoding_xml encoding_base64; do
     fi
 done
 echo "ok payload marshalling lowers to memcpy in native code"
+
+# The intrinsics are restricted to compiler-shipped stdlib source. A user
+# module whose packages are named json, xml and base64 and which declares
+# the intrinsic names with the exact validated signatures must keep its own
+# Beans bodies in every backend.
+./build/beansc run test/cases/encoding_shadow/main.b >"$tmp/shadow.interp" 2>&1
+./build/beansc build test/cases/encoding_shadow/main.b -o "$tmp/shadow" >/dev/null
+"$tmp/shadow" >"$tmp/shadow.native" 2>&1
+diff -u test/cases/encoding_shadow.out "$tmp/shadow.interp"
+diff -u test/cases/encoding_shadow.out "$tmp/shadow.native"
+if grep -q "llvm.memcpy" build/main.ll; then
+    echo "a user package named json/xml/base64 triggered the encoding intrinsic" >&2
+    exit 1
+fi
+echo "ok shadowing user packages cannot trigger the encoding intrinsics"
 
 # macOS leak checks below cover encoding_fuzz too; keep its run short enough
 # to stay inside the suite's normal time budget.

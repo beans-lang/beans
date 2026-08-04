@@ -439,10 +439,13 @@ expansion or network/file fetching ever. The full API and limits are in
 
 Verified by executing the bridges' own smoke program on each target
 (`bash test/encoding_targets.sh`): macOS arm64, Linux glibc on x86-64 and
-ARM64, Alpine musl, and **big-endian s390x** under emulation. `wasm32-wasi`
-compiles with a complete WASI SDK but has not been executed. **Windows is
-not supported**: it has never been built or run there, and the C++ ABI shim
-pugixml needs is written for the Itanium ABI, not MSVC's.
+ARM64, Alpine musl on both, and **big-endian s390x** under emulation, where
+`std.encoding.binary`'s own golden also runs. Windows is covered by
+`make test-encoding-windows` locally — every bridge compiles with the
+Windows toolchain and all four packages cross-build for the GNU, GNullVM,
+32-bit and ARM64 ABIs — and CI's `windows-native` job builds and runs the
+same cases on real `windows-latest` and `windows-11-arm` machines.
+`wasm32-wasi` compiles with a complete WASI SDK but has not been executed.
 
 ## Memory
 

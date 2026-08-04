@@ -272,6 +272,17 @@ types are visible — and one is pure Beans:
 | `std.encoding.base64` | simdutf 9.0.0 | MIT (upstream offers MIT or Apache-2.0) |
 | `std.encoding.binary` | Beans source over `Bytes` | — |
 
+Payload marshalling is not written as a Beans byte loop in native code: the
+packages call four private helpers — two bulk copies and two payload-address
+borrows — that the native backend lowers to `@llvm.memcpy`, a pointer load,
+and overflow-safe bounds checks. Eligibility is validated, not assumed: a
+helper qualifies only when its source file sits under the compiler-shipped
+stdlib root, its package is one of the three shipped encoding packages, and
+its parameter and result types match the intrinsic signature exactly. A user
+module with its own `json`, `xml` or `base64` package therefore keeps its own
+Beans bodies (`test/cases/encoding_shadow/`), and both interpreters always
+run the Beans bodies, which is why the three backends stay byte-identical.
+
 Vendored sources live in `runtime/encoding/vendor/` (exact release files,
 recorded in `VENDOR.md` there) and ship with every package. Each feature
 compiles to its own cached object, keyed on the bridge ABI version, the
@@ -424,9 +435,11 @@ let raw: string = base64.Encoding.url_safe_no_pad.encode(Bytes.from("x"))
 - simdutf is built in upstream's `SIMDUTF_NO_LIBCXX` mode, so the object
   references no C++ runtime symbol at all. pugixml still needs `operator
   delete` and `__cxa_pure_virtual` for its writer vtable; those are defined
-  weak inside its own object for the Itanium C++ ABI, which is what every
-  verified target uses. `test/encoding_symbols.sh` fails the build if either
-  object grows a symbol outside libc.
+  weak inside its own object for the Itanium C++ ABI, which every supported
+  target uses — including Windows, where MinGW and GNullVM are Itanium-ABI
+  toolchains. `test/encoding_symbols.sh` fails the build if either object
+  grows a symbol outside libc, and `test/encoding_windows.sh` checks the same
+  thing with the Windows toolchain.
 
 ### std.encoding.binary
 

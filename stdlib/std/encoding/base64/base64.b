@@ -74,6 +74,22 @@ fn enc_copy_from_raw(address: int, target: Bytes, at: int, count: int) {
     }
 }
 
+// ---- borrowed payload addresses (native only) ----
+//
+// The address of a live Bytes payload, or of a string's bytes. The native
+// backend lowers these to the object's own data pointer; both interpreters
+// run this body and get 0, so every caller must keep a copy path for that
+// answer. The address is valid only while the value is alive and unmodified
+// and must never be stored — callers hand it straight to a bridge call in
+// the same scope.
+fn enc_bytes_address(data: Bytes) -> int {
+    return 0
+}
+
+fn enc_string_address(text: string) -> int {
+    return 0
+}
+
 fn raw_from_bytes(data: Bytes) -> int {
     let count: int = data.len()
     let address: int = alloc_words((count + 7) / 8)
@@ -121,15 +137,30 @@ pub enum Encoding {
 
     /// Encodes `data`. The output length is exact for this encoding, and
     /// simdutf writes the text straight into the output buffer.
+    ///
+    /// Native code borrows the input's own bytes and lets simdutf write into
+    /// the output Bytes in place, so the only copy left is the one that turns
+    /// that buffer into an immutable string. The interpreters get address 0
+    /// and fall back to staging both sides through raw blocks; the result is
+    /// identical either way.
     pub fn encode(data: Bytes) -> string {
         let count: int = data.len()
         if count == 0 { return "" }
-        let source: int = raw_from_bytes(data)
-        var wrote: int = 0
-        var target: int = 0
+        let borrowed: int = enc_bytes_address(data)
+        var source: int = borrowed
+        if source == 0 { source = raw_from_bytes(data) }
+
+        var need: int = 0
         unsafe {
-            let need: int = beans_enc_b64_encoded_len(self.id(), count)
-            target = alloc_words((need + 7) / 8)
+            need = beans_enc_b64_encoded_len(self.id(), count)
+        }
+        var out: Bytes = new Bytes(need)
+        let out_borrowed: int = enc_bytes_address(out)
+        var target: int = out_borrowed
+        if target == 0 { target = alloc_words((need + 7) / 8) }
+
+        var wrote: int = 0
+        unsafe {
             let req: RawPtr<u64> = RawPtr.alloc(3)
             req.write(count as u64)
             req.offset(1).write(need as u64)
@@ -139,13 +170,13 @@ pub enum Encoding {
             wrote = beans_enc_b64_encode(source_view, target_view, req)
             req.free()
         }
-        var text: string = ""
-        if wrote >= 0 {
-            text = bytes_from_raw(target, wrote).to_string_full()
+        if out_borrowed == 0 && wrote >= 0 {
+            out = bytes_from_raw(target, wrote)
         }
-        free_raw(source)
-        free_raw(target)
-        return text
+        if borrowed == 0 { free_raw(source) }
+        if out_borrowed == 0 { free_raw(target) }
+        if wrote < 0 { return "" }
+        return out.to_string_full()
     }
 
     /// Strict RFC 4648 decoding. See the module comment for the contract.
@@ -163,14 +194,26 @@ pub enum Encoding {
     fn decode_mode(text: string, mode: int) -> Result<Bytes> {
         let count: int = text.len()
         if count == 0 { return ok(new Bytes(0)) }
-        let source: int = raw_from_bytes(Bytes.from(text))
+        // Native code reads the string's own bytes and decodes straight into
+        // the result buffer: no staging copy on either side. The
+        // interpreters get address 0 and stage through raw blocks.
+        let borrowed: int = enc_string_address(text)
+        var source: int = borrowed
+        if source == 0 { source = raw_from_bytes(Bytes.from(text)) }
+
+        var cap: int = 0
+        unsafe {
+            cap = beans_enc_b64_max_decoded_len(count)
+        }
+        var payload: Bytes = new Bytes(cap)
+        let payload_borrowed: int = enc_bytes_address(payload)
+        var target: int = payload_borrowed
+        if target == 0 { target = alloc_words((cap + 7) / 8) }
+
         var status: int = 0
         var wrote: int = 0
         var position: int = 0
-        var target: int = 0
         unsafe {
-            let cap: int = beans_enc_b64_max_decoded_len(count)
-            target = alloc_words((cap + 7) / 8)
             let req: RawPtr<u64> = RawPtr.alloc(6)
             req.write(count as u64)
             req.offset(1).write(cap as u64)
@@ -183,12 +226,16 @@ pub enum Encoding {
             position = req.offset(5).read() as int
             req.free()
         }
-        var payload: Bytes = new Bytes(0)
         if status == 0 {
-            payload = bytes_from_raw(target, wrote)
+            if payload_borrowed == 0 {
+                payload = bytes_from_raw(target, wrote)
+            } else {
+                // decoded in place; trim the capacity down to what was written
+                payload = payload.slice(0, wrote)
+            }
         }
-        free_raw(source)
-        free_raw(target)
+        if borrowed == 0 { free_raw(source) }
+        if payload_borrowed == 0 { free_raw(target) }
         if status == 0 { return ok(move payload) }
         if status == 1 {
             return err("invalid base64 character at byte {position}", "invalid")

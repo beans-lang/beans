@@ -154,6 +154,25 @@ if buildable examples/shop/main.b; then
     stage examples/shop/main.b shop
 fi
 
+# std.encoding. These are not examples — they are the four packages' own
+# goldens — but they are the only programs in the tree that link a vendored
+# C/C++ bridge, so they are exactly what a Windows run has to prove. Building
+# them here compiles yyjson, pugixml and simdutf with the Windows toolchain;
+# running them on the real machine is what makes Windows a supported target
+# for std.encoding rather than an assumption.
+#
+# The expectation comes from `beansc run` on the staging host, as for every
+# other row, so the Windows binary is held to the same cross-machine answer.
+for case_name in encoding_json encoding_xml encoding_base64 encoding_binary \
+    encoding_fuzz; do
+    if buildable "test/cases/$case_name.b"; then
+        stage "test/cases/$case_name.b" "$case_name"
+    else
+        echo "std.encoding case $case_name is not buildable for $TRIPLE" >&2
+        exit 1
+    fi
+done
+
 # The classes,packages differential-fuzz corpus (seed 47): class dispatch,
 # super calls, ARC drop order, and multi-package projects. Expectations come
 # from the generator's independent oracle — not from any compiler — so the

@@ -112,7 +112,7 @@ $(BIN): $(SELF_HOST_SRC) $(RUNTIME_COPY)
 
 endif
 
-.PHONY: stage0 run clean install test test-ci test-core test-stage0 platform-status test-platform-manifest test-portable-int128 test-compiler-arch-objects test-stage0-windows test-windows-source-bootstrap test-musl-hosted test-armv6hf-hosted test-sanitize test-release-package test-install-release test-release-completeness test-clean-bootstrap test-c-abi-tier1 test-mir-stage0 test-barq-core fuzz-smoke fuzz-differential fuzz-differential-smoke test-linux test-linux-arch test-linux-hosted test-windows test-windows-native test-windows-native-i686 test-windows-native-arm64 test-windows-arch test-windows-hosted test-encoding-targets access-score self-host-next test-self-host test-self-host-full test-bootstrap bench-compiler bench-quick bench-full bench-verify bench-profile bench-compare
+.PHONY: stage0 run clean install test test-ci test-core test-stage0 platform-status test-platform-manifest test-portable-int128 test-compiler-arch-objects test-stage0-windows test-windows-source-bootstrap test-musl-hosted test-armv6hf-hosted test-sanitize test-release-package test-install-release test-release-completeness test-clean-bootstrap test-c-abi-tier1 test-mir-stage0 test-barq-core fuzz-smoke fuzz-differential fuzz-differential-smoke test-linux test-linux-arch test-linux-hosted test-windows test-windows-native test-windows-native-i686 test-windows-native-arm64 test-windows-arch test-windows-hosted test-encoding-targets test-encoding-windows access-score self-host-next test-self-host test-self-host-full test-bootstrap bench-compiler bench-quick bench-full bench-verify bench-profile bench-compare
 stage0: $(BOOTSTRAP_BIN)
 
 run: $(BIN)
@@ -469,6 +469,14 @@ test-windows-hosted:
 #   make test-encoding-targets TARGET=big-endian
 test-encoding-targets:
 	bash ./test/encoding_targets.sh $(or $(TARGET),all)
+
+# The local half of Windows support for std.encoding: every bridge compiles
+# with the Windows toolchain and every package cross-builds for all four
+# registered Windows ABIs. Execution happens in CI's windows-native job,
+# which builds and runs the same cases on real Windows machines. Kept out of
+# `make test` because it fetches an LLVM-MinGW toolchain on first use.
+test-encoding-windows:
+	bash ./test/encoding_windows.sh
 
 access-score: $(BIN)
 	bash ./test/access_score.sh

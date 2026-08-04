@@ -29,16 +29,18 @@ for case_name in encoding_json encoding_xml encoding_base64 encoding_binary; do
 done
 echo "ok bin: all four packages match their goldens"
 
-# ---- 2. release and release+LTO produce the same output ----
+# ---- 2. release and release+LTO produce the same output, all four ----
 for mode in "--release" "--release --lto"; do
     label=$(echo "$mode" | tr -d ' -')
-    for case_name in encoding_json encoding_base64; do
+    for case_name in encoding_json encoding_xml encoding_base64 \
+        encoding_binary encoding_fuzz; do
         # shellcheck disable=SC2086
         ./build/beansc build $mode "test/cases/$case_name.b" \
             -o "$tmp/$case_name.$label" >/dev/null
         "$tmp/$case_name.$label" >"$tmp/$case_name.$label.out" 2>&1
         diff -u "test/cases/$case_name.out" "$tmp/$case_name.$label.out"
     done
+    echo "  ok $mode: all four packages plus the fuzz corpus match"
 done
 echo "ok release and release+LTO match the default build's output"
 
@@ -245,7 +247,10 @@ fn main() {
 EOF
 ./build/beansc build "$tmp/hello.b" -o "$tmp/hello" >/dev/null
 hello_size=$(wc -c <"$tmp/hello" | tr -d ' ')
-if nm "$tmp/hello" 2>/dev/null | grep -Eq "beans_enc_|yyjson|pugi|simdutf"; then
+# Captured first: `grep -q` stops at its first match and SIGPIPEs nm, which
+# `set -o pipefail` would otherwise report as a failed check.
+nm "$tmp/hello" >"$tmp/hello.syms" 2>/dev/null || true
+if grep -Eq "beans_enc_|yyjson|pugi|simdutf" "$tmp/hello.syms"; then
     echo "hello world contains encoding symbols" >&2
     exit 1
 fi
@@ -260,11 +265,12 @@ fn main() {
 EOF
 ./build/beansc build "$tmp/hello_enc.b" -o "$tmp/hello_enc" >/dev/null
 enc_size=$(wc -c <"$tmp/hello_enc" | tr -d ' ')
-nm "$tmp/hello_enc" 2>/dev/null | grep -q "beans_enc_b64_encode" || {
+nm "$tmp/hello_enc" >"$tmp/hello_enc.syms" 2>/dev/null || true
+grep -q "beans_enc_b64_encode" "$tmp/hello_enc.syms" || {
     echo "the base64 program is missing its own bridge" >&2
     exit 1
 }
-if nm "$tmp/hello_enc" 2>/dev/null | grep -Eq "beans_enc_json|beans_enc_xml"; then
+if grep -Eq "beans_enc_json|beans_enc_xml" "$tmp/hello_enc.syms"; then
     echo "the base64 program pulled in another feature's bridge" >&2
     exit 1
 fi

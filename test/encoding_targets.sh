@@ -13,12 +13,15 @@ set -euo pipefail
 #   bash test/encoding_targets.sh linux-musl   # one target
 #
 # Targets:
-#   host          the machine running this script
-#   linux-glibc   Debian/Ubuntu container (Docker)
-#   linux-musl    Alpine container (Docker)
-#   big-endian    s390x container under emulation (Docker + binfmt/qemu)
-#   wasi          wasm32-wasip1 through a WASI SDK, run under wasmtime
-#   windows       not reachable from a POSIX host; always reports skipped
+#   host                  the machine running this script
+#   linux-glibc-x86_64    Debian container, linux/amd64
+#   linux-glibc-arm64     Debian container, linux/arm64
+#   linux-musl-x86_64     Alpine container, linux/amd64
+#   linux-musl-arm64      Alpine container, linux/arm64
+#   big-endian            s390x container (Docker + binfmt/qemu), C bridges
+#   big-endian-binary     s390x, the std.encoding.binary Beans golden
+#   wasi                  wasm32-wasip1 through a WASI SDK, run under wasmtime
+#   windows               cross-built here; executed only by Windows CI
 
 cd "$(dirname "$0")/.."
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/beans-enc-targets.XXXXXX")
@@ -171,7 +174,9 @@ docker_available() {
     command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1
 }
 
-# One container target: install clang, compile, link, run.
+# One container target: install clang, compile, link, run. `platform` is
+# passed to docker so each architecture is its own reproducible case rather
+# than "whatever this host happens to be".
 run_in_container() {
     local label=$1 image=$2 platform=$3 install=$4
     if ! docker_available; then
@@ -209,13 +214,27 @@ done
     ran=$((ran + 1))
 }
 
-if run_target linux-glibc; then
-    run_in_container linux-glibc debian:bookworm-slim "" \
+# Each Linux architecture is pinned explicitly, so "Linux x86-64" and
+# "Linux ARM64" are separate results and neither is inferred from the other.
+# One of the two runs natively on this host and the other under emulation;
+# both execute the same smoke program.
+if run_target linux-glibc-x86_64; then
+    run_in_container linux-glibc-x86_64 debian:bookworm-slim linux/amd64 \
         "apt-get update -qq >/dev/null && apt-get install -y -qq clang >/dev/null"
 fi
 
-if run_target linux-musl; then
-    run_in_container linux-musl alpine:3.22 "" \
+if run_target linux-glibc-arm64; then
+    run_in_container linux-glibc-arm64 debian:bookworm-slim linux/arm64 \
+        "apt-get update -qq >/dev/null && apt-get install -y -qq clang >/dev/null"
+fi
+
+if run_target linux-musl-x86_64; then
+    run_in_container linux-musl-x86_64 alpine:3.22 linux/amd64 \
+        "apk add -q clang lld musl-dev g++ >/dev/null"
+fi
+
+if run_target linux-musl-arm64; then
+    run_in_container linux-musl-arm64 alpine:3.22 linux/arm64 \
         "apk add -q clang lld musl-dev g++ >/dev/null"
 fi
 
@@ -225,6 +244,54 @@ fi
 if run_target big-endian; then
     run_in_container big-endian s390x/ubuntu:24.04 linux/s390x \
         "apt-get update -qq >/dev/null && apt-get install -y -qq clang >/dev/null"
+fi
+
+# The C smoke program covers the bridges, but std.encoding.binary is pure
+# Beans and has no bridge — its byte-order handling is compiled Beans code,
+# so it has to be executed as a Beans program on the big-endian machine.
+# beansc cross-emits LLVM IR for s390x (no sysroot needed), and the
+# container's own clang turns that into a native binary beside the runtime.
+if run_target big-endian-binary; then
+    echo "== big-endian-binary =="
+    if ! docker_available; then
+        echo "  skipped: docker is not available"
+        skipped=$((skipped + 1))
+    else
+        ./build/beansc build --target s390x-unknown-linux-gnu --emit ir \
+            test/cases/encoding_binary.b -o "$tmp/be_binary.ll" >/dev/null
+        # The one line that must differ is ByteOrder.native resolving to the
+        # target's own order; everything else must be byte-identical.
+        sed 's/^native matches little true big false$/native matches little false big true/' \
+            test/cases/encoding_binary.out >"$tmp/be_expected.out"
+        if [[ ! -s "$tmp/be_expected.out" ]]; then
+            echo "could not build the big-endian expectation" >&2
+            exit 1
+        fi
+        if ! cmp -s test/cases/encoding_binary.out "$tmp/be_expected.out"; then
+            : # the substitution applied, as it must
+        else
+            echo "the native-order line was not found in the golden" >&2
+            exit 1
+        fi
+        docker run --rm --platform linux/s390x -v "$PWD:/w:ro" \
+            -v "$tmp:/host:ro" -w /tmp s390x/ubuntu:24.04 sh -c '
+set -e
+apt-get update -qq >/dev/null 2>&1
+apt-get install -y -qq clang >/dev/null 2>&1
+clang -O2 -Wno-override-module -Wno-ignored-attributes \
+    /host/be_binary.ll /w/runtime/beans_rt.c -lm -o /tmp/be_binary
+/tmp/be_binary
+' >"$tmp/be_binary.out" 2>"$tmp/be_binary.err" || {
+            echo "big-endian binary run failed:" >&2
+            tail -20 "$tmp/be_binary.err" >&2
+            exit 1
+        }
+        diff -u "$tmp/be_expected.out" "$tmp/be_binary.out"
+        grep -q "native matches little false big true" "$tmp/be_binary.out"
+        echo "  std.encoding.binary golden matches on big-endian s390x"
+        echo "  (ByteOrder.native correctly resolves to big there)"
+        ran=$((ran + 1))
+    fi
 fi
 
 # ---- WASI ----
