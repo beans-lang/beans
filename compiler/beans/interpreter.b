@@ -9269,7 +9269,10 @@ class TreeInterpreter {
         var pointer_bridges: List<TreeFfiMemory> = []
         var storage: List<RawPtr<u8>> = []
         unsafe {
-            let pointers: RawPtr<u64> =
+            // The bridge indexes these slots as void**, so each one is a host
+            // pointer, not a fixed u64 — on a 32-bit host args[1] would land
+            // in the high half of a widened slot and read as null.
+            let pointers: RawPtr<RawPtr<u8> > =
                 RawPtr.alloc(arguments.len())
             let contexts:
                 RawPtr<RawPtr<u8> > =
@@ -9278,7 +9281,8 @@ class TreeInterpreter {
                 let parameter_type: HirType =
                     function.parameters[index].type
                 if parameter_type.name == "fn" {
-                    pointers.offset(index).write(0)
+                    pointers.offset(index).write(
+                        RawPtr.null())
                     if arguments[index].kind ==
                            "stored_function" {
                         let stored_value:
@@ -9301,7 +9305,7 @@ class TreeInterpreter {
                                 storage.push(stored)
                                 pointers.offset(
                                     index).write(
-                                        stored.address())
+                                        stored)
                                 contexts.offset(
                                     index).write(
                                         callback.context)
@@ -9327,7 +9331,7 @@ class TreeInterpreter {
                             pointer_bridges)
                     storage.push(argument)
                     pointers.offset(index).write(
-                        argument.address())
+                        argument)
                     contexts.offset(index).write(
                         RawPtr.null())
                 }
