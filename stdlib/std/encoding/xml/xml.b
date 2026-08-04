@@ -45,38 +45,60 @@ extern "C" fn beans_enc_xml_take_buf(buf: int, len: int, target: RawPtr<u8>) -> 
 
 // ---- raw-buffer marshalling (word-at-a-time, no per-byte Beans calls) ----
 
+// The two bulk-copy primitives every marshalling helper builds on. The
+// native backend lowers calls to these exact functions to a bounds-checked
+// @llvm.memcpy over the Bytes buffer; these bodies are the interpreters'
+// definition, and the two agree on every outcome, including the panic.
+// `address` must be word-aligned with `count` accessible bytes — every
+// caller allocates through alloc_words.
+fn enc_copy_to_raw(data: Bytes, from: int, address: int, count: int) {
+    if from < 0 || count < 0 || from + count > data.len() {
+        panic("encoding raw copy out of range")
+    }
+    unsafe {
+        let tail: RawPtr<u8> = RawPtr.from_address(address as u64)
+        var index: int = 0
+        for index + 8 <= count {
+            let word: RawPtr<u64> = RawPtr.from_address((address + index) as u64)
+            word.write(data.get_u64(from + index) as u64)
+            index += 8
+        }
+        for index < count {
+            tail.offset(index).write(data.get(from + index) as u8)
+            index += 1
+        }
+    }
+}
+
+fn enc_copy_from_raw(address: int, target: Bytes, at: int, count: int) {
+    if at < 0 || count < 0 || at + count > target.len() {
+        panic("encoding raw copy out of range")
+    }
+    unsafe {
+        let tail: RawPtr<u8> = RawPtr.from_address(address as u64)
+        var index: int = 0
+        for index + 8 <= count {
+            let word: RawPtr<u64> = RawPtr.from_address((address + index) as u64)
+            target.put_u64(at + index, word.read() as int)
+            index += 8
+        }
+        for index < count {
+            target.set(at + index, tail.offset(index).read() as int)
+            index += 1
+        }
+    }
+}
+
 fn raw_from_bytes(data: Bytes) -> int {
     let count: int = data.len()
-    let words: int = (count + 7) / 8
-    var address: int = 0
-    unsafe {
-        let block: RawPtr<u64> = RawPtr.alloc(if words == 0 { 1 } else { words })
-        let whole: int = count / 8
-        for index: int in 0..whole {
-            block.offset(index).write(data.get_u64(index * 8) as u64)
-        }
-        let tail: RawPtr<u8> = RawPtr.from_address(block.address())
-        for index: int in (whole * 8)..count {
-            tail.offset(index).write(data.get(index) as u8)
-        }
-        address = block.address() as int
-    }
+    let address: int = alloc_words((count + 7) / 8)
+    enc_copy_to_raw(data, 0, address, count)
     return address
 }
 
 fn bytes_from_raw(address: int, count: int) -> Bytes {
     var out: Bytes = new Bytes(count)
-    unsafe {
-        let block: RawPtr<u64> = RawPtr.from_address(address as u64)
-        let whole: int = count / 8
-        for index: int in 0..whole {
-            out.put_u64(index * 8, block.offset(index).read() as int)
-        }
-        let tail: RawPtr<u8> = RawPtr.from_address(address as u64)
-        for index: int in (whole * 8)..count {
-            out.set(index, tail.offset(index).read() as int)
-        }
-    }
+    enc_copy_from_raw(address, out, 0, count)
     return out
 }
 
@@ -398,21 +420,11 @@ pub class Node {
 
 // Reads `len` bytes starting at word `cursor` of a packed stream.
 fn packed_text(view: RawPtr<u64>, cursor: int, len: int) -> string {
-    var data: Bytes = new Bytes(len)
+    var address: int = 0
     unsafe {
-        let whole: int = len / 8
-        for index: int in 0..whole {
-            data.put_u64(index * 8, view.offset(cursor + index).read() as int)
-        }
-        if whole * 8 < len {
-            let last: u64 = view.offset(cursor + whole).read()
-            for index: int in (whole * 8)..len {
-                let shift: int = (index - whole * 8) * 8
-                data.set(index, ((last >> (shift as u64)) & 0xff) as int)
-            }
-        }
+        address = view.offset(cursor).address() as int
     }
-    return data.to_string_full()
+    return bytes_from_raw(address, len).to_string_full()
 }
 
 /// A whole XML document. Parse one, or build one from `new_document()`.
@@ -518,6 +530,15 @@ fn parse_phrase(code: int) -> string {
     }
 }
 
+// Where an error happened, as a phrase. A UTF-16 or UTF-32 input is
+// transcoded to UTF-8 before parsing, so pugixml's offsets index that
+// internal buffer and cannot be mapped back to the caller's bytes; those
+// documents say so instead of quoting a number that means nothing.
+fn error_place(position: int, exact: bool) -> string {
+    if exact { return "at byte {position}" }
+    return "at an unknown byte offset (the input was transcoded from UTF-16 or UTF-32)"
+}
+
 fn parse_data(data: Bytes, options: Options) -> Result<Document> {
     let block: int = raw_from_bytes(data)
     var status: int = 0
@@ -525,27 +546,29 @@ fn parse_data(data: Bytes, options: Options) -> Result<Document> {
     var root: int = 0
     var code: int = 0
     var position: int = 0
+    var exact: bool = true
     unsafe {
-        let view: RawPtr<u8> = RawPtr.from_address(block as u64)
-        let req: RawPtr<u64> = RawPtr.alloc(6)
-        req.write(data.len() as u64)
-        req.offset(1).write(options.flag_bits() as u64)
-        status = beans_enc_xml_parse(view, req)
-        doc_handle = req.offset(2).read() as int
-        root = req.offset(3).read() as int
-        code = req.offset(4).read() as int
-        position = req.offset(5).read() as int
-        req.free()
+        let view: RawPtr<u64> = RawPtr.alloc(7)
+        let source: RawPtr<u8> = RawPtr.from_address(block as u64)
+        view.write(data.len() as u64)
+        view.offset(1).write(options.flag_bits() as u64)
+        status = beans_enc_xml_parse(source, view)
+        doc_handle = view.offset(2).read() as int
+        root = view.offset(3).read() as int
+        code = view.offset(4).read() as int
+        position = view.offset(5).read() as int
+        exact = view.offset(6).read() != 0
+        view.free()
     }
     free_raw(block)
     if status == 6 {
-        return err("XML DOCTYPE at byte {position} is rejected by default; opt in with Options.allow_doctype", "doctype")
+        return err("XML DOCTYPE {error_place(position, exact)} is rejected by default; opt in with Options.allow_doctype", "doctype")
     }
     if status != 0 {
         if code == 3 {
-            return err("invalid XML at byte {position}: out of memory", "memory")
+            return err("invalid XML {error_place(position, exact)}: out of memory", "memory")
         }
-        return err("invalid XML at byte {position}: {parse_phrase(code)}", "invalid")
+        return err("invalid XML {error_place(position, exact)}: {parse_phrase(code)}", "invalid")
     }
     return ok(new Document(new DocOwner(doc_handle), root))
 }

@@ -8,7 +8,8 @@ trap 'rm -rf "$tmp"' EXIT
 echo "checking std.encoding.{json,xml,base64,binary}"
 
 # 1. Interpreter and native builds agree with the goldens, byte for byte.
-for case_name in encoding_json encoding_xml encoding_base64 encoding_binary; do
+for case_name in encoding_json encoding_xml encoding_base64 encoding_binary \
+    encoding_fuzz; do
     ./build/beansc run "test/cases/$case_name.b" >"$tmp/$case_name.interp" 2>&1
     ./build/beansc build "test/cases/$case_name.b" -o "$tmp/$case_name" \
         >"$tmp/$case_name.build" 2>&1
@@ -91,6 +92,20 @@ assert_defined base64.encode encoding_base64
 assert_defined binary.read_uvarint encoding_binary
 echo "ok Beans-source API definitions in the IR"
 
+# The marshalling helpers must lower to memcpy in native code rather than a
+# byte loop. The Beans bodies stay as the interpreters' definition, so this
+# checks the lowering actually fired.
+for case_name in encoding_json encoding_xml encoding_base64; do
+    if ! grep -q "llvm.memcpy" "build/$case_name.ll"; then
+        echo "$case_name marshalling did not lower to memcpy" >&2
+        exit 1
+    fi
+done
+echo "ok payload marshalling lowers to memcpy in native code"
+
+# macOS leak checks below cover encoding_fuzz too; keep its run short enough
+# to stay inside the suite's normal time budget.
+
 # 6. ASan/UBSan over each case: the emitted IR, the runtime, and the same
 # bridge sources the driver compiles, all instrumented together. The
 # allocator pool is disabled so use-after-free cannot hide, and on Linux
@@ -109,8 +124,11 @@ declare -A bridge_object=(
     [encoding_xml]="$tmp/san_xml.o"
     [encoding_base64]="$tmp/san_b64.o"
     [encoding_binary]=""
+    # the malformed-input corpus exercises all three bridges at once
+    [encoding_fuzz]="$tmp/san_json.o $tmp/san_xml.o $tmp/san_b64.o"
 )
-for case_name in encoding_json encoding_xml encoding_base64 encoding_binary; do
+for case_name in encoding_json encoding_xml encoding_base64 encoding_binary \
+    encoding_fuzz; do
     extra=${bridge_object[$case_name]}
     # extern "C" calls ride the generated FFI sidecar the driver compiles
     # beside the program; the instrumented link needs it too.
@@ -133,7 +151,7 @@ echo "ok ASan/UBSan clean on all four packages"
 # 7. macOS: the leaks tool verifies the document owners free every native
 # handle across the repeated parse/free loops.
 if [[ "$(uname)" == "Darwin" ]] && command -v leaks >/dev/null 2>&1; then
-    for case_name in encoding_json encoding_xml; do
+    for case_name in encoding_json encoding_xml encoding_fuzz; do
         if ! leaks --atExit -- "$tmp/$case_name" >"$tmp/$case_name.leaks" 2>&1; then
             sed -n '1,40p' "$tmp/$case_name.leaks" >&2
             echo "leaks reported failures for $case_name" >&2

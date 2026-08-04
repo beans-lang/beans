@@ -430,11 +430,19 @@ vendored, pinned upstream releases (see
 compiled into per-feature cached objects: importing JSON links yyjson and
 nothing else, and a program with no encoding import gains no encoding code or
 size. `beansc run` uses the same bridge sources through a cached per-host
-library, so interpreter and native output stay byte-identical. JSON and XML
+library, so interpreter and native output stay byte-identical — and so does
+the C++ stage 0, which needed no changes to support any of this. JSON and XML
 are safe by default — strict RFC 8259 with explicit opt-in extensions, XML
-DOCTYPE rejected by default, and no entity expansion or network/file fetching
-ever. The full API and limits are in
+DOCTYPE rejected by default, exactly one root element required, and no entity
+expansion or network/file fetching ever. The full API and limits are in
 [spec/SYNTAX.md](spec/SYNTAX.md).
+
+Verified by executing the bridges' own smoke program on each target
+(`bash test/encoding_targets.sh`): macOS arm64, Linux glibc on x86-64 and
+ARM64, Alpine musl, and **big-endian s390x** under emulation. `wasm32-wasi`
+compiles with a complete WASI SDK but has not been executed. **Windows is
+not supported**: it has never been built or run there, and the C++ ABI shim
+pugixml needs is written for the Itanium ABI, not MSVC's.
 
 ## Memory
 

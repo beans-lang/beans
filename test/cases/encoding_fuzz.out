@@ -1,0 +1,15 @@
+json malformed corpus: 2 accepted, 41 rejected
+json invalid utf-8: 0 accepted, 8 rejected
+xml malformed corpus: 9 accepted, 25 rejected
+base64 malformed corpus: 2 accepted, 25 rejected
+embedded NUL and high bytes: 0 accepted, 3 rejected
+json every prefix: 0 accepted, 40 rejected
+xml every prefix: 0 accepted, 63 rejected
+base64 every prefix: 5 accepted, 15 rejected
+mutation loop (4000 cases): 758 accepted, 3242 rejected
+deep json ok object
+unbalanced json eof
+unbalanced xml invalid
+padding run padding
+alphabet run decoded 7500
+survived every corpus

@@ -36,6 +36,61 @@ fn check_parse_error(label: string, text: string) {
     }
 }
 
+fn bom_case(label: string, prefix: List<int>, body: string, wide: int) {
+    var data: Bytes = new Bytes(0)
+    for piece: int in prefix { data.push(piece) }
+    for index: int in 0..body.len() {
+        data.push(body.byte_at(index))
+        for pad: int in 0..wide { data.push(0) }
+    }
+    match xml.parse_bytes(data) {
+        ok(doc) => {
+            match doc.root() {
+                ok(root) => io.println("{label}: root [{root.name()}] text [{root.text()}]"),
+                err(e) => io.println("{label}: {e.msg}"),
+            }
+        }
+        err(e) => io.println("{label}: {e.kind} - {e.msg}"),
+    }
+}
+
+fn big_endian_case(label: string, prefix: List<int>, body: string, wide: int) {
+    var data: Bytes = new Bytes(0)
+    for piece: int in prefix { data.push(piece) }
+    for index: int in 0..body.len() {
+        for pad: int in 0..wide { data.push(0) }
+        data.push(body.byte_at(index))
+    }
+    match xml.parse_bytes(data) {
+        ok(doc) => {
+            match doc.root() {
+                ok(root) => io.println("{label}: root [{root.name()}] text [{root.text()}]"),
+                err(e) => io.println("{label}: {e.msg}"),
+            }
+        }
+        err(e) => io.println("{label}: {e.kind} - {e.msg}"),
+    }
+}
+
+fn doctype_case(label: string, prefix: List<int>, wide: int, big_end: bool) {
+    let body: string = "<!DOCTYPE r><r/>"
+    var data: Bytes = new Bytes(0)
+    for piece: int in prefix { data.push(piece) }
+    for index: int in 0..body.len() {
+        if big_end {
+            for pad: int in 0..wide { data.push(0) }
+            data.push(body.byte_at(index))
+        } else {
+            data.push(body.byte_at(index))
+            for pad: int in 0..wide { data.push(0) }
+        }
+    }
+    match xml.parse_bytes(data) {
+        ok(_) => io.println("{label}: accepted"),
+        err(e) => io.println("{label}: {e.kind} - {e.msg}"),
+    }
+}
+
 fn main() {
     let source: string = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><!-- top --><?robot spin?><shop:order z=\"last\" a=\"first\" a2=\"2\">text <b>bold</b> tail<![CDATA[<raw> & bytes]]><!-- note --><?do it?></shop:order>"
     match xml.parse(source) {
@@ -93,10 +148,59 @@ fn main() {
     check_parse_error("mismatch", "<a><b></a>")
     check_parse_error("unclosed", "<a>")
     check_parse_error("bad attr", "<a x=1></a>")
-    check_parse_error("two roots", "<a/><b/>")
-    check_parse_error("empty", "")
     check_parse_error("bad comment", "<a><!-- x --></a><!--")
     check_parse_error("bad cdata", "<a><![CDATA[x]]</a>")
+
+    // exactly one root element, checked in both directions
+    check_parse_error("zero roots (empty)", "")
+    check_parse_error("zero roots (spaces)", "   ")
+    check_parse_error("zero roots (decl)", "<?xml version=\"1.0\"?>")
+    check_parse_error("zero roots (comment)", "<!--only a comment-->")
+    check_parse_error("zero roots (pi)", "<?target data?>")
+    check_parse_error("zero roots (doctype)", "<!DOCTYPE r>")
+    check_parse_error("two roots", "<a/><b/>")
+    check_parse_error("three roots", "<a/><b/><c/>")
+    // trailing misc after the root element is well-formed XML
+    check_parse_error("root plus trailing misc", "<a/><!--after-->")
+    match xml.parse("<!--before--><a/><?after it?>") {
+        ok(doc) => {
+            io.println("one root among siblings: {doc.nodes().len()} top nodes")
+        }
+        err(e) => io.println("one root rejected: {e.msg}"),
+    }
+
+    // byte-order marks: UTF-8, UTF-16 (both ends), UTF-32 (both ends)
+    // UTF-8 with and without a BOM
+    bom_case("utf8 bom", [0xef, 0xbb, 0xbf], "<r>hi</r>", 0)
+    bom_case("utf8 plain", [], "<r>hi</r>", 0)
+    // UTF-16LE: BOM FF FE, then each ASCII byte followed by one zero
+    bom_case("utf16le bom", [0xff, 0xfe], "<r>hi</r>", 1)
+    // UTF-32LE: BOM FF FE 00 00, then each byte followed by three zeros
+    bom_case("utf32le bom", [0xff, 0xfe, 0x00, 0x00], "<r>hi</r>", 3)
+
+    // UTF-16BE and UTF-32BE put the zero padding first
+    big_endian_case("utf16be bom", [0xfe, 0xff], "<r>hi</r>", 1)
+    big_endian_case("utf32be bom", [0x00, 0x00, 0xfe, 0xff], "<r>hi</r>", 3)
+
+    // DOCTYPE stays rejected under every encoding, and a transcoded input
+    // says so rather than quoting an offset into a buffer the caller never
+    // saw. A UTF-8 input keeps its exact offset, BOM included.
+    doctype_case("doctype utf8", [], 0, false)
+    doctype_case("doctype utf8 bom", [0xef, 0xbb, 0xbf], 0, false)
+    doctype_case("doctype utf16le", [0xff, 0xfe], 1, false)
+    doctype_case("doctype utf16be", [0xfe, 0xff], 1, true)
+    doctype_case("doctype utf32le", [0xff, 0xfe, 0x00, 0x00], 3, false)
+
+    // a malformed UTF-8 document keeps its exact offset even behind a BOM
+    var bom_bad: Bytes = new Bytes(0)
+    bom_bad.push(0xef)
+    bom_bad.push(0xbb)
+    bom_bad.push(0xbf)
+    bom_bad.append_str("<a><b></a>")
+    match xml.parse_bytes(bom_bad) {
+        ok(_) => io.println("bom mismatch accepted"),
+        err(e) => io.println("bom mismatch: {e.msg}"),
+    }
 
     // DOCTYPE is rejected by default, with the offset of the declaration
     check_parse_error("doctype", "<!DOCTYPE note SYSTEM \"http://evil.example/x.dtd\"><note/>")

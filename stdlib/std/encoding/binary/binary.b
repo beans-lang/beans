@@ -20,6 +20,7 @@
 // pattern, ten bytes for negatives); the two signed conventions are
 // different formats, named differently on purpose.
 
+import std.intrinsic
 import std.target
 
 pub enum ByteOrder {
@@ -36,21 +37,34 @@ pub enum ByteOrder {
     }
 }
 
-// ---- byte-pattern helpers (u64 domain: logical shifts) ----
+// ---- byte-pattern helpers ----
+//
+// The swaps are the machine's byte-swap instructions through std.intrinsic;
+// each narrow form works on the low bytes and leaves the rest zero, which
+// is exactly the masked-shift definition it replaces.
 
 fn swap16(value: u64) -> u64 {
-    return ((value & 0xff) << 8) | ((value >> 8) & 0xff)
+    var swapped: int = 0
+    unsafe {
+        swapped = intrinsic.bswap16((value & 0xffff) as int)
+    }
+    return swapped as u64
 }
 
 fn swap32(value: u64) -> u64 {
-    return ((value & 0xff) << 24) |
-           ((value & 0xff00) << 8) |
-           ((value >> 8) & 0xff00) |
-           ((value >> 24) & 0xff)
+    var swapped: int = 0
+    unsafe {
+        swapped = intrinsic.bswap32((value & 0xffffffff) as int)
+    }
+    return swapped as u64
 }
 
 fn swap64(value: u64) -> u64 {
-    return (swap32(value & 0xffffffff) << 32) | swap32(value >> 32)
+    var swapped: int = 0
+    unsafe {
+        swapped = intrinsic.bswap64(value as int)
+    }
+    return swapped as u64
 }
 
 fn check_range(data: Bytes, pos: int, width: int, op: string) -> Result<bool> {
@@ -120,51 +134,53 @@ fn append_pattern(data: Bytes, width: int, pattern: u64, order: ByteOrder) {
 }
 
 // ---- bit-preserving float conversion ----
+//
+// One scoped stack slot per conversion through RawPtr.with_local: the native
+// backend reuses the real stack slot and the interpreter copies through
+// aligned C storage — no heap allocation on either path.
 
 fn f64_bits(value: float) -> u64 {
-    var bits: u64 = 0
+    var scratch: u64 = 0
     unsafe {
-        let slot: RawPtr<f64> = RawPtr.alloc(1)
-        slot.write(value)
-        let view: RawPtr<u64> = RawPtr.from_address(slot.address())
-        bits = view.read()
-        slot.free()
+        RawPtr.with_local(inout scratch, fn(slot: RawPtr<u64>) {
+            let view: RawPtr<f64> = RawPtr.from_address(slot.address())
+            view.write(value)
+        })
     }
-    return bits
+    return scratch
 }
 
 fn f64_from_bits(bits: u64) -> float {
+    var scratch: u64 = bits
     var value: float = 0.0
     unsafe {
-        let slot: RawPtr<u64> = RawPtr.alloc(1)
-        slot.write(bits)
-        let view: RawPtr<f64> = RawPtr.from_address(slot.address())
-        value = view.read()
-        slot.free()
+        RawPtr.with_local(inout scratch, fn(slot: RawPtr<u64>) {
+            let view: RawPtr<f64> = RawPtr.from_address(slot.address())
+            value = view.read()
+        })
     }
     return value
 }
 
 fn f32_bits(value: f32) -> u64 {
-    var bits: u64 = 0
+    var scratch: u32 = 0
     unsafe {
-        let slot: RawPtr<f32> = RawPtr.alloc(1)
-        slot.write(value)
-        let view: RawPtr<u32> = RawPtr.from_address(slot.address())
-        bits = view.read() as u64
-        slot.free()
+        RawPtr.with_local(inout scratch, fn(slot: RawPtr<u32>) {
+            let view: RawPtr<f32> = RawPtr.from_address(slot.address())
+            view.write(value)
+        })
     }
-    return bits
+    return scratch as u64
 }
 
 fn f32_from_bits(bits: u64) -> f32 {
+    var scratch: u32 = (bits & 0xffffffff) as u32
     var value: f32 = 0.0
     unsafe {
-        let slot: RawPtr<u32> = RawPtr.alloc(1)
-        slot.write((bits & 0xffffffff) as u32)
-        let view: RawPtr<f32> = RawPtr.from_address(slot.address())
-        value = view.read()
-        slot.free()
+        RawPtr.with_local(inout scratch, fn(slot: RawPtr<u32>) {
+            let view: RawPtr<f32> = RawPtr.from_address(slot.address())
+            value = view.read()
+        })
     }
     return value
 }

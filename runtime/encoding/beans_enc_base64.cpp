@@ -1,7 +1,8 @@
 // std.encoding.base64 native bridge over simdutf (vendored, see
-// vendor/VENDOR.md). Compiled as C++17 with no exceptions and no RTTI; the
-// only C++ runtime symbols are supplied by beans_enc_cxx_shim.h, so programs
-// keep linking through the plain C driver with no C++ standard library.
+// vendor/VENDOR.md). Compiled as C++17 with no exceptions and no RTTI, in
+// upstream's SIMDUTF_NO_LIBCXX mode: the object references no C++ runtime
+// symbol at all, so programs keep linking through the plain C driver with no
+// C++ standard library and no Beans-written shim.
 //
 // ABI shape (shared by every encoding bridge): payload buffers cross as
 // direct RawPtr parameters and everything else — lengths, flags, outputs —
@@ -16,8 +17,13 @@
 // fallback for targets with no vector unit all come from upstream unchanged.
 
 #include "beans_enc_common.h"
-#include "beans_enc_cxx_shim.h"
 
+// Upstream's supported mode for building without a C++ standard library:
+// it removes the function-local static in the implementation dispatch and
+// supplies its own weak __cxa_pure_virtual, leaving an object whose only
+// undefined symbols are libc's. No Beans-written C++ runtime shim is needed
+// here; test/encoding_symbols.sh enforces that.
+#define SIMDUTF_NO_LIBCXX 1
 #define SIMDUTF_FEATURE_DETECT_ENCODING 0
 #define SIMDUTF_FEATURE_ASCII 0
 #define SIMDUTF_FEATURE_LATIN1 0

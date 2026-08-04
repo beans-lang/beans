@@ -1,7 +1,8 @@
 // std.encoding.xml native bridge over pugixml (vendored, see
 // vendor/VENDOR.md). Compiled as C++17 with no exceptions, no RTTI, no STL
-// and no XPath; beans_enc_cxx_shim.h supplies the two C++ runtime symbols the
-// object still references, so programs link through the plain C driver.
+// and no XPath. beans_enc_pugixml_shim.h supplies the two C++ runtime
+// symbols pugixml's writer vtable still references, so programs link
+// through the plain C driver with no C++ standard library.
 //
 // ABI shape (shared by every encoding bridge): payload buffers cross as
 // direct RawPtr parameters and everything else — lengths, flags, handles,
@@ -24,7 +25,7 @@
 // by default; opting in only stores the doctype text as an inert node.
 
 #include "beans_enc_common.h"
-#include "beans_enc_cxx_shim.h"
+#include "beans_enc_pugixml_shim.h"
 
 #define PUGIXML_NO_XPATH
 #define PUGIXML_NO_STL
@@ -83,6 +84,36 @@ static uint64_t beans_enc_xml_doctype_offset(const char* text, size_t len) {
     return 0;
 }
 
+// True when pugixml will consume the buffer as UTF-8 (with or without a
+// UTF-8 BOM), which is exactly when a reported offset is an offset into the
+// caller's own bytes. UTF-16 and UTF-32 inputs are transcoded into an
+// internal UTF-8 buffer first, so pugixml's offsets index that buffer and
+// mean nothing to the caller; the bridge reports them as unavailable rather
+// than as a wrong number. The detection mirrors pugixml's own
+// guess_buffer_encoding: BOM first, then the byte pattern of a leading '<'.
+static int beans_enc_xml_offsets_are_input_bytes(const unsigned char* src,
+                                                 size_t len) {
+    if (len >= 4) {
+        if (src[0] == 0 && src[1] == 0 && src[2] == 0xfe && src[3] == 0xff) return 0;
+        if (src[0] == 0xff && src[1] == 0xfe && src[2] == 0 && src[3] == 0) return 0;
+    }
+    if (len >= 2) {
+        if (src[0] == 0xfe && src[1] == 0xff) return 0;
+        if (src[0] == 0xff && src[1] == 0xfe) return 0;
+    }
+    if (len >= 4) {
+        // UTF-32 without a BOM: '<' surrounded by three zero bytes.
+        if (src[0] == 0 && src[1] == 0 && src[2] == 0 && src[3] == 0x3c) return 0;
+        if (src[0] == 0x3c && src[1] == 0 && src[2] == 0 && src[3] == 0) return 0;
+    }
+    if (len >= 2) {
+        // UTF-16 without a BOM: '<' beside one zero byte.
+        if (src[0] == 0 && src[1] == 0x3c) return 0;
+        if (src[0] == 0x3c && src[1] == 0) return 0;
+    }
+    return 1;
+}
+
 static size_t beans_enc_xml_pack_words(size_t len) { return (len + 7) / 8; }
 
 static size_t beans_enc_xml_pack_string(uint64_t* out, size_t index,
@@ -101,9 +132,12 @@ extern "C" {
 
 // req[0]=text len, req[1]=option bits
 // out: req[2]=doc handle, req[3]=document root node handle,
-//      req[4]=pugixml parse status (vendored 1.16's enum values, rendered
-//      into messages by xml.b so both backends print identical text),
-//      req[5]=error byte offset
+//      req[4]=pugixml parse status (vendored 1.16's enum values, plus 17 for
+//      the multi-root check below; rendered into messages by xml.b so both
+//      backends print identical text),
+//      req[5]=error byte offset, req[6]=1 when that offset indexes the
+//      caller's own bytes and 0 when the input was transcoded and no input
+//      offset exists
 // Returns BEANS_ENC_OK, BEANS_ENC_ERR_DOCTYPE, or BEANS_ENC_ERR_INVALID.
 BEANS_ENC_API long long beans_enc_xml_parse(unsigned char* src, uint64_t* req) {
     size_t len = (size_t)req[0];
@@ -112,6 +146,7 @@ BEANS_ENC_API long long beans_enc_xml_parse(unsigned char* src, uint64_t* req) {
     req[3] = 0;
     req[4] = 0;
     req[5] = 0;
+    req[6] = (uint64_t)beans_enc_xml_offsets_are_input_bytes(src, len);
     unsigned int flags = pugi::parse_default | pugi::parse_comments |
                          pugi::parse_pi | pugi::parse_declaration |
                          pugi::parse_doctype;
@@ -134,24 +169,33 @@ BEANS_ENC_API long long beans_enc_xml_parse(unsigned char* src, uint64_t* req) {
         for (pugi::xml_node child = doc->first_child(); child;
              child = child.next_sibling()) {
             if (child.type() == pugi::node_doctype) {
-                req[5] = beans_enc_xml_doctype_offset((const char*)src, len);
+                // The scan is over the caller's bytes, so it only applies to
+                // a UTF-8 input; a transcoded one already reported that no
+                // input offset exists.
+                req[5] = req[6]
+                             ? beans_enc_xml_doctype_offset((const char*)src, len)
+                             : 0;
                 doc->~xml_document();
                 free(doc);
                 return BEANS_ENC_ERR_DOCTYPE;
             }
         }
     }
-    // pugixml happily parses fragments with several top-level elements; a
-    // well-formed XML document has exactly one. 17 extends the vendored
-    // status enum, rendered by xml.b.
+    // A well-formed XML document has exactly one root element. pugixml
+    // already refuses zero with status_no_document_element (16) — that
+    // covers empty, whitespace-only, declaration-only, comment-only,
+    // processing-instruction-only and DOCTYPE-only inputs — but it accepts
+    // fragments with several top-level elements, so the upper bound is
+    // enforced here. 17 extends the vendored status enum and is rendered by
+    // xml.b. The count is asserted in both directions rather than assumed.
     {
         int elements = 0;
         for (pugi::xml_node child = doc->first_child(); child;
              child = child.next_sibling()) {
             if (child.type() == pugi::node_element) elements++;
         }
-        if (elements > 1) {
-            req[4] = 17;
+        if (elements != 1) {
+            req[4] = elements > 1 ? 17 : 16;
             doc->~xml_document();
             free(doc);
             return BEANS_ENC_ERR_INVALID;

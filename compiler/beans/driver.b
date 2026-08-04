@@ -26,8 +26,33 @@ fn encoding_source_root() -> string {
     return path.join(path.parent(stdlib_root()), "encoding")
 }
 
+// Bump when the request-buffer layouts, the status codes, or the entry-point
+// set change. A cached object built against an older contract can then never
+// be reused by a compiler that speaks the newer one.
+fn encoding_bridge_abi() -> string {
+    return "enc-abi-2"
+}
+
 fn encoding_bridge_is_cxx(feature: string) -> bool {
     return feature == "xml" || feature == "base64"
+}
+
+// The C driver's own identity, so a compiler upgrade or a different clang on
+// PATH cannot reuse objects built by the previous one. Falls back to the
+// path alone when the version cannot be read, which is still stronger than
+// omitting it.
+fn encoding_compiler_identity(compiler: string) -> string {
+    let probe: process.Command = new process.Command(compiler)
+    probe.arg("--version")
+    match probe.run() {
+        ok(done) => {
+            if done.ok() {
+                return "{compiler}|{done.text().trim()}"
+            }
+        }
+        err(_) => {}
+    }
+    return "{compiler}|unknown-version"
 }
 
 fn encoding_bridge_translation_unit(root: string, feature: string) -> string {
@@ -50,12 +75,11 @@ fn encoding_bridge_inputs(root: string, feature: string) -> List<string> {
         files.push(path.join(root, "vendor/yyjson/yyjson.c"))
         files.push(path.join(root, "vendor/yyjson/yyjson.h"))
     } else if feature == "xml" {
-        files.push(path.join(root, "beans_enc_cxx_shim.h"))
+        files.push(path.join(root, "beans_enc_pugixml_shim.h"))
         files.push(path.join(root, "vendor/pugixml/pugixml.cpp"))
         files.push(path.join(root, "vendor/pugixml/pugixml.hpp"))
         files.push(path.join(root, "vendor/pugixml/pugiconfig.hpp"))
     } else {
-        files.push(path.join(root, "beans_enc_cxx_shim.h"))
         files.push(path.join(root, "vendor/simdutf/simdutf.cpp"))
         files.push(path.join(root, "vendor/simdutf/simdutf.h"))
     }
@@ -189,6 +213,42 @@ class NativeBuildDriver {
         return true
     }
 
+    // The target-selection flags as a list, so a caller that needs to hash
+    // them (the encoding bridge cache) sees exactly what add_target_flags
+    // passes to Clang.
+    fn target_flag_list() -> List<string> {
+        var flags: List<string> = []
+        let native_musl: bool =
+            self.target.env == "musl" &&
+            self.target.triple == host_target_name()
+        if !native_musl {
+            flags.push("--target={self.target.llvm_triple()}")
+        }
+        if self.sysroot != "" {
+            flags.push("--sysroot={self.sysroot}")
+        }
+        if self.cpu == "native" {
+            flags.push("-march=native")
+        } else if self.cpu != "generic" {
+            if self.target.arch == "x86_64" ||
+               self.target.arch == "x86" {
+                flags.push("-march={self.cpu}")
+            } else {
+                flags.push("-mcpu={self.cpu}")
+            }
+        }
+        for feature: string in self.target.features {
+            flags.push("-Xclang")
+            flags.push("-target-feature")
+            flags.push("-Xclang")
+            flags.push("+{feature}")
+        }
+        for flag: string in self.target.c_driver_flags() {
+            flags.push(flag)
+        }
+        return move flags
+    }
+
     fn add_target_flags(command: process.Command) {
         // Alpine loses its startup-file search when its otherwise-correct musl
         // triple is forced explicitly. Omit it only on an actual musl host;
@@ -303,39 +363,55 @@ class NativeBuildDriver {
             command, source, "Clang")
     }
 
-    // The C++ bridges build with no exceptions and no RTTI; their only C++
-    // runtime symbols come from weak shims inside the objects, so the plain
-    // C driver links them with no C++ standard library. -fvisibility=hidden
-    // keeps vendored internals out of the symbol table; the beans_enc_* API
-    // opts back in from the source.
+    // Every flag the bridge compile uses, in the order the command line
+    // takes them. One list feeds both the cache key and the invocation, so a
+    // flag can never change the object without changing its cache path.
+    //
+    // The C++ bridges build with no exceptions and no RTTI; simdutf runs in
+    // upstream's SIMDUTF_NO_LIBCXX mode and pugixml carries a narrow shim
+    // inside its own object, so the plain C driver links both with no C++
+    // standard library. -fvisibility=hidden keeps vendored internals out of
+    // the symbol table; the beans_enc_* API opts back in from the source.
+    fn encoding_compile_flags(feature: string,
+                              pic: bool) -> List<string> {
+        var flags: List<string> = []
+        if encoding_bridge_is_cxx(feature) {
+            flags.push("-x")
+            flags.push("c++")
+            flags.push("-std=c++17")
+            flags.push("-fno-exceptions")
+            flags.push("-fno-rtti")
+        }
+        flags.push(
+            if self.release { "-O3" } else { "-O2" })
+        if self.release { flags.push("-DNDEBUG") }
+        if self.lto { flags.push("-flto") }
+        let wasi: bool = self.target.os == "wasi"
+        if wasi {
+            flags.push("-fno-stack-protector")
+            flags.push("-D_FORTIFY_SOURCE=0")
+        } else if self.target.os != "windows" {
+            flags.push("-pthread")
+        }
+        flags.push("-fvisibility=hidden")
+        if pic { flags.push("-fPIC") }
+        for flag: string in self.target_flag_list() {
+            flags.push(flag)
+        }
+        return move flags
+    }
+
     fn compile_encoding_object(compiler: string,
                                source: string,
                                output: string,
-                               pic: bool,
-                               cxx: bool) -> bool {
+                               feature: string,
+                               pic: bool) -> bool {
         let command: process.Command =
             new process.Command(compiler)
-        if cxx {
-            command.arg("-x")
-            command.arg("c++")
-            command.arg("-std=c++17")
-            command.arg("-fno-exceptions")
-            command.arg("-fno-rtti")
+        for flag: string in
+            self.encoding_compile_flags(feature, pic) {
+            command.arg(flag)
         }
-        command.arg(
-            if self.release { "-O3" } else { "-O2" })
-        if self.release { command.arg("-DNDEBUG") }
-        if self.lto { command.arg("-flto") }
-        let wasi: bool = self.target.os == "wasi"
-        if wasi {
-            command.arg("-fno-stack-protector")
-            command.arg("-D_FORTIFY_SOURCE=0")
-        } else if self.target.os != "windows" {
-            command.arg("-pthread")
-        }
-        command.arg("-fvisibility=hidden")
-        if pic { command.arg("-fPIC") }
-        self.add_target_flags(command)
         command.arg("-c")
         command.arg(source)
         command.arg("-o")
@@ -343,28 +419,46 @@ class NativeBuildDriver {
         return self.run_tool(command, source, "Clang")
     }
 
-    fn encoding_cache_path(root: string,
+    // The cache key covers everything that can change the emitted object:
+    // the bridge ABI contract, the target and its CPU/feature selection, the
+    // runtime profile, PIC/LTO/release mode, the exact compiler and its
+    // version, every effective compile flag, and the full contents of the
+    // bridge and vendored sources.
+    fn encoding_cache_path(compiler: string,
+                           root: string,
                            feature: string,
                            pic: bool) -> string {
-        var blob: string =
-            "{self.target.triple}|{self.cpu}|{self.target.features.join(",")}|{self.runtime_profile}|{self.release}|{self.lto}|{pic}|{feature}"
+        var blob: string = encoding_bridge_abi()
+        blob = "{blob}|{feature}"
+        blob = "{blob}|{self.target.triple}|{self.target.llvm_triple()}"
+        blob = "{blob}|{self.cpu}|{self.target.features.join(",")}"
+        blob = "{blob}|{self.runtime_profile}|{self.release}|{self.lto}|{pic}"
+        blob = "{blob}|{self.sysroot}"
+        blob =
+            "{blob}|{encoding_compiler_identity(compiler)}"
+        blob =
+            "{blob}|{self.encoding_compile_flags(feature, pic).join(" ")}"
         for input: string in encoding_bridge_inputs(root, feature) {
             match fs.read(input) {
                 ok(text) => { blob = "{blob}|{text}" }
                 err(_) => { blob = "{blob}|missing:{input}" }
             }
         }
+        // Two independent 31-bit rolling hashes with different multipliers.
+        // A single one over multi-megabyte vendored sources leaves too few
+        // bits for a cache that must never serve a wrong object.
         var hash: int = 0
+        var mixed: int = 0
         for index: int in 0..blob.len() {
-            hash =
-                (hash * 131 + blob.byte_at(index)) %
-                2147483647
+            let byte: int = blob.byte_at(index)
+            hash = (hash * 131 + byte) % 2147483647
+            mixed = (mixed * 16777619 + byte + index % 7) % 2147483629
         }
         let extension: string =
             if self.lto { "bc" } else { "o" }
         return path.join(
             "build",
-            "beans_enc_{feature}.{self.target.triple}.{hash}.{extension}")
+            "beans_enc_{feature}.{self.target.triple}.{hash}x{mixed}.{extension}")
     }
 
     fn cached_encoding_object(compiler: string,
@@ -372,7 +466,8 @@ class NativeBuildDriver {
                               feature: string,
                               pic: bool) -> string {
         let object: string =
-            self.encoding_cache_path(root, feature, pic)
+            self.encoding_cache_path(
+                compiler, root, feature, pic)
         if File.exists(object) { return object }
         let source: string =
             encoding_bridge_translation_unit(root, feature)
@@ -392,8 +487,7 @@ class NativeBuildDriver {
             }
         }
         if !self.compile_encoding_object(
-               compiler, source, staging, pic,
-               encoding_bridge_is_cxx(feature)) {
+               compiler, source, staging, feature, pic) {
             return ""
         }
         match File.rename(staging, object) {

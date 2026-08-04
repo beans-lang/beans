@@ -30,41 +30,60 @@ extern "C" fn beans_enc_b64_decode(source: RawPtr<u8>, target: RawPtr<u8>, req: 
 // as 64-bit words, so the copies below run word-at-a-time through the native
 // Bytes accessors — never a Beans call per payload byte inside the codec.
 
-// Allocates a word-aligned raw block holding a copy of `data` and returns
-// its address; release with free_raw. Addresses (not RawPtr values) cross
-// helper boundaries so each function keeps its own unsafe block small.
+// The two bulk-copy primitives every marshalling helper builds on. The
+// native backend lowers calls to these exact functions to a bounds-checked
+// @llvm.memcpy over the Bytes buffer; these bodies are the interpreters'
+// definition, and the two agree on every outcome, including the panic.
+// `address` must be word-aligned with `count` accessible bytes — every
+// caller allocates through alloc_words.
+fn enc_copy_to_raw(data: Bytes, from: int, address: int, count: int) {
+    if from < 0 || count < 0 || from + count > data.len() {
+        panic("encoding raw copy out of range")
+    }
+    unsafe {
+        let tail: RawPtr<u8> = RawPtr.from_address(address as u64)
+        var index: int = 0
+        for index + 8 <= count {
+            let word: RawPtr<u64> = RawPtr.from_address((address + index) as u64)
+            word.write(data.get_u64(from + index) as u64)
+            index += 8
+        }
+        for index < count {
+            tail.offset(index).write(data.get(from + index) as u8)
+            index += 1
+        }
+    }
+}
+
+fn enc_copy_from_raw(address: int, target: Bytes, at: int, count: int) {
+    if at < 0 || count < 0 || at + count > target.len() {
+        panic("encoding raw copy out of range")
+    }
+    unsafe {
+        let tail: RawPtr<u8> = RawPtr.from_address(address as u64)
+        var index: int = 0
+        for index + 8 <= count {
+            let word: RawPtr<u64> = RawPtr.from_address((address + index) as u64)
+            target.put_u64(at + index, word.read() as int)
+            index += 8
+        }
+        for index < count {
+            target.set(at + index, tail.offset(index).read() as int)
+            index += 1
+        }
+    }
+}
+
 fn raw_from_bytes(data: Bytes) -> int {
     let count: int = data.len()
-    let words: int = (count + 7) / 8
-    var address: int = 0
-    unsafe {
-        let block: RawPtr<u64> = RawPtr.alloc(if words == 0 { 1 } else { words })
-        let whole: int = count / 8
-        for index: int in 0..whole {
-            block.offset(index).write(data.get_u64(index * 8) as u64)
-        }
-        let tail: RawPtr<u8> = RawPtr.from_address(block.address())
-        for index: int in (whole * 8)..count {
-            tail.offset(index).write(data.get(index) as u8)
-        }
-        address = block.address() as int
-    }
+    let address: int = alloc_words((count + 7) / 8)
+    enc_copy_to_raw(data, 0, address, count)
     return address
 }
 
 fn bytes_from_raw(address: int, count: int) -> Bytes {
     var out: Bytes = new Bytes(count)
-    unsafe {
-        let block: RawPtr<u64> = RawPtr.from_address(address as u64)
-        let whole: int = count / 8
-        for index: int in 0..whole {
-            out.put_u64(index * 8, block.offset(index).read() as int)
-        }
-        let tail: RawPtr<u8> = RawPtr.from_address(address as u64)
-        for index: int in (whole * 8)..count {
-            out.set(index, tail.offset(index).read() as int)
-        }
-    }
+    enc_copy_from_raw(address, out, 0, count)
     return out
 }
 

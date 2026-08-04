@@ -112,7 +112,7 @@ $(BIN): $(SELF_HOST_SRC) $(RUNTIME_COPY)
 
 endif
 
-.PHONY: stage0 run clean install test test-ci test-core test-stage0 platform-status test-platform-manifest test-portable-int128 test-compiler-arch-objects test-stage0-windows test-windows-source-bootstrap test-musl-hosted test-armv6hf-hosted test-sanitize test-release-package test-install-release test-release-completeness test-clean-bootstrap test-c-abi-tier1 test-mir-stage0 test-barq-core fuzz-smoke fuzz-differential fuzz-differential-smoke test-linux test-linux-arch test-linux-hosted test-windows test-windows-native test-windows-native-i686 test-windows-native-arm64 test-windows-arch test-windows-hosted access-score self-host-next test-self-host test-self-host-full test-bootstrap bench-compiler bench-quick bench-full bench-verify bench-profile bench-compare
+.PHONY: stage0 run clean install test test-ci test-core test-stage0 platform-status test-platform-manifest test-portable-int128 test-compiler-arch-objects test-stage0-windows test-windows-source-bootstrap test-musl-hosted test-armv6hf-hosted test-sanitize test-release-package test-install-release test-release-completeness test-clean-bootstrap test-c-abi-tier1 test-mir-stage0 test-barq-core fuzz-smoke fuzz-differential fuzz-differential-smoke test-linux test-linux-arch test-linux-hosted test-windows test-windows-native test-windows-native-i686 test-windows-native-arm64 test-windows-arch test-windows-hosted test-encoding-targets access-score self-host-next test-self-host test-self-host-full test-bootstrap bench-compiler bench-quick bench-full bench-verify bench-profile bench-compare
 stage0: $(BOOTSTRAP_BIN)
 
 run: $(BIN)
@@ -140,7 +140,10 @@ else
 	@echo "not run. This is expected on a fork pull request."
 endif
 
-test-stage0: $(BIN)
+# bench_compare.sh exercises the comparator binary, so a clean checkout's
+# `make test` must build it first rather than assume an earlier bench run
+# left one behind.
+test-stage0: $(BIN) $(if $(HAVE_BOOTSTRAP),build/bench/compare)
 ifeq ($(HAVE_BOOTSTRAP),)
 	@echo "make test needs the stage-0 bootstrap compiler, which is not in this checkout."
 	@echo ""
@@ -204,6 +207,9 @@ test-core: $(BIN)
 	bash ./test/closure_captures.sh
 	./test/stdlib_source.sh
 	bash ./test/encoding.sh
+	bash ./test/encoding_symbols.sh
+	bash ./test/encoding_outputs.sh
+	bash ./test/encoding_cache.sh
 	./test/parse_recovery.sh
 	bash ./test/mir.sh
 	bash ./test/devirtualize.sh
@@ -453,6 +459,16 @@ test-windows-arch: test-windows-native test-windows-native-i686 test-windows-nat
 # it after cross-building beansc.exe; locally it needs a Windows box.
 test-windows-hosted:
 	bash ./test/windows_hosted.sh
+
+# Cross-target verification for the std.encoding bridges: compiles all three
+# for a target, links them with the plain C driver, and runs a C smoke
+# program on it. Needs Docker for the container targets, so it is not part of
+# `make test`; each unreachable target skips with its reason.
+#
+#   make test-encoding-targets                 # every reachable target
+#   make test-encoding-targets TARGET=big-endian
+test-encoding-targets:
+	bash ./test/encoding_targets.sh $(or $(TARGET),all)
 
 access-score: $(BIN)
 	bash ./test/access_score.sh

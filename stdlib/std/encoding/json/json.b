@@ -56,38 +56,60 @@ extern "C" fn beans_enc_json_take_buf(buf: int, len: int, target: RawPtr<u8>) ->
 
 // ---- raw-buffer marshalling (word-at-a-time, no per-byte Beans calls) ----
 
+// The two bulk-copy primitives every marshalling helper builds on. The
+// native backend lowers calls to these exact functions to a bounds-checked
+// @llvm.memcpy over the Bytes buffer; these bodies are the interpreters'
+// definition, and the two agree on every outcome, including the panic.
+// `address` must be word-aligned with `count` accessible bytes — every
+// caller allocates through alloc_words.
+fn enc_copy_to_raw(data: Bytes, from: int, address: int, count: int) {
+    if from < 0 || count < 0 || from + count > data.len() {
+        panic("encoding raw copy out of range")
+    }
+    unsafe {
+        let tail: RawPtr<u8> = RawPtr.from_address(address as u64)
+        var index: int = 0
+        for index + 8 <= count {
+            let word: RawPtr<u64> = RawPtr.from_address((address + index) as u64)
+            word.write(data.get_u64(from + index) as u64)
+            index += 8
+        }
+        for index < count {
+            tail.offset(index).write(data.get(from + index) as u8)
+            index += 1
+        }
+    }
+}
+
+fn enc_copy_from_raw(address: int, target: Bytes, at: int, count: int) {
+    if at < 0 || count < 0 || at + count > target.len() {
+        panic("encoding raw copy out of range")
+    }
+    unsafe {
+        let tail: RawPtr<u8> = RawPtr.from_address(address as u64)
+        var index: int = 0
+        for index + 8 <= count {
+            let word: RawPtr<u64> = RawPtr.from_address((address + index) as u64)
+            target.put_u64(at + index, word.read() as int)
+            index += 8
+        }
+        for index < count {
+            target.set(at + index, tail.offset(index).read() as int)
+            index += 1
+        }
+    }
+}
+
 fn raw_from_bytes(data: Bytes) -> int {
     let count: int = data.len()
-    let words: int = (count + 7) / 8
-    var address: int = 0
-    unsafe {
-        let block: RawPtr<u64> = RawPtr.alloc(if words == 0 { 1 } else { words })
-        let whole: int = count / 8
-        for index: int in 0..whole {
-            block.offset(index).write(data.get_u64(index * 8) as u64)
-        }
-        let tail: RawPtr<u8> = RawPtr.from_address(block.address())
-        for index: int in (whole * 8)..count {
-            tail.offset(index).write(data.get(index) as u8)
-        }
-        address = block.address() as int
-    }
+    let address: int = alloc_words((count + 7) / 8)
+    enc_copy_to_raw(data, 0, address, count)
     return address
 }
 
 fn bytes_from_raw(address: int, count: int) -> Bytes {
     var out: Bytes = new Bytes(count)
-    unsafe {
-        let block: RawPtr<u64> = RawPtr.from_address(address as u64)
-        let whole: int = count / 8
-        for index: int in 0..whole {
-            out.put_u64(index * 8, block.offset(index).read() as int)
-        }
-        let tail: RawPtr<u8> = RawPtr.from_address(address as u64)
-        for index: int in (whole * 8)..count {
-            out.set(index, tail.offset(index).read() as int)
-        }
-    }
+    enc_copy_from_raw(address, out, 0, count)
     return out
 }
 
@@ -107,28 +129,29 @@ fn alloc_words(count: int) -> int {
     return address
 }
 
+// Bit-preserving f64 conversion through a scoped stack slot: no heap
+// allocation on either backend.
 fn f64_from_bits(bits: u64) -> float {
+    var scratch: u64 = bits
     var value: float = 0.0
     unsafe {
-        let slot: RawPtr<u64> = RawPtr.alloc(1)
-        slot.write(bits)
-        let view: RawPtr<f64> = RawPtr.from_address(slot.address())
-        value = view.read()
-        slot.free()
+        RawPtr.with_local(inout scratch, fn(slot: RawPtr<u64>) {
+            let view: RawPtr<f64> = RawPtr.from_address(slot.address())
+            value = view.read()
+        })
     }
     return value
 }
 
 fn f64_bits(value: float) -> u64 {
-    var bits: u64 = 0
+    var scratch: u64 = 0
     unsafe {
-        let slot: RawPtr<f64> = RawPtr.alloc(1)
-        slot.write(value)
-        let view: RawPtr<u64> = RawPtr.from_address(slot.address())
-        bits = view.read()
-        slot.free()
+        RawPtr.with_local(inout scratch, fn(slot: RawPtr<u64>) {
+            let view: RawPtr<f64> = RawPtr.from_address(slot.address())
+            view.write(value)
+        })
     }
-    return bits
+    return scratch
 }
 
 /// What a Value holds.
@@ -446,24 +469,11 @@ pub class Value {
                 let key_len: int = view.offset(cursor).read() as int
                 let handle: int = view.offset(cursor + 1).read() as int
                 cursor += 2
-                let key_words: int = (key_len + 7) / 8
-                var key_data: Bytes = new Bytes(key_len)
-                let key_whole: int = key_len / 8
-                for index: int in 0..key_whole {
-                    key_data.put_u64(index * 8,
-                                     view.offset(cursor + index).read() as int)
-                }
-                if key_whole * 8 < key_len {
-                    let last: u64 = view.offset(cursor + key_whole).read()
-                    for index: int in (key_whole * 8)..key_len {
-                        let shift: int = (index - key_whole * 8) * 8
-                        key_data.set(index,
-                                     ((last >> (shift as u64)) & 0xff) as int)
-                    }
-                }
-                cursor += key_words
+                let key_address: int =
+                    view.offset(cursor).address() as int
+                cursor += (key_len + 7) / 8
                 found.push(Entry {
-                    key: key_data.to_string_full(),
+                    key: bytes_from_raw(key_address, key_len).to_string_full(),
                     value: new Value(self.owner, handle),
                 })
             }

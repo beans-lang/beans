@@ -274,9 +274,14 @@ types are visible — and one is pure Beans:
 
 Vendored sources live in `runtime/encoding/vendor/` (exact release files,
 recorded in `VENDOR.md` there) and ship with every package. Each feature
-compiles to its own cached object keyed on target, CPU, profile, mode, and
-the bridge/vendor file contents: importing JSON links yyjson and nothing
-else, and a program with no encoding import carries no encoding code.
+compiles to its own cached object, keyed on the bridge ABI version, the
+target and its CPU/feature selection, the runtime profile, PIC/LTO/release
+mode, the exact C compiler and its version, every effective compile flag,
+and the full contents of the bridge and vendored sources
+(`test/encoding_cache.sh` changes one input at a time and asserts the key
+moves). Importing JSON links yyjson and nothing else, a program with no
+encoding import carries no encoding code, and no vendored symbol appears in
+a Beans library's export table.
 `beansc run` builds one cached bridge library per feature per host from the
 same sources, so both backends execute identical native code and stay
 byte-identical. The bridges need a C library, so `--runtime freestanding`
@@ -349,9 +354,19 @@ for child: xml.Node in root.children() {
 let out: string = xml.stringify_pretty(doc, "  ")?
 ```
 
-- `parse(text)`, `parse_bytes(data)` → `Result<Document>` (byte-order marks
-  are honoured; otherwise UTF-8). Parse errors carry a byte offset. A
-  document must have exactly one root element.
+- `parse(text)`, `parse_bytes(data)` → `Result<Document>`. UTF-8, UTF-16 and
+  UTF-32 byte-order marks are honoured, and a BOM-less input is read as
+  UTF-8. A document must have **exactly one** root element: zero — which
+  covers empty, whitespace-only, declaration-only, comment-only,
+  processing-instruction-only and DOCTYPE-only inputs — and two or more are
+  both errors. Trailing comments and processing instructions after the root
+  are well-formed and accepted.
+- Parse errors carry a byte offset **into the caller's own bytes**, BOM
+  included, whenever the input was consumed as UTF-8. A UTF-16 or UTF-32
+  input is transcoded to UTF-8 before parsing, so pugixml's offsets index a
+  buffer the caller never saw; those errors say "at an unknown byte offset
+  (the input was transcoded from UTF-16 or UTF-32)" rather than quoting a
+  number that means nothing.
 - Node kinds: `element`, `text`, `cdata`, `comment`,
   `processing_instruction`, `declaration`, `doctype`. `children()` and
   `attributes()` preserve document order — mixed content included.
@@ -406,6 +421,12 @@ let raw: string = base64.Encoding.url_safe_no_pad.encode(Bytes.from("x"))
   scalar fallback elsewhere (including the big-endian and 32-bit targets).
   There is no streaming API: Beans has no generic Reader/Writer abstraction
   yet, and inventing one here would freeze a bad shape.
+- simdutf is built in upstream's `SIMDUTF_NO_LIBCXX` mode, so the object
+  references no C++ runtime symbol at all. pugixml still needs `operator
+  delete` and `__cxa_pure_virtual` for its writer vtable; those are defined
+  weak inside its own object for the Itanium C++ ABI, which is what every
+  verified target uses. `test/encoding_symbols.sh` fails the build if either
+  object grows a symbol outside libc.
 
 ### std.encoding.binary
 
@@ -426,6 +447,9 @@ let value: u32 = binary.read_u32(wire, 0, binary.ByteOrder.big)?
   the round trip. Reads and writes are checked: truncated input is kind
   `eof`, a bad write position kind `range` — never a panic, and never a
   read past the buffer.
+- Byte swaps use the machine's byte-swap instruction through
+  `std.intrinsic`, and float conversion borrows one scoped stack slot
+  (`RawPtr.with_local`) rather than allocating.
 - Varints: `append_uvarint`/`read_uvarint` are unsigned LEB128 — the same
   wire format as `Bytes.append_varint`, whose raw two's-complement
   behaviour is unchanged. `append_varint`/`read_varint` are the signed

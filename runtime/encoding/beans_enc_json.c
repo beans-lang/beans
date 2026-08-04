@@ -25,6 +25,19 @@
 
 // The vendored sources stay byte-identical to the upstream release; all
 // Beans-specific configuration happens here, before inclusion.
+//
+// yyjson marks its whole API `visibility("default")`, which overrides the
+// -fvisibility=hidden the build passes and would export ~50 yyjson_* symbols
+// from any Beans shared library or executable that imports std.encoding.json.
+// The header only defines the macro `#ifndef`, so defining it first is the
+// supported way to keep the vendored implementation internal. On Windows the
+// upstream default is already empty unless YYJSON_EXPORTS is set, so the
+// override is a no-op there.
+#if !defined(_WIN32)
+  #define yyjson_api __attribute__((visibility("hidden")))
+#else
+  #define yyjson_api
+#endif
 #include "vendor/yyjson/yyjson.c"
 
 typedef struct {

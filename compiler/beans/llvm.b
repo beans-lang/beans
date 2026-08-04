@@ -15505,9 +15505,95 @@ class LlvmTextEmitter {
         return ""
     }
 
+    // The std.encoding packages marshal payloads through two private
+    // helpers with a fixed shape. Their Beans bodies are the reference
+    // definition — the interpreters run them, and they must keep agreeing —
+    // but a byte loop is the wrong instruction sequence for a bulk copy, so
+    // native code lowers a call to the same bounds check followed by one
+    // @llvm.memcpy. Recognised by exact qualified name; a package that
+    // renames or reshapes them simply keeps the loop.
+    fn encoding_copy_direction(name: string) -> int {
+        for package: string in ["json", "xml", "base64"] {
+            if name == "{package}.enc_copy_to_raw" { return 1 }
+            if name == "{package}.enc_copy_from_raw" { return 2 }
+        }
+        return 0
+    }
+
+    fn emit_encoding_copy(function: MirFunction,
+                          instruction: MirInstruction,
+                          values: Map<int, string>,
+                          direction: int) -> string {
+        if instruction.operands.len() != 4 { return "" }
+        var operands: List<string> = []
+        for index: int in 0..4 {
+            operands.push(
+                self.value(
+                    function, values,
+                    instruction.operands[index], instruction))
+        }
+        // to_raw:   (Bytes data, i64 from, i64 address, i64 count)
+        // from_raw: (i64 address, Bytes target, i64 at, i64 count)
+        let bytes_value: string =
+            if direction == 1 { operands[0] } else { operands[1] }
+        let offset: string =
+            if direction == 1 { operands[1] } else { operands[2] }
+        let address: string =
+            if direction == 1 { operands[2] } else { operands[0] }
+        let count: string = operands[3]
+        self.require_declare(
+            "llvm.memcpy.p0.p0.i64",
+            "void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)")
+        // beans_panic and beans_bytes_len are already declared by the
+        // module's runtime prelude; re-declaring them is an LLVM error.
+        let id: int = self.fresh()
+        let message: string =
+            self.string_pointer(
+                "encoding raw copy out of range")
+        // The same three conditions the Beans body checks, in the same
+        // order, so a violation panics identically in both backends.
+        var output: string =
+            "  %enc.len{id} = call i64 @beans_bytes_len(ptr {bytes_value})\n"
+        output =
+            "{output}  %enc.neg{id} = icmp slt i64 {offset}, 0\n"
+        output =
+            "{output}  %enc.negn{id} = icmp slt i64 {count}, 0\n"
+        output =
+            "{output}  %enc.end{id} = add i64 {offset}, {count}\n"
+        output =
+            "{output}  %enc.over{id} = icmp sgt i64 %enc.end{id}, %enc.len{id}\n"
+        output =
+            "{output}  %enc.bad0{id} = or i1 %enc.neg{id}, %enc.negn{id}\n"
+        output =
+            "{output}  %enc.bad{id} = or i1 %enc.bad0{id}, %enc.over{id}\n"
+        output =
+            "{output}  br i1 %enc.bad{id}, label %enc.panic{id}, label %enc.ok{id}\nenc.panic{id}:\n"
+        output =
+            "{output}  call void @beans_panic(ptr {message}, i64 {instruction.line}, i64 {instruction.col})\n  unreachable\nenc.ok{id}:\n"
+        output =
+            "{output}  %enc.data{id} = load ptr, ptr {bytes_value}\n"
+        output =
+            "{output}  %enc.at{id} = getelementptr i8, ptr %enc.data{id}, i64 {offset}\n"
+        output =
+            "{output}  %enc.raw{id} = inttoptr i64 {address} to ptr\n"
+        if direction == 1 {
+            return "{output}  call void @llvm.memcpy.p0.p0.i64(ptr %enc.raw{id}, ptr %enc.at{id}, i64 {count}, i1 false)\n"
+        }
+        return "{output}  call void @llvm.memcpy.p0.p0.i64(ptr %enc.at{id}, ptr %enc.raw{id}, i64 {count}, i1 false)\n"
+    }
+
     fn emit_call(function: MirFunction,
                  instruction: MirInstruction,
                  values: Map<int, string>) -> string {
+        let encoding_copy: int =
+            self.encoding_copy_direction(instruction.resolved)
+        if encoding_copy != 0 {
+            let lowered: string =
+                self.emit_encoding_copy(
+                    function, instruction, values,
+                    encoding_copy)
+            if lowered != "" { return lowered }
+        }
         if !self.function_symbols.contains(
                instruction.resolved) {
             if self.extern_functions.contains(
