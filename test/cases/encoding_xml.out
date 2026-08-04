@@ -1,0 +1,67 @@
+top declaration name [xml] value []
+top comment name [] value [ top ]
+top processing_instruction name [robot] value [spin]
+top element name [shop:order] value []
+decl version 1.0 encoding UTF-8
+root [shop:order] prefix [shop] local [order]
+attr z=last
+attr a=first
+attr a2=2
+attr lookup first missing true
+child text [] [text ]
+child element [b] []
+child text [] [ tail]
+child cdata [] [<raw> & bytes]
+child comment [] [ note ]
+child processing_instruction [do] [it]
+text [text  tail<raw> & bytes]
+roundtrip exact
+unicode text [🙂 & é] attr [café]
+mismatch: invalid - invalid XML at byte 8: start and end tags do not match
+unclosed: invalid - invalid XML at byte 2: start and end tags do not match
+bad attr: invalid - invalid XML at byte 5: bad attribute
+bad comment: invalid - invalid XML at byte 20: bad comment
+bad cdata: invalid - invalid XML at byte 12: bad CDATA section
+zero roots (empty): invalid - invalid XML at byte 0: document has no element
+zero roots (spaces): invalid - invalid XML at byte 3: document has no element
+zero roots (decl): invalid - invalid XML at byte 21: document has no element
+zero roots (comment): invalid - invalid XML at byte 21: document has no element
+zero roots (pi): invalid - invalid XML at byte 15: document has no element
+zero roots (doctype): invalid - invalid XML at byte 12: document has no element
+two roots: invalid - invalid XML at byte 0: more than one root element
+three roots: invalid - invalid XML at byte 0: more than one root element
+root plus trailing misc: accepted
+one root among siblings: 3 top nodes
+utf8 bom: root [r] text [hi]
+utf8 plain: root [r] text [hi]
+utf16le bom: root [r] text [hi]
+utf32le bom: root [r] text [hi]
+utf16be bom: root [r] text [hi]
+utf32be bom: root [r] text [hi]
+doctype utf8: doctype - XML DOCTYPE at byte 0 is rejected by default; opt in with Options.allow_doctype
+doctype utf8 bom: doctype - XML DOCTYPE at byte 3 is rejected by default; opt in with Options.allow_doctype
+doctype utf16le: doctype - XML DOCTYPE at an unknown byte offset (the input was transcoded from UTF-16 or UTF-32) is rejected by default; opt in with Options.allow_doctype
+doctype utf16be: doctype - XML DOCTYPE at an unknown byte offset (the input was transcoded from UTF-16 or UTF-32) is rejected by default; opt in with Options.allow_doctype
+doctype utf32le: doctype - XML DOCTYPE at an unknown byte offset (the input was transcoded from UTF-16 or UTF-32) is rejected by default; opt in with Options.allow_doctype
+bom mismatch: invalid XML at byte 11: start and end tags do not match
+doctype: doctype - XML DOCTYPE at byte 0 is rejected by default; opt in with Options.allow_doctype
+doctype entity: doctype - XML DOCTYPE at byte 0 is rejected by default; opt in with Options.allow_doctype
+permissive doctype
+permissive element
+entity literal true leaked false
+default children 1
+preserved children 3
+survivor [inner] [held]
+dup attr exists
+built <?xml version="1.0" encoding="UTF-8"?><!-- made by beans --><order id="7" note="a&lt;b&amp;&quot;c&quot;"><item>first &amp; last<![CDATA[<raw/>]]></item><?target data here?></order>
+pretty:
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- made by beans -->
+<order id="7" note="a&lt;b&amp;&quot;c&quot;">
+  <item>first &amp; last<![CDATA[<raw/>]]></item>
+  <?target data here?>
+</order>
+tabs ok true
+reparse root [order] attrs 2
+deep depth 3000
+loop checksum 4000

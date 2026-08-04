@@ -491,6 +491,46 @@ jobs:
             exit 1
           fi
 
+      # std.encoding on genuine Windows. The bundle staged on Linux already
+      # carried the four packages' goldens through the PE-header check and
+      # the manifest diff above, which is the cross-built half. This step is
+      # the native half: beansc.exe compiles each case *on this machine*,
+      # building yyjson, pugixml and simdutf with the Windows toolchain, and
+      # runs the result against the same golden. A skip is a failure — the
+      # whole point is that Windows is not taken on trust.
+      - name: std.encoding builds and runs natively
+        if: matrix.hosted
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ matrix.arch }}" in
+            x86_64) target_cc=x86_64-w64-mingw32-clang.exe ;;
+            i686) target_cc=i686-w64-mingw32-clang.exe ;;
+            aarch64) target_cc=aarch64-w64-mingw32-clang.exe ;;
+          esac
+          target_cc=$(cygpath -w "$(command -v "$target_cc")")
+          failures=0
+          for case_name in encoding_json encoding_xml encoding_base64 \
+              encoding_binary encoding_fuzz; do
+            echo "== $case_name =="
+            ./build/windows_native/beansc.exe build \
+              --cc "$target_cc" --linker lld \
+              "test/cases/$case_name.b" -o "build/$case_name.exe"
+            "./build/$case_name.exe" > "build/$case_name.actual" 2>&1 || true
+            if diff -u "test/cases/$case_name.out" \
+                "build/$case_name.actual"; then
+              echo "ok $case_name"
+            else
+              echo "FAIL $case_name" >&2
+              failures=$((failures + 1))
+            fi
+          done
+          if [ "$failures" -ne 0 ]; then
+            echo "$failures std.encoding case(s) failed on Windows" >&2
+            exit 1
+          fi
+          echo "std.encoding: all four packages built and ran on ${{ matrix.arch }} Windows"
+
       # A compiler that can compile itself on the machine it runs on. This is
       # the fixed-point half of the self-hosting claim, per architecture: the
       # PE linkers stamp image metadata, so executable bytes are not a compiler

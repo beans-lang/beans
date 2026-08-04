@@ -120,6 +120,10 @@ chmod 0755 "$root/bin/beansc.real"
 cp "$repo/runtime/beans_rt.c" "$root/bin/"
 cp "$repo/runtime/wasm_host.c" "$root/bin/"
 cp -R "$repo/stdlib/std" "$root/lib/std"
+# std.encoding bridge and pinned vendored sources (yyjson, pugixml, simdutf)
+# with their licenses; builds and the interpreter's bridge cache compile from
+# these, offline.
+cp -R "$repo/runtime/encoding" "$root/lib/encoding"
 cp "$repo/LICENSE" "$root/LICENSE"
 
 # Copy a dynamically linked tool together with the shared objects it needs that
@@ -223,7 +227,8 @@ BEANS_HOME=${BEANS_HOME:-$root}
 BEANS_RUNTIME=${BEANS_RUNTIME:-$bin/beans_rt.c}
 BEANS_WASM_HOST=${BEANS_WASM_HOST:-$bin/wasm_host.c}
 BEANS_STDLIB=${BEANS_STDLIB:-$root/lib/std}
-export BEANS_HOME BEANS_RUNTIME BEANS_WASM_HOST BEANS_STDLIB
+BEANS_ENCODING=${BEANS_ENCODING:-$root/lib/encoding}
+export BEANS_HOME BEANS_RUNTIME BEANS_WASM_HOST BEANS_STDLIB BEANS_ENCODING
 if [ -x "$root/toolchain/bin/clang" ]; then
     BEANS_CC=${BEANS_CC:-$root/toolchain/bin/clang}
     BEANS_AR=${BEANS_AR:-$root/toolchain/bin/llvm-ar}

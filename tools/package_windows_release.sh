@@ -81,6 +81,7 @@ cp "$beansc" "$root/bin/beansc.real.exe"
 cp "$repo/runtime/beans_rt.c" "$root/bin/"
 cp "$repo/runtime/wasm_host.c" "$root/bin/"
 cp -R "$repo/stdlib/std" "$root/lib/std"
+cp -R "$repo/runtime/encoding" "$root/lib/encoding"
 cp "$repo/LICENSE" "$root/LICENSE"
 
 if [[ "$class" == full ]]; then
@@ -138,6 +139,7 @@ if not defined BEANS_HOME set "BEANS_HOME=%BEANS_ROOT%"
 if not defined BEANS_RUNTIME set "BEANS_RUNTIME=%~dp0beans_rt.c"
 if not defined BEANS_WASM_HOST set "BEANS_WASM_HOST=%~dp0wasm_host.c"
 if not defined BEANS_STDLIB set "BEANS_STDLIB=%BEANS_ROOT%\lib\std"
+if not defined BEANS_ENCODING set "BEANS_ENCODING=%BEANS_ROOT%\lib\encoding"
 if exist "%BEANS_ROOT%\toolchain\bin\clang.exe" (
     if not defined BEANS_CC set "BEANS_CC=%BEANS_ROOT%\toolchain\bin\clang.exe"
     if not defined BEANS_AR set "BEANS_AR=%BEANS_ROOT%\toolchain\bin\llvm-ar.exe"

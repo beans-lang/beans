@@ -97,15 +97,31 @@ stage() { # <source> <stem>
     local src=$1 stem=$2
     "$BEANSC" build --target $TRIPLE --linker lld "$src" -o "$OUT/$stem.exe"
     local code=0
-    if [[ "$TRIPLE" == *-windows-msvc && "$src" == examples/ffi.b ]]; then
+    local fixture=""
+    if [[ "$TRIPLE" == *-windows-msvc ]]; then
         # The staging compiler uses the GNU ABI, but this job has already
-        # switched clang and the SDK to MSVC. Its interpreter cannot build a
-        # GNU fallback DLL for CRT-only float symbols in that mixed setup.
-        # The MSVC-hosted compiler gate below interprets ffi.b with one ABI;
-        # this cross-machine half holds the native binary to the same tracked
-        # output fixture instead of treating a staging-tool mismatch as a
-        # language failure.
-        cp test/cases/ffi.out "$OUT/$stem.expected"
+        # switched clang and the SDK to MSVC, and in that mixed setup its
+        # interpreter cannot build the host DLL two kinds of program need:
+        # ffi.b wants a GNU fallback DLL for CRT-only float symbols, and the
+        # std.encoding cases want their vendored bridge, which has no GNU
+        # headers to compile against here.
+        #
+        # Both have a tracked output fixture that every other backend is
+        # already held to, so the native binary is diffed against that fixed
+        # expectation rather than against a staging tool that cannot run on
+        # this host. Nothing about the binary is relaxed: this job's MSVC
+        # toolchain still builds it and the real machine still executes it.
+        case "$src" in
+            examples/ffi.b) fixture=test/cases/ffi.out ;;
+            test/cases/encoding_*.b) fixture=${src%.b}.out ;;
+        esac
+    fi
+    if [[ -n "$fixture" ]]; then
+        test -s "$fixture" || {
+            echo "no tracked fixture $fixture for $src" >&2
+            exit 1
+        }
+        cp "$fixture" "$OUT/$stem.expected"
     else
         set +e
         "$BEANSC" run "$src" > "$OUT/$stem.expected" 2>&1
@@ -153,6 +169,25 @@ done
 if buildable examples/shop/main.b; then
     stage examples/shop/main.b shop
 fi
+
+# std.encoding. These are not examples — they are the four packages' own
+# goldens — but they are the only programs in the tree that link a vendored
+# C/C++ bridge, so they are exactly what a Windows run has to prove. Building
+# them here compiles yyjson, pugixml and simdutf with the Windows toolchain;
+# running them on the real machine is what makes Windows a supported target
+# for std.encoding rather than an assumption.
+#
+# The expectation comes from `beansc run` on the staging host, as for every
+# other row, so the Windows binary is held to the same cross-machine answer.
+for case_name in encoding_json encoding_xml encoding_base64 encoding_binary \
+    encoding_fuzz; do
+    if buildable "test/cases/$case_name.b"; then
+        stage "test/cases/$case_name.b" "$case_name"
+    else
+        echo "std.encoding case $case_name is not buildable for $TRIPLE" >&2
+        exit 1
+    fi
+done
 
 # The classes,packages differential-fuzz corpus (seed 47): class dispatch,
 # super calls, ARC drop order, and multi-package projects. Expectations come
