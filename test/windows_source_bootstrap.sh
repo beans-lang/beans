@@ -52,7 +52,9 @@ extra_flags=()
 if [[ "$TRIPLE" != *-msvc ]]; then
     extra_flags=(-pthread -static-libgcc -static-libstdc++)
 fi
-"$CXX" -std=c++20 -Wall -Wextra -O2 -fno-rtti \
+# -Icompiler: version.h is the one compiler/language/runtime-ABI version and
+# lives in the public tree beside both compilers, not inside stage 0.
+"$CXX" -std=c++20 -Wall -Wextra -O2 -fno-rtti -Icompiler \
     "${extra_flags[@]}" --target="$clang_triple" $host_flag \
     -fuse-ld=lld \
     compiler/bootstrap/*.cpp -o "$OUT/beansc0.exe"

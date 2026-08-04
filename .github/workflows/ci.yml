@@ -11,11 +11,169 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Four parallel preflight depths. Each fails at its own cost, so the
+  # cheapest reproducer reports first: a workflow or coverage-map mistake in
+  # under a minute, a stage-0 semantic break in a few minutes, compiler
+  # parity and the deterministic fuzz smoke inside ten. Everything else fans
+  # out only after all four pass.
+  preflight-validate:
+    name: preflight 1 - sources and coverage map
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Coverage map and workflow sanity
+        run: |
+          bash test/ci_coverage.sh
+          python3 - <<'EOF'
+          import yaml
+          for f in ("ci.yml", "differential-fuzz.yml", "targets.yml",
+                    "fuzz.yml", "benchmark.yml"):
+              yaml.safe_load(open(".github/workflows/" + f))
+          print("workflows parse")
+          EOF
+
+  preflight-stage0:
+    name: preflight 2 - stage 0 and whole-compiler check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The stage-0 submodule is private. Secrets are withheld from fork
+          # pull requests, so those check out without it and run the
+          # bootstrap-free gate rather than failing on a clone they cannot do.
+          submodules: ${{ secrets.BOOTSTRAP_TOKEN != '' && 'recursive' || '' }}
+          token: ${{ secrets.BOOTSTRAP_TOKEN || github.token }}
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang lld llvm
+
+      # The whole-compiler check is the deepest cheap semantic probe there
+      # is: stage 0 parses, resolves and type-checks every line of the
+      # self-hosted compiler without running codegen.
+      - name: Stage 0 builds and checks the compiler
+        run: |
+          if [ -f compiler/bootstrap/main.cpp ]; then
+            make -j4 stage0
+            ./build/beansc0 check compiler/beans/main.b
+            ./build/beansc0 parse examples/hello.b examples/tour.b
+          else
+            echo "stage 0 absent (fork PR): the bootstrap-free gate runs in the fan-out"
+          fi
+
+  preflight-parity:
+    name: preflight 3 - compiler parity
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The stage-0 submodule is private. Secrets are withheld from fork
+          # pull requests, so those check out without it and run the
+          # bootstrap-free gate rather than failing on a clone they cannot do.
+          submodules: ${{ secrets.BOOTSTRAP_TOKEN != '' && 'recursive' || '' }}
+          token: ${{ secrets.BOOTSTRAP_TOKEN || github.token }}
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang lld llvm file binutils ripgrep
+
+      - name: Toolchain fingerprint
+        run: |
+          echo "CLANG_VER=$(clang++ --version | head -1 | tr -c 'A-Za-z0-9.' '-')" >> "$GITHUB_ENV"
+
+      # Compiler binaries keyed by OS, architecture, compiler version and
+      # source hash: a hit skips the four-stage build; anything else rebuilds.
+      # Binaries never cross OS or architecture boundaries by construction.
+      - name: Cache compiler build
+        uses: actions/cache@v4
+        with:
+          path: build
+          key: beansc-${{ runner.os }}-${{ runner.arch }}-${{ env.CLANG_VER }}-${{ hashFiles('compiler/**', 'Makefile', 'runtime/**', 'stdlib/**') }}
+
+      - name: Parity gate
+        run: |
+          if [ -f compiler/bootstrap/main.cpp ]; then
+            make -j4
+            ./test/cli_parity.sh
+            ./test/parse_recovery.sh
+            bash test/package_semantics.sh
+            bash test/builtin_names.sh
+            ./test/deterministic_build.sh
+            bash test/unsafe.sh
+            make test-bootstrap
+          else
+            echo "stage 0 absent (fork PR): the bootstrap-free gate runs in the fan-out"
+          fi
+
+      - name: Failure pointer
+        if: failure()
+        run: |
+          {
+            echo "### preflight parity failed"
+            echo "- host: $(uname -sm)"
+            echo "- reproduce with: \`make test-quick\` (each failing script names itself in the log)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  preflight-smoke:
+    name: preflight 4 - differential and fuzz smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The stage-0 submodule is private. Secrets are withheld from fork
+          # pull requests, so those check out without it and run the
+          # bootstrap-free gate rather than failing on a clone they cannot do.
+          submodules: ${{ secrets.BOOTSTRAP_TOKEN != '' && 'recursive' || '' }}
+          token: ${{ secrets.BOOTSTRAP_TOKEN || github.token }}
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang lld llvm file binutils ripgrep
+
+      - name: Toolchain fingerprint
+        run: |
+          echo "CLANG_VER=$(clang++ --version | head -1 | tr -c 'A-Za-z0-9.' '-')" >> "$GITHUB_ENV"
+
+      - name: Cache compiler build
+        uses: actions/cache@v4
+        with:
+          path: build
+          key: beansc-${{ runner.os }}-${{ runner.arch }}-${{ env.CLANG_VER }}-${{ hashFiles('compiler/**', 'Makefile', 'runtime/**', 'stdlib/**') }}
+
+      - name: Differential and semantic-fuzz smoke
+        run: |
+          if [ -f compiler/bootstrap/main.cpp ]; then
+            make -j4
+            ./test/differential.sh
+            make fuzz-differential-smoke
+          else
+            echo "stage 0 absent (fork PR): the bootstrap-free gate runs in the fan-out"
+          fi
+
+      - name: Upload fuzz failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: preflight-fuzz-failures
+          path: build/differential-fuzz/failures/
+          if-no-files-found: ignore
+
   # Native Linux/x86-64 is split by failure area too. The compiler build is
   # cheap compared with the gates, and three parallel jobs report a frontend,
   # sanitizer/ABI, or bootstrap/target failure much sooner than one long chain.
   linux-x86_64:
     name: core gate (linux/x86-64, native)
+    needs: [preflight-validate, preflight-stage0, preflight-parity, preflight-smoke]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -58,6 +216,7 @@ jobs:
 
   linux-x86_64-safety:
     name: safety + ABI gate (linux/x86-64, native)
+    needs: [preflight-validate, preflight-stage0, preflight-parity, preflight-smoke]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -96,8 +255,17 @@ jobs:
       - name: Systems-access score
         run: make access-score
 
+      - name: Upload fuzz failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: safety-fuzz-failures
+          path: build/differential-fuzz/failures/
+          if-no-files-found: ignore
+
   linux-x86_64-bootstrap:
     name: bootstrap + targets gate (linux/x86-64, native)
+    needs: [preflight-validate, preflight-stage0, preflight-parity, preflight-smoke]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -135,8 +303,12 @@ jobs:
   # run began and hid which other architectures were already sound.
   linux-cross:
     name: linux cross + hosted (${{ matrix.arch }})
+    needs: [preflight-validate, preflight-stage0, preflight-parity, preflight-smoke]
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    # One arch lane plus its hosted loop measures 5-8 minutes on a dev
+    # machine; a runner with apt and a cold build lands near 30-45. 90 keeps
+    # a two-times margin without letting a hang eat three hours.
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -190,6 +362,7 @@ jobs:
 
   linux-armv6hf:
     name: hosted gate (linux/armv6 hard-float, Raspbian)
+    needs: [preflight-validate, preflight-stage0, preflight-parity, preflight-smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 240
     steps:
@@ -211,14 +384,18 @@ jobs:
             -v "$PWD:/src:ro" \
             balenalib/raspberry-pi-debian@sha256:5e44b1697cd34bac1eaf43fbadab44c54d25246ff0b57144b054b8039d85141a sh -lc '
               set -eu
+              echo "phase apt start: $(date -u +%H:%M:%S)"
               apt-get update
               DEBIAN_FRONTEND=noninteractive apt-get install -y \
                 --no-install-recommends bash clang-16 lld-16 llvm-16 git file make
+              echo "phase copy start: $(date -u +%H:%M:%S)"
               mkdir -p /work/beans
               tar -cf - -C /src --exclude=./build --exclude=./.git \
                 --exclude=./toolchains . | tar -xf - -C /work/beans
               cd /work/beans
+              echo "phase gate start: $(date -u +%H:%M:%S)"
               BEANS_ARMV6HF_REQUIRE=1 bash test/armv6hf_hosted.sh
+              echo "phase gate end: $(date -u +%H:%M:%S)"
             '
 
   # This is separate from the score and normal local work. Barq Core is a
@@ -226,6 +403,7 @@ jobs:
   # the small local ABI fixtures depend on an external repository.
   barq-core:
     name: Barq Core C API (linux/x86-64)
+    needs: [preflight-validate, preflight-stage0, preflight-parity, preflight-smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -252,6 +430,7 @@ jobs:
   # Linux/arm64 gets the same required gate as x86-64.
   linux-arm64:
     name: full gate (linux/arm64, native)
+    needs: [preflight-validate, preflight-stage0, preflight-parity, preflight-smoke]
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
@@ -303,6 +482,7 @@ jobs:
   # macOS owns the kqueue backend, so its full differential suite must gate too.
   macos-arm64:
     name: differential gate (macos/arm64)
+    needs: [preflight-validate, preflight-stage0, preflight-parity, preflight-smoke]
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
@@ -342,6 +522,14 @@ jobs:
       - name: Semantic differential fuzz smoke
         run: make fuzz-differential-smoke
 
+      - name: Upload fuzz failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-fuzz-failures
+          path: build/differential-fuzz/failures/
+          if-no-files-found: ignore
+
       - name: Tier-1 C ABI (stage 0 and self-hosted, native)
         run: make test-c-abi-tier1
 
@@ -361,7 +549,9 @@ jobs:
   # used to hide a late architecture failure behind about an hour of duplicates.
   docker-linux:
     name: docker container gate
+    needs: [preflight-validate, preflight-stage0, preflight-parity, preflight-smoke]
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
         with:

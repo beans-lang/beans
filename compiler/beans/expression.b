@@ -518,6 +518,22 @@ fn simd_description(name: string) -> Option<SimdDescription> {
     return none
 }
 
+// Arity of the builtin generic containers, -1 for everything else. The HIR
+// lowering validates signature and field types; statement annotations reach
+// validate_target_type instead, and both have to refuse a builtin generic
+// spelled without its type arguments.
+fn builtin_generic_arity(name: string) -> int {
+    if name == "Map" || name == "OrderedMap" { return 2 }
+    if name == "List" || name == "Thread" || name == "Mutex" ||
+       name == "Channel" || name == "Box" || name == "Arena" ||
+       name == "Shared" || name == "Weak" || name == "RawPtr" ||
+       name == "Slice" || name == "Atomic" ||
+       name == "StoredCallback" {
+        return 1
+    }
+    return -1
+}
+
 fn builtin_class_name(name: string) -> bool {
     return name == "Bytes" || name == "File" ||
            name == "Dir" || name == "MMap" ||
@@ -3003,6 +3019,31 @@ class ExpressionChecker {
         }
     }
 
+    // Statement annotations never reach the HIR lowering's validate_arity,
+    // so a builtin generic spelled without its type arguments has to be
+    // refused here; new-expressions stay exempt because `new Box(7)` may
+    // take its type argument from the declared result type. False means the
+    // caller must poison the annotation, so one arity mistake reports once
+    // instead of cascading into mismatch and missing-method errors.
+    fn validate_annotation_arity(node: AstNode, type: HirType) -> bool {
+        var ok: bool = true
+        let generic_arity: int =
+            builtin_generic_arity(type.name)
+        if generic_arity >= 0 &&
+           type.args.len() != generic_arity {
+            self.fail(
+                node,
+                "{type.name} needs {generic_arity} type argument(s), got {type.args.len()}")
+            ok = false
+        }
+        for argument: HirType in type.args {
+            if !self.validate_annotation_arity(node, argument) {
+                ok = false
+            }
+        }
+        return ok
+    }
+
     fn validate_target_type(node: AstNode, type: HirType) {
         if type.name == "StoredCallback" &&
            type.args.len() == 1 &&
@@ -3051,7 +3092,12 @@ class ExpressionChecker {
                 }
             }
             none => {
-                if type.name.len() > 4 &&
+                // A digit after Simd is almost always a typo for a real
+                // vector shape — but only when the name belongs to no
+                // registered user declaration; a class by a non-vector
+                // name is an ordinary type.
+                if self.declaration_for(type).is_none() &&
+                   type.name.len() > 4 &&
                    type.name.starts_with("Simd") &&
                    type.name.byte_at(4) >= 48 &&
                    type.name.byte_at(4) <= 57 {
@@ -3781,9 +3827,11 @@ class ExpressionChecker {
                 return result
             }
             none => {
-                self.fail(
-                    node,
-                    "{render_hir_type(receiver.type)} has no field '{node.value}'")
+                if receiver.type.name != "poison" {
+                    self.fail(
+                        node,
+                        "{render_hir_type(receiver.type)} has no field '{node.value}'")
+                }
                 return self.make_node(
                     node, "error", node.value, poison_hir_type())
             }
@@ -3847,8 +3895,12 @@ class ExpressionChecker {
         operation: string, result: HirNode) {
         let count: int = node.children.len() - first
         if count != signature.parameters.len() {
+            // A builtin constructor reads as the new-expression it came
+            // from; every other builtin keeps its qualified spelling.
             let shown: string =
-                if result.resolved == "" {
+                if result.kind == "new" {
+                    "new {result.value}"
+                } else if result.resolved == "" {
                     "builtin"
                 } else {
                     "'{result.resolved}'"
@@ -3993,12 +4045,13 @@ class ExpressionChecker {
     fn check_arguments(node: AstNode, first: int,
                        function: HirFunction,
                        owner: HirType,
+                       shown: string,
                        result: HirNode) {
         let count: int = node.children.len() - first
         if count != function.parameters.len() {
             self.fail(
                 node,
-                "function '{function.name}' needs {function.parameters.len()} argument(s), got {count}")
+                "{shown} takes {function.parameters.len()} argument(s), got {count}")
         }
         let shared: int =
             if count < function.parameters.len() {
@@ -4044,6 +4097,7 @@ class ExpressionChecker {
     fn check_generic_arguments(
         node: AstNode, first: int,
         function: HirFunction, expected: HirType,
+        shown: string,
         result: HirNode) {
         var inference: Map<string, HirType> = {}
         if expected.name != "" {
@@ -4055,7 +4109,7 @@ class ExpressionChecker {
         if count != function.parameters.len() {
             self.fail(
                 node,
-                "function '{function.name}' needs {function.parameters.len()} argument(s), got {count}")
+                "{shown} takes {function.parameters.len()} argument(s), got {count}")
         }
         let shared: int =
             if count < function.parameters.len() {
@@ -4145,8 +4199,12 @@ class ExpressionChecker {
                                result: HirNode) {
         let count: int = node.children.len() - first
         if count != signature.parameters.len() {
+            // A builtin constructor reads as the new-expression it came
+            // from; every other builtin keeps its qualified spelling.
             let shown: string =
-                if result.resolved == "" {
+                if result.kind == "new" {
+                    "new {result.value}"
+                } else if result.resolved == "" {
                     "builtin"
                 } else {
                     "'{result.resolved}'"
@@ -4584,11 +4642,13 @@ class ExpressionChecker {
                     if function.generics.len() != 0 {
                         self.check_generic_arguments(
                             node, 1, function,
-                            expected, result)
+                            expected,
+                            "'{function.name}'", result)
                     } else {
                         self.check_arguments(
                             node, 1, function,
-                            no_hir_type(), result)
+                            no_hir_type(),
+                            "'{function.name}'", result)
                     }
                     self.expect_type(node, result.type, expected)
                     return some(result)
@@ -5089,7 +5149,8 @@ class ExpressionChecker {
                                 target.function.qualified
                             self.check_arguments(
                                 node, 1, target.function,
-                                target.owner, result)
+                                target.owner,
+                                "super.init", result)
                         }
                         none => {
                             self.fail(
@@ -5156,7 +5217,8 @@ class ExpressionChecker {
                             target.function.qualified
                         self.check_arguments(
                             node, 1, target.function,
-                            target.owner, result)
+                            target.owner,
+                            "super.{callee.value}", result)
                         self.expect_type(
                             node, result.type, expected)
                         return result
@@ -5244,11 +5306,15 @@ class ExpressionChecker {
                                 if function.generics.len() != 0 {
                                     self.check_generic_arguments(
                                         node, 1, function,
-                                        expected, result)
+                                        expected,
+                                        "'{self.static_syntax_name(receiver_syntax)}.{callee.value}'",
+                                        result)
                                 } else {
                                     self.check_arguments(
                                         node, 1, function,
-                                        no_hir_type(), result)
+                                        no_hir_type(),
+                                        "'{self.static_syntax_name(receiver_syntax)}.{callee.value}'",
+                                        result)
                                 }
                                 self.expect_type(
                                     node, result.type, expected)
@@ -5974,7 +6040,9 @@ class ExpressionChecker {
                             result.children.push(receiver)
                             self.check_arguments(
                                 node, 1, function,
-                                receiver.type, result)
+                                receiver.type,
+                                "{declaration.name}.{function.name}",
+                                result)
                             self.expect_type(
                                 node, result.type, expected)
                             return result
@@ -5983,6 +6051,12 @@ class ExpressionChecker {
                     }
                 }
                 none => {}
+            }
+            // A poison receiver already reported its own error; a second
+            // "poison has no method" line would only bury it.
+            if receiver.type.name == "poison" {
+                return self.make_node(
+                    node, "error", "call", poison_hir_type())
             }
             self.fail(
                 callee,
@@ -6127,11 +6201,13 @@ class ExpressionChecker {
                 if function.generics.len() != 0 {
                     self.check_generic_arguments(
                         node, 1, function,
-                        expected, result)
+                        expected,
+                        "'{function.name}'", result)
                 } else {
                     self.check_arguments(
                         node, 1, function,
-                        no_hir_type(), result)
+                        no_hir_type(),
+                        "'{function.name}'", result)
                 }
                 self.expect_type(node, result.type, expected)
                 return result
@@ -6218,13 +6294,20 @@ class ExpressionChecker {
             let result: HirNode =
                 self.make_node(node, "new", type.name, type)
             result.resolved = "{type.name}.init"
+            if type.args.len() > 1 {
+                self.fail(
+                    node,
+                    "{type.name} takes one type argument")
+                type.args = [type.args[0]]
+                result.type = type
+            }
             let count: int = node.children.len() - 1
             if count != 1 {
                 self.fail(
                     node,
-                    "new {type.name} takes 1 argument, got {count}")
+                    "new {type.name} takes 1 argument(s), got {count}")
             }
-            if type.args.len() == 1 {
+            if type.args.len() == 1 && count == 1 {
                 let signature: BuiltinSignature =
                     new BuiltinSignature([type.args[0]], type)
                 self.check_builtin_arguments(
@@ -6285,6 +6368,7 @@ class ExpressionChecker {
                         self.check_arguments(
                             node, 1, initializer,
                             initializer_owner,
+                            "'{node.children[0].value}' init",
                             result)
                         result.resolved =
                             initializer.qualified
@@ -7334,6 +7418,10 @@ class ExpressionChecker {
         match type_child(node) {
             some(type_node) => {
                 declared = hir_type_from_ast(type_node)
+                if !self.validate_annotation_arity(
+                        type_node, declared) {
+                    declared = poison_hir_type()
+                }
                 self.validate_target_type(
                     type_node, declared)
             }

@@ -2903,7 +2903,7 @@ if ./build/beansc-next check test/cases/self_host_expressions_bad.b \
 fi
 grep -q "cannot assign to immutable 'fixed'" "$tmp/expressions.bad"
 grep -q "unknown name 'unknown'" "$tmp/expressions.bad"
-grep -q "function 'one' needs 1 argument(s), got 2" \
+grep -q "'one' takes 1 argument(s), got 2" \
     "$tmp/expressions.bad"
 grep -q "List<T> has no method 'clone'" \
     "$tmp/expressions.bad"

@@ -37,3 +37,10 @@ Makefile text eol=lf
 # Documentation checks use line-oriented shell tools. Pin Markdown to LF so
 # those checks behave the same way on Windows, Linux, and macOS checkouts.
 *.md text eol=lf
+
+# GitHub's Linguist does not know Beans yet, and the `.b` extension is already
+# registered to Limbo and Brainfuck. Without this, every `.b` source in the
+# repo is counted as Limbo, and the repository's top language badge reads
+# "Limbo" — an unrelated language. Keep `.b` out of the language statistics
+# until "Beans" is added to github-linguist/linguist; then delete this line.
+*.b linguist-detectable=false

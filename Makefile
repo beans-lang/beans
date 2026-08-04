@@ -112,7 +112,7 @@ $(BIN): $(SELF_HOST_SRC) $(RUNTIME_COPY)
 
 endif
 
-.PHONY: stage0 run clean install test test-ci test-core test-stage0 platform-status test-platform-manifest test-portable-int128 test-compiler-arch-objects test-stage0-windows test-windows-source-bootstrap test-musl-hosted test-armv6hf-hosted test-sanitize test-release-package test-install-release test-release-completeness test-clean-bootstrap test-c-abi-tier1 test-mir-stage0 test-barq-core fuzz-smoke fuzz-differential fuzz-differential-smoke test-linux test-linux-arch test-linux-hosted test-windows test-windows-native test-windows-native-i686 test-windows-native-arm64 test-windows-arch test-windows-hosted test-encoding-targets test-encoding-windows access-score self-host-next test-self-host test-self-host-full test-bootstrap bench-compiler bench-quick bench-full bench-verify bench-profile bench-compare
+.PHONY: stage0 run clean install test test-ci test-core test-stage0 test-quick test-frontend test-semantics test-runtime test-ffi test-platform platform-status test-platform-manifest test-portable-int128 test-compiler-arch-objects test-stage0-windows test-windows-source-bootstrap test-musl-hosted test-armv6hf-hosted test-sanitize test-release-package test-install-release test-release-completeness test-clean-bootstrap test-c-abi-tier1 test-mir-stage0 test-barq-core fuzz-smoke fuzz-differential fuzz-differential-smoke test-linux test-linux-arch test-linux-hosted test-windows test-windows-native test-windows-native-i686 test-windows-native-arm64 test-windows-arch test-windows-hosted test-encoding-targets test-encoding-windows access-score self-host-next test-self-host test-self-host-full test-bootstrap bench-compiler bench-quick bench-full bench-verify bench-profile bench-compare
 stage0: $(BOOTSTRAP_BIN)
 
 run: $(BIN)
@@ -141,8 +141,10 @@ else
 endif
 
 # bench_compare.sh exercises the comparator binary, so a clean checkout's
-# `make test` must build it first rather than assume an earlier bench run
-# left one behind.
+# `make test` must build it first rather than assume an earlier bench run left
+# one behind. The prerequisite is conditional because the comparator is built
+# from the stage-0 sources: a checkout without that submodule must still reach
+# the message below rather than fail on a missing rule.
 test-stage0: $(BIN) $(if $(HAVE_BOOTSTRAP),build/bench/compare)
 ifeq ($(HAVE_BOOTSTRAP),)
 	@echo "make test needs the stage-0 bootstrap compiler, which is not in this checkout."
@@ -162,7 +164,154 @@ else
 	bash ./test/package_semantics.sh
 	./test/self_host.sh
 	bash ./test/unsafe.sh
+	bash ./test/builtin_names.sh
 	bash ./test/bench_compare.sh
+	bash ./test/compiler_arch_objects.sh
+endif
+
+# The five-minute developer gate: the checks that catch almost every compiler
+# mistake, cheapest first, so a parity break reports in seconds. This is a
+# feedback loop, not the bar — `make test` stays the full suite. Timings are
+# from build/test_timing on a dev laptop; the whole chain is under five
+# minutes when the compiler is already built.
+test-quick: $(BIN)
+ifeq ($(HAVE_BOOTSTRAP),)
+	@echo "make test-quick needs the stage-0 bootstrap compiler (see make test)."
+	@exit 1
+else
+	./test/cli_parity.sh
+	./test/parse_recovery.sh
+	bash ./test/package_semantics.sh
+	bash ./test/builtin_names.sh
+	./test/deterministic_build.sh
+	bash ./test/unsafe.sh
+	./test/differential.sh
+	bash ./test/ci_coverage.sh
+	$(MAKE) test-bootstrap
+	$(MAKE) fuzz-differential-smoke
+endif
+
+# Focused slices of the full suite for iterating on one area. Together the
+# five slices run exactly the scripts `make test` runs — test/ci_coverage.sh
+# fails if they ever drift apart — so a green run of all five plus nothing
+# else is the same claim as `make test`.
+test-frontend: $(BIN)
+ifeq ($(HAVE_BOOTSTRAP),)
+	@echo "make test-frontend needs the stage-0 bootstrap compiler (see make test)."
+	@exit 1
+else
+	./test/docs.sh
+	./test/version.sh
+	bash ./test/syntax_v07.sh
+	./test/parse_recovery.sh
+	./test/lsp_probe.sh
+	./test/lsp_server.sh
+	./test/stdlib_source.sh
+	./test/fs_source.sh
+	./test/reader_source.sh
+	./test/dependencies.sh
+	./test/cli_parity.sh
+	bash ./test/package_semantics.sh
+	bash ./test/builtin_names.sh
+endif
+
+test-semantics: $(BIN) build/bench/compare
+ifeq ($(HAVE_BOOTSTRAP),)
+	@echo "make test-semantics needs the stage-0 bootstrap compiler (see make test)."
+	@exit 1
+else
+	./test/differential.sh
+	./test/panic.sh
+	./test/numerics.sh
+	./test/moves.sh
+	./test/maps.sh
+	./test/traits.sh
+	./test/fixed_arrays.sh
+	bash ./test/closure_captures.sh
+	bash ./test/mir.sh
+	bash ./test/devirtualize.sh
+	bash ./test/default_eval_order.sh
+	./test/inline_options.sh
+	./test/inline_results.sh
+	bash ./test/wide_lists.sh
+	bash ./test/wide_maps.sh
+	bash ./test/wide_enums.sh
+	bash ./test/wide_owners.sh
+	bash ./test/wide_sync.sh
+	bash ./test/wide_concurrency.sh
+	./test/portable_int128.sh
+	./test/self_host.sh
+	bash ./test/bench_compare.sh
+endif
+
+test-runtime: $(BIN)
+ifeq ($(HAVE_BOOTSTRAP),)
+	@echo "make test-runtime needs the stage-0 bootstrap compiler (see make test)."
+	@exit 1
+else
+	bash ./test/thread_cleanup.sh
+	./test/resources.sh
+	./test/shm.sh
+	./test/process.sh
+	./test/profiles.sh
+	./test/atomics.sh
+	./test/cpu_features.sh
+	./test/clocks_random.sh
+	./test/net.sh
+	./test/poll.sh
+	./test/signals.sh
+	./test/dylib.sh
+	./test/child.sh
+	bash ./test/encoding.sh
+endif
+
+test-ffi: $(BIN)
+ifeq ($(HAVE_BOOTSTRAP),)
+	@echo "make test-ffi needs the stage-0 bootstrap compiler (see make test)."
+	@exit 1
+else
+	./test/raw_slices.sh
+	./test/c_layout_structs.sh
+	./test/c_layout_unions.sh
+	./test/c_layout_c_abi.sh
+	./test/c_wide_args.sh
+	./test/c_callbacks.sh
+	./test/c_opaque.sh
+	./test/c_globals.sh
+	./test/link_manifest.sh
+	./test/library_output.sh
+	./test/bindgen.sh
+	./test/stack_pointer.sh
+	./test/stored_callbacks.sh
+	./test/simd.sh
+	./test/intrinsics.sh
+	./test/packed_layout.sh
+	./test/layout_introspect.sh
+	bash ./test/unsafe.sh
+	bash ./test/runtime_abi.sh
+	bash ./test/decimal_align.sh
+	./test/object_abi.sh
+	bash ./test/encoding_symbols.sh
+	bash ./test/encoding_outputs.sh
+	bash ./test/encoding_cache.sh
+	bash ./test/encoding_stage0.sh
+endif
+
+test-platform: $(BIN)
+ifeq ($(HAVE_BOOTSTRAP),)
+	@echo "make test-platform needs the stage-0 bootstrap compiler (see make test)."
+	@exit 1
+else
+	./test/freestanding.sh
+	bash ./test/abi_probe.sh
+	./test/wasm_matrix.sh
+	./test/wasm.sh
+	./test/embedded.sh
+	bash ./test/release_completeness.sh --self-test
+	./test/deterministic_build.sh
+	./test/asm.sh
+	./test/targets.sh
+	./test/platform_manifest.sh
 	bash ./test/compiler_arch_objects.sh
 endif
 
@@ -335,18 +484,18 @@ test-barq-core: $(BIN)
 
 build/beansc-asan-ubsan: $(SRC) $(HDR) $(RUNTIME_COPY)
 	@mkdir -p build
-	$(CXX) -std=c++20 -Wall -Wextra -O1 -g -pthread \
+	$(CXX) $(CPPFLAGS) -std=c++20 -Wall -Wextra -O1 -g -pthread \
 		-fsanitize=address,undefined -fno-sanitize-recover=undefined \
 		$(SRC) -o $@
 
 build/beansc-tsan: $(SRC) $(HDR) $(RUNTIME_COPY)
 	@mkdir -p build
-	$(CXX) -std=c++20 -Wall -Wextra -O1 -g -pthread \
+	$(CXX) $(CPPFLAGS) -std=c++20 -Wall -Wextra -O1 -g -pthread \
 		-fsanitize=thread $(SRC) -o $@
 
 build/fuzz-frontend: test/fuzz_frontend.cpp $(FRONTEND_FUZZ_SRC) $(HDR)
 	@mkdir -p build
-	$(CXX) -std=c++20 -O1 -g -pthread -Icompiler/bootstrap \
+	$(CXX) $(CPPFLAGS) -std=c++20 -O1 -g -pthread -Icompiler/bootstrap \
 		$(FUZZ_FLAGS) \
 		test/fuzz_frontend.cpp $(FRONTEND_FUZZ_SRC) -o $@
 
@@ -499,7 +648,7 @@ ifneq ($(HAVE_BOOTSTRAP),)
 
 build/bench/compare: bench/compare.cpp compiler/bootstrap/json.cpp compiler/bootstrap/json.h
 	@mkdir -p build/bench
-	$(CXX) -std=c++20 -Wall -Wextra -O2 bench/compare.cpp compiler/bootstrap/json.cpp -o $@
+	$(CXX) $(CPPFLAGS) -std=c++20 -Wall -Wextra -O2 bench/compare.cpp compiler/bootstrap/json.cpp -o $@
 
 bench-compare: build/bench/compare
 	@test -n "$(BEFORE)" || { echo "usage: make bench-compare BEFORE=before AFTER=after EXPECT=workload"; exit 2; }

@@ -482,7 +482,7 @@ case "$mode" in
             --keep-going
         echo "== differential fuzz: checker parity (negative cases) =="
         "$python3" tools/differential_fuzz.py \
-            --negative --seed 1 --cases 13 --keep-going
+            --negative --seed 1 --cases 14 --keep-going
         echo "ok semantic differential fuzz smoke"
         ;;
     run)
@@ -502,7 +502,7 @@ case "$mode" in
         if [ "${FUZZ_NEGATIVE:-1}" = 1 ]; then
             "$python3" tools/differential_fuzz.py \
                 --negative --seed "${FUZZ_SEED:-1}" \
-                --cases "${FUZZ_NEGATIVE_CASES:-26}" --keep-going
+                --cases "${FUZZ_NEGATIVE_CASES:-28}" --keep-going
         fi
         ;;
     *)

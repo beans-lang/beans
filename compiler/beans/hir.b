@@ -510,7 +510,12 @@ class SignatureChecker {
                 }
             }
             none => {
-                if name.len() > 4 &&
+                // A digit after Simd is almost always a typo for a real
+                // vector shape — but only when the name belongs to no
+                // registered user declaration; a class by a non-vector
+                // name is an ordinary type.
+                if !self.generic_arity.contains(name) &&
+                   name.len() > 4 &&
                    name.starts_with("Simd") &&
                    name.byte_at(4) >= 48 &&
                    name.byte_at(4) <= 57 {

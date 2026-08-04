@@ -178,12 +178,18 @@ done
 # from the generator's independent oracle — not from any compiler — so the
 # Windows machine executes against the same answers the qemu and wine gates
 # use. Directory cases carry beans.pot; the entry point is always main.b.
+dfuzz_seed=47
+dfuzz_cases=6
 if command -v python3 >/dev/null 2>&1; then
     dfuzz_corpus="$OUT/../dfuzz-corpus-classes"
     rm -rf "$dfuzz_corpus"
     python3 tools/differential_fuzz.py --corpus "$dfuzz_corpus" \
-        --seed 47 --cases 6 --groups classes,packages >/dev/null
+        --seed "$dfuzz_seed" --cases "$dfuzz_cases" --groups classes,packages >/dev/null
     while read -r cname; do
+        # A generated file, so .gitattributes cannot pin its endings. `read -r`
+        # keeps a carriage return, and a case name ending in \r names a path
+        # that does not exist.
+        cname=${cname%$'\r'}
         [[ -n "$cname" ]] || continue
         if [[ -f "$dfuzz_corpus/$cname.b" ]]; then
             csrc="$dfuzz_corpus/$cname.b"
@@ -199,7 +205,8 @@ if command -v python3 >/dev/null 2>&1; then
         cp "$cexpect" "$OUT/dfuzz_$cname.expected"
         printf '%s\t%s\n' "dfuzz_$cname" "$cexit" >> "$OUT/manifest.tsv"
     done < "$dfuzz_corpus/MANIFEST"
-    echo "staged 6 oracle-checked differential corpus cases (seed 47)"
+    printf 'seed %s cases %s\n' "$dfuzz_seed" "$dfuzz_cases" > "$OUT/corpus_meta"
+    echo "staged $dfuzz_cases oracle-checked differential corpus cases (seed $dfuzz_seed)"
 else
     echo "differential corpus not staged: python3 is not installed" >&2
 fi
@@ -207,6 +214,13 @@ fi
 # The exact target this bundle was staged for, so the Windows side can
 # report the architecture and toolchain it really executed.
 echo "$TRIPLE" > "$OUT/triple"
+
+# The compiler identity behind every staged binary, for the run-side report:
+# the Beans compiler that drove the build and the C driver underneath it.
+{
+    "$BEANSC" --version 2>/dev/null | head -1 || echo "beansc (version unavailable)"
+    clang --version 2>/dev/null | head -1 || echo "clang (version unavailable)"
+} > "$OUT/toolchain"
 
 # target_info runs on the Windows side as a positive golden: the facts a
 # running PE binary reports must be the Windows target's, not the build host's.

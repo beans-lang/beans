@@ -1,5 +1,6 @@
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <vector>
@@ -16,6 +17,18 @@
 #include "lexer.h"
 #include "parser.h"
 #include "target.h"
+
+// The interpreter's C ABI bridge calls this, and the real definition lives in
+// the driver's main.cpp — which this build deliberately leaves out, because
+// libFuzzer supplies its own main. The harness only lexes, parses and checks,
+// so it never reaches the bridge; this satisfies the linker with the same
+// default the driver would pick.
+std::string find_c_driver() {
+    if (const char* configured = std::getenv("BEANS_CC")) {
+        if (*configured) return configured;
+    }
+    return "clang";
+}
 
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     // Keep one input bounded even when a caller forgets libFuzzer's -max_len.
