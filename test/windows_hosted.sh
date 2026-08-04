@@ -101,6 +101,40 @@ if ! tr -d '\r' < build/windows_hosted/agg.bad \
 fi
 echo "reserved names refused; the C ABI bridge runs and honors BEANS_CC"
 
+# Narrow extern arguments, held differentially: _rotl's u32/i32 pair is the
+# exact signature whose widened words a 32-bit host used to split across
+# argument slots and answer silently wrong, and ffi_words covers the pointer
+# shapes. Both cases stay on msvcrt-exported symbols because the module walk
+# cannot see static-CRT symbols.
+for words in ffi_words ffi_rotate; do
+    if ! "$BEANSC" run "test/cases/$words.b" 2> "build/windows_hosted/$words.err" \
+            | tr -d '\r' > "build/windows_hosted/$words.interp.out"; then
+        echo "FAIL: test/cases/$words.b did not run interpreted on this host:" >&2
+        cat "build/windows_hosted/$words.err" >&2
+        exit 1
+    fi
+    if ! diff -u "test/cases/$words.out" "build/windows_hosted/$words.interp.out"; then
+        echo "FAIL: interpreted $words output differs on this host" >&2
+        exit 1
+    fi
+    if ! "$BEANSC" build --linker lld "${sysroot_args[@]}" "test/cases/$words.b" \
+            -o "build/windows_hosted/$words.exe" > "build/windows_hosted/$words.buildlog" 2>&1; then
+        echo "FAIL: test/cases/$words.b does not build natively:" >&2
+        sed 's/^/  /' "build/windows_hosted/$words.buildlog" >&2
+        exit 1
+    fi
+    if ! "./build/windows_hosted/$words.exe" \
+            | tr -d '\r' > "build/windows_hosted/$words.native.out"; then
+        echo "FAIL: the native $words binary did not run" >&2
+        exit 1
+    fi
+    if ! diff -u "test/cases/$words.out" "build/windows_hosted/$words.native.out"; then
+        echo "FAIL: native $words output differs on this host" >&2
+        exit 1
+    fi
+done
+echo "narrow extern arguments marshal by declared width on this host"
+
 fails=0
 ran=0
 refused=0
