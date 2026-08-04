@@ -60,4 +60,21 @@ grep -q "inout is only valid for an inout call argument" "$tmp/collection-bad"
 grep -q "closure cannot capture inout parameter 'value'" "$tmp/collection-bad"
 grep -q "changes ownership mode of argument 1" "$tmp/collection-bad"
 
+# A struct that reaches itself has no finite layout, and that is reported on
+# its own. Checking then carries on, so the move-only question still gets asked
+# about a type whose fields loop — it has to come back with an answer rather
+# than descend the cycle until the stack runs out. Stage 0 is where that walk
+# is C++ recursion, so it is checked too when the bootstrap is present; forks
+# build without the private submodule and skip it.
+for compiler in ./build/beansc ./build/beansc0; do
+    [[ -x "$compiler" ]] || continue
+    out="$tmp/recursive-bad.$(basename "$compiler")"
+    if "$compiler" check test/cases/move_only_recursive_bad.b >"$out" 2>&1; then
+        echo "move_only_recursive_bad.b unexpectedly passed $compiler" >&2
+        exit 1
+    fi
+    grep -q "recursive inline layout through field 'next'" "$out"
+    grep -q "recursive inline layout through field 'ping'" "$out"
+done
+
 echo "ok move, unique buffers/handles, explicit clones, branches, and use-after-move errors"

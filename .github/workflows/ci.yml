@@ -255,12 +255,18 @@ jobs:
       - name: Systems-access score
         run: make access-score
 
+      # Two fuzzers run in this job and they write their reproducers to
+      # different places: libFuzzer drops a crashing input under
+      # build/fuzz-artifacts, the semantic fuzzer writes a failure directory.
+      # Both paths are collected, or a crash here leaves nothing to replay.
       - name: Upload fuzz failure artifacts
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: safety-fuzz-failures
-          path: build/differential-fuzz/failures/
+          path: |
+            build/differential-fuzz/failures/
+            build/fuzz-artifacts/
           if-no-files-found: ignore
 
   linux-x86_64-bootstrap:
