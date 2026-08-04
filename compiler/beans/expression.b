@@ -3018,9 +3018,15 @@ class ExpressionChecker {
 
     fn make_node(node: AstNode, kind: string,
                  value: string, type: HirType) -> HirNode {
-        return new HirNode(
+        let result: HirNode = new HirNode(
             kind, value, type, self.current.file,
             node.line, node.col)
+        // The async expander reads types and argument modes from the AST,
+        // so every checked node keeps a handle to its lowering. Later
+        // make_node calls for the same AST node overwrite earlier ones;
+        // the final one is the node's real meaning.
+        node.checked = some(result)
+        return result
     }
 
     fn expect_type(node: AstNode, actual: HirType,
@@ -3227,11 +3233,17 @@ class ExpressionChecker {
             }
             let parser: Parser =
                 new Parser(move tokens)
-            // An interpolation piece is part of the surrounding body, so
-            // `await` stays available in an async function's strings.
+            // An interpolation piece is parsed with the surrounding body's
+            // async context so the refusal below can name the real
+            // problem instead of reporting a confused parse.
             parser.in_async = self.current.is_async
             let expression: AstNode =
                 parser.parse_standalone_expression()
+            if ast_contains_await(expression) {
+                self.fail(
+                    node,
+                    "await is not allowed inside string interpolation — bind the awaited value to a local first")
+            }
             for diagnostic: Diagnostic in parser.errors {
                 self.fail(
                     node,
@@ -4913,18 +4925,27 @@ class ExpressionChecker {
                 }
                 result.children.push(message)
                 result.children.push(kind)
+            } else if custom_error {
+                result.children.push(
+                    self.check_expression(
+                        node.children[1], error_type))
             } else {
-                for index: int in
-                    1..node.children.len() {
-                    result.children.push(
-                        self.check_expression(
-                            node.children[index],
-                            if custom_error {
-                                error_type
-                            } else {
-                                new HirType("string")
-                            }))
+                // For the built-in Error, err(message) constructs one and
+                // err(existing_error) re-raises one — the shape ?
+                // propagation needs when the failure came out of another
+                // Result.
+                let argument: HirNode =
+                    self.check_expression(
+                        node.children[1], no_hir_type())
+                if canonical_hir_name(argument.type.name) !=
+                       "string" &&
+                   !hir_types_equal(argument.type, error_type) &&
+                   argument.type.name != "poison" {
+                    self.fail(
+                        node,
+                        "err takes a message string or an Error value, got {render_hir_type(argument.type)}")
                 }
+                result.children.push(argument)
             }
             return some(result)
         }

@@ -7,6 +7,10 @@ class AstNode {
     note: string
     parenthesized: bool
     children: List<AstNode>
+    // The HirNode the expression checker produced for this node, attached
+    // during checking. The async expander reads types, argument passing,
+    // and binding ids from here without re-deriving them.
+    checked: Option<HirNode>
 
     fn init(kind: string, value: string, line: int, col: int) {
         self.kind = kind
@@ -17,6 +21,7 @@ class AstNode {
         self.note = ""
         self.parenthesized = false
         self.children = []
+        self.checked = none
     }
 
     fn add(value: AstNode) {

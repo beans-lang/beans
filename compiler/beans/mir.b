@@ -2015,7 +2015,7 @@ class MirLowerer {
     }
 
     fn lower_function(function: HirFunction) {
-        if function.is_async {
+        if function.is_async && !function.expanded {
             // The async expander runs before MIR lowering and rewrites
             // every async body into a task maker; an async function here
             // means that step was skipped.

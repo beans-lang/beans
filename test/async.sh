@@ -154,7 +154,8 @@ async fn uses(a: int) -> int {
         0 => 0,
         _ => 1,
     }
-    let title: string = "got {await plain(picked)}"
+    let boxed: int = await plain(picked)
+    let title: string = "got {boxed}"
     return nested + looped + title.len()
 }
 
@@ -377,6 +378,21 @@ EOF
 both_reject_same "$tmp/rej_override_async.b" \
     "'step' cannot be async — the parent declaration is synchronous"
 
+cat > "$tmp/rej_interp.b" <<'EOF'
+import std.async as aio
+import std.io
+
+async fn plain(a: int) -> int { return a }
+
+async fn bad(a: int) -> string {
+    return "got {await plain(a)}"
+}
+
+fn main() {}
+EOF
+both_reject_same "$tmp/rej_interp.b" \
+    "await is not allowed inside string interpolation — bind the awaited value to a local first"
+
 cat > "$tmp/rej_borrowed_loop.b" <<'EOF'
 import std.async as aio
 
@@ -428,5 +444,321 @@ grep -q "pub async fn poke" "$tmp/d0"
 grep -q "static async fn make" "$tmp/d0"
 # both printers spell a move operand without a space — pinned as-is
 grep -q "(await (movet))" "$tmp/d0"
+
+# ---- execution: both executors and the native backend agree ---------------
+
+native_dir=$tmp/native
+mkdir -p "$native_dir"
+
+# beansc0's native backend predates generic fn-typed fields and refuses
+# them ("not in the native backend yet"), so native coverage is the
+# self-hosted compiler's. Interpreters run on both.
+# stderr merges before the CR-stripping pipe so a panic line lands after
+# the stdout that was flushed before it, not wherever pipe buffering puts it.
+run_merged() { # <compiler> <source>
+    local status
+    "$1" run "$2" 2>&1 | tr -d '\r'
+    status=${PIPESTATUS[0]}
+    return "$status"
+}
+
+run_matrix() { # <source> <expected> [expected-exit]
+    local src="$1" expected="$2" wanted_exit="${3:-0}"
+    set +e
+    run_merged "$BEANSC0" "$src" >"$tmp/m0"; local r0=$?
+    run_merged "$BEANSC"  "$src" >"$tmp/m1"; local r1=$?
+    set -e
+    if [ "$r0" -ne "$wanted_exit" ] || [ "$r1" -ne "$wanted_exit" ]; then
+        echo "async: $src exits (stage0=$r0 selfhost=$r1, wanted $wanted_exit)" >&2
+        cat "$tmp/m0" "$tmp/m1" >&2
+        exit 1
+    fi
+    diff -u "$expected" "$tmp/m0"
+    diff -u "$expected" "$tmp/m1"
+    local bin="$native_dir/$(basename "$src" .b)"
+    "$BEANSC" build "$src" -o "$bin" >/dev/null
+    set +e
+    "$bin" 2>&1 >"$tmp/mn.merged" | cat >>"$tmp/mn.merged"; local rn=${PIPESTATUS[0]}
+    mv "$tmp/mn.merged" "$tmp/mn"
+    set -e
+    if [ "$rn" -ne "$wanted_exit" ]; then
+        echo "async: $src native exit $rn, wanted $wanted_exit" >&2
+        cat "$tmp/mn" >&2
+        exit 1
+    fi
+    tr -d '\r' <"$tmp/mn" >"$tmp/mn.lf"
+    diff -u "$expected" "$tmp/mn.lf"
+}
+
+echo "checking basic task semantics"
+cat > "$tmp/sem_basic.b" <<'BEANS'
+import std.async as aio
+import std.io
+
+async fn add_later(a: int, b: int) -> int {
+    io.println("running {a}+{b}")
+    return a + b
+}
+
+fn main() {
+    let cold: aio.Task<int> = add_later(2, 3)
+    io.println("made, nothing ran")
+    io.println("sum {aio.run(move cold)}")
+    var dropped: aio.Task<int> = add_later(7, 7)
+    dropped = add_later(1, 1)
+    io.println("replaced a cold task without running it")
+    io.println("direct {aio.run(add_later(4, 4))}")
+}
+BEANS
+cat > "$tmp/sem_basic.expected" <<'BEANS'
+made, nothing ran
+running 2+3
+sum 5
+replaced a cold task without running it
+running 4+4
+direct 8
+BEANS
+run_matrix "$tmp/sem_basic.b" "$tmp/sem_basic.expected"
+
+echo "checking awaits across control flow"
+cat > "$tmp/sem_control.b" <<'BEANS'
+import std.async as aio
+import std.io
+
+async fn add_later(a: int, b: int) -> int { return a + b }
+
+async fn control(a: int) -> int {
+    var total: int = 0
+    for i: int in 0..3 {
+        total += await add_later(i, a)
+    }
+    let names: List<string> = ["x", "yy", "zzz"]
+    for name: string in names {
+        total += await add_later(name.len(), 0)
+    }
+    var count: int = 0
+    for count < 2 {
+        count += 1
+        total += await add_later(1, 0)
+    }
+    if (await add_later(total, 0)) > 10 {
+        total += 100
+    } else {
+        total += 200
+    }
+    let label: string = if (await add_later(1, 1)) == 2 { "two" } else { "other" }
+    total += label.len()
+    let sorted: int = match await add_later(a, 0) {
+        0 => 1000,
+        _ => 2000,
+    }
+    total += sorted
+    var gate: bool = (await add_later(1, 0)) == 1 && (await add_later(2, 0)) == 2
+    if gate { total += 1 }
+    gate = (await add_later(9, 0)) == 0 || (await add_later(3, 0)) == 3
+    if gate { total += 1 }
+    for j: int in 0..10 {
+        if j == 2 { continue }
+        if j == 4 { break }
+        total += await add_later(j, 0)
+    }
+    io.println("mid total {total}")
+    return total
+}
+
+fn main() {
+    io.println("control {aio.run(control(1))}")
+}
+BEANS
+cat > "$tmp/sem_control.expected" <<'BEANS'
+mid total 2123
+control 2123
+BEANS
+run_matrix "$tmp/sem_control.b" "$tmp/sem_control.expected"
+
+echo "checking methods, generics, and ownership across suspension"
+cat > "$tmp/sem_own.b" <<'BEANS'
+import std.async as aio
+import std.io
+
+async fn tick(a: int) -> int { return a }
+
+class Counter {
+    label: string
+    hits: int = 0
+
+    pub fn init(label: string) { self.label = label }
+
+    pub async fn bump(by: int) -> int {
+        let extra: int = await tick(by)
+        self.hits += extra
+        return self.hits
+    }
+
+    pub static async fn fixed() -> int {
+        return await tick(7)
+    }
+}
+
+async fn generic_carry<T>(move value: T) -> T {
+    let pause: int = await tick(1)
+    let ignored: int = pause
+    return move value
+}
+
+async fn carries_list(move items: List<int>) -> List<int> {
+    let first: int = await tick(items.len())
+    items.push(first)
+    return move items
+}
+
+async fn keeps_ref(c: Counter) -> string {
+    let n: int = await tick(2)
+    let ignored: int = n
+    return c.label
+}
+
+fn make_counter() -> Counter {
+    return new Counter("kept")
+}
+
+fn main() {
+    let c: Counter = new Counter("beans")
+    io.println("bump {aio.run(c.bump(5))}")
+    io.println("bump again {aio.run(c.bump(3))}")
+    io.println("static {aio.run(Counter.fixed())}")
+    io.println("generic {aio.run(generic_carry(41))}")
+    let words: aio.Task<string> = generic_carry("hello")
+    io.println("generic str {aio.run(move words)}")
+    var xs: List<int> = [10, 20]
+    let back: List<int> = aio.run(carries_list(move xs))
+    io.println("list {back}")
+    let t: aio.Task<string> = keeps_ref(make_counter())
+    io.println("ref {aio.run(move t)}")
+}
+BEANS
+cat > "$tmp/sem_own.expected" <<'BEANS'
+bump 5
+bump again 8
+static 7
+generic 41
+generic str hello
+list [10, 20, 2]
+ref kept
+BEANS
+run_matrix "$tmp/sem_own.b" "$tmp/sem_own.expected"
+
+echo "checking Result, Option, and defer flows"
+cat > "$tmp/sem_flows.b" <<'BEANS'
+import std.async as aio
+import std.io
+
+async fn add_later(a: int, b: int) -> int { return a + b }
+
+async fn fallible(a: int) -> Result<int> {
+    if a < 0 { return err("negative input") }
+    return ok(a + 100)
+}
+
+async fn flows(a: int) -> Result<int> {
+    let v: int = (await fallible(a))?
+    defer io.println("flows cleanup {v}")
+    let w: int = (await fallible(v))?
+    return ok(w)
+}
+
+async fn maybe(a: int) -> Option<int> {
+    if a < 0 { return none }
+    return some(a * 2)
+}
+
+async fn opt_flow(a: int) -> Option<int> {
+    let v: int = (await maybe(a))?
+    return some(v + 1)
+}
+
+async fn chain(a: int) -> int {
+    let x: int = await add_later(a, 1)
+    defer io.println("cleanup {x}")
+    let stored: aio.Task<int> = add_later(x, 2)
+    let y: int = await move stored
+    let nested: int = await add_later(await add_later(x, y), 10)
+    return nested
+}
+
+fn main() {
+    io.println("chain {aio.run(chain(4))}")
+    io.println("ok {aio.run(flows(1)).or(-1)}")
+    io.println("err {aio.run(flows(-5)).or(-1)}")
+    io.println("some {aio.run(opt_flow(3)).or(-1)}")
+    io.println("none {aio.run(opt_flow(-3)).or(-1)}")
+}
+BEANS
+cat > "$tmp/sem_flows.expected" <<'BEANS'
+cleanup 5
+chain 22
+flows cleanup 101
+ok 201
+err -1
+some 7
+none -1
+BEANS
+run_matrix "$tmp/sem_flows.b" "$tmp/sem_flows.expected"
+
+echo "checking a task panic stops the program at the poll site"
+cat > "$tmp/sem_panic.b" <<'BEANS'
+import std.async as aio
+import std.io
+
+async fn boom(a: int) -> int {
+    let xs: List<int> = [1]
+    return xs[a]
+}
+
+fn main() {
+    io.println("before")
+    let v: int = aio.run(boom(5))
+    io.println("after {v}")
+}
+BEANS
+cat > "$tmp/sem_panic.expected" <<'BEANS'
+before
+runtime panic at 6:14: list index 5 out of range (len 1)
+BEANS
+run_matrix "$tmp/sem_panic.b" "$tmp/sem_panic.expected" 3
+
+echo "checking cancellation runs armed defers and cascades to children"
+cat > "$tmp/sem_cancel.b" <<'BEANS'
+import std.async as aio
+import std.io
+
+fn never() -> aio.Task<int> {
+    return new aio.Task<int>(
+        fn() -> int { return 0 },
+        fn() -> int { return 0 },
+        fn() { io.println("never cancelled") })
+}
+
+async fn waits(a: int) -> int {
+    defer io.println("armed defer ran {a}")
+    let got: int = await never()
+    return got + a
+}
+
+fn main() {
+    var pending: aio.Task<int> = waits(3)
+    let first: int = pending.poll_once()
+    io.println("first poll {first}")
+    pending = waits(9)
+    io.println("replaced the pending task")
+}
+BEANS
+cat > "$tmp/sem_cancel.expected" <<'BEANS'
+first poll 0
+armed defer ran 3
+never cancelled
+replaced the pending task
+BEANS
+run_matrix "$tmp/sem_cancel.b" "$tmp/sem_cancel.expected"
 
 echo "async: ok"

@@ -9948,7 +9948,7 @@ class TreeInterpreter {
     fn invoke(function: HirFunction,
               arguments: List<TreeValue>,
               receiver: Option<TreeValue>) -> TreeValue {
-        if function.is_async {
+        if function.is_async && !function.expanded {
             // The async expander rewrites every async body into a task
             // maker before execution; reaching one here is a compiler bug,
             // not a user error.

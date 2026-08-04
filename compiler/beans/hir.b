@@ -68,6 +68,10 @@ class HirFunction {
     // What the body's return statements and ? propagation produce.
     body_result: HirType
     is_async: bool
+    // True once the async expander rewrote the body into a task maker.
+    // is_async stays set so override matching keeps working; execution
+    // guards check is_async && !expanded.
+    expanded: bool
     is_extern_c: bool
     extern_name: string
     is_c_export: bool
@@ -100,6 +104,7 @@ class HirFunction {
         self.result = new HirType("unit")
         self.body_result = new HirType("unit")
         self.is_async = false
+        self.expanded = false
         self.is_extern_c = false
         self.extern_name = name
         self.is_c_export = false
