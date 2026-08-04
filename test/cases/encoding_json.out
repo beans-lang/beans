@@ -1,0 +1,69 @@
+root object len 9
+n null
+t boolean
+f boolean
+i integer
+u unsigned_integer
+d floating
+s text
+a array
+o object
+i64 min -9223372036854775808
+u64 max 18446744073709551615
+u64 as int false
+d 1.5
+num unsigned_integer 9.223372037e+18
+num unsigned_integer 9.223372037e+18
+num floating 1.844674407e+19
+num floating 1e+308
+num floating 4.940656458e-324
+num unsigned_integer 9.007199255e+15
+2^53+1 exact 9007199254740993
+escapes len 17 [a
+	Aé😀 é🙂]
+nul len 3
+empty: eof - invalid JSON at byte 0: empty input
+truncated: eof - invalid JSON at byte 5: unexpected end of input
+trailing: invalid - invalid JSON at byte 4: unexpected content after the document
+bad number: invalid - invalid JSON at byte 1: invalid number
+bad string: eof - invalid JSON at byte 3: unexpected end of input
+bad literal: invalid - invalid JSON at byte 1: invalid literal
+comment strict: invalid - invalid JSON at byte 4: unexpected content after the document
+bad utf8: invalid - invalid JSON at byte 2: invalid string
+relaxed len 2
+inf inf
+dup len 3
+dup first 1
+dup k=1
+dup k=2
+dup k=3
+survivor kept alive
+compact {"b":[1,{"c":null}],"a":"x"}
+pretty2:
+{
+  "b": [
+    1,
+    {
+      "c": null
+    }
+  ],
+  "a": "x"
+}
+pretty4:
+{
+    "b": [
+        1,
+        {
+            "c": null
+        }
+    ],
+    "a": "x"
+}
+tab refused invalid
+built {"null":null,"bool":true,"int":-1,"uint":18446744073709551615,"float":0.25,"text":"é\"quote\"","arr":[7,7]}
+nan refused invalid
+frozen immutable
+type err false false
+oob range
+loop checksum 9999
+deep ok array

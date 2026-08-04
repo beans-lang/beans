@@ -5,6 +5,91 @@ import std.path
 import std.process
 import std.random
 
+// ---- std.encoding native bridges ----
+//
+// Each std.encoding package with a native side (json, xml, base64) maps to
+// one bridge translation unit under runtime/encoding that includes its
+// vendored library. Importing a package pulls exactly its own cached bridge
+// object into the link; a program with no encoding import links none of
+// them, so hello-world binaries carry no encoding code. The cache key covers
+// the bridge and vendor file contents, so a vendored upgrade can never reuse
+// a stale object.
+
+fn encoding_source_root() -> string {
+    match os.env("BEANS_ENCODING") {
+        some(root) => {
+            if root != "" { return root }
+        }
+        none => {}
+    }
+    if Dir.exists("runtime/encoding") { return "runtime/encoding" }
+    return path.join(path.parent(stdlib_root()), "encoding")
+}
+
+fn encoding_bridge_is_cxx(feature: string) -> bool {
+    return feature == "xml" || feature == "base64"
+}
+
+fn encoding_bridge_translation_unit(root: string, feature: string) -> string {
+    if feature == "json" {
+        return path.join(root, "beans_enc_json.c")
+    }
+    if feature == "xml" {
+        return path.join(root, "beans_enc_xml.cpp")
+    }
+    return path.join(root, "beans_enc_base64.cpp")
+}
+
+// Every file whose content shapes the compiled bridge, translation unit
+// first. All of them feed the cache key.
+fn encoding_bridge_inputs(root: string, feature: string) -> List<string> {
+    var files: List<string> = []
+    files.push(encoding_bridge_translation_unit(root, feature))
+    files.push(path.join(root, "beans_enc_common.h"))
+    if feature == "json" {
+        files.push(path.join(root, "vendor/yyjson/yyjson.c"))
+        files.push(path.join(root, "vendor/yyjson/yyjson.h"))
+    } else if feature == "xml" {
+        files.push(path.join(root, "beans_enc_cxx_shim.h"))
+        files.push(path.join(root, "vendor/pugixml/pugixml.cpp"))
+        files.push(path.join(root, "vendor/pugixml/pugixml.hpp"))
+        files.push(path.join(root, "vendor/pugixml/pugiconfig.hpp"))
+    } else {
+        files.push(path.join(root, "beans_enc_cxx_shim.h"))
+        files.push(path.join(root, "vendor/simdutf/simdutf.cpp"))
+        files.push(path.join(root, "vendor/simdutf/simdutf.h"))
+    }
+    return move files
+}
+
+// The feature owning one beans_enc_* symbol, or "" for a symbol no bridge
+// provides. The interpreter uses this to load a bridge on first call.
+fn encoding_feature_for_symbol(symbol: string) -> string {
+    if symbol.starts_with("beans_enc_json_") { return "json" }
+    if symbol.starts_with("beans_enc_xml_") { return "xml" }
+    if symbol.starts_with("beans_enc_b64_") { return "base64" }
+    return ""
+}
+
+// Which std.encoding features the loaded program imports, in load order.
+// std.encoding.binary is pure Beans and needs no bridge.
+fn encoding_bridge_features(packages: List<LoadedPackage>) -> List<string> {
+    var features: List<string> = []
+    for loaded: LoadedPackage in packages {
+        if loaded.import_path.starts_with("std.encoding.") {
+            let feature: string =
+                loaded.import_path.slice(13, loaded.import_path.len())
+            if feature == "json" || feature == "xml" ||
+               feature == "base64" {
+                if !features.contains(feature) {
+                    features.push(feature)
+                }
+            }
+        }
+    }
+    return move features
+}
+
 class NativeBuildDriver {
     target: TargetDescription
     cpu: string
@@ -16,6 +101,7 @@ class NativeBuildDriver {
     linker: string
     link_arguments: List<string>
     export_symbols: List<string>
+    encoding_features: List<string>
     errors: List<Diagnostic>
 
     fn init(target: TargetDescription,
@@ -27,7 +113,8 @@ class NativeBuildDriver {
             compiler: string,
             linker: string,
             move link_arguments: List<string>,
-            move export_symbols: List<string>) {
+            move export_symbols: List<string>,
+            move encoding_features: List<string>) {
         self.target = target
         self.cpu = cpu
         self.runtime_profile = runtime_profile
@@ -38,6 +125,7 @@ class NativeBuildDriver {
         self.linker = linker
         self.link_arguments = move link_arguments
         self.export_symbols = move export_symbols
+        self.encoding_features = move encoding_features
         self.errors = []
     }
 
@@ -213,6 +301,145 @@ class NativeBuildDriver {
         command.arg(output)
         return self.run_tool(
             command, source, "Clang")
+    }
+
+    // The C++ bridges build with no exceptions and no RTTI; their only C++
+    // runtime symbols come from weak shims inside the objects, so the plain
+    // C driver links them with no C++ standard library. -fvisibility=hidden
+    // keeps vendored internals out of the symbol table; the beans_enc_* API
+    // opts back in from the source.
+    fn compile_encoding_object(compiler: string,
+                               source: string,
+                               output: string,
+                               pic: bool,
+                               cxx: bool) -> bool {
+        let command: process.Command =
+            new process.Command(compiler)
+        if cxx {
+            command.arg("-x")
+            command.arg("c++")
+            command.arg("-std=c++17")
+            command.arg("-fno-exceptions")
+            command.arg("-fno-rtti")
+        }
+        command.arg(
+            if self.release { "-O3" } else { "-O2" })
+        if self.release { command.arg("-DNDEBUG") }
+        if self.lto { command.arg("-flto") }
+        let wasi: bool = self.target.os == "wasi"
+        if wasi {
+            command.arg("-fno-stack-protector")
+            command.arg("-D_FORTIFY_SOURCE=0")
+        } else if self.target.os != "windows" {
+            command.arg("-pthread")
+        }
+        command.arg("-fvisibility=hidden")
+        if pic { command.arg("-fPIC") }
+        self.add_target_flags(command)
+        command.arg("-c")
+        command.arg(source)
+        command.arg("-o")
+        command.arg(output)
+        return self.run_tool(command, source, "Clang")
+    }
+
+    fn encoding_cache_path(root: string,
+                           feature: string,
+                           pic: bool) -> string {
+        var blob: string =
+            "{self.target.triple}|{self.cpu}|{self.target.features.join(",")}|{self.runtime_profile}|{self.release}|{self.lto}|{pic}|{feature}"
+        for input: string in encoding_bridge_inputs(root, feature) {
+            match fs.read(input) {
+                ok(text) => { blob = "{blob}|{text}" }
+                err(_) => { blob = "{blob}|missing:{input}" }
+            }
+        }
+        var hash: int = 0
+        for index: int in 0..blob.len() {
+            hash =
+                (hash * 131 + blob.byte_at(index)) %
+                2147483647
+        }
+        let extension: string =
+            if self.lto { "bc" } else { "o" }
+        return path.join(
+            "build",
+            "beans_enc_{feature}.{self.target.triple}.{hash}.{extension}")
+    }
+
+    fn cached_encoding_object(compiler: string,
+                              root: string,
+                              feature: string,
+                              pic: bool) -> string {
+        let object: string =
+            self.encoding_cache_path(root, feature, pic)
+        if File.exists(object) { return object }
+        let source: string =
+            encoding_bridge_translation_unit(root, feature)
+        if !File.exists(source) {
+            self.fail(
+                source,
+                "cannot find the std.encoding.{feature} bridge sources; set BEANS_ENCODING to the directory holding runtime/encoding")
+            return ""
+        }
+        var staging: string = object
+        match random.bytes(8) {
+            ok(seed) => {
+                staging = "{object}.{seed.get_u64(0)}"
+            }
+            err(_) => {
+                staging = "{object}.{os.now_ms()}"
+            }
+        }
+        if !self.compile_encoding_object(
+               compiler, source, staging, pic,
+               encoding_bridge_is_cxx(feature)) {
+            return ""
+        }
+        match File.rename(staging, object) {
+            ok(_) => {}
+            err(_) => {
+                match File.remove(staging) {
+                    ok(_) => {}
+                    err(_) => {}
+                }
+            }
+        }
+        return object
+    }
+
+    // One cached object per imported encoding feature, or an empty list
+    // with a diagnostic recorded. The freestanding profile has no C library
+    // for the bridges to stand on, so it is refused by name here rather
+    // than surfacing as undefined libc symbols at link time.
+    fn cached_encoding_objects(compiler: string,
+                               pic: bool) -> List<string> {
+        var objects: List<string> = []
+        if self.encoding_features.len() == 0 {
+            return move objects
+        }
+        if self.runtime_profile == "freestanding" {
+            self.fail(
+                "std.encoding",
+                "std.encoding.{self.encoding_features[0]} needs --runtime full or minimal; the freestanding profile has no C library for the encoding bridges")
+            return move objects
+        }
+        let root: string = encoding_source_root()
+        var failed: bool = false
+        for feature: string in self.encoding_features {
+            if !failed {
+                let object: string =
+                    self.cached_encoding_object(
+                        compiler, root, feature, pic)
+                if object == "" {
+                    failed = true
+                } else {
+                    objects.push(object)
+                }
+            }
+        }
+        if failed { objects.clear() }
+        return move objects
     }
 
     fn runtime_cache_path(runtime: string,
@@ -469,6 +696,19 @@ class NativeBuildDriver {
             return false
         }
 
+        // Imported std.encoding features become cached bridge objects here,
+        // once, and every emit path below links exactly this list.
+        var encoding_objects: List<string> = []
+        if self.encoding_features.len() != 0 {
+            let recorded: int = self.errors.len()
+            encoding_objects =
+                self.cached_encoding_objects(
+                    compiler, emit == "shared")
+            if self.errors.len() != recorded {
+                return false
+            }
+        }
+
         if emit == "obj" {
             if !self.compile_object(
                     compiler, ir_path, output, false,
@@ -484,6 +724,21 @@ class NativeBuildDriver {
                     return false
                 }
                 io.println("built {ffi_object}")
+            }
+            // An object build's consumer owns the final link, so the bridge
+            // objects are placed beside the output under stable names.
+            for index: int in 0..encoding_objects.len() {
+                let member: string =
+                    "{output}_enc_{self.encoding_features[index]}.o"
+                match fs.copy(encoding_objects[index], member) {
+                    ok(_) => { io.println("built {member}") }
+                    err(error) => {
+                        self.fail(
+                            member,
+                            "cannot place encoding bridge object: {error.msg}")
+                        return false
+                    }
+                }
             }
             io.println("built {output}")
             return true
@@ -524,6 +779,9 @@ class NativeBuildDriver {
             archive.arg(output)
             archive.arg(beans_object)
             archive.arg(runtime_object)
+            for encoding_object: string in encoding_objects {
+                archive.arg(encoding_object)
+            }
             if ffi_object != "" {
                 archive.arg(ffi_object)
             }
@@ -585,6 +843,9 @@ class NativeBuildDriver {
             if ffi_path != "" { wasm.arg(ffi_path) }
             wasm.arg(runtime)
             if wasi_wasm { wasm.arg(wasm_host) }
+            for encoding_object: string in encoding_objects {
+                wasm.arg(encoding_object)
+            }
             for argument: string in self.link_arguments {
                 wasm.arg(argument)
             }
@@ -653,6 +914,9 @@ class NativeBuildDriver {
             command.arg(ffi_path)
         }
         command.arg(runtime_object)
+        for encoding_object: string in encoding_objects {
+            command.arg(encoding_object)
+        }
         for argument: string in self.link_arguments {
             command.arg(argument)
         }

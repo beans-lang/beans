@@ -752,7 +752,9 @@ fn main() {
                                         linker,
                                         loader.link_arguments(
                                             selected),
-                                        move export_symbols)
+                                        move export_symbols,
+                                        encoding_bridge_features(
+                                            loader.packages))
                                 let built: bool =
                                     driver.build(
                                         file_path, emitted,

@@ -1,0 +1,47 @@
+top declaration name [xml] value []
+top comment name [] value [ top ]
+top processing_instruction name [robot] value [spin]
+top element name [shop:order] value []
+decl version 1.0 encoding UTF-8
+root [shop:order] prefix [shop] local [order]
+attr z=last
+attr a=first
+attr a2=2
+attr lookup first missing true
+child text [] [text ]
+child element [b] []
+child text [] [ tail]
+child cdata [] [<raw> & bytes]
+child comment [] [ note ]
+child processing_instruction [do] [it]
+text [text  tail<raw> & bytes]
+roundtrip exact
+unicode text [🙂 & é] attr [café]
+mismatch: invalid - invalid XML at byte 8: start and end tags do not match
+unclosed: invalid - invalid XML at byte 2: start and end tags do not match
+bad attr: invalid - invalid XML at byte 5: bad attribute
+two roots: invalid - invalid XML at byte 0: more than one root element
+empty: invalid - invalid XML at byte 0: document has no element
+bad comment: invalid - invalid XML at byte 20: bad comment
+bad cdata: invalid - invalid XML at byte 12: bad CDATA section
+doctype: doctype - XML DOCTYPE at byte 0 is rejected by default; opt in with Options.allow_doctype
+doctype entity: doctype - XML DOCTYPE at byte 0 is rejected by default; opt in with Options.allow_doctype
+permissive doctype
+permissive element
+entity literal true leaked false
+default children 1
+preserved children 3
+survivor [inner] [held]
+dup attr exists
+built <?xml version="1.0" encoding="UTF-8"?><!-- made by beans --><order id="7" note="a&lt;b&amp;&quot;c&quot;"><item>first &amp; last<![CDATA[<raw/>]]></item><?target data here?></order>
+pretty:
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- made by beans -->
+<order id="7" note="a&lt;b&amp;&quot;c&quot;">
+  <item>first &amp; last<![CDATA[<raw/>]]></item>
+  <?target data here?>
+</order>
+tabs ok true
+reparse root [order] attrs 2
+deep depth 3000
+loop checksum 4000

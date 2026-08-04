@@ -24,6 +24,11 @@ mkdir -p "$bin_dir" "$lib_dir" "$share_dir/lib"
 install -m 0755 "$root/build/beansc" "$lib_dir/beansc"
 install -m 0644 "$root/runtime/beans_rt.c" "$lib_dir/beans_rt.c"
 install -m 0644 "$root/runtime/wasm_host.c" "$lib_dir/wasm_host.c"
+# The std.encoding bridge and vendored sources: `beansc build` compiles them
+# per target and `beansc run` builds its cached bridge library from them, so
+# an installation works offline like a checkout does.
+rm -rf "$lib_dir/encoding"
+cp -R "$root/runtime/encoding" "$lib_dir/encoding"
 rm -rf "$share_dir/lib/std"
 cp -R "$root/stdlib/std" "$share_dir/lib/std"
 install -m 0644 "$root/LICENSE" "$share_dir/LICENSE"
@@ -38,7 +43,8 @@ set -eu
 BEANS_RUNTIME="\${BEANS_RUNTIME:-$prefix/lib/beans/beans_rt.c}"
 BEANS_WASM_HOST="\${BEANS_WASM_HOST:-$prefix/lib/beans/wasm_host.c}"
 BEANS_STDLIB="\${BEANS_STDLIB:-$prefix/share/beans/lib/std}"
-export BEANS_RUNTIME BEANS_WASM_HOST BEANS_STDLIB
+BEANS_ENCODING="\${BEANS_ENCODING:-$prefix/lib/beans/encoding}"
+export BEANS_RUNTIME BEANS_WASM_HOST BEANS_STDLIB BEANS_ENCODING
 exec "$prefix/lib/beans/beansc" "\$@"
 EOF
 chmod 0755 "$bin_dir/beansc"

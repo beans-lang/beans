@@ -203,6 +203,7 @@ test-core: $(BIN)
 	./test/stored_callbacks.sh
 	bash ./test/closure_captures.sh
 	./test/stdlib_source.sh
+	bash ./test/encoding.sh
 	./test/parse_recovery.sh
 	bash ./test/mir.sh
 	bash ./test/devirtualize.sh
@@ -238,8 +239,9 @@ ifneq ($(HAVE_BOOTSTRAP),)
 	./test/signals.sh
 	./test/dylib.sh
 	./test/child.sh
+	bash ./test/encoding_stage0.sh
 else
-	@echo "skipped 13 suites whose implementation assertions read the stage-0 sources"
+	@echo "skipped 14 suites whose implementation assertions read the stage-0 sources"
 endif
 
 # Everything below needs the C++ stage 0. It lives in a private submodule, so a

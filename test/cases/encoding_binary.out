@@ -1,0 +1,51 @@
+wire [255,128,255,255,0,128,255,255,255,255,0,0,0,128,255,255,255,255,255,255,255,255,0,0,0,0,0,0,0,128]
+u8  255
+i8  -128
+u16 65535
+i16 -32768
+u32 4294967295
+i32 -2147483648
+u64 18446744073709551615
+i64 -9223372036854775808
+order [52,18,18,52]
+cross read 13330
+slab [222,173,190,239,239,190,173,222]
+write oob range
+write neg range
+float head [127,240,0,0,0,0,0,0]
+inf inf again true
+-inf -inf
+nan self-equal false
+negzero -0 sign-preserved true
+f32 1.5
+nan bits stable true
+truncated eof - read_u32 of 4 bytes at 0 is outside length 2
+past end eof
+uvarint [0,127,128,1,172,2,255,255,255,255,255,255,255,255,255,1]
+uvarint 0 size 1
+uvarint 127 size 1
+uvarint 128 size 2
+uvarint 300 size 2
+uvarint 18446744073709551615 size 10
+uvarint_size 127 1 128 2 max 10
+varint [0,1,2,3,4,254,255,255,255,255,255,255,255,255,1,255,255,255,255,255,255,255,255,255,1]
+varint 0 size 1
+varint -1 size 1
+varint 1 size 1
+varint -2 size 1
+varint 2 size 1
+varint 9223372036854775807 size 10
+varint -9223372036854775808 size 10
+varint cut eof
+varint overflow overflow
+varint long overflow
+legacy len 10 value -1
+legacy as uvarint 18446744073709551615 size 10
+r u16 2026 at 2
+r uvarint 300 at 4
+r f32 0.25 at 8
+r varint -40 left 0
+cursor end eof
+writer [2,1,6,5,4,3]
+writer full range
+native matches little true big false

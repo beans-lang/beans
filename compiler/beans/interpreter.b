@@ -1197,6 +1197,8 @@ class TreeInterpreter {
     ffi_bridge_addresses: Map<string, int>
     ffi_bridge_handles: List<int>
     ffi_bridge_sequence: int
+    encoding_handles: Map<string, int>
+    encoding_error: string
     stored_callbacks: Map<int, TreeStoredCallback>
 
     fn init(program: HirProgram,
@@ -1211,6 +1213,8 @@ class TreeInterpreter {
         self.ffi_bridge_addresses = {}
         self.ffi_bridge_handles = []
         self.ffi_bridge_sequence = 0
+        self.encoding_handles = {}
+        self.encoding_error = ""
         self.stored_callbacks = {}
     }
 
@@ -9366,12 +9370,191 @@ class TreeInterpreter {
     // the same way c_global_address asks for a thread-local: compile a shim that
     // takes its address and hand the pointer back. The bridge is cached by
     // source text, so this costs one compile per symbol per run.
+    // Resolves and caches the shared bridge library for one std.encoding
+    // feature. The library is compiled once per host from the same vendored
+    // sources `beansc build` links, cached content-addressed under
+    // BEANS_HOME, and reused across runs — so `beansc run` needs the C
+    // driver at most once per checkout or upgrade.
+    fn ensure_encoding_bridge(feature: string) -> int {
+        match self.encoding_handles.get(feature) {
+            some(handle) => { return handle }
+            none => {}
+        }
+        let library: string =
+            self.encoding_bridge_library(feature)
+        if library == "" {
+            self.encoding_handles[feature] = 0
+            return 0
+        }
+        var handle: int = 0
+        match host_dl.open(library) {
+            ok(value) => { handle = value }
+            err(error) => {
+                self.encoding_error =
+                    "cannot load {library}: {error.msg}"
+            }
+        }
+        self.encoding_handles[feature] = handle
+        return handle
+    }
+
+    fn encoding_bridge_library(feature: string) -> string {
+        let root: string = encoding_source_root()
+        let source: string =
+            encoding_bridge_translation_unit(root, feature)
+        if !File.exists(source) {
+            self.encoding_error =
+                "cannot find the bridge sources under {root}; set BEANS_ENCODING to the directory holding runtime/encoding"
+            return ""
+        }
+        var blob: string =
+            "{self.program.target.triple}|interp"
+        for input: string in
+            encoding_bridge_inputs(root, feature) {
+            match host_fs.read(input) {
+                ok(text) => { blob = "{blob}|{text}" }
+                err(_) => {
+                    blob = "{blob}|missing:{input}"
+                }
+            }
+        }
+        var hash: int = 0
+        for index: int in 0..blob.len() {
+            hash =
+                (hash * 131 + blob.byte_at(index)) %
+                2147483647
+        }
+        let extension: string =
+            if self.program.target.os == "macos" {
+                "dylib"
+            } else if self.program.target.os == "windows" {
+                "dll"
+            } else {
+                "so"
+            }
+        let cache_dir: string =
+            "{beans_home()}/cache/encoding"
+        let library: string =
+            "{cache_dir}/beans_enc_{feature}.{self.program.target.triple}.{hash}.{extension}"
+        if File.exists(library) { return library }
+        match Dir.make_all(cache_dir) {
+            ok(_) => {}
+            err(error) => {
+                self.encoding_error =
+                    "cannot create {cache_dir}: {error.msg}"
+                return ""
+            }
+        }
+        let staging: string =
+            "{library}.{host_time.monotonic_nanos()}"
+        let c_driver: string = self.ffi_c_driver()
+        let argv: Bytes = new Bytes(0)
+        self.ffi_pack_argument(argv, c_driver)
+        if encoding_bridge_is_cxx(feature) {
+            self.ffi_pack_argument(argv, "-x")
+            self.ffi_pack_argument(argv, "c++")
+            self.ffi_pack_argument(argv, "-std=c++17")
+            self.ffi_pack_argument(argv, "-fno-exceptions")
+            self.ffi_pack_argument(argv, "-fno-rtti")
+        }
+        self.ffi_pack_argument(argv, "-O2")
+        self.ffi_pack_argument(argv, "-fvisibility=hidden")
+        if self.program.target.os == "macos" {
+            self.ffi_pack_argument(argv, "-dynamiclib")
+        } else {
+            self.ffi_pack_argument(argv, "-shared")
+            self.ffi_pack_argument(argv, "-fPIC")
+        }
+        if self.program.target.os == "windows" {
+            // The bridge is loaded into this process, so it has to match
+            // this process's ABI; see ffi_bridge above.
+            self.ffi_pack_argument(
+                argv,
+                "--target={self.program.target.llvm_triple()}")
+        }
+        self.ffi_pack_argument(argv, source)
+        self.ffi_pack_argument(argv, "-o")
+        self.ffi_pack_argument(argv, staging)
+        let environment: Bytes = new Bytes(0)
+        self.ffi_forward_env(environment, "PATH")
+        self.ffi_forward_env(environment, "TMPDIR")
+        self.ffi_forward_env(environment, "TEMP")
+        self.ffi_forward_env(environment, "TMP")
+        self.ffi_forward_env(environment, "INCLUDE")
+        self.ffi_forward_env(environment, "LIB")
+        self.ffi_forward_env(environment, "LIBPATH")
+        var compiled: bool = false
+        var compiler_error: string = ""
+        match host_proc.run(
+                argv, environment, "",
+                new Bytes(0), 8388608) {
+            ok(output) => {
+                let status: int = output.get_i64(0)
+                let out_size: int = output.get_i64(8)
+                let err_size: int = output.get_i64(16)
+                compiled = status == 0
+                if err_size != 0 {
+                    let error_bytes: Bytes =
+                        output.slice(
+                            24 + out_size,
+                            24 + out_size + err_size)
+                    compiler_error =
+                        error_bytes.to_string_full()
+                }
+            }
+            err(error) => {
+                compiler_error = error.msg
+            }
+        }
+        if !compiled {
+            File.remove(staging)
+            self.encoding_error =
+                "building the bridge with {c_driver} failed: {compiler_error.trim()}"
+            return ""
+        }
+        match File.rename(staging, library) {
+            ok(_) => {}
+            err(_) => {
+                // a concurrent run already published the same content
+                File.remove(staging)
+            }
+        }
+        if File.exists(library) { return library }
+        self.encoding_error =
+            "cannot place the bridge library at {library}"
+        return ""
+    }
+
     fn extern_symbol_address(
         function: HirFunction) -> int {
         match host_dl.global_symbol(
                   function.extern_name) {
             ok(address) => { return address }
             err(error) => {}
+        }
+        // The std.encoding bridges live in RTLD_LOCAL shared libraries the
+        // interpreter loads on demand, so their symbols are resolved through
+        // the library handle rather than the global namespace.
+        if function.extern_name.starts_with("beans_enc_") {
+            let feature: string =
+                encoding_feature_for_symbol(
+                    function.extern_name)
+            if feature != "" {
+                let handle: int =
+                    self.ensure_encoding_bridge(feature)
+                if handle != 0 {
+                    match host_dl.symbol(
+                              handle,
+                              function.extern_name) {
+                        ok(address) => { return address }
+                        err(_) => {}
+                    }
+                } else {
+                    return self.fail_extern(
+                        function,
+                        "std.encoding.{feature} bridge library is unavailable: {self.encoding_error}").int_data
+                }
+            }
         }
         let builder: CAbiTextBuilder =
             new CAbiTextBuilder(self.program)

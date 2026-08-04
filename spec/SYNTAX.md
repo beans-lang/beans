@@ -259,6 +259,184 @@ Interpolation assembles, fmt formats. No printf — the language has no varargs.
   `hex(-1)` is 16 f's.
 - `group(n, sep)` — thousands grouping: `group(1234567, ",")` is `"1,234,567"`.
 
+## std.encoding (v0.9, implemented)
+
+Four shipped packages for wire formats. Three wrap pinned, vendored native
+libraries behind ordinary Beans APIs — no C functions, pointers, or upstream
+types are visible — and one is pure Beans:
+
+| package | underneath | license |
+|---|---|---|
+| `std.encoding.json` | yyjson 0.12.0 | MIT |
+| `std.encoding.xml` | pugixml 1.16 | MIT |
+| `std.encoding.base64` | simdutf 9.0.0 | MIT (upstream offers MIT or Apache-2.0) |
+| `std.encoding.binary` | Beans source over `Bytes` | — |
+
+Vendored sources live in `runtime/encoding/vendor/` (exact release files,
+recorded in `VENDOR.md` there) and ship with every package. Each feature
+compiles to its own cached object keyed on target, CPU, profile, mode, and
+the bridge/vendor file contents: importing JSON links yyjson and nothing
+else, and a program with no encoding import carries no encoding code.
+`beansc run` builds one cached bridge library per feature per host from the
+same sources, so both backends execute identical native code and stay
+byte-identical. The bridges need a C library, so `--runtime freestanding`
+refuses `std.encoding` by name; `full`, `minimal`, and `wasm32-wasip1`
+builds work.
+
+### std.encoding.json
+
+```beans
+import std.encoding.json
+
+let root: json.Value = json.parse("\{\"a\":[1, 2.5, \"x\"]\}")?
+match root.get("a") {
+    some(list) => {
+        for item: json.Value in list.items()? {
+            io.println("{item.kind()}")
+        }
+    }
+    none => {}
+}
+let text: string = json.stringify(root)?
+```
+
+- `parse(text)`, `parse_bytes(data)` → `Result<Value>`; `parse_with`/
+  `parse_bytes_with` take an `Options`. Strict RFC 8259 is the default: the
+  whole input must be one document, trailing content is an error, and every
+  parse error carries a kind (`invalid`, `eof`, `memory`) and a byte
+  position.
+- `Options` opts into exactly three named extensions — `allow_comments`,
+  `allow_trailing_commas`, `allow_inf_nan`. That is a subset of JSON5,
+  deliberately not called JSON5; unquoted keys and single quotes stay
+  errors.
+- `Value.kind()` reports `null`, `boolean`, `integer`, `unsigned_integer`,
+  `floating`, `text`, `array`, or `object`. Numbers keep their parsed kind:
+  a non-negative integer is `unsigned_integer`, a negative one `integer`
+  (yyjson's classification), a decimal-point or exponent form `floating` —
+  nothing is silently collapsed to f64. An integer beyond u64 parses as
+  `floating`, the reading every RFC 8259 parser gives it.
+- Typed access returns `Result`: `to_bool`, `to_int` (signed, or unsigned
+  when it fits), `to_uint`, `to_float` (floating only), `number()` (any
+  numeric, converted), `to_string`. Arrays: `len`, `at(index)`, `items()`.
+  Objects: `len`, `get(key)` → `Option<Value>`, `entries()` →
+  `List<Entry>`.
+- Object entries keep document order, duplicates included: `entries()`
+  reports every entry; `get` returns the first match for a duplicated key.
+- **Ownership**: a `Value` is a cheap view holding a shared reference to its
+  document; the yyjson document is freed when the last `Value` over it
+  drops. Nothing is eagerly copied into Beans collections — this is a DOM
+  API over yyjson's tree, not a converter. Typed struct decoding would be a
+  separate compiler feature; this version does not pretend to reflect.
+- Building: `Value.of_null/of_bool/of_int/of_uint/of_float/of_string`,
+  `Value.array()`, `Value.object()`, then `push(item)` and
+  `add(key, item)`. Inserts deep-copy the argument, so a value can be
+  inserted twice or across documents safely. Values from `parse` are
+  read-only; mutating one reports kind `immutable`.
+- `stringify(value)` is compact RFC 8259; `stringify_pretty(value, indent)`
+  accepts `"  "` or `"    "` (yyjson's two writers). Writing a NaN or
+  infinity is an error, not invalid output.
+
+### std.encoding.xml
+
+```beans
+import std.encoding.xml
+
+let doc: xml.Document = xml.parse("<order id=\"7\">hi<b>x</b></order>")?
+let root: xml.Node = doc.root()?
+for child: xml.Node in root.children() {
+    io.println("{child.kind()} {child.name()}")
+}
+let out: string = xml.stringify_pretty(doc, "  ")?
+```
+
+- `parse(text)`, `parse_bytes(data)` → `Result<Document>` (byte-order marks
+  are honoured; otherwise UTF-8). Parse errors carry a byte offset. A
+  document must have exactly one root element.
+- Node kinds: `element`, `text`, `cdata`, `comment`,
+  `processing_instruction`, `declaration`, `doctype`. `children()` and
+  `attributes()` preserve document order — mixed content included.
+  `name()` is the raw qualified name; `prefix()`/`local_name()` split it at
+  the colon. **There is no namespace-URI resolution**: prefixes are not
+  matched to `xmlns` declarations, and this version is a DOM, not a
+  streaming parser — neither is pretended otherwise.
+- `text()` concatenates an element's direct text and CDATA children.
+  Whitespace-only text nodes are dropped unless
+  `Options.preserve_space_text` is set.
+- **Security defaults**: DOCTYPE is rejected by default with its byte
+  offset; `Options.allow_doctype` keeps the declaration as an inert node
+  only. pugixml expands nothing beyond the five built-in entities and
+  numeric character references — there is no external-entity mechanism, and
+  parsing never touches the filesystem or network.
+- **Ownership**: `Document` and `Node` share one owner; a child node stays
+  valid after the binding that held its document is gone, and the native
+  document is freed with the last reference.
+- Building: `Document.new_document()`, `append_declaration(version,
+  encoding)`, `append_element`, `append_text`, `append_cdata`,
+  `append_comment`, `append_instruction`, `set_attr` (duplicate attribute
+  names on one element are refused with kind `exists`). Escaping and
+  serialization are pugixml's writer; `stringify` is compact,
+  `stringify_pretty(doc, indent)` takes any indent up to 16 bytes.
+
+### std.encoding.base64
+
+```beans
+import std.encoding.base64
+
+let text: string = base64.encode(Bytes.from("beans"))
+let data: Bytes = base64.decode(text)?
+let raw: string = base64.Encoding.url_safe_no_pad.encode(Bytes.from("x"))
+```
+
+- Four encodings as one enum: `Encoding.standard`,
+  `Encoding.standard_no_pad`, `Encoding.url_safe`,
+  `Encoding.url_safe_no_pad`, each with `encode`, `decode`, and
+  `decode_forgiving`. Module-level `encode`/`decode`/`decode_forgiving`
+  are the standard padded encoding.
+- Strict decoding (`decode`) is RFC 4648 for the chosen encoding: padded
+  encodings need exact padding, unpadded ones refuse `=` entirely,
+  non-zero trailing padding bits are an error, and any byte outside the
+  alphabet — whitespace included — is an error with kind and position
+  (`invalid`, `length`, `padding`, `bits`, `whitespace`).
+- `decode_forgiving` is the WHATWG forgiving-base64 shape, named so the
+  relaxation is visible: ASCII whitespace skipped, partial final group
+  accepted with or without padding, non-zero trailing bits ignored;
+  alphabet violations still fail.
+- Output buffers are allocated at the exact encoded size and simdutf writes
+  into them directly — SIMD kernels where the target has them, upstream's
+  scalar fallback elsewhere (including the big-endian and 32-bit targets).
+  There is no streaming API: Beans has no generic Reader/Writer abstraction
+  yet, and inventing one here would freeze a bad shape.
+
+### std.encoding.binary
+
+```beans
+import std.encoding.binary
+
+var wire: Bytes = new Bytes(0)
+binary.append_u32(wire, 0xdeadbeef, binary.ByteOrder.big)
+binary.append_varint(wire, -2)                 // zigzag, Go-compatible
+let value: u32 = binary.read_u32(wire, 0, binary.ByteOrder.big)?
+```
+
+- `ByteOrder.little`, `ByteOrder.big`, `ByteOrder.native` (the selected
+  target's order, folded at compile time through `std.target`).
+- Positional `read_`/`write_` and appending `append_` forms for
+  `u8/i8/u16/i16/u32/i32/u64/i64`, plus `f32`/`f64` through bit-preserving
+  conversion — infinities, quiet-NaN payloads, and negative zero survive
+  the round trip. Reads and writes are checked: truncated input is kind
+  `eof`, a bad write position kind `range` — never a panic, and never a
+  read past the buffer.
+- Varints: `append_uvarint`/`read_uvarint` are unsigned LEB128 — the same
+  wire format as `Bytes.append_varint`, whose raw two's-complement
+  behaviour is unchanged. `append_varint`/`read_varint` are the signed
+  zigzag form matching Go's `PutVarint`. Reads report the value and its
+  consumed byte count; running past ten bytes or 64 bits is kind
+  `overflow`.
+- `Reader` and `Writer` are cursors holding a position and an order;
+  `Bytes` is move-only, so every method borrows the buffer per call
+  instead of owning it. `remaining(data)` and `skip(data, n)` complete the
+  cursor surface.
+
 ## Variables
 
 ```

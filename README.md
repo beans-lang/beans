@@ -397,7 +397,8 @@ The native backend emits textual LLVM IR and hands it to clang — no LLVM libra
 
 High-level standard-library code can now be written in Beans. The loader ships
 packages from `stdlib/std/`; `std.collections`, `std.math`, `std.bytes`,
-`std.path`, `std.fmt`, `std.fs`, and `std.reader` are the first ones. Generic collection
+`std.path`, `std.fmt`, `std.fs`, `std.reader`, and the four
+`std.encoding` packages are the first ones. Generic collection
 `filter`/`transform`, inout Map increment/insert/merge/remove/map policies,
 Option and Result combinators, `frequencies`, `unique`, `gcd`, `clamp_int`,
 CRC32, unsigned varint append/encoding/decoding, path handling,
@@ -407,6 +408,33 @@ low-level storage operations remain native. The scored bytes workload calls the
 Beans-written varint and CRC32 code, not the older native compatibility methods.
 Set `BEANS_STDLIB` to use a
 different shipped library root.
+
+### Encoding
+
+Four compiler-shipped packages cover the common wire formats:
+
+```
+import std.encoding.json      // yyjson 0.12.0 underneath (MIT)
+import std.encoding.xml       // pugixml 1.16 underneath (MIT)
+import std.encoding.base64    // simdutf 9.0.0 underneath (MIT)
+import std.encoding.binary    // pure Beans over Bytes
+
+let parsed: json.Value = json.parse("[1, \"two\"]")?
+let cart: string = base64.encode(Bytes.from("beans"))
+```
+
+The public APIs are ordinary Beans — `Result` errors with kinds and byte
+positions, classes and enums, no C types anywhere. The native halves are
+vendored, pinned upstream releases (see
+[runtime/encoding/vendor/VENDOR.md](runtime/encoding/vendor/VENDOR.md))
+compiled into per-feature cached objects: importing JSON links yyjson and
+nothing else, and a program with no encoding import gains no encoding code or
+size. `beansc run` uses the same bridge sources through a cached per-host
+library, so interpreter and native output stay byte-identical. JSON and XML
+are safe by default — strict RFC 8259 with explicit opt-in extensions, XML
+DOCTYPE rejected by default, and no entity expansion or network/file fetching
+ever. The full API and limits are in
+[spec/SYNTAX.md](spec/SYNTAX.md).
 
 ## Memory
 
