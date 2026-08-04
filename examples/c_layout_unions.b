@@ -1,3 +1,33 @@
+/*
+extern "C" union — several fields sharing one piece of storage.
+
+What it is:
+  Every field starts at offset zero, so they overlap. The union is as big as
+  its largest field and as aligned as its strictest one. You initialize it with
+  exactly one named field, but you may read any field afterwards — writing
+  `bits` and reading `number` reinterprets the same bytes as a different type.
+  Beans does not track which field is active, which is why initialization,
+  reads, and writes all need `unsafe`. Reading the wrong field is not caught;
+  you get whatever those bytes mean in that type.
+
+Use it when:
+  - You are matching a C struct/union in a header and need the same memory
+    layout for FFI, syscalls, or a wire/file format.
+  - You want a bit-level reinterpret: `Word` below reads the raw IEEE-754 bits
+    of an f32 (1065353216 is exactly 1.0).
+  - You need a block with a guaranteed size and alignment. `AlignedBlock`
+    below is 16 bytes of storage that is also addressable as a u64.
+
+Don't use it when:
+  - You want "one of these several cases" with the tag checked for you. That is
+    an `enum`, and the compiler makes reading the wrong case impossible.
+  - The fields hold strings, classes, lists, or anything reference counted.
+    C-layout unions only take inline scalars, RawPtr, fixed arrays, and nested
+    C-layout records, so the C ABI carries no hidden ownership rules.
+
+This first slice has no defaults, methods, generics, or inheritance.
+*/
+
 import std.io
 
 extern "C" union Word {
