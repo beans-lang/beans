@@ -9133,7 +9133,12 @@ class TreeInterpreter {
                 argv, "dynamic_lookup")
         } else {
             self.ffi_pack_argument(argv, "-shared")
-            self.ffi_pack_argument(argv, "-fPIC")
+            // Windows code is position-independent by construction, so there
+            // is nothing for -fPIC to ask for; clang rejects it outright for
+            // the MSVC targets rather than ignoring it.
+            if self.program.target.os != "windows" {
+                self.ffi_pack_argument(argv, "-fPIC")
+            }
         }
         if self.program.target.os == "windows" {
             // The bridge is loaded into this process, so it has to match this
@@ -9463,7 +9468,11 @@ class TreeInterpreter {
             self.ffi_pack_argument(argv, "-dynamiclib")
         } else {
             self.ffi_pack_argument(argv, "-shared")
-            self.ffi_pack_argument(argv, "-fPIC")
+            // See ffi_bridge above: -fPIC is not a thing to ask for on
+            // Windows, and clang errors on it for the MSVC targets.
+            if self.program.target.os != "windows" {
+                self.ffi_pack_argument(argv, "-fPIC")
+            }
         }
         if self.program.target.os == "windows" {
             // The bridge is loaded into this process, so it has to match

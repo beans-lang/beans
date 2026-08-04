@@ -26,7 +26,13 @@ cc=${BEANS_CC:-clang}
 # libc, plus stack-protector and stack-probe helpers the compiler emits.
 # bzero is on the list because clang's optimizer rewrites a zeroing memset
 # into it on Darwin; it is a libc function everywhere it is emitted.
-allowed='^_?(mem(cpy|set|move|cmp|chr)|bcmp|bzero|str(len|cmp|tod|ncmp)|wcslen|malloc|free|realloc|calloc|abort|getenv|snprintf|__assert(_rtn|_fail)?|f(open|close|read|write|error|flush|ileno|stat|seek|tell)|_?_?stack_chk_(fail|guard)|__chkstk_darwin|___chkstk_ms|__stack_chk_fail_local)$'
+#
+# assert() is pugixml's internal invariant check, and it is libc's back end
+# that lands in the object: __assert_rtn on Darwin, __assert_fail on glibc and
+# musl. Both spellings need the same _?_? the stack-protector entries use,
+# because the strip below removes only Mach-O's one extra underscore — an ELF
+# __assert_fail arrives here as _assert_fail.
+allowed='^_?(mem(cpy|set|move|cmp|chr)|bcmp|bzero|str(len|cmp|tod|ncmp)|wcslen|malloc|free|realloc|calloc|abort|getenv|snprintf|_?_?assert(_rtn|_fail)?|f(open|close|read|write|error|flush|ileno|stat|seek|tell)|_?_?stack_chk_(fail|guard)|__chkstk_darwin|___chkstk_ms|__stack_chk_fail_local)$'
 
 status=0
 for object in json xml base64; do

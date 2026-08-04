@@ -16,11 +16,25 @@ trap 'rm -rf "$tmp"' EXIT
 BEANSC0=${BEANSC0:-./build/beansc0}
 BEANSC=${BEANSC:-./build/beansc}
 
+# Windows binaries write \r\n, and the two compilers spell the separator in a
+# path they built themselves differently there: stage 0 joins a package
+# directory to a file with the platform separator, the self-hosted compiler
+# always joins with '/'. Both name the same file and both are accepted by
+# every Windows API, so the separator is platform noise in exactly the way the
+# carriage return is. Normalising it keeps this sweep about which names are
+# refused, which is what it exists to check.
+diagnostics() { # <compiler> <source>
+    local status
+    "$1" check "$2" 2>&1 | tr -d '\r' | tr '\\' '/'
+    status=${PIPESTATUS[0]}
+    return "$status"
+}
+
 both_reject_same() {
     local src="$1"
     set +e
-    "$BEANSC0" check "$src" 2>&1 | tr -d '\r' >"$tmp/a0"; local r0=${PIPESTATUS[0]}
-    "$BEANSC"  check "$src" 2>&1 | tr -d '\r' >"$tmp/a1"; local r1=${PIPESTATUS[0]}
+    diagnostics "$BEANSC0" "$src" >"$tmp/a0"; local r0=$?
+    diagnostics "$BEANSC"  "$src" >"$tmp/a1"; local r1=$?
     set -e
     if [ "$r0" -eq 0 ] || [ "$r1" -eq 0 ]; then
         echo "builtin_names: $src accepted (stage0=$r0 selfhost=$r1)" >&2
