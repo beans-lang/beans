@@ -560,6 +560,23 @@ class TreeFormatSpec {
     }
 }
 
+// What marks a generated bridge's entry point as exported.
+//
+// The Windows spelling is not a nicety. MSVC's linker exports exactly what a
+// dllexport directive names, and a visibility attribute emits no directive at
+// all, so a bridge DLL built for the MSVC ABI carries an empty export table
+// and the load that follows cannot find beans_ffi_bridge in it. MinGW honours
+// dllexport too, so one branch covers every Windows ABI. Everywhere else the
+// visibility attribute is what keeps the entry point out of reach of
+// -fvisibility=hidden.
+fn ffi_export_attribute() -> string {
+    var text: string = "#if defined(_WIN32)\n"
+    text = "{text}__declspec(dllexport)\n"
+    text = "{text}#else\n"
+    text = "{text}__attribute__((visibility(\"default\")))\n"
+    return "{text}#endif\n"
+}
+
 fn tree_unquote(source: string) -> string {
     var start: int = 0
     var end: int = source.len()
@@ -1360,7 +1377,7 @@ class TreeInterpreter {
             source =
                 "{source}extern _Thread_local unsigned char {global.extern_name};\n"
             source =
-                "{source}__attribute__((visibility(\"default\")))\n"
+                "{source}{ffi_export_attribute()}"
             source =
                 "{source}void* beans_ffi_bridge(void) \{ return &{global.extern_name}; \}\n"
             let function: HirFunction =
@@ -4855,7 +4872,7 @@ class TreeInterpreter {
                 "{source}  {c_result} result = \{0\};\n  stored_dispatch(context, &result, arguments);\n  return result;\n\}\n"
         }
         source =
-            "{source}__attribute__((visibility(\"default\")))\n"
+            "{source}{ffi_export_attribute()}"
         source =
             "{source}void beans_ffi_bridge(void* symbol, void* result, void** args, BeansFfiDispatch dispatch, void** contexts) \{\n  (void)symbol; (void)args; (void)contexts;\n  stored_dispatch = dispatch;\n  *(void**)result = (void*)(uintptr_t)&beans_stored_entry;\n\}\n"
         return source
@@ -8977,7 +8994,7 @@ class TreeInterpreter {
         source =
             "{source}typedef {abi.return_type} (*BeansFfiFn)({parameters});\n"
         source =
-            "{source}__attribute__((visibility(\"default\")))\n"
+            "{source}{ffi_export_attribute()}"
         source =
             "{source}void beans_ffi_bridge(void* symbol, void* result, void** args, BeansFfiDispatch dispatch, void** contexts) \{\n"
         source =
@@ -9580,7 +9597,7 @@ class TreeInterpreter {
         source =
             "{source}extern {abi.return_type} {function.extern_name}({parameters});\n"
         source =
-            "{source}__attribute__((visibility(\"default\")))\n"
+            "{source}{ffi_export_attribute()}"
         source =
             "{source}void* beans_ffi_bridge(void) \{ return (void*)&{function.extern_name}; \}\n"
         let bridge: int =
