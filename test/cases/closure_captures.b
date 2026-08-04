@@ -35,6 +35,18 @@ fn weak_after_pattern() -> Weak<string> {
     return weak
 }
 
+class Held {
+    wrapped: fn() -> int
+
+    pub fn init(wrapped: fn() -> int) {
+        self.wrapped = wrapped
+    }
+
+    fn deinit() {
+        io.println("drop held")
+    }
+}
+
 fn main() {
     let fixed: int = 7
     let read_fixed: fn() -> int = fn() -> int { return fixed }
@@ -53,4 +65,15 @@ fn main() {
     io.println(matched_or_fallback(some("matched"), false))
     io.println(matched_or_fallback(none, true))
     io.println("pattern weak {weak_after_pattern().expired()}")
+
+    // an object whose field holds a closure made in this same frame
+    // still runs its deinit at end of scope: the closure captures its
+    // named bindings, not the frame that holds the object
+    if true {
+        let held: Held =
+            new Held(fn() -> int { return fixed })
+        let read: fn() -> int = held.wrapped
+        io.println("held {read()}")
+    }
+    io.println("held gone")
 }
