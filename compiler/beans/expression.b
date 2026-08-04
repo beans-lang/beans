@@ -6811,6 +6811,13 @@ class ExpressionChecker {
                         self.check_statement(statement))
                 }
                 result.children.push(body)
+                if result_type.name != "unit" &&
+                   result_type.name != "poison" &&
+                   !self.block_always_returns(block) {
+                    self.fail(
+                        node,
+                        "this closure must return {render_hir_type(result_type)} — the body can finish without a return")
+                }
             }
             none => {
                 self.fail(node, "closure needs a body")
@@ -7741,6 +7748,12 @@ class ExpressionChecker {
         return result
     }
 
+    // beans has no implicit tail return — a `-> T` body must say
+    // `return` on every path (spec/SYNTAX.md, "Functions"), so a
+    // body that can run off the end has no value to hand back. The
+    // walk is deliberately conservative: unsure means "does not
+    // return", which at worst asks for a `return` the reader can
+    // already see is needed.
     fn block_always_returns(block: AstNode) -> bool {
         for statement: AstNode in block.children {
             if self.statement_always_returns(statement) {
@@ -7766,10 +7779,78 @@ class ExpressionChecker {
                 }
             return yes && no
         }
+        if node.kind == "for" &&
+           node.children.len() == 1 &&
+           node.children[0].kind == "block" {
+            // `for { }` with no break never finishes, so nothing
+            // follows it
+            return !self.block_has_break(node.children[0])
+        }
         if node.kind == "unsafe" &&
            node.children.len() == 1 {
             return self.block_always_returns(
                 node.children[0])
+        }
+        if node.kind == "expression" &&
+           node.children[0].kind == "match" &&
+           node.children[0].children.len() > 1 {
+            // a statement-position match counts when every arm
+            // returns — check_match already proved the arms cover
+            // the subject
+            let match_node: AstNode = node.children[0]
+            for index: int in 1..match_node.children.len() {
+                let arm: AstNode = match_node.children[index]
+                if arm.children[1].kind != "block" ||
+                   !self.block_always_returns(arm.children[1]) {
+                    return false
+                }
+            }
+            return true
+        }
+        return false
+    }
+
+    // a `break` binds to the innermost loop, so this stops at a
+    // nested loop instead of counting its breaks as this loop's
+    fn block_has_break(block: AstNode) -> bool {
+        for statement: AstNode in block.children {
+            if self.statement_has_break(statement) {
+                return true
+            }
+        }
+        return false
+    }
+
+    fn statement_has_break(node: AstNode) -> bool {
+        if node.kind == "break" { return true }
+        if node.kind == "if" {
+            if self.block_has_break(node.children[1]) {
+                return true
+            }
+            if node.children.len() > 2 {
+                if node.children[2].kind == "block" {
+                    return self.block_has_break(
+                        node.children[2])
+                }
+                return self.statement_has_break(
+                    node.children[2])
+            }
+            return false
+        }
+        if node.kind == "unsafe" &&
+           node.children.len() == 1 {
+            return self.block_has_break(node.children[0])
+        }
+        if node.kind == "expression" &&
+           node.children[0].kind == "match" {
+            let match_node: AstNode = node.children[0]
+            for index: int in 1..match_node.children.len() {
+                let arm: AstNode = match_node.children[index]
+                if arm.children[1].kind == "block" &&
+                   self.block_has_break(arm.children[1]) {
+                    return true
+                }
+            }
         }
         return false
     }
@@ -7976,6 +8057,13 @@ class ExpressionChecker {
             if child.kind != "block" { continue }
             for statement: AstNode in child.children {
                 function.body.push(self.check_statement(statement))
+            }
+            if function.result.name != "unit" &&
+               function.result.name != "poison" &&
+               !self.block_always_returns(child) {
+                self.fail(
+                    function.syntax,
+                    "'{function.name}' must return {render_hir_type(function.result)} — the body can finish without a return")
             }
         }
         self.pop_scope()

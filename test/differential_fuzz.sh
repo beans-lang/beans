@@ -112,6 +112,116 @@ EOF
         }
     done
 
+    # a `-> T` body that can finish without a return is rejected by
+    # both checkers (spec/SYNTAX.md, "There is no implicit tail
+    # return"). The self-hosted checker used to accept it and the
+    # interpreter handed back unit when the body ran off the end.
+    cat >"$tmp/fall_off.b" <<'EOF'
+fn wrong(flag: bool) -> int {
+    if flag {
+        return 1
+    }
+}
+
+fn main() {
+    wrong(true)
+}
+EOF
+    cat >"$tmp/fall_off_loop.b" <<'EOF'
+fn drain(n: int) -> int {
+    for n > 0 {
+        return n
+    }
+}
+
+fn main() {
+    drain(3)
+}
+EOF
+    cat >"$tmp/fall_off_break.b" <<'EOF'
+fn escape() -> int {
+    for {
+        break
+    }
+}
+
+fn main() {
+    escape()
+}
+EOF
+    cat >"$tmp/fall_off_closure.b" <<'EOF'
+fn main() {
+    let f: fn(bool) -> int = fn(flag: bool) -> int {
+        if flag {
+            return 1
+        }
+    }
+    f(true)
+}
+EOF
+    for case in "fall_off:'wrong' must return int" \
+                "fall_off_loop:'drain' must return int" \
+                "fall_off_break:'escape' must return int" \
+                "fall_off_closure:this closure must return int"; do
+        file="${case%%:*}"
+        message="${case#*:} — the body can finish without a return"
+        for cc in build/beansc0 build/beansc; do
+            if "$cc" check "$tmp/$file.b" >"$tmp/fo.log" 2>&1; then
+                echo "  FAIL: $cc accepted $file.b (body can finish without a return)" >&2
+                return 1
+            fi
+            grep -qF "$message" "$tmp/fo.log" || {
+                echo "  FAIL: $cc rejected $file.b with the wrong message:" >&2
+                head -2 "$tmp/fo.log" >&2
+                return 1
+            }
+        done
+    done
+
+    # ...and the shapes that do always return stay accepted by both:
+    # if/else chains, `for { }` with no break, and a statement match
+    # whose arms all return
+    cat >"$tmp/always_returns.b" <<'EOF'
+fn chain(n: int) -> int {
+    if n == 0 {
+        return 1
+    } else if n == 1 {
+        return 2
+    } else {
+        return 3
+    }
+}
+
+fn spin(n: int) -> int {
+    for {
+        if n > 0 {
+            return n
+        }
+        return 0
+    }
+}
+
+fn arms(n: int) -> int {
+    match n {
+        0 => { return 10 }
+        _ => { return 20 }
+    }
+}
+
+fn main() {
+    chain(0)
+    spin(1)
+    arms(2)
+}
+EOF
+    for cc in build/beansc0 build/beansc; do
+        "$cc" check "$tmp/always_returns.b" >"$tmp/ar.log" 2>&1 || {
+            echo "  FAIL: $cc rejected a body whose every path returns" >&2
+            head -3 "$tmp/ar.log" >&2
+            return 1
+        }
+    done
+
     # an object with an inheritance chain releases fields in one order
     # everywhere: deinit bodies child first, then each class's fields in
     # reverse declaration order walking up. The self-hosted interpreter
@@ -482,7 +592,7 @@ case "$mode" in
             --keep-going
         echo "== differential fuzz: checker parity (negative cases) =="
         "$python3" tools/differential_fuzz.py \
-            --negative --seed 1 --cases 14 --keep-going
+            --negative --seed 1 --cases 15 --keep-going
         echo "ok semantic differential fuzz smoke"
         ;;
     run)
@@ -502,7 +612,7 @@ case "$mode" in
         if [ "${FUZZ_NEGATIVE:-1}" = 1 ]; then
             "$python3" tools/differential_fuzz.py \
                 --negative --seed "${FUZZ_SEED:-1}" \
-                --cases "${FUZZ_NEGATIVE_CASES:-28}" --keep-going
+                --cases "${FUZZ_NEGATIVE_CASES:-30}" --keep-going
         fi
         ;;
     *)

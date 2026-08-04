@@ -4045,7 +4045,7 @@ NEGATIVE_KINDS = (
     "through_value", "private_override", "super_private",
     "super_outside", "super_static", "super_no_parent",
     "super_unknown", "unknown_import", "unknown_member",
-    "private_fn", "builtin_reuse",
+    "private_fn", "builtin_reuse", "missing_return",
 )
 
 # Names the language reserves for its own types: redeclaring one anywhere is
@@ -4181,6 +4181,33 @@ def negative_case_files(seed, case):
                  "}",
                  "",
                  "fn main() {}"]
+    elif kind == "missing_return":
+        # a `-> T` body that can run off the end — both checkers must
+        # reject it with the same report (there is no implicit tail
+        # return, and the walk treats a conditional `for` or a broken
+        # `for { }` as falling through)
+        shape = rng.choice(("if_no_else", "cond_for", "loop_break"))
+        if shape == "if_no_else":
+            body = ["    if flag{} {{".format(n),
+                    "        return 1",
+                    "    }"]
+        elif shape == "cond_for":
+            body = ["    for flag{} {{".format(n),
+                    "        return 1",
+                    "    }"]
+        else:
+            body = ["    for {",
+                    "        if flag{} {{".format(n),
+                    "            break",
+                    "        }",
+                    "    }"]
+        main += ["fn wrong{}(flag{}: bool) -> int {{".format(n, n)]
+        main += body
+        main += ["}",
+                 "",
+                 "fn main() {",
+                 "    wrong{}(true)".format(n),
+                 "}"]
     elif kind == "unknown_import":
         main = ["import {}.nowhere{}".format(MODULE_NAME, n), "",
                 "fn main() {}"]
