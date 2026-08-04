@@ -54,6 +54,53 @@ if [[ $? -ne 42 ]]; then
     exit 0
 fi
 
+# The reserved-name rule and the C ABI bridge, held on this host too: the
+# compiler that runs here must refuse a builtin type name with the exact
+# message every other platform pins, and must build an aggregate FFI bridge
+# with the same driver selection `build` uses — including honoring BEANS_CC
+# and naming a configured driver that does not exist.
+cat > build/windows_hosted/reserved.b <<'EOF'
+class Box {
+    pub fn init() {}
+}
+
+fn main() {}
+EOF
+if "$BEANSC" check build/windows_hosted/reserved.b \
+        > build/windows_hosted/reserved.raw 2>&1; then
+    echo "FAIL: a builtin type name was accepted on this host" >&2
+    exit 1
+fi
+tr -d '\r' < build/windows_hosted/reserved.raw > build/windows_hosted/reserved.out
+if ! grep -q "type name 'Box' already taken" build/windows_hosted/reserved.out; then
+    echo "FAIL: the reserved-name message differs on this host:" >&2
+    cat build/windows_hosted/reserved.out >&2
+    exit 1
+fi
+
+if ! "$BEANSC" run test/cases/ffi_aggregate.b 2> build/windows_hosted/agg.err \
+        | tr -d '\r' > build/windows_hosted/agg.out; then
+    echo "FAIL: the aggregate C ABI bridge did not run on this host:" >&2
+    cat build/windows_hosted/agg.err >&2
+    exit 1
+fi
+if ! diff -u test/cases/ffi_aggregate.out build/windows_hosted/agg.out; then
+    echo "FAIL: aggregate C ABI output differs on this host" >&2
+    exit 1
+fi
+if BEANS_CC=./no-such-cc "$BEANSC" run test/cases/ffi_aggregate.b \
+        > build/windows_hosted/agg.bad 2>&1; then
+    echo "FAIL: BEANS_CC was ignored by the C ABI bridge on this host" >&2
+    exit 1
+fi
+if ! tr -d '\r' < build/windows_hosted/agg.bad \
+        | grep -q "no-such-cc could not build the C ABI bridge"; then
+    echo "FAIL: the bridge failure does not name the configured driver:" >&2
+    tr -d '\r' < build/windows_hosted/agg.bad >&2
+    exit 1
+fi
+echo "reserved names refused; the C ABI bridge runs and honors BEANS_CC"
+
 fails=0
 ran=0
 refused=0

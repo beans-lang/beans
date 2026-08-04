@@ -458,6 +458,16 @@ jobs:
           bash test/windows_source_bootstrap.sh \
             ${{ matrix.triple }} build/windows_source_bootstrap
 
+      # Both compilers exist on this machine now, so the reserved-name
+      # registry parity sweep runs here exactly as it does on POSIX hosts.
+      - name: Reserved type names hold on real Windows
+        if: matrix.hosted
+        shell: bash
+        run: |
+          BEANSC0=build/windows_source_bootstrap/beansc0.exe \
+          BEANSC=build/windows_native/beansc.exe \
+            bash test/builtin_names.sh
+
       # The final claim: beansc.exe itself, on genuine Windows, running the
       # same interpret-compile-diff loop make test runs everywhere else. A
       # skip here means the runner lost its toolchain, not that the claim

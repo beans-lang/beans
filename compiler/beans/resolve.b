@@ -18,6 +18,15 @@ fn generic_name(value: string) -> string {
     return words[0]
 }
 
+// The one answer to "does the language own this unqualified type name?".
+// Everything here is pre-bound somewhere by resolution — the type grammar,
+// the expression checker, the bounds checks, or qualified lookup — so a user
+// type by one of these names could never be referred to coherently, and
+// declaration registration refuses it. The SIMD families are decided by the
+// same closed parse the checker uses, never by prefix: SimdDescription and
+// other Simd-prefixed user names that name no real vector stay free.
+// test/builtin_names.sh sweeps this registry against the stage-0 compiler,
+// so the two predicates cannot drift apart silently.
 fn builtin_type(name: string) -> bool {
     return name == "unit" || name == "bool" || name == "string" ||
            name == "decimal" || name == "int" || name == "i8" ||
@@ -36,31 +45,11 @@ fn builtin_type(name: string) -> bool {
            name == "Channel" || name == "Thread" ||
            name == "Bytes" || name == "File" || name == "Dir" ||
            name == "MMap" || name == "Error" ||
-           name == "RawSlice" || name == "Simd" ||
+           name == "RawSlice" ||
            name == "AtomicInt" || name == "MemoryOrder" ||
            name == "RoundingMode" || name == "CpuFeature" ||
            name == "StoredCallback" ||
-           name == "Self" || name.starts_with("Simd")
-}
-
-// A user type may not reuse a name the language already owns: the builtin
-// generic classes, the builtin enums, Error, and the primitive type names.
-// The type grammar resolves these to the builtin everywhere, so a user
-// declaration by one of these names could never be referred to.
-fn reserved_type_name(name: string) -> bool {
-    return name == "List" || name == "Map" || name == "OrderedMap" ||
-           name == "Thread" || name == "Mutex" || name == "Channel" ||
-           name == "Box" || name == "Arena" || name == "Shared" ||
-           name == "Weak" || name == "RawPtr" || name == "Slice" ||
-           name == "Atomic" || name == "StoredCallback" ||
-           name == "Error" || name == "Option" || name == "Result" ||
-           name == "MemoryOrder" || name == "RoundingMode" ||
-           name == "unit" || name == "bool" || name == "string" ||
-           name == "decimal" || name == "int" || name == "i8" ||
-           name == "i16" || name == "i32" || name == "i64" ||
-           name == "uint" || name == "byte" || name == "u8" ||
-           name == "u16" || name == "u32" || name == "u64" ||
-           name == "f32" || name == "f64" || name == "float"
+           name == "Self" || simd_description(name).is_some()
 }
 
 fn copy_names(source: Map<string, bool>) -> Map<string, bool> {
@@ -112,7 +101,7 @@ class Resolver {
                         declaration_name(declaration.value)
                     if declaration.kind != "fn" &&
                        declaration.kind != "c_global" &&
-                       reserved_type_name(name) {
+                       builtin_type(name) {
                         self.fail(file.path, declaration,
                                   "type name '{name}' already taken")
                         // The declaration must not exist downstream: no

@@ -76,9 +76,35 @@ for needle, what in (
     ("windows-11-arm", "targets.yml lost the real Windows ARM64 runner"),
     ("windows_docker.sh", "targets.yml lost the Wine gate"),
     ("windows_native_run.sh", "targets.yml lost the native execution step"),
+    ("windows_hosted.sh", "targets.yml lost the hosted Windows gate"),
+    ("builtin_names.sh", "targets.yml lost the reserved-name sweep on real Windows"),
 ):
     if needle not in targets:
         fail.append(what)
+
+# Staging a bundle without executing it is a compile-only lane wearing a
+# test's name. Every stage call in the workflows must be matched by at
+# least as many run calls in the same file.
+if targets.count("windows_native_stage.sh") > targets.count("windows_native_run.sh"):
+    fail.append("targets.yml stages more Windows bundles than it executes")
+
+# A required matrix entry quietly marked optional stops failing the run
+# without anyone deciding that.
+for fname, text in (("ci.yml", ci), ("targets.yml", targets)):
+    if "continue-on-error" in text:
+        fail.append(fname + " marks a required job optional (continue-on-error)")
+
+# The staged preflight is the fast-failure contract; losing a stage widens
+# the time to first useful failure without anyone deciding that either.
+for job in ("preflight-validate", "preflight-stage0", "preflight-parity",
+            "preflight-smoke"):
+    if job + ":" not in ci:
+        fail.append("ci.yml lost preflight stage: " + job)
+
+# A slice that runs zero scripts is a silent hole, not a fast test.
+for g, names in groups.items():
+    if not names:
+        fail.append(g + " runs zero tests")
 
 fuzz = open(".github/workflows/differential-fuzz.yml").read()
 seeds = re.findall(r"seed:\s*\"?(\d+)\"?", fuzz)

@@ -3092,7 +3092,12 @@ class ExpressionChecker {
                 }
             }
             none => {
-                if type.name.len() > 4 &&
+                // A digit after Simd is almost always a typo for a real
+                // vector shape — but only when the name belongs to no
+                // registered user declaration; a class by a non-vector
+                // name is an ordinary type.
+                if self.declaration_for(type).is_none() &&
+                   type.name.len() > 4 &&
                    type.name.starts_with("Simd") &&
                    type.name.byte_at(4) >= 48 &&
                    type.name.byte_at(4) <= 57 {
@@ -3890,8 +3895,12 @@ class ExpressionChecker {
         operation: string, result: HirNode) {
         let count: int = node.children.len() - first
         if count != signature.parameters.len() {
+            // A builtin constructor reads as the new-expression it came
+            // from; every other builtin keeps its qualified spelling.
             let shown: string =
-                if result.resolved == "" {
+                if result.kind == "new" {
+                    "new {result.value}"
+                } else if result.resolved == "" {
                     "builtin"
                 } else {
                     "'{result.resolved}'"
@@ -4036,12 +4045,13 @@ class ExpressionChecker {
     fn check_arguments(node: AstNode, first: int,
                        function: HirFunction,
                        owner: HirType,
+                       shown: string,
                        result: HirNode) {
         let count: int = node.children.len() - first
         if count != function.parameters.len() {
             self.fail(
                 node,
-                "function '{function.name}' needs {function.parameters.len()} argument(s), got {count}")
+                "{shown} takes {function.parameters.len()} argument(s), got {count}")
         }
         let shared: int =
             if count < function.parameters.len() {
@@ -4087,6 +4097,7 @@ class ExpressionChecker {
     fn check_generic_arguments(
         node: AstNode, first: int,
         function: HirFunction, expected: HirType,
+        shown: string,
         result: HirNode) {
         var inference: Map<string, HirType> = {}
         if expected.name != "" {
@@ -4098,7 +4109,7 @@ class ExpressionChecker {
         if count != function.parameters.len() {
             self.fail(
                 node,
-                "function '{function.name}' needs {function.parameters.len()} argument(s), got {count}")
+                "{shown} takes {function.parameters.len()} argument(s), got {count}")
         }
         let shared: int =
             if count < function.parameters.len() {
@@ -4188,8 +4199,12 @@ class ExpressionChecker {
                                result: HirNode) {
         let count: int = node.children.len() - first
         if count != signature.parameters.len() {
+            // A builtin constructor reads as the new-expression it came
+            // from; every other builtin keeps its qualified spelling.
             let shown: string =
-                if result.resolved == "" {
+                if result.kind == "new" {
+                    "new {result.value}"
+                } else if result.resolved == "" {
                     "builtin"
                 } else {
                     "'{result.resolved}'"
@@ -4627,11 +4642,13 @@ class ExpressionChecker {
                     if function.generics.len() != 0 {
                         self.check_generic_arguments(
                             node, 1, function,
-                            expected, result)
+                            expected,
+                            "'{function.name}'", result)
                     } else {
                         self.check_arguments(
                             node, 1, function,
-                            no_hir_type(), result)
+                            no_hir_type(),
+                            "'{function.name}'", result)
                     }
                     self.expect_type(node, result.type, expected)
                     return some(result)
@@ -5132,7 +5149,8 @@ class ExpressionChecker {
                                 target.function.qualified
                             self.check_arguments(
                                 node, 1, target.function,
-                                target.owner, result)
+                                target.owner,
+                                "super.init", result)
                         }
                         none => {
                             self.fail(
@@ -5199,7 +5217,8 @@ class ExpressionChecker {
                             target.function.qualified
                         self.check_arguments(
                             node, 1, target.function,
-                            target.owner, result)
+                            target.owner,
+                            "super.{callee.value}", result)
                         self.expect_type(
                             node, result.type, expected)
                         return result
@@ -5287,11 +5306,15 @@ class ExpressionChecker {
                                 if function.generics.len() != 0 {
                                     self.check_generic_arguments(
                                         node, 1, function,
-                                        expected, result)
+                                        expected,
+                                        "'{self.static_syntax_name(receiver_syntax)}.{callee.value}'",
+                                        result)
                                 } else {
                                     self.check_arguments(
                                         node, 1, function,
-                                        no_hir_type(), result)
+                                        no_hir_type(),
+                                        "'{self.static_syntax_name(receiver_syntax)}.{callee.value}'",
+                                        result)
                                 }
                                 self.expect_type(
                                     node, result.type, expected)
@@ -6017,7 +6040,9 @@ class ExpressionChecker {
                             result.children.push(receiver)
                             self.check_arguments(
                                 node, 1, function,
-                                receiver.type, result)
+                                receiver.type,
+                                "{declaration.name}.{function.name}",
+                                result)
                             self.expect_type(
                                 node, result.type, expected)
                             return result
@@ -6176,11 +6201,13 @@ class ExpressionChecker {
                 if function.generics.len() != 0 {
                     self.check_generic_arguments(
                         node, 1, function,
-                        expected, result)
+                        expected,
+                        "'{function.name}'", result)
                 } else {
                     self.check_arguments(
                         node, 1, function,
-                        no_hir_type(), result)
+                        no_hir_type(),
+                        "'{function.name}'", result)
                 }
                 self.expect_type(node, result.type, expected)
                 return result
@@ -6267,13 +6294,20 @@ class ExpressionChecker {
             let result: HirNode =
                 self.make_node(node, "new", type.name, type)
             result.resolved = "{type.name}.init"
+            if type.args.len() > 1 {
+                self.fail(
+                    node,
+                    "{type.name} takes one type argument")
+                type.args = [type.args[0]]
+                result.type = type
+            }
             let count: int = node.children.len() - 1
             if count != 1 {
                 self.fail(
                     node,
-                    "new {type.name} takes 1 argument, got {count}")
+                    "new {type.name} takes 1 argument(s), got {count}")
             }
-            if type.args.len() == 1 {
+            if type.args.len() == 1 && count == 1 {
                 let signature: BuiltinSignature =
                     new BuiltinSignature([type.args[0]], type)
                 self.check_builtin_arguments(
@@ -6334,6 +6368,7 @@ class ExpressionChecker {
                         self.check_arguments(
                             node, 1, initializer,
                             initializer_owner,
+                            "'{node.children[0].value}' init",
                             result)
                         result.resolved =
                             initializer.qualified

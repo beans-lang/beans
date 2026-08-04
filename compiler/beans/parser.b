@@ -750,7 +750,17 @@ class Parser {
         let start: Token = self.advance()
         let name: Token = self.expect("ident", "expected local name")
         let local: AstNode = self.node(start.kind, name.text, start)
-        if self.match_token(":") { local.add(self.parse_type()) }
+        if self.match_token(":") {
+            local.add(self.parse_type())
+        } else if self.check("=") {
+            // The annotation is part of the statement, never inferred from
+            // the initializer. Two reports, matching the stage-0 parser
+            // byte for byte, then recovery continues at the initializer.
+            let here: Token = self.current()
+            self.fail(here,
+                      "expected ':' — beans requires the type here")
+            self.fail(here, "expected type")
+        }
         if self.match_token("=") { local.add(self.parse_expression()) }
         self.finish_statement()
         return local

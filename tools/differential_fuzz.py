@@ -3873,6 +3873,11 @@ def fuzz_loop(args):
             print("FAIL case {}-{}: {} in lanes {} -> {}".format(
                 args.seed, case, ",".join(kinds), ",".join(lanes),
                 fail_dir))
+            print("     host {} {}, {:.0f}s in; exact commands and exits in "
+                  "{}/commands.txt; replay with: python3 "
+                  "tools/differential_fuzz.py --replay {}:{}".format(
+                      platform.system(), platform.machine(),
+                      time.time() - started, fail_dir, args.seed, case))
             if args.reduce_failures:
                 reduce_failure(runner, out_root, args.seed, case, config,
                                args.reduce_budget)
