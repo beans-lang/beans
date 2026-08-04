@@ -2015,6 +2015,15 @@ class MirLowerer {
     }
 
     fn lower_function(function: HirFunction) {
+        if function.is_async {
+            // The async expander runs before MIR lowering and rewrites
+            // every async body into a task maker; an async function here
+            // means that step was skipped.
+            self.fail(
+                function.file, function.line, function.col,
+                "internal: async function '{function.qualified}' was not expanded before MIR lowering")
+            return
+        }
         self.current = new MirFunction(
             function.qualified, function.result,
             function.file, function.line, function.col)

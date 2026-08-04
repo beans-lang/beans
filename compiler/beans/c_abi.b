@@ -143,6 +143,9 @@ class CAbiChecker {
     fn check_functions() {
         for function: HirFunction in self.program.functions {
             if !function.is_extern_c { continue }
+            // Already rejected outright; a second complaint about the
+            // wrapped task return would only bury that error.
+            if function.is_async { continue }
             if function.name == "main" {
                 self.fail_function(
                     function,

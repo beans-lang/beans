@@ -608,6 +608,11 @@ class ExpressionChecker {
     bad_send_captures: Map<string, bool>
     bad_sync_captures: Map<string, bool>
     next_binding_id: int
+    // Counts enclosing borrowed bindings of move-only values: a for-in
+    // element or a match payload. An await inside such a scope would have
+    // to keep the borrow alive across a suspension, which the task frame
+    // cannot do, so check_await refuses while this is nonzero.
+    move_only_borrow_depth: int
 
     fn init(signature: SignatureChecker) {
         self.signature = signature
@@ -636,6 +641,7 @@ class ExpressionChecker {
         self.bad_send_captures = {}
         self.bad_sync_captures = {}
         self.next_binding_id = 0
+        self.move_only_borrow_depth = 0
         for function: HirFunction in self.program.functions {
             if function.owner != "" {
                 self.methods["{function.owner}.{function.name}"] =
@@ -1673,6 +1679,15 @@ class ExpressionChecker {
         match self.inherited_method(
             function.owner, function.name) {
             some(parent) => {
+                if function.is_async != parent.is_async {
+                    self.fail(
+                        function.syntax,
+                        if parent.is_async {
+                            "'{function.name}' must be async to match the parent declaration"
+                        } else {
+                            "'{function.name}' cannot be async — the parent declaration is synchronous"
+                        })
+                }
                 let shared: int =
                     if function.parameters.len() <
                        parent.parameters.len() {
@@ -3212,6 +3227,9 @@ class ExpressionChecker {
             }
             let parser: Parser =
                 new Parser(move tokens)
+            // An interpolation piece is part of the surrounding body, so
+            // `await` stays available in an async function's strings.
+            parser.in_async = self.current.is_async
             let expression: AstNode =
                 parser.parse_standalone_expression()
             for diagnostic: Diagnostic in parser.errors {
@@ -6665,7 +6683,7 @@ class ExpressionChecker {
         if operand.type.name == "Result" &&
            operand.type.args.len() >= 1 {
             result_type = operand.type.args[0]
-            if self.current.result.name != "Result" {
+            if self.current.body_result.name != "Result" {
                 self.fail(
                     node,
                     "'?' needs a function returning Result")
@@ -6673,7 +6691,7 @@ class ExpressionChecker {
         } else if operand.type.name == "Option" &&
                   operand.type.args.len() == 1 {
             result_type = operand.type.args[0]
-            if self.current.result.name != "Option" {
+            if self.current.body_result.name != "Option" {
                 self.fail(
                     node,
                     "'?' needs a function returning Option")
@@ -6686,6 +6704,50 @@ class ExpressionChecker {
         self.expect_type(node, result_type, expected)
         let result: HirNode =
             self.make_node(node, "try", "", result_type)
+        result.children.push(operand)
+        return result
+    }
+
+    fn check_await(node: AstNode,
+                   expected: HirType) -> HirNode {
+        if !self.current.is_async {
+            self.fail(
+                node,
+                "await is only valid inside an async function")
+        } else if self.capture_floor_depth >= 0 {
+            self.fail(
+                node,
+                "await cannot be used inside a closure — only directly in the async function body")
+        } else if self.defer_depth > 0 {
+            self.fail(
+                node,
+                "await is not allowed inside defer")
+        } else if self.move_only_borrow_depth > 0 {
+            self.fail(
+                node,
+                "await cannot suspend while a loop or match borrows a move-only value — copy or move what you need first")
+        }
+        let operand: HirNode =
+            self.check_expression(
+                node.children[0], no_hir_type())
+        if operand.type.name == "poison" {
+            return self.make_node(
+                node, "error", "await", poison_hir_type())
+        }
+        if operand.type.name != "async.Task" ||
+           operand.type.args.len() != 1 {
+            self.fail(
+                node,
+                "await needs a std.async task, got {render_hir_type(operand.type)}")
+            return self.make_node(
+                node, "error", "await", poison_hir_type())
+        }
+        self.require_move_source(
+            node.children[0], operand.type, "await")
+        let result_type: HirType = operand.type.args[0]
+        self.expect_type(node, result_type, expected)
+        let result: HirNode =
+            self.make_node(node, "await", "", result_type)
         result.children.push(operand)
         return result
     }
@@ -6778,6 +6840,8 @@ class ExpressionChecker {
         let result: HirNode =
             self.make_node(node, "closure", "", type)
         let saved_result: HirType = self.current.result
+        let saved_body_result: HirType =
+            self.current.body_result
         let saved_capture_floor: int =
             self.capture_floor_depth
         let saved_take_floor: int =
@@ -6788,6 +6852,7 @@ class ExpressionChecker {
             self.take_floor_depth = capture_floor
         }
         self.current.result = result_type
+        self.current.body_result = result_type
         self.push_scope()
         for index: int in 0..parameter_nodes.len() {
             let binding_id: int = self.declare(
@@ -6825,6 +6890,7 @@ class ExpressionChecker {
         }
         self.pop_scope()
         self.current.result = saved_result
+        self.current.body_result = saved_body_result
         self.capture_floor_depth = saved_capture_floor
         self.take_floor_depth = saved_take_floor
         return result
@@ -7270,6 +7336,21 @@ class ExpressionChecker {
             lowered.children.push(
                 self.check_pattern(
                     arm.children[0], subject.type))
+            var arm_borrows_move_only: bool = false
+            let arm_scope: LocalScope =
+                self.scopes[self.scopes.len() - 1]
+            for bound_name: string in
+                arm_scope.bindings.keys() {
+                let bound: LocalBinding =
+                    arm_scope.bindings[bound_name]
+                if bound.borrowed &&
+                   self.is_move_only(bound.type) {
+                    arm_borrows_move_only = true
+                }
+            }
+            if arm_borrows_move_only {
+                self.move_only_borrow_depth += 1
+            }
             if !discard && expected.name != "" &&
                expected.name != "unit" &&
                arm.children[1].kind == "block" {
@@ -7296,6 +7377,9 @@ class ExpressionChecker {
                         arm.children[1], arm_type)
                 }
             lowered.children.push(value)
+            if arm_borrows_move_only {
+                self.move_only_borrow_depth -= 1
+            }
             self.pop_scope()
             let arm_returns: bool =
                 arm.children[1].kind == "block" &&
@@ -7389,6 +7473,9 @@ class ExpressionChecker {
         }
         if node.kind == "try" {
             return self.check_try(node, expected)
+        }
+        if node.kind == "await" {
+            return self.check_await(node, expected)
         }
         if node.kind == "cast" {
             return self.check_cast(node, expected)
@@ -7718,9 +7805,17 @@ class ExpressionChecker {
             self.push_scope()
             lowered_binding.binding_id = self.declare(
                 binding, element, false, true, false)
+            let element_borrows_move_only: bool =
+                self.is_move_only(element)
+            if element_borrows_move_only {
+                self.move_only_borrow_depth += 1
+            }
             for statement: AstNode in block.children {
                 body.children.push(
                     self.check_statement(statement))
+            }
+            if element_borrows_move_only {
+                self.move_only_borrow_depth -= 1
             }
             self.pop_scope()
             self.take_floor_depth = saved_floor
@@ -7864,16 +7959,16 @@ class ExpressionChecker {
                 self.make_node(
                     node, "return", "", new HirType("unit"))
             if node.children.len() == 0 {
-                if self.current.result.name != "unit" {
+                if self.current.body_result.name != "unit" {
                     self.fail(
                         node,
-                        "return needs {render_hir_type(self.current.result)}")
+                        "return needs {render_hir_type(self.current.body_result)}")
                 }
             } else {
                 let value: HirNode =
                     self.check_expression(
                         node.children[0],
-                        self.current.result)
+                        self.current.body_result)
                 result.children.push(value)
                 self.require_move_source(
                     node.children[0], value.type,
@@ -8015,10 +8110,24 @@ class ExpressionChecker {
         self.bad_inout_captures = {}
         self.bad_send_captures = {}
         self.bad_sync_captures = {}
+        self.move_only_borrow_depth = 0
         self.current_constraints = []
         for constraint: HirGeneric in
             function.generic_constraints {
             self.current_constraints.push(constraint)
+        }
+        if function.is_async && function.owner != "" &&
+           !function.is_static {
+            match self.declarations.get(function.owner) {
+                some(owner) => {
+                    if owner.is_unique {
+                        self.fail(
+                            function.syntax,
+                            "async instance methods are not available on a unique class — the task frame cannot borrow the receiver; use a static async fn")
+                    }
+                }
+                none => {}
+            }
         }
         if function.owner != "" {
             match self.declarations.get(function.owner) {

@@ -62,7 +62,12 @@ class HirFunction {
     generics: List<string>
     generic_constraints: List<HirGeneric>
     parameters: List<HirParameter>
+    // What a call to this function produces. For an async function this is
+    // async.Task<body_result>; for everything else it equals body_result.
     result: HirType
+    // What the body's return statements and ? propagation produce.
+    body_result: HirType
+    is_async: bool
     is_extern_c: bool
     extern_name: string
     is_c_export: bool
@@ -93,6 +98,8 @@ class HirFunction {
         self.generic_constraints = []
         self.parameters = []
         self.result = new HirType("unit")
+        self.body_result = new HirType("unit")
+        self.is_async = false
         self.is_extern_c = false
         self.extern_name = name
         self.is_c_export = false
@@ -244,6 +251,18 @@ fn layout_modifier_align(value: string) -> int {
         }
     }
     return 0
+}
+
+// True when `async` appears among the declaration's modifier words. The
+// value string ends with the declaration's own name, so the last word never
+// counts — `fn async()` is a function named async, not an async function.
+fn value_marks_async(value: string) -> bool {
+    let words: List<string> = module_words(value)
+    if words.len() < 2 { return false }
+    for index: int in 0..words.len() - 1 {
+        if words[index] == "async" { return true }
+    }
+    return false
 }
 
 fn required_feature_from_value(value: string) -> string {
@@ -636,6 +655,7 @@ class SignatureChecker {
         function.syntax = node
         function.is_extern_c =
             node.value.contains("extern \"C\"")
+        function.is_async = value_marks_async(node.value)
         function.is_static =
             module_words(node.value).contains("static")
         function.is_override =
@@ -691,7 +711,63 @@ class SignatureChecker {
         function.is_c_export =
             function.is_extern_c && function.has_body &&
             function.is_public
+        function.body_result = function.result
+        if function.is_async {
+            self.validate_async_function(node, file, function)
+        }
         self.hir.functions.push(function)
+    }
+
+    // The declared type of an async function is what its body returns; a
+    // call to it produces async.Task of that type. The split happens here,
+    // once, so no later phase wraps results ad hoc.
+    fn validate_async_function(node: AstNode, file: ParsedModuleFile,
+                               function: HirFunction) {
+        var task_known: bool = false
+        match self.resolver.symbols.get("async.Task") {
+            some(symbol) => {
+                task_known =
+                    symbol.package_path == "std.async"
+            }
+            none => {}
+        }
+        if !task_known {
+            self.fail(
+                file.path, node,
+                "async functions need 'import std.async' for the task type")
+        }
+        if function.is_extern_c {
+            self.fail(
+                file.path, node,
+                "extern \"C\" functions cannot be async — expose a synchronous wrapper that calls std.async.run")
+        }
+        if function.name == "init" ||
+           function.name == "deinit" {
+            self.fail(
+                file.path, node,
+                "{function.name} cannot be async")
+        }
+        if function.required_feature != "" {
+            self.fail(
+                file.path, node,
+                "feature-gated functions cannot be async yet")
+        }
+        for parameter: HirParameter in function.parameters {
+            if parameter.passing == "inout" {
+                self.hir.errors.push(Diagnostic {
+                    severity: Severity.error,
+                    file: file.path,
+                    line: parameter.line,
+                    col: parameter.col,
+                    message:
+                        "async functions cannot take inout parameters — the call returns before the body runs",
+                })
+            }
+        }
+        if task_known {
+            function.result =
+                hir_named("async.Task", [function.body_result])
+        }
     }
 
     fn lower_c_global(node: AstNode,

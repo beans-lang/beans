@@ -27,6 +27,10 @@ class Parser {
     allow_initializer: bool
     recovered_statement_end: bool
     pending_type_closes: int
+    // True while parsing an async fn body. `await` is a contextual word:
+    // only here does it start an await expression; everywhere else it is an
+    // ordinary identifier, so existing code that uses the name keeps parsing.
+    in_async: bool
 
     fn init(move tokens: List<Token>) {
         self.tokens = move tokens
@@ -35,6 +39,7 @@ class Parser {
         self.allow_initializer = true
         self.recovered_statement_end = false
         self.pending_type_closes = 0
+        self.in_async = false
     }
 
     fn current() -> Token {
@@ -251,6 +256,18 @@ class Parser {
             self.fail(self.current(), "expected unique class")
             return self.node("error", "unique", modifier)
         }
+        // Contextual: `async` is a keyword only immediately before `fn`.
+        // Anywhere else it stays an ordinary identifier.
+        if self.check("ident") && self.current().text == "async" &&
+           self.tokens[self.pos + 1].kind == "fn" {
+            self.advance()
+            self.in_async = true
+            let result: AstNode = self.parse_function()
+            self.in_async = false
+            result.value = "async {result.value}"
+            if public { result.value = "pub {result.value}" }
+            return result
+        }
         if self.match_token("extern") {
             let abi: Token = self.expect("string", "expected extern ABI")
             var layout: string = ""
@@ -314,6 +331,20 @@ class Parser {
                             alias.text, alias))
                 }
                 self.finish_statement()
+                return result
+            }
+            if self.check("ident") &&
+               self.current().text == "async" &&
+               self.tokens[self.pos + 1].kind == "fn" {
+                // Parsed so the checker can name the real problem: a C
+                // entry point cannot be async.
+                self.advance()
+                self.in_async = true
+                let result: AstNode = self.parse_function()
+                self.in_async = false
+                result.value =
+                    "extern {abi.text} {layout} async {result.value}"
+                if public { result.value = "pub {result.value}" }
                 return result
             }
             if self.check("fn") {
@@ -542,6 +573,7 @@ class Parser {
         self.skip_newlines()
         for !self.check("\}") && !self.at_end() {
             var modifier: string = ""
+            var method_async: bool = false
             var reading_modifiers: bool = true
             for reading_modifiers {
                 if self.check("override") || self.check("static") ||
@@ -552,12 +584,29 @@ class Parser {
                     } else {
                         modifier = "{modifier} {part}"
                     }
+                } else if self.check("ident") &&
+                          self.current().text == "async" &&
+                          self.tokens[self.pos + 1].kind == "fn" {
+                    // Contextual, same rule as the top level: `async`
+                    // is a modifier only immediately before `fn`, so a
+                    // field named async keeps parsing as a field.
+                    self.advance()
+                    method_async = true
+                    if modifier == "" {
+                        modifier = "async"
+                    } else {
+                        modifier = "{modifier} async"
+                    }
+                    reading_modifiers = false
                 } else {
                     reading_modifiers = false
                 }
             }
             if self.check("fn") {
+                let saved_async: bool = self.in_async
+                self.in_async = method_async
                 let method: AstNode = self.parse_function()
+                self.in_async = saved_async
                 if start.kind == "interface" &&
                    modifier.contains("static") {
                     self.fail(
@@ -833,6 +882,18 @@ class Parser {
     }
 
     fn parse_prefix() -> AstNode {
+        // Contextual: inside an async body `await` starts an await
+        // expression. Its operand is one prefix/postfix chain, so `await`
+        // binds tighter than every binary operator and looser than call,
+        // field, index, `?` and `as`: `await t?` awaits `t?`, and
+        // `(await t)?` applies `?` to the awaited value.
+        if self.in_async && self.check("ident") &&
+           self.current().text == "await" {
+            let keyword: Token = self.advance()
+            let result: AstNode = self.node("await", "", keyword)
+            result.add(self.parse_prefix())
+            return result
+        }
         if self.check("-") || self.check("!") || self.check("~") ||
            self.check("move") || self.check("take") ||
            self.check("inout") {

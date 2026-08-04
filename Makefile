@@ -229,6 +229,7 @@ else
 	./test/traits.sh
 	./test/fixed_arrays.sh
 	bash ./test/closure_captures.sh
+	bash ./test/async.sh
 	bash ./test/mir.sh
 	bash ./test/devirtualize.sh
 	bash ./test/default_eval_order.sh
@@ -356,6 +357,7 @@ test-core: $(BIN)
 	./test/stack_pointer.sh
 	./test/stored_callbacks.sh
 	bash ./test/closure_captures.sh
+	bash ./test/async.sh
 	./test/stdlib_source.sh
 	bash ./test/encoding.sh
 	bash ./test/encoding_symbols.sh
