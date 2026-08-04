@@ -761,4 +761,43 @@ replaced the pending task
 BEANS
 run_matrix "$tmp/sem_cancel.b" "$tmp/sem_cancel.expected"
 
+echo "checking pure async rides every profile and 32-bit targets"
+cat > "$tmp/prof_pure.b" <<'BEANS'
+import std.async as aio
+
+async fn tick(a: int) -> int { return a }
+
+async fn sums(a: int) -> int {
+    return (await tick(a)) + (await tick(a + 1))
+}
+
+fn main() {
+    let ignored: int = aio.run(sums(1))
+}
+BEANS
+"$BEANSC" check --runtime minimal "$tmp/prof_pure.b" >/dev/null
+"$BEANSC" check --runtime freestanding "$tmp/prof_pure.b" >/dev/null
+"$BEANSC0" check --runtime minimal "$tmp/prof_pure.b" >/dev/null
+# 32-bit async frame layout: the closures' capture cells must emit for a
+# 32-bit target without complaint.
+"$BEANSC" llvm --target i686-unknown-linux-gnu "$tmp/prof_pure.b" >/dev/null
+"$BEANSC" llvm --target wasm32-wasip1 --runtime minimal "$tmp/prof_pure.b" >/dev/null
+
+echo "checking the poller still needs the full profile beside async"
+cat > "$tmp/prof_poll.b" <<'BEANS'
+import std.async as aio
+import std.poll
+
+async fn f() -> int { return 1 }
+
+fn main() {}
+BEANS
+set +e
+"$BEANSC0" check --runtime minimal "$tmp/prof_poll.b" >"$tmp/pp0" 2>&1; r0=$?
+"$BEANSC" check --runtime minimal "$tmp/prof_poll.b" >"$tmp/pp1" 2>&1; r1=$?
+set -e
+[ "$r0" -ne 0 ] && [ "$r1" -ne 0 ]
+grep -q "needs readiness polling" "$tmp/pp0"
+grep -q "needs readiness polling" "$tmp/pp1"
+
 echo "async: ok"
