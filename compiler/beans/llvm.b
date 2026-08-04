@@ -1688,6 +1688,7 @@ class LlvmTextEmitter {
         clone.last_use = instruction.last_use
         clone.scalar_materialize =
             instruction.scalar_materialize
+        clone.borrow_elided = instruction.borrow_elided
         clone.removed = instruction.removed
         return clone
     }
@@ -14857,8 +14858,10 @@ class LlvmTextEmitter {
                 var output: string =
                     "  {index} = load i64, ptr {self.iterator_current[iterator]}\n  {data} = load ptr, ptr {self.iterator_collection[iterator]}\n  {slot_pointer} = getelementptr {llvm}, ptr {data}, i64 {index}\n  {result} = load {llvm}, ptr {slot_pointer}\n"
                 values[instruction.result] = result
-                output =
-                    "{output}{self.emit_arc_value(type, result, true)}"
+                if !instruction.borrow_elided {
+                    output =
+                        "{output}{self.emit_arc_value(type, result, true)}"
+                }
                 output =
                     "{output}  {advanced} = add i64 {index}, 1\n  store i64 {advanced}, ptr {self.iterator_current[iterator]}\n"
                 return output
@@ -14871,7 +14874,8 @@ class LlvmTextEmitter {
             output = "{output}{converted.setup}"
             values[instruction.result] =
                 converted.value
-            if self.type_is_reference(type) {
+            if self.type_is_reference(type) &&
+               !instruction.borrow_elided {
                 output =
                     "{output}  call void @beans_retain(ptr {converted.value})\n"
             }

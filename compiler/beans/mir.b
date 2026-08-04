@@ -61,6 +61,7 @@ class MirInstruction {
     col: int
     last_use: bool
     scalar_materialize: bool
+    borrow_elided: bool
     removed: bool
 
     fn init(op: string, result: int, type: HirType,
@@ -89,6 +90,7 @@ class MirInstruction {
         self.col = col
         self.last_use = false
         self.scalar_materialize = false
+        self.borrow_elided = false
         self.removed = false
     }
 }
@@ -238,6 +240,14 @@ class MirScope {
     fn init() {
         self.bindings = {}
         self.locals = []
+    }
+}
+
+class MirBlockEdges {
+    sources: List<int>
+
+    fn init() {
+        self.sources = []
     }
 }
 
@@ -3008,6 +3018,338 @@ class MirLowerer {
         local.needs_live_flag = true
     }
 
+    // Borrowed list iteration: when the loop binding cannot outlive its
+    // element slot and the list cannot be structurally changed while the
+    // binding is live, elements are read as borrows. The iterate_value
+    // stops retaining, the binding local stops being dropped, and the
+    // loop's own reference to the iterable keeps every element alive.
+    fn analyze_borrowed_iteration(function: MirFunction) {
+        if function.declaration || function.external ||
+           function.blocks.len() == 0 {
+            return
+        }
+        var predecessors: List<MirBlockEdges> = []
+        for unused: MirBlock in function.blocks {
+            predecessors.push(new MirBlockEdges())
+        }
+        for block: MirBlock in function.blocks {
+            for target: int in block.terminator.targets {
+                if target >= 0 &&
+                   target < predecessors.len() {
+                    predecessors[target].sources.push(
+                        block.id)
+                }
+            }
+        }
+        var dominance: List<MirValueSet> =
+            self.dominators(function)
+        for block: MirBlock in function.blocks {
+            for index: int in
+                0..block.instructions.len() {
+                let read: MirInstruction =
+                    block.instructions[index]
+                if read.removed ||
+                   read.op != "iterate_value" ||
+                   read.borrow_elided ||
+                   read.operands.len() != 1 ||
+                   read.result < 0 ||
+                   mir_type_is_trivial(read.type) ||
+                   !self.plain_reference_type(read.type) {
+                    continue
+                }
+                self.try_elide_iteration(
+                    function, predecessors, dominance,
+                    block, index)
+            }
+        }
+    }
+
+    // Borrowed elements must be plain class or interface references: a
+    // slot the list itself keeps alive. Options and other wide shapes
+    // may materialize fresh boxes on read, which a borrow cannot own.
+    fn plain_reference_type(type: HirType) -> bool {
+        if type.args.len() != 0 {
+            return false
+        }
+        let name: string =
+            canonical_hir_name(type.name)
+        for declaration: HirDeclaration in
+            self.source.declarations {
+            if declaration.qualified == name ||
+               declaration.name == name {
+                return declaration.kind == "class" ||
+                       declaration.kind == "interface"
+            }
+        }
+        return false
+    }
+
+    // The natural loop of every back edge into `head`: head itself plus
+    // all blocks that reach a back-edge source without passing head.
+    fn loop_blocks_of(function: MirFunction,
+                      predecessors: List<MirBlockEdges>,
+                      dominance: List<MirValueSet>,
+                      head: int) -> MirValueSet {
+        let members: MirValueSet =
+            new MirValueSet(function.blocks.len())
+        members.add(head)
+        var work: List<int> = []
+        for source: int in
+            predecessors[head].sources {
+            if source >= 0 &&
+               source < dominance.len() &&
+               dominance[source].contains(head) {
+                work.push(source)
+            }
+        }
+        for work.len() > 0 {
+            let candidate: int =
+                work[work.len() - 1]
+            work.pop()
+            if members.contains(candidate) { continue }
+            members.add(candidate)
+            for source: int in
+                predecessors[candidate].sources {
+                work.push(source)
+            }
+        }
+        return members
+    }
+
+    fn try_elide_iteration(function: MirFunction,
+                           predecessors: List<MirBlockEdges>,
+                           dominance: List<MirValueSet>,
+                           block: MirBlock,
+                           index: int) {
+        let read: MirInstruction =
+            block.instructions[index]
+        // the binding's local_init must directly consume this element
+        var next_index: int = index + 1
+        for next_index < block.instructions.len() &&
+            block.instructions[next_index].removed {
+            next_index += 1
+        }
+        if next_index >= block.instructions.len() {
+            return
+        }
+        let init: MirInstruction =
+            block.instructions[next_index]
+        if init.op != "local_init" ||
+           init.local < 0 ||
+           init.local >= function.locals.len() ||
+           init.operands.len() != 1 ||
+           init.operands[0] != read.result {
+            return
+        }
+        let binding: MirLocal =
+            function.locals[init.local]
+        if binding.captured || binding.parameter ||
+           binding.scalar_replaced ||
+           binding.ownership != "owned" {
+            return
+        }
+        // the iterator must walk a List the loop owns for its duration
+        let cursor: int = read.operands[0]
+        var setup: MirInstruction = read
+        match self.definition_for(function, cursor) {
+            some(found) => { setup = found }
+            none => { return }
+        }
+        if setup.op != "iterate_init" ||
+           setup.operands.len() != 1 {
+            return
+        }
+        let iterable: int = setup.operands[0]
+        if iterable < 0 ||
+           iterable >= function.value_types.len() ||
+           canonical_hir_name(
+               function.value_types[iterable].name) !=
+           "List" {
+            return
+        }
+        // the cursor feeds exactly this element read and one advance
+        let cursor_uses: List<MirPosition> =
+            self.uses_for(function, cursor)
+        if cursor_uses.len() != 2 { return }
+        var head: int = -1
+        for use: MirPosition in cursor_uses {
+            if use.instruction.op == "iterate_next" {
+                head = use.block
+            } else if use.instruction.op !=
+                          "iterate_value" {
+                return
+            }
+        }
+        if head < 0 || head >= function.blocks.len() {
+            return
+        }
+        let members: MirValueSet =
+            self.loop_blocks_of(
+                function, predecessors, dominance, head)
+        if !members.contains(block.id) { return }
+        // the iterable must be a fresh list literal or a local that is
+        // provably never aliased, never escaping, and never touched
+        // while the loop runs
+        let source: int =
+            self.local_for_value(function, iterable)
+        if source < 0 {
+            match self.definition_for(
+                      function, iterable) {
+                some(definition) => {
+                    if definition.op != "list" {
+                        return
+                    }
+                }
+                none => { return }
+            }
+        } else {
+            if !self.iterable_stays_stable(
+                   function, members, setup, source) {
+                return
+            }
+        }
+        if !self.binding_stays_local(
+               function, init.local) {
+            return
+        }
+        // commit: the element is a borrow, the binding never drops
+        read.borrow_elided = true
+        read.ownership = "borrowed"
+        function.value_ownership[read.result] =
+            "borrowed"
+        init.consumes[0] = false
+        binding.ownership = "borrowed"
+        for scan: MirBlock in function.blocks {
+            for candidate: MirInstruction in
+                scan.instructions {
+                if !candidate.removed &&
+                   candidate.op == "drop_local" &&
+                   candidate.local == init.local {
+                    candidate.removed = true
+                }
+            }
+        }
+    }
+
+    // A list local may feed borrowed iteration only when every use in
+    // the function is this loop's setup, a List builtin invoked directly
+    // on it outside the loop, or another loop's setup. Any alias, escape,
+    // assignment, move, capture, or use inside the loop rejects it.
+    fn iterable_stays_stable(function: MirFunction,
+                             members: MirValueSet,
+                             setup: MirInstruction,
+                             source: int) -> bool {
+        let local: MirLocal = function.locals[source]
+        if local.captured || local.parameter ||
+           local.scalar_replaced {
+            return false
+        }
+        for scan: MirBlock in function.blocks {
+            for candidate: MirInstruction in
+                scan.instructions {
+                if candidate.removed { continue }
+                if candidate.op == "assign" &&
+                   candidate.local == source {
+                    return false
+                }
+                if candidate.op == "move" &&
+                   candidate.local == source {
+                    return false
+                }
+                for capture: int in
+                    candidate.capture_locals {
+                    if capture == source {
+                        return false
+                    }
+                }
+                if candidate.op != "borrow" ||
+                   candidate.local != source {
+                    continue
+                }
+                if members.contains(scan.id) {
+                    return false
+                }
+                let uses: List<MirPosition> =
+                    self.uses_for(
+                        function, candidate.result)
+                for use: MirPosition in uses {
+                    if !self.stable_list_use(
+                           function, candidate.result,
+                           use.instruction) {
+                        return false
+                    }
+                }
+            }
+        }
+        return true
+    }
+
+    fn stable_list_use(function: MirFunction,
+                       borrowed: int,
+                       user: MirInstruction) -> bool {
+        if user.op == "iterate_init" {
+            return true
+        }
+        if user.op == "retain" {
+            // only as the +1 handed straight to an iterator
+            let uses: List<MirPosition> =
+                self.uses_for(function, user.result)
+            if uses.len() != 1 {
+                return false
+            }
+            return uses[0].instruction.op ==
+                   "iterate_init"
+        }
+        if user.op == "builtin_method" {
+            // invoked directly on the list: the receiver slot only
+            return user.operands.len() != 0 &&
+                   user.operands[0] == borrowed &&
+                   user.resolved.starts_with("List<")
+        }
+        return false
+    }
+
+    // The binding may not be assigned, moved, captured, or returned;
+    // everything else retains its own reference when it stores the
+    // element, so the borrow never outlives the element's slot.
+    fn binding_stays_local(function: MirFunction,
+                           binding: int) -> bool {
+        for scan: MirBlock in function.blocks {
+            for candidate: MirInstruction in
+                scan.instructions {
+                if candidate.removed { continue }
+                if candidate.op == "assign" &&
+                   candidate.local == binding {
+                    return false
+                }
+                if candidate.op == "move" &&
+                   candidate.local == binding {
+                    return false
+                }
+                for capture: int in
+                    candidate.capture_locals {
+                    if capture == binding {
+                        return false
+                    }
+                }
+                if candidate.op != "borrow" ||
+                   candidate.local != binding {
+                    continue
+                }
+                let uses: List<MirPosition> =
+                    self.uses_for(
+                        function, candidate.result)
+                for use: MirPosition in uses {
+                    if use.instruction.op ==
+                       "$terminator" {
+                        return false
+                    }
+                }
+            }
+        }
+        return true
+    }
+
     fn canonical_value(function: MirFunction,
                        written: int) -> int {
         var value: int = written
@@ -3431,6 +3773,7 @@ class MirLowerer {
         function: MirFunction,
         instruction: MirInstruction,
         state: MirLocalState) {
+        if instruction.removed { return }
         let local: int = instruction.local
         if local < 0 ||
            local >= function.locals.len() ||
@@ -3577,6 +3920,7 @@ class MirLowerer {
                 function.blocks[block_index]
             for instruction: MirInstruction in
                 block.instructions {
+                if instruction.removed { continue }
                 let local: int = instruction.local
                 if local >= 0 &&
                    local < function.locals.len() &&
@@ -3782,7 +4126,8 @@ class MirLowerer {
                     "MIR retain must turn one borrowed value into owned")
             }
         }
-        if instruction.op == "drop_local" {
+        if instruction.op == "drop_local" &&
+           !instruction.removed {
             if instruction.local < 0 ||
                instruction.local >= function.locals.len() ||
                function.locals[
@@ -4111,6 +4456,7 @@ class MirLowerer {
         for function: MirFunction in self.mir.functions {
             self.mark_reachable(function)
             self.mark_last_uses(function)
+            self.analyze_borrowed_iteration(function)
             self.analyze_ownership_transfers(function)
             self.plan_value_lifetimes(function)
             self.verify_function(function)
@@ -4299,6 +4645,9 @@ fn render_mir(program: MirProgram) -> string {
                    instruction.local >= 0 {
                     detail =
                         "{detail} transfer=l{instruction.local}"
+                }
+                if instruction.borrow_elided {
+                    detail = "{detail} borrow-elided"
                 }
                 if instruction.scalar_materialize {
                     detail =
