@@ -119,6 +119,60 @@ cat > "$tmp/compat_names.expected" <<'EOF'
 EOF
 both_run "$tmp/compat_names.b" "$tmp/compat_names.expected"
 
+echo "checking non-printable interpolation pieces refuse with the same words"
+# A synchronous rule the two compilers used to disagree on: stage 0
+# refused a class-typed piece at check time while the self-hosted checker
+# let it through (its interpreter printed a placeholder, its emitter
+# refused late, differently). Both refuse identically now.
+cat > "$tmp/rej_interp_error.b" <<'EOF'
+import std.io
+
+fn failing() -> Result<int> { return err("bad luck") }
+
+fn main() {
+    match failing() {
+        ok(v) => { io.println("ok {v}") }
+        err(problem) => { io.println("err {problem}") }
+    }
+}
+EOF
+both_reject_same "$tmp/rej_interp_error.b" \
+    "can't put a Error inside a string yet — give it a string form first"
+
+cat > "$tmp/rej_interp_class.b" <<'EOF'
+import std.io
+
+class Wrench {
+    pub size: int = 12
+}
+
+fn main() {
+    let tool: Wrench = new Wrench()
+    io.println("tool {tool}")
+}
+EOF
+both_reject_same "$tmp/rej_interp_class.b" \
+    "can't put a Wrench inside a string yet — give it a string form first"
+
+cat > "$tmp/ok_interp_forms.b" <<'EOF'
+import std.io
+
+fn failing() -> Result<int> { return err("bad luck") }
+
+fn main() {
+    // the string form, an enum with printable payloads, and a list all
+    // stay printable
+    match failing() {
+        ok(v) => { io.println("ok {v}") }
+        err(problem) => { io.println("err {problem.msg}") }
+    }
+    let missing: Option<int> = none
+    let xs: List<int> = [1, 2]
+    io.println("{missing} {xs}")
+}
+EOF
+both_accept "$tmp/ok_interp_forms.b"
+
 echo "checking user-defined Task and Future stay legal"
 cat > "$tmp/compat_task.b" <<'EOF'
 import std.io

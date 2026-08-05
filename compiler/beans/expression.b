@@ -3275,11 +3275,89 @@ class ExpressionChecker {
             }
             if lexer.errors.len() == 0 &&
                parser.errors.len() == 0 {
-                lowered.push(self.check_expression(
-                    expression, no_hir_type()))
+                let piece: HirNode = self.check_expression(
+                    expression, no_hir_type())
+                // Stage 0 refuses non-printable pieces at check time;
+                // without this gate the tree interpreter printed a
+                // placeholder and the LLVM emitter refused late, so the
+                // two compilers disagreed on the same program.
+                if !self.printable_in_string(piece.type) {
+                    self.fail(
+                        node,
+                        "can't put a {render_hir_type(piece.type)} inside a string yet — give it a string form first")
+                }
+                lowered.push(piece)
             }
         }
         return move lowered
+    }
+
+    // Mirrors stage 0's printable walk: lists print as [a, b], enums as
+    // variant(payload...) — printable when every piece is. Class payloads
+    // stay out: their display would need the dynamic class name, which
+    // the native backend does not carry. That excludes Result.
+    fn printable_in_string(type: HirType) -> bool {
+        var seen: Map<string, bool> = {}
+        return self.printable_in_string_rec(type, inout seen)
+    }
+
+    fn printable_in_string_rec(type: HirType,
+                               inout seen: Map<string, bool>) -> bool {
+        let name: string = canonical_hir_name(type.name)
+        if name == "poison" { return true }
+        if hir_is_numeric(type) || name == "bool" ||
+           name == "string" {
+            return true
+        }
+        if name == "List" && type.args.len() == 1 {
+            return self.printable_in_string_rec(
+                type.args[0], inout seen)
+        }
+        // The builtin enums live outside the declaration table; their
+        // shapes mirror stage 0's registrations. Result's err payload is
+        // Error — a class — unless spelled otherwise, which is what
+        // keeps Result out of strings.
+        if name == "Option" && type.args.len() == 1 {
+            return self.printable_in_string_rec(
+                type.args[0], inout seen)
+        }
+        if name == "Result" {
+            if type.args.len() >= 2 {
+                if !self.printable_in_string_rec(
+                    type.args[0], inout seen) {
+                    return false
+                }
+                return self.printable_in_string_rec(
+                    type.args[1], inout seen)
+            }
+            return false
+        }
+        if name == "MemoryOrder" || name == "RoundingMode" {
+            return true
+        }
+        match self.declaration_for(type) {
+            some(declaration) => {
+                if declaration.kind != "enum" { return false }
+                let key: string = render_hir_type(type)
+                // self-recursive enums hold finite values
+                if seen.contains(key) { return true }
+                seen[key] = true
+                for variant: HirField in declaration.variants {
+                    for payload: HirType in variant.type.args {
+                        let item: HirType =
+                            self.substitute_owner_type(
+                                payload, declaration, type)
+                        if !self.printable_in_string_rec(
+                            item, inout seen) {
+                            return false
+                        }
+                    }
+                }
+                return true
+            }
+            none => {}
+        }
+        return false
     }
 
     fn check_literal(node: AstNode,
