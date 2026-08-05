@@ -402,7 +402,9 @@ fn cli_ast_statement(node: AstNode, depth: int) -> string {
                     " = {cli_ast_expression(child, depth)}"
             }
         }
-        return "{indent}{node.kind} {node.value}: {type}{value}\n"
+        var marker: string = ""
+        if node.note == "async" { marker = "async " }
+        return "{indent}{marker}{node.kind} {node.value}: {type}{value}\n"
     }
     if node.kind == "assign" {
         if node.children.len() < 2 {

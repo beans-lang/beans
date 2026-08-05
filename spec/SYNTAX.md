@@ -1193,13 +1193,25 @@ async fn main() {
   `Future`.
 - **Every async call is waited on, exactly where it happens.** A call to an
   async function is legal in two positions only: directly under `await`, or
-  as the initializer of an `async let` (structured concurrency, next
-  version). Anywhere else — bare statement, argument, receiver, stored into
-  a variable — it is refused: *async call must be awaited or started with
-  'async let'*. A synchronous function cannot call an async one at all
-  (*'f' is async and can only be called from an async function*), and an
-  async function cannot be stored as a `fn` value. There is no run/block_on
-  escape hatch back into sync code.
+  as the initializer of an `async let`. Anywhere else — bare statement,
+  argument, receiver, stored into a variable — it is refused: *async call
+  must be awaited or started with 'async let'*. A synchronous function
+  cannot call an async one at all (*'f' is async and can only be called
+  from an async function*), and an async function cannot be stored as a
+  `fn` value. There is no run/block_on escape hatch back into sync code.
+- **`async let` starts a structured child.** `async let x: R = f(args)` is
+  legal only inside an async body; the initializer must be a direct async
+  call, the arguments evaluate right there in the parent, and the child
+  belongs to the enclosing lexical scope. The written type is the eventual
+  result: `await x` produces `R`, exactly once — a plain read is refused
+  (*async let binding 'x' must be awaited*), so the hidden handle can
+  never escape, and a second await is refused (*was already awaited*).
+  Leaving the scope without awaiting — early `return`, `?`, `break`,
+  `continue`, or falling off the end — cancels the unfinished child
+  before the parent's own result lands: its armed `defer`s run newest
+  first, its live values drop exactly once, and children it started
+  cancel in cascade. The parent never finishes while a child is still
+  running or cleaning.
 - **`await` takes a direct call and produces the declared result.** The
   operand must be a call to an async function: `await f(x)` has type `R`,
   awaiting anything else is refused (*await needs a direct call to an async
@@ -1239,9 +1251,9 @@ async fn main() {
   thread. Long CPU work therefore blocks every other task — put it on
   `std.thread`. Cancellation is cooperative: it takes effect at suspension
   points, never mid-statement.
-- **Not yet in this first version:** `async let` structured concurrency,
-  readiness-based I/O awaits, dynamic task groups, detached tasks, async
-  closures. They layer on this model without changing it.
+- **Not yet in this first version:** readiness-based I/O awaits, dynamic
+  task groups, detached tasks, async closures. They layer on this model
+  without changing it.
 
 ## Targets and the build (v0.8, implemented)
 

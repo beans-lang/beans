@@ -94,12 +94,16 @@ class AsyncSlot {
     // A masking entry: the name is re-bound as a real borrow (loop
     // binding), so substitution must leave it alone.
     masked: bool
+    // An async let child: completion clears it before the result lands,
+    // so the parent never finishes while a child still holds anything.
+    is_child: bool
 
     fn init(name: string, slot: string, type: HirType) {
         self.name = name
         self.slot = slot
         self.type = type
         self.masked = false
+        self.is_child = false
     }
 }
 
@@ -643,6 +647,20 @@ class AsyncExpander {
     }
 
     fn decompose_await(node: AstNode) -> AstNode {
+        // Awaiting an async let binding: the child's task is already in
+        // the binding's slot, so the poll/take tail runs on it directly.
+        // The take empties the slot, which is what makes the scope-exit
+        // clear a no-op for an awaited child.
+        if node.children[0].kind == "name" {
+            let child_value: HirType = self.checked_type(node)
+            match self.find_slot(node.children[0].value) {
+                some(child) => {
+                    return self.drain_task_slot(
+                        child.slot, child_value, node)
+                }
+                none => {}
+            }
+        }
         let operand: AstNode = self.decompose(node.children[0])
         // The operand is a checked async call, so its type is the result
         // R (asyncness is an effect); the maker it becomes after the
@@ -654,6 +672,15 @@ class AsyncExpander {
         self.slot_decls.push(
             self.slot_declaration(wait, task_type, node))
         self.emit_slot_push(wait, task_type, operand, node)
+        return self.drain_task_slot(wait, value_type, node)
+    }
+
+    // The shared await tail: suspend until the task in `slot` reports
+    // ready, then move it out and take its value.
+    fn drain_task_slot(wait: string, value_type: HirType,
+                       node: AstNode) -> AstNode {
+        let task_type: HirType =
+            hir_named("async$rt.Task", [value_type])
         let poll_state: int = self.new_state(node)
         self.emit_transition(poll_state, node)
         self.enter_state(poll_state)
@@ -881,6 +908,12 @@ class AsyncExpander {
     }
 
     fn statement_needs_rewrite(node: AstNode) -> bool {
+        // an async let always lowers: the child task lives in a slot even
+        // when nothing after it suspends
+        if (node.kind == "let" || node.kind == "var") &&
+           node.note == "async" {
+            return true
+        }
         if self.contains_completion(node) { return true }
         if self.loop_stack.len() != 0 &&
            self.contains_loop_exit(node) {
@@ -952,6 +985,27 @@ class AsyncExpander {
             } else {
                 value = some(child)
             }
+        }
+        if statement.note == "async" {
+            // async let: the child task starts here and lives in the
+            // binding's slot. The one await drains it; a scope exit with
+            // the task still in the slot cancels it (Task.deinit runs the
+            // armed cleanup, children cascade).
+            let task_type: HirType = hir_named(
+                "async$rt.Task", [declared])
+            match value {
+                some(initializer) => {
+                    let rewritten: AstNode =
+                        self.decompose(initializer)
+                    let slot: AsyncSlot = self.declare_slot(
+                        statement.value, task_type, statement)
+                    slot.is_child = true
+                    self.emit_slot_push(
+                        slot.slot, task_type, rewritten, statement)
+                }
+                none => {}
+            }
+            return
         }
         if !self.local_needs_slot(statement) {
             match value {
@@ -1456,6 +1510,24 @@ class AsyncExpander {
         for flushed: AstNode in flush.children {
             self.emit(flushed)
         }
+        // Unfinished children cancel before the result lands: clearing a
+        // child slot drops its task, and Task.deinit runs the cleanup.
+        var scope_index: int = self.scopes.len() - 1
+        for scope_index >= 0 {
+            for name: string in
+                self.scopes[scope_index].bindings.keys() {
+                match self.scopes[scope_index].bindings.get(name) {
+                    some(slot) => {
+                        if slot.is_child {
+                            self.emit(self.slot_clear(
+                                slot.slot, anchor))
+                        }
+                    }
+                    none => {}
+                }
+            }
+            scope_index -= 1
+        }
         match value {
             some(result_value) => {
                 if self.body_is_unit {
@@ -1480,7 +1552,10 @@ class AsyncExpander {
         for index >= 0 {
             let statement: AstNode = block.children[index]
             if (statement.kind == "let" ||
-                statement.kind == "var") && seen_after {
+                statement.kind == "var") && seen_after &&
+               statement.note != "async" {
+                // an async let is always slotted by its own lowering; the
+                // marker must survive for rewrite_local to see it
                 statement.note = "async_hoist"
             }
             if statement.kind == "if" {

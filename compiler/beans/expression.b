@@ -3350,7 +3350,17 @@ class ExpressionChecker {
                             "stored callback cannot capture '{node.value}' of non-Sync type {render_hir_type(binding.type)}")
                     }
                 }
-                if binding.move_state == "moved" {
+                if binding.move_state == "async_pending" {
+                    // the hidden handle never escapes: awaiting the
+                    // binding is its only read
+                    self.fail(
+                        node,
+                        "async let binding '{node.value}' must be awaited")
+                } else if binding.move_state == "async_done" {
+                    self.fail(
+                        node,
+                        "async let binding '{node.value}' was already awaited")
+                } else if binding.move_state == "moved" {
                     self.fail(
                         node,
                         "use of moved value '{node.value}'")
@@ -6788,6 +6798,34 @@ class ExpressionChecker {
                 node,
                 "await cannot suspend while a loop or match borrows a move-only value — copy or move what you need first")
         }
+        // Awaiting an async let binding produces its declared result,
+        // exactly once; the state flip is what rejects a second await.
+        if node.children[0].kind == "name" {
+            match self.find_local(node.children[0].value) {
+                some(binding) => {
+                    if binding.move_state == "async_pending" ||
+                       binding.move_state == "async_done" {
+                        if binding.move_state == "async_done" {
+                            self.fail(
+                                node,
+                                "async let binding '{node.children[0].value}' was already awaited")
+                        }
+                        binding.move_state = "async_done"
+                        let operand: HirNode = self.make_node(
+                            node.children[0], "local",
+                            node.children[0].value, binding.type)
+                        operand.binding_id = binding.id
+                        self.expect_type(
+                            node, binding.type, expected)
+                        let result: HirNode = self.make_node(
+                            node, "await", "child", binding.type)
+                        result.children.push(operand)
+                        return result
+                    }
+                }
+                none => {}
+            }
+        }
         // The operand must be a direct call to an async function; the
         // call's own checking consumes the allowance, so if it is still
         // set afterwards nothing async was called.
@@ -7604,10 +7642,35 @@ class ExpressionChecker {
         var actual: HirType = declared
         var result: HirNode =
             self.make_node(node, node.kind, node.value, actual)
+        // `async let` starts a structured child: the initializer must be a
+        // direct async call, and the written type is the eventual result.
+        let starts_child: bool = node.note == "async"
+        if starts_child && !self.current.is_async {
+            self.fail(
+                node,
+                "'async let' is only valid inside an async function")
+        }
         match initializer {
             some(expression) => {
+                if starts_child {
+                    if expression.kind != "call" {
+                        self.fail(
+                            node,
+                            "'async let' needs a direct call to an async function")
+                    } else {
+                        expression.await_allowed = true
+                    }
+                }
                 let value: HirNode =
                     self.check_expression(expression, declared)
+                if starts_child && expression.await_allowed {
+                    expression.await_allowed = false
+                    if value.type.name != "poison" {
+                        self.fail(
+                            node,
+                            "'async let' needs a call to an async function — this call is synchronous")
+                    }
+                }
                 result.children.push(value)
                 if declared.name == "" { actual = value.type }
                 self.require_move_source(
@@ -7615,7 +7678,11 @@ class ExpressionChecker {
                     "binding '{node.value}'")
             }
             none => {
-                if declared.name == "" {
+                if starts_child {
+                    self.fail(
+                        node,
+                        "'async let' needs a call to an async function as its initializer")
+                } else if declared.name == "" {
                     self.fail(
                         node,
                         "local '{node.value}' needs a type or initializer")
@@ -7626,6 +7693,14 @@ class ExpressionChecker {
         result.type = actual
         result.binding_id = self.declare(
             node, actual, node.kind == "var", false, false)
+        if starts_child {
+            match self.find_local(node.value) {
+                some(binding) => {
+                    binding.move_state = "async_pending"
+                }
+                none => {}
+            }
+        }
         return result
     }
 

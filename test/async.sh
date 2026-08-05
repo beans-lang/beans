@@ -452,6 +452,50 @@ EOF
 both_reject_same "$tmp/rej_borrowed_loop.b" \
     "await cannot suspend while a loop or match borrows a move-only value"
 
+echo "checking the async let rules refuse with the same words"
+cat > "$tmp/rej_al_sync.b" <<'EOF'
+async fn work() -> int { return 1 }
+fn plain() -> int { return 3 }
+
+async fn main() {
+    async let x: int = work()
+    let v: int = await x
+    async let y: int = work()
+    let bad: int = y
+    async let z: int = plain()
+    let w: int = await x
+}
+EOF
+both_reject_same "$tmp/rej_al_sync.b" \
+    "async let binding 'y' must be awaited"
+grep -q "'async let' needs a call to an async function — this call is synchronous" "$tmp/a0"
+grep -q "async let binding 'x' was already awaited" "$tmp/a0"
+
+cat > "$tmp/rej_al_outside.b" <<'EOF'
+async fn work() -> int { return 1 }
+
+async fn main() {
+    let ok: int = await work()
+}
+
+fn helper() {
+    async let x: int = work()
+}
+EOF
+# outside an async body the pair never parses — `async` is an identifier
+both_reject_same "$tmp/rej_al_outside.b" "expected end of statement"
+
+cat > "$tmp/rej_al_noncall.b" <<'EOF'
+async fn work() -> int { return 1 }
+
+async fn main() {
+    async let x: int = 42
+    let v: int = await x
+}
+EOF
+both_reject_same "$tmp/rej_al_noncall.b" \
+    "'async let' needs a direct call to an async function"
+
 echo "checking async fn main keeps the entry shape rules"
 cat > "$tmp/rej_main_shape.b" <<'EOF'
 async fn main() -> int { return 1 }
@@ -809,6 +853,69 @@ cat > "$tmp/sem_dispatch.expected" <<'BEANS'
 kept
 BEANS
 run_matrix "$tmp/sem_dispatch.b" "$tmp/sem_dispatch.expected"
+
+echo "checking async let children start, finish, and cancel structurally"
+cat > "$tmp/sem_children.b" <<'BEANS'
+import std.io
+
+unique class Crate {
+    pub label: string
+
+    pub fn init(label: string) {
+        self.label = label
+    }
+
+    fn deinit() {
+        io.println("dropped {self.label}")
+    }
+}
+
+async fn work(a: int) -> int {
+    io.println("child {a}")
+    return a * 2
+}
+
+async fn hold(move c: Crate) -> int {
+    io.println("holding {c.label}")
+    return 1
+}
+
+async fn scoped(early: bool) -> int {
+    defer io.println("scoped defer")
+    async let a: int = hold(new Crate("kept"))
+    if early { return 0 }
+    return await a
+}
+
+async fn main() {
+    async let x: int = work(5)
+    async let y: int = work(7)
+    io.println("started")
+    let vx: int = await x
+    let vy: int = await y
+    io.println("got {vx} {vy}")
+    // an early return cancels the unfinished child before the parent's
+    // result lands: the crate drops before "early" prints
+    let quick: int = await scoped(true)
+    io.println("early {quick}")
+    let full: int = await scoped(false)
+    io.println("full {full}")
+}
+BEANS
+cat > "$tmp/sem_children.expected" <<'BEANS'
+started
+child 5
+child 7
+got 10 14
+scoped defer
+dropped kept
+early 0
+holding kept
+scoped defer
+dropped kept
+full 1
+BEANS
+run_matrix "$tmp/sem_children.b" "$tmp/sem_children.expected"
 
 echo "checking a panic inside an async body keeps its source position"
 cat > "$tmp/sem_panic.b" <<'BEANS'

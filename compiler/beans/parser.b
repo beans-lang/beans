@@ -739,6 +739,18 @@ class Parser {
     }
 
     fn parse_statement() -> AstNode {
+        // Contextual: inside an async body the exact pair `async let`
+        // starts a structured child. `async` anywhere else in a statement
+        // stays an ordinary identifier.
+        if self.in_async && self.check("ident") &&
+           self.current().text == "async" &&
+           self.pos + 1 < self.tokens.len() &&
+           self.tokens[self.pos + 1].kind == "let" {
+            self.advance()
+            let local: AstNode = self.parse_local()
+            local.note = "async"
+            return local
+        }
         if self.check("let") || self.check("var") {
             return self.parse_local()
         }
