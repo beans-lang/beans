@@ -3028,6 +3028,10 @@ class ExpressionChecker {
                 return some(new BuiltinSignature(
                     [integer], integer))
             }
+            if name == "park_bind" {
+                return some(new BuiltinSignature(
+                    [integer, integer], integer))
+            }
             if name == "park_forget" {
                 return some(new BuiltinSignature(
                     [integer], integer))
@@ -3039,6 +3043,10 @@ class ExpressionChecker {
             if name == "park_dead" {
                 return some(new BuiltinSignature(
                     [integer], integer))
+            }
+            if name == "park_shutdown" {
+                return some(new BuiltinSignature(
+                    [], integer))
             }
         }
         return none

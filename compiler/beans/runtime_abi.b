@@ -872,6 +872,11 @@ pub fn runtime_builtin_fn(key: string) -> Option<RuntimeBuiltin> {
             ["i64"],
             "i64", "beans_reactor_note_park", false))
     }
+    if key == "std.ready.park_bind" {
+        return some(new RuntimeBuiltin(
+            ["i64", "i64"],
+            "i64", "beans_reactor_bind_park", false))
+    }
     if key == "std.ready.park_forget" {
         return some(new RuntimeBuiltin(
             ["i64"],
@@ -886,6 +891,11 @@ pub fn runtime_builtin_fn(key: string) -> Option<RuntimeBuiltin> {
         return some(new RuntimeBuiltin(
             ["i64"],
             "i64", "beans_reactor_park_dead", false))
+    }
+    if key == "std.ready.park_shutdown" {
+        return some(new RuntimeBuiltin(
+            [],
+            "i64", "beans_reactor_shutdown_parks", false))
     }
     if key == "std.time.monotonic_nanos" {
         return some(new RuntimeBuiltin(

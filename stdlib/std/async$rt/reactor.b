@@ -16,7 +16,8 @@ import std.ready
 // is closed, and the Windows poller registry hands out slot 0 first — so
 // only the shifted zero can mean "not open yet". Every backend zero-fills
 // fresh task slots, which is exactly that state. The runtime also keeps
-// the parked-descriptor table (ready.park_note / park_forget / park_stale):
+// the parked-descriptor registry (ready.park_note / park_bind /
+// park_forget / park_stale):
 // poller registration is keyed by descriptor, so a second await parked on
 // the same descriptor would silently cancel the first one's interest — the
 // table refuses that up front — and it lets the driver notice a descriptor
@@ -114,6 +115,12 @@ pub fn reactor_park(fd: int, write: bool) -> Task<bool> {
         fn() -> int {
             if token_cell.len() == 0 {
                 let noted: int = ready.park_note(fd)
+                if noted == 0 - 2 {
+                    // park_note validates without opening a descriptor, so an
+                    // invalid number cannot be reused by the reactor itself
+                    fired_cell.push(false)
+                    return 1
+                }
                 if noted == 0 {
                     panic("async runtime: two awaits are parked on one descriptor — await the first before starting the second")
                 }
@@ -121,6 +128,14 @@ pub fn reactor_park(fd: int, write: bool) -> Task<bool> {
                     panic("async runtime: too many awaits are parked at once")
                 }
                 let poller: int = reactor_poller()
+                if ready.park_bind(noted, ready.task_slot(2)) != 1 {
+                    // A close raced the small interval between validation and
+                    // lazy reactor creation. The token, not the descriptor,
+                    // says this await is already dead.
+                    let forgotten: int = ready.park_forget(noted)
+                    fired_cell.push(false)
+                    return 1
+                }
                 match ready.add(poller, fd, fd, !write, write, true) {
                     ok(added) => {}
                     err(adding) => {
@@ -192,6 +207,7 @@ pub fn driver_wait() {
 /// programs in one lifetime; without this the next run would inherit a
 /// dead poller and the closed descriptors would be a leak.
 pub fn driver_shutdown() {
+    let parks: int = ready.park_shutdown()
     if ready.task_slot(0) != 0 {
         let closed: Result<bool> = ready.close(
             ready.task_slot(0) - 1, ready.task_slot(1),
