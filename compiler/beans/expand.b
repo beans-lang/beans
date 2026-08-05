@@ -182,6 +182,11 @@ class AsyncExpander {
     // clear, and result$ registers here but is skipped: the take reads
     // it after the final poll returns.
     slot_names: List<string>
+    // Whether the loader brought in the readiness half of the async
+    // runtime (reactor.b — present exactly when std.net is loaded).
+    // Decides which driver main's drive loop calls: the blocking
+    // reactor driver, or the poller-free stall that reports deadlock.
+    has_reactor: bool
 
     fn init(signature: SignatureChecker) {
         self.signature = signature
@@ -199,6 +204,12 @@ class AsyncExpander {
         self.body_is_unit = false
         self.cleanup_state = 0
         self.slot_names = []
+        self.has_reactor = false
+        for function: HirFunction in self.program.functions {
+            if function.qualified == "async$rt.driver_wait" {
+                self.has_reactor = true
+            }
+        }
     }
 
     fn fail(node: AstNode, message: string) {
@@ -2137,25 +2148,41 @@ class AsyncExpander {
             let leave: AstNode = self.node("if", "", anchor)
             leave.add(done)
             let leave_block: AstNode = self.node("block", "", anchor)
-            // async main is done: close the reactor and reset the task
-            // slots before returning, so one process can run again.
-            let shutdown_call: AstNode = self.node("call", "", anchor)
-            let shutdown_callee: AstNode = self.node(
-                "name", "driver_shutdown", anchor)
-            shutdown_callee.resolved = "async$rt.driver_shutdown"
-            shutdown_call.add(shutdown_callee)
-            leave_block.add(self.statement_of(shutdown_call))
+            if self.has_reactor {
+                // async main is done: close the reactor and reset the
+                // task slots before returning, so one process can run
+                // again.
+                let shutdown_call: AstNode = self.node("call", "", anchor)
+                let shutdown_callee: AstNode = self.node(
+                    "name", "driver_shutdown", anchor)
+                shutdown_callee.resolved = "async$rt.driver_shutdown"
+                shutdown_call.add(shutdown_callee)
+                leave_block.add(self.statement_of(shutdown_call))
+            }
             leave_block.add(self.node("return", "", anchor))
             leave.add(leave_block)
             drive_body.add(leave)
-            // Pending means something is parked on readiness: block in
-            // the reactor until it can move. Never a busy spin.
-            let wait_call: AstNode = self.node("call", "", anchor)
-            let wait_callee: AstNode = self.node(
-                "name", "driver_wait", anchor)
-            wait_callee.resolved = "async$rt.driver_wait"
-            wait_call.add(wait_callee)
-            drive_body.add(self.statement_of(wait_call))
+            if self.has_reactor {
+                // Pending means something is parked on readiness: block
+                // in the reactor until it can move. Never a busy spin.
+                let wait_call: AstNode = self.node("call", "", anchor)
+                let wait_callee: AstNode = self.node(
+                    "name", "driver_wait", anchor)
+                wait_callee.resolved = "async$rt.driver_wait"
+                wait_call.add(wait_callee)
+                drive_body.add(self.statement_of(wait_call))
+            } else {
+                // No readiness source exists in this program, so pending
+                // after a full poll cycle can never resolve: report the
+                // deadlock without ever naming a poller symbol — this is
+                // what lets pure async link under every runtime profile.
+                let stall_call: AstNode = self.node("call", "", anchor)
+                let stall_callee: AstNode = self.node(
+                    "name", "driver_stall", anchor)
+                stall_callee.resolved = "async$rt.driver_stall"
+                stall_call.add(stall_callee)
+                drive_body.add(self.statement_of(stall_call))
+            }
             drive.add(drive_body)
             maker.add(drive)
         } else {
