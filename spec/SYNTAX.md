@@ -1275,7 +1275,11 @@ async fn main() {
   points, never mid-statement.
 - **Readiness awaits.** `await net.await_readable(handle)` (and
   `await_writable`) suspends until the descriptor is ready — a socket's
-  `.handle()`, or any pollable descriptor. While one child is parked,
+  `.handle()`, or any pollable descriptor on POSIX (Windows readiness is
+  socket-handle only). Before the hidden reactor opens, POSIX validates with
+  allocation-free `fcntl(F_GETFD)` and Windows with `getsockopt(SO_TYPE)`.
+  An invalid watched number therefore cannot be reused for the reactor's own
+  poller or wake channel. While one child is parked,
   its runnable siblings keep running through the scan above; when
   nothing can move and something is parked, the hidden driver blocks in
   the platform poller — never a busy spin — and the OS wakes it. When
@@ -1288,13 +1292,18 @@ async fn main() {
   time are refused with a panic — the poller keys registration by
   descriptor, so the second would silently cancel the first; await the
   first before starting the second (sequential re-parks on one
-  descriptor are fine). At most 64 awaits can be parked at once. When
+  descriptor are fine). At most 64 awaits can be parked per executor. When
   `async fn main` finishes, the hidden poller closes and its state
   resets, so a full run leaves no descriptor behind.
 - **Closing a watched descriptor.** Every close that goes through the
   runtime — a stream's `close()`, a drop of the owning handle, files,
-  process streams, signal sources — marks any await parked on that
-  descriptor, on every platform including Windows. The marked await
+  mappings, process streams, signal sources — marks every await parked on
+  that descriptor, even when the close runs on another thread, on every
+  platform including Windows. Park entries live in a locked shared registry,
+  carry a stable token, and point at the owning reactor only through its
+  generation-checked wake handle. The close marks under the registry lock,
+  then wakes after unlocking; reactor shutdown makes any late copied handle
+  stale rather than letting it address a reused descriptor. The marked await
   finishes `false` on its next turn without touching the descriptor
   number again, so the number is immediately safe to reuse: a fresh
   await parked on the reused number watches only the new resource, and
@@ -2497,7 +2506,8 @@ library function, not a keyword. `async` and `await` are contextual too:
   number is reused the instant it closes; kqueue's separate read and write filters are
   merged so the event count matches epoll's; and a cross-thread wake goes through a
   slot-plus-generation `int` handle, so a wake after close is reported instead of writing
-  into whatever inherited the descriptor
+  into whatever inherited the descriptor; async park tokens live in a locked shared
+  registry, so a worker-thread close marks and wakes the executor that owns the park
 - Live children v0.8 (implemented): `Command.start()` gives a `Child` whose streams stay
   open; a dropped `Child` is asked to stop, killed if it refuses, and always reaped, so
   neither an orphan nor a zombie can escape; "still running" is `none` rather than an

@@ -765,11 +765,27 @@ run_merged() { # <compiler> <source>
     return "$status"
 }
 
-run_matrix() { # <source> <expected> [expected-exit]
-    local src="$1" expected="$2" wanted_exit="${3:-0}"
+run_merged_layout() { # <layout> <compiler> <source>
+    case "$1" in
+        low) run_merged "$2" "$3" 3<&- 4<&- 5<&- ;;
+        stdin) run_merged "$2" "$3" 0<&- 3<&- 4<&- 5<&- ;;
+        *) run_merged "$2" "$3" ;;
+    esac
+}
+
+run_native_layout() { # <layout> <binary>
+    case "$1" in
+        low) maybe_deadline "$2" 3<&- 4<&- 5<&- ;;
+        stdin) maybe_deadline "$2" 0<&- 3<&- 4<&- 5<&- ;;
+        *) maybe_deadline "$2" ;;
+    esac
+}
+
+run_matrix() { # <source> <expected> [expected-exit] [fd-layout]
+    local src="$1" expected="$2" wanted_exit="${3:-0}" layout="${4:-}"
     set +e
-    run_merged "$BEANSC0" "$src" >"$tmp/m0"; local r0=$?
-    run_merged "$BEANSC"  "$src" >"$tmp/m1"; local r1=$?
+    run_merged_layout "$layout" "$BEANSC0" "$src" >"$tmp/m0"; local r0=$?
+    run_merged_layout "$layout" "$BEANSC"  "$src" >"$tmp/m1"; local r1=$?
     set -e
     if [ "$r0" -ne "$wanted_exit" ] || [ "$r1" -ne "$wanted_exit" ]; then
         echo "async: $src exits (stage0=$r0 selfhost=$r1, wanted $wanted_exit)" >&2
@@ -782,7 +798,7 @@ run_matrix() { # <source> <expected> [expected-exit]
     local bin="$native_dir/$(basename "$src" .b)"
     "$BEANSC" build "$src" -o "$bin" >/dev/null
     set +e
-    "$bin" 2>&1 >"$tmp/mn.merged" | cat >>"$tmp/mn.merged"; local rn=${PIPESTATUS[0]}
+    run_native_layout "$layout" "$bin" 2>&1 >"$tmp/mn.merged" | cat >>"$tmp/mn.merged"; local rn=${PIPESTATUS[0]}
     mv "$tmp/mn.merged" "$tmp/mn"
     set -e
     if [ "$rn" -ne "$wanted_exit" ]; then
@@ -795,7 +811,7 @@ run_matrix() { # <source> <expected> [expected-exit]
     local bin0="$native_dir/$(basename "$src" .b).s0"
     "$BEANSC0" build "$src" -o "$bin0" >/dev/null
     set +e
-    "$bin0" 2>&1 >"$tmp/mz.merged" | cat >>"$tmp/mz.merged"; local rz=${PIPESTATUS[0]}
+    run_native_layout "$layout" "$bin0" 2>&1 >"$tmp/mz.merged" | cat >>"$tmp/mz.merged"; local rz=${PIPESTATUS[0]}
     mv "$tmp/mz.merged" "$tmp/mz"
     set -e
     if [ "$rz" -ne "$wanted_exit" ]; then
@@ -1480,6 +1496,48 @@ cat > "$tmp/sem_hard_invalid.expected" <<'BEANS'
 invalid false
 BEANS
 DEADLINE=30 run_matrix "$tmp/sem_hard_invalid.b" "$tmp/sem_hard_invalid.expected"
+
+echo "checking invalid watched numbers cannot become reactor internals"
+# With 0..2 open and 3..5 forced closed, a lazy POSIX reactor allocates its
+# poller, wake-read, and wake-write descriptors as 3, 4, and 5. Each await is
+# a separate process so the watched invalid number can collide with exactly
+# one internal descriptor. Closing stdin gives the original fd-0 regression.
+cat > "$tmp/invalid_collision.expected" <<'BEANS'
+invalid false
+BEANS
+for watched in 3 4 5; do
+    for interest in readable writable; do
+        cat > "$tmp/invalid_${interest}_${watched}.b" <<BEANS
+import std.io
+import std.net
+
+async fn main() {
+    let woke: bool = await net.await_${interest}($watched)
+    io.println("invalid {woke}")
+}
+BEANS
+        DEADLINE=10 run_matrix "$tmp/invalid_${interest}_${watched}.b" \
+            "$tmp/invalid_collision.expected" 0 low
+    done
+done
+for interest in readable writable; do
+    cat > "$tmp/invalid_${interest}_0.b" <<BEANS
+import std.io
+import std.net
+import std.sock
+
+async fn main() {
+    // A compiler interpreter may have reused its inherited closed stdin
+    // while loading this source. Close that host-side alias too so fd 0 is
+    // invalid at the exact point every backend starts the await.
+    let normalized: Result<bool> = sock.close(0)
+    let woke: bool = await net.await_${interest}(0)
+    io.println("invalid {woke}")
+}
+BEANS
+    DEADLINE=10 run_matrix "$tmp/invalid_${interest}_0.b" \
+        "$tmp/invalid_collision.expected" 0 stdin
+done
 
 echo "checking a descriptor closed under a parked await finishes false"
 cat > "$tmp/sem_hard_closed.b" <<'BEANS'
@@ -2320,11 +2378,12 @@ grep -q "needs sockets" "$tmp/pn0"
 diff -u "$tmp/pn0" "$tmp/pn1"
 
 echo "checking the reactor works when the poller handle is zero"
-# stdin is closed for every run, so descriptor 0 is the first free
-# number and the reactor's poller takes handle 0 — which slot 0 must
-# still distinguish from "not open yet". The program proves an invalid
-# await finishes false, two simultaneous parks wake through handle 0,
-# and the reactor holds and leaks nothing across the cycle.
+# stdin is closed for every run while descriptor 6 is inherited from
+# /dev/null. The valid descriptor-6 await makes POSIX open the reactor while
+# fd 0 is still free, so its poller takes handle 0; on Windows, the first live
+# socket await below takes poller registry slot 0. Slot 0 must still distinguish
+# that real handle from "not open yet". Two simultaneous parks then wake
+# through it, and the reactor holds and leaks nothing across the cycle.
 cat > "$tmp/zero_handle.b" <<'BEANS'
 import std.io
 import std.net
@@ -2374,11 +2433,11 @@ async fn pairs() -> int {
 }
 
 async fn main() {
-    // stdin is closed: this invalid await opens the reactor before any
-    // application descriptor exists, so the poller takes handle 0
-    async let dead: bool = net.await_readable(4000)
-    let dead_woke: bool = await dead
-    io.println("dead {dead_woke}")
+    // Descriptor 6 is inherited and valid. Some pollers cannot watch a
+    // regular file, but either verdict is fine: the point is that validation
+    // succeeds and lazy reactor creation takes handle 0 before this returns.
+    let seed: bool = await net.await_readable(6)
+    io.println("seeded")
     let first_fd: int = probe_fd()
 
     let score: int = await pairs()
@@ -2393,7 +2452,7 @@ async fn main() {
 }
 BEANS
 cat > "$tmp/zero_handle.expected" <<'BEANS'
-dead false
+seeded
 score 1111
 stable
 BEANS
@@ -2403,13 +2462,13 @@ for zh in "$native_dir/zero_handle" "$native_dir/zero_handle.s0"; do
     # twice per binary: the second run proves a fresh reactor cycle
     # initializes and shuts down identically after the first
     for pass in 1 2; do
-        perl -e 'alarm 30; exec @ARGV' "$zh" 0<&- >"$tmp/zh.out" 2>&1
+        perl -e 'alarm 30; exec @ARGV' "$zh" 0<&- 6</dev/null >"$tmp/zh.out" 2>&1
         diff -u "$tmp/zero_handle.expected" "$tmp/zh.out"
     done
 done
-perl -e 'alarm 45; exec @ARGV' "$BEANSC" run "$tmp/zero_handle.b" 0<&- >"$tmp/zh.i1" 2>&1
+perl -e 'alarm 45; exec @ARGV' "$BEANSC" run "$tmp/zero_handle.b" 0<&- 6</dev/null >"$tmp/zh.i1" 2>&1
 diff -u "$tmp/zero_handle.expected" "$tmp/zh.i1"
-perl -e 'alarm 45; exec @ARGV' "$BEANSC0" run "$tmp/zero_handle.b" 0<&- >"$tmp/zh.i0" 2>&1
+perl -e 'alarm 45; exec @ARGV' "$BEANSC0" run "$tmp/zero_handle.b" 0<&- 6</dev/null >"$tmp/zh.i0" 2>&1
 diff -u "$tmp/zero_handle.expected" "$tmp/zh.i0"
 
 echo "checking a closed-and-reused descriptor cannot wake or hang the old await"
@@ -2561,5 +2620,32 @@ abandoned 1
 rounds 5
 BEANS
 DEADLINE=45 run_matrix "$tmp/sem_reuse_cancel.b" "$tmp/sem_reuse_cancel.expected"
+
+echo "checking cross-thread close, reuse, cancellation, and repeated cleanup"
+cat > "$tmp/cross_thread.expected" <<'BEANS'
+plain 1
+reuse 1
+cancel 1
+rounds 10
+stable
+BEANS
+DEADLINE=45 run_matrix test/cases/async_cross_thread_close.b \
+    "$tmp/cross_thread.expected"
+
+echo "checking MMap last-reference cleanup notifies a parked token"
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+        # Windows readiness accepts sockets, not CRT file descriptors, so an
+        # MMap fd cannot be parked there. The close hook still compiles in the
+        # normal Windows runtime gates.
+        ;;
+    *)
+        reactor_libs=(-lm)
+        if [[ "$(uname -s)" == Linux ]]; then reactor_libs+=(-ldl); fi
+        ${CC:-clang} -std=c11 -O1 -g -pthread test/reactor_mmap_drop.c \
+            "${reactor_libs[@]}" -o "$native_dir/reactor_mmap_drop"
+        "$native_dir/reactor_mmap_drop"
+        ;;
+esac
 
 echo "async: ok"
