@@ -207,7 +207,6 @@ pub fn driver_wait() {
 /// programs in one lifetime; without this the next run would inherit a
 /// dead poller and the closed descriptors would be a leak.
 pub fn driver_shutdown() {
-    let parks: int = ready.park_shutdown()
     if ready.task_slot(0) != 0 {
         let closed: Result<bool> = ready.close(
             ready.task_slot(0) - 1, ready.task_slot(1),
@@ -217,4 +216,5 @@ pub fn driver_shutdown() {
         let c: int = ready.set_task_slot(2, 0)
         let d: int = ready.set_task_slot(3, 0)
     }
+    let parks: int = ready.park_shutdown()
 }

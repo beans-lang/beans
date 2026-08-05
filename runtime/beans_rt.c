@@ -8907,9 +8907,11 @@ long long beans_reactor_stale_park(void) {
     return -1;
 }
 
-// Interpreter processes can drive several programs in sequence. Shutdown
-// drops any leftover entries for this executor before its poller/waker closes,
-// then gives the next run a fresh owner identity.
+// Interpreter processes can drive several programs in sequence. The end of
+// shutdown drops any leftover entries for this executor and gives the next run
+// a fresh owner identity. If a close copied the old wake handle just before the
+// poller closed, its generation check now reports stale rather than using a
+// recycled descriptor.
 long long beans_reactor_shutdown_parks(void) {
     pthread_mutex_lock(&beans_parked_lock);
     BeansParked** at = &beans_parked;
