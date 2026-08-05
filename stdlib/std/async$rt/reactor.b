@@ -10,8 +10,12 @@
 import std.ready
 
 // Thread-local state lives in the runtime's task slots because Beans has no
-// globals: [0..2] the shared poller triple from ready.open (0 = not open
-// yet), [3] how many readiness awaits are parked. The runtime also keeps
+// globals: [0..2] the shared poller triple from ready.open, [3] how many
+// readiness awaits are parked. Slot 0 stores the poller handle plus one,
+// because zero is a real handle — POSIX hands out descriptor 0 when stdin
+// is closed, and the Windows poller registry hands out slot 0 first — so
+// only the shifted zero can mean "not open yet". Every backend zero-fills
+// fresh task slots, which is exactly that state. The runtime also keeps
 // the parked-descriptor table (ready.park_note / park_forget / park_stale):
 // poller registration is keyed by descriptor, so a second await parked on
 // the same descriptor would silently cancel the first one's interest — the
@@ -25,7 +29,8 @@ fn reactor_poller() -> int {
     if ready.task_slot(0) == 0 {
         match ready.open() {
             ok(triple) => {
-                let a: int = ready.set_task_slot(0, triple.get_i64(0))
+                let a: int = ready.set_task_slot(
+                    0, triple.get_i64(0) + 1)
                 let b: int = ready.set_task_slot(1, triple.get_i64(8))
                 let c: int = ready.set_task_slot(2, triple.get_i64(16))
             }
@@ -34,7 +39,7 @@ fn reactor_poller() -> int {
             }
         }
     }
-    return ready.task_slot(0)
+    return ready.task_slot(0) - 1
 }
 
 // One readiness check without blocking. 1 = ready now, 0 = not yet,
@@ -73,7 +78,7 @@ fn probe_now(fd: int, write: bool) -> int {
 // parked table, and the parked count move together, and the count can
 // only fall when the table really held the descriptor.
 fn unpark(fd: int) {
-    let poller: int = ready.task_slot(0)
+    let poller: int = ready.task_slot(0) - 1
     let removed: Result<bool> = ready.remove(poller, fd)
     if ready.park_forget(fd) == 1 {
         let count: int = ready.task_slot(3)
@@ -150,7 +155,7 @@ pub fn driver_wait() {
         panic("async deadlock: every task is waiting and none is parked on readiness")
     }
     if ready.park_stale() >= 0 { return }
-    let poller: int = ready.task_slot(0)
+    let poller: int = ready.task_slot(0) - 1
     match ready.wait(poller, ready.task_slot(1), 16, 0 - 1) {
         ok(packed) => {}
         err(waited) => {
@@ -166,7 +171,7 @@ pub fn driver_wait() {
 pub fn driver_shutdown() {
     if ready.task_slot(0) != 0 {
         let closed: Result<bool> = ready.close(
-            ready.task_slot(0), ready.task_slot(1),
+            ready.task_slot(0) - 1, ready.task_slot(1),
             ready.task_slot(2))
         let a: int = ready.set_task_slot(0, 0)
         let b: int = ready.set_task_slot(1, 0)
