@@ -109,9 +109,15 @@ class AsyncSlot {
 
 class AsyncScope {
     bindings: Map<string, AsyncSlot>
+    // Declaration order of the real slots in this scope. Map promises no
+    // iteration order, and both the sibling scan (first declared first)
+    // and the scope-exit clears (last declared first, like local drops)
+    // are observable behavior the two compilers must agree on.
+    order: List<string>
 
     fn init() {
         self.bindings = {}
+        self.order = []
     }
 }
 
@@ -372,11 +378,17 @@ class AsyncExpander {
         let scope: AsyncScope =
             self.scopes[self.scopes.len() - 1]
         if emit_clears {
-            for name: string in scope.bindings.keys() {
-                let slot: AsyncSlot = scope.bindings[name]
+            // Last declared clears first, matching how plain locals drop
+            // at the end of a scope. For an async let child the clear is
+            // the cancellation, so children cancel newest-first too.
+            var index: int = scope.order.len() - 1
+            for index >= 0 {
+                let slot: AsyncSlot =
+                    scope.bindings[scope.order[index]]
                 if !slot.masked {
                     self.emit(self.slot_clear(slot.slot, anchor))
                 }
+                index -= 1
             }
         }
         self.scopes.pop()
@@ -421,6 +433,7 @@ class AsyncExpander {
         self.slot_decls.push(
             self.slot_declaration(slot.slot, type, anchor))
         self.scopes[self.scopes.len() - 1].bindings[name] = slot
+        self.scopes[self.scopes.len() - 1].order.push(name)
         if self.loop_stack.len() != 0 {
             let context: AsyncLoopContext =
                 self.loop_stack[self.loop_stack.len() - 1]
@@ -728,6 +741,53 @@ class AsyncExpander {
         return self.drain_task_slot(wait, value_type, node)
     }
 
+    // The sibling scan, emitted into every suspension: while this frame
+    // is about to report pending, every live async let child of the frame
+    // gets one poll, first declared first. This is what lets a child
+    // progress while another child's await is parked. The scan re-runs on
+    // every re-poll of the frame, so a full pass happens each cycle and
+    // no child starves; a finished child answers from its `finished` flag
+    // without re-entering its body, and a child's own scan reaches the
+    // grandchildren, so the poll depth is bounded by the task tree.
+    fn append_child_scan(pending: AstNode, wait: string,
+                         anchor: AstNode) {
+        var scope_index: int = 0
+        for scope_index < self.scopes.len() {
+            let scope: AsyncScope = self.scopes[scope_index]
+            for name: string in scope.order {
+                let slot: AsyncSlot = scope.bindings[name]
+                if !slot.is_child || slot.masked ||
+                   slot.slot == wait {
+                    continue
+                }
+                // if child$.len() != 0 { let step$: int =
+                //     child$[0].poll_once() }
+                let occupied: AstNode =
+                    self.node("binary", "!=", anchor)
+                occupied.add(self.call_method(
+                    self.name_of(slot.slot, anchor), "len", [],
+                    anchor))
+                occupied.add(self.int_literal(0, anchor))
+                let poll_child: AstNode = self.node("if", "", anchor)
+                poll_child.add(occupied)
+                let body: AstNode = self.node("block", "", anchor)
+                let step: string = self.fresh_name("step_")
+                let step_decl: AstNode = self.node("let", step, anchor)
+                let step_type: AstNode =
+                    self.node("type", "int", anchor)
+                step_type.resolved = "int"
+                step_decl.add(step_type)
+                step_decl.add(self.call_method(
+                    self.slot_read(slot.slot, anchor), "poll_once",
+                    [], anchor))
+                body.add(step_decl)
+                poll_child.add(body)
+                pending.add(poll_child)
+            }
+            scope_index += 1
+        }
+    }
+
     // The shared await tail: suspend until the task in `slot` reports
     // ready, then move it out and take its value.
     fn drain_task_slot(wait: string, value_type: HirType,
@@ -737,7 +797,7 @@ class AsyncExpander {
         let poll_state: int = self.new_state(node)
         self.emit_transition(poll_state, node)
         self.enter_state(poll_state)
-        // if wait$[0].poll_once() == 0 { return 0 }
+        // if wait$[0].poll_once() == 0 { <poll siblings>; return 0 }
         let poll: AstNode = self.call_method(
             self.slot_read(wait, node), "poll_once", [], node)
         let compare: AstNode = self.node("binary", "==", node)
@@ -746,6 +806,7 @@ class AsyncExpander {
         let suspend: AstNode = self.node("if", "", node)
         suspend.add(compare)
         let pending: AstNode = self.node("block", "", node)
+        self.append_child_scan(pending, wait, node)
         pending.add(self.return_int(0, node))
         suspend.add(pending)
         self.emit(suspend)
@@ -1048,6 +1109,81 @@ class AsyncExpander {
                 "async$rt.Task", [declared])
             match value {
                 some(initializer) => {
+                    // Interpolated pieces and thread closures in the
+                    // arguments resolve names by binding, not through the
+                    // slot substitution, so slotted names (a loop
+                    // binding, say) re-bind as borrows around the push —
+                    // the same wrap every other statement gets.
+                    var names: Map<string, bool> = {}
+                    self.interpolated_slot_names(
+                        initializer, inout names)
+                    self.thread_capture_slot_names(
+                        initializer, inout names)
+                    var wrap_slots: List<AsyncSlot> = []
+                    for name: string in names.keys() {
+                        match self.find_slot(name) {
+                            some(borrowed) => {
+                                wrap_slots.push(borrowed)
+                            }
+                            none => {}
+                        }
+                    }
+                    if wrap_slots.len() != 0 {
+                        self.push_scope()
+                        for borrowed: AsyncSlot in wrap_slots {
+                            let mask: AsyncSlot = new AsyncSlot(
+                                borrowed.name, "", borrowed.type)
+                            mask.masked = true
+                            let top: AsyncScope =
+                                self.scopes[self.scopes.len() - 1]
+                            top.bindings[borrowed.name] = mask
+                        }
+                        let rewritten: AstNode = self.readiness_swap(
+                            self.decompose(initializer))
+                        self.pop_scope(false, statement)
+                        let slot: AsyncSlot = self.declare_slot(
+                            statement.value, task_type, statement)
+                        slot.is_child = true
+                        let carry: string = self.fresh_name("carry_")
+                        let carry_decl: AstNode = self.node(
+                            "let", carry, statement)
+                        carry_decl.add(
+                            self.type_ast(task_type, statement))
+                        carry_decl.add(rewritten)
+                        let taken: AstNode = self.node(
+                            "unary", "move", statement)
+                        taken.add(self.name_of(carry, statement))
+                        var wrapped: AstNode = self.node(
+                            "block", "", statement)
+                        wrapped.add(carry_decl)
+                        wrapped.add(self.slot_push(
+                            slot.slot, taken, statement))
+                        var index: int = wrap_slots.len() - 1
+                        for index >= 0 {
+                            let borrowed: AsyncSlot = wrap_slots[index]
+                            let loop_node: AstNode = self.node(
+                                "for", borrowed.name, statement)
+                            let binding: AstNode = self.node(
+                                "binding", borrowed.name, statement)
+                            binding.add(self.type_ast(
+                                borrowed.type, statement))
+                            loop_node.add(binding)
+                            loop_node.add(self.name_of(
+                                borrowed.slot, statement))
+                            if wrapped.kind == "block" {
+                                loop_node.add(wrapped)
+                            } else {
+                                let body: AstNode = self.node(
+                                    "block", "", statement)
+                                body.add(wrapped)
+                                loop_node.add(body)
+                            }
+                            wrapped = loop_node
+                            index -= 1
+                        }
+                        self.emit(wrapped)
+                        return
+                    }
                     let rewritten: AstNode = self.readiness_swap(
                         self.decompose(initializer))
                     let slot: AsyncSlot = self.declare_slot(
@@ -1339,6 +1475,7 @@ class AsyncExpander {
                 self.slot_decls.push(self.slot_declaration(
                     slot.slot, binding_type, arm))
                 self.scopes[self.scopes.len() - 1].bindings[binding] = slot
+                self.scopes[self.scopes.len() - 1].order.push(binding)
                 binding_index += 1
             }
             let body: AstNode = arm.children[1]
@@ -1582,12 +1719,16 @@ class AsyncExpander {
     }
 
     fn rewrite_loop_exit(statement: AstNode) {
+        // Both exits leave the iteration early, skipping the body-end
+        // clears, so both clear this loop's slots here: a value from
+        // iteration N must never sit under iteration N+1's push, and a
+        // pending child from iteration N cancels at its own continue.
         let context: AsyncLoopContext =
             self.loop_stack[self.loop_stack.len() - 1]
+        for slot: string in context.slots_inside {
+            self.emit(self.slot_clear(slot, statement))
+        }
         if statement.kind == "break" {
-            for slot: string in context.slots_inside {
-                self.emit(self.slot_clear(slot, statement))
-            }
             self.emit_transition(context.exit_state, statement)
         } else {
             self.emit_transition(context.continue_state, statement)
@@ -1635,19 +1776,19 @@ class AsyncExpander {
         }
         // Unfinished children cancel before the result lands: clearing a
         // child slot drops its task, and Task.deinit runs the cleanup.
+        // Newest scope first and last declared first within each — the
+        // same reverse-declaration order plain locals drop in.
         var scope_index: int = self.scopes.len() - 1
         for scope_index >= 0 {
-            for name: string in
-                self.scopes[scope_index].bindings.keys() {
-                match self.scopes[scope_index].bindings.get(name) {
-                    some(slot) => {
-                        if slot.is_child {
-                            self.emit(self.slot_clear(
-                                slot.slot, anchor))
-                        }
-                    }
-                    none => {}
+            let scope: AsyncScope = self.scopes[scope_index]
+            var slot_index: int = scope.order.len() - 1
+            for slot_index >= 0 {
+                let slot: AsyncSlot =
+                    scope.bindings[scope.order[slot_index]]
+                if slot.is_child && !slot.masked {
+                    self.emit(self.slot_clear(slot.slot, anchor))
                 }
+                slot_index -= 1
             }
             scope_index -= 1
         }

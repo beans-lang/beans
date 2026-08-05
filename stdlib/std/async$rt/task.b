@@ -113,11 +113,14 @@ pub fn reactor_park(fd: int, write: bool) -> Task<bool> {
 }
 
 /// One blocking step of the hidden driver: called when the root task is
-/// pending. Blocks in the shared poller until something parked can move —
-/// never a busy spin. Pending with nothing parked is a deadlocked program.
+/// pending. By then every task in the tree has had its poll for this
+/// cycle — nothing is runnable — so blocking in the shared poller until
+/// something parked can move is correct and never a busy spin. Pending
+/// with nothing parked means no task can ever move again: a deadlock,
+/// reported as one.
 pub fn driver_wait() {
     if ready.task_slot(3) == 0 {
-        panic("async main is pending with nothing to wait for")
+        panic("async deadlock: every task is waiting and none is parked on readiness")
     }
     let poller: int = ready.task_slot(0)
     match ready.wait(poller, ready.task_slot(1), 16, 0 - 1) {
@@ -161,4 +164,3 @@ pub unique class Task<T> {
         }
     }
 }
-

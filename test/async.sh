@@ -677,11 +677,33 @@ grep -Fq "(await risky(a))?" "$tmp/d0"
 native_dir=$tmp/native
 mkdir -p "$native_dir"
 
+# Deadlock-sensitive tests run under a hard deadline: a scheduling
+# regression must fail loudly, not hang the suite. perl's alarm is
+# everywhere; exit 142 (SIGALRM) reads as "hit the deadline".
+DEADLINE=${DEADLINE:-0}
+maybe_deadline() {
+    if [ "${DEADLINE:-0}" -gt 0 ]; then
+        perl -e 'alarm shift; exec @ARGV or die "exec failed"' \
+            "$DEADLINE" "$@"
+    else
+        "$@"
+    fi
+}
+
+note_hang() { # <exit>...
+    local code
+    for code in "$@"; do
+        if [ "$code" -eq 142 ]; then
+            echo "async: exit 142 = hit the hard deadline — a scheduling hang" >&2
+        fi
+    done
+}
+
 # stderr merges before the CR-stripping pipe so a panic line lands after
 # the stdout that was flushed before it, not wherever pipe buffering puts it.
 run_merged() { # <compiler> <source>
     local status
-    "$1" run "$2" 2>&1 | tr -d '\r'
+    maybe_deadline "$1" run "$2" 2>&1 | tr -d '\r'
     status=${PIPESTATUS[0]}
     return "$status"
 }
@@ -694,6 +716,7 @@ run_matrix() { # <source> <expected> [expected-exit]
     set -e
     if [ "$r0" -ne "$wanted_exit" ] || [ "$r1" -ne "$wanted_exit" ]; then
         echo "async: $src exits (stage0=$r0 selfhost=$r1, wanted $wanted_exit)" >&2
+        note_hang "$r0" "$r1"
         cat "$tmp/m0" "$tmp/m1" >&2
         exit 1
     fi
@@ -870,6 +893,82 @@ sturdy 4 -1
 mixed 1 2
 BEANS
 run_matrix "$tmp/sem_noawait.b" "$tmp/sem_noawait.expected"
+
+echo "checking continue and break clean the iteration's slots and children"
+# Regression: continue skipped the body-end clears, so a slotted local
+# from iteration N sat under iteration N+1's push and every later read
+# saw the stale head. Both exits now clear the loop's slots, which is
+# also what cancels a pending child in its own iteration.
+cat > "$tmp/sem_loops.b" <<'BEANS'
+import std.io
+
+async fn tick(a: int) -> int { return a }
+
+async fn skipping() -> int {
+    var total: int = 0
+    for i: int in 0..4 {
+        let v: int = await tick(i)
+        let w: int = await tick(100)
+        if i < 2 { continue }
+        total += v + w - 100
+    }
+    return total
+}
+
+unique class Tag {
+    pub label: string
+    pub fn init(label: string) { self.label = label }
+    fn deinit() { io.println("dropped {self.label}") }
+}
+
+async fn carry(move t: Tag, base: int) -> int {
+    io.println("start {t.label}")
+    return base * 10
+}
+
+async fn looper() -> int {
+    var kept: int = 0
+    for i: int in 0..4 {
+        io.println("iter {i}")
+        async let child: int = carry(new Tag("t{i}"), i)
+        if i == 0 { continue }
+        if i == 3 { break }
+        kept += await child
+    }
+    return kept
+}
+
+async fn main() {
+    let sums: int = await skipping()
+    io.println("sums {sums}")
+    let kept: int = await looper()
+    io.println("kept {kept}")
+}
+BEANS
+set +e
+run_merged "$BEANSC" "$tmp/sem_loops.b" >"$tmp/loops.probe"; probe_exit=$?
+set -e
+[ "$probe_exit" -eq 0 ]
+grep -q "sums 5" "$tmp/loops.probe" || {
+    echo "async: continue left a stale slot value behind:" >&2
+    cat "$tmp/loops.probe" >&2
+    exit 1
+}
+cat > "$tmp/sem_loops.expected" <<'BEANS'
+sums 5
+iter 0
+dropped t0
+iter 1
+start t1
+dropped t1
+iter 2
+start t2
+dropped t2
+iter 3
+dropped t3
+kept 30
+BEANS
+run_matrix "$tmp/sem_loops.b" "$tmp/sem_loops.expected"
 
 echo "checking move-only values ride across suspensions"
 cat > "$tmp/sem_own.b" <<'BEANS'
@@ -1133,7 +1232,224 @@ runtime panic at 5:14: list index 5 out of range (len 1)
 BEANS
 run_matrix "$tmp/sem_panic.b" "$tmp/sem_panic.expected" 3
 
-echo "checking readiness awaits park, progress, and wake without spinning"
+echo "checking children run while a sibling's await is parked — no helper thread"
+# The core executor property: the parked child is awaited FIRST, so the
+# writer can only run through the scheduler itself. A regression here
+# hangs, which the hard deadline turns into a failure.
+cat > "$tmp/sem_ready_nothread.b" <<'BEANS'
+import std.io
+import std.net
+import std.sock
+
+async fn reader(fd: int) -> int {
+    io.println("reader parks")
+    let woke: bool = await net.await_readable(fd)
+    io.println("reader woke")
+    return if woke { 1 } else { 0 }
+}
+
+async fn writer(fd: int) -> int {
+    io.println("writer runs")
+    let sent: Result<int> = sock.send(fd, Bytes.from("x"), 0)
+    return sent.or(0 - 1)
+}
+
+async fn main() {
+    let server: net.TcpListener =
+        net.TcpListener.bind("127.0.0.1", 0).expect("bind")
+    let port: int = server.local().expect("local").port
+    var sender: net.TcpStream =
+        net.TcpStream.connect("127.0.0.1", port).expect("connect")
+    let accepted: net.TcpStream = server.accept().expect("accept")
+
+    async let read_result: int = reader(accepted.handle())
+    async let write_result: int = writer(sender.handle())
+
+    // the blocked reader is awaited first on purpose: the writer must
+    // still run, through the executor, with no thread or sleep anywhere
+    let read_value: int = await read_result
+    let write_value: int = await write_result
+    io.println("read {read_value} write {write_value}")
+}
+BEANS
+cat > "$tmp/sem_ready_nothread.expected" <<'BEANS'
+reader parks
+writer runs
+reader woke
+read 1 write 1
+BEANS
+DEADLINE=30 run_matrix "$tmp/sem_ready_nothread.b" "$tmp/sem_ready_nothread.expected"
+
+echo "checking ping-pong siblings wake each other across many suspensions"
+# Two children in lockstep over one socket pair: each round, the one
+# being scanned wakes the one that is parked. A third child proves a
+# busy pair cannot starve a sibling, and its finished task answers later
+# scans from the flag without re-entering the body.
+cat > "$tmp/sem_pingpong.b" <<'BEANS'
+import std.io
+import std.net
+import std.sock
+
+async fn ponger(fd: int, rounds: int) -> int {
+    var seen: int = 0
+    for i: int in 0..rounds {
+        let woke: bool = await net.await_readable(fd)
+        let piece: Bytes = sock.recv(fd, 1).expect("pong recv")
+        seen += piece.len()
+        io.println("pong {i}")
+        let sent: Result<int> = sock.send(fd, Bytes.from("y"), 0)
+    }
+    return seen
+}
+
+async fn pinger(fd: int, rounds: int) -> int {
+    var seen: int = 0
+    for i: int in 0..rounds {
+        let sent: Result<int> = sock.send(fd, Bytes.from("x"), 0)
+        io.println("ping {i}")
+        let woke: bool = await net.await_readable(fd)
+        let piece: Bytes = sock.recv(fd, 1).expect("ping recv")
+        seen += piece.len()
+    }
+    return seen
+}
+
+async fn bystander() -> int {
+    io.println("bystander ran")
+    return 5
+}
+
+async fn main() {
+    let server: net.TcpListener =
+        net.TcpListener.bind("127.0.0.1", 0).expect("bind")
+    let port: int = server.local().expect("local").port
+    var client: net.TcpStream =
+        net.TcpStream.connect("127.0.0.1", port).expect("connect")
+    let accepted: net.TcpStream = server.accept().expect("accept")
+
+    async let pong: int = ponger(accepted.handle(), 3)
+    async let ping: int = pinger(client.handle(), 3)
+    async let extra: int = bystander()
+
+    let pong_total: int = await pong
+    let ping_total: int = await ping
+    let extra_value: int = await extra
+    io.println("totals {pong_total} {ping_total} {extra_value}")
+}
+BEANS
+cat > "$tmp/sem_pingpong.expected" <<'BEANS'
+ping 0
+bystander ran
+pong 0
+ping 1
+pong 1
+ping 2
+pong 2
+totals 3 3 5
+BEANS
+DEADLINE=30 run_matrix "$tmp/sem_pingpong.b" "$tmp/sem_pingpong.expected"
+
+echo "checking grandchildren schedule through their own parent's scan"
+cat > "$tmp/sem_nested_ready.b" <<'BEANS'
+import std.io
+import std.net
+import std.sock
+
+async fn parked(fd: int, tag: string) -> int {
+    let woke: bool = await net.await_readable(fd)
+    io.println("{tag} woke")
+    return 1
+}
+
+async fn feeder(first: int, second: int) -> int {
+    let one: Result<int> = sock.send(first, Bytes.from("a"), 0)
+    let two: Result<int> = sock.send(second, Bytes.from("b"), 0)
+    io.println("grandchild wrote")
+    return 2
+}
+
+async fn middle(fd: int, peer: int, outer_peer: int) -> int {
+    // the middle task has children of its own: one parks, one writes to
+    // both parked descendants — reached only through the parent's scan
+    async let waiting: int = parked(fd, "middle reader")
+    async let writing: int = feeder(peer, outer_peer)
+    let woke: int = await waiting
+    let wrote: int = await writing
+    return woke + wrote
+}
+
+async fn main() {
+    let s1: net.TcpListener =
+        net.TcpListener.bind("127.0.0.1", 0).expect("bind1")
+    let p1: int = s1.local().expect("local1").port
+    var c1: net.TcpStream =
+        net.TcpStream.connect("127.0.0.1", p1).expect("conn1")
+    let a1: net.TcpStream = s1.accept().expect("accept1")
+    let s2: net.TcpListener =
+        net.TcpListener.bind("127.0.0.1", 0).expect("bind2")
+    let p2: int = s2.local().expect("local2").port
+    var c2: net.TcpStream =
+        net.TcpStream.connect("127.0.0.1", p2).expect("conn2")
+    let a2: net.TcpStream = s2.accept().expect("accept2")
+
+    async let deep: int = middle(a1.handle(), c1.handle(), c2.handle())
+    // a direct awaited call parks while the async let child is active:
+    // the scan reaches the child, whose own scan reaches the grandchild
+    let direct: int = await parked(a2.handle(), "direct await")
+    let nested: int = await deep
+    io.println("direct {direct} nested {nested}")
+}
+BEANS
+cat > "$tmp/sem_nested_ready.expected" <<'BEANS'
+grandchild wrote
+direct await woke
+middle reader woke
+direct 1 nested 3
+BEANS
+DEADLINE=30 run_matrix "$tmp/sem_nested_ready.b" "$tmp/sem_nested_ready.expected"
+
+echo "checking declaration-time arguments, reverse awaits, and scan order"
+cat > "$tmp/sem_fair.b" <<'BEANS'
+import std.io
+
+fn noisy(tag: int) -> int {
+    io.println("arg {tag}")
+    return tag
+}
+
+async fn work(seed: int) -> int {
+    io.println("ran {seed}")
+    return seed * 10
+}
+
+async fn main() {
+    // arguments evaluate at the async let itself, in source order,
+    // before any child body runs
+    async let first: int = work(noisy(1))
+    async let second: int = work(noisy(2))
+    async let third: int = work(noisy(3))
+    io.println("declared")
+    // awaited in reverse declaration order: each child runs at its own
+    // await (nothing here ever suspends, so the scan never fires)
+    let c: int = await third
+    let b: int = await second
+    let a: int = await first
+    io.println("got {a} {b} {c}")
+}
+BEANS
+cat > "$tmp/sem_fair.expected" <<'BEANS'
+arg 1
+arg 2
+arg 3
+declared
+ran 3
+ran 2
+ran 1
+got 10 20 30
+BEANS
+run_matrix "$tmp/sem_fair.b" "$tmp/sem_fair.expected"
+
+echo "checking a parked await wakes from another OS thread"
 cat > "$tmp/sem_ready.b" <<'BEANS'
 import std.io
 import std.net
@@ -1180,7 +1496,18 @@ counter ran
 fast 41
 slow 1
 BEANS
-run_matrix "$tmp/sem_ready.b" "$tmp/sem_ready.expected"
+DEADLINE=30 run_matrix "$tmp/sem_ready.b" "$tmp/sem_ready.expected"
+
+echo "checking the blocked driver does not spin while parked"
+# The thread-wake test above blocks the driver for ~150ms of wall time.
+# A spinning driver burns that as CPU; a parked one sleeps in the OS
+# poller. Budget: under 60ms of CPU for the whole native run.
+cpu_probe=$native_dir/sem_ready
+cpu_line=$( { /usr/bin/time -p "$cpu_probe" >/dev/null; } 2>&1 | awk '/^user/ {u=$2} /^sys/ {s=$2} END {printf "%.0f", (u+s)*1000}' )
+if [ "${cpu_line:-999}" -ge 60 ]; then
+    echo "async: the driver burned ${cpu_line}ms of CPU across a 150ms park — spinning?" >&2
+    exit 1
+fi
 
 echo "checking pure async rides every profile and 32-bit targets"
 cat > "$tmp/prof_pure.b" <<'BEANS'
