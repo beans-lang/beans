@@ -3392,6 +3392,11 @@ class ExpressionChecker {
                         node,
                         "extern C function '{function.name}' cannot be stored as a Beans function value yet")
                 }
+                if function.is_async {
+                    self.fail(
+                        node,
+                        "'{function.name}' is async and cannot be stored as a function value — call it with await or 'async let'")
+                }
                 self.require_function_feature(
                     node, function,
                     "storing it as a function value")
@@ -4668,6 +4673,7 @@ class ExpressionChecker {
                         self.make_node(
                             node, "call", function.name,
                             function.result)
+                    self.validate_async_call(node, function)
                     result.resolved = function.qualified
                     if function.generics.len() != 0 {
                         self.check_generic_arguments(
@@ -5158,6 +5164,33 @@ class ExpressionChecker {
         return some(result)
     }
 
+    // Asyncness is an effect on the callable. A call to an async function
+    // is legal only directly under await (or as an async let initializer);
+    // anywhere else it is a bare call, and a synchronous function has no
+    // way to wait at all.
+    fn validate_async_call(node: AstNode,
+                           function: HirFunction) {
+        if !function.is_async { return }
+        // After expansion the "async" function is really a synchronous
+        // task maker; the re-check of expanded bodies calls it bare.
+        if function.expanded { return }
+        // The allowance lives on the exact call node the await marked, so
+        // calls in receivers or arguments never inherit it.
+        let allowed: bool = node.await_allowed
+        node.await_allowed = false
+        if !self.current.is_async {
+            self.fail(
+                node,
+                "'{function.name}' is async and can only be called from an async function")
+            return
+        }
+        if !allowed {
+            self.fail(
+                node,
+                "async call must be awaited or started with 'async let'")
+        }
+    }
+
     fn check_call(node: AstNode,
                   expected: HirType) -> HirNode {
         let callee: AstNode = node.children[0]
@@ -5252,6 +5285,8 @@ class ExpressionChecker {
                             self.make_node(
                                 node, "super_call",
                                 callee.value, result_type)
+                        self.validate_async_call(
+                            node, target.function)
                         result.resolved =
                             target.function.qualified
                         self.check_arguments(
@@ -5340,6 +5375,8 @@ class ExpressionChecker {
                                         node, "static_call",
                                         function.name,
                                         function.result)
+                                self.validate_async_call(
+                                    node, function)
                                 result.resolved =
                                     function.qualified
                                 if function.generics.len() != 0 {
@@ -6070,6 +6107,8 @@ class ExpressionChecker {
                                 self.make_node(
                                     node, "method_call",
                                     function.name, result_type)
+                            self.validate_async_call(
+                                node, function)
                             result.resolved = function.qualified
                             result.dispatch_slot =
                                 hir_method_slot(
@@ -6236,6 +6275,7 @@ class ExpressionChecker {
                     self.make_node(
                         node, "call", function.name,
                         function.result)
+                self.validate_async_call(node, function)
                 result.resolved = function.qualified
                 if function.generics.len() != 0 {
                     self.check_generic_arguments(
@@ -6748,24 +6788,42 @@ class ExpressionChecker {
                 node,
                 "await cannot suspend while a loop or match borrows a move-only value — copy or move what you need first")
         }
+        // The operand must be a direct call to an async function; the
+        // call's own checking consumes the allowance, so if it is still
+        // set afterwards nothing async was called.
+        if node.children[0].kind != "call" {
+            self.fail(
+                node,
+                "await needs a direct call to an async function")
+            let ignored: HirNode =
+                self.check_expression(
+                    node.children[0], no_hir_type())
+            let poisoned: HirNode = self.make_node(
+                node, "error", "await", poison_hir_type())
+            poisoned.children.push(ignored)
+            return poisoned
+        }
+        node.children[0].await_allowed = true
         let operand: HirNode =
             self.check_expression(
                 node.children[0], no_hir_type())
+        if node.children[0].await_allowed {
+            node.children[0].await_allowed = false
+            if operand.type.name != "poison" {
+                self.fail(
+                    node,
+                    "await needs a call to an async function — this call is synchronous")
+            }
+            let poisoned: HirNode = self.make_node(
+                node, "error", "await", poison_hir_type())
+            poisoned.children.push(operand)
+            return poisoned
+        }
         if operand.type.name == "poison" {
             return self.make_node(
                 node, "error", "await", poison_hir_type())
         }
-        if operand.type.name != "async.Task" ||
-           operand.type.args.len() != 1 {
-            self.fail(
-                node,
-                "await needs a std.async task, got {render_hir_type(operand.type)}")
-            return self.make_node(
-                node, "error", "await", poison_hir_type())
-        }
-        self.require_move_source(
-            node.children[0], operand.type, "await")
-        let result_type: HirType = operand.type.args[0]
+        let result_type: HirType = operand.type
         self.expect_type(node, result_type, expected)
         let result: HirNode =
             self.make_node(node, "await", "", result_type)

@@ -62,8 +62,9 @@ class HirFunction {
     generics: List<string>
     generic_constraints: List<HirGeneric>
     parameters: List<HirParameter>
-    // What a call to this function produces. For an async function this is
-    // async.Task<body_result>; for everything else it equals body_result.
+    // What a call to this function produces. Asyncness is an effect, not
+    // a wrapper type, so this equals body_result for async functions too;
+    // the checker requires the call to sit under await (or async let).
     result: HirType
     // What the body's return statements and ? propagation produce.
     body_result: HirType
@@ -723,28 +724,30 @@ class SignatureChecker {
         self.hir.functions.push(function)
     }
 
-    // The declared type of an async function is what its body returns; a
-    // call to it produces async.Task of that type. The split happens here,
-    // once, so no later phase wraps results ad hoc.
+    // Asyncness is an effect on the callable: the declared type is what
+    // the body returns AND what an awaited call produces, so result and
+    // body_result stay equal. The internal task record backing the
+    // lowering is loaded automatically; a missing registration here is a
+    // compiler-installation problem, not a user mistake.
     fn validate_async_function(node: AstNode, file: ParsedModuleFile,
                                function: HirFunction) {
         var task_known: bool = false
-        match self.resolver.symbols.get("async.Task") {
+        match self.resolver.symbols.get("async$rt.Task") {
             some(symbol) => {
                 task_known =
-                    symbol.package_path == "std.async"
+                    symbol.package_path == "std.async$rt"
             }
             none => {}
         }
         if !task_known {
             self.fail(
                 file.path, node,
-                "async functions need 'import std.async' for the task type")
+                "internal: the async runtime package did not load")
         }
         if function.is_extern_c {
             self.fail(
                 file.path, node,
-                "extern \"C\" functions cannot be async — expose a synchronous wrapper that calls std.async.run")
+                "extern \"C\" functions cannot be async — wrap the C call in an async Beans function instead")
         }
         if function.name == "init" ||
            function.name == "deinit" {
@@ -765,13 +768,9 @@ class SignatureChecker {
                     line: parameter.line,
                     col: parameter.col,
                     message:
-                        "async functions cannot take inout parameters — the call returns before the body runs",
+                        "async functions cannot take inout parameters — an async call can run as a concurrent child, so it cannot hold exclusive access to the caller's variable",
                 })
             }
-        }
-        if task_known {
-            function.result =
-                hir_named("async.Task", [function.body_result])
         }
     }
 

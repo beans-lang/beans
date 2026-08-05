@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# async/await: the contextual words stay ordinary identifiers everywhere they
-# were legal before, `async fn` declares a task-returning function, `await`
-# consumes one task inside an async body, and the two compilers agree on the
-# accepted syntax and on every refusal this file pins byte for byte.
+# async/await as an effect: `async fn` declares a function whose calls must
+# sit directly under `await` (or start an `async let`), the call keeps the
+# declared result type — there is no public task type — and `async fn main`
+# drives itself. The contextual words stay ordinary identifiers everywhere
+# they were legal before, and the two compilers agree on the accepted syntax
+# and on every refusal this file pins byte for byte.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/beans-async.XXXXXX")
@@ -50,6 +52,24 @@ both_reject_same() { # <source> <required message fragment>
         cat "$tmp/a0" >&2
         exit 1
     }
+}
+
+both_reject() { # <source> <fragment both outputs must contain>
+    # For refusals whose wording predates async and differs between the
+    # compilers (missing-package types); both must still refuse and name
+    # the same offender.
+    local src="$1" fragment="$2"
+    set +e
+    diagnostics "$BEANSC0" "$src" >"$tmp/a0"; local r0=$?
+    diagnostics "$BEANSC"  "$src" >"$tmp/a1"; local r1=$?
+    set -e
+    if [ "$r0" -eq 0 ] || [ "$r1" -eq 0 ]; then
+        echo "async: $src accepted (stage0=$r0 selfhost=$r1)" >&2
+        cat "$tmp/a0" "$tmp/a1" >&2
+        exit 1
+    fi
+    grep -q "$fragment" "$tmp/a0"
+    grep -q "$fragment" "$tmp/a1"
 }
 
 run_lf() {
@@ -101,7 +121,6 @@ both_run "$tmp/compat_names.b" "$tmp/compat_names.expected"
 
 echo "checking user-defined Task and Future stay legal"
 cat > "$tmp/compat_task.b" <<'EOF'
-import std.async as aio
 import std.io
 
 class Task {
@@ -123,78 +142,64 @@ mine 3024
 EOF
 both_run "$tmp/compat_task.b" "$tmp/compat_task.expected"
 
+# ---- the old public task model is gone -------------------------------------
+
+echo "checking the old std.async surface no longer resolves"
+cat > "$tmp/dead_task.b" <<'EOF'
+import std.async as aio
+
+fn main() {
+    let t: aio.Task<int> = aio.run(1)
+}
+EOF
+both_reject "$tmp/dead_task.b" "aio.Task"
+
+echo "checking the internal runtime package cannot be imported"
+cat > "$tmp/dead_import.b" <<'EOF'
+import std.async$rt
+
+fn main() {}
+EOF
+both_reject "$tmp/dead_import.b" "expected end of statement"
+
 # ---- accepted async syntax --------------------------------------------------
 
 echo "checking accepted async declarations and await positions"
 cat > "$tmp/accept_shapes.b" <<'EOF'
-import std.async as aio
 import std.io
-
-async fn plain(a: int) -> int { return a }
 
 async fn no_result() {}
 
-pub async fn public_one(a: int) -> int { return a }
+async fn top(a: int) -> int { return a }
 
-async fn generic_one<T>(move value: T) -> T { return move value }
-
-async fn uses(a: int) -> int {
-    let direct: int = await plain(a)
-    let stored: aio.Task<int> = plain(direct)
-    let moved: int = await move stored
-    let nested: int = await plain(await plain(moved))
-    var looped: int = 0
-    for i: int in 0..3 {
-        looped += await plain(i)
-    }
-    if (await plain(looped)) > 2 {
-        looped += 1
-    }
-    let picked: int = match await plain(looped) {
-        0 => 0,
-        _ => 1,
-    }
-    let boxed: int = await plain(picked)
-    let title: string = "got {boxed}"
-    return nested + looped + title.len()
+async fn positions(a: int) -> int {
+    // await in let, return, arguments, and operator position
+    let x: int = await top(a)
+    let y: int = await top(x + await top(a))
+    let shown: int = await top(y)
+    io.println("{shown}")
+    return await top(x) + await top(y)
 }
 
-async fn flows(a: int) -> Result<int> {
-    let v: int = (await fallible(a))?
-    return ok(v)
-}
-
-async fn fallible(a: int) -> Result<int> {
+async fn tries(a: int) -> Result<int> {
     if a < 0 { return err("negative") }
     return ok(a)
 }
 
-async fn optional(a: int) -> Option<int> {
-    let v: int = (await maybe(a))?
-    return some(v)
-}
-
-async fn maybe(a: int) -> Option<int> {
-    if a < 0 { return none }
-    return some(a)
+async fn unwraps(a: int) -> Result<int> {
+    // `?` applies to the awaited value
+    let v: int = await tries(a)?
+    return ok(v + 1)
 }
 
 class Widget {
-    n: int = 4
+    n: int = 0
 
     pub async fn poke() -> int { return self.n }
     static async fn make() -> int { return 2 }
-}
 
-enum Signal {
-    quiet
-    loud
-
-    pub async fn strength() -> int {
-        return match self {
-            quiet => 1,
-            loud => 9,
-        }
+    pub async fn both() -> int {
+        return await self.poke() + await Widget.make()
     }
 }
 
@@ -202,51 +207,131 @@ interface Face {
     async fn go() -> int
 }
 
-class Real implements Face {
-    async fn go() -> int { return 5 }
+class Facing {
+    pub fn init() {}
+
+    pub async fn go() -> int { return 5 }
 }
 
-class Louder extends Real {
-    override async fn go() -> int { return 6 }
+enum Shade {
+    light
+    dark
+
+    pub async fn depth() -> int {
+        match self {
+            light => { return 1 }
+            dark => { return 2 }
+        }
+    }
 }
 
-fn main() { io.println("ok") }
+async fn main() {
+    let total: int = await positions(1)
+    io.println("total {total}")
+}
 EOF
 both_accept "$tmp/accept_shapes.b"
 
+echo "checking a sync main stays valid beside async functions"
+cat > "$tmp/accept_sync_main.b" <<'EOF'
+import std.io
+
+async fn quiet() -> int { return 1 }
+
+fn main() { io.println("ok") }
+EOF
+cat > "$tmp/accept_sync_main.expected" <<'EOF'
+ok
+EOF
+both_run "$tmp/accept_sync_main.b" "$tmp/accept_sync_main.expected"
+
 # ---- refusals, byte for byte ------------------------------------------------
 
-echo "checking async refusals match between the compilers"
+echo "checking the effect rules refuse with the same words"
+cat > "$tmp/rej_bare.b" <<'EOF'
+async fn work() -> int { return 1 }
+
+async fn main() {
+    work()
+}
+EOF
+both_reject_same "$tmp/rej_bare.b" \
+    "async call must be awaited or started with 'async let'"
+
+cat > "$tmp/rej_sync_caller.b" <<'EOF'
+async fn work() -> int { return 1 }
+
+fn caller() -> int { return work() }
+
+fn main() {}
+EOF
+both_reject_same "$tmp/rej_sync_caller.b" \
+    "'work' is async and can only be called from an async function"
+
+cat > "$tmp/rej_await_sync.b" <<'EOF'
+fn plain() -> int { return 1 }
+
+async fn main() {
+    let x: int = await plain()
+}
+EOF
+both_reject_same "$tmp/rej_await_sync.b" \
+    "await needs a call to an async function — this call is synchronous"
+
+cat > "$tmp/rej_await_noncall.b" <<'EOF'
+async fn work() -> int { return 1 }
+
+async fn main() {
+    let x: int = await 42
+}
+EOF
+both_reject_same "$tmp/rej_await_noncall.b" \
+    "await needs a direct call to an async function"
+
+cat > "$tmp/rej_fn_value.b" <<'EOF'
+async fn work() -> int { return 1 }
+
+async fn main() {
+    let f: fn() -> int = work
+}
+EOF
+both_reject_same "$tmp/rej_fn_value.b" \
+    "'work' is async and cannot be stored as a function value"
+
+cat > "$tmp/rej_bare_arg.b" <<'EOF'
+async fn work() -> int { return 1 }
+async fn outer(a: int) -> int { return a }
+
+async fn main() {
+    // the allowance covers exactly the call under the await; arguments
+    // are bare calls
+    let x: int = await outer(work())
+}
+EOF
+both_reject_same "$tmp/rej_bare_arg.b" \
+    "async call must be awaited or started with 'async let'"
 
 cat > "$tmp/rej_inout.b" <<'EOF'
-import std.async as aio
-
-async fn bad(inout counter: int) -> int { return counter }
+async fn poke(inout a: int) {}
 
 fn main() {}
 EOF
 both_reject_same "$tmp/rej_inout.b" \
-    "async functions cannot take inout parameters — the call returns before the body runs"
+    "async functions cannot take inout parameters — an async call can run as a concurrent child, so it cannot hold exclusive access to the caller's variable"
 
 cat > "$tmp/rej_extern.b" <<'EOF'
-import std.async as aio
-
-extern "C" async fn bad() -> i32
+extern "C" async fn c_side() -> int
 
 fn main() {}
 EOF
 both_reject_same "$tmp/rej_extern.b" \
-    "extern \"C\" functions cannot be async — expose a synchronous wrapper that calls std.async.run"
+    "extern \"C\" functions cannot be async — wrap the C call in an async Beans function instead"
 
 cat > "$tmp/rej_init.b" <<'EOF'
-import std.async as aio
+class Widget {
+    n: int = 0
 
-class Conn {
-    host: string
-
-    async fn init(host: string) {
-        self.host = host
-    }
+    pub async fn init() {}
 }
 
 fn main() {}
@@ -254,10 +339,8 @@ EOF
 both_reject_same "$tmp/rej_init.b" "init cannot be async"
 
 cat > "$tmp/rej_deinit.b" <<'EOF'
-import std.async as aio
-
-class Conn {
-    host: string = ""
+class Widget {
+    n: int = 0
 
     async fn deinit() {}
 }
@@ -266,48 +349,11 @@ fn main() {}
 EOF
 both_reject_same "$tmp/rej_deinit.b" "deinit cannot be async"
 
-cat > "$tmp/rej_import.b" <<'EOF'
-async fn lonely() -> int { return 1 }
-
-fn main() {}
-EOF
-both_reject_same "$tmp/rej_import.b" \
-    "async functions need 'import std.async' for the task type"
-
-cat > "$tmp/rej_move.b" <<'EOF'
-import std.async as aio
-
-async fn plain(a: int) -> int { return a }
-
-async fn stored(a: int) -> int {
-    let t: aio.Task<int> = plain(a)
-    return await t
-}
-
-fn main() {}
-EOF
-both_reject_same "$tmp/rej_move.b" \
-    "await needs 'move t' because async.Task<int> is move-only"
-
-cat > "$tmp/rej_wrong_type.b" <<'EOF'
-import std.async as aio
-
-async fn bad(a: int) -> int {
-    return await a
-}
-
-fn main() {}
-EOF
-both_reject_same "$tmp/rej_wrong_type.b" \
-    "await needs a std.async task, got int"
-
 cat > "$tmp/rej_closure.b" <<'EOF'
-import std.async as aio
+async fn tick() -> int { return 1 }
 
-async fn plain(a: int) -> int { return a }
-
-async fn bad(a: int) -> int {
-    let f: fn() -> int = fn() -> int { return await plain(1) }
+async fn outer() -> int {
+    let f: fn() -> int = fn() -> int { return await tick() }
     return f()
 }
 
@@ -317,15 +363,13 @@ both_reject_same "$tmp/rej_closure.b" \
     "await cannot be used inside a closure — only directly in the async function body"
 
 cat > "$tmp/rej_defer.b" <<'EOF'
-import std.async as aio
+fn discard(v: int) {}
 
-async fn plain(a: int) -> int { return a }
+async fn tick() -> int { return 1 }
 
-fn sink(x: int) {}
-
-async fn bad(a: int) -> int {
-    defer sink(await plain(a))
-    return a
+async fn outer() -> int {
+    defer discard(await tick())
+    return 0
 }
 
 fn main() {}
@@ -333,59 +377,54 @@ EOF
 both_reject_same "$tmp/rej_defer.b" "await is not allowed inside defer"
 
 cat > "$tmp/rej_unique.b" <<'EOF'
-import std.async as aio
+unique class Pipe {
+    fd: int = -1
 
-unique class Sock {
-    fd: int = 0
-
-    async fn watch() -> int { return self.fd }
+    pub async fn read_all() -> int { return self.fd }
 }
 
 fn main() {}
 EOF
 both_reject_same "$tmp/rej_unique.b" \
-    "async instance methods are not available on a unique class — the task frame cannot borrow the receiver; use a static async fn"
+    "async instance methods are not available on a unique class"
 
 cat > "$tmp/rej_override_sync.b" <<'EOF'
-import std.async as aio
+class Base {
+    n: int = 0
 
-interface Face {
-    async fn go() -> int
+    pub async fn step() -> int { return 1 }
 }
 
-class Eager implements Face {
-    fn go() -> int { return 1 }
+class Kid : Base {
+    pub fn step() -> int { return 2 }
 }
 
 fn main() {}
 EOF
-both_reject_same "$tmp/rej_override_sync.b" \
-    "'go' must be async to match the parent declaration"
+both_reject_same "$tmp/rej_override_sync.b" "async"
 
 cat > "$tmp/rej_override_async.b" <<'EOF'
-import std.async as aio
-
 class Base {
-    fn step() -> int { return 0 }
+    n: int = 0
+
+    pub fn step() -> int { return 1 }
 }
 
-class Derived extends Base {
-    override async fn step() -> int { return 1 }
+class Kid : Base {
+    pub async fn step() -> int { return 2 }
 }
 
 fn main() {}
 EOF
-both_reject_same "$tmp/rej_override_async.b" \
-    "'step' cannot be async — the parent declaration is synchronous"
+both_reject_same "$tmp/rej_override_async.b" "async"
 
 cat > "$tmp/rej_interp.b" <<'EOF'
-import std.async as aio
 import std.io
 
-async fn plain(a: int) -> int { return a }
+async fn tick() -> int { return 1 }
 
-async fn bad(a: int) -> string {
-    return "got {await plain(a)}"
+async fn outer() {
+    io.println("got {await tick()}")
 }
 
 fn main() {}
@@ -394,15 +433,16 @@ both_reject_same "$tmp/rej_interp.b" \
     "await is not allowed inside string interpolation — bind the awaited value to a local first"
 
 cat > "$tmp/rej_borrowed_loop.b" <<'EOF'
-import std.async as aio
+unique class Sack {
+    pub v: int = 1
+}
 
-async fn plain(a: int) -> int { return a }
+async fn tick() -> int { return 1 }
 
-async fn bad(a: int) -> int {
+async fn outer(move sacks: List<Sack>) -> int {
     var total: int = 0
-    let rows: List<List<int>> = [[1], [2]]
-    for row: List<int> in rows {
-        total += await plain(row.len())
+    for s: Sack in sacks {
+        total += s.v + await tick()
     }
     return total
 }
@@ -410,18 +450,34 @@ async fn bad(a: int) -> int {
 fn main() {}
 EOF
 both_reject_same "$tmp/rej_borrowed_loop.b" \
-    "await cannot suspend while a loop or match borrows a move-only value — copy or move what you need first"
+    "await cannot suspend while a loop or match borrows a move-only value"
+
+echo "checking async fn main keeps the entry shape rules"
+cat > "$tmp/rej_main_shape.b" <<'EOF'
+async fn main() -> int { return 1 }
+EOF
+set +e
+"$BEANSC0" run "$tmp/rej_main_shape.b" >"$tmp/ms0" 2>&1; r0=$?
+"$BEANSC"  run "$tmp/rej_main_shape.b" >"$tmp/ms1" 2>&1; r1=$?
+set -e
+[ "$r0" -ne 0 ] && [ "$r1" -ne 0 ]
+grep -q "main must be 'fn main()'" "$tmp/ms0"
+grep -q "main must be 'fn main()'" "$tmp/ms1"
 
 # ---- parse dumps stay aligned ----------------------------------------------
 
 echo "checking the two parsers print async syntax identically"
 cat > "$tmp/dump.b" <<'EOF'
-import std.async as aio
+import std.io
 
 async fn top(a: int) -> int {
-    let t: aio.Task<int> = top(a)
-    let x: int = await move t
+    let x: int = await top(a)
     return x + await top(x)
+}
+
+async fn risky(a: int) -> Result<int> {
+    let v: int = await risky(a)?
+    return ok(v)
 }
 
 class Widget {
@@ -434,25 +490,26 @@ interface Face {
     async fn go() -> int
 }
 
-fn main() {}
+async fn main() {
+    let t: int = await top(1)
+    io.println("{t}")
+}
 EOF
 "$BEANSC0" parse "$tmp/dump.b" | tr -d '\r' >"$tmp/d0"
 "$BEANSC"  parse "$tmp/dump.b" | tr -d '\r' >"$tmp/d1"
 diff -u "$tmp/d0" "$tmp/d1"
 grep -q "async fn top" "$tmp/d0"
+grep -q "async fn main" "$tmp/d0"
 grep -q "pub async fn poke" "$tmp/d0"
 grep -q "static async fn make" "$tmp/d0"
-# both printers spell a move operand without a space — pinned as-is
-grep -q "(await (movet))" "$tmp/d0"
+# `?` binds looser than await: the try wraps the await, which wraps the call
+grep -Fq "(await risky(a))?" "$tmp/d0"
 
 # ---- execution: both executors and the native backend agree ---------------
 
 native_dir=$tmp/native
 mkdir -p "$native_dir"
 
-# beansc0's native backend predates generic fn-typed fields and refuses
-# them ("not in the native backend yet"), so native coverage is the
-# self-hosted compiler's. Interpreters run on both.
 # stderr merges before the CR-stripping pipe so a panic line lands after
 # the stdout that was flushed before it, not wherever pipe buffering puts it.
 run_merged() { # <compiler> <source>
@@ -488,11 +545,23 @@ run_matrix() { # <source> <expected> [expected-exit]
     fi
     tr -d '\r' <"$tmp/mn" >"$tmp/mn.lf"
     diff -u "$expected" "$tmp/mn.lf"
+    local bin0="$native_dir/$(basename "$src" .b).s0"
+    "$BEANSC0" build "$src" -o "$bin0" >/dev/null
+    set +e
+    "$bin0" 2>&1 >"$tmp/mz.merged" | cat >>"$tmp/mz.merged"; local rz=${PIPESTATUS[0]}
+    mv "$tmp/mz.merged" "$tmp/mz"
+    set -e
+    if [ "$rz" -ne "$wanted_exit" ]; then
+        echo "async: $src stage0-native exit $rz, wanted $wanted_exit" >&2
+        cat "$tmp/mz" >&2
+        exit 1
+    fi
+    tr -d '\r' <"$tmp/mz" >"$tmp/mz.lf"
+    diff -u "$expected" "$tmp/mz.lf"
 }
 
-echo "checking basic task semantics"
+echo "checking direct await semantics"
 cat > "$tmp/sem_basic.b" <<'BEANS'
-import std.async as aio
 import std.io
 
 async fn add_later(a: int, b: int) -> int {
@@ -500,170 +569,126 @@ async fn add_later(a: int, b: int) -> int {
     return a + b
 }
 
-fn main() {
-    let cold: aio.Task<int> = add_later(2, 3)
-    io.println("made, nothing ran")
-    io.println("sum {aio.run(move cold)}")
-    var dropped: aio.Task<int> = add_later(7, 7)
-    dropped = add_later(1, 1)
-    io.println("replaced a cold task without running it")
-    io.println("direct {aio.run(add_later(4, 4))}")
+async fn main() {
+    io.println("start")
+    let sum: int = await add_later(2, 3)
+    io.println("sum {sum}")
+    // awaits nest: the inner one finishes before the outer call starts
+    let nested: int = await add_later(await add_later(1, 1), 10)
+    io.println("nested {nested}")
 }
 BEANS
 cat > "$tmp/sem_basic.expected" <<'BEANS'
-made, nothing ran
+start
 running 2+3
 sum 5
-replaced a cold task without running it
-running 4+4
-direct 8
+running 1+1
+running 2+10
+nested 12
 BEANS
 run_matrix "$tmp/sem_basic.b" "$tmp/sem_basic.expected"
 
-echo "checking awaits across control flow"
+echo "checking control flow around awaits"
 cat > "$tmp/sem_control.b" <<'BEANS'
-import std.async as aio
 import std.io
 
-async fn add_later(a: int, b: int) -> int { return a + b }
+async fn tick(a: int) -> int { return a * 2 }
 
-async fn control(a: int) -> int {
-    var total: int = 0
-    for i: int in 0..3 {
-        total += await add_later(i, a)
+async fn choose(flag: bool) -> int {
+    if flag {
+        return await tick(10)
     }
-    let names: List<string> = ["x", "yy", "zzz"]
-    for name: string in names {
-        total += await add_later(name.len(), 0)
-    }
-    var count: int = 0
-    for count < 2 {
-        count += 1
-        total += await add_later(1, 0)
-    }
-    if (await add_later(total, 0)) > 10 {
-        total += 100
-    } else {
-        total += 200
-    }
-    let label: string = if (await add_later(1, 1)) == 2 { "two" } else { "other" }
-    total += label.len()
-    let sorted: int = match await add_later(a, 0) {
-        0 => 1000,
-        _ => 2000,
-    }
-    total += sorted
-    var gate: bool = (await add_later(1, 0)) == 1 && (await add_later(2, 0)) == 2
-    if gate { total += 1 }
-    gate = (await add_later(9, 0)) == 0 || (await add_later(3, 0)) == 3
-    if gate { total += 1 }
-    for j: int in 0..10 {
-        if j == 2 { continue }
-        if j == 4 { break }
-        total += await add_later(j, 0)
-    }
-    io.println("mid total {total}")
-    return total
+    return await tick(20)
 }
 
-fn main() {
-    io.println("control {aio.run(control(1))}")
+async fn total(upto: int) -> int {
+    var sum: int = 0
+    for i: int in 0..upto {
+        if i == 2 { continue }
+        sum += await tick(i)
+        if sum > 20 { break }
+    }
+    return sum
+}
+
+async fn main() {
+    let t: int = await choose(true)
+    io.println("t {t}")
+    let f: int = await choose(false)
+    io.println("f {f}")
+    let sum: int = await total(10)
+    io.println("sum {sum}")
+    match await tick(3) {
+        6 => { io.println("matched six") }
+        _ => { io.println("missed") }
+    }
 }
 BEANS
 cat > "$tmp/sem_control.expected" <<'BEANS'
-mid total 2123
-control 2123
+t 20
+f 40
+sum 26
+matched six
 BEANS
 run_matrix "$tmp/sem_control.b" "$tmp/sem_control.expected"
 
-echo "checking methods, generics, and ownership across suspension"
+echo "checking move-only values ride across suspensions"
 cat > "$tmp/sem_own.b" <<'BEANS'
-import std.async as aio
 import std.io
 
-async fn tick(a: int) -> int { return a }
+unique class Crate {
+    pub label: string
 
-class Counter {
-    label: string
-    hits: int = 0
-
-    pub fn init(label: string) { self.label = label }
-
-    pub async fn bump(by: int) -> int {
-        let extra: int = await tick(by)
-        self.hits += extra
-        return self.hits
+    pub fn init(label: string) {
+        self.label = label
     }
 
-    pub static async fn fixed() -> int {
-        return await tick(7)
+    fn deinit() {
+        io.println("dropped {self.label}")
     }
 }
 
-async fn generic_carry<T>(move value: T) -> T {
-    let pause: int = await tick(1)
-    let ignored: int = pause
-    return move value
+async fn build(label: string) -> Crate {
+    return new Crate(label)
 }
 
-async fn carries_list(move items: List<int>) -> List<int> {
-    let first: int = await tick(items.len())
-    items.push(first)
-    return move items
+async fn relay(move c: Crate) -> Crate {
+    io.println("relaying {c.label}")
+    let extra: Crate = await build("extra")
+    io.println("made {extra.label}")
+    return move c
 }
 
-async fn keeps_ref(c: Counter) -> string {
-    let n: int = await tick(2)
-    let ignored: int = n
-    return c.label
-}
-
-fn make_counter() -> Counter {
-    return new Counter("kept")
-}
-
-fn main() {
-    let c: Counter = new Counter("beans")
-    io.println("bump {aio.run(c.bump(5))}")
-    io.println("bump again {aio.run(c.bump(3))}")
-    io.println("static {aio.run(Counter.fixed())}")
-    io.println("generic {aio.run(generic_carry(41))}")
-    let words: aio.Task<string> = generic_carry("hello")
-    io.println("generic str {aio.run(move words)}")
-    var xs: List<int> = [10, 20]
-    let back: List<int> = aio.run(carries_list(move xs))
-    io.println("list {back}")
-    let t: aio.Task<string> = keeps_ref(make_counter())
-    io.println("ref {aio.run(move t)}")
+async fn main() {
+    let first: Crate = await build("first")
+    let kept: Crate = await relay(move first)
+    io.println("kept {kept.label}")
 }
 BEANS
 cat > "$tmp/sem_own.expected" <<'BEANS'
-bump 5
-bump again 8
-static 7
-generic 41
-generic str hello
-list [10, 20, 2]
-ref kept
+relaying first
+made extra
+dropped extra
+kept first
+dropped first
 BEANS
 run_matrix "$tmp/sem_own.b" "$tmp/sem_own.expected"
 
-echo "checking Result, Option, and defer flows"
+echo "checking error and option flows through await"
 cat > "$tmp/sem_flows.b" <<'BEANS'
-import std.async as aio
 import std.io
 
 async fn add_later(a: int, b: int) -> int { return a + b }
 
 async fn fallible(a: int) -> Result<int> {
-    if a < 0 { return err("negative input") }
+    if a < 0 { return err("no") }
     return ok(a + 100)
 }
 
 async fn flows(a: int) -> Result<int> {
-    let v: int = (await fallible(a))?
+    let v: int = await fallible(a)?
     defer io.println("flows cleanup {v}")
-    let w: int = (await fallible(v))?
+    let w: int = await fallible(v)?
     return ok(w)
 }
 
@@ -673,25 +698,29 @@ async fn maybe(a: int) -> Option<int> {
 }
 
 async fn opt_flow(a: int) -> Option<int> {
-    let v: int = (await maybe(a))?
+    let v: int = await maybe(a)?
     return some(v + 1)
 }
 
 async fn chain(a: int) -> int {
     let x: int = await add_later(a, 1)
     defer io.println("cleanup {x}")
-    let stored: aio.Task<int> = add_later(x, 2)
-    let y: int = await move stored
+    let y: int = await add_later(x, 2)
     let nested: int = await add_later(await add_later(x, y), 10)
     return nested
 }
 
-fn main() {
-    io.println("chain {aio.run(chain(4))}")
-    io.println("ok {aio.run(flows(1)).or(-1)}")
-    io.println("err {aio.run(flows(-5)).or(-1)}")
-    io.println("some {aio.run(opt_flow(3)).or(-1)}")
-    io.println("none {aio.run(opt_flow(-3)).or(-1)}")
+async fn main() {
+    let c: int = await chain(4)
+    io.println("chain {c}")
+    let a: Result<int> = await flows(1)
+    io.println("ok {a.or(-1)}")
+    let b: Result<int> = await flows(-5)
+    io.println("err {b.or(-1)}")
+    let s: Option<int> = await opt_flow(3)
+    io.println("some {s.or(-1)}")
+    let n: Option<int> = await opt_flow(-3)
+    io.println("none {n.or(-1)}")
 }
 BEANS
 cat > "$tmp/sem_flows.expected" <<'BEANS'
@@ -705,9 +734,84 @@ none -1
 BEANS
 run_matrix "$tmp/sem_flows.b" "$tmp/sem_flows.expected"
 
-echo "checking a task panic stops the program at the poll site"
+echo "checking defers run exactly once on early returns"
+cat > "$tmp/sem_defer.b" <<'BEANS'
+import std.io
+
+async fn tick(a: int) -> int { return a }
+
+async fn leaves(early: bool) -> int {
+    defer io.println("first defer")
+    let x: int = await tick(1)
+    if early {
+        return await tick(x + 100)
+    }
+    defer io.println("late defer")
+    return await tick(x)
+}
+
+async fn main() {
+    let early: int = await leaves(true)
+    io.println("early {early}")
+    let late: int = await leaves(false)
+    io.println("late {late}")
+}
+BEANS
+cat > "$tmp/sem_defer.expected" <<'BEANS'
+first defer
+early 101
+late defer
+first defer
+late 1
+BEANS
+run_matrix "$tmp/sem_defer.b" "$tmp/sem_defer.expected"
+
+echo "checking generic async fns and interface dispatch"
+cat > "$tmp/sem_dispatch.b" <<'BEANS'
+import std.io
+
+interface Doubler {
+    async fn double(a: int) -> int
+}
+
+class Twice implements Doubler {
+    pub fn init() {}
+
+    pub async fn double(a: int) -> int { return a * 2 }
+}
+
+class Thrice implements Doubler {
+    pub fn init() {}
+
+    pub async fn double(a: int) -> int { return a * 3 }
+}
+
+async fn pick<T>(move value: T) -> T {
+    return move value
+}
+
+async fn apply(d: Doubler, a: int) -> int {
+    return await d.double(a)
+}
+
+async fn main() {
+    let two: Doubler = new Twice()
+    let three: Doubler = new Thrice()
+    let x: int = await apply(two, 10)
+    let y: int = await apply(three, 10)
+    io.println("{x} {y}")
+    let s: string = await pick("kept")
+    io.println("{s}")
+}
+BEANS
+cat > "$tmp/sem_dispatch.expected" <<'BEANS'
+20 30
+kept
+BEANS
+run_matrix "$tmp/sem_dispatch.b" "$tmp/sem_dispatch.expected"
+
+echo "checking a panic inside an async body keeps its source position"
 cat > "$tmp/sem_panic.b" <<'BEANS'
-import std.async as aio
 import std.io
 
 async fn boom(a: int) -> int {
@@ -715,64 +819,28 @@ async fn boom(a: int) -> int {
     return xs[a]
 }
 
-fn main() {
+async fn main() {
     io.println("before")
-    let v: int = aio.run(boom(5))
+    let v: int = await boom(5)
     io.println("after {v}")
 }
 BEANS
 cat > "$tmp/sem_panic.expected" <<'BEANS'
 before
-runtime panic at 6:14: list index 5 out of range (len 1)
+runtime panic at 5:14: list index 5 out of range (len 1)
 BEANS
 run_matrix "$tmp/sem_panic.b" "$tmp/sem_panic.expected" 3
 
-echo "checking cancellation runs armed defers and cascades to children"
-cat > "$tmp/sem_cancel.b" <<'BEANS'
-import std.async as aio
-import std.io
-
-fn never() -> aio.Task<int> {
-    return new aio.Task<int>(
-        fn() -> int { return 0 },
-        fn() -> int { return 0 },
-        fn() { io.println("never cancelled") })
-}
-
-async fn waits(a: int) -> int {
-    defer io.println("armed defer ran {a}")
-    let got: int = await never()
-    return got + a
-}
-
-fn main() {
-    var pending: aio.Task<int> = waits(3)
-    let first: int = pending.poll_once()
-    io.println("first poll {first}")
-    pending = waits(9)
-    io.println("replaced the pending task")
-}
-BEANS
-cat > "$tmp/sem_cancel.expected" <<'BEANS'
-first poll 0
-armed defer ran 3
-never cancelled
-replaced the pending task
-BEANS
-run_matrix "$tmp/sem_cancel.b" "$tmp/sem_cancel.expected"
-
 echo "checking pure async rides every profile and 32-bit targets"
 cat > "$tmp/prof_pure.b" <<'BEANS'
-import std.async as aio
-
 async fn tick(a: int) -> int { return a }
 
 async fn sums(a: int) -> int {
-    return (await tick(a)) + (await tick(a + 1))
+    return await tick(a) + await tick(a + 1)
 }
 
-fn main() {
-    let ignored: int = aio.run(sums(1))
+async fn main() {
+    let ignored: int = await sums(1)
 }
 BEANS
 "$BEANSC" check --runtime minimal "$tmp/prof_pure.b" >/dev/null
@@ -785,7 +853,6 @@ BEANS
 
 echo "checking the poller still needs the full profile beside async"
 cat > "$tmp/prof_poll.b" <<'BEANS'
-import std.async as aio
 import std.poll
 
 async fn f() -> int { return 1 }

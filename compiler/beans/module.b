@@ -852,6 +852,43 @@ class ModuleLoader {
         self.state[import_path] = 2
     }
 
+    // Any program that declares an async function needs the internal task
+    // package. Its directory name cannot be spelled in source — the
+    // compiler is the only importer.
+    fn load_async_runtime() {
+        var wanted: bool = false
+        for package: LoadedPackage in self.packages {
+            for file: ParsedModuleFile in package.files {
+                for declaration: AstNode in file.ast.children {
+                    if declaration.kind == "fn" &&
+                       value_marks_async(declaration.value) {
+                        wanted = true
+                    }
+                    if declaration.kind == "class" ||
+                       declaration.kind == "interface" ||
+                       declaration.kind == "enum" {
+                        for member: AstNode in declaration.children {
+                            if member.kind == "fn" &&
+                               value_marks_async(member.value) {
+                                wanted = true
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !wanted { return }
+        let dir: string =
+            path.join(stdlib_root(), "async$rt")
+        if !Dir.exists(dir) {
+            self.fail(dir, 0, 0,
+                      "the async runtime package is missing from the standard library")
+            return
+        }
+        self.load_package("std.async$rt", dir, "async$rt",
+                          "std", stdlib_root(), "")
+    }
+
     fn load(entry: string) -> bool {
         self.root = self.find_root(entry)
         if self.root == "" {
@@ -870,6 +907,7 @@ class ModuleLoader {
                                          "", "", "")
             self.packages.push(package)
             self.state["main"] = 2
+            self.load_async_runtime()
             return self.errors.len() == 0
         }
 
@@ -885,6 +923,7 @@ class ModuleLoader {
         }
         self.load_package(self.module_name, self.root, "",
                           self.module_name, self.root, "")
+        self.load_async_runtime()
         if self.locked || self.offline {
             for locked_path: string in self.lock_entries.keys() {
                 if !self.resolved_entries.contains(locked_path) {

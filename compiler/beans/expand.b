@@ -4,17 +4,23 @@ import std.os
 // The async expander: the one shared lowering for async functions.
 //
 // After expression checking succeeds, every `async fn` body is rewritten
-// into a synchronous task maker with the same signature:
+// into a synchronous task maker. To the user the function's type is still
+// `fn(int) -> R` — asyncness is an effect — but after expansion the maker
+// really returns the internal task record:
 //
-//     fn f(a: int) -> async.Task<R> {
+//     fn f(a: int) -> async$rt.Task<R> {
 //         ...one slot list per local that lives across a suspension...
 //         var state$: int = 0
 //         var result$: List<R> = []
-//         return new async.Task<R>(
+//         return new async$rt.Task<R>(
 //             fn() -> int { for { if state$ == 0 { ... } ... } },
 //             fn() -> R { return result$.remove(0) },
 //             fn() { ...armed defers, newest first... })
 //     }
+//
+// `async fn main` is the exception: it keeps its unit result and, instead
+// of returning the task, drives it to completion in place — that loop is
+// the hidden executor's root.
 //
 // The maker's locals are captured by the three closures, so the closure
 // environment — the heap cells both backends already share between
@@ -638,13 +644,12 @@ class AsyncExpander {
 
     fn decompose_await(node: AstNode) -> AstNode {
         let operand: AstNode = self.decompose(node.children[0])
-        let task_type: HirType = self.checked_type(node.children[0])
-        let value_type: HirType =
-            if task_type.args.len() == 1 {
-                task_type.args[0]
-            } else {
-                poison_hir_type()
-            }
+        // The operand is a checked async call, so its type is the result
+        // R (asyncness is an effect); the maker it becomes after the
+        // signature flip really hands back the internal task.
+        let value_type: HirType = self.checked_type(node.children[0])
+        let task_type: HirType =
+            hir_named("async$rt.Task", [value_type])
         let wait: string = self.fresh_name("await_")
         self.slot_decls.push(
             self.slot_declaration(wait, task_type, node))
@@ -814,8 +819,17 @@ class AsyncExpander {
             return
         }
         if statement.kind == "expression" {
+            let inner: AstNode = statement.children[0]
+            // A match in statement position produces no value: block arms
+            // push nothing, so the value path's pick slot would stay empty
+            // and the join's take would blow up.
+            if inner.kind == "match" {
+                self.decompose_match(
+                    inner, none, poison_hir_type())
+                return
+            }
             let rewritten: AstNode =
-                self.decompose(statement.children[0])
+                self.decompose(inner)
             self.emit(self.statement_of(rewritten))
             return
         }
@@ -1673,19 +1687,46 @@ class AsyncExpander {
         self.append_defer_flushes(cancel_body, anchor)
         cancel_closure.add(cancel_body)
 
+        let task_hir: HirType = hir_named(
+            "async$rt.Task", [function.body_result])
         let task_new: AstNode = self.node("new", "", anchor)
-        let task_type: AstNode =
-            self.type_ast(function.result, anchor)
-        task_new.add(task_type)
+        task_new.add(self.type_ast(task_hir, anchor))
         task_new.add(poll_closure)
         task_new.add(take_closure)
         task_new.add(cancel_closure)
-        let hand_back: AstNode = self.node("return", "", anchor)
-        hand_back.add(task_new)
-        maker.add(hand_back)
+        if function.qualified == "main" {
+            // The entry point cannot hand a task to anyone, so it drives
+            // its own: this loop is the hidden executor's root. main keeps
+            // the unit result, so the native entry ABI is unchanged.
+            let root_decl: AstNode = self.node("let", "root$", anchor)
+            root_decl.add(self.type_ast(task_hir, anchor))
+            root_decl.add(task_new)
+            maker.add(root_decl)
+            let drive: AstNode = self.node("for", "", anchor)
+            let drive_body: AstNode = self.node("block", "", anchor)
+            let poll: AstNode = self.call_method(
+                self.name_of("root$", anchor), "poll_once", [], anchor)
+            let done: AstNode = self.node("binary", "==", anchor)
+            done.add(poll)
+            done.add(self.int_literal(1, anchor))
+            let leave: AstNode = self.node("if", "", anchor)
+            leave.add(done)
+            let leave_block: AstNode = self.node("block", "", anchor)
+            leave_block.add(self.node("return", "", anchor))
+            leave.add(leave_block)
+            drive_body.add(leave)
+            drive.add(drive_body)
+            maker.add(drive)
+        } else {
+            let hand_back: AstNode = self.node("return", "", anchor)
+            hand_back.add(task_new)
+            maker.add(hand_back)
+        }
 
-        // Swap the maker in and re-mark the function as synchronous for
-        // checking purposes: the body now returns the task itself.
+        // Swap the maker in and flip the signature: outside the expander
+        // the call had the user-facing result type R (asyncness is an
+        // effect), but the maker really returns the internal task. main
+        // stays unit — its maker drives the task instead of returning it.
         var fresh_syntax: AstNode = self.node(
             "fn", function.syntax.value, anchor)
         for child: AstNode in function.syntax.children {
@@ -1693,7 +1734,10 @@ class AsyncExpander {
         }
         fresh_syntax.add(maker)
         function.syntax = fresh_syntax
-        function.body_result = function.result
+        if function.qualified != "main" {
+            function.result = task_hir
+            function.body_result = task_hir
+        }
         function.expanded = true
         function.body = []
     }
@@ -1707,13 +1751,26 @@ class AsyncExpander {
                 any = true
             }
         }
+        // Bodiless async declarations — interface methods — flip too:
+        // their implementations are makers, so the declared signature
+        // must agree on returning the task.
+        for function: HirFunction in self.program.functions {
+            if function.is_async && !function.expanded {
+                let task: HirType = hir_named(
+                    "async$rt.Task", [function.body_result])
+                function.result = task
+                function.body_result = task
+                function.expanded = true
+            }
+        }
         if self.errors.len() != 0 { return false }
         if !any { return true }
         match os.env("BEANS_ASYNC_DUMP") {
             some(_) => {
                 for function: HirFunction in
                     self.program.functions {
-                    if function.is_async && function.expanded {
+                    if function.is_async && function.expanded &&
+                       function.has_body {
                         io.eprintln(render_ast(function.syntax))
                     }
                 }
@@ -1725,7 +1782,8 @@ class AsyncExpander {
         let recheck: ExpressionChecker =
             new ExpressionChecker(self.signature)
         for function: HirFunction in self.program.functions {
-            if function.is_async && function.expanded {
+            if function.is_async && function.expanded &&
+               function.has_body {
                 recheck.check_function(function)
             }
         }

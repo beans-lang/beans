@@ -1160,76 +1160,88 @@ hits.add(1)
 
 ### async and await (v0.9, first version implemented)
 
-Stackless cooperative tasks on the thread that polls them. No green threads,
-no stack switching: `thread.spawn` stays the tool for CPU-heavy or blocking
-work, and a `Task` never crosses a thread.
+Asyncness is an **effect on the callable**, not a type. `async fn f() -> R`
+declares a function whose calls must be waited on; the call still has type
+`R`. There is no public task, future, executor, or polling protocol — the
+compiler and runtime schedule everything behind the scenes, on the one
+thread that entered `main`. `thread.spawn` stays the tool for CPU-heavy or
+blocking work.
 
 ```beans
-import std.async as aio
 import std.io
-
-async fn fetch_size(a: int) -> Result<int> {
-    let doubled: int = await double_later(a)
-    return ok(doubled)
-}
 
 async fn double_later(a: int) -> int {
     return a * 2
 }
 
-fn main() {
-    let task: aio.Task<Result<int>> = fetch_size(21)   // cold: nothing ran
-    io.println("{aio.run(move task).or(-1)}")           // 42
+async fn fetch_size(a: int) -> Result<int> {
+    let doubled: int = await double_later(a)   // doubled: int
+    return ok(doubled)
+}
+
+async fn main() {
+    let n: Result<int> = await fetch_size(21)
+    io.println("{n.or(-1)}")
 }
 ```
 
 - **`async` and `await` are not keywords.** `async` means something only
-  immediately before `fn` — at the top level, in class and enum bodies, and in
-  interfaces — and `await` only inside an async body. Everywhere else both stay
-  ordinary identifiers, so existing functions, locals, fields, and methods by
-  those names keep working, as do user classes named `Task` or `Future`.
-  Inside an async body `await` is a prefix operator over one postfix chain: it
-  binds tighter than every binary operator and looser than call, field, index,
-  `?`, and `as` — `await t?` awaits `t?`, and `(await op())?` awaits first,
-  then examines the `Result`.
-- **The declared type is what the body returns.** `async fn f() -> R` has body
-  result `R`; a call to `f` has type `aio.Task<R>`. `return`, `?`, and
-  missing-return checking use `R`. Overrides and interface implementations
-  must match asyncness — a sync method never silently satisfies an async
-  declaration or the other way around.
-- **A task is cold and single-use.** Calling an async fn evaluates the
-  arguments into the task (retaining ARC references; `move` parameters are
-  moved in) and runs nothing. `std.async.run(move task)` drives it to
-  completion from synchronous code. `await` consumes one task: a fresh result
-  can be awaited directly, a stored task needs `await move task` — `Task` is a
-  `unique class` like every other single-owner resource.
-- **Dropping a task cancels it.** A never-polled task drops its captured
-  arguments without entering the body. A task dropped mid-flight runs its
-  armed `defer`s newest-first, then drops every live value exactly once —
-  and tasks it was awaiting cancel in cascade. A finished task just drops.
-- **Cleanup stays synchronous.** `await` is refused inside `defer` and inside
-  closures; `init` and `deinit` cannot be async. A `defer` armed before a
-  suspension survives any number of them and runs exactly once on return, `?`
-  propagation, or cancellation. A panic inside a task stops the program at the
-  poll site with the original position, like every other panic — it is never
-  swallowed, and (the base rule) defers do not run on a panic.
-- **What an async fn cannot do:** take `inout` parameters (the call returns
-  before the body runs), be `extern "C"` (expose a sync wrapper that calls
-  `run`), be `feature`-gated, or be an instance method on a `unique class`
-  (the frame cannot borrow the receiver; statics are fine). `await` cannot sit
-  inside string interpolation — bind the value to a local first — and cannot
-  suspend while a `for` element or `match` payload borrows a move-only value.
-- **The protocol is public.** `aio.Task<T>` is three closures —
-  `poll_fn: fn() -> int` advances one step and reports 0 (pending) or
-  1 (ready), `take_fn: fn() -> T` moves the finished value out exactly once,
-  `cancel_fn: fn()` runs the cleanup completion would have run — plus
-  `poll_once()`, which memoizes readiness. `new aio.Task<T>(poll, take,
-  cancel)` builds a hand-rolled awaitable; an `async fn` is sugar the compiler
-  expands into exactly this triple, with the body's locals captured by the
-  closures. Keep the contract: take only after ready, at most once.
-- **Not yet in this first version:** `spawn` and `yield_now` (the local
-  executor queue), readiness-based socket awaits, and async closures. Awaiting
-  an unspawned task drives it inline, one step per `poll_once`.
+  immediately before `fn` — at the top level, in class and enum bodies, and
+  in interfaces — and `await` only inside an async body. Everywhere else
+  both stay ordinary identifiers, so existing functions, locals, fields, and
+  methods by those names keep working, as do user classes named `Task` or
+  `Future`.
+- **Every async call is waited on, exactly where it happens.** A call to an
+  async function is legal in two positions only: directly under `await`, or
+  as the initializer of an `async let` (structured concurrency, next
+  version). Anywhere else — bare statement, argument, receiver, stored into
+  a variable — it is refused: *async call must be awaited or started with
+  'async let'*. A synchronous function cannot call an async one at all
+  (*'f' is async and can only be called from an async function*), and an
+  async function cannot be stored as a `fn` value. There is no run/block_on
+  escape hatch back into sync code.
+- **`await` takes a direct call and produces the declared result.** The
+  operand must be a call to an async function: `await f(x)` has type `R`,
+  awaiting anything else is refused (*await needs a direct call to an async
+  function*; a sync call gets *this call is synchronous*). `await` binds
+  tighter than every binary operator and looser than call, field, and
+  index. `?` and `as` are the exception: they apply to the value the await
+  produced — `await f(x)?` unwraps the awaited `Result` — so error
+  propagation reads without parentheses.
+- **`async fn main()` drives itself.** Declare the entry point async — no
+  parameters, no type parameters, no result, same as ever — and a hidden
+  single-threaded executor drives the body to completion. Nothing to
+  import, nothing to call. A synchronous `fn main()` stays exactly as it
+  was; it just cannot call async functions.
+- **Checking uses the declared result.** `return`, `?`, and missing-return
+  analysis in an async body use `R`. Overrides and interface
+  implementations must match asyncness — a sync method never silently
+  satisfies an async declaration or the other way around. `Result`,
+  `Option`, generics, methods, and move-only values all work across
+  suspension points.
+- **Cleanup stays synchronous and exact.** `await` is refused inside
+  `defer` and inside closures; `init` and `deinit` cannot be async. A
+  `defer` armed before a suspension survives any number of them and runs
+  exactly once on return or `?` propagation — and on cancellation, when a
+  scope's unfinished children are torn down (next version). A panic inside
+  an async body stops the program with the original source position, like
+  every other panic; defers do not run on a panic (the base rule).
+- **What an async fn cannot do:** take `inout` parameters (an async call
+  can run as a concurrent child, so its signature cannot promise exclusive
+  access to a caller's variable), be `extern "C"` (wrap the C call in an
+  async Beans function instead), be `feature`-gated, or be an instance
+  method on a `unique class` (the hidden frame cannot borrow the receiver;
+  statics are fine). `await` cannot sit inside string interpolation — bind
+  the value to a local first — and cannot suspend while a `for` element or
+  `match` payload borrows a move-only value.
+- **Scheduling is hidden and cooperative.** An async call suspends only at
+  `await` points; between them it runs synchronously on the executor's one
+  thread. Long CPU work therefore blocks every other task — put it on
+  `std.thread`. Cancellation is cooperative: it takes effect at suspension
+  points, never mid-statement.
+- **Not yet in this first version:** `async let` structured concurrency,
+  readiness-based I/O awaits, dynamic task groups, detached tasks, async
+  closures. They layer on this model without changing it.
 
 ## Targets and the build (v0.8, implemented)
 

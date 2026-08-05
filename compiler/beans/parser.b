@@ -885,14 +885,30 @@ class Parser {
         // Contextual: inside an async body `await` starts an await
         // expression. Its operand is one prefix/postfix chain, so `await`
         // binds tighter than every binary operator and looser than call,
-        // field, index, `?` and `as`: `await t?` awaits `t?`, and
-        // `(await t)?` applies `?` to the awaited value.
+        // field, and index. `?` and `as` are the exception: they apply to
+        // the value the await produced — `await f()?` unwraps the awaited
+        // Result — so any try/cast the chain built rotates above the
+        // await. Explicit parentheses keep their own grouping.
         if self.in_async && self.check("ident") &&
            self.current().text == "await" {
             let keyword: Token = self.advance()
             let result: AstNode = self.node("await", "", keyword)
-            result.add(self.parse_prefix())
-            return result
+            var operand: AstNode = self.parse_prefix()
+            var wrappers: List<AstNode> = []
+            for operand.kind == "try" || operand.kind == "cast" {
+                wrappers.push(operand)
+                operand = operand.children[0]
+            }
+            result.add(operand)
+            var rebuilt: AstNode = result
+            var index: int = wrappers.len()
+            for index > 0 {
+                index -= 1
+                let wrapper: AstNode = wrappers[index]
+                wrapper.children[0] = rebuilt
+                rebuilt = wrapper
+            }
+            return rebuilt
         }
         if self.check("-") || self.check("!") || self.check("~") ||
            self.check("move") || self.check("take") ||
