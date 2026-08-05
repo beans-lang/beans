@@ -1386,7 +1386,10 @@ static void* cc_free_shell(void* p, long long meta) {
 #else
             if (m->p) munmap(m->p, (size_t)m->len);
 #endif
-            if (m->fd >= 0) close((int)m->fd);
+            if (m->fd >= 0) {
+                beans_reactor_note_close(m->fd);
+                close((int)m->fd);
+            }
 #endif
         } else {
             BFile* f = p; // net; close() / f.close() is the real API
