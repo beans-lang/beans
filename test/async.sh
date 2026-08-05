@@ -496,6 +496,129 @@ EOF
 both_reject_same "$tmp/rej_al_noncall.b" \
     "'async let' needs a direct call to an async function"
 
+echo "checking async bodies obey the missing-return rule with the same words"
+# Asyncness is an effect: the declared result is the body's result, so the
+# whole-body missing-return walk applies to async bodies unchanged, before
+# any expansion, and both compilers refuse byte for byte.
+cat > "$tmp/rej_mr_empty.b" <<'EOF'
+async fn missing() -> int {
+}
+
+async fn main() {
+    let x: int = await missing()
+}
+EOF
+both_reject_same "$tmp/rej_mr_empty.b" \
+    "'missing' must return int — the body can finish without a return"
+
+cat > "$tmp/rej_mr_cond.b" <<'EOF'
+async fn conditional(flag: bool) -> int {
+    if flag { return 1 }
+}
+
+async fn main() {
+    let x: int = await conditional(true)
+}
+EOF
+both_reject_same "$tmp/rej_mr_cond.b" \
+    "'conditional' must return int — the body can finish without a return"
+
+cat > "$tmp/rej_mr_break.b" <<'EOF'
+async fn hunts(flag: bool) -> int {
+    for {
+        if flag { break }
+    }
+}
+
+async fn main() {
+    let x: int = await hunts(false)
+}
+EOF
+# a loop that may break can finish, so the body still needs a return
+both_reject_same "$tmp/rej_mr_break.b" \
+    "'hunts' must return int — the body can finish without a return"
+
+cat > "$tmp/rej_mr_closure.b" <<'EOF'
+async fn work() -> int { return 5 }
+
+async fn main() {
+    let broken: fn() -> int = fn() -> int {
+    }
+    let x: int = await work()
+}
+EOF
+both_reject_same "$tmp/rej_mr_closure.b" \
+    "this closure must return int — the body can finish without a return"
+
+cat > "$tmp/rej_mr_async_closure.b" <<'EOF'
+async fn main() {
+    let c: fn() -> int = async fn() -> int { return 1 }
+}
+EOF
+# there are no async closures: in expression position `async` is only an
+# identifier, so the pair never parses. The parsers recover from the
+# malformed tail differently for any identifier (not an async divergence),
+# so this pins the shared refusal, not the recovery cascade.
+both_reject "$tmp/rej_mr_async_closure.b" "expected end of statement"
+
+cat > "$tmp/rej_mr_sync.b" <<'EOF'
+fn plain() -> int {
+}
+
+fn main() {
+    let x: int = plain()
+}
+EOF
+# the synchronous rule is untouched beside async declarations
+both_reject_same "$tmp/rej_mr_sync.b" \
+    "'plain' must return int — the body can finish without a return"
+
+cat > "$tmp/mr_shapes.b" <<'EOF'
+async fn split(flag: bool) -> int {
+    if flag { return 1 } else { return 2 }
+}
+
+async fn chosen(pick: int) -> string {
+    match pick {
+        0 => { return "none" }
+        _ => { return "some" }
+    }
+}
+
+async fn forever() -> int {
+    for {
+    }
+}
+
+async fn main() {
+    let a: int = await split(true)
+    let b: string = await chosen(a)
+}
+EOF
+# a complete if/else, a fully returning match, and a breakless `for { }`
+# all count as returning — accepted, never run (forever never finishes)
+both_accept "$tmp/mr_shapes.b"
+
+echo "checking a broken stdlib install refuses with the same words"
+mkdir -p "$tmp/stdlib-hollow/std/io"
+cp stdlib/std/io/*.b "$tmp/stdlib-hollow/std/io/" 2>/dev/null || true
+cat > "$tmp/rej_no_rt.b" <<'EOF'
+async fn work() -> int { return 1 }
+
+async fn main() {
+    let x: int = await work()
+}
+EOF
+set +e
+BEANS_STDLIB="$tmp/stdlib-hollow/std" "$BEANSC0" check "$tmp/rej_no_rt.b" \
+    2>&1 | tr -d '\r' | tr '\\' '/' >"$tmp/a0"; r0=${PIPESTATUS[0]}
+BEANS_STDLIB="$tmp/stdlib-hollow/std" "$BEANSC" check "$tmp/rej_no_rt.b" \
+    2>&1 | tr -d '\r' | tr '\\' '/' >"$tmp/a1"; r1=${PIPESTATUS[0]}
+set -e
+[ "$r0" -ne 0 ] && [ "$r1" -ne 0 ]
+diff -u "$tmp/a0" "$tmp/a1"
+grep -q "the async runtime package is missing from the standard library" "$tmp/a0"
+
 echo "checking async fn main keeps the entry shape rules"
 cat > "$tmp/rej_main_shape.b" <<'EOF'
 async fn main() -> int { return 1 }
@@ -675,6 +798,78 @@ sum 26
 matched six
 BEANS
 run_matrix "$tmp/sem_control.b" "$tmp/sem_control.expected"
+
+echo "checking async bodies that never await still complete correctly"
+# Regression: stage-0 handed a no-await statement match back verbatim, so a
+# `return` in an arm became the poll closure's own return — an int result
+# silently corrupted the poll protocol (the value became a poll status) and
+# anything else was an internal re-check error. The int case is the nasty
+# one: it type-checked and broke only at runtime.
+cat > "$tmp/sem_noawait.b" <<'BEANS'
+import std.io
+
+async fn coded(pick: int) -> int {
+    match pick {
+        0 => { return 70 }
+        1 => { return 71 }
+        _ => { return 79 }
+    }
+}
+
+async fn named(pick: int) -> string {
+    match pick {
+        0 => { return "zero" }
+        _ => { return "other" }
+    }
+}
+
+async fn sturdy(seek: int) -> int {
+    // a match arm that breaks out of the enclosing loop, no awaits anywhere
+    var found: int = 0 - 1
+    for i: int in 0..10 {
+        match i == seek {
+            true => {
+                found = i
+                break
+            }
+            false => {}
+        }
+    }
+    return found
+}
+
+async fn mixed(flag: bool) -> int {
+    // one arm returns, the other falls through to the tail return
+    match flag {
+        true => { return 1 }
+        false => {}
+    }
+    return 2
+}
+
+async fn main() {
+    let c0: int = await coded(0)
+    let c1: int = await coded(1)
+    let c9: int = await coded(9)
+    io.println("coded {c0} {c1} {c9}")
+    let n0: string = await named(0)
+    let n3: string = await named(3)
+    io.println("named {n0} {n3}")
+    let s4: int = await sturdy(4)
+    let s99: int = await sturdy(99)
+    io.println("sturdy {s4} {s99}")
+    let mt: int = await mixed(true)
+    let mf: int = await mixed(false)
+    io.println("mixed {mt} {mf}")
+}
+BEANS
+cat > "$tmp/sem_noawait.expected" <<'BEANS'
+coded 70 71 79
+named zero other
+sturdy 4 -1
+mixed 1 2
+BEANS
+run_matrix "$tmp/sem_noawait.b" "$tmp/sem_noawait.expected"
 
 echo "checking move-only values ride across suspensions"
 cat > "$tmp/sem_own.b" <<'BEANS'

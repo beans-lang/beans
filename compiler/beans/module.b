@@ -881,7 +881,9 @@ class ModuleLoader {
         let dir: string =
             path.join(stdlib_root(), "async$rt")
         if !Dir.exists(dir) {
-            self.fail(dir, 0, 0,
+            // 1:1, not 0:0: both compilers render a real position the same
+            // way, so this installation error stays byte-identical too.
+            self.fail(dir, 1, 1,
                       "the async runtime package is missing from the standard library")
             return
         }
