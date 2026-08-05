@@ -1208,8 +1208,8 @@ scoped defer
 dropped kept
 early 0
 holding kept
-scoped defer
 dropped kept
+scoped defer
 full 1
 BEANS
 run_matrix "$tmp/sem_children.b" "$tmp/sem_children.expected"
@@ -1756,6 +1756,364 @@ ran 1
 got 10 20 30
 BEANS
 run_matrix "$tmp/sem_fair.b" "$tmp/sem_fair.expected"
+
+echo "checking every result shape rides the scan while a sibling parks"
+# One parked child forces the scan to poll children of every shape —
+# unit, string, int, Result, Option, generic, class, move-only, list,
+# interface-typed — so nothing in the machinery can assume one Task<T>.
+cat > "$tmp/sem_shapes.b" <<'BEANS'
+import std.io
+import std.net
+import std.sock
+
+interface Speaker {
+    fn speak() -> string
+}
+
+class Dog implements Speaker {
+    pub sound: string
+    pub fn init(sound: string) { self.sound = sound }
+    pub fn speak() -> string { return self.sound }
+}
+
+unique class Crate {
+    pub label: string
+    pub fn init(label: string) { self.label = label }
+}
+
+async fn quiet() { io.println("quiet ran") }
+async fn worded() -> string { return "words" }
+async fn counted() -> int { return 5 }
+async fn tried(flag: bool) -> Result<int> {
+    if flag { return ok(9) }
+    return err("nope")
+}
+async fn perhaps(flag: bool) -> Option<int> {
+    if flag { return some(4) }
+    return none
+}
+async fn echoed<T>(move v: T) -> T { return v }
+async fn barked() -> Dog { return new Dog("woof") }
+async fn crated() -> Crate { return new Crate("boxed") }
+async fn listed() -> List<int> { return [1, 2, 3] }
+async fn spoken() -> Speaker { return new Dog("spoke") }
+
+async fn parker(fd: int) -> int {
+    let woke: bool = await net.await_readable(fd)
+    return if woke { 1 } else { 0 }
+}
+
+async fn feeder(fd: int) -> int {
+    let sent: Result<int> = sock.send(fd, Bytes.from("x"), 0)
+    return sent.or(0 - 1)
+}
+
+async fn main() {
+    let server: net.TcpListener =
+        net.TcpListener.bind("127.0.0.1", 0).expect("bind")
+    let port: int = server.local().expect("local").port
+    var sender: net.TcpStream =
+        net.TcpStream.connect("127.0.0.1", port).expect("connect")
+    let accepted: net.TcpStream = server.accept().expect("accept")
+
+    await quiet()
+    async let gate: int = parker(accepted.handle())
+    async let s: string = worded()
+    async let n: int = counted()
+    async let r: Result<int> = tried(true)
+    async let o: Option<int> = perhaps(false)
+    async let g: int = echoed(11)
+    async let d: Dog = barked()
+    async let c: Crate = crated()
+    async let xs: List<int> = listed()
+    async let v: Speaker = spoken()
+    async let push: int = feeder(sender.handle())
+    // awaiting the parked child first sends the scan through every
+    // shape child above before the feeder wakes the gate
+    let woke: int = await gate
+    let said: string = await s
+    let count: int = await n
+    let risky: int = (await r).expect("tried")
+    let missing: Option<int> = await o
+    let echoes: int = await g
+    let dog: Dog = await d
+    let crate_val: Crate = await c
+    let list_val: List<int> = await xs
+    let speaker: Speaker = await v
+    let fed: int = await push
+    var missing_text: string = "none"
+    match missing {
+        some(inner) => { missing_text = "{inner}" }
+        none => {}
+    }
+    io.println("woke {woke} said {said} count {count} risky {risky}")
+    io.println("missing {missing_text} echoes {echoes}")
+    io.println("dog {dog.speak()} crate {crate_val.label}")
+    io.println("list {list_val.len()} speaker {speaker.speak()} fed {fed}")
+}
+BEANS
+cat > "$tmp/sem_shapes.expected" <<'BEANS'
+quiet ran
+woke 1 said words count 5 risky 9
+missing none echoes 11
+dog woof crate boxed
+list 3 speaker spoke fed 1
+BEANS
+DEADLINE=30 run_matrix "$tmp/sem_shapes.b" "$tmp/sem_shapes.expected"
+
+echo "checking cancellation cascades run armed defers exactly once"
+# The parent returns early while its child is mid-body and the child's
+# own child is parked: parent defers flush, the child cancels with its
+# armed defer, the grandchild unparks, and every held object drops
+# exactly once — parent before child before grandchild.
+cat > "$tmp/sem_cascade.b" <<'BEANS'
+import std.io
+import std.net
+import std.sock
+
+class Holder {
+    pub fetch: fn() -> int
+    pub fn init(fetch: fn() -> int) { self.fetch = fetch }
+    fn deinit() { io.println("holder gone") }
+}
+
+async fn leaf(fd: int) -> int {
+    defer io.println("leaf defer")
+    let woke: bool = await net.await_readable(fd)
+    return 1
+}
+
+async fn middle(fd: int) -> int {
+    defer io.println("middle defer")
+    let base: int = 40
+    let held: Holder = new Holder(fn() -> int { return base + 2 })
+    async let deep: int = leaf(fd)
+    let sum: int = await deep
+    let out: fn() -> int = held.fetch
+    return sum + out()
+}
+
+async fn watch(fd: int) -> int {
+    let woke: bool = await net.await_readable(fd)
+    return 1
+}
+
+async fn writer(fd: int) -> int {
+    let sent: Result<int> = sock.send(fd, Bytes.from("x"), 0)
+    return sent.or(0 - 1)
+}
+
+async fn racing(quiet_fd: int, alarm_fd: int, alarm_peer: int) -> int {
+    defer io.println("racing defer")
+    async let stuck: int = middle(quiet_fd)
+    async let alarm: int = watch(alarm_fd)
+    async let feed: int = writer(alarm_peer)
+    // the alarm fires first; returning without awaiting `stuck` cancels
+    // middle mid-body — its defer is armed, its holder is live, and its
+    // grandchild is parked
+    let rang: int = await alarm
+    return rang
+}
+
+async fn main() {
+    let server: net.TcpListener =
+        net.TcpListener.bind("127.0.0.1", 0).expect("bind")
+    let port: int = server.local().expect("local").port
+    var quiet_sender: net.TcpStream =
+        net.TcpStream.connect("127.0.0.1", port).expect("c1")
+    let quiet_accepted: net.TcpStream = server.accept().expect("a1")
+    var alarm_sender: net.TcpStream =
+        net.TcpStream.connect("127.0.0.1", port).expect("c2")
+    let alarm_accepted: net.TcpStream = server.accept().expect("a2")
+
+    let rang: int = await racing(
+        quiet_accepted.handle(), alarm_accepted.handle(),
+        alarm_sender.handle())
+    io.println("rang {rang}")
+}
+BEANS
+# Cancellation order is defined: armed defers newest-first, then the
+# body's slots clear last-created-first — the grandchild's task (the
+# newest slot) cancels before the older holder releases.
+cat > "$tmp/sem_cascade.expected" <<'BEANS'
+racing defer
+middle defer
+leaf defer
+holder gone
+rang 1
+BEANS
+DEADLINE=30 run_matrix "$tmp/sem_cascade.b" "$tmp/sem_cascade.expected"
+
+echo "checking closures in async bodies capture, survive, and share"
+cat > "$tmp/sem_closures.b" <<'BEANS'
+import std.io
+
+class Holder {
+    pub fetch: fn() -> int
+    pub fn init(fetch: fn() -> int) { self.fetch = fetch }
+}
+
+async fn tick(a: int) -> int { return a }
+
+async fn closured() -> int {
+    var base: int = 10
+    let bump: fn() -> int = fn() -> int { return base + 1 }
+    let held: Holder = new Holder(bump)
+    let mid: int = await tick(4)
+    base = 20
+    let out: fn() -> int = held.fetch
+    // the closure reads the shared binding, so the mutation after the
+    // suspension is visible through the object-held copy too
+    return out() + mid + base
+}
+
+async fn main() {
+    let got: int = await closured()
+    io.println("got {got}")
+}
+BEANS
+cat > "$tmp/sem_closures.expected" <<'BEANS'
+got 45
+BEANS
+run_matrix "$tmp/sem_closures.b" "$tmp/sem_closures.expected"
+
+echo "checking error propagation cancels live children on the way out"
+cat > "$tmp/sem_qflow.b" <<'BEANS'
+import std.io
+
+unique class Marker {
+    pub tag: string
+    pub fn init(tag: string) { self.tag = tag }
+    fn deinit() { io.println("drop {self.tag}") }
+}
+
+async fn hold(move m: Marker) -> int {
+    io.println("held {m.tag}")
+    return 1
+}
+
+async fn failing(flag: bool) -> Result<int> {
+    if flag { return err("bad luck") }
+    return ok(7)
+}
+
+async fn outer(flag: bool) -> Result<int> {
+    defer io.println("outer defer")
+    async let kid: int = hold(new Marker("kid"))
+    let risky: int = (await failing(flag))?
+    let rest: int = await kid
+    return ok(risky + rest)
+}
+
+async fn main() {
+    // the error path leaves before the child was ever polled: the `?`
+    // exit flushes the defer and cancels the cold child, dropping its
+    // argument exactly once
+    let bad: Result<int> = await outer(true)
+    match bad {
+        ok(v) => { io.println("ok {v}") }
+        err(problem) => { io.println("err {problem.msg}") }
+    }
+    let good: Result<int> = await outer(false)
+    match good {
+        ok(v) => { io.println("ok {v}") }
+        err(problem) => { io.println("err {problem.msg}") }
+    }
+}
+BEANS
+cat > "$tmp/sem_qflow.expected" <<'BEANS'
+outer defer
+drop kid
+err bad luck
+held kid
+drop kid
+outer defer
+ok 8
+BEANS
+run_matrix "$tmp/sem_qflow.b" "$tmp/sem_qflow.expected"
+
+echo "checking shadowed and block-scoped async lets stay separate"
+cat > "$tmp/sem_scopes.b" <<'BEANS'
+import std.io
+
+async fn tick(a: int) -> int { return a }
+
+async fn nested(flag: bool) -> int {
+    async let x: int = tick(1)
+    var total: int = 0
+    if flag {
+        // a different binding with the same name in a nested scope
+        async let x: int = tick(100)
+        total += await x
+    }
+    match flag {
+        true => {
+            async let y: int = tick(30)
+            total += await y
+        }
+        false => {}
+    }
+    total += await x
+    return total
+}
+
+async fn main() {
+    let both: int = await nested(true)
+    io.println("both {both}")
+    let outer_only: int = await nested(false)
+    io.println("outer {outer_only}")
+}
+BEANS
+cat > "$tmp/sem_scopes.expected" <<'BEANS'
+both 131
+outer 1
+BEANS
+run_matrix "$tmp/sem_scopes.b" "$tmp/sem_scopes.expected"
+
+echo "checking an await after a maybe-awaiting branch refuses both ways"
+cat > "$tmp/rej_maybe_await.b" <<'EOF'
+async fn work() -> int { return 1 }
+
+async fn rejoin(flag: bool) -> int {
+    async let x: int = work()
+    if flag {
+        let a: int = await x
+    }
+    let b: int = await x
+    return b
+}
+
+async fn main() {
+    let v: int = await rejoin(false)
+}
+EOF
+# after the join the binding is maybe-awaited: the second await falls out
+# of the child arm and both the direct-call rule and the move tracker
+# refuse it, byte for byte
+both_reject_same "$tmp/rej_maybe_await.b" \
+    "await needs a direct call to an async function"
+grep -q "value 'x' may have been moved" "$tmp/a0"
+
+cat > "$tmp/ok_terminal_awaits.b" <<'EOF'
+async fn work() -> int { return 1 }
+
+async fn split(flag: bool) -> int {
+    async let x: int = work()
+    if flag {
+        let a: int = await x
+        return a
+    }
+    let b: int = await x
+    return b + 1
+}
+
+async fn main() {
+    let v: int = await split(true)
+    let w: int = await split(false)
+}
+EOF
+# both branches await exactly once and neither path rejoins: accepted
+both_accept "$tmp/ok_terminal_awaits.b"
 
 echo "checking a parked await wakes from another OS thread"
 cat > "$tmp/sem_ready.b" <<'BEANS'

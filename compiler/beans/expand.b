@@ -167,6 +167,15 @@ class AsyncExpander {
     loop_stack: List<AsyncLoopContext>
     counter: int
     body_is_unit: bool
+    // The shared terminal state every completion transitions to: filled
+    // at the end of expansion, when every slot is known, with the
+    // reverse-creation clears and the final return.
+    cleanup_state: int
+    // Names of the genuine list slots, in creation order. slot_decls
+    // also holds the plain bool defer flags, which have nothing to
+    // clear, and result$ registers here but is skipped: the take reads
+    // it after the final poll returns.
+    slot_names: List<string>
 
     fn init(signature: SignatureChecker) {
         self.signature = signature
@@ -182,6 +191,8 @@ class AsyncExpander {
         self.loop_stack = []
         self.counter = 0
         self.body_is_unit = false
+        self.cleanup_state = 0
+        self.slot_names = []
     }
 
     fn fail(node: AstNode, message: string) {
@@ -244,6 +255,9 @@ class AsyncExpander {
 
     fn slot_declaration(slot: string, element: HirType,
                         anchor: AstNode) -> AstNode {
+        // every genuine one-element list slot registers its name here;
+        // the cleanup state and the cancel closure clear exactly these
+        self.slot_names.push(slot)
         let declaration: AstNode = self.node("var", slot, anchor)
         declaration.add(self.type_ast(hir_list(element), anchor))
         declaration.add(self.node("list", "", anchor))
@@ -847,12 +861,18 @@ class AsyncExpander {
         take_read.add(self.name_of(done, node))
         taker_decl.add(take_read)
         self.emit(taker_decl)
+        let invoke: AstNode = self.node("call", "", node)
+        invoke.add(self.name_of(taker, node))
+        // A unit value has no slot to ride in — List<unit> is not a real
+        // container for either backend — so the take call itself is the
+        // await's (unit) value.
+        if canonical_hir_name(value_type.name) == "unit" {
+            return invoke
+        }
         // value$.push(taken$())
         let value: string = self.fresh_name("value_")
         self.slot_decls.push(
             self.slot_declaration(value, value_type, node))
-        let invoke: AstNode = self.node("call", "", node)
-        invoke.add(self.name_of(taker, node))
         self.emit(self.slot_push(value, invoke, node))
         return self.slot_take(value, node)
     }
@@ -941,8 +961,11 @@ class AsyncExpander {
                 [taken], node)
             bad_block.add(self.statement_of(store))
         }
-        bad_block.add(self.set_state_statement(0 - 1, node))
-        bad_block.add(self.return_int(1, node))
+        // the early error exit completes through the shared cleanup
+        // state like every other completion
+        bad_block.add(self.set_state_statement(
+            self.cleanup_state, node))
+        bad_block.add(self.node("continue", "", node))
         bad_arm.add(bad_block)
         dispatch.add(bad_arm)
         self.emit(self.statement_of(dispatch))
@@ -1813,24 +1836,6 @@ class AsyncExpander {
         for flushed: AstNode in flush.children {
             self.emit(flushed)
         }
-        // Unfinished children cancel before the result lands: clearing a
-        // child slot drops its task, and Task.deinit runs the cleanup.
-        // Newest scope first and last declared first within each — the
-        // same reverse-declaration order plain locals drop in.
-        var scope_index: int = self.scopes.len() - 1
-        for scope_index >= 0 {
-            let scope: AsyncScope = self.scopes[scope_index]
-            var slot_index: int = scope.order.len() - 1
-            for slot_index >= 0 {
-                let slot: AsyncSlot =
-                    scope.bindings[scope.order[slot_index]]
-                if slot.is_child && !slot.masked {
-                    self.emit(self.slot_clear(slot.slot, anchor))
-                }
-                slot_index -= 1
-            }
-            scope_index -= 1
-        }
         match value {
             some(result_value) => {
                 if self.body_is_unit {
@@ -1843,8 +1848,15 @@ class AsyncExpander {
             }
             none => {}
         }
-        self.emit(self.set_state_statement(0 - 1, anchor))
-        self.emit(self.return_int(1, anchor))
+        // Every remaining slot clears in the shared cleanup state, last
+        // created first — after the result push above, which may still
+        // read them. Without this the values would drop when the task
+        // record's closures release, in whatever capture order each
+        // backend happened to emit; the cleanup state is built once the
+        // full slot list is known, so every completion site — even one
+        // emitted before a later slot existed — clears everything, and
+        // the drop order is defined and the same everywhere.
+        self.emit_transition(self.cleanup_state, anchor)
     }
 
     // ---- hoist pre-pass ----------------------------------------------
@@ -1923,6 +1935,7 @@ class AsyncExpander {
         self.function = function
         self.states = []
         self.slot_decls = []
+        self.slot_names = []
         self.scopes = []
         self.defer_names = {}
         self.defers = []
@@ -1957,6 +1970,7 @@ class AsyncExpander {
                 slot.slot, taken, anchor))
         }
         let entry: int = self.new_state(anchor)
+        self.cleanup_state = self.new_state(anchor)
         self.enter_state(entry)
         self.push_scope()
         self.rewrite_block_statements(body_block)
@@ -1979,6 +1993,21 @@ class AsyncExpander {
             self.emit(self.return_int(1, anchor))
         }
         self.pop_scope(false, anchor)
+        // The shared cleanup state: every completion transitions here.
+        // The full slot list exists now, so even a completion emitted
+        // before a later slot was created clears everything, last
+        // created first — the drop order plain locals get.
+        self.enter_state(self.cleanup_state)
+        var clear_index: int = self.slot_names.len() - 1
+        for clear_index >= 0 {
+            if self.slot_names[clear_index] != "result$" {
+                self.emit(self.slot_clear(
+                    self.slot_names[clear_index], anchor))
+            }
+            clear_index -= 1
+        }
+        self.emit(self.set_state_statement(0 - 1, anchor))
+        self.emit(self.return_int(1, anchor))
 
         // Assemble the maker body.
         let maker: AstNode = self.node("block", "", anchor)
@@ -2058,11 +2087,23 @@ class AsyncExpander {
             take_closure.add(self.node("block", "", anchor))
         }
 
-        // fn() { armed defers, newest first }
+        // fn() { armed defers newest first, then every slot clears in
+        // reverse creation order — cancellation drops what the body
+        // still held in a defined order, children cancelling in cascade
+        // as their slots clear, instead of whatever capture order each
+        // backend's closure teardown happened to use }
         let cancel_closure: AstNode = self.node("closure", "", anchor)
         cancel_closure.add(self.node("params", "", anchor))
         let cancel_body: AstNode = self.node("block", "", anchor)
         self.append_defer_flushes(cancel_body, anchor)
+        var cancel_index: int = self.slot_names.len() - 1
+        for cancel_index >= 0 {
+            if self.slot_names[cancel_index] != "result$" {
+                cancel_body.add(self.slot_clear(
+                    self.slot_names[cancel_index], anchor))
+            }
+            cancel_index -= 1
+        }
         cancel_closure.add(cancel_body)
 
         let task_hir: HirType = hir_named(
