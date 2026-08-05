@@ -57,6 +57,13 @@ import std.os
 //     drop in, defined the same for both compilers. The cancel closure
 //     runs the armed defers and the same clears when an unfinished task
 //     is dropped, so children cancel in cascade as their slots clear.
+//   - main's drive loop matches what the loader loaded: when the
+//     readiness half of the async runtime is present (std.net loaded),
+//     a pending root blocks in the reactor driver; without it the loop
+//     calls the poller-free stall, which reports the async deadlock.
+//     That choice is what keeps every poller symbol out of pure async
+//     programs, so they link under the minimal and freestanding
+//     runtime profiles.
 
 fn ast_contains_await(node: AstNode) -> bool {
     if node.kind == "await" { return true }

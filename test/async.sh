@@ -2229,8 +2229,13 @@ if [ "${cpu_line:-999}" -ge 60 ]; then
     exit 1
 fi
 
-echo "checking pure async rides every profile and 32-bit targets"
+echo "checking pure async builds, links and runs under the minimal profile"
+# Not just `check`: the whole claim is that a pure-compute async program
+# emits no poller reference, so the minimal runtime — which has no
+# poller — must carry it through an actual link and run.
 cat > "$tmp/prof_pure.b" <<'BEANS'
+import std.io
+
 async fn tick(a: int) -> int { return a }
 
 async fn sums(a: int) -> int {
@@ -2238,12 +2243,44 @@ async fn sums(a: int) -> int {
 }
 
 async fn main() {
-    let ignored: int = await sums(1)
+    let total: int = await sums(1)
+    io.println("total {total}")
 }
 BEANS
-"$BEANSC" check --runtime minimal "$tmp/prof_pure.b" >/dev/null
+"$BEANSC" build --runtime minimal "$tmp/prof_pure.b" -o "$native_dir/prof_pure" >/dev/null
+"$BEANSC0" build --runtime minimal "$tmp/prof_pure.b" -o "$native_dir/prof_pure.s0" >/dev/null
+[ "$("$native_dir/prof_pure")" = "total 3" ]
+[ "$("$native_dir/prof_pure.s0")" = "total 3" ]
+# and the same source still runs under the full profile, both ways
+"$BEANSC" build "$tmp/prof_pure.b" -o "$native_dir/prof_pure.full" >/dev/null
+[ "$("$native_dir/prof_pure.full")" = "total 3" ]
+
+echo "checking minimal output carries no poller or reactor symbols"
+# The self-hosted emitter writes nothing it does not use; the stage-0
+# emitter declares every known builtin up front, so its proof is the
+# absence of calls and of linked symbols, not of declarations.
+"$BEANSC" build --emit ir --runtime minimal "$tmp/prof_pure.b" -o "$tmp/prof_pure.ll" >/dev/null
+"$BEANSC0" build --emit ir --runtime minimal "$tmp/prof_pure.b" -o "$tmp/prof_pure0.ll" >/dev/null
+[ "$(grep -c 'beans_poll_\|beans_reactor_\|beans_task_slot' "$tmp/prof_pure.ll")" -eq 0 ]
+[ "$(grep -c 'call.*beans_poll_\|call.*beans_reactor_\|call.*beans_task_slot' "$tmp/prof_pure0.ll")" -eq 0 ]
+for bin in "$native_dir/prof_pure" "$native_dir/prof_pure.s0"; do
+    if nm "$bin" 2>/dev/null | grep -qi "beans_poll_\|beans_reactor_\|beans_task_slot"; then
+        echo "async: $bin carries poller symbols under the minimal profile" >&2
+        exit 1
+    fi
+done
+# a full-profile readiness program is the size yardstick: minimal pure
+# async staying far below it means the poller did not ride along
+net_size=$(wc -c <"$native_dir/sem_ready")
+min_size=$(wc -c <"$native_dir/prof_pure")
+if [ "$min_size" -ge "$net_size" ]; then
+    echo "async: minimal pure async ($min_size) is no smaller than a full readiness binary ($net_size)" >&2
+    exit 1
+fi
+
+echo "checking pure async still checks and emits for the other profiles"
 "$BEANSC" check --runtime freestanding "$tmp/prof_pure.b" >/dev/null
-"$BEANSC0" check --runtime minimal "$tmp/prof_pure.b" >/dev/null
+"$BEANSC0" check --runtime freestanding "$tmp/prof_pure.b" >/dev/null
 # 32-bit async frame layout: the closures' capture cells must emit for a
 # 32-bit target without complaint.
 "$BEANSC" llvm --target i686-unknown-linux-gnu "$tmp/prof_pure.b" >/dev/null
@@ -2264,5 +2301,265 @@ set -e
 [ "$r0" -ne 0 ] && [ "$r1" -ne 0 ]
 grep -q "needs readiness polling" "$tmp/pp0"
 grep -q "needs readiness polling" "$tmp/pp1"
+
+echo "checking readiness awaits are refused under minimal, byte-identically"
+cat > "$tmp/prof_net.b" <<'BEANS'
+import std.net
+
+async fn main() {
+    async let woke: bool = net.await_readable(0)
+    let value: bool = await woke
+}
+BEANS
+set +e
+"$BEANSC0" check --runtime minimal "$tmp/prof_net.b" >"$tmp/pn0" 2>&1; r0=$?
+"$BEANSC" check --runtime minimal "$tmp/prof_net.b" >"$tmp/pn1" 2>&1; r1=$?
+set -e
+[ "$r0" -ne 0 ] && [ "$r1" -ne 0 ]
+grep -q "needs sockets" "$tmp/pn0"
+diff -u "$tmp/pn0" "$tmp/pn1"
+
+echo "checking the reactor works when the poller handle is zero"
+# stdin is closed for every run, so descriptor 0 is the first free
+# number and the reactor's poller takes handle 0 — which slot 0 must
+# still distinguish from "not open yet". The program proves an invalid
+# await finishes false, two simultaneous parks wake through handle 0,
+# and the reactor holds and leaks nothing across the cycle.
+cat > "$tmp/zero_handle.b" <<'BEANS'
+import std.io
+import std.net
+import std.sock
+
+async fn reader(fd: int) -> int {
+    let woke: bool = await net.await_readable(fd)
+    return if woke { 1 } else { 0 }
+}
+
+async fn writer(fd: int) -> int {
+    let sent: Result<int> = sock.send(fd, Bytes.from("x"), 0)
+    return sent.or(0 - 1)
+}
+
+fn probe_fd() -> int {
+    let probe: net.TcpListener =
+        net.TcpListener.bind("127.0.0.1", 0).expect("probe")
+    return probe.handle()
+}
+
+// two simultaneous parks and their wakes, all through the shared poller;
+// every socket drops before this returns, so the caller's probe reads
+// only what the reactor itself holds open
+async fn pairs() -> int {
+    let server: net.TcpListener =
+        net.TcpListener.bind("127.0.0.1", 0).expect("bind")
+    let port: int = server.local().expect("local").port
+    var sender_a: net.TcpStream =
+        net.TcpStream.connect("127.0.0.1", port).expect("connect a")
+    let accepted_a: net.TcpStream = server.accept().expect("accept a")
+    var sender_b: net.TcpStream =
+        net.TcpStream.connect("127.0.0.1", port).expect("connect b")
+    let accepted_b: net.TcpStream = server.accept().expect("accept b")
+
+    async let got_a: int = reader(accepted_a.handle())
+    async let got_b: int = reader(accepted_b.handle())
+    async let sent_a: int = writer(sender_a.handle())
+    async let sent_b: int = writer(sender_b.handle())
+    let woke_a: int = await got_a
+    let woke_b: int = await got_b
+    let wrote_a: int = await sent_a
+    let wrote_b: int = await sent_b
+    return woke_a * 1000 + woke_b * 100 +
+           if wrote_a > 0 { 10 } else { 0 } +
+           if wrote_b > 0 { 1 } else { 0 }
+}
+
+async fn main() {
+    // stdin is closed: this invalid await opens the reactor before any
+    // application descriptor exists, so the poller takes handle 0
+    async let dead: bool = net.await_readable(4000)
+    let dead_woke: bool = await dead
+    io.println("dead {dead_woke}")
+    let first_fd: int = probe_fd()
+
+    let score: int = await pairs()
+    io.println("score {score}")
+
+    let second_fd: int = probe_fd()
+    if second_fd != first_fd {
+        io.println("leaked: probe fd moved {first_fd} -> {second_fd}")
+    } else {
+        io.println("stable")
+    }
+}
+BEANS
+cat > "$tmp/zero_handle.expected" <<'BEANS'
+dead false
+score 1111
+stable
+BEANS
+"$BEANSC" build "$tmp/zero_handle.b" -o "$native_dir/zero_handle" >/dev/null
+"$BEANSC0" build "$tmp/zero_handle.b" -o "$native_dir/zero_handle.s0" >/dev/null
+for zh in "$native_dir/zero_handle" "$native_dir/zero_handle.s0"; do
+    # twice per binary: the second run proves a fresh reactor cycle
+    # initializes and shuts down identically after the first
+    for pass in 1 2; do
+        perl -e 'alarm 30; exec @ARGV' "$zh" 0<&- >"$tmp/zh.out" 2>&1
+        diff -u "$tmp/zero_handle.expected" "$tmp/zh.out"
+    done
+done
+perl -e 'alarm 45; exec @ARGV' "$BEANSC" run "$tmp/zero_handle.b" 0<&- >"$tmp/zh.i1" 2>&1
+diff -u "$tmp/zero_handle.expected" "$tmp/zh.i1"
+perl -e 'alarm 45; exec @ARGV' "$BEANSC0" run "$tmp/zero_handle.b" 0<&- >"$tmp/zh.i0" 2>&1
+diff -u "$tmp/zero_handle.expected" "$tmp/zh.i0"
+
+echo "checking a closed-and-reused descriptor cannot wake or hang the old await"
+# The identity fix in one program: a sibling closes the watched stream
+# while its await is parked, the freed number is immediately reused by a
+# fresh pair, and the old await must finish false off its own token —
+# without watching the replacement and without blocking the driver. The
+# replacement pair itself must behave like any other descriptor.
+cat > "$tmp/sem_reuse.b" <<'BEANS'
+import std.io
+import std.net
+import std.sock
+
+async fn watcher(fd: int) -> int {
+    let woke: bool = await net.await_readable(fd)
+    return if woke { 1 } else { 0 }
+}
+
+async fn writer(fd: int) -> int {
+    let sent: Result<int> = sock.send(fd, Bytes.from("x"), 0)
+    return sent.or(0 - 1)
+}
+
+async fn havoc(stream: net.TcpStream, server: net.TcpListener,
+               port: int, victim_fd: int) -> int {
+    let closed: Result<bool> = stream.close()
+    var sender2: net.TcpStream =
+        net.TcpStream.connect("127.0.0.1", port).expect("connect2")
+    let accepted2: net.TcpStream = server.accept().expect("accept2")
+    let reused: bool = sender2.handle() == victim_fd ||
+                       accepted2.handle() == victim_fd
+    io.println("reused {reused}")
+    async let woke2: int = watcher(accepted2.handle())
+    async let sent2: int = writer(sender2.handle())
+    let w2: int = await woke2
+    let s2: int = await sent2
+    return if reused && w2 == 1 && s2 == 1 { 1 } else { 0 }
+}
+
+async fn main() {
+    let server: net.TcpListener =
+        net.TcpListener.bind("127.0.0.1", 0).expect("bind")
+    let port: int = server.local().expect("local").port
+    var sender: net.TcpStream =
+        net.TcpStream.connect("127.0.0.1", port).expect("connect")
+    var accepted: net.TcpStream = server.accept().expect("accept")
+    let victim_fd: int = accepted.handle()
+
+    async let victim: int = watcher(victim_fd)
+    async let chaos: int = havoc(move accepted, move server,
+                                 port, victim_fd)
+    // the victim is awaited first on purpose: its descriptor dies under
+    // the park, and the await must finish false — not hang, and not
+    // wake off the replacement resource that reuses the number
+    let victim_verdict: int = await victim
+    let chaos_verdict: int = await chaos
+    io.println("victim {victim_verdict} chaos {chaos_verdict}")
+}
+BEANS
+cat > "$tmp/sem_reuse.expected" <<'BEANS'
+reused true
+victim 0 chaos 1
+BEANS
+DEADLINE=30 run_matrix "$tmp/sem_reuse.b" "$tmp/sem_reuse.expected"
+
+echo "checking reuse after cancellation, completion, and across repeats"
+# Round one: a parked await whose descriptor died is cancelled, never
+# awaited — the cancel path must release its token without touching
+# the reused number. Then full park/wake/close cycles in a loop, each
+# ending with a normal completion and a writable await, all recycling
+# the same descriptor numbers. Any stale registration, stolen wake, or
+# double bookkeeping breaks a later round or the final count.
+cat > "$tmp/sem_reuse_cancel.b" <<'BEANS'
+import std.io
+import std.net
+import std.sock
+
+async fn watcher(fd: int) -> int {
+    let woke: bool = await net.await_readable(fd)
+    return if woke { 1 } else { 0 }
+}
+
+async fn writer(fd: int) -> int {
+    let sent: Result<int> = sock.send(fd, Bytes.from("x"), 0)
+    return sent.or(0 - 1)
+}
+
+// parks a watcher on the victim, kills the victim's descriptor while
+// the watcher is parked, and returns WITHOUT awaiting it: the
+// cancellation must clean the dead park without disturbing anything
+async fn abandon(victim: net.TcpStream, gate_read: int,
+                 gate_write: int) -> int {
+    async let doomed: int = watcher(victim.handle())
+    async let kick: int = writer(gate_write)
+    // parking here suspends this body, which is what first runs the
+    // doomed watcher and the gate writer
+    let woke: bool = await net.await_readable(gate_read)
+    let closed: Result<bool> = victim.close()
+    let kicked: int = await kick
+    return if woke && kicked == 1 { 1 } else { 0 }
+}
+
+// a full park/wake/close round on freshly bound descriptors — the
+// numbers freed by the previous round come straight back here
+async fn cycle() -> int {
+    let server: net.TcpListener =
+        net.TcpListener.bind("127.0.0.1", 0).expect("bind")
+    let port: int = server.local().expect("local").port
+    var sender: net.TcpStream =
+        net.TcpStream.connect("127.0.0.1", port).expect("connect")
+    let accepted: net.TcpStream = server.accept().expect("accept")
+    async let got: int = watcher(accepted.handle())
+    async let sent: int = writer(sender.handle())
+    let woke: int = await got
+    let wrote: int = await sent
+    // a writable await on the recycled numbers completes immediately
+    // on an empty buffer
+    let free: bool = await net.await_writable(sender.handle())
+    return if woke == 1 && wrote == 1 && free { 1 } else { 0 }
+}
+
+async fn main() {
+    let server: net.TcpListener =
+        net.TcpListener.bind("127.0.0.1", 0).expect("bind")
+    let port: int = server.local().expect("local").port
+    var victim_sender: net.TcpStream =
+        net.TcpStream.connect("127.0.0.1", port).expect("vconnect")
+    let victim_accepted: net.TcpStream = server.accept().expect("vaccept")
+    var gate_sender: net.TcpStream =
+        net.TcpStream.connect("127.0.0.1", port).expect("gconnect")
+    let gate_accepted: net.TcpStream = server.accept().expect("gaccept")
+
+    let stage: int = await abandon(
+        move victim_accepted, gate_accepted.handle(),
+        gate_sender.handle())
+    io.println("abandoned {stage}")
+
+    var total: int = 0
+    var round: int = 0
+    for round < 5 {
+        total += await cycle()
+        round += 1
+    }
+    io.println("rounds {total}")
+}
+BEANS
+cat > "$tmp/sem_reuse_cancel.expected" <<'BEANS'
+abandoned 1
+rounds 5
+BEANS
+DEADLINE=45 run_matrix "$tmp/sem_reuse_cancel.b" "$tmp/sem_reuse_cancel.expected"
 
 echo "async: ok"

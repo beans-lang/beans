@@ -1290,9 +1290,31 @@ async fn main() {
   first before starting the second (sequential re-parks on one
   descriptor are fine). At most 64 awaits can be parked at once. When
   `async fn main` finishes, the hidden poller closes and its state
-  resets, so a full run leaves no descriptor behind. This rides the full
-  runtime profile like `std.poll`; pure computation async code still
-  runs on every profile.
+  resets, so a full run leaves no descriptor behind.
+- **Closing a watched descriptor.** Every close that goes through the
+  runtime — a stream's `close()`, a drop of the owning handle, files,
+  process streams, signal sources — marks any await parked on that
+  descriptor, on every platform including Windows. The marked await
+  finishes `false` on its next turn without touching the descriptor
+  number again, so the number is immediately safe to reuse: a fresh
+  await parked on the reused number watches only the new resource, and
+  the old await can neither wake off it nor block it. A close performed
+  *outside* the runtime (raw extern C code) is caught on POSIX only
+  while the number stays unused, and cannot be told apart from a live
+  descriptor once the number is reused — close through the handle, not
+  behind it. The same borrow rule guards the other direction: a
+  `.handle()` number is borrowed, so closing the handle and reusing the
+  number *before* a child that holds the number first suspends means
+  that child watches whatever the number means by then.
+- **Runtime profiles.** Pure-compute async — `async fn`, `await`,
+  `async let`, cancellation — builds and runs under every runtime
+  profile, `minimal` and `freestanding` included: a program that never
+  imports `std.net` gets an async runtime with no poller in it, and its
+  binary carries no polling or socket code. Readiness awaits ride
+  `std.net`, which needs the full profile; under a smaller profile that
+  import is refused at check time, naming the capability. A pure async
+  program that somehow ends up pending reports the async deadlock above
+  rather than reaching for a poller it does not have.
 - **Not yet in this first version:** dynamic task groups, detached tasks,
   async closures, `inout` on a directly awaited call. They layer on this
   model without changing it.
