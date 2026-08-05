@@ -1209,9 +1209,21 @@ async fn main() {
   Leaving the scope without awaiting — early `return`, `?`, `break`,
   `continue`, or falling off the end — cancels the unfinished child
   before the parent's own result lands: its armed `defer`s run newest
-  first, its live values drop exactly once, and children it started
-  cancel in cascade. The parent never finishes while a child is still
+  first, then everything its body still held drops, last created first —
+  the order plain locals drop in — and children it started cancel in
+  cascade the same way. The parent never finishes while a child is still
   running or cleaning.
+- **When children run.** The child is registered the moment the
+  `async let` executes, and its body first runs at the earlier of two
+  points: its own `await`, or the parent's next suspension. Every time a
+  frame is about to report pending — its awaited call parked or still
+  working — it first gives each of its live children one poll, first
+  declared first, and that full pass repeats on every re-poll, so a
+  busy or repeatedly waking child cannot starve its siblings. A child's
+  own suspensions reach its children the same way, so scheduling depth
+  follows the task tree and nothing else. Between suspension points a
+  task runs synchronously and uninterrupted; there is no preemption and
+  no `yield`.
 - **`await` takes a direct call and produces the declared result.** The
   operand must be a call to an async function: `await f(x)` has type `R`,
   awaiting anything else is refused (*await needs a direct call to an async
@@ -1234,18 +1246,28 @@ async fn main() {
 - **Cleanup stays synchronous and exact.** `await` is refused inside
   `defer` and inside closures; `init` and `deinit` cannot be async. A
   `defer` armed before a suspension survives any number of them and runs
-  exactly once on return or `?` propagation — and on cancellation, when a
-  scope's unfinished children are torn down (next version). A panic inside
-  an async body stops the program with the original source position, like
-  every other panic; defers do not run on a panic (the base rule).
-- **What an async fn cannot do:** take `inout` parameters (an async call
-  can run as a concurrent child, so its signature cannot promise exclusive
-  access to a caller's variable), be `extern "C"` (wrap the C call in an
-  async Beans function instead), be `feature`-gated, or be an instance
-  method on a `unique class` (the hidden frame cannot borrow the receiver;
-  statics are fine). `await` cannot sit inside string interpolation — bind
-  the value to a local first — and cannot suspend while a `for` element or
-  `match` payload borrows a move-only value.
+  exactly once — on return, on `?` propagation, and on cancellation when
+  a scope's unfinished children are torn down. A completed child's
+  locals drop at its completion; a cancelled child's drop during the
+  cancellation, armed defers first, then values last-created-first. A
+  panic inside an async body stops the program with the original source
+  position, like every other panic; defers do not run on a panic (the
+  base rule). A panic inside a never-awaited child surfaces when the
+  scheduler first polls it — at the parent's next suspension.
+- **What an async fn cannot do:** take `inout` parameters, be
+  `extern "C"` (wrap the C call in an async Beans function instead), be
+  `feature`-gated, or be an instance method on a `unique class` (statics
+  are fine). The `inout` and unique-receiver rules share one honest
+  reason: the body lowers to closures that outlive the call, and a
+  closure cannot capture an `inout` parameter or keep a move-only
+  receiver borrowed past the call that lent it. A **directly awaited**
+  call could hold such a borrow safely — the caller is suspended for the
+  child's whole life — but an `async let` child runs beside its caller
+  and could not, and one lowering serves both call forms, so the
+  declaration is refused rather than the call. Pass the value in and
+  return the new one. `await` cannot sit inside string interpolation —
+  bind the value to a local first — and cannot suspend while a `for`
+  element or `match` payload borrows a move-only value.
 - **Scheduling is hidden and cooperative.** An async call suspends only at
   `await` points; between them it runs synchronously on the executor's one
   thread. Long CPU work therefore blocks every other task — put it on
@@ -1253,14 +1275,27 @@ async fn main() {
   points, never mid-statement.
 - **Readiness awaits.** `await net.await_readable(handle)` (and
   `await_writable`) suspends until the descriptor is ready — a socket's
-  `.handle()`, or any pollable descriptor. While one child is parked, the
-  rest of the program keeps going; when nothing can move, the hidden
-  driver blocks in the platform poller — never a busy spin — and the OS
-  wakes it. Level-triggered: already-ready completes on the spot. This
-  rides the full runtime profile like `std.poll`; pure computation
-  async code still runs on every profile.
+  `.handle()`, or any pollable descriptor. While one child is parked,
+  its runnable siblings keep running through the scan above; when
+  nothing can move and something is parked, the hidden driver blocks in
+  the platform poller — never a busy spin — and the OS wakes it. When
+  nothing can move and nothing is parked, the program stops with *async
+  deadlock: every task is waiting and none is parked on readiness*.
+  Level-triggered: already-ready completes on the spot. A readiness that
+  can never come does not hang: an await on a closed or invalid
+  descriptor finishes with `false`, including a descriptor closed while
+  the await was parked. Two awaits parked on one descriptor at the same
+  time are refused with a panic — the poller keys registration by
+  descriptor, so the second would silently cancel the first; await the
+  first before starting the second (sequential re-parks on one
+  descriptor are fine). At most 64 awaits can be parked at once. When
+  `async fn main` finishes, the hidden poller closes and its state
+  resets, so a full run leaves no descriptor behind. This rides the full
+  runtime profile like `std.poll`; pure computation async code still
+  runs on every profile.
 - **Not yet in this first version:** dynamic task groups, detached tasks,
-  async closures. They layer on this model without changing it.
+  async closures, `inout` on a directly awaited call. They layer on this
+  model without changing it.
 
 ## Targets and the build (v0.8, implemented)
 

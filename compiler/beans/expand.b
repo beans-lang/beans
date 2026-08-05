@@ -47,10 +47,16 @@ import std.os
 //   - String pieces re-resolve names when the maker is re-checked, so a
 //     statement whose interpolations read a slotted local is wrapped in a
 //     one-element loop that re-binds the original name as a borrow.
+//   - Every suspension first gives each live async let child of the
+//     frame one poll, first declared first — that scan is what lets a
+//     child progress while a sibling's await is parked, and it repeats
+//     on every re-poll, so no child starves.
 //   - `return` and `?` run the armed defers newest-first, store the
-//     completion value, and report ready. The cancel closure runs the same
-//     armed-defer code when an unfinished task is dropped; the captured
-//     values drop with the closures.
+//     completion value, and transition to a shared cleanup state that
+//     clears every slot last-created-first — the order plain locals
+//     drop in, defined the same for both compilers. The cancel closure
+//     runs the armed defers and the same clears when an unfinished task
+//     is dropped, so children cancel in cascade as their slots clear.
 
 fn ast_contains_await(node: AstNode) -> bool {
     if node.kind == "await" { return true }
