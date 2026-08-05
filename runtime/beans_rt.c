@@ -42,6 +42,14 @@
 #define BEANS_RT_MINIMAL 2
 #define BEANS_RT_FULL 3
 
+#if BEANS_RT_PROFILE >= BEANS_RT_FULL
+// Defined with the readiness reactor far below; every runtime path that
+// closes a descriptor reports it here so a parked await on that number
+// finishes false instead of attaching itself to whatever resource the
+// OS hands the number to next.
+void beans_reactor_note_close(long long fd);
+#endif
+
 // ---- portable decimal ------------------------------------------------------
 //
 // Decimal carries a signed 128-bit coefficient as two u64 limbs. It therefore
@@ -1382,7 +1390,12 @@ static void* cc_free_shell(void* p, long long meta) {
 #endif
         } else {
             BFile* f = p; // net; close() / f.close() is the real API
-            if (f->fd >= 0) close((int)f->fd);
+            if (f->fd >= 0) {
+#if BEANS_RT_PROFILE >= BEANS_RT_FULL
+                beans_reactor_note_close(f->fd);
+#endif
+                close((int)f->fd);
+            }
         }
 #endif
     }
@@ -4744,6 +4757,9 @@ BRes beans_file_close(BFile* f) {
     // cc_free_shell, when no thread can hold it. This mirrors the collector's
     // own "don't touch shared resources while mutators run" gate. Zero cost
     // single-threaded, where cc_threads is 0 and the fd closes now.
+#if BEANS_RT_PROFILE >= BEANS_RT_FULL
+    beans_reactor_note_close(f->fd);
+#endif
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
     if (cc_threads > 0) return (BRes){1, NULL};
 #endif
@@ -5866,6 +5882,9 @@ long long beans_proc_read_out(long long fd, long long max, void** e_out) { BRes 
 
 BRes beans_proc_close(long long fd) {
     if (fd < 0) return (BRes){0, mk_error("stream is closed", "closed")};
+#if BEANS_RT_PROFILE >= BEANS_RT_FULL
+    beans_reactor_note_close(fd);
+#endif
     if (close((int)fd) != 0 && errno != EINTR)
         return (BRes){0, op_err_obj("close", errno)};
     return (BRes){1, NULL};
@@ -6147,6 +6166,9 @@ long long beans_mmap_flush_range_out(BMMap* m, long long pos, long long n, void*
 BRes beans_mmap_close(BMMap* m) {
     if (m->closed) return (BRes){0, mk_error("mmap already closed", "closed")};
     m->closed = 1;
+#if BEANS_RT_PROFILE >= BEANS_RT_FULL
+    if (m->fd >= 0) beans_reactor_note_close(m->fd);
+#endif
     // defer munmap+close while workers run (see beans_file_close): a racing op
     // reading through the mapping must not have it pulled out from under it
     if (cc_threads > 0) return (BRes){1, NULL};
@@ -7917,6 +7939,11 @@ long long beans_net_set_nonblocking_out(long long fd, long long on, void** e_out
 BRes beans_net_close(long long fd) {
     net_init();
     if (fd < 0) return (BRes){0, net_closed_err("close")};
+    // A parked await on this number must finish false off its dead flag,
+    // never off whatever resource the number is reused for. Marked before
+    // the close so no window exists where the number is free but the
+    // entry still looks live.
+    beans_reactor_note_close(fd);
     // EINTR from close must not be retried: on Linux the descriptor is already gone,
     // so a retry would close whatever number was handed out next.
     if (net_close(net_fd_of(fd)) != 0 && net_errno() != EINTR)
@@ -8677,45 +8704,86 @@ long long beans_set_task_slot(long long index, long long value) {
 // parked so the driver can notice a descriptor closed while an await
 // still waits on it — the OS quietly drops such registrations and would
 // leave the driver blocked forever.
+//
+// An entry is identified by a token, not the descriptor: the moment a
+// parked descriptor is closed its number can be handed to a brand-new
+// resource, and a descriptor-keyed table could not tell the dead await
+// from a fresh one on the reused number. The runtime's own close paths
+// call beans_reactor_note_close, which marks the entry dead in place —
+// the await finishes false off the flag, without ever touching the
+// number again, and the number is immediately free for a new park.
 #define BEANS_PARKED_MAX 64
-static _Thread_local long long beans_parked_fds[BEANS_PARKED_MAX];
+typedef struct {
+    long long fd;
+    long long token;
+    int dead;
+} BeansParked;
+static _Thread_local BeansParked beans_parked[BEANS_PARKED_MAX];
 static _Thread_local long long beans_parked_len;
+static _Thread_local long long beans_parked_token_next;
 
-// 1 = noted, 0 = that descriptor already has a parked await, -1 = full.
+// token (> 0) = noted, 0 = that descriptor already has a live parked
+// await, -1 = full. A dead entry on the same number does not block a
+// new park: the number belongs to the new resource now.
 long long beans_reactor_note_park(long long fd) {
     for (long long i = 0; i < beans_parked_len; i++)
-        if (beans_parked_fds[i] == fd) return 0;
+        if (!beans_parked[i].dead && beans_parked[i].fd == fd) return 0;
     if (beans_parked_len == BEANS_PARKED_MAX) return -1;
-    beans_parked_fds[beans_parked_len++] = fd;
-    return 1;
+    long long token = ++beans_parked_token_next;
+    beans_parked[beans_parked_len].fd = fd;
+    beans_parked[beans_parked_len].token = token;
+    beans_parked[beans_parked_len].dead = 0;
+    beans_parked_len++;
+    return token;
 }
 
-// 1 = removed, 0 = was not parked.
-long long beans_reactor_forget_park(long long fd) {
+// 1 = removed, 0 = no entry carries that token.
+long long beans_reactor_forget_park(long long token) {
     for (long long i = 0; i < beans_parked_len; i++) {
-        if (beans_parked_fds[i] != fd) continue;
+        if (beans_parked[i].token != token) continue;
         beans_parked_len--;
-        beans_parked_fds[i] = beans_parked_fds[beans_parked_len];
+        beans_parked[i] = beans_parked[beans_parked_len];
         return 1;
     }
     return 0;
 }
 
-// First parked descriptor that is no longer open, or -1. A descriptor
-// closed while parked never fires its registration again; the driver
-// checks before blocking so the parked await can finish with false
-// instead of the program hanging.
-long long beans_reactor_stale_park(void) {
-#if defined(_WIN32)
-    // SOCKET handles have no cheap liveness probe here; the driver skips
-    // the check and a same-thread close under a park stays undetected.
-    return -1;
-#else
+// 1 = the parked descriptor was closed under the await, 0 = still live,
+// -1 = no entry carries that token.
+long long beans_reactor_park_dead(long long token) {
     for (long long i = 0; i < beans_parked_len; i++)
-        if (fcntl((int)beans_parked_fds[i], F_GETFD, 0) < 0)
-            return beans_parked_fds[i];
+        if (beans_parked[i].token == token)
+            return beans_parked[i].dead ? 1 : 0;
     return -1;
+}
+
+// Every runtime path that closes a descriptor reports it here. Marking
+// instead of removing keeps the await the only writer of its own entry,
+// and works on every platform — including Windows, where descriptors
+// have no cheap liveness probe.
+void beans_reactor_note_close(long long fd) {
+    for (long long i = 0; i < beans_parked_len; i++)
+        if (!beans_parked[i].dead && beans_parked[i].fd == fd)
+            beans_parked[i].dead = 1;
+}
+
+// 1 when some parked await can never fire, else -1. Dead flags are the
+// portable signal; the descriptor probe is a POSIX fallback for a close
+// that bypassed the runtime — it marks what it finds so the await
+// finishes off the flag, but it cannot tell a bypassed close whose
+// number was already reused from a live descriptor. Closes through the
+// runtime never depend on the fallback.
+long long beans_reactor_stale_park(void) {
+    for (long long i = 0; i < beans_parked_len; i++)
+        if (beans_parked[i].dead) return 1;
+#if !defined(_WIN32)
+    for (long long i = 0; i < beans_parked_len; i++)
+        if (fcntl((int)beans_parked[i].fd, F_GETFD, 0) < 0) {
+            beans_parked[i].dead = 1;
+            return 1;
+        }
 #endif
+    return -1;
 }
 
 #endif // BEANS_RT_PROFILE >= BEANS_RT_FULL — sockets + readiness poller
@@ -8973,6 +9041,7 @@ BRes beans_signal_close(long long fd, BList* packed) {
     } else if (error) {
         beans_release(error);
     }
+    beans_reactor_note_close(fd);
     if (close((int)fd) != 0 && errno != EINTR)
         return (BRes){0, op_err_obj("signal close", errno)};
     return (BRes){1, NULL};

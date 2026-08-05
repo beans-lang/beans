@@ -74,13 +74,18 @@ fn probe_now(fd: int, write: bool) -> int {
     return verdict
 }
 
-// Deregisters a live park exactly once: the poller registration, the
-// parked table, and the parked count move together, and the count can
-// only fall when the table really held the descriptor.
-fn unpark(fd: int) {
-    let poller: int = ready.task_slot(0) - 1
-    let removed: Result<bool> = ready.remove(poller, fd)
-    if ready.park_forget(fd) == 1 {
+// Deregisters a park exactly once: the poller registration, the parked
+// table, and the parked count move together, and the count can only
+// fall when the table really held the token. A dead park never touches
+// the poller: the close already dropped the registration with the
+// descriptor, and the number may belong to a brand-new resource whose
+// own registration must not be disturbed.
+fn unpark(fd: int, token: int, dead: bool) {
+    if !dead {
+        let poller: int = ready.task_slot(0) - 1
+        let removed: Result<bool> = ready.remove(poller, fd)
+    }
+    if ready.park_forget(token) == 1 {
         let count: int = ready.task_slot(3)
         if count <= 0 {
             panic("async runtime: the parked count went negative")
@@ -92,16 +97,22 @@ fn unpark(fd: int) {
 /// A parked readiness await: pending until `fd` is ready for the asked
 /// interest, finished with `false` the moment the descriptor cannot be
 /// watched (closed or invalid) — a readiness that can never come must not
-/// hang the program. Two awaits parked on one descriptor are refused up
-/// front: the poller keys registration by descriptor, so the second would
-/// silently cancel the first. Only the async expander calls this, for the
-/// compiler-known net.await_readable / net.await_writable operations.
+/// hang the program. Two awaits parked on one live descriptor are refused
+/// up front: the poller keys registration by descriptor, so the second
+/// would silently cancel the first. The park is identified by its token,
+/// not the descriptor: if the descriptor is closed under the await, its
+/// number can be handed to a brand-new resource at once, and the token's
+/// dead flag — set by the runtime's own close paths — is what tells this
+/// await apart from one freshly parked on the reused number. A dead park
+/// finishes false without touching the number again. Only the async
+/// expander calls this, for the compiler-known net.await_readable /
+/// net.await_writable operations.
 pub fn reactor_park(fd: int, write: bool) -> Task<bool> {
-    var registered_cell: List<bool> = []
+    var token_cell: List<int> = []
     var fired_cell: List<bool> = []
     return new Task<bool>(
         fn() -> int {
-            if registered_cell.len() == 0 {
+            if token_cell.len() == 0 {
                 let noted: int = ready.park_note(fd)
                 if noted == 0 {
                     panic("async runtime: two awaits are parked on one descriptor — await the first before starting the second")
@@ -114,19 +125,27 @@ pub fn reactor_park(fd: int, write: bool) -> Task<bool> {
                     ok(added) => {}
                     err(adding) => {
                         // closed or invalid: never ready, finish false
-                        let forgotten: int = ready.park_forget(fd)
+                        let forgotten: int = ready.park_forget(noted)
                         fired_cell.push(false)
                         return 1
                     }
                 }
                 let count: int = ready.task_slot(3)
                 let bumped: int = ready.set_task_slot(3, count + 1)
-                registered_cell.push(true)
+                token_cell.push(noted)
+            }
+            // the dead check comes before the probe: a probe on a reused
+            // number would read the new resource's readiness as this one's
+            if ready.park_dead(token_cell[0]) == 1 {
+                unpark(fd, token_cell[0], true)
+                token_cell.clear()
+                fired_cell.push(false)
+                return 1
             }
             let verdict: int = probe_now(fd, write)
             if verdict == 0 { return 0 }
-            unpark(fd)
-            registered_cell.clear()
+            unpark(fd, token_cell[0], false)
+            token_cell.clear()
             fired_cell.push(verdict == 1)
             return 1
         },
@@ -134,10 +153,14 @@ pub fn reactor_park(fd: int, write: bool) -> Task<bool> {
             return fired_cell.len() != 0 && fired_cell[0]
         },
         fn() {
-            // cancelled while parked: leave the reactor exactly as it was
-            if registered_cell.len() != 0 {
-                unpark(fd)
-                registered_cell.clear()
+            // cancelled while parked: leave the reactor exactly as it
+            // was — through the same dead distinction, so cancelling an
+            // await whose descriptor was closed cannot disturb a reused
+            // number either
+            if token_cell.len() != 0 {
+                unpark(fd, token_cell[0],
+                       ready.park_dead(token_cell[0]) == 1)
+                token_cell.clear()
             }
         })
 }

@@ -3036,6 +3036,10 @@ class ExpressionChecker {
                 return some(new BuiltinSignature(
                     [], integer))
             }
+            if name == "park_dead" {
+                return some(new BuiltinSignature(
+                    [integer], integer))
+            }
         }
         return none
     }

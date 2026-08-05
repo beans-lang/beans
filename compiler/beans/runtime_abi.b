@@ -882,6 +882,11 @@ pub fn runtime_builtin_fn(key: string) -> Option<RuntimeBuiltin> {
             [],
             "i64", "beans_reactor_stale_park", false))
     }
+    if key == "std.ready.park_dead" {
+        return some(new RuntimeBuiltin(
+            ["i64"],
+            "i64", "beans_reactor_park_dead", false))
+    }
     if key == "std.time.monotonic_nanos" {
         return some(new RuntimeBuiltin(
             [],

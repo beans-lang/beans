@@ -3425,6 +3425,11 @@ class TreeInterpreter {
         if node.resolved == "std.ready.park_stale" {
             return TreeValue.integer(host_ready.park_stale())
         }
+        if node.resolved == "std.ready.park_dead" &&
+           arguments.len() == 1 {
+            return TreeValue.integer(host_ready.park_dead(
+                arguments[0].int_data))
+        }
         if node.resolved == "std.ready.open" {
             return self.host_bytes_result(
                 host_ready.open())
