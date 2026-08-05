@@ -316,8 +316,11 @@ async fn poke(inout a: int) {}
 
 fn main() {}
 EOF
+# Deliberately conservative and honest about why: the closure lowering,
+# not task coldness. A direct await could hold the borrow, but one
+# lowering serves both call forms.
 both_reject_same "$tmp/rej_inout.b" \
-    "async functions cannot take inout parameters — an async call can run as a concurrent child, so it cannot hold exclusive access to the caller's variable"
+    "async functions cannot take inout parameters — the body becomes closures that outlive the call and a closure cannot capture an inout parameter; pass the value in and return the new one"
 
 cat > "$tmp/rej_extern.b" <<'EOF'
 extern "C" async fn c_side() -> int
@@ -1407,6 +1410,311 @@ middle reader woke
 direct 1 nested 3
 BEANS
 DEADLINE=30 run_matrix "$tmp/sem_nested_ready.b" "$tmp/sem_nested_ready.expected"
+
+echo "checking a readiness await on a dead descriptor finishes false"
+cat > "$tmp/sem_hard_invalid.b" <<'BEANS'
+import std.io
+import std.net
+
+async fn main() {
+    // an invalid descriptor can never become readable: false, not a hang
+    let woke: bool = await net.await_readable(0 - 1)
+    io.println("invalid {woke}")
+}
+BEANS
+cat > "$tmp/sem_hard_invalid.expected" <<'BEANS'
+invalid false
+BEANS
+DEADLINE=30 run_matrix "$tmp/sem_hard_invalid.b" "$tmp/sem_hard_invalid.expected"
+
+echo "checking a descriptor closed under a parked await finishes false"
+cat > "$tmp/sem_hard_closed.b" <<'BEANS'
+import std.io
+import std.net
+import std.sock
+
+async fn watcher(fd: int) -> int {
+    let woke: bool = await net.await_readable(fd)
+    return if woke { 1 } else { 0 }
+}
+
+async fn closer(fd: int) -> int {
+    let closed: Result<bool> = sock.close(fd)
+    io.println("closed under the park")
+    return 7
+}
+
+async fn main() {
+    let server: net.TcpListener =
+        net.TcpListener.bind("127.0.0.1", 0).expect("bind")
+    let port: int = server.local().expect("local").port
+    var sender: net.TcpStream =
+        net.TcpStream.connect("127.0.0.1", port).expect("connect")
+    let accepted: net.TcpStream = server.accept().expect("accept")
+    let fd: int = accepted.handle()
+
+    async let parked: int = watcher(fd)
+    async let closes: int = closer(fd)
+    // the watcher parks first; the closer closes the descriptor under
+    // it; the await must finish false instead of blocking forever
+    let woke: int = await parked
+    let did: int = await closes
+    io.println("woke {woke} did {did}")
+}
+BEANS
+cat > "$tmp/sem_hard_closed.expected" <<'BEANS'
+closed under the park
+woke 0 did 7
+BEANS
+DEADLINE=30 run_matrix "$tmp/sem_hard_closed.b" "$tmp/sem_hard_closed.expected"
+
+echo "checking two awaits parked on one descriptor refuse loudly"
+cat > "$tmp/sem_hard_double.b" <<'BEANS'
+import std.io
+import std.net
+
+async fn watcher(fd: int, tag: string) -> int {
+    let woke: bool = await net.await_readable(fd)
+    io.println("{tag} woke")
+    return 1
+}
+
+async fn main() {
+    let server: net.TcpListener =
+        net.TcpListener.bind("127.0.0.1", 0).expect("bind")
+    let port: int = server.local().expect("local").port
+    var sender: net.TcpStream =
+        net.TcpStream.connect("127.0.0.1", port).expect("connect")
+    let accepted: net.TcpStream = server.accept().expect("accept")
+    let fd: int = accepted.handle()
+
+    async let one: int = watcher(fd, "one")
+    async let two: int = watcher(fd, "two")
+    let first: int = await one
+    let second: int = await two
+}
+BEANS
+set +e
+DEADLINE=30 run_merged "$BEANSC0" "$tmp/sem_hard_double.b" >"$tmp/hd0"; hd0=$?
+DEADLINE=30 run_merged "$BEANSC"  "$tmp/sem_hard_double.b" >"$tmp/hd1"; hd1=$?
+set -e
+[ "$hd0" -eq 3 ] && [ "$hd1" -eq 3 ]
+note_hang "$hd0" "$hd1"
+grep -q "two awaits are parked on one descriptor" "$tmp/hd0"
+grep -q "two awaits are parked on one descriptor" "$tmp/hd1"
+
+echo "checking a full park and wake cycle leaks no descriptors"
+cat > "$tmp/sem_hard_fds.b" <<'BEANS'
+import std.io
+import std.net
+import std.sock
+
+async fn reader(fd: int) -> int {
+    let woke: bool = await net.await_readable(fd)
+    return if woke { 1 } else { 0 }
+}
+
+async fn writer(fd: int) -> int {
+    let sent: Result<int> = sock.send(fd, Bytes.from("x"), 0)
+    return sent.or(0 - 1)
+}
+
+async fn cycle() -> int {
+    let server: net.TcpListener =
+        net.TcpListener.bind("127.0.0.1", 0).expect("bind")
+    let port: int = server.local().expect("local").port
+    var sender: net.TcpStream =
+        net.TcpStream.connect("127.0.0.1", port).expect("connect")
+    let accepted: net.TcpStream = server.accept().expect("accept")
+    async let got: int = reader(accepted.handle())
+    async let sent: int = writer(sender.handle())
+    let woke: int = await got
+    let wrote: int = await sent
+    return woke + wrote
+}
+
+fn probe_fd() -> int {
+    // POSIX hands out the lowest free descriptor; the listener drops on
+    // return, so the number reads the current low-water mark.
+    let probe: net.TcpListener =
+        net.TcpListener.bind("127.0.0.1", 0).expect("probe")
+    return probe.handle()
+}
+
+async fn measured() -> int {
+    // one full park/wake cycle, probed from the same spot every time so
+    // both readings carry identical still-live locals; the poller opens
+    // lazily inside the first call and stays for the rest
+    let ignored: int = await cycle()
+    return probe_fd()
+}
+
+async fn main() {
+    let first_fd: int = await measured()
+    var index: int = 0
+    for index < 30 {
+        let more: int = await cycle()
+        index += 1
+    }
+    let second_fd: int = await measured()
+    if second_fd != first_fd {
+        io.println("leaked: probe fd moved {first_fd} -> {second_fd}")
+    } else {
+        io.println("stable")
+    }
+}
+BEANS
+cat > "$tmp/sem_hard_fds.expected" <<'BEANS'
+stable
+BEANS
+DEADLINE=60 run_matrix "$tmp/sem_hard_fds.b" "$tmp/sem_hard_fds.expected"
+
+echo "checking more parked awaits than one poller batch still complete"
+cat > "$tmp/sem_hard_batch.b" <<'BEANS'
+import std.io
+import std.net
+import std.sock
+
+async fn watch(fd: int) -> int {
+    let woke: bool = await net.await_readable(fd)
+    return if woke { 1 } else { 0 }
+}
+
+async fn feeder(move senders: List<net.TcpStream>) -> int {
+    var count: int = 0
+    for stream: net.TcpStream in senders {
+        let sent: Result<int> =
+            sock.send(stream.handle(), Bytes.from("x"), 0)
+        count += sent.or(0)
+    }
+    return count
+}
+
+async fn main() {
+    let server: net.TcpListener =
+        net.TcpListener.bind("127.0.0.1", 0).expect("bind")
+    let port: int = server.local().expect("local").port
+    var senders: List<net.TcpStream> = []
+    var receivers: List<net.TcpStream> = []
+    var watched: List<int> = []
+    var index: int = 0
+    for index < 18 {
+        let sender: net.TcpStream =
+            net.TcpStream.connect("127.0.0.1", port).expect("connect")
+        senders.push(move sender)
+        let accepted: net.TcpStream = server.accept().expect("accept")
+        let fd: int = accepted.handle()
+        watched.push(fd)
+        // the receivers list keeps the accepted sockets open for the
+        // watchers; dropping them here would close every watched fd
+        receivers.push(move accepted)
+        index += 1
+    }
+    // eighteen watchers park — more than one 16-event wait batch — and
+    // the feeder, declared last, runs in the same scan that parked them
+    async let w0: int = watch(watched[0])
+    async let w1: int = watch(watched[1])
+    async let w2: int = watch(watched[2])
+    async let w3: int = watch(watched[3])
+    async let w4: int = watch(watched[4])
+    async let w5: int = watch(watched[5])
+    async let w6: int = watch(watched[6])
+    async let w7: int = watch(watched[7])
+    async let w8: int = watch(watched[8])
+    async let w9: int = watch(watched[9])
+    async let w10: int = watch(watched[10])
+    async let w11: int = watch(watched[11])
+    async let w12: int = watch(watched[12])
+    async let w13: int = watch(watched[13])
+    async let w14: int = watch(watched[14])
+    async let w15: int = watch(watched[15])
+    async let w16: int = watch(watched[16])
+    async let w17: int = watch(watched[17])
+    async let fed: int = feeder(move senders)
+    var woke: int = await w0
+    woke += await w1
+    woke += await w2
+    woke += await w3
+    woke += await w4
+    woke += await w5
+    woke += await w6
+    woke += await w7
+    woke += await w8
+    woke += await w9
+    woke += await w10
+    woke += await w11
+    woke += await w12
+    woke += await w13
+    woke += await w14
+    woke += await w15
+    woke += await w16
+    woke += await w17
+    let sent: int = await fed
+    io.println("woke {woke} sent {sent}")
+}
+BEANS
+cat > "$tmp/sem_hard_batch.expected" <<'BEANS'
+woke 18 sent 18
+BEANS
+DEADLINE=45 run_matrix "$tmp/sem_hard_batch.b" "$tmp/sem_hard_batch.expected"
+
+echo "checking a cancelled park frees the descriptor for a later await"
+cat > "$tmp/sem_hard_repark.b" <<'BEANS'
+import std.io
+import std.net
+import std.sock
+
+async fn watch(fd: int, tag: string) -> int {
+    let woke: bool = await net.await_readable(fd)
+    io.println("{tag} woke {woke}")
+    return if woke { 1 } else { 0 }
+}
+
+async fn writer(fd: int) -> int {
+    let sent: Result<int> = sock.send(fd, Bytes.from("x"), 0)
+    return sent.or(0 - 1)
+}
+
+async fn abandoning(fd: int, alarm_fd: int, alarm_peer: int) -> int {
+    // the watcher parks on fd; the alarm pair forces this frame to really
+    // suspend, so the watcher is parked — not merely cold — when the
+    // early return below cancels it. Its registration must vanish.
+    async let parked: int = watch(fd, "abandoned")
+    async let rings: int = watch(alarm_fd, "alarm")
+    async let feeds: int = writer(alarm_peer)
+    let rang: int = await rings
+    let fed: int = await feeds
+    return rang + fed
+}
+
+async fn main() {
+    let server: net.TcpListener =
+        net.TcpListener.bind("127.0.0.1", 0).expect("bind")
+    let port: int = server.local().expect("local").port
+    var sender: net.TcpStream =
+        net.TcpStream.connect("127.0.0.1", port).expect("connect")
+    let accepted: net.TcpStream = server.accept().expect("accept")
+    var alarm_sender: net.TcpStream =
+        net.TcpStream.connect("127.0.0.1", port).expect("connect2")
+    let alarm_accepted: net.TcpStream = server.accept().expect("accept2")
+    let fd: int = accepted.handle()
+
+    let rung: int = await abandoning(
+        fd, alarm_accepted.handle(), alarm_sender.handle())
+    // the same descriptor parks again cleanly after the cancellation
+    async let again: int = watch(fd, "second")
+    async let sent: int = writer(sender.handle())
+    let woke: int = await again
+    let wrote: int = await sent
+    io.println("rung {rung} woke {woke} wrote {wrote}")
+}
+BEANS
+cat > "$tmp/sem_hard_repark.expected" <<'BEANS'
+alarm woke true
+second woke true
+rung 2 woke 1 wrote 1
+BEANS
+DEADLINE=30 run_matrix "$tmp/sem_hard_repark.b" "$tmp/sem_hard_repark.expected"
 
 echo "checking declaration-time arguments, reverse awaits, and scan order"
 cat > "$tmp/sem_fair.b" <<'BEANS'

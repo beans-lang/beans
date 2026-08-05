@@ -867,6 +867,21 @@ pub fn runtime_builtin_fn(key: string) -> Option<RuntimeBuiltin> {
             ["i64", "i64"],
             "i64", "beans_set_task_slot", false))
     }
+    if key == "std.ready.park_note" {
+        return some(new RuntimeBuiltin(
+            ["i64"],
+            "i64", "beans_reactor_note_park", false))
+    }
+    if key == "std.ready.park_forget" {
+        return some(new RuntimeBuiltin(
+            ["i64"],
+            "i64", "beans_reactor_forget_park", false))
+    }
+    if key == "std.ready.park_stale" {
+        return some(new RuntimeBuiltin(
+            [],
+            "i64", "beans_reactor_stale_park", false))
+    }
     if key == "std.time.monotonic_nanos" {
         return some(new RuntimeBuiltin(
             [],

@@ -760,6 +760,14 @@ class SignatureChecker {
                 file.path, node,
                 "feature-gated functions cannot be async yet")
         }
+        // Deliberately conservative, and at the declaration: the body
+        // lowers to closures that live past the maker call, and a closure
+        // cannot capture an inout parameter (nor keep a caller's variable
+        // exclusively borrowed past the call that lent it). A directly
+        // awaited call could hold the borrow safely — the caller is
+        // suspended for the child's whole life — but an async let child
+        // runs beside its caller and cannot, and one lowering serves both
+        // call forms, so the declaration is refused rather than the call.
         for parameter: HirParameter in function.parameters {
             if parameter.passing == "inout" {
                 self.hir.errors.push(Diagnostic {
@@ -768,7 +776,7 @@ class SignatureChecker {
                     line: parameter.line,
                     col: parameter.col,
                     message:
-                        "async functions cannot take inout parameters — an async call can run as a concurrent child, so it cannot hold exclusive access to the caller's variable",
+                        "async functions cannot take inout parameters — the body becomes closures that outlive the call and a closure cannot capture an inout parameter; pass the value in and return the new one",
                 })
             }
         }

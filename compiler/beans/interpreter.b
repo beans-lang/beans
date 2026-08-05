@@ -3412,6 +3412,19 @@ class TreeInterpreter {
                 arguments[0].int_data,
                 arguments[1].int_data))
         }
+        if node.resolved == "std.ready.park_note" &&
+           arguments.len() == 1 {
+            return TreeValue.integer(host_ready.park_note(
+                arguments[0].int_data))
+        }
+        if node.resolved == "std.ready.park_forget" &&
+           arguments.len() == 1 {
+            return TreeValue.integer(host_ready.park_forget(
+                arguments[0].int_data))
+        }
+        if node.resolved == "std.ready.park_stale" {
+            return TreeValue.integer(host_ready.park_stale())
+        }
         if node.resolved == "std.ready.open" {
             return self.host_bytes_result(
                 host_ready.open())

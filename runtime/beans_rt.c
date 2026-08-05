@@ -8670,6 +8670,54 @@ long long beans_set_task_slot(long long index, long long value) {
     return 1;
 }
 
+// The reactor's parked-await table. Poller registration is keyed by
+// descriptor ("make it exactly this"), so two awaits parked on one
+// descriptor would silently cancel each other's interest; the table lets
+// the runtime refuse that clearly instead. It also remembers what is
+// parked so the driver can notice a descriptor closed while an await
+// still waits on it — the OS quietly drops such registrations and would
+// leave the driver blocked forever.
+#define BEANS_PARKED_MAX 64
+static _Thread_local long long beans_parked_fds[BEANS_PARKED_MAX];
+static _Thread_local long long beans_parked_len;
+
+// 1 = noted, 0 = that descriptor already has a parked await, -1 = full.
+long long beans_reactor_note_park(long long fd) {
+    for (long long i = 0; i < beans_parked_len; i++)
+        if (beans_parked_fds[i] == fd) return 0;
+    if (beans_parked_len == BEANS_PARKED_MAX) return -1;
+    beans_parked_fds[beans_parked_len++] = fd;
+    return 1;
+}
+
+// 1 = removed, 0 = was not parked.
+long long beans_reactor_forget_park(long long fd) {
+    for (long long i = 0; i < beans_parked_len; i++) {
+        if (beans_parked_fds[i] != fd) continue;
+        beans_parked_len--;
+        beans_parked_fds[i] = beans_parked_fds[beans_parked_len];
+        return 1;
+    }
+    return 0;
+}
+
+// First parked descriptor that is no longer open, or -1. A descriptor
+// closed while parked never fires its registration again; the driver
+// checks before blocking so the parked await can finish with false
+// instead of the program hanging.
+long long beans_reactor_stale_park(void) {
+#if defined(_WIN32)
+    // SOCKET handles have no cheap liveness probe here; the driver skips
+    // the check and a same-thread close under a park stays undetected.
+    return -1;
+#else
+    for (long long i = 0; i < beans_parked_len; i++)
+        if (fcntl((int)beans_parked_fds[i], F_GETFD, 0) < 0)
+            return beans_parked_fds[i];
+    return -1;
+#endif
+}
+
 #endif // BEANS_RT_PROFILE >= BEANS_RT_FULL — sockets + readiness poller
 
 #if BEANS_RT_PROFILE >= BEANS_RT_FULL && !defined(_WIN32)

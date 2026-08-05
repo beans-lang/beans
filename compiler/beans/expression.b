@@ -3013,8 +3013,9 @@ class ExpressionChecker {
                     hir_result(boolean)))
             }
             // The hidden async executor's thread-local state: the shared
-            // reactor poller triple and the parked-await count. Internal —
-            // only std.async$rt calls these.
+            // reactor poller triple, the parked-await count, and the
+            // parked-descriptor table. Internal — only std.async$rt
+            // calls these.
             if name == "task_slot" {
                 return some(new BuiltinSignature(
                     [integer], integer))
@@ -3022,6 +3023,18 @@ class ExpressionChecker {
             if name == "set_task_slot" {
                 return some(new BuiltinSignature(
                     [integer, integer], integer))
+            }
+            if name == "park_note" {
+                return some(new BuiltinSignature(
+                    [integer], integer))
+            }
+            if name == "park_forget" {
+                return some(new BuiltinSignature(
+                    [integer], integer))
+            }
+            if name == "park_stale" {
+                return some(new BuiltinSignature(
+                    [], integer))
             }
         }
         return none
@@ -8302,6 +8315,11 @@ class ExpressionChecker {
             function.generic_constraints {
             self.current_constraints.push(constraint)
         }
+        // Same conservative shape as the inout rule: the body lowers to
+        // closures that live past the maker call, and they cannot keep
+        // the move-only receiver borrowed past it. A direct await could —
+        // the caller waits the whole time — but an async let child runs
+        // beside its caller and cannot, and one lowering serves both.
         if function.is_async && function.owner != "" &&
            !function.is_static {
             match self.declarations.get(function.owner) {
@@ -8309,7 +8327,7 @@ class ExpressionChecker {
                     if owner.is_unique {
                         self.fail(
                             function.syntax,
-                            "async instance methods are not available on a unique class — the task frame cannot borrow the receiver; use a static async fn")
+                            "async instance methods are not available on a unique class — the body becomes closures that outlive the call and they cannot keep the move-only receiver borrowed; use a static async fn that takes the value")
                     }
                 }
                 none => {}

@@ -464,6 +464,28 @@ class AsyncExpander {
                 none => { return node }
             }
         }
+        // A compound assign to a slotted name would substitute into
+        // `slot$[0] += v`, and list index assignment only supports `=`,
+        // so it becomes `slot$[0] = slot$[0] op v` instead.
+        if node.kind == "assign" && node.value != "=" &&
+           node.children.len() == 2 &&
+           node.children[0].kind == "name" {
+            match self.find_slot(node.children[0].value) {
+                some(slot) => {
+                    let combined: AstNode = self.node(
+                        "binary",
+                        node.value.slice(0, node.value.len() - 1),
+                        node)
+                    combined.add(self.slot_read(slot.slot, node))
+                    combined.add(self.substitute(node.children[1]))
+                    let plain: AstNode = self.node("assign", "=", node)
+                    plain.add(self.slot_read(slot.slot, node))
+                    plain.add(combined)
+                    return plain
+                }
+                none => {}
+            }
+        }
         var index: int = 0
         for index < node.children.len() {
             node.children[index] =
@@ -944,6 +966,23 @@ class AsyncExpander {
     fn rewrite_statement(statement: AstNode) {
         if !ast_contains_await(statement) &&
            !self.statement_needs_rewrite(statement) {
+            self.emit_with_piece_bindings(statement)
+            return
+        }
+        // Control flow that only touches slotted names — no await, no
+        // return, no break for an enclosing rewritten loop, no `?` — is
+        // still one synchronous statement: substitute the names and emit
+        // it whole. Splitting it into states would strand plain locals
+        // declared in the current state from uses inside the branches.
+        if (statement.kind == "if" || statement.kind == "for" ||
+            statement.kind == "match" ||
+            (statement.kind == "expression" &&
+             statement.children[0].kind == "match")) &&
+           !ast_contains_await(statement) &&
+           !self.contains_completion(statement) &&
+           !(self.loop_stack.len() != 0 &&
+             self.contains_loop_exit(statement)) &&
+           !self.contains_try(statement) {
             self.emit_with_piece_bindings(statement)
             return
         }
@@ -2051,6 +2090,14 @@ class AsyncExpander {
             let leave: AstNode = self.node("if", "", anchor)
             leave.add(done)
             let leave_block: AstNode = self.node("block", "", anchor)
+            // async main is done: close the reactor and reset the task
+            // slots before returning, so one process can run again.
+            let shutdown_call: AstNode = self.node("call", "", anchor)
+            let shutdown_callee: AstNode = self.node(
+                "name", "driver_shutdown", anchor)
+            shutdown_callee.resolved = "async$rt.driver_shutdown"
+            shutdown_call.add(shutdown_callee)
+            leave_block.add(self.statement_of(shutdown_call))
             leave_block.add(self.node("return", "", anchor))
             leave.add(leave_block)
             drive_body.add(leave)
