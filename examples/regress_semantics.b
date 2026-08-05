@@ -117,6 +117,27 @@ fn main() {
     // ordinary upcast; both MIR verifiers used to reject it
     let upcast: RBase = rmake()
     io.println("upcast {upcast.tag()}")
+
+    // an object holding a closure made in the frame that holds the
+    // object: the self-hosted interpreter used to capture the whole
+    // creation frame, and the frame -> object -> closure -> frame
+    // cycle silently skipped every deinit in that frame
+    if true {
+        var punched: int = 0
+        let ticket: RTicket =
+            new RTicket(fn() -> int {
+                punched += 1
+                return punched
+            })
+        io.println("ticket {ticket.punch()} {ticket.punch()}")
+        io.println("outside {punched}")
+    }
+    io.println("ticket gone")
+
+    // a returned closure outlives its frame: the captured cell keeps
+    // the counter alive after the frame is gone
+    let counter: fn() -> int = rcounter()
+    io.println("count {counter()} {counter()}")
 }
 
 class RLeaf {
@@ -176,4 +197,29 @@ fn rpeek(t: RLeaf) -> int {
 
 fn rmake() -> RBase {
     return new RKid()
+}
+
+class RTicket {
+    stamp: fn() -> int
+
+    pub fn init(stamp: fn() -> int) {
+        self.stamp = stamp
+    }
+
+    fn deinit() {
+        io.println("ticket deinit")
+    }
+
+    pub fn punch() -> int {
+        let stamp: fn() -> int = self.stamp
+        return stamp()
+    }
+}
+
+fn rcounter() -> fn() -> int {
+    var n: int = 0
+    return fn() -> int {
+        n += 1
+        return n
+    }
 }

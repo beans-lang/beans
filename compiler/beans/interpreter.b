@@ -2403,21 +2403,28 @@ class TreeInterpreter {
              node: HirNode) -> TreeValue {
         match frame.get(node.binding_id) {
             some(value) => {
-                if value.kind == "reference" {
-                    match value.reference_frame {
+                // references can chain — an inout taken on a binding
+                // a closure captured reaches the value through the
+                // shared cell — so follow them to the end
+                var current: TreeValue = value
+                for current.kind == "reference" {
+                    var advanced: Option<TreeValue> =
+                        none
+                    match current.reference_frame {
                         some(target) => {
-                            match target.get(
-                                value.reference_binding) {
-                                some(actual) => {
-                                    return actual
-                                }
-                                none => {}
-                            }
+                            advanced = target.get(
+                                current.reference_binding)
                         }
                         none => {}
                     }
+                    match advanced {
+                        some(actual) => {
+                            current = actual
+                        }
+                        none => { return current }
+                    }
                 }
-                return value
+                return current
             }
             none => {
                 return self.fail(
@@ -2976,6 +2983,18 @@ class TreeInterpreter {
         if node.value == "inout" &&
            node.children.len() == 1 &&
            node.children[0].kind == "local" {
+            // a binding a closure captured already lives in a shared
+            // cell; hand that cell out rather than wrapping the slot
+            // again, which would take two dereferences to read
+            match frame.get(
+                    node.children[0].binding_id) {
+                some(current) => {
+                    if current.kind == "reference" {
+                        return current
+                    }
+                }
+                none => {}
+            }
             return TreeValue.reference(
                 frame,
                 node.children[0].binding_id)
@@ -7069,13 +7088,77 @@ class TreeInterpreter {
             "builtin method '{node.resolved}' is not in the Beans interpreter yet")
     }
 
+    // A closure used to keep its whole creation frame alive. A local in
+    // that frame holding the closure back (through an object field) then
+    // made a host-level cycle the program never wrote — frame -> object
+    // -> closure -> frame — and the frame's deinits never ran, where the
+    // native backend runs them at end of scope. Capture only the
+    // bindings the body actually names, each promoted to the shared
+    // cell TreeFrame.snapshot uses, so mutation stays shared through
+    // the cell and nothing else rides along. A closure that names the
+    // object holding it still cycles — the same cycle the native
+    // reference counts would leak, per the TreeObjectValue note.
     fn closure(node: HirNode,
                frame: TreeFrame) -> TreeValue {
         let result: TreeValue =
             new TreeValue("closure")
         result.closure_node = some(node)
-        result.closure_frame = some(frame)
+        let captured: TreeFrame = new TreeFrame()
+        self.collect_closure_captures(
+            node, frame, captured)
+        result.closure_frame = some(captured)
         return result
+    }
+
+    fn collect_closure_captures(node: HirNode,
+                                frame: TreeFrame,
+                                captured: TreeFrame) {
+        if node.kind == "local" &&
+           node.binding_id >= 0 &&
+           !captured.values.contains(node.binding_id) {
+            match self.capture_cell(
+                    frame, node.binding_id) {
+                some(cell) => {
+                    captured.values[node.binding_id] =
+                        cell
+                }
+                none => {}
+            }
+        }
+        for child: HirNode in node.children {
+            self.collect_closure_captures(
+                child, frame, captured)
+        }
+    }
+
+    // The owner's slot is promoted to a reference into a one-slot
+    // holder frame, the same shape TreeFrame.snapshot leaves behind,
+    // and both sides keep that one cell: assignments follow the
+    // reference, so the closure and the enclosing scope stay in sync.
+    // A binding the body names but declares itself is not in the
+    // enclosing chain yet and comes back none.
+    fn capture_cell(frame: TreeFrame,
+                    binding: int) -> Option<TreeValue> {
+        if frame.values.contains(binding) {
+            let current: TreeValue =
+                frame.values[binding]
+            if current.kind == "reference" {
+                return some(current)
+            }
+            let holder: TreeFrame = new TreeFrame()
+            holder.values[-1] = current
+            let cell: TreeValue =
+                TreeValue.reference(holder, -1)
+            frame.values[binding] = cell
+            return some(cell)
+        }
+        match frame.parent {
+            some(outer) => {
+                return self.capture_cell(
+                    outer, binding)
+            }
+            none => { return none }
+        }
     }
 
     fn invoke_closure(node: HirNode,
