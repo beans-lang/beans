@@ -1251,9 +1251,16 @@ async fn main() {
   thread. Long CPU work therefore blocks every other task — put it on
   `std.thread`. Cancellation is cooperative: it takes effect at suspension
   points, never mid-statement.
-- **Not yet in this first version:** readiness-based I/O awaits, dynamic
-  task groups, detached tasks, async closures. They layer on this model
-  without changing it.
+- **Readiness awaits.** `await net.await_readable(handle)` (and
+  `await_writable`) suspends until the descriptor is ready — a socket's
+  `.handle()`, or any pollable descriptor. While one child is parked, the
+  rest of the program keeps going; when nothing can move, the hidden
+  driver blocks in the platform poller — never a busy spin — and the OS
+  wakes it. Level-triggered: already-ready completes on the spot. This
+  rides the full runtime profile like `std.poll`; pure computation
+  async code still runs on every profile.
+- **Not yet in this first version:** dynamic task groups, detached tasks,
+  async closures. They layer on this model without changing it.
 
 ## Targets and the build (v0.8, implemented)
 

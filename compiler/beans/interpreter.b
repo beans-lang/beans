@@ -3401,6 +3401,17 @@ class TreeInterpreter {
                     arguments[0].text,
                     arguments[1].int_data))
         }
+        if node.resolved == "std.ready.task_slot" &&
+           arguments.len() == 1 {
+            return TreeValue.integer(host_ready.task_slot(
+                arguments[0].int_data))
+        }
+        if node.resolved == "std.ready.set_task_slot" &&
+           arguments.len() == 2 {
+            return TreeValue.integer(host_ready.set_task_slot(
+                arguments[0].int_data,
+                arguments[1].int_data))
+        }
         if node.resolved == "std.ready.open" {
             return self.host_bytes_result(
                 host_ready.open())

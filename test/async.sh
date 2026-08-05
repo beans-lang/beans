@@ -938,6 +938,55 @@ runtime panic at 5:14: list index 5 out of range (len 1)
 BEANS
 run_matrix "$tmp/sem_panic.b" "$tmp/sem_panic.expected" 3
 
+echo "checking readiness awaits park, progress, and wake without spinning"
+cat > "$tmp/sem_ready.b" <<'BEANS'
+import std.io
+import std.net
+import std.sock
+import std.thread
+import std.time
+
+async fn reader(fd: int) -> int {
+    let woke: bool = await net.await_readable(fd)
+    return 1
+}
+
+async fn counter() -> int {
+    io.println("counter ran")
+    return 41
+}
+
+async fn main() {
+    let server: net.TcpListener =
+        net.TcpListener.bind("127.0.0.1", 0).expect("bind")
+    let port: int = server.local().expect("local").port
+    var sender: net.TcpStream =
+        net.TcpStream.connect("127.0.0.1", port).expect("connect")
+    let accepted: net.TcpStream = server.accept().expect("accept")
+    let send_fd: int = sender.handle()
+    let worker: Thread<int> = thread.spawn(fn() -> int {
+        time.sleep_nanos(150000000)
+        let wrote: Result<int> =
+            sock.send(send_fd, Bytes.from("x"), 0)
+        return 0
+    })
+    // one child parks on real socket readiness while the other finishes
+    async let slow: int = reader(accepted.handle())
+    async let fast: int = counter()
+    let quick: int = await fast
+    io.println("fast {quick}")
+    let waited: int = await slow
+    io.println("slow {waited}")
+    let joined: int = worker.join()
+}
+BEANS
+cat > "$tmp/sem_ready.expected" <<'BEANS'
+counter ran
+fast 41
+slow 1
+BEANS
+run_matrix "$tmp/sem_ready.b" "$tmp/sem_ready.expected"
+
 echo "checking pure async rides every profile and 32-bit targets"
 cat > "$tmp/prof_pure.b" <<'BEANS'
 async fn tick(a: int) -> int { return a }

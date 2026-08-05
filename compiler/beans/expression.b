@@ -3012,6 +3012,17 @@ class ExpressionChecker {
                     [integer, integer, integer],
                     hir_result(boolean)))
             }
+            // The hidden async executor's thread-local state: the shared
+            // reactor poller triple and the parked-await count. Internal —
+            // only std.async$rt calls these.
+            if name == "task_slot" {
+                return some(new BuiltinSignature(
+                    [integer], integer))
+            }
+            if name == "set_task_slot" {
+                return some(new BuiltinSignature(
+                    [integer, integer], integer))
+            }
         }
         return none
     }
@@ -5204,6 +5215,27 @@ class ExpressionChecker {
     fn check_call(node: AstNode,
                   expected: HirType) -> HirNode {
         let callee: AstNode = node.children[0]
+        // The async expander pins its generated calls to a qualified name
+        // (the internal runtime package is not importable), so a pre-
+        // resolved callee looks up directly, skipping scope resolution.
+        if callee.kind == "name" &&
+           callee.resolved.starts_with("async$rt.") {
+            match self.functions.get(callee.resolved) {
+                some(function) => {
+                    let result: HirNode =
+                        self.make_node(
+                            node, "call", function.name,
+                            function.result)
+                    result.resolved = function.qualified
+                    self.check_arguments(
+                        node, 1, function, no_hir_type(),
+                        "'{function.name}'", result)
+                    self.expect_type(node, result.type, expected)
+                    return result
+                }
+                none => {}
+            }
+        }
         if callee.kind == "field" {
             let receiver_syntax: AstNode = callee.children[0]
             if receiver_syntax.kind == "name" &&

@@ -8652,6 +8652,24 @@ BRes beans_poll_close(long long poller, long long wake_read, long long handle) {
 }
 long long beans_poll_close_out(long long poller, long long wake_read, long long handle, void** e_out) { BRes r = beans_poll_close(poller, wake_read, handle); *e_out = r.err; return r.val; }
 
+// ---- hidden async executor state --------------------------------------------
+//
+// Four thread-local slots the async runtime package threads its reactor
+// through: [0..2] the shared poller triple from ready.open, [3] the number of
+// parked readiness awaits. State lives here because Beans has no globals and
+// the park tasks, the driver, and cancellation all need the same poller.
+// Thread-local, so each thread that drives async work gets its own executor.
+static _Thread_local long long beans_task_slots[4];
+
+long long beans_task_slot(long long index) {
+    return beans_task_slots[index & 3];
+}
+
+long long beans_set_task_slot(long long index, long long value) {
+    beans_task_slots[index & 3] = value;
+    return 1;
+}
+
 #endif // BEANS_RT_PROFILE >= BEANS_RT_FULL — sockets + readiness poller
 
 #if BEANS_RT_PROFILE >= BEANS_RT_FULL && !defined(_WIN32)

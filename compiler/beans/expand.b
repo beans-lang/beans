@@ -478,6 +478,30 @@ class AsyncExpander {
         }
     }
 
+    fn thread_capture_slot_names(node: AstNode,
+                                 inout found: Map<string, bool>) {
+        var is_spawn: bool = false
+        match node.checked {
+            some(checked) => {
+                is_spawn = checked.resolved == "std.thread.spawn"
+            }
+            none => {}
+        }
+        if is_spawn {
+            var inner: Map<string, bool> = {}
+            ast_names_in(node, inout inner)
+            for name: string in inner.keys() {
+                if self.find_slot(name).is_some() {
+                    found[name] = true
+                }
+            }
+            return
+        }
+        for child: AstNode in node.children {
+            self.thread_capture_slot_names(child, inout found)
+        }
+    }
+
     fn piece_slot_names(node: HirNode,
                         inout found: Map<string, bool>) {
         if node.kind == "local" &&
@@ -500,6 +524,10 @@ class AsyncExpander {
     fn wrap_for_pieces(statement: AstNode) -> AstNode {
         var names: Map<string, bool> = {}
         self.interpolated_slot_names(statement, inout names)
+        // A thread closure must capture Send values, never the one-slot
+        // List a suspended local lives in — re-bind those names as plain
+        // borrows the same way interpolation pieces are.
+        self.thread_capture_slot_names(statement, inout names)
         if names.len() == 0 {
             return self.substitute(statement)
         }
@@ -646,6 +674,30 @@ class AsyncExpander {
         return false
     }
 
+    // net.await_readable / net.await_writable are compiler-known: their
+    // declared bodies never run. The call swaps for a parked readiness
+    // await on the hidden reactor, argument already decomposed in place.
+    fn readiness_swap(operand: AstNode) -> AstNode {
+        var target: string = ""
+        match operand.checked {
+            some(checked) => { target = checked.resolved }
+            none => {}
+        }
+        if target != "net.await_readable" &&
+           target != "net.await_writable" {
+            return operand
+        }
+        let park: AstNode = self.node("call", "", operand)
+        let callee: AstNode = self.node(
+            "name", "reactor_park", operand)
+        callee.resolved = "async$rt.reactor_park"
+        park.add(callee)
+        park.add(operand.children[1])
+        park.add(self.bool_literal(
+            target == "net.await_writable", operand))
+        return park
+    }
+
     fn decompose_await(node: AstNode) -> AstNode {
         // Awaiting an async let binding: the child's task is already in
         // the binding's slot, so the poll/take tail runs on it directly.
@@ -661,7 +713,8 @@ class AsyncExpander {
                 none => {}
             }
         }
-        let operand: AstNode = self.decompose(node.children[0])
+        let operand: AstNode = self.readiness_swap(
+            self.decompose(node.children[0]))
         // The operand is a checked async call, so its type is the result
         // R (asyncness is an effect); the maker it becomes after the
         // signature flip really hands back the internal task.
@@ -995,8 +1048,8 @@ class AsyncExpander {
                 "async$rt.Task", [declared])
             match value {
                 some(initializer) => {
-                    let rewritten: AstNode =
-                        self.decompose(initializer)
+                    let rewritten: AstNode = self.readiness_swap(
+                        self.decompose(initializer))
                     let slot: AsyncSlot = self.declare_slot(
                         statement.value, task_type, statement)
                     slot.is_child = true
@@ -1030,6 +1083,76 @@ class AsyncExpander {
         }
         match value {
             some(initializer) => {
+                // A thread closure in the initializer must capture Send
+                // values, never a suspended local's one-slot List: those
+                // names re-bind as plain borrows around the push.
+                var captures: Map<string, bool> = {}
+                self.thread_capture_slot_names(
+                    initializer, inout captures)
+                if captures.len() != 0 {
+                    var wrap_slots: List<AsyncSlot> = []
+                    for name: string in captures.keys() {
+                        match self.find_slot(name) {
+                            some(borrowed) => {
+                                wrap_slots.push(borrowed)
+                            }
+                            none => {}
+                        }
+                    }
+                    self.push_scope()
+                    for borrowed: AsyncSlot in wrap_slots {
+                        let mask: AsyncSlot = new AsyncSlot(
+                            borrowed.name, "", borrowed.type)
+                        mask.masked = true
+                        let top: AsyncScope =
+                            self.scopes[self.scopes.len() - 1]
+                        top.bindings[borrowed.name] = mask
+                    }
+                    let rebound: AstNode =
+                        self.substitute(initializer)
+                    self.pop_scope(false, statement)
+                    let target: AsyncSlot = self.declare_slot(
+                        statement.value, declared, statement)
+                    let carry: string = self.fresh_name("carry_")
+                    let carry_decl: AstNode = self.node(
+                        "let", carry, statement)
+                    carry_decl.add(
+                        self.type_ast(declared, statement))
+                    carry_decl.add(rebound)
+                    let taken: AstNode = self.node(
+                        "unary", "move", statement)
+                    taken.add(self.name_of(carry, statement))
+                    var wrapped: AstNode = self.node(
+                        "block", "", statement)
+                    wrapped.add(carry_decl)
+                    wrapped.add(self.slot_push(
+                        target.slot, taken, statement))
+                    var index: int = wrap_slots.len() - 1
+                    for index >= 0 {
+                        let borrowed: AsyncSlot = wrap_slots[index]
+                        let loop_node: AstNode = self.node(
+                            "for", borrowed.name, statement)
+                        let binding: AstNode = self.node(
+                            "binding", borrowed.name, statement)
+                        binding.add(self.type_ast(
+                            borrowed.type, statement))
+                        loop_node.add(binding)
+                        loop_node.add(self.name_of(
+                            borrowed.slot, statement))
+                        if wrapped.kind == "block" {
+                            loop_node.add(wrapped)
+                        } else {
+                            let body: AstNode = self.node(
+                                "block", "", statement)
+                            body.add(wrapped)
+                            loop_node.add(body)
+                        }
+                        wrapped = loop_node
+                        index -= 1
+                    }
+                    self.emit(wrapped)
+                    return
+                }
                 let rewritten: AstNode = self.decompose(initializer)
                 let slot: AsyncSlot = self.declare_slot(
                     statement.value, declared, statement)
@@ -1790,6 +1913,14 @@ class AsyncExpander {
             leave_block.add(self.node("return", "", anchor))
             leave.add(leave_block)
             drive_body.add(leave)
+            // Pending means something is parked on readiness: block in
+            // the reactor until it can move. Never a busy spin.
+            let wait_call: AstNode = self.node("call", "", anchor)
+            let wait_callee: AstNode = self.node(
+                "name", "driver_wait", anchor)
+            wait_callee.resolved = "async$rt.driver_wait"
+            wait_call.add(wait_callee)
+            drive_body.add(self.statement_of(wait_call))
             drive.add(drive_body)
             maker.add(drive)
         } else {
