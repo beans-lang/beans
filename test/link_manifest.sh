@@ -31,6 +31,8 @@ link $wrong_os library "this_must_not_be_linked"
 link $triple library "manifest_value"
 MOD
 cat >"$tmp/main.b" <<'BEANS'
+package main
+
 import std.io
 extern "C" fn manifest_value() -> i32
 fn main() {

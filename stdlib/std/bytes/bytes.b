@@ -1,6 +1,8 @@
 // Binary algorithms in Beans. Bytes allocation, indexed access, and copying
 // stay primitive runtime operations; policies and formats live here.
 
+package bytes
+
 pub fn crc32(data: Bytes) -> u32 {
     var crc: u32 = 0xffffffff
     var index: int = 0

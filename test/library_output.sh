@@ -123,6 +123,8 @@ module beans_test_library
 kind library
 MOD
 cat >"$tmp/project/api.b" <<'BEANS'
+package api
+
 pub fn doubled(value: i32) -> i32 {
     return value * 2
 }
@@ -149,6 +151,8 @@ module bad_library
 kind library
 MOD
 cat >"$tmp/bad_library/main.b" <<'BEANS'
+package api
+
 fn main() {}
 BEANS
 if "$beansc" build "$tmp/bad_library/main.b" \
@@ -187,6 +191,8 @@ module bad_kind
 kind plugin
 MOD
 cat >"$tmp/bad_kind/api.b" <<'BEANS'
+package api
+
 pub fn helper() -> i32 {
     return 42
 }

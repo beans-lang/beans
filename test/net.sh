@@ -448,7 +448,7 @@ expect_error "is move-only" test/cases/socket_no_copy.b
 expect_error "use of moved value 'server'" test/cases/socket_use_after_move.b
 # unique is not Clone, so it is not Send: a socket cannot cross a thread boundary.
 # Documented, and this is what holds the line.
-expect_error "non-Send type net.TcpListener" test/cases/socket_across_thread.b
+expect_error "non-Send type std.net.TcpListener" test/cases/socket_across_thread.b
 # Fabricating a socket from an arbitrary integer is not something callers can do.
 expect_error "init of 'net.TcpStream' isn't pub" test/cases/socket_private_init.b
 

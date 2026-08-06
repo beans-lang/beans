@@ -19,6 +19,8 @@
 // and shapes errors. Output buffers are allocated at the exact encoded size
 // and simdutf writes into them directly.
 
+package base64
+
 extern "C" fn beans_enc_b64_encoded_len(encoding: int, len: int) -> int
 extern "C" fn beans_enc_b64_max_decoded_len(len: int) -> int
 extern "C" fn beans_enc_b64_encode(source: RawPtr<u8>, target: RawPtr<u8>, req: RawPtr<u64>) -> int

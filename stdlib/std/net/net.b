@@ -24,6 +24,8 @@
 //   thing a count cannot say: the peer closed. `write_all` and `read_exact` are the
 //   looping forms for when you want all of it.
 
+package net
+
 import std.sock
 
 // ---- addresses --------------------------------------------------------------

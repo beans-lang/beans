@@ -1,5 +1,7 @@
 // High-level numeric helpers written in Beans, not C++.
 
+package math
+
 /// Clamp `value` into the inclusive range `[low, high]`.
 ///
 /// When to use: keeping an index or measurement within known bounds without

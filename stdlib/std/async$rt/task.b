@@ -20,6 +20,8 @@
 // program links under every runtime profile because nothing here
 // references a poller symbol.
 
+package async_rt
+
 /// The driver's step for a program with no readiness source: the root
 /// task reported pending after every task in the tree had its poll, so
 /// nothing is runnable — and with nothing parked on a descriptor,

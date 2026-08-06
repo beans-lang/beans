@@ -38,12 +38,12 @@ echo "checking the emitted LLVM type carries the layout itself"
 ./build/beansc build examples/packed.b --emit ir >/dev/null
 # A packed record must be LLVM's packed form. Without `<{ }>` LLVM would re-pad
 # it and every offset past the first would be wrong.
-grep -qF '%bs.Header = type <{i8, i32, i16, i32}>' build/packed.ll
-grep -qF '%bs.Frame = type <{i8, %bs.Header, i16}>' build/packed.ll
+grep -qF '%bs.main$Header = type <{i8, i32, i16, i32}>' build/packed.ll
+grep -qF '%bs.main$Frame = type <{i8, %bs.main$Header, i16}>' build/packed.ll
 # An over-aligned record's tail padding has to be explicit: no LLVM type can say
 # `align(64)`, so the size has to come from members LLVM can count.
-grep -qF '%bs.Counter = type <{i32, [60 x i8]}>' build/packed.ll
-grep -qF '%bs.Pair = type <{%bs.Counter, %bs.Counter}>' build/packed.ll
+grep -qF '%bs.main$Counter = type <{i32, [60 x i8]}>' build/packed.ll
+grep -qF '%bs.main$Pair = type <{%bs.main$Counter, %bs.main$Counter}>' build/packed.ll
 # A field inside a packed record may sit at an address its type is not aligned
 # for, so its accesses must say align 1 rather than let LLVM assume more.
 if ! grep -q 'align 1$' build/packed.ll; then
@@ -51,15 +51,15 @@ if ! grep -q 'align 1$' build/packed.ll; then
     exit 1
 fi
 # Storage for an over-aligned record must actually be that aligned.
-grep -q 'alloca %bs.Counter, align 64' build/packed.ll ||
-    grep -q 'alloca %bs.Pair, align 64' build/packed.ll
+grep -q 'alloca %bs.main$Counter, align 64' build/packed.ll ||
+    grep -q 'alloca %bs.main$Pair, align 64' build/packed.ll
 
 echo "checking a plain record's IR did not change"
 # The layout engine is shared now, so a plain record must still come out as an
 # unpacked LLVM struct with no padding members and no alignment suffixes. This is
 # the regression guard for every existing program.
 ./build/beansc build examples/c_layout_structs.b --emit ir >/dev/null
-grep -qF '%bs.Packet = type {i8, i32, float, i1}' build/c_layout_structs.ll
+grep -qF '%bs.main$Packet = type {i8, i32, float, i1}' build/c_layout_structs.ll
 if grep -q '%bs\..* = type <{' build/c_layout_structs.ll; then
     echo "a plain record was emitted in packed form" >&2
     exit 1

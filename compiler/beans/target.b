@@ -1,3 +1,5 @@
+package main
+
 import std.target as running_target
 
 class TargetDescription {

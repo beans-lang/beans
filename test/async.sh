@@ -152,7 +152,7 @@ fn main() {
 }
 EOF
 both_reject_same "$tmp/rej_interp_class.b" \
-    "can't put a Wrench inside a string yet — give it a string form first"
+    "can't put a main.Wrench inside a string yet — give it a string form first"
 
 cat > "$tmp/ok_interp_forms.b" <<'EOF'
 import std.io

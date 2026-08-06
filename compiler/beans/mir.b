@@ -1,3 +1,5 @@
+package main
+
 class MirLocal {
     id: int
     binding_id: int
@@ -223,6 +225,8 @@ class MirProgram {
     c_globals: List<HirCGlobal>
     functions: List<MirFunction>
     errors: List<Diagnostic>
+    // The entry point's canonical symbol, carried over from the HIR.
+    entry_symbol: string
 
     fn init(target: TargetDescription) {
         self.target = target
@@ -230,6 +234,7 @@ class MirProgram {
         self.c_globals = []
         self.functions = []
         self.errors = []
+        self.entry_symbol = package_symbol("main", "main")
     }
 }
 
@@ -455,6 +460,7 @@ class MirLowerer {
     fn init(source: HirProgram) {
         self.source = source
         self.mir = new MirProgram(source.target)
+        self.mir.entry_symbol = source.entry_symbol
         for declaration: HirDeclaration in
             source.declarations {
             self.mir.declarations.push(declaration)

@@ -13,6 +13,8 @@
 // A `Poller` is a `unique class` like every other resource: move-only, closed by
 // `deinit`. `wake()` is the one thing on it that is safe to call from another thread.
 
+package poll
+
 import std.ready
 
 /// What to watch a descriptor for. An ordinary value, so build one and reuse it.

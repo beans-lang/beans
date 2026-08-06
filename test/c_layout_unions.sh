@@ -12,14 +12,14 @@ echo "checking inline C-layout union parity"
 "$tmp/native" >"$tmp/native.out"
 diff -u test/cases/c_layout_union.out "$tmp/interp"
 diff -u test/cases/c_layout_union.out "$tmp/native.out"
-grep -q '%bs.Word = type {i32}' build/c_layout_unions.ll
-grep -q '%bs.AlignedBlock = type {i64, \[8 x i8\]}' build/c_layout_unions.ll
-if ! grep -q '^define %bs.Word @b_passthrough(%bs.Word ' \
+grep -q '%bs.main$Word = type {i32}' build/c_layout_unions.ll
+grep -q '%bs.main$AlignedBlock = type {i64, \[8 x i8\]}' build/c_layout_unions.ll
+if ! grep -q '^define %bs.main$Word @b_main$passthrough(%bs.main$Word ' \
         build/c_layout_unions.ll; then
     awk '
-        $0 == "; passthrough" {
+        $0 == "; main.passthrough" {
             getline
-            if ($0 ~ /^define %bs.Word @[^ (]+[(]%bs.Word /) found = 1
+            if ($0 ~ /^define %bs[.]main[$]Word @[^ (]+[(]%bs[.]main[$]Word /) found = 1
         }
         END { exit !found }
     ' build/c_layout_unions.ll

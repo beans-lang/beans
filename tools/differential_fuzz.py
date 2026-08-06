@@ -1285,10 +1285,14 @@ class Program:
     def emit_files(self):
         files = {"main.b": self.emit()}
         if self.packages:
+            # A project needs a package clause in every file it loads; a
+            # single-file case stays manifestless and needs none.
+            files["main.b"] = "package main\n\n" + files["main.b"]
             files["beans.pot"] = "module {}\n".format(MODULE_NAME)
             for pkg in self.packages:
-                out = self.import_lines(pkg, pkg in self.pkg_prints)
-                if out:
+                out = ["package {}".format(pkg), ""]
+                out.extend(self.import_lines(pkg, pkg in self.pkg_prints))
+                if out[-1] != "":
                     out.append("")
                 out.extend(self.emit_decl_lines(pkg))
                 while out and out[-1] == "":

@@ -19,6 +19,8 @@
 // created afterwards inherit it. Threads that already exist do not, and a signal
 // delivered to one of those still runs the default action.
 
+package signal
+
 import std.sig
 
 /// The signals that can be watched, by name. Numbers differ between platforms —

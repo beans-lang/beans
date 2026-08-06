@@ -6,6 +6,8 @@
 // backend lowered any of them as an intrinsic, the marks would be missing
 // and the addresses would be real pointers instead of the sentinels.
 
+package main
+
 import encshadow.json
 import encshadow.xml
 import encshadow.base64

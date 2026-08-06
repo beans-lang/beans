@@ -11,8 +11,9 @@ main_ir=build/test-devirtualize-main.ll
     -o "$binary" >/dev/null
 sed -n '/^define i32 @main(/,/^}/p' "$ir" >"$main_ir"
 
+# The IR comment names a function by its package's import path.
 symbol_for() {
-    awk -v label="; $1" '
+    awk -v label="; main.$1" '
         $0 == label { found = 1; next }
         found && /^define / {
             match($0, /@[^ (]+/)

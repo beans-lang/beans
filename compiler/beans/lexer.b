@@ -1,3 +1,5 @@
+package main
+
 fn is_digit(value: int) -> bool {
     return value >= 48 && value <= 57
 }

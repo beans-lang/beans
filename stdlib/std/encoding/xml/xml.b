@@ -24,6 +24,8 @@
 // Escaping and serialization are pugixml's own writer; nothing is written
 // by hand here.
 
+package xml
+
 extern "C" fn beans_enc_xml_parse(source: RawPtr<u8>, req: RawPtr<u64>) -> int
 extern "C" fn beans_enc_xml_new_doc() -> int
 extern "C" fn beans_enc_xml_doc_root(doc: int) -> int

@@ -25,12 +25,12 @@ echo "checking compiler-shipped Beans std packages"
 
 diff -u test/cases/stdlib_beans.out "$tmp/interp"
 diff -u test/cases/stdlib_beans.out "$tmp/native.out"
-assert_beans_function path.join ptr build/stdlib_beans.ll
-assert_beans_function fmt.hex ptr build/stdlib_beans.ll
-assert_beans_function fmt.bin ptr build/stdlib_beans.ll
-assert_beans_function fmt.group ptr build/stdlib_beans.ll
-assert_beans_function 'collections.increment$' i64 build/stdlib_beans.ll
-assert_beans_function 'collections.map_values$' ptr build/stdlib_beans.ll
+assert_beans_function std.path.join ptr build/stdlib_beans.ll
+assert_beans_function std.fmt.hex ptr build/stdlib_beans.ll
+assert_beans_function std.fmt.bin ptr build/stdlib_beans.ll
+assert_beans_function std.fmt.group ptr build/stdlib_beans.ll
+assert_beans_function 'std.collections.increment$' i64 build/stdlib_beans.ll
+assert_beans_function 'std.collections.map_values$' ptr build/stdlib_beans.ll
 grep -Eq 'define internal i64 @[^ (]*eq[^(]*[(]' build/stdlib_beans.ll
 if grep -Eq 'beans_path_|beans_fmt_(hex|bin|group)' build/beans_rt.c; then
     echo "migrated path/fmt code still exists in the native runtime" >&2
@@ -38,9 +38,9 @@ if grep -Eq 'beans_path_|beans_fmt_(hex|bin|group)' build/beans_rt.c; then
 fi
 
 ./build/beansc build bench/bytes.b -o "$tmp/bytes" >"$tmp/bytes-build"
-assert_beans_function bytes.append_varint void build/bytes.ll
-assert_beans_function bytes.decode_varint_at_or i64 build/bytes.ll
-assert_beans_function bytes.crc32 i32 build/bytes.ll
+assert_beans_function std.bytes.append_varint void build/bytes.ll
+assert_beans_function std.bytes.decode_varint_at_or i64 build/bytes.ll
+assert_beans_function std.bytes.crc32 i32 build/bytes.ll
 if grep -Eq 'call .*@beans_bytes_(append_varint|get_varint|crc32)' build/bytes.ll; then
     echo "bytes benchmark still calls migrated native algorithms" >&2
     exit 1

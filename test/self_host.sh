@@ -203,18 +203,18 @@ cmp "$tmp/loader.first" "$tmp/loader.second"
 ./build/beansc-next resolve examples/shop/main.b >"$tmp/resolver.first"
 ./build/beansc-next resolve examples/shop/main.b >"$tmp/resolver.second"
 cmp "$tmp/resolver.first" "$tmp/resolver.second"
-grep -q '^symbol money.Money class pub shop.money$' "$tmp/resolver.first"
-grep -q ' u.Device -> util.Device$' "$tmp/resolver.first"
+grep -q '^symbol shop.money::Money class pub shop.money$' "$tmp/resolver.first"
+grep -q ' u.Device -> shop.util::Device$' "$tmp/resolver.first"
 ./build/beansc-next hir compiler/beans/main.b >"$tmp/hir.first"
 ./build/beansc-next hir compiler/beans/main.b >"$tmp/hir.second"
 cmp "$tmp/hir.first" "$tmp/hir.second"
-grep -q '^fn ModuleLoader.load(entry: string) -> bool$' "$tmp/hir.first"
+grep -q '^fn compiler::ModuleLoader.load(entry: string) -> bool$' "$tmp/hir.first"
 ./build/beansc-next mir examples/tour.b >"$tmp/tour.mir.first"
 ./build/beansc-next mir examples/tour.b >"$tmp/tour.mir.second"
 cmp "$tmp/tour.mir.first" "$tmp/tour.mir.second"
 grep -q '^target ' "$tmp/tour.mir.first"
-grep -q '^fn describe_payment -> string$' "$tmp/tour.mir.first"
-grep -q '^  local l[0-9][0-9]* p: Payment ' "$tmp/tour.mir.first"
+grep -q '^fn main::describe_payment -> string$' "$tmp/tour.mir.first"
+grep -q '^  local l[0-9][0-9]* p: main.Payment ' "$tmp/tour.mir.first"
 grep -q '^    branch v[0-9][0-9]* -> bb[0-9][0-9]*,bb[0-9][0-9]*$' \
     "$tmp/tour.mir.first"
 grep -q '^    match v[0-9][0-9]* -> ' "$tmp/tour.mir.first"
@@ -224,8 +224,8 @@ grep -q ' = iterate_next ' "$tmp/tour.mir.first"
 grep -q ' = iterate_value ' "$tmp/tour.mir.first"
 grep -q '^    try_branch v[0-9][0-9]* -> ' "$tmp/tour.mir.first"
 ./build/beansc-next mir compiler/beans/main.b >"$tmp/compiler.mir"
-grep -q '^fn MirLowerer.run -> MirProgram$' "$tmp/compiler.mir"
-grep -q '^fn main -> unit$' "$tmp/compiler.mir"
+grep -q '^fn compiler::MirLowerer.run -> compiler.MirProgram$' "$tmp/compiler.mir"
+grep -q '^fn compiler::main -> unit$' "$tmp/compiler.mir"
 ./build/beansc-next llvm test/cases/self_host_llvm.b \
     >"$tmp/self-host.first.ll"
 ./build/beansc-next llvm test/cases/self_host_llvm.b \
@@ -472,7 +472,7 @@ grep -q 'call ptr @beans_alloc(i64 24, i64 33)' \
     "$tmp/enum-payload.first.ll"
 grep -q '^define internal i64 @.next.eq0(i64 %a, i64 %b) {' \
     "$tmp/enum-payload.first.ll"
-grep -q 'store %bs[.]Point %pattern.value' \
+grep -q 'store %bs[.]main[$]Point %pattern.value' \
     "$tmp/enum-payload.first.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
@@ -803,7 +803,7 @@ grep -q 'call void @.next.fn[0-9]*(ptr %deinit.self[0-9]*)' \
     "$tmp/inheritance-layouts.first.ll"
 # inherited class defaults are lowered as MIR functions; construction
 # calls the default before the field store, and that function allocates
-grep -q '^; Base[.]\$default[.]leaf$' \
+grep -q '^; main[.]Base[.]\$default[.]leaf$' \
     "$tmp/inheritance-layouts.first.ll"
 grep -q '%default.value[0-9]* = call ptr @.next.fn[0-9]*()' \
     "$tmp/inheritance-layouts.first.ll"
@@ -1028,9 +1028,9 @@ cmp "$tmp/defaults.first.ll" "$tmp/defaults.second.ll"
 # Non-zero field defaults are MIR functions called between allocation
 # and init. The collection and Bytes constructors stay inside those
 # functions instead of being re-read from HIR by the LLVM emitter.
-grep -q '^; Basket[.]\$default[.]items$' \
+grep -q '^; main[.]Basket[.]\$default[.]items$' \
     "$tmp/defaults.first.ll"
-grep -q '^; Basket[.]\$default[.]blob$' \
+grep -q '^; main[.]Basket[.]\$default[.]blob$' \
     "$tmp/defaults.first.ll"
 grep -q 'call ptr @beans_list_new(i64 0)' \
     "$tmp/defaults.first.ll"
@@ -2430,7 +2430,7 @@ for llvm_target in arm64-apple-darwin \
         --target "$llvm_target" \
         test/cases/self_host_llvm_inheritance_layouts.b \
         >"$tmp/$llvm_target-inheritance-layouts.ll"
-    grep -q '^; Base[.]\$default[.]leaf$' \
+    grep -q '^; main[.]Base[.]\$default[.]leaf$' \
         "$tmp/$llvm_target-inheritance-layouts.ll"
     grep -q '%default.value[0-9]* = call ptr @.next.fn[0-9]*()' \
         "$tmp/$llvm_target-inheritance-layouts.ll"
@@ -2668,7 +2668,7 @@ grep -q 'call ptr @beans_alloc(i64 16, i64 33)' \
     --target riscv32imac-unknown-none-elf --runtime freestanding \
     test/cases/self_host_llvm_inheritance_layouts.b \
     >"$tmp/inheritance-layouts-rv32.ll"
-grep -q '^; Base[.]\$default[.]leaf$' \
+grep -q '^; main[.]Base[.]\$default[.]leaf$' \
     "$tmp/inheritance-layouts-rv32.ll"
 grep -q '%default.value[0-9]* = call ptr @.next.fn[0-9]*()' \
     "$tmp/inheritance-layouts-rv32.ll"
@@ -2739,7 +2739,7 @@ BEANS_NO_POOL=1 "$tmp/return-cast-native" \
     >"$tmp/return-cast.actual"
 diff -u "$tmp/return-cast.expected" "$tmp/return-cast.actual"
 ./build/beansc-next mir bench/closures.b >"$tmp/closures.mir"
-grep -q '^closure main[.][$]closure[.]0 -> int$' \
+grep -q '^closure main::main[.][$]closure[.]0 -> int$' \
     "$tmp/closures.mir"
 grep -q '^  capture offset binding=[0-9][0-9]* l[0-9][0-9]*->l[0-9][0-9]*: int$' \
     "$tmp/closures.mir"
@@ -2747,9 +2747,9 @@ grep -q ' = closure closure=[0-9][0-9]* captures=(l[0-9][0-9]*) ' \
     "$tmp/closures.mir"
 ./build/beansc-next mir test/cases/mir_control.b \
     >"$tmp/nested-closures.mir"
-grep -q '^closure make_nested[.][$]closure[.][0-9][0-9]*[.][$]closure[.][0-9][0-9]* -> int$' \
+grep -q '^closure main::make_nested[.][$]closure[.][0-9][0-9]*[.][$]closure[.][0-9][0-9]* -> int$' \
     "$tmp/nested-closures.mir"
-grep -q '^cleanup deferred[.][$]cleanup[.][0-9][0-9]* -> unit$' \
+grep -q '^cleanup main::deferred[.][$]cleanup[.][0-9][0-9]* -> unit$' \
     "$tmp/nested-closures.mir"
 grep -q '^    defer_register cleanup=[0-9][0-9]*' \
     "$tmp/nested-closures.mir"
@@ -2781,9 +2781,9 @@ grep -q 'local .* label: string borrowed,parameter,ownership-sink' \
     "$tmp/nested-closures.mir"
 grep -q 'new OwnedSink .*consumes=(1) passing=(borrow)' \
     "$tmp/nested-closures.mir"
-grep -q 'local .* alias: Item owned,mutable,borrows=l[0-9][0-9]*,scalar-replaced' \
+grep -q 'local .* alias: main.Item owned,mutable,borrows=l[0-9][0-9]*,scalar-replaced' \
     "$tmp/nested-closures.mir"
-grep -q 'local .* item: Item owned,scalar-replaced' \
+grep -q 'local .* item: main.Item owned,scalar-replaced' \
     "$tmp/nested-closures.mir"
 grep -q 'borrow item .*scalar-materialize' \
     "$tmp/nested-closures.mir"
@@ -2937,7 +2937,7 @@ grep -q "'one' takes 1 argument(s), got 2" \
     "$tmp/expressions.bad"
 grep -q "List<T> has no method 'clone'" \
     "$tmp/expressions.bad"
-grep -q "'requires_order' needs T implements Order, got Unordered" \
+grep -q "'requires_order' needs T implements Order, got main.Unordered" \
     "$tmp/expressions.bad"
 for checker_bad in index_compound_bad syntax_bound_bad \
     syntax_inheritance_bad syntax_multiple_bases_bad \
@@ -2954,13 +2954,13 @@ grep -q "map index assignment only supports '='" \
     "$tmp/index_compound_bad.out"
 grep -q "generic bound 'Value' is not an interface" \
     "$tmp/syntax_bound_bad.out"
-grep -q "inheritance cycle involving 'CycleA'" \
+grep -q "inheritance cycle involving 'main.CycleA'" \
     "$tmp/syntax_inheritance_bad.out"
 grep -Fq "expected '{'" \
     "$tmp/syntax_multiple_bases_bad.out"
 grep -q "self isn't available here" \
     "$tmp/syntax_static_self_bad.out"
-grep -q 'Map key needs Hash, got RawKey' \
+grep -q 'Map key needs Hash, got main.RawKey' \
     "$tmp/wide_map_key_bad.out"
 for ownership_bad in arena_move_bad box_move_bad child_no_copy \
     child_private_init collection_move_bad dylib_no_copy \
@@ -2977,14 +2977,14 @@ for ownership_bad in arena_move_bad box_move_bad child_no_copy \
 done
 grep -q "binding 'copied' needs 'move first' because Box<int> is move-only" \
     "$tmp/box_move_bad.out"
-grep -q "init of 'process.Child' isn't pub in package 'process'" \
+grep -q "init of 'process.Child' isn't pub in package 'std.process'" \
     "$tmp/child_private_init.out"
 test "$(grep -c 'error:' "$tmp/collection_move_bad.out")" -eq 13
 grep -q "value 'item' may have been moved" \
     "$tmp/move_bad.out"
 grep -q "can't move borrowed binding 's'" \
     "$tmp/resource_move_out_of_match.out"
-grep -q "thread closure cannot capture 'server' of non-Send type net.TcpListener" \
+grep -q "thread closure cannot capture 'server' of non-Send type std.net.TcpListener" \
     "$tmp/socket_across_thread.out"
 for match_bad in match_exhaustive_bad match_move_bad \
     match_pattern_bad; do
@@ -3109,7 +3109,7 @@ grep -q ': ok$' "$tmp/cpu-build-feature.ok"
 grep -q ': ok$' "$tmp/intrinsic-build-feature.ok"
 ./build/beansc-next hir test/cases/cpu_unguarded.b \
     >"$tmp/cpu-feature.hir"
-grep -q '^feature needs_aes aes$' "$tmp/cpu-feature.hir"
+grep -q '^feature main::needs_aes aes$' "$tmp/cpu-feature.hir"
 
 clang -O2 test/fixtures/layout_reference.c -o "$tmp/layout-reference"
 "$tmp/layout-reference" | sed -n '/^Packet /,$p' \
@@ -3141,7 +3141,7 @@ done
 grep -q 'must be a power of two' "$tmp/packed_bad_align.out"
 grep -q 'packed already fixes every offset' \
     "$tmp/packed_bad_field_in_packed.out"
-grep -q 'recursive inline layout for Loop has no finite size' \
+grep -q 'recursive inline layout for main.Loop has no finite size' \
     "$tmp/layout_recursive_introspect_bad.out"
 for bad_check_layout in packed_bad_align packed_bad_field_in_packed \
     packed_bad_huge layout_recursive_introspect_bad \
@@ -3165,6 +3165,8 @@ grep -q 'offset_of needs a struct or union, got int' \
 mkdir -p "$tmp/layout-scalars"
 printf 'module layout_scalars\n' >"$tmp/layout-scalars/beans.pot"
 cat >"$tmp/layout-scalars/main.b" <<'EOF'
+package main
+
 struct ScalarBlock {
     amount: decimal
     vector: Simd4f32
@@ -3191,7 +3193,7 @@ grep -q 'decimal is not available in the runtime for riscv32-unknown-none-elf' \
 
 mkdir -p "$tmp/bad-signature"
 printf 'module bad\n' >"$tmp/bad-signature/beans.pot"
-printf 'fn broken(values: List) {}\n' >"$tmp/bad-signature/main.b"
+printf 'package main\n\nfn broken(values: List) {}\n' >"$tmp/bad-signature/main.b"
 if ./build/beansc-next hir "$tmp/bad-signature/main.b" \
     >"$tmp/bad-signature.out"; then
     echo "bad generic arity was accepted" >&2
@@ -3203,6 +3205,8 @@ grep -q 'List needs 1 type argument(s), got 0' \
 mkdir -p "$tmp/bad-c-abi"
 printf 'module bad_c_abi\n' >"$tmp/bad-c-abi/beans.pot"
 cat >"$tmp/bad-c-abi/main.b" <<'EOF'
+package main
+
 struct Plain {
     value: i32
 }
@@ -3241,19 +3245,20 @@ grep -q 'got fn(i8, i8, i8, i8, i8, i8, i8) -> unit' \
 
 mkdir -p "$tmp/private/dep"
 printf 'module private\n' >"$tmp/private/beans.pot"
-printf 'import private.dep\nfn main() { let value: dep.Hidden }\n' \
+printf 'package main\n\nimport private.dep\nfn main() { let value: dep.Hidden }\n' \
     >"$tmp/private/main.b"
-printf 'class Hidden {}\n' >"$tmp/private/dep/dep.b"
+printf 'package dep\n\nclass Hidden {}\n' >"$tmp/private/dep/dep.b"
 if ./build/beansc-next resolve "$tmp/private/main.b" \
     >"$tmp/private.out"; then
     echo "private imported type was accepted" >&2
     exit 1
 fi
-grep -q "type 'dep.Hidden' isn't pub in package 'dep'" "$tmp/private.out"
+grep -q "type 'dep.Hidden' isn't pub in package 'private.dep'" \
+    "$tmp/private.out"
 
 mkdir -p "$tmp/locked"
 printf 'module locked\n' >"$tmp/locked/beans.pot"
-printf 'fn main() {}\n' >"$tmp/locked/main.b"
+printf 'package main\n\nfn main() {}\n' >"$tmp/locked/main.b"
 if ./build/beansc-next load --locked "$tmp/locked/main.b" \
     >"$tmp/missing-lock"; then
     echo "missing lock was accepted" >&2
@@ -3292,9 +3297,9 @@ git -C "$tmp/dependency/source" init -q
 git -C "$tmp/dependency/source" config user.name "Beans Test"
 git -C "$tmp/dependency/source" config user.email "beans@example.test"
 printf 'module dep\n' >"$tmp/dependency/source/beans.pot"
-printf 'import dep.sub\npub fn answer() -> int { return sub.value() }\n' \
+printf 'package dep\n\nimport dep.sub\npub fn answer() -> int { return sub.value() }\n' \
     >"$tmp/dependency/source/dep.b"
-printf 'pub fn value() -> int { return 42 }\n' \
+printf 'package sub\n\npub fn value() -> int { return 42 }\n' \
     >"$tmp/dependency/source/sub/sub.b"
 git -C "$tmp/dependency/source" add beans.pot dep.b sub/sub.b
 git -C "$tmp/dependency/source" commit -qm v1
@@ -3310,6 +3315,8 @@ module app
 require example.test/acme/dep v1
 EOF
 cat >"$tmp/dependency/app/main.b" <<'EOF'
+package main
+
 import example.test/acme/dep as dependency
 fn main() {}
 EOF
@@ -3336,9 +3343,9 @@ cmp "$tmp/dependency/first.lock" "$tmp/dependency/app/beans.lock"
 BEANS_HOME="$tmp/dependency/home" \
     ./build/beansc-next load --locked --offline \
     "$tmp/dependency/app/main.b" >"$tmp/dependency/offline.graph"
-grep -q '^package example.test/acme/dep prefix=dep$' \
+grep -q '^package example.test/acme/dep name=dep$' \
     "$tmp/dependency/offline.graph"
-grep -q '^package example.test/acme/dep/sub prefix=sub$' \
+grep -q '^package example.test/acme/dep/sub name=sub$' \
     "$tmp/dependency/offline.graph"
 dependency_cache="$tmp/dependency/home/pkg/example.test/acme/dep/$dependency_commit"
 printf '\n// changed\n' >>"$dependency_cache/dep.b"
@@ -3352,7 +3359,7 @@ grep -q 'cached checkout has local content changes' \
     "$tmp/dependency/tampered.out"
 git -C "$dependency_cache" checkout -q -- dep.b
 
-printf 'import dep.sub\npub fn answer() -> int { return sub.value() + 1 }\n' \
+printf 'package dep\n\nimport dep.sub\npub fn answer() -> int { return sub.value() + 1 }\n' \
     >"$tmp/dependency/source/dep.b"
 git -C "$tmp/dependency/source" add dep.b
 git -C "$tmp/dependency/source" commit -qm v2

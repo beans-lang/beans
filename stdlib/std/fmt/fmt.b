@@ -1,6 +1,8 @@
 // Formatting algorithms written in Beans. Floating-point and decimal
 // conversion remain native primitives for now.
 
+package fmt
+
 fn hex_impl(value: int) -> string {
     let digits: string = "0123456789abcdef"
     var remaining: u64 = value as u64

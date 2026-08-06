@@ -1,3 +1,5 @@
+package main
+
 class ValueLayout {
     size: int
     align: int
@@ -419,7 +421,7 @@ class LayoutEngine {
                            active: Map<string, bool>) -> RecordLayoutAnswer {
         if declaration.is_opaque {
             return new RecordLayoutAnswer(layout_error(
-                "{declaration.qualified} is an opaque C type and has no known layout"))
+                "{display_symbol(declaration.qualified)} is an opaque C type and has no known layout"))
         }
         let key: string = render_hir_type(type)
         if active.contains(key) {
@@ -428,7 +430,7 @@ class LayoutEngine {
         }
         if declaration.generics.len() != type.args.len() {
             return new RecordLayoutAnswer(layout_error(
-                "{declaration.qualified} needs {declaration.generics.len()} type argument(s), got {type.args.len()}"))
+                "{display_symbol(declaration.qualified)} needs {declaration.generics.len()} type argument(s), got {type.args.len()}"))
         }
 
         var nested_substitutions: Map<string, HirType> =
@@ -530,10 +532,10 @@ fn render_record_layouts(engine: LayoutEngine) -> string {
             continue
         }
         lines.push(
-            "{declaration.qualified} {record.answer.value.size} {record.answer.value.align}")
+            "{declaration.name} {record.answer.value.size} {record.answer.value.align}")
         for field: HirField in declaration.fields {
             lines.push(
-                "{declaration.qualified}.{field.name} {record.offsets[field.name]}")
+                "{declaration.name}.{field.name} {record.offsets[field.name]}")
         }
     }
     return lines.join("\n")

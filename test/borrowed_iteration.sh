@@ -16,9 +16,10 @@ trap 'rm -rf "$tmp"' EXIT
 diff -u test/cases/borrowed_iteration.out "$tmp/interp"
 diff -u test/cases/borrowed_iteration.out "$tmp/native.out"
 
+# The MIR dump names a function by its canonical symbol, "<package>::<name>".
 mir_body() {
     ./build/beansc mir test/cases/borrowed_iteration.b |
-        awk -v name="$1" '
+        awk -v name="main::$1" '
             $1 == "fn" && $2 == name { inside = 1; next }
             $1 == "fn" { inside = 0 }
             inside'

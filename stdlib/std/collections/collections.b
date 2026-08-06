@@ -2,6 +2,8 @@
 // primitive operations are still runtime intrinsics while the buffer types
 // are being moved into core.
 
+package collections
+
 pub fn count_int(values: List<int>, needle: int) -> int {
     var count: int = 0
     for value: int in values {

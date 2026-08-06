@@ -11,7 +11,7 @@ git -C "$tmp/source" init -q
 git -C "$tmp/source" config user.name "Beans Test"
 git -C "$tmp/source" config user.email "beans@example.test"
 printf 'module dep\n' >"$tmp/source/beans.pot"
-printf 'pub fn answer() -> int { return 42 }\n' >"$tmp/source/dep.b"
+printf 'package dep\n\npub fn answer() -> int { return 42 }\n' >"$tmp/source/dep.b"
 git -C "$tmp/source" add beans.pot dep.b
 git -C "$tmp/source" commit -qm v1
 git -C "$tmp/source" tag v1
@@ -25,6 +25,8 @@ module app
 require example.test/acme/dep v1
 EOF
 cat >"$tmp/app/main.b" <<'EOF'
+package main
+
 import std.io
 import example.test/acme/dep
 
@@ -72,7 +74,7 @@ fi
 grep -q 'cached checkout has local content changes' "$tmp/tampered"
 git -C "$cache" checkout -q -- dep.b
 
-printf 'pub fn answer() -> int { return 43 }\n' >"$tmp/source/dep.b"
+printf 'package dep\n\npub fn answer() -> int { return 43 }\n' >"$tmp/source/dep.b"
 git -C "$tmp/source" add dep.b
 git -C "$tmp/source" commit -qm v2
 git -C "$tmp/source" tag v2

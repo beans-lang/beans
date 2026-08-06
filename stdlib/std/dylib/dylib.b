@@ -16,6 +16,8 @@
 // integer or a by-value struct needs `extern "C"`, where Clang classifies the signature
 // for the target instead of you.
 
+package dylib
+
 import std.dl
 
 /// A resolved symbol: its address, and the name it was looked up by.

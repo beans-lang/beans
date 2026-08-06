@@ -1,3 +1,13 @@
+package main
+
+// The LLVM named type for a record. A canonical name carries the package's
+// whole import path, so it goes through symbol_text: '/' and ':' are not
+// legal in an LLVM identifier, and two same-named records in different
+// packages must not collapse onto one type.
+fn llvm_record_name(qualified: string) -> string {
+    return "%bs.{symbol_text(qualified)}"
+}
+
 fn llvm_unquote(source: string) -> string {
     var start: int = 0
     var end: int = source.len()
@@ -758,7 +768,7 @@ class LlvmTextEmitter {
                    declaration.kind == "union" {
                     match self.record_layout(type) {
                         some(layout) => {
-                            return "%bs.{layout.declaration.qualified}"
+                            return llvm_record_name(layout.declaration.qualified)
                         }
                         none => { return "" }
                     }
@@ -2484,7 +2494,7 @@ class LlvmTextEmitter {
                 continue
             }
             let symbol: string =
-                if function.name == "main" {
+                if function.name == self.program.entry_symbol {
                     "@main"
                 } else if function.c_export {
                     "@beans_export_body_{function.external_name}"
@@ -2557,10 +2567,10 @@ class LlvmTextEmitter {
             if self.type_needs_explicit_record_layout(
                    type) {
                 output =
-                    "{output}%bs.{layout.declaration.qualified} = type <\{{layout.llvm_fields.join(", ")}\}>\n"
+                    "{output}{llvm_record_name(layout.declaration.qualified)} = type <\{{layout.llvm_fields.join(", ")}\}>\n"
             } else {
                 output =
-                    "{output}%bs.{layout.declaration.qualified} = type \{{layout.llvm_fields.join(", ")}\}\n"
+                    "{output}{llvm_record_name(layout.declaration.qualified)} = type \{{layout.llvm_fields.join(", ")}\}\n"
             }
         }
         for id: int in 0..self.strings.len() {
@@ -5088,7 +5098,7 @@ class LlvmTextEmitter {
                             "  %field.assign.ptr{address} = getelementptr i8, ptr %l{target}, i64 0\n"
                     } else {
                         output =
-                            "  %field.assign.ptr{address} = getelementptr %bs.{layout.declaration.qualified}, ptr %l{target}, i32 0, i32 {layout.field_indices[name]}\n"
+                            "  %field.assign.ptr{address} = getelementptr {llvm_record_name(layout.declaration.qualified)}, ptr %l{target}, i32 0, i32 {layout.field_indices[name]}\n"
                     }
                     if operation != "=" {
                         let access: string =
@@ -15508,9 +15518,9 @@ class LlvmTextEmitter {
     //      match the intrinsic's signature exactly.
     //
     // Rule 2 is what makes a user package harmless: a module of its own
-    // named json, xml or base64 produces the same MIR name, but its source
-    // lives outside the stdlib root, so it is compiled as an ordinary call
-    // and runs its own Beans body. test/cases/encoding_shadow/ is the
+    // named json, xml or base64 has a different import path and a source
+    // outside the stdlib root, so it is compiled as an ordinary call and
+    // runs its own Beans body. test/cases/encoding_shadow/ is the
     // negative proof.
     //
     // Intrinsic ids:
@@ -15557,22 +15567,24 @@ class LlvmTextEmitter {
         let root: string = stdlib_root()
         for function: MirFunction in self.program.functions {
             if function.declaration || function.external { continue }
-            let dot: int = function.name.rfind(".").or(-1)
-            if dot <= 0 { continue }
-            let package: string = function.name.slice(0, dot)
-            let short_name: string =
-                function.name.slice(dot + 1, function.name.len())
+            let package: string = symbol_package(function.name)
+            if package == "" { continue }
+            let short_name: string = symbol_name(function.name)
             let id: int = self.encoding_intrinsic_id(short_name)
             if id == 0 { continue }
-            // 3. only the three shipped encoding packages
-            if package != "json" && package != "xml" &&
-               package != "base64" {
+            // 3. only the three shipped encoding packages, named by their
+            // canonical import path — a user package called json has a
+            // different identity and never matches
+            if package != "std.encoding.json" &&
+               package != "std.encoding.xml" &&
+               package != "std.encoding.base64" {
                 continue
             }
             // 2. and only when the source really is the shipped library
             var expected: string = root
             if !expected.ends_with("/") { expected = "{expected}/" }
-            expected = "{expected}encoding/{package}"
+            expected =
+                "{expected}encoding/{last_path_segment(package)}"
             if !self.path_is_under(function.file, expected) {
                 continue
             }
@@ -18954,7 +18966,7 @@ class LlvmTextEmitter {
                 }
             }
         }
-        let is_main: bool = function.name == "main"
+        let is_main: bool = function.name == self.program.entry_symbol
         if is_main &&
            canonical_hir_name(function.result.name) !=
                "unit" {
@@ -19067,7 +19079,7 @@ class LlvmTextEmitter {
                 " \"target-features\"=\"+{function.required_feature}\""
             }
         var output: string =
-            "; {function.name}\ndefine {result_type} {symbol}({parameters.join(", ")}){feature_attribute} \{\nentry:\n"
+            "; {display_symbol(function.name)}\ndefine {result_type} {symbol}({parameters.join(", ")}){feature_attribute} \{\nentry:\n"
         if is_main {
             output =
                 "{output}  call void @beans_os_init(i32 %beans.argc, ptr %beans.argv)\n"
@@ -19232,7 +19244,7 @@ class LlvmTextEmitter {
                 // their instances emit
                 continue
             }
-            if function.name == "main" {
+            if function.name == self.program.entry_symbol {
                 found_main = true
             }
             functions =

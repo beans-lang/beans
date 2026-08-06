@@ -14,7 +14,7 @@ mkdir "$tmp/interp" "$tmp/native" "$tmp/asan"
 diff -u test/cases/reader_source.out "$tmp/interp.out"
 diff -u test/cases/reader_source.out "$tmp/native.out"
 awk '
-    $0 == "; reader.Reader.read_line" { found = 1; next }
+    $0 == "; std.reader.Reader.read_line" { found = 1; next }
     found && /^define ptr / { exit 0 }
     found { exit 1 }
     END { if (!found) exit 1 }

@@ -1,3 +1,5 @@
+package main
+
 class HirNode {
     kind: string
     value: string
@@ -658,25 +660,16 @@ class ExpressionChecker {
             self.c_globals[
                 global.qualified] = global
         }
+        // Bindings are keyed by file: an import in one file of a package
+        // must not qualify anything in its siblings.
         for package: LoadedPackage in
             signature.resolver.loader.packages {
             for file: ParsedModuleFile in package.files {
-                for declaration: AstNode in file.ast.children {
-                    if declaration.kind != "import" { continue }
-                    var import_path: string = declaration.value
-                    if import_path.starts_with("pub ") {
-                        import_path =
-                            import_path.slice(4, import_path.len())
-                    }
-                    var alias: string =
-                        package_prefix(import_path)
-                    for child: AstNode in declaration.children {
-                        if child.kind == "alias" {
-                            alias = child.value
-                        }
-                    }
-                    self.imports["{file.path}|{alias}"] =
-                        import_path
+                for imported: ModuleImport in file.imports {
+                    var target: string = imported.resolved
+                    if target == "" { target = imported.path }
+                    self.imports[
+                        "{file.path}|{imported.binding}"] = target
                 }
             }
         }
@@ -1254,6 +1247,39 @@ class ExpressionChecker {
         return false
     }
 
+    // A re-parsed interpolation segment never went through the resolver, so
+    // its type names are still source spellings. Bind them the way the
+    // resolver would have: an import binding names its package, and a bare
+    // name means this file's own package.
+    fn qualify_unresolved_types(node: AstNode) {
+        if (node.kind == "type" || node.kind == "array_type" ||
+            node.kind == "fn_type") && node.resolved == "" {
+            let name: string = node.value
+            var generic: bool = false
+            for constraint: HirGeneric in self.current_constraints {
+                if constraint.name == name { generic = true }
+            }
+            if name == "Self" {
+                node.resolved = self.current.owner
+            } else if !builtin_type(name) && !generic && name != "" {
+                if name.contains(".") {
+                    let parts: List<string> = name.split(".")
+                    let target: string =
+                        self.imported_path(parts[0])
+                    if target != "" && parts.len() == 2 {
+                        node.resolved =
+                            package_symbol(target, parts[1])
+                    }
+                } else {
+                    node.resolved = self.current_qualified(name)
+                }
+            }
+        }
+        for child: AstNode in node.children {
+            self.qualify_unresolved_types(child)
+        }
+    }
+
     fn declaration_for(type: HirType) -> Option<HirDeclaration> {
         match self.declarations.get(type.name) {
             some(declaration) => { return some(declaration) }
@@ -1271,13 +1297,8 @@ class ExpressionChecker {
             let import_path: string =
                 self.imported_path(parts[0])
             if import_path != "" {
-                let prefix: string =
-                    self.signature.resolver.package_prefix_for(
-                        import_path)
-                if prefix != "" {
-                    return self.declarations.get(
-                        "{prefix}.{parts[1]}")
-                }
+                return self.declarations.get(
+                    package_symbol(import_path, parts[1]))
             }
         }
         return none
@@ -1344,23 +1365,9 @@ class ExpressionChecker {
         return none
     }
 
-    fn package_prefix_for_file(file_path: string) -> string {
-        for package: LoadedPackage in
-            self.signature.resolver.loader.packages {
-            for file: ParsedModuleFile in package.files {
-                if file.path == file_path {
-                    return package.prefix
-                }
-            }
-        }
-        return ""
-    }
-
     fn current_qualified(name: string) -> string {
-        let prefix: string =
-            self.package_prefix_for_file(self.current.file)
-        if prefix == "" { return name }
-        return "{prefix}.{name}"
+        return package_symbol(
+            self.package_path_for_file(self.current.file), name)
     }
 
     fn current_declaration(name: string) -> Option<HirDeclaration> {
@@ -1786,21 +1793,6 @@ class ExpressionChecker {
         return ""
     }
 
-    fn package_label_for_file(file_path: string) -> string {
-        for package: LoadedPackage in
-            self.signature.resolver.loader.packages {
-            for file: ParsedModuleFile in package.files {
-                if file.path == file_path {
-                    if package.prefix != "" {
-                        return package.prefix
-                    }
-                    return package.import_path
-                }
-            }
-        }
-        return ""
-    }
-
     fn require_visible(node: AstNode, is_public: bool,
                        owner_file: string, what: string,
                        shown: string) -> bool {
@@ -1811,21 +1803,20 @@ class ExpressionChecker {
         if caller_package == owner_package || is_public {
             return true
         }
-        let owner_label: string =
-            self.package_label_for_file(owner_file)
         self.fail(
             node,
-            "{what} '{shown}' isn't pub in package '{owner_label}'")
+            "{what} '{shown}' isn't pub in package '{owner_package}'")
         return false
     }
 
+    // `shown` is the name the source wrote — `process.Child`, not the
+    // canonical symbol — so the message points at what the user typed.
     fn check_initializer_visibility(
         node: AstNode, declaration: HirDeclaration,
-        initializer: HirFunction) {
+        initializer: HirFunction, shown: string) {
         self.require_visible(
             node, initializer.is_public,
-            initializer.file, "init of",
-            declaration.qualified)
+            initializer.file, "init of", shown)
     }
 
     fn static_syntax_name(syntax: AstNode) -> string {
@@ -1848,12 +1839,8 @@ class ExpressionChecker {
                 self.imported_path(
                     syntax.children[0].value)
             if import_path == "" { return none }
-            let prefix: string =
-                self.signature.resolver.package_prefix_for(
-                    import_path)
-            if prefix == "" { return none }
             match self.declarations.get(
-                "{prefix}.{syntax.value}") {
+                package_symbol(import_path, syntax.value)) {
                 some(declaration) => {
                     self.require_visible(
                         syntax, declaration.is_public,
@@ -3287,6 +3274,7 @@ class ExpressionChecker {
             }
             if lexer.errors.len() == 0 &&
                parser.errors.len() == 0 {
+                self.qualify_unresolved_types(expression)
                 let piece: HirNode = self.check_expression(
                     expression, no_hir_type())
                 // Stage 0 refuses non-printable pieces at check time;
@@ -4776,10 +4764,9 @@ class ExpressionChecker {
             result.children.push(closure)
             return some(result)
         }
-        let prefix: string =
-            self.signature.resolver.package_prefix_for(import_path)
-        if prefix != "" {
-            match self.functions.get("{prefix}.{callee.value}") {
+        if self.signature.resolver.is_loaded_package(import_path) {
+            match self.functions.get(
+                package_symbol(import_path, callee.value)) {
                 some(function) => {
                     self.require_visible(
                         node, function.is_public,
@@ -5322,7 +5309,7 @@ class ExpressionChecker {
         // (the internal runtime package is not importable), so a pre-
         // resolved callee looks up directly, skipping scope resolution.
         if callee.kind == "name" &&
-           callee.resolved.starts_with("async$rt.") {
+           callee.resolved.starts_with("{async_rt_package()}::") {
             match self.functions.get(callee.resolved) {
                 some(function) => {
                     let result: HirNode =
@@ -5543,7 +5530,7 @@ class ExpressionChecker {
                             }
                             self.fail(
                                 node,
-                                "'{callee.value}' is an instance method — declare 'static fn {callee.value}' or call it on a {declaration.name} value")
+                                "'{callee.value}' is an instance method — declare 'static fn {callee.value}' or call it on a {display_symbol(declaration.qualified)} value")
                             return self.make_node(
                                 node, "error",
                                 callee.value,
@@ -5553,7 +5540,7 @@ class ExpressionChecker {
                             if declaration.kind != "enum" {
                                 self.fail(
                                     node,
-                                    "{declaration.name} has no static '{callee.value}'")
+                                    "{display_symbol(declaration.qualified)} has no static '{callee.value}'")
                                 return self.make_node(
                                     node, "error",
                                     callee.value,
@@ -6264,7 +6251,7 @@ class ExpressionChecker {
                             self.check_arguments(
                                 node, 1, function,
                                 receiver.type,
-                                "{declaration.name}.{function.name}",
+                                "{display_symbol(declaration.qualified)}.{function.name}",
                                 result)
                             self.expect_type(
                                 node, result.type, expected)
@@ -6580,7 +6567,8 @@ class ExpressionChecker {
                 match self.initializer_for(declaration) {
                     some(initializer) => {
                         self.check_initializer_visibility(
-                            node, declaration, initializer)
+                            node, declaration, initializer,
+                            node.children[0].value)
                         let initializer_owner: HirType =
                             if initializer.owner ==
                                declaration.qualified {
@@ -6602,7 +6590,7 @@ class ExpressionChecker {
                         if count != 0 {
                             self.fail(
                                 node,
-                                "{declaration.name} has no initializer")
+                                "{node.children[0].value} has no initializer")
                         }
                     }
                 }

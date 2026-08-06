@@ -12,14 +12,14 @@ echo "checking inline Result value, ownership, and ABI parity"
 diff -u test/cases/inline_result.out "$tmp/interp"
 diff -u test/cases/inline_result.out "$tmp/native.out"
 awk '
-    $0 == "; pass" { found = 1; next }
-    found && /^define \{ ?i1, %bs[.]Pair, ptr ?\} @[^ (]+\(\{ ?i1, %bs[.]Pair, ptr ?\}/ {
+    $0 == "; main.pass" { found = 1; next }
+    found && /^define \{ ?i1, %bs[.]main[$]Pair, ptr ?\} @[^ (]+\(\{ ?i1, %bs[.]main[$]Pair, ptr ?\}/ {
         exit 0
     }
     found { exit 1 }
     END { if (!found) exit 1 }
 ' build/inline_results.ll
-grep -Eq 'insertvalue \{ ?i1, %bs[.]Pair, ptr ?\} zeroinitializer, i1 false, 0' \
+grep -Eq 'insertvalue \{ ?i1, %bs[.]main[$]Pair, ptr ?\} zeroinitializer, i1 false, 0' \
     build/inline_results.ll
 grep -q 'call void @beans_retain(ptr' build/inline_results.ll
 grep -q 'call void @beans_release(ptr' build/inline_results.ll

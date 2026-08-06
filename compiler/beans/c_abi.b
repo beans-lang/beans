@@ -1,3 +1,5 @@
+package main
+
 class CAbiChecker {
     program: HirProgram
     declarations: Map<string, HirDeclaration>
@@ -141,8 +143,24 @@ class CAbiChecker {
     }
 
     fn check_functions() {
+        // The ABI name is written by hand and never carries the package, so
+        // two exports can claim one C symbol. That is a real collision, and
+        // clang's late redefinition error says nothing about which Beans
+        // code caused it.
+        var exported: Map<string, string> = {}
         for function: HirFunction in self.program.functions {
             if !function.is_extern_c { continue }
+            if function.is_c_export && function.extern_name != "" {
+                let claimed: string =
+                    exported.get(function.extern_name).or("")
+                if claimed != "" {
+                    self.fail_function(
+                        function,
+                        "C symbol '{function.extern_name}' is already exported by {display_symbol(claimed)}")
+                } else {
+                    exported[function.extern_name] = function.qualified
+                }
+            }
             // Already rejected outright; a second complaint about the
             // wrapped task return would only bury that error.
             if function.is_async { continue }

@@ -1,3 +1,5 @@
+package main
+
 import std.fs
 import std.io
 import std.os

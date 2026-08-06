@@ -63,7 +63,7 @@ done
 
 # Decimal is a real wide value in normal native code. The one-slot generic
 # runtime boxes it only at a remaining one-slot key or enum boundary.
-grep -q '^; add_cent$' build/numeric_ok.ll
+grep -q '^; main.add_cent$' build/numeric_ok.ll
 grep -q '^define { i128, i64, i64 } @.next.fn[0-9]*(i128 %arg[0-9]*[.]coeff, i64 %arg[0-9]*[.]scale)' \
     build/numeric_ok.ll
 # Internal calls flatten decimal arguments. This class initializer puts a

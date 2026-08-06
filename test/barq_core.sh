@@ -62,6 +62,8 @@ link all search "native/lib"
 link all library "barq-ffi"
 MOD
 cat >"$project/main.b" <<'BEANS'
+package main
+
 import std.io
 
 fn main() {

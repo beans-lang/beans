@@ -12,16 +12,16 @@ echo "checking inline C-layout struct parity"
 "$tmp/native" >"$tmp/native.out"
 diff -u test/cases/c_layout_struct.out "$tmp/interp"
 diff -u test/cases/c_layout_struct.out "$tmp/native.out"
-grep -q '%bs.Packet = type {i8, i32, float, i1}' build/c_layout_structs.ll
-grep -q '%bs.Link = type {i32, ptr}' build/c_layout_structs.ll
-grep -q '%bs.Pair = type {i16, \[3 x i8\]}' build/c_layout_structs.ll
-grep -q '%bs.Frame = type {%bs.Pair, \[2 x i32\], \[2 x ptr\]}' build/c_layout_structs.ll
-if ! grep -q '^define %bs.Packet @b_bumped(%bs.Packet ' \
+grep -q '%bs.main$Packet = type {i8, i32, float, i1}' build/c_layout_structs.ll
+grep -q '%bs.main$Link = type {i32, ptr}' build/c_layout_structs.ll
+grep -q '%bs.main$Pair = type {i16, \[3 x i8\]}' build/c_layout_structs.ll
+grep -q '%bs.main$Frame = type {%bs.main$Pair, \[2 x i32\], \[2 x ptr\]}' build/c_layout_structs.ll
+if ! grep -q '^define %bs.main$Packet @b_main$bumped(%bs.main$Packet ' \
         build/c_layout_structs.ll; then
     awk '
-        $0 == "; bumped" {
+        $0 == "; main.bumped" {
             getline
-            if ($0 ~ /^define %bs.Packet @[^ (]+[(]%bs.Packet /) found = 1
+            if ($0 ~ /^define %bs[.]main[$]Packet @[^ (]+[(]%bs[.]main[$]Packet /) found = 1
         }
         END { exit !found }
     ' build/c_layout_structs.ll

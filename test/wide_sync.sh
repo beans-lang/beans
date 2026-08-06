@@ -24,14 +24,14 @@ if grep -Eq 'call void %with[.]fn[0-9]+\(ptr .*, \{ ?i128, i64, i64 ?\}' \
 fi
 grep -q 'private unnamed_addr constant {i64, i64, ptr}' build/wide_sync.ll
 awk '
-    /^; share[$][(]Event[)]/ { found = 1; next }
-    found && /^define ptr @[^ (]+\(%bs[.]Event / { exit 0 }
+    /^; main[.]share[$][(]main[.]Event[)]/ { found = 1; next }
+    found && /^define ptr @[^ (]+\(%bs[.]main[$]Event / { exit 0 }
     found { exit 1 }
     END { if (!found) exit 1 }
 ' build/wide_sync.ll
 awk '
-    /^; guard[$][(]Event[)]/ { found = 1; next }
-    found && /^define ptr @[^ (]+\(%bs[.]Event / { exit 0 }
+    /^; main[.]guard[$][(]main[.]Event[)]/ { found = 1; next }
+    found && /^define ptr @[^ (]+\(%bs[.]main[$]Event / { exit 0 }
     found { exit 1 }
     END { if (!found) exit 1 }
 ' build/wide_sync.ll

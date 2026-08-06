@@ -1,3 +1,5 @@
+package main
+
 struct Token {
     kind: string
     text: string

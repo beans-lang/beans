@@ -21,7 +21,7 @@ grep -Eq '= select i1 %option[.]present[0-9]+, i64 %option[.]value[0-9]+, i64 ' 
 grep -q 'call ptr @beans_thread_spawn_typed' build/wide_concurrency.ll
 grep -q 'call void @beans_thread_join_typed' build/wide_concurrency.ll
 awk '
-    /^; send_one[$][(]Channel<Event>[)]/ { found = 1; next }
+    /^; main[.]send_one[$][(]Channel<main[.]Event>[)]/ { found = 1; next }
     found && /^define void @[^ (]+\(ptr [^,]+, %[^ ]+ / { exit 0 }
     found { exit 1 }
     END { if (!found) exit 1 }

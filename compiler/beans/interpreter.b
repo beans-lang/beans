@@ -1,3 +1,5 @@
+package main
+
 import std.io
 import std.c as host_c
 import std.cpu as host_cpu
@@ -10042,7 +10044,7 @@ class TreeInterpreter {
     }
 
     fn run() -> bool {
-        match self.find_function("main") {
+        match self.find_function(self.program.entry_symbol) {
             some(entry) => {
                 self.invoke(entry, [], none)
             }
