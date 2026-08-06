@@ -169,6 +169,7 @@ else
 	bash ./test/decimal_align.sh
 	./test/cli_parity.sh
 	bash ./test/package_semantics.sh
+	bash ./test/package_identity.sh
 	./test/self_host.sh
 	bash ./test/unsafe.sh
 	bash ./test/builtin_names.sh
@@ -189,6 +190,7 @@ else
 	./test/cli_parity.sh
 	./test/parse_recovery.sh
 	bash ./test/package_semantics.sh
+	bash ./test/package_identity.sh
 	bash ./test/builtin_names.sh
 	./test/deterministic_build.sh
 	bash ./test/unsafe.sh
@@ -219,6 +221,7 @@ else
 	./test/dependencies.sh
 	./test/cli_parity.sh
 	bash ./test/package_semantics.sh
+	bash ./test/package_identity.sh
 	bash ./test/builtin_names.sh
 endif
 
