@@ -13,11 +13,16 @@ set -euo pipefail
 
 mode=${1:-}
 
+# Fed on stdin, never by name. Given a path holding a backslash — which is every
+# Windows row, since GITHUB_WORKSPACE there is D:\a\beans\beans — GNU sha256sum
+# escapes the name and marks it by prefixing the whole line with a backslash, so
+# hashing by name puts \<hash> in the manifest and the completeness gate rejects
+# a release whose archives are in fact all correct.
 sha256_of() {
     if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum "$1" | cut -d' ' -f1
+        sha256sum <"$1" | cut -d' ' -f1
     else
-        shasum -a 256 "$1" | cut -d' ' -f1
+        shasum -a 256 <"$1" | cut -d' ' -f1
     fi
 }
 

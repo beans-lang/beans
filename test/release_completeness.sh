@@ -32,9 +32,9 @@ if [[ "${1:-}" == --self-test ]]; then
             asset="beans-v0.0.0-selftest-$target.$extension"
             printf 'synthetic %s\n' "$target" >"$scratch/assets/$asset"
             if command -v sha256sum >/dev/null 2>&1; then
-                sum=$(sha256sum "$scratch/assets/$asset" | cut -d' ' -f1)
+                sum=$(sha256sum <"$scratch/assets/$asset" | cut -d' ' -f1)
             else
-                sum=$(shasum -a 256 "$scratch/assets/$asset" | cut -d' ' -f1)
+                sum=$(shasum -a 256 <"$scratch/assets/$asset" | cut -d' ' -f1)
             fi
             contained=no
             [[ "$class" == full ]] && contained=yes
@@ -107,10 +107,13 @@ while IFS=$'\t' read -r version target os arch libc class asset sha self_contain
         status=1
         continue
     fi
+    # On stdin, like tools/release_manifest.sh: a path holding a backslash makes
+    # GNU sha256sum escape its output line, and a gate that reports a false
+    # mismatch is the one failure that costs a whole release run to find.
     if command -v sha256sum >/dev/null 2>&1; then
-        actual=$(sha256sum "$assets/$asset" | cut -d' ' -f1)
+        actual=$(sha256sum <"$assets/$asset" | cut -d' ' -f1)
     else
-        actual=$(shasum -a 256 "$assets/$asset" | cut -d' ' -f1)
+        actual=$(shasum -a 256 <"$assets/$asset" | cut -d' ' -f1)
     fi
     if [[ "$actual" != "$sha" ]]; then
         echo "  $asset hashes to $actual, manifest says $sha" >&2
