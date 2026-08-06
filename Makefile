@@ -62,6 +62,13 @@ $(RUNTIME_COPY): $(RUNTIME_SRC)
 	@mkdir -p build
 	cp $(RUNTIME_SRC) $(RUNTIME_COPY)
 
+# The self-hosted half of the compiler cannot include compiler/version.h, so it
+# reads the same numbers out of a generated source. Committed, not gitignored:
+# the Windows source bootstrap runs stage 0 straight at main.b with no make step
+# to generate it first. test/version.sh refuses a stale copy.
+compiler/beans/version.b: compiler/version.h tools/gen_version_b.sh
+	tools/gen_version_b.sh $@
+
 ifneq ($(HAVE_BOOTSTRAP),)
 
 $(BOOTSTRAP_BIN): $(SRC) $(HDR) $(RUNTIME_COPY)

@@ -674,11 +674,16 @@ jobs:
           build/msvc-rebuilt.exe llvm compiler/beans/main.b > build/msvc-stage3.ll
           cmp build/msvc-stage2.ll build/msvc-stage3.ll
 
-      # The shipped Beans compiler above owns the full hosted loop and fixed
-      # point. Stage 0 is the bootstrap/reference compiler; on MSVC it still
-      # has to be a real native program, but it need not bootstrap itself again.
-      - name: C++ stage 0 runs natively on MSVC
+      # Everything above drives the msvc *target* from a stage 0 built with
+      # LLVM-MinGW, so it says nothing about stage 0 built with MSVC itself.
+      # This step used to stop at BEANS_SOURCE_SMOKE_ONLY=1, which exits just
+      # before "building self-host stages 1 to 3" — so the one thing unique to
+      # the MSVC host, stage 0 compiling main.b, was never run until a release
+      # tag did it in release.yml. That is how a stage 0 emitting corrupt IR
+      # under MSVC reached v0.1.0 with this workflow green. Run the same full
+      # bootstrap release.yml runs, so the release path has no step CI skips.
+      - name: C++ stage 0 bootstraps to a fixed point on MSVC
         shell: bash
         run: |
-          BEANS_SOURCE_SMOKE_ONLY=1 bash test/windows_source_bootstrap.sh \
+          bash test/windows_source_bootstrap.sh \
             ${{ matrix.triple }} build/windows_source_msvc
