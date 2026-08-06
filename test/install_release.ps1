@@ -23,7 +23,7 @@ $Dist = (Resolve-Path $Dist).Path
 function Step([string] $Message) { Write-Host "  $Message" }
 function Fail([string] $Message) { Write-Error $Message; exit 1 }
 
-$versionLine = Get-Content (Join-Path $repo 'compiler\bootstrap\version.h') |
+$versionLine = Get-Content (Join-Path $repo 'compiler\version.h') |
     Select-String -Pattern 'char version\[\] = "([^"]*)"'
 $version = $versionLine.Matches[0].Groups[1].Value
 

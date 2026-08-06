@@ -1393,7 +1393,7 @@ class SelfLspServer {
                             "name", lsp_quote("beansc")),
                         lsp_member(
                             "version",
-                            lsp_quote("0.9.0-dev"))]))]))
+                            lsp_quote(compiler_version()))]))]))
     }
 
     fn hover(id: BindgenJson,

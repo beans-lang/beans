@@ -244,8 +244,7 @@ fn run_doctor() -> int {
         sysroot = "the C driver's default"
     }
 
-    io.println(
-        "beansc 0.9.0-dev (language 1.0, runtime ABI 4)")
+    io.println(compiler_banner())
     io.println("")
     io.println(doctor_row("package:", package_class))
     io.println(

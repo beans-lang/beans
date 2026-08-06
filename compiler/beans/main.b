@@ -138,8 +138,7 @@ fn main() {
     if args.len() == 1 &&
        (args[0] == "--version" ||
         args[0] == "version") {
-        io.println(
-            "beansc 0.9.0-dev (language 1.0, runtime ABI 4)")
+        io.println(compiler_banner())
         return
     }
 
