@@ -40,10 +40,51 @@ Rust capitalizes `Some`/`Ok` because Rust variants are PascalCase. Beans variant
 
 ## Files, modules, imports (implemented, v0.4)
 
+Four separate things, and it pays to keep them apart:
+
+| | example | what it is |
+|---|---|---|
+| module path | `shop` | the `beans.pot` unit: one dependency, one lock row |
+| import path | `shop.money` | a **package's identity** — globally unique |
+| package name | `money` | what the package calls itself, in its `package` clause |
+| import binding | `cash` in `import shop.money as cash` | a name, in one file only |
+
 - One folder = one package. `.b` files in it share the package — no import needed between them.
-- Everything is private to its package unless marked `pub`.
+- Everything is private to its package unless marked `pub`. Private means
+  *same import path*, never *same package name*.
 - Application entry point: `fn main()`, in the module root. A library has no
   `main`.
+
+### The package clause
+
+Every `.b` file the compiler loads as a package starts with one:
+
+```beans
+package main
+
+import std.io
+import shop.money
+```
+
+```beans
+package money
+
+pub class Money {
+    // ...
+}
+```
+
+- Exactly one clause, before every import and declaration.
+- Every file in a directory declares the same name.
+- The name is a lowercase snake_case identifier.
+- It need not match the directory. `shop/transport_v2/` may declare
+  `package transport`, which is what versioned or internal directory names are
+  for — the import path stays `shop.transport_v2`.
+- An application's module root declares `package main`. A library root declares
+  a normal name, usually the last segment of its module path. An importable
+  package never declares `main`.
+- A single file with no `beans.pot` may leave the clause out, or write
+  `package main`.
 
 A module is a directory tree with a `beans.pot` at its root:
 
@@ -91,7 +132,14 @@ import github.com/acme/http          // cloned to ~/.beans/src on first build
 import gitlab.com/tools/csv as csvlib
 ```
 
-- Last path segment is the name you use (`http.get(...)`). `as` renames the binding.
+- The **declared package name** is the name you use (`http.get(...)`), not the
+  last path segment. `import shop.transport_v2` binds `transport` when that
+  directory declares `package transport`. `as` overrides it.
+- A binding belongs to the file that wrote the import. Two files of one package
+  may give the same alias to different packages, and an import in one file
+  qualifies nothing in its siblings.
+- Two imports with the same local name in one file are an error; `as` separates
+  them.
 - Cross-package access: `util.some_fn()`, `util.User`, `new util.User(...)`, `util.color.red` — anything `pub`. Methods of a `pub interface` travel with it (an interface is its method set).
 - `pub fn init(...)` controls class construction across package lines. Struct field literals still enforce field visibility.
 - A git import needs `host/owner/repo`; the repo must carry its own `beans.pot`.
@@ -103,7 +151,36 @@ import gitlab.com/tools/csv as csvlib
   network access and accepts only a clean cached tree matching the locked hash.
   Dependency Git processes are started directly, never through a shell.
 - No `beans.pot` above the file = single-file mode: `std.*` and git imports still work, local packages don't.
-- Two packages can't share a final name in one program (`a/json` + `b/json`) — rename one directory.
+- A package's identity is its whole canonical import path. Two packages may
+  freely share a declared name, and two paths may freely share a final segment
+  (`a/cart` + `b/cart`); give the imports different local names and both work:
+
+  ```beans
+  import shop.a.cart as retail
+  import shop.b.cart as wholesale
+
+  let a: retail.Cart = new retail.Cart()
+  let b: wholesale.Cart = new wholesale.Cart()
+  ```
+
+  They stay separate everywhere — separate types, separate private methods,
+  separate generated symbols. A declared name and an alias are source-facing
+  only; neither decides visibility.
+- Packages form a directed graph. A package importing itself, or a cycle
+  through several packages, is refused with the whole chain:
+
+  ```text
+  package import cycle:
+    shop.a imports shop.b at a/a.b:3
+    shop.b imports shop.c at b/b.b:2
+    shop.c imports shop.a at c/c.b:4
+  ```
+
+  Files of one package create no edges between each other, so mutually
+  recursive functions in one package are fine. A diamond is acyclic and loads
+  its shared dependency once.
+- A declaration name is claimed once per package, whichever file writes it.
+  Two `Cart` classes in one package are a duplicate, not an ambiguity.
 - `link` selects `all`, an OS name, or one exact target triple. `search` paths
   are relative to that `beans.pot`. `library` and macOS `framework` entries are
   passed to the linker in declaration order.
@@ -2458,6 +2535,8 @@ self true false unique
 `some none ok err` are ordinary names. `super` is contextual. `spawn` is a
 library function, not a keyword. `async` and `await` are contextual too:
 `async` only immediately before `fn`, `await` only inside an async body.
+`package` is contextual as well — only `package <name>` at the top of a file
+declares one, so `package` stays usable as an ordinary identifier.
 
 ## Decided
 

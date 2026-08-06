@@ -266,7 +266,13 @@ and friends — as compile-time constants.
 `check` / `run` / `build` load the whole program: if a `beans.pot` sits next to
 the file, every `.b` file in that directory joins the root package,
 `import shop.util` pulls in `util/`, and `import github.com/owner/repo` resolves
-the requested Git reference. `beansc mod tidy` writes the exact commit and Git
+the requested Git reference. Every file in a package starts with a `package`
+clause — `package main` in an application's root, a normal name elsewhere.
+A package's **identity** is its whole import path, so `shop.a.cart` and
+`shop.b.cart` can both call themselves `cart` and still be two different
+packages; a declared name and an `as` alias are source-facing only, and an
+alias binds in the one file that wrote it. Import cycles are refused with the
+whole chain of import sites. `beansc mod tidy` writes the exact commit and Git
 tree hash to `beans.lock`; dependencies are cached by commit under
 `$BEANS_HOME/pkg`. `--locked` rejects drift, while `--offline` requires the
 locked, hashed cache and never contacts the network. Git is started directly
@@ -393,7 +399,7 @@ lends a scoped stack pointer. `StoredCallback` covers callbacks registered for
 later or cross-thread use, with `Send + Sync` captures and an explicit
 unregister then `close()` lifetime.
 
-The native backend emits textual LLVM IR and hands it to clang — no LLVM library dependency. The C runtime lives in `runtime/beans_rt.c`, not inside the compiler binary. Development builds link a cached runtime object; `--release --lto` links cached runtime bitcode so LLVM can optimize across the boundary. `BEANS_RUNTIME` can point at another runtime source. The backend covers the whole language: classes (descriptor/vtable dispatch, inheritance, interface defaults, `override`, `as?`), monomorphized generics on classes *and* functions, enums + `match` (block-bodied arms included), Option/Result + `?`, exact-width integers and `f32`, exact `decimal`, lists and maps, closures (lambda-lifted, captured variables live in shared heap cells — mutation works, escaping works), real pthreads for `thread.spawn`/`Mutex`/`Channel`/`AtomicInt`, `defer`, string interpolation, and multi-package programs (symbols are package-qualified; cross-package calls, inheritance, generics, and interface dispatch all compile into one flat module). Every test file produces byte-identical output under `beansc build` and `beansc run` — panics included, same message, same exit code.
+The native backend emits textual LLVM IR and hands it to clang — no LLVM library dependency. The C runtime lives in `runtime/beans_rt.c`, not inside the compiler binary. Development builds link a cached runtime object; `--release --lto` links cached runtime bitcode so LLVM can optimize across the boundary. `BEANS_RUNTIME` can point at another runtime source. The backend covers the whole language: classes (descriptor/vtable dispatch, inheritance, interface defaults, `override`, `as?`), monomorphized generics on classes *and* functions, enums + `match` (block-bodied arms included), Option/Result + `?`, exact-width integers and `f32`, exact `decimal`, lists and maps, closures (lambda-lifted, captured variables live in shared heap cells — mutation works, escaping works), real pthreads for `thread.spawn`/`Mutex`/`Channel`/`AtomicInt`, `defer`, string interpolation, and multi-package programs (every symbol carries its package's whole import path, so two packages with the same name never collide; cross-package calls, inheritance, generics, and interface dispatch all compile into one flat module). Every test file produces byte-identical output under `beansc build` and `beansc run` — panics included, same message, same exit code.
 
 High-level standard-library code can now be written in Beans. The loader ships
 packages from `stdlib/std/`; `std.collections`, `std.math`, `std.bytes`,
