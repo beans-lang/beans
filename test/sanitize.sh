@@ -96,6 +96,7 @@ run_asan examples/wide_sync.b wide_sync
 run_asan examples/wide_concurrency.b wide_concurrency
 run_asan test/cases/thread_deinit.b thread_deinit
 run_asan test/cases/thread_cycles.b thread_cycles
+run_asan test/cases/async_cross_thread_close.b async_cross_thread_close
 run_asan examples/stdlib_beans.b stdlib_beans
 run_asan examples/ffi.b ffi
 run_asan test/cases/move_ok.b move_ok
@@ -107,7 +108,8 @@ run_asan test/cases/decimal_overflow_mul.b decimal_overflow_mul 3
 
 for file in examples/threads.b examples/shared_weak.b examples/wide_sync.b \
             examples/wide_concurrency.b test/cases/thread_deinit.b \
-            test/cases/thread_cycles.b examples/unsafe_raw.b examples/atomics.b; do
+            test/cases/thread_cycles.b test/cases/async_cross_thread_close.b \
+            examples/unsafe_raw.b examples/atomics.b; do
     echo "TSan checking $file"
     name=$(basename "$file" .b)
     ./build/beansc build "$file" -o "$out/${name}_source" >/dev/null
@@ -117,8 +119,14 @@ for file in examples/threads.b examples/shared_weak.b examples/wide_sync.b \
         # reporting rather than aborting the whole sweep on, and the real signal
         # is the warning text plus the status compared to the expectation.
         set +e
-        BEANS_NO_POOL=1 "$out/${name}_tsan" >"$out/${name}.stdout" \
-            2>"$out/${name}.stderr"
+        if [[ "$name" == async_cross_thread_close ]]; then
+            BEANS_NO_POOL=1 perl -e 'alarm 120; exec @ARGV' \
+                "$out/${name}_tsan" >"$out/${name}.stdout" \
+                2>"$out/${name}.stderr"
+        else
+            BEANS_NO_POOL=1 "$out/${name}_tsan" >"$out/${name}.stdout" \
+                2>"$out/${name}.stderr"
+        fi
         status=$?
         set -e
         if grep -q 'WARNING: ThreadSanitizer' "$out/${name}.stderr"; then
@@ -149,6 +157,12 @@ set +e
 ./build/beansc-tsan run examples/atomics.b \
     >"$out/compiler-tsan.stdout" 2>"$out/compiler-tsan.stderr"
 status=$?
+if [[ "$status" -eq 0 ]]; then
+    perl -e 'alarm 120; exec @ARGV' ./build/beansc-tsan run \
+        test/cases/async_cross_thread_close.b \
+        >>"$out/compiler-tsan.stdout" 2>>"$out/compiler-tsan.stderr"
+    status=$?
+fi
 set -e
 if grep -q 'WARNING: ThreadSanitizer' "$out/compiler-tsan.stderr"; then
     echo "TSan reported a race in the compiler/interpreter" >&2

@@ -28,8 +28,8 @@ LDLIBS += -latomic
 endif
 endif
 
-SRC := compiler/bootstrap/token.cpp compiler/bootstrap/lexer.cpp compiler/bootstrap/parser.cpp compiler/bootstrap/ast_print.cpp compiler/bootstrap/process.cpp compiler/bootstrap/loader.cpp compiler/bootstrap/target.cpp compiler/bootstrap/mir.cpp compiler/bootstrap/c_abi.cpp compiler/bootstrap/checker.cpp compiler/bootstrap/builtins.cpp compiler/bootstrap/codegen.cpp compiler/bootstrap/interp.cpp compiler/bootstrap/lsppos.cpp compiler/bootstrap/json.cpp compiler/bootstrap/bindgen.cpp compiler/bootstrap/lsp.cpp compiler/bootstrap/lspserver.cpp compiler/bootstrap/main.cpp
-HDR := compiler/bootstrap/token.h compiler/bootstrap/lexer.h compiler/bootstrap/ast.h compiler/bootstrap/parser.h compiler/bootstrap/types.h compiler/bootstrap/process.h compiler/bootstrap/target.h compiler/bootstrap/host_target.h compiler/bootstrap/int128.h compiler/bootstrap/mir.h compiler/bootstrap/hir.h compiler/bootstrap/c_abi.h compiler/bootstrap/loader.h compiler/bootstrap/checker.h compiler/bootstrap/value.h compiler/bootstrap/builtins.h compiler/bootstrap/interp.h compiler/bootstrap/codegen.h compiler/bootstrap/lsppos.h compiler/bootstrap/json.h compiler/bootstrap/bindgen.h compiler/bootstrap/lsp.h compiler/bootstrap/rounding.h compiler/version.h
+SRC := compiler/bootstrap/token.cpp compiler/bootstrap/lexer.cpp compiler/bootstrap/parser.cpp compiler/bootstrap/ast_print.cpp compiler/bootstrap/process.cpp compiler/bootstrap/loader.cpp compiler/bootstrap/target.cpp compiler/bootstrap/mir.cpp compiler/bootstrap/c_abi.cpp compiler/bootstrap/checker.cpp compiler/bootstrap/expand.cpp compiler/bootstrap/builtins.cpp compiler/bootstrap/codegen.cpp compiler/bootstrap/interp.cpp compiler/bootstrap/lsppos.cpp compiler/bootstrap/json.cpp compiler/bootstrap/bindgen.cpp compiler/bootstrap/lsp.cpp compiler/bootstrap/lspserver.cpp compiler/bootstrap/main.cpp
+HDR := compiler/bootstrap/token.h compiler/bootstrap/lexer.h compiler/bootstrap/ast.h compiler/bootstrap/parser.h compiler/bootstrap/types.h compiler/bootstrap/process.h compiler/bootstrap/target.h compiler/bootstrap/host_target.h compiler/bootstrap/int128.h compiler/bootstrap/mir.h compiler/bootstrap/hir.h compiler/bootstrap/c_abi.h compiler/bootstrap/loader.h compiler/bootstrap/checker.h compiler/bootstrap/expand.h compiler/bootstrap/value.h compiler/bootstrap/builtins.h compiler/bootstrap/interp.h compiler/bootstrap/codegen.h compiler/bootstrap/lsppos.h compiler/bootstrap/json.h compiler/bootstrap/bindgen.h compiler/bootstrap/lsp.h compiler/bootstrap/rounding.h compiler/version.h
 BOOTSTRAP_BIN := build/beansc0
 STAGE1_BIN := build/beansc-stage1
 STAGE2_BIN := build/beansc-stage2
@@ -229,6 +229,7 @@ else
 	./test/traits.sh
 	./test/fixed_arrays.sh
 	bash ./test/closure_captures.sh
+	bash ./test/async.sh
 	bash ./test/mir.sh
 	bash ./test/devirtualize.sh
 	bash ./test/default_eval_order.sh
@@ -356,6 +357,7 @@ test-core: $(BIN)
 	./test/stack_pointer.sh
 	./test/stored_callbacks.sh
 	bash ./test/closure_captures.sh
+	bash ./test/async.sh
 	./test/stdlib_source.sh
 	bash ./test/encoding.sh
 	bash ./test/encoding_symbols.sh

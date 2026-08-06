@@ -62,7 +62,17 @@ class HirFunction {
     generics: List<string>
     generic_constraints: List<HirGeneric>
     parameters: List<HirParameter>
+    // What a call to this function produces. Asyncness is an effect, not
+    // a wrapper type, so this equals body_result for async functions too;
+    // the checker requires the call to sit under await (or async let).
     result: HirType
+    // What the body's return statements and ? propagation produce.
+    body_result: HirType
+    is_async: bool
+    // True once the async expander rewrote the body into a task maker.
+    // is_async stays set so override matching keeps working; execution
+    // guards check is_async && !expanded.
+    expanded: bool
     is_extern_c: bool
     extern_name: string
     is_c_export: bool
@@ -93,6 +103,9 @@ class HirFunction {
         self.generic_constraints = []
         self.parameters = []
         self.result = new HirType("unit")
+        self.body_result = new HirType("unit")
+        self.is_async = false
+        self.expanded = false
         self.is_extern_c = false
         self.extern_name = name
         self.is_c_export = false
@@ -244,6 +257,18 @@ fn layout_modifier_align(value: string) -> int {
         }
     }
     return 0
+}
+
+// True when `async` appears among the declaration's modifier words. The
+// value string ends with the declaration's own name, so the last word never
+// counts — `fn async()` is a function named async, not an async function.
+fn value_marks_async(value: string) -> bool {
+    let words: List<string> = module_words(value)
+    if words.len() < 2 { return false }
+    for index: int in 0..words.len() - 1 {
+        if words[index] == "async" { return true }
+    }
+    return false
 }
 
 fn required_feature_from_value(value: string) -> string {
@@ -636,6 +661,7 @@ class SignatureChecker {
         function.syntax = node
         function.is_extern_c =
             node.value.contains("extern \"C\"")
+        function.is_async = value_marks_async(node.value)
         function.is_static =
             module_words(node.value).contains("static")
         function.is_override =
@@ -691,7 +717,69 @@ class SignatureChecker {
         function.is_c_export =
             function.is_extern_c && function.has_body &&
             function.is_public
+        function.body_result = function.result
+        if function.is_async {
+            self.validate_async_function(node, file, function)
+        }
         self.hir.functions.push(function)
+    }
+
+    // Asyncness is an effect on the callable: the declared type is what
+    // the body returns AND what an awaited call produces, so result and
+    // body_result stay equal. The internal task record backing the
+    // lowering is loaded automatically; a missing registration here is a
+    // compiler-installation problem, not a user mistake.
+    fn validate_async_function(node: AstNode, file: ParsedModuleFile,
+                               function: HirFunction) {
+        var task_known: bool = false
+        match self.resolver.symbols.get("async$rt.Task") {
+            some(symbol) => {
+                task_known =
+                    symbol.package_path == "std.async$rt"
+            }
+            none => {}
+        }
+        if !task_known {
+            self.fail(
+                file.path, node,
+                "internal: the async runtime package did not load")
+        }
+        if function.is_extern_c {
+            self.fail(
+                file.path, node,
+                "extern \"C\" functions cannot be async — wrap the C call in an async Beans function instead")
+        }
+        if function.name == "init" ||
+           function.name == "deinit" {
+            self.fail(
+                file.path, node,
+                "{function.name} cannot be async")
+        }
+        if function.required_feature != "" {
+            self.fail(
+                file.path, node,
+                "feature-gated functions cannot be async yet")
+        }
+        // Deliberately conservative, and at the declaration: the body
+        // lowers to closures that live past the maker call, and a closure
+        // cannot capture an inout parameter (nor keep a caller's variable
+        // exclusively borrowed past the call that lent it). A directly
+        // awaited call could hold the borrow safely — the caller is
+        // suspended for the child's whole life — but an async let child
+        // runs beside its caller and cannot, and one lowering serves both
+        // call forms, so the declaration is refused rather than the call.
+        for parameter: HirParameter in function.parameters {
+            if parameter.passing == "inout" {
+                self.hir.errors.push(Diagnostic {
+                    severity: Severity.error,
+                    file: file.path,
+                    line: parameter.line,
+                    col: parameter.col,
+                    message:
+                        "async functions cannot take inout parameters — the body becomes closures that outlive the call and a closure cannot capture an inout parameter; pass the value in and return the new one",
+                })
+            }
+        }
     }
 
     fn lower_c_global(node: AstNode,

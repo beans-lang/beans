@@ -2513,10 +2513,14 @@ class LlvmTextEmitter {
         // deinit's slot is what @beans_deinit_sel publishes.
         for function: MirFunction in
             self.program.functions {
+            // Generic-family members keep their template name here — no
+            // symbol exists yet — but their dispatch identities are real:
+            // a generic class instance dispatches deinit (and any interface
+            // method) through the same descriptor slots, so templates must
+            // still register selectors or the instance's table has no row
+            // to fill.
             if function.declaration ||
                function.external ||
-               self.function_in_generic_family(
-                   function.name) ||
                function.cleanup_id >= 0 ||
                function.closure_id >= 0 {
                 continue

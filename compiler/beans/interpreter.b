@@ -1347,10 +1347,19 @@ class TreeInterpreter {
 
     fn declaration(name: string) ->
         Option<HirDeclaration> {
+        // Exact qualified matches first: a dependency's class may share its
+        // short name with one from the root package (user Task beside
+        // std.async's Task), and the short-name fallback must not let
+        // whichever loaded first shadow the other.
         for declaration: HirDeclaration in
             self.program.declarations {
-            if declaration.qualified == name ||
-               declaration.name == name {
+            if declaration.qualified == name {
+                return some(declaration)
+            }
+        }
+        for declaration: HirDeclaration in
+            self.program.declarations {
+            if declaration.name == name {
                 return some(declaration)
             }
         }
@@ -3391,6 +3400,44 @@ class TreeInterpreter {
                 host_sock.resolve(
                     arguments[0].text,
                     arguments[1].int_data))
+        }
+        if node.resolved == "std.ready.task_slot" &&
+           arguments.len() == 1 {
+            return TreeValue.integer(host_ready.task_slot(
+                arguments[0].int_data))
+        }
+        if node.resolved == "std.ready.set_task_slot" &&
+           arguments.len() == 2 {
+            return TreeValue.integer(host_ready.set_task_slot(
+                arguments[0].int_data,
+                arguments[1].int_data))
+        }
+        if node.resolved == "std.ready.park_note" &&
+           arguments.len() == 1 {
+            return TreeValue.integer(host_ready.park_note(
+                arguments[0].int_data))
+        }
+        if node.resolved == "std.ready.park_bind" &&
+           arguments.len() == 2 {
+            return TreeValue.integer(host_ready.park_bind(
+                arguments[0].int_data,
+                arguments[1].int_data))
+        }
+        if node.resolved == "std.ready.park_forget" &&
+           arguments.len() == 1 {
+            return TreeValue.integer(host_ready.park_forget(
+                arguments[0].int_data))
+        }
+        if node.resolved == "std.ready.park_stale" {
+            return TreeValue.integer(host_ready.park_stale())
+        }
+        if node.resolved == "std.ready.park_dead" &&
+           arguments.len() == 1 {
+            return TreeValue.integer(host_ready.park_dead(
+                arguments[0].int_data))
+        }
+        if node.resolved == "std.ready.park_shutdown" {
+            return TreeValue.integer(host_ready.park_shutdown())
         }
         if node.resolved == "std.ready.open" {
             return self.host_bytes_result(
@@ -7543,34 +7590,42 @@ class TreeInterpreter {
         name: string,
         object: TreeValue,
         frame: TreeFrame) {
-        for declaration: HirDeclaration in
-            self.program.declarations {
-            if declaration.qualified != name &&
-               declaration.name != name {
-                continue
+        // Same two-pass rule as declaration(): an exact qualified name wins
+        // before any short-name fallback, so a dependency's class cannot
+        // shadow a root-package class that shares its short name.
+        match self.declaration(name) {
+            some(declaration) => {
+                self.apply_declaration_defaults(
+                    declaration, object, frame)
             }
-            for field: HirField in declaration.fields {
-                match field.default_value {
-                    some(value) => {
-                        object.fields[field.name] =
-                            tree_value_copy(
-                                self.expression(value, frame))
-                    }
-                    none => {}
+            none => {}
+        }
+    }
+
+    fn apply_declaration_defaults(
+        declaration: HirDeclaration,
+        object: TreeValue,
+        frame: TreeFrame) {
+        for field: HirField in declaration.fields {
+            match field.default_value {
+                some(value) => {
+                    object.fields[field.name] =
+                        tree_value_copy(
+                            self.expression(value, frame))
                 }
+                none => {}
             }
-            for index: int in
-                0..declaration.relations.len() {
-                if index <
-                       declaration.relation_kinds.len() &&
-                   declaration.relation_kinds[index] ==
-                       "extends" {
-                    self.apply_field_defaults(
-                        declaration.relations[index].name,
-                        object, frame)
-                }
+        }
+        for index: int in
+            0..declaration.relations.len() {
+            if index <
+                   declaration.relation_kinds.len() &&
+               declaration.relation_kinds[index] ==
+                   "extends" {
+                self.apply_field_defaults(
+                    declaration.relations[index].name,
+                    object, frame)
             }
-            return
         }
     }
 
@@ -9931,6 +9986,15 @@ class TreeInterpreter {
     fn invoke(function: HirFunction,
               arguments: List<TreeValue>,
               receiver: Option<TreeValue>) -> TreeValue {
+        if function.is_async && !function.expanded {
+            // The async expander rewrites every async body into a task
+            // maker before execution; reaching one here is a compiler bug,
+            // not a user error.
+            self.fail_extern(
+                function,
+                "internal: async function '{function.name}' was not expanded before execution")
+            return TreeValue.unit()
+        }
         if function.is_extern_c && !function.is_c_export {
             return self.call_extern(
                 function, arguments)

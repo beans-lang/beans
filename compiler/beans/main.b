@@ -670,6 +670,22 @@ fn main() {
                         }
                         os.exit(1)
                     }
+                    if command == "mir" || command == "llvm" ||
+                       command == "build" || command == "run" {
+                        // Async bodies become synchronous task makers
+                        // before either executor sees them. `check` skips
+                        // this: expansion emits no user diagnostics.
+                        let expander: AsyncExpander =
+                            new AsyncExpander(checker)
+                        if !expander.run() {
+                            for diagnostic: Diagnostic in
+                                expander.errors {
+                                io.eprintln(
+                                    render_diagnostic(diagnostic))
+                            }
+                            os.exit(1)
+                        }
+                    }
                     if command == "build" &&
                        header_path != "" {
                         match render_c_header(

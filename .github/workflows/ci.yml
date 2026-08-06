@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: ["**"]
+    branches: ["main"]
   pull_request:
 
 # Cancel superseded runs on the same ref.
@@ -196,6 +196,19 @@ jobs:
           ld.lld --version
           make --version | head -1
 
+      - name: Toolchain fingerprint
+        run: |
+          echo "CLANG_VER=$(clang++ --version | head -1 | tr -c 'A-Za-z0-9.' '-')" >> "$GITHUB_ENV"
+
+      # All native x86-64 jobs wait for preflight, whose parity/smoke jobs have
+      # already built and saved this exact key. Reuse it instead of compiling
+      # the same four-stage compiler again in every fan-out lane.
+      - name: Restore preflight compiler build
+        uses: actions/cache@v4
+        with:
+          path: build
+          key: beansc-${{ runner.os }}-${{ runner.arch }}-${{ env.CLANG_VER }}-${{ hashFiles('compiler/**', 'Makefile', 'runtime/**', 'stdlib/**') }}
+
       - name: Build the compiler
         run: make
 
@@ -232,6 +245,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             clang lld llvm file binutils ripgrep
+
+      - name: Toolchain fingerprint
+        run: |
+          echo "CLANG_VER=$(clang++ --version | head -1 | tr -c 'A-Za-z0-9.' '-')" >> "$GITHUB_ENV"
+
+      - name: Restore preflight compiler build
+        uses: actions/cache@v4
+        with:
+          path: build
+          key: beansc-${{ runner.os }}-${{ runner.arch }}-${{ env.CLANG_VER }}-${{ hashFiles('compiler/**', 'Makefile', 'runtime/**', 'stdlib/**') }}
 
       - name: Build the compiler
         run: make
@@ -290,6 +313,16 @@ jobs:
             gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
             qemu-user-static
 
+      - name: Toolchain fingerprint
+        run: |
+          echo "CLANG_VER=$(clang++ --version | head -1 | tr -c 'A-Za-z0-9.' '-')" >> "$GITHUB_ENV"
+
+      - name: Restore preflight compiler build
+        uses: actions/cache@v4
+        with:
+          path: build
+          key: beansc-${{ runner.os }}-${{ runner.arch }}-${{ env.CLANG_VER }}-${{ hashFiles('compiler/**', 'Makefile', 'runtime/**', 'stdlib/**') }}
+
       - name: Build the compiler
         run: make
 
@@ -304,9 +337,10 @@ jobs:
       - name: Cross link to aarch64 and run under qemu
         run: bash test/cross_link.sh
 
-  # Each architecture reports on its own. The old single x86-64 job ran these
-  # 18 gates in sequence, so an i686 failure appeared almost an hour after the
-  # run began and hid which other architectures were already sound.
+  # Pull requests keep one 64-bit little-endian, one 32-bit and one big-endian
+  # hosted lane. Main keeps the remaining architectures below. This preserves
+  # fast cross-host feedback without making every PR wait for all nine QEMU
+  # source-bootstrap loops.
   linux-cross:
     name: linux cross + hosted (${{ matrix.arch }})
     needs: [preflight-validate, preflight-stage0, preflight-parity, preflight-smoke]
@@ -321,22 +355,10 @@ jobs:
         include:
           - arch: riscv64
             packages: gcc-riscv64-linux-gnu g++-riscv64-linux-gnu libc6-dev-riscv64-cross
-          - arch: ppc64le
-            packages: gcc-powerpc64le-linux-gnu g++-powerpc64le-linux-gnu libc6-dev-ppc64el-cross
-          - arch: i686
-            packages: gcc-i686-linux-gnu g++-i686-linux-gnu libc6-dev-i386-cross
           - arch: armv7
             packages: gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf libc6-dev-armhf-cross
-          - arch: armv6
-            packages: gcc-arm-linux-gnueabi g++-arm-linux-gnueabi libc6-dev-armel-cross
-          - arch: loongarch64
-            packages: gcc-14-loongarch64-linux-gnu g++-14-loongarch64-linux-gnu libc6-dev-loong64-cross
-          - arch: ppc
-            packages: gcc-powerpc-linux-gnu g++-powerpc-linux-gnu libc6-dev-powerpc-cross
           - arch: ppc64
             packages: gcc-powerpc64-linux-gnu g++-powerpc64-linux-gnu libc6-dev-ppc64-cross
-          - arch: s390x
-            packages: gcc-s390x-linux-gnu g++-s390x-linux-gnu libc6-dev-s390x-cross
     steps:
       - uses: actions/checkout@v7
         with:
@@ -366,8 +388,57 @@ jobs:
           BEANS_LINUX_ARCH_REQUIRE: "1"
         run: bash test/linux_hosted.sh "${{ matrix.arch }}"
 
+  linux-cross-exhaustive:
+    name: linux cross + hosted (${{ matrix.arch }})
+    if: github.event_name != 'pull_request'
+    needs: [preflight-validate, preflight-stage0, preflight-parity, preflight-smoke]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: ppc64le
+            packages: gcc-powerpc64le-linux-gnu g++-powerpc64le-linux-gnu libc6-dev-ppc64el-cross
+          - arch: i686
+            packages: gcc-i686-linux-gnu g++-i686-linux-gnu libc6-dev-i386-cross
+          - arch: armv6
+            packages: gcc-arm-linux-gnueabi g++-arm-linux-gnueabi libc6-dev-armel-cross
+          - arch: loongarch64
+            packages: gcc-14-loongarch64-linux-gnu g++-14-loongarch64-linux-gnu libc6-dev-loong64-cross
+          - arch: ppc
+            packages: gcc-powerpc-linux-gnu g++-powerpc-linux-gnu libc6-dev-powerpc-cross
+          - arch: s390x
+            packages: gcc-s390x-linux-gnu g++-s390x-linux-gnu libc6-dev-s390x-cross
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: ${{ secrets.BOOTSTRAP_TOKEN != '' && 'recursive' || '' }}
+          token: ${{ secrets.BOOTSTRAP_TOKEN || github.token }}
+
+      - name: Install ${{ matrix.arch }} toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang lld llvm file binutils qemu-user-static \
+            ${{ matrix.packages }}
+
+      - name: Build the compiler
+        run: make -j2
+
+      - name: Cross-build and run examples under qemu
+        env:
+          BEANS_LINUX_ARCH_REQUIRE: "1"
+        run: bash test/linux_arch.sh "${{ matrix.arch }}"
+
+      - name: Hosted compiler self-build under qemu
+        env:
+          BEANS_LINUX_ARCH_REQUIRE: "1"
+        run: bash test/linux_hosted.sh "${{ matrix.arch }}"
+
   linux-armv6hf:
     name: hosted gate (linux/armv6 hard-float, Raspbian)
+    if: github.event_name != 'pull_request'
     needs: [preflight-validate, preflight-stage0, preflight-parity, preflight-smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 240
@@ -409,6 +480,7 @@ jobs:
   # the small local ABI fixtures depend on an external repository.
   barq-core:
     name: Barq Core C API (linux/x86-64)
+    if: github.event_name != 'pull_request'
     needs: [preflight-validate, preflight-stage0, preflight-parity, preflight-smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 90
@@ -555,6 +627,7 @@ jobs:
   # used to hide a late architecture failure behind about an hour of duplicates.
   docker-linux:
     name: docker container gate
+    if: github.event_name != 'pull_request'
     needs: [preflight-validate, preflight-stage0, preflight-parity, preflight-smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 30

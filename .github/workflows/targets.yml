@@ -41,8 +41,34 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Pull requests prove the musl host path on native x86-64. The emulated
+  # architecture sweep below stays on main, the weekly schedule, and manual
+  # runs, where its 50-75 minute QEMU lanes do not block review feedback.
+  musl-pr:
+    name: musl host (x86_64)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: ${{ secrets.BOOTSTRAP_TOKEN != '' && 'recursive' || '' }}
+          token: ${{ secrets.BOOTSTRAP_TOKEN || github.token }}
+
+      - name: Source bootstrap and hosted differential loop on Alpine
+        run: |
+          docker run --rm --platform linux/amd64 \
+            -v "$PWD:/src:ro" alpine:3.22 sh -lc '
+              set -eu
+              apk add --no-cache bash build-base clang lld llvm git file
+              cp -a /src/. /work
+              cd /work
+              BEANS_MUSL_REQUIRE=1 bash test/musl_hosted.sh x86_64
+            '
+
   musl-hosts:
     name: musl host (${{ matrix.arch }})
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 180
     strategy:
@@ -95,6 +121,7 @@ jobs:
 
   musl-powerpc64:
     name: musl host (powerpc64 big-endian)
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 240
     steps:

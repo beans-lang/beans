@@ -134,6 +134,7 @@ class ModuleLoader {
     remote_names: Map<string, string>
     links: List<ModuleLink>
     overlays: Map<string, string>
+    want_reactor: bool
 
     fn init(sources: SourceManager, locked: bool, offline: bool,
             lock_mode: string, update_module: string) {
@@ -156,6 +157,7 @@ class ModuleLoader {
         self.remote_names = {}
         self.links = []
         self.overlays = {}
+        self.want_reactor = false
     }
 
     fn set_overlay(file_path: string, text: string) {
@@ -837,6 +839,13 @@ class ModuleLoader {
         let names: List<string> = Dir.list(dir).expect("list package")
         for name: string in names {
             if !name.ends_with(".b") { continue }
+            // The async runtime's readiness half only loads when the
+            // program can reach it (see load_async_runtime): a pure
+            // async program must not emit or link poller symbols.
+            if import_path == "std.async$rt" &&
+               name == "reactor.b" && !self.want_reactor {
+                continue
+            }
             let file_path: string = path.join(dir, name)
             let parsed: ParsedModuleFile = self.parse_file(file_path)
             self.record_file(package, parsed)
@@ -850,6 +859,53 @@ class ModuleLoader {
                                      context_root, context_canon)
         self.packages.push(package)
         self.state[import_path] = 2
+    }
+
+    // Any program that declares an async function needs the internal task
+    // package. Its directory name cannot be spelled in source — the
+    // compiler is the only importer.
+    fn load_async_runtime() {
+        var wanted: bool = false
+        for package: LoadedPackage in self.packages {
+            for file: ParsedModuleFile in package.files {
+                for declaration: AstNode in file.ast.children {
+                    if declaration.kind == "fn" &&
+                       value_marks_async(declaration.value) {
+                        wanted = true
+                    }
+                    if declaration.kind == "class" ||
+                       declaration.kind == "interface" ||
+                       declaration.kind == "enum" {
+                        for member: AstNode in declaration.children {
+                            if member.kind == "fn" &&
+                               value_marks_async(member.value) {
+                                wanted = true
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !wanted { return }
+        let dir: string =
+            path.join(stdlib_root(), "async$rt")
+        if !Dir.exists(dir) {
+            // 1:1, not 0:0: both compilers render a real position the same
+            // way, so this installation error stays byte-identical too.
+            self.fail(dir, 1, 1,
+                      "the async runtime package is missing from the standard library")
+            return
+        }
+        // The readiness half (reactor.b) rides along only when std.net is
+        // loaded — net.await_readable / net.await_writable are the only
+        // operations that can park an await, and they cannot be named
+        // without that import. Everything the loader loads is emitted, so
+        // this is what keeps poller symbols out of pure async programs and
+        // lets them link under the minimal and freestanding profiles.
+        self.want_reactor =
+            self.state.get("std.net").or(0) == 2
+        self.load_package("std.async$rt", dir, "async$rt",
+                          "std", stdlib_root(), "")
     }
 
     fn load(entry: string) -> bool {
@@ -870,6 +926,7 @@ class ModuleLoader {
                                          "", "", "")
             self.packages.push(package)
             self.state["main"] = 2
+            self.load_async_runtime()
             return self.errors.len() == 0
         }
 
@@ -885,6 +942,7 @@ class ModuleLoader {
         }
         self.load_package(self.module_name, self.root, "",
                           self.module_name, self.root, "")
+        self.load_async_runtime()
         if self.locked || self.offline {
             for locked_path: string in self.lock_entries.keys() {
                 if !self.resolved_entries.contains(locked_path) {

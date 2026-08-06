@@ -7,6 +7,14 @@ class AstNode {
     note: string
     parenthesized: bool
     children: List<AstNode>
+    // The HirNode the expression checker produced for this node, attached
+    // during checking. The async expander reads types, argument passing,
+    // and binding ids from here without re-deriving them.
+    checked: Option<HirNode>
+    // Set by check_await (and async let) on its operand call node only:
+    // this exact call may be an async call. The callee's own checking
+    // consumes it, so calls in receivers or arguments never inherit it.
+    await_allowed: bool
 
     fn init(kind: string, value: string, line: int, col: int) {
         self.kind = kind
@@ -17,6 +25,8 @@ class AstNode {
         self.note = ""
         self.parenthesized = false
         self.children = []
+        self.checked = none
+        self.await_allowed = false
     }
 
     fn add(value: AstNode) {
@@ -200,6 +210,10 @@ fn cli_ast_expression(node: AstNode, depth: int) -> string {
     if node.kind == "unary" {
         if node.children.len() == 0 { return "({node.value}?)" }
         return "({node.value}{cli_ast_expression(node.children[0], depth)})"
+    }
+    if node.kind == "await" {
+        if node.children.len() == 0 { return "(await ?)" }
+        return "(await {cli_ast_expression(node.children[0], depth)})"
     }
     if node.kind == "binary" {
         if node.children.len() < 2 { return "(? {node.value} ?)" }
@@ -388,7 +402,9 @@ fn cli_ast_statement(node: AstNode, depth: int) -> string {
                     " = {cli_ast_expression(child, depth)}"
             }
         }
-        return "{indent}{node.kind} {node.value}: {type}{value}\n"
+        var marker: string = ""
+        if node.note == "async" { marker = "async " }
+        return "{indent}{marker}{node.kind} {node.value}: {type}{value}\n"
     }
     if node.kind == "assign" {
         if node.children.len() < 2 {
@@ -479,6 +495,9 @@ fn cli_ast_function(node: AstNode, depth: int) -> string {
     }
     if node.value.contains("static ") {
         prefix = "{prefix}static "
+    }
+    if value_marks_async(node.value) {
+        prefix = "{prefix}async "
     }
     if node.value.contains("feature ") {
         let parts: List<string> = node.value.split(" ")
