@@ -5,9 +5,9 @@
 // and rebuild — test/version.sh refuses a stale copy.
 
 fn compiler_version() -> string {
-    return "0.1.0"
+    return "0.1.1"
 }
 
 fn compiler_banner() -> string {
-    return "beansc 0.1.0 (language 1.0, runtime ABI 4)"
+    return "beansc 0.1.1 (language 1.0, runtime ABI 4)"
 }
