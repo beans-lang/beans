@@ -243,6 +243,42 @@ fn sem_scopes_overlap(left: SemanticBinding,
 }
 
 // ---------------------------------------------------------------------------
+// Buckets
+// ---------------------------------------------------------------------------
+
+// Every index below is a multimap, and a multimap cannot store a `List<T>`
+// directly: a list is move-only, so stage 0 can read it back neither with
+// `m.get(k)` nor with `m[k]` — "a consuming map read is not available yet".
+// A class is a reference, so a bucket holding the list reads out fine, the
+// same way `Map<string, HirFunction>` does elsewhere in the compiler.
+//
+// Read one with `let bucket: SemIds = m[k]`, then use `bucket.items`.
+
+class SemIds {
+    items: List<string>
+
+    fn init() { self.items = [] }
+}
+
+class SemInts {
+    items: List<int>
+
+    fn init() { self.items = [] }
+}
+
+class SemRefs {
+    items: List<SemanticRef>
+
+    fn init() { self.items = [] }
+}
+
+class SemBindings {
+    items: List<SemanticBinding>
+
+    fn init() { self.items = [] }
+}
+
+// ---------------------------------------------------------------------------
 // Snapshot
 // ---------------------------------------------------------------------------
 
@@ -278,22 +314,22 @@ class SemanticSnapshot {
 
     decls: Map<string, SemanticDecl>
     decl_ids: List<string>
-    refs_by_file: Map<string, List<SemanticRef>>
-    refs_by_id: Map<string, List<SemanticRef>>
-    bindings_by_file: Map<string, List<SemanticBinding>>
+    refs_by_file: Map<string, SemRefs>
+    refs_by_id: Map<string, SemRefs>
+    bindings_by_file: Map<string, SemBindings>
     // type id -> direct supertype ids (extends and implements)
-    supertypes: Map<string, List<string>>
-    subtypes: Map<string, List<string>>
+    supertypes: Map<string, SemIds>
+    subtypes: Map<string, SemIds>
     // method id -> the base/interface method ids it implements
-    overridden: Map<string, List<string>>
+    overridden: Map<string, SemIds>
     // base/interface method id -> the method ids that implement it
-    overrides: Map<string, List<string>>
+    overrides: Map<string, SemIds>
     // type id -> ids of members declared directly on it
-    members: Map<string, List<string>>
+    members: Map<string, SemIds>
     // package id -> ids of its top-level declarations
-    package_members: Map<string, List<string>>
+    package_members: Map<string, SemIds>
     // file path -> import binding names it declares
-    file_imports: Map<string, List<string>>
+    file_imports: Map<string, SemIds>
 
     fn init(entry: string, revision: int,
             loader: ModuleLoader, sources: SourceManager) {
@@ -343,7 +379,7 @@ class SemanticSnapshot {
         var result: List<SemanticRef> = []
         match self.refs_by_id.get(id) {
             some(found) => {
-                for reference: SemanticRef in found {
+                for reference: SemanticRef in found.items {
                     result.push(reference)
                 }
             }
@@ -359,7 +395,7 @@ class SemanticSnapshot {
         match self.refs_by_file.get(path) {
             some(refs) => {
                 var best: Option<SemanticRef> = none
-                for reference: SemanticRef in refs {
+                for reference: SemanticRef in refs.items {
                     if reference.line != line { continue }
                     // Half-open: a name owns [col, col + length). The column
                     // one past its last byte belongs to whatever is written
@@ -558,31 +594,33 @@ class SemanticBuilder {
         reference.is_write = is_write
         reference.owner = self.function_id
         if !self.snapshot.refs_by_file.contains_key(self.file_path) {
-            self.snapshot.refs_by_file[self.file_path] = []
+            self.snapshot.refs_by_file[self.file_path] = new SemRefs()
         }
-        self.snapshot.refs_by_file[self.file_path].push(reference)
+        let by_file: SemRefs = self.snapshot.refs_by_file[self.file_path]
+        by_file.items.push(reference)
         if !self.snapshot.refs_by_id.contains_key(id) {
-            self.snapshot.refs_by_id[id] = []
+            self.snapshot.refs_by_id[id] = new SemRefs()
         }
-        self.snapshot.refs_by_id[id].push(reference)
+        let by_id: SemRefs = self.snapshot.refs_by_id[id]
+        by_id.items.push(reference)
     }
 
     fn add_member(owner_id: string, member_id: string) {
         if owner_id == "" || member_id == "" { return }
         if !self.snapshot.members.contains_key(owner_id) {
-            self.snapshot.members[owner_id] = []
+            self.snapshot.members[owner_id] = new SemIds()
         }
-        self.snapshot.members[owner_id].push(member_id)
+        let owned: SemIds = self.snapshot.members[owner_id]
+        owned.items.push(member_id)
     }
 
-    // The table comes last: a `Map<K, List<V>>` parameter followed by a
-    // comma trips the type parser's `>>` split.
     fn add_edge(key: string, value: string,
-                table: Map<string, List<string>>) {
+                table: Map<string, SemIds>) {
         if key == "" || value == "" { return }
-        if !table.contains_key(key) { table[key] = [] }
-        if table[key].contains(value) { return }
-        table[key].push(value)
+        if !table.contains_key(key) { table[key] = new SemIds() }
+        let bucket: SemIds = table[key]
+        if bucket.items.contains(value) { return }
+        bucket.items.push(value)
     }
 
     // The `///` block written directly above a declaration. The line comes
@@ -797,9 +835,12 @@ class SemanticBuilder {
         binding.scope_end_col = self.scope_end_col
         if !self.snapshot.bindings_by_file.contains_key(
                self.file_path) {
-            self.snapshot.bindings_by_file[self.file_path] = []
+            self.snapshot.bindings_by_file[self.file_path] =
+                new SemBindings()
         }
-        self.snapshot.bindings_by_file[self.file_path].push(binding)
+        let bucket: SemBindings =
+            self.snapshot.bindings_by_file[self.file_path]
+        bucket.items.push(binding)
     }
 
     // -----------------------------------------------------------------
@@ -973,10 +1014,12 @@ class SemanticBuilder {
         }
         // A package qualifier is never an expression of its own, so the
         // checker leaves it alone; the file's own import list names it.
-        if self.snapshot.file_imports.contains_key(self.file_path) &&
-           self.snapshot.file_imports[self.file_path].contains(
-               node.value) {
-            return sem_import_id(self.file_path, node.value)
+        if self.snapshot.file_imports.contains_key(self.file_path) {
+            let imports: SemIds =
+                self.snapshot.file_imports[self.file_path]
+            if imports.items.contains(node.value) {
+                return sem_import_id(self.file_path, node.value)
+            }
         }
         return ""
     }
@@ -1600,9 +1643,10 @@ class SemanticBuilder {
     fn add_package_member(id: string) {
         let key: string = sem_package_id(self.package_path)
         if !self.snapshot.package_members.contains_key(key) {
-            self.snapshot.package_members[key] = []
+            self.snapshot.package_members[key] = new SemIds()
         }
-        self.snapshot.package_members[key].push(id)
+        let bucket: SemIds = self.snapshot.package_members[key]
+        bucket.items.push(id)
     }
 
     fn declare_generic(node: AstNode, owner: string) {
@@ -1788,7 +1832,7 @@ class SemanticBuilder {
         entry.can_rename = false
         self.add_decl(entry)
         if !self.snapshot.package_members.contains_key(id) {
-            self.snapshot.package_members[id] = []
+            self.snapshot.package_members[id] = new SemIds()
         }
     }
 
@@ -1800,16 +1844,16 @@ class SemanticBuilder {
         self.owner = ""
         self.function_id = ""
         self.current_function = none
-        var bindings: List<string> = []
+        let imports: SemIds = new SemIds()
         for imported: ModuleImport in file.imports {
-            bindings.push(imported.binding)
+            imports.items.push(imported.binding)
         }
-        self.snapshot.file_imports[file.path] = move bindings
+        self.snapshot.file_imports[file.path] = imports
         if !self.snapshot.refs_by_file.contains_key(file.path) {
-            self.snapshot.refs_by_file[file.path] = []
+            self.snapshot.refs_by_file[file.path] = new SemRefs()
         }
         if !self.snapshot.bindings_by_file.contains_key(file.path) {
-            self.snapshot.bindings_by_file[file.path] = []
+            self.snapshot.bindings_by_file[file.path] = new SemBindings()
         }
         for node: AstNode in file.ast.children {
             if node.kind == "import" {
@@ -2023,7 +2067,7 @@ fn semantic_visible_symbols(snapshot: SemanticSnapshot,
     var seen: Map<string, bool> = {}
     match snapshot.bindings_by_file.get(path) {
         some(bindings) => {
-            for binding: SemanticBinding in bindings {
+            for binding: SemanticBinding in bindings.items {
                 if !sem_contains(
                        binding.scope_line, binding.scope_col,
                        binding.scope_end_line,
@@ -2063,7 +2107,7 @@ fn semantic_visible_symbols(snapshot: SemanticSnapshot,
     let package_path: string = semantic_package_of(snapshot, path)
     match snapshot.file_imports.get(path) {
         some(bindings) => {
-            for binding: string in bindings {
+            for binding: string in bindings.items {
                 match snapshot.decls.get(
                           sem_import_id(path, binding)) {
                     some(declaration) => {
@@ -2101,7 +2145,7 @@ fn semantic_package_member_ids(snapshot: SemanticSnapshot,
                                package_path: string) -> List<string> {
     match snapshot.package_members.get(
               sem_package_id(package_path)) {
-        some(ids) => { return sem_copy_ids(ids) }
+        some(ids) => { return sem_copy_ids(ids.items) }
         none => {
             var empty: List<string> = []
             return move empty
@@ -2135,7 +2179,7 @@ fn semantic_members(snapshot: SemanticSnapshot, type_id: string,
         visited[current] = true
         match snapshot.members.get(current) {
             some(ids) => {
-                for id: string in ids {
+                for id: string in ids.items {
                     match snapshot.decls.get(id) {
                         some(declaration) => {
                             if seen.contains_key(declaration.name) {
@@ -2156,7 +2200,7 @@ fn semantic_members(snapshot: SemanticSnapshot, type_id: string,
         }
         match snapshot.supertypes.get(current) {
             some(supers) => {
-                for id: string in supers { pending.push(id) }
+                for id: string in supers.items { pending.push(id) }
             }
             none => {}
         }
@@ -2186,7 +2230,7 @@ fn semantic_descendant_members(
         if current != type_id {
             match snapshot.members.get(current) {
                 some(ids) => {
-                    for id: string in ids {
+                    for id: string in ids.items {
                         match snapshot.decls.get(id) {
                             some(declaration) => {
                                 found.push(declaration)
@@ -2200,7 +2244,7 @@ fn semantic_descendant_members(
         }
         match snapshot.subtypes.get(current) {
             some(children) => {
-                for id: string in children { pending.push(id) }
+                for id: string in children.items { pending.push(id) }
             }
             none => {}
         }
@@ -2257,7 +2301,7 @@ fn semantic_override_family(snapshot: SemanticSnapshot,
 fn semantic_supertypes(snapshot: SemanticSnapshot,
                        type_id: string) -> List<string> {
     match snapshot.supertypes.get(type_id) {
-        some(found) => { return sem_copy_ids(found) }
+        some(found) => { return sem_copy_ids(found.items) }
         none => {
             var empty: List<string> = []
             return move empty
@@ -2268,7 +2312,7 @@ fn semantic_supertypes(snapshot: SemanticSnapshot,
 fn semantic_subtypes(snapshot: SemanticSnapshot,
                      type_id: string) -> List<string> {
     match snapshot.subtypes.get(type_id) {
-        some(found) => { return sem_copy_ids(found) }
+        some(found) => { return sem_copy_ids(found.items) }
         none => {
             var empty: List<string> = []
             return move empty
@@ -2279,7 +2323,7 @@ fn semantic_subtypes(snapshot: SemanticSnapshot,
 fn semantic_overrides(snapshot: SemanticSnapshot,
                       method_id: string) -> List<string> {
     match snapshot.overrides.get(method_id) {
-        some(found) => { return sem_copy_ids(found) }
+        some(found) => { return sem_copy_ids(found.items) }
         none => {
             var empty: List<string> = []
             return move empty
@@ -2290,7 +2334,7 @@ fn semantic_overrides(snapshot: SemanticSnapshot,
 fn semantic_overridden(snapshot: SemanticSnapshot,
                        method_id: string) -> List<string> {
     match snapshot.overridden.get(method_id) {
-        some(found) => { return sem_copy_ids(found) }
+        some(found) => { return sem_copy_ids(found.items) }
         none => {
             var empty: List<string> = []
             return move empty

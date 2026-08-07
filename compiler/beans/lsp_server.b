@@ -904,7 +904,7 @@ class BeansLspServer {
                 sem_id_key(declaration.id))
             match snapshot.members.get(type_id) {
                 some(member_ids) => {
-                    for member_id: string in member_ids {
+                    for member_id: string in member_ids.items {
                         match snapshot.decls.get(member_id) {
                             some(member) => {
                                 if member.file != file_path {
@@ -1091,7 +1091,7 @@ class BeansLspServer {
                   id: string) -> Option<SemanticBinding> {
         match snapshot.bindings_by_file.get(file_path) {
             some(bindings) => {
-                for binding: SemanticBinding in bindings {
+                for binding: SemanticBinding in bindings.items {
                     if binding.id == id { return some(binding) }
                 }
             }
@@ -1113,7 +1113,7 @@ class BeansLspServer {
                 match snapshot.bindings_by_file.get(
                           declaration.file) {
                     some(bindings) => {
-                        for other: SemanticBinding in bindings {
+                        for other: SemanticBinding in bindings.items {
                             if other.id == mine.id { continue }
                             if other.owner != mine.owner { continue }
                             if other.name != new_name { continue }
@@ -1300,7 +1300,7 @@ class BeansLspServer {
                 // one alone is not a rename — it leaves an `override` whose
                 // parent no longer has the name, and an interface method
                 // nothing implements.
-                var by_file: Map<string, List<string>> = {}
+                var by_file: Map<string, SemIds> = {}
                 var order: List<string> = []
                 for found: SemanticRef in
                     self.rename_sites(snapshot, reference.id) {
@@ -1316,17 +1316,18 @@ class BeansLspServer {
                             lsp_member(
                                 "newText", lsp_quote(new_name))])
                     if !by_file.contains_key(found.file) {
-                        by_file[found.file] = []
+                        by_file[found.file] = new SemIds()
                         order.push(found.file)
                     }
-                    by_file[found.file].push(edit)
+                    let edits: SemIds = by_file[found.file]
+                    edits.items.push(edit)
                 }
                 var changes: List<string> = []
                 for file_path: string in order {
                     changes.push(
                         lsp_member(
                             lsp_file_uri(file_path),
-                            lsp_array(by_file[file_path])))
+                            lsp_array(by_file[file_path].items)))
                 }
                 self.reply(
                     id,
@@ -1354,7 +1355,7 @@ class BeansLspServer {
         var refs: List<SemanticRef> = []
         match snapshot.refs_by_file.get(file_path) {
             some(found) => {
-                for reference: SemanticRef in found {
+                for reference: SemanticRef in found.items {
                     refs.push(reference)
                 }
             }
@@ -1509,7 +1510,7 @@ class BeansLspServer {
                     lsp_uri_path(item.string("uri"))
                 let snapshot: SemanticSnapshot =
                     self.workspace.snapshot(file_path)
-                var by_caller: Map<string, List<string>> = {}
+                var by_caller: Map<string, SemIds> = {}
                 var order: List<string> = []
                 for found: SemanticRef in
                     snapshot.references(target) {
@@ -1518,10 +1519,11 @@ class BeansLspServer {
                     let text: string =
                         self.text_for(snapshot, found.file)
                     if !by_caller.contains_key(found.owner) {
-                        by_caller[found.owner] = []
+                        by_caller[found.owner] = new SemIds()
                         order.push(found.owner)
                     }
-                    by_caller[found.owner].push(
+                    let ranges: SemIds = by_caller[found.owner]
+                    ranges.items.push(
                         lsp_span(
                             text, found.line, found.col,
                             found.length))
@@ -1539,7 +1541,7 @@ class BeansLspServer {
                                     lsp_member(
                                         "fromRanges",
                                         lsp_array(
-                                            by_caller[caller]))]))
+                                            by_caller[caller].items))]))
                         }
                         none => {}
                     }
@@ -1559,7 +1561,7 @@ class BeansLspServer {
                     lsp_uri_path(item.string("uri"))
                 let snapshot: SemanticSnapshot =
                     self.workspace.snapshot(file_path)
-                var by_callee: Map<string, List<string>> = {}
+                var by_callee: Map<string, SemIds> = {}
                 var order: List<string> = []
                 for id_of: string in snapshot.decl_ids {
                     if sem_id_kind(id_of) != "fn" { continue }
@@ -1570,10 +1572,11 @@ class BeansLspServer {
                         let text: string =
                             self.text_for(snapshot, found.file)
                         if !by_callee.contains_key(id_of) {
-                            by_callee[id_of] = []
+                            by_callee[id_of] = new SemIds()
                             order.push(id_of)
                         }
-                        by_callee[id_of].push(
+                        let ranges: SemIds = by_callee[id_of]
+                        ranges.items.push(
                             lsp_span(
                                 text, found.line, found.col,
                                 found.length))
@@ -1593,7 +1596,7 @@ class BeansLspServer {
                                     lsp_member(
                                         "fromRanges",
                                         lsp_array(
-                                            by_callee[callee]))]))
+                                            by_callee[callee].items))]))
                         }
                         none => {}
                     }

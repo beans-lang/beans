@@ -147,9 +147,9 @@ class DebugSession {
     interpreter: Option<TreeInterpreter>
     entry_file: string
     // normalized path -> the lines the client asked to break on
-    breakpoints: Map<string, List<int>>
+    breakpoints: Map<string, SemInts>
     // normalized path -> the lines that actually carry a statement
-    executable: Map<string, List<int>>
+    executable: Map<string, SemInts>
     // binding id -> the name the source gave it
     names: Map<int, string>
     stop_on_entry: bool
@@ -222,10 +222,11 @@ class DebugSession {
            self.is_statement(node.kind) {
             let key: string = dap_normalize(node.file)
             if !self.executable.contains_key(key) {
-                self.executable[key] = []
+                self.executable[key] = new SemInts()
             }
-            if !self.executable[key].contains(node.line) {
-                self.executable[key].push(node.line)
+            let lines: SemInts = self.executable[key]
+            if !lines.items.contains(node.line) {
+                lines.items.push(node.line)
             }
         }
         for child: HirNode in node.children {
@@ -322,7 +323,8 @@ class DebugSession {
             if !dap_same_file(key, file_path) { continue }
             var best_below: int = -1
             var best_above: int = -1
-            for line: int in self.executable[key] {
+            let lines: SemInts = self.executable[key]
+            for line: int in lines.items {
                 if line == wanted { return line }
                 if line > wanted {
                     if best_below < 0 || line < best_below {
@@ -341,7 +343,8 @@ class DebugSession {
     fn breakpoint_hit(file_path: string, line: int) -> bool {
         for key: string in self.breakpoints.keys() {
             if !dap_same_file(key, file_path) { continue }
-            if self.breakpoints[key].contains(line) { return true }
+            let lines: SemInts = self.breakpoints[key]
+            if lines.items.contains(line) { return true }
         }
         return false
     }
@@ -906,7 +909,9 @@ class DebugSession {
             }
             rendered.push(lsp_object(fields))
         }
-        self.breakpoints[dap_normalize(file_path)] = move settled
+        let resolved: SemInts = new SemInts()
+        resolved.items = move settled
+        self.breakpoints[dap_normalize(file_path)] = resolved
         self.respond(
             request,
             lsp_object([
