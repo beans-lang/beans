@@ -2546,6 +2546,22 @@ declares one, so `package` stays usable as an ordinary identifier.
 
 ## Decided
 
+- Public API names v0.9 (implemented): a name says what it does or it changes,
+  and there are no aliases for the old spelling — a rename that leaves the old
+  name working is a rename nobody finishes. The pairs that lied got fixed
+  first: `Bytes.to_string` truncated at a NUL while `to_string_full` was the
+  honest conversion, so `to_string` is now every byte and the truncating one
+  says `to_string_until_nul`; `Map.contains` read like `List.contains` but asks
+  about a key, so it is `contains_key`; `Bytes.append_varint` meant unsigned
+  LEB128 while `std.encoding.binary` used "varint" for zigzag, so the built-in
+  pair carries the `u`. Names that hid what they cost or handed back got said
+  out loud — `Mutex.with_lock`, `Weak.is_expired`, `Channel.receive`,
+  `AtomicInt.load`/`store`/`add_and_get`, `Dir.create`/`create_all`, and
+  `MMap.open_shared_memory`. A resource's pollable descriptor is `poll_handle`
+  everywhere it appears, `Signals.drain` says that reading consumes, and the
+  millisecond clocks moved to `std.time` beside the nanosecond forms, where
+  their names name their clock. Internal `beans_*` runtime symbols keep their
+  old spellings: they are an ABI, not a public API.
 - async/await v0.9 (first version implemented): contextual words, never
   keywords, so every existing use of the names keeps parsing; the declared
   type is the body's, a call gets `std.async.Task` of it, and the split never
