@@ -418,6 +418,8 @@ EOF
 module upleak
 EOF
     cat >"$tmp/upleak/pka/pka.b" <<'EOF'
+package pka
+
 import std.io
 
 pub class Plain {
@@ -444,6 +446,8 @@ pub class Loud extends Plain {
 }
 EOF
     cat >"$tmp/upleak/main.b" <<'EOF'
+package main
+
 import std.io
 import upleak.pka
 
@@ -465,6 +469,8 @@ EOF
 module segalias
 EOF
     cat >"$tmp/segalias/pka/pka.b" <<'EOF'
+package pka
+
 import std.io
 
 pub class Crate {
@@ -484,6 +490,8 @@ pub fn local_seg() {
 }
 EOF
     cat >"$tmp/segalias/main.b" <<'EOF'
+package main
+
 import std.io
 import segalias.pka as al1
 
