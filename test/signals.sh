@@ -63,7 +63,7 @@ fn main() {
         ok(n) => {
             // stderr, unbuffered: a buffered line would be lost when the signal lands.
             io.eprintln("raising an unwatched signal")
-            match signal.Signal.raise_self(n) {
+            match signal.Signal.send_to_self(n) {
                 ok(sent) => io.eprintln("survived, which means it was not delivered"),
                 err(e) => io.eprintln("raise failed: {e.msg}"),
             }
@@ -112,17 +112,17 @@ import std.io
 import std.signal
 fn handled() -> Result<int> {
     let want: int = signal.Signal.terminate()?
-    let watch: signal.Signals = signal.Signals.watch_one(want)?
-    signal.Signal.raise_self(want)?
-    io.println("handled it {watch.pending()?.contains(want)}")
+    let watch: signal.Signals = signal.Signals.watch_signal(want)?
+    signal.Signal.send_to_self(want)?
+    io.println("handled it {watch.drain()?.contains(want)}")
     // watch is dropped here, which unblocks. A still-pending terminate would arrive now.
     return ok(1)
 }
 fn unread() -> Result<int> {
     let want: int = signal.Signal.terminate()?
-    let watch: signal.Signals = signal.Signals.watch_one(want)?
+    let watch: signal.Signals = signal.Signals.watch_signal(want)?
     // Deliberately never read. Dropping the watch must discard it, not deliver it.
-    signal.Signal.raise_self(want)?
+    signal.Signal.send_to_self(want)?
     return ok(1)
 }
 fn main() {
@@ -148,13 +148,13 @@ import std.io
 import std.signal
 fn go() -> Result<int> {
     let want: int = signal.Signal.user1()?
-    let first: signal.Signals = signal.Signals.watch_one(want)?
-    let second: signal.Signals = signal.Signals.watch_one(want)?
+    let first: signal.Signals = signal.Signals.watch_signal(want)?
+    let second: signal.Signals = signal.Signals.watch_signal(want)?
     first.close()?
     // Closing first must not unblock under second. Before the ownership count,
     // this raise took the default action and killed the whole process.
-    signal.Signal.raise_self(want)?
-    io.println("second watcher still owns the signal {second.arrived(want)?}")
+    signal.Signal.send_to_self(want)?
+    io.println("second watcher still owns the signal {second.drain()?.contains(want)}")
     second.close()?
     return ok(1)
 }
@@ -227,8 +227,8 @@ import std.signal
 fn once() -> Result<bool> {
     let want: int = signal.Signal.window_change()?
     // Never closed on purpose. deinit must unblock and close the descriptor.
-    let watch: signal.Signals = signal.Signals.watch_one(want)?
-    return ok(watch.pending()?.len() == 0)
+    let watch: signal.Signals = signal.Signals.watch_signal(want)?
+    return ok(watch.drain()?.len() == 0)
 }
 fn main() {
     var made: int = 0

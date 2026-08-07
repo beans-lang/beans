@@ -30,12 +30,12 @@ fn main() {
     // slice / copy_from / append
     let word: Bytes = Bytes.from("beans language")
     let head: Bytes = word.slice(0, 5)
-    io.println(head.to_string())
+    io.println(head.to_string_until_nul())
     let buf: Bytes = new Bytes(5)
     buf.copy_from(head, 0)
-    io.println(buf.to_string())
-    buf.append(Bytes.from("!")).append_str("!!")
-    io.println("{buf.to_string()} {buf.len()}")
+    io.println(buf.to_string_until_nul())
+    buf.append(Bytes.from("!")).append_string("!!")
+    io.println("{buf.to_string_until_nul()} {buf.len()}")
 
     // reserve and record appends grow one unique buffer. append_range copies
     // directly, including when the source and destination are the same value.
@@ -43,27 +43,30 @@ fn main() {
     fast.reserve(64).append_i64(0 - 123456789)
     fast.append_range(Bytes.from("abcd"), 1, 4)
     fast.append_range(fast, 8, 11)
-    io.println("{fast.len()} {fast.get_i64(0)} {fast.slice(8, 14).to_string()}")
+    io.println("{fast.len()} {fast.get_i64(0)} {fast.slice(8, 14).to_string_until_nul()}")
 
-    // to_string stops at an embedded NUL — strings are text
+    // to_string keeps every byte; to_string_until_nul stops at an embedded NUL.
+    // The names say which one you get, so a binary-safe reader cannot pick the
+    // truncating form by accident.
     let z: Bytes = new Bytes(6)
     z.set(0, 104).set(1, 105)
-    io.println("{z.to_string()} {z.to_string().len()}")
+    io.println("{z.to_string_until_nul()} {z.to_string_until_nul().len()}")
+    io.println("{z.to_string().len()} {z.to_string().byte_at(2)}")
 
     // round-trip
-    io.println(Bytes.from("round trip").to_string())
+    io.println(Bytes.from("round trip").to_string_until_nul())
 
     // varints: unsigned LEB128, negatives move 10 bytes; the size of a value
     // is derivable, so records advance without a second return value
     var vrec: Bytes = new Bytes(0)
-    vrec.append_varint(0).append_varint(300).append_varint(-1)
-    io.println("{vrec.len()} {Bytes.varint_size(300)} {Bytes.varint_size(-1)}")
+    vrec.append_uvarint(0).append_uvarint(300).append_uvarint(-1)
+    io.println("{vrec.len()} {Bytes.uvarint_size(300)} {Bytes.uvarint_size(-1)}")
     var vpos: int = 0
     var vs: List<int> = []
     for vs.len() < 3 {
-        let v: int = vrec.get_varint(vpos)
+        let v: int = vrec.get_uvarint(vpos)
         vs.push(v)
-        vpos = vpos + Bytes.varint_size(v)
+        vpos = vpos + Bytes.uvarint_size(v)
     }
     io.println(vs)
 

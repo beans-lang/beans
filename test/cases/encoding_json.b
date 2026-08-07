@@ -21,7 +21,7 @@ fn escaped_child() -> json.Value {
         }
         err(_) => {}
     }
-    return json.Value.of_null()
+    return json.Value.null()
 }
 
 fn check_parse_error(label: string, text: string) {
@@ -67,7 +67,7 @@ fn main() {
     // integer boundaries and float behaviour
     match json.parse("[9223372036854775807, 9223372036854775808, 18446744073709551616, 1e308, 5e-324, 9007199254740993]") {
         ok(list) => {
-            match list.items() {
+            match list.elements() {
                 ok(values) => {
                     for value: json.Value in values {
                         io.println("num {kind_name(value)} {value.number().or(-1.0)}")
@@ -117,7 +117,7 @@ fn main() {
     // invalid UTF-8 inside a string is rejected with its position
     var bad_utf8: Bytes = Bytes.from("[\"")
     bad_utf8.push(255)
-    bad_utf8.append_str("\"]")
+    bad_utf8.append_string("\"]")
     match json.parse_bytes(bad_utf8) {
         ok(_) => io.println("bad utf8: accepted"),
         err(e) => io.println("bad utf8: {e.kind} - {e.msg}"),
@@ -128,11 +128,11 @@ fn main() {
     relaxed.allow_comments = true
     relaxed.allow_trailing_commas = true
     relaxed.allow_inf_nan = true
-    match json.parse_with("// note\n[1, 2,] // tail", relaxed) {
+    match json.parse_with_options("// note\n[1, 2,] // tail", relaxed) {
         ok(v) => io.println("relaxed len {v.len().or(-1)}"),
         err(e) => io.println("relaxed err {e.msg}"),
     }
-    match json.parse_with("[Infinity, NaN]", relaxed) {
+    match json.parse_with_options("[Infinity, NaN]", relaxed) {
         ok(v) => {
             match v.at(0) {
                 ok(inf) => io.println("inf {inf.to_float().or(0.0)}"),
@@ -191,14 +191,14 @@ fn main() {
 
     // building: constructors for every kind, deep copies, writer errors
     var built: json.Value = json.Value.object()
-    built.add("null", json.Value.of_null()).expect("add")
-    built.add("bool", json.Value.of_bool(true)).expect("add")
-    built.add("int", json.Value.of_int(-1)).expect("add")
-    built.add("uint", json.Value.of_uint(18446744073709551615)).expect("add")
-    built.add("float", json.Value.of_float(0.25)).expect("add")
-    built.add("text", json.Value.of_string("é\"quote\"")).expect("add")
+    built.add("null", json.Value.null()).expect("add")
+    built.add("bool", json.Value.from_bool(true)).expect("add")
+    built.add("int", json.Value.from_int(-1)).expect("add")
+    built.add("uint", json.Value.from_uint(18446744073709551615)).expect("add")
+    built.add("float", json.Value.from_float(0.25)).expect("add")
+    built.add("text", json.Value.from_string("é\"quote\"")).expect("add")
     var inner: json.Value = json.Value.array()
-    let shared_item: json.Value = json.Value.of_int(7)
+    let shared_item: json.Value = json.Value.from_int(7)
     inner.push(shared_item).expect("push")
     inner.push(shared_item).expect("push")
     built.add("arr", inner).expect("add")
@@ -206,7 +206,7 @@ fn main() {
         ok(text) => io.println("built {text}"),
         err(e) => io.println("err {e.msg}"),
     }
-    match json.stringify(json.Value.of_float(0.0 / 0.0)) {
+    match json.stringify(json.Value.from_float(0.0 / 0.0)) {
         ok(text) => io.println("nan wrote {text}"),
         err(e) => io.println("nan refused {e.kind}"),
     }
@@ -214,7 +214,7 @@ fn main() {
     // parsed documents are read-only
     match json.parse("[1]") {
         ok(frozen) => {
-            match frozen.push(json.Value.of_int(2)) {
+            match frozen.push(json.Value.from_int(2)) {
                 ok(_) => io.println("frozen accepted"),
                 err(e) => io.println("frozen {e.kind}"),
             }

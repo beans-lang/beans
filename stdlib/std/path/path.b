@@ -60,8 +60,8 @@ pub fn parent(value: string) -> string {
 /// The final segment of a path (the file or directory name).
 ///
 /// When to use: getting a display name from a full path. Trailing slashes are
-/// ignored, so `base("/a/b/")` is `"b"`.
-pub fn base(value: string) -> string {
+/// ignored, so `name("/a/b/")` is `"b"`.
+pub fn name(value: string) -> string {
     return base_name(value)
 }
 
@@ -69,14 +69,14 @@ pub fn base(value: string) -> string {
 ///
 /// When to use: branching on file type. A leading dot on the name itself (a
 /// dotfile like `.env`) is not treated as an extension.
-pub fn ext(value: string) -> string {
-    let name: string = base_name(value)
-    var index: int = name.len()
+pub fn extension(value: string) -> string {
+    let last: string = base_name(value)
+    var index: int = last.len()
     for index > 0 {
         index -= 1
-        if name.byte_at(index) == 46 {
+        if last.byte_at(index) == 46 {
             if index == 0 { return "" }
-            return name.slice(index, name.len())
+            return last.slice(index, last.len())
         }
     }
     return ""
@@ -86,16 +86,16 @@ pub fn ext(value: string) -> string {
 /// `"/a/report.txt"`).
 ///
 /// When to use: deriving an output name from an input file. Complements
-/// [ext]: `stem` + `ext` reconstruct [base].
+/// [extension]: `stem` + `extension` reconstruct [name].
 pub fn stem(value: string) -> string {
-    let name: string = base_name(value)
-    var index: int = name.len()
+    let last: string = base_name(value)
+    var index: int = last.len()
     for index > 0 {
         index -= 1
-        if name.byte_at(index) == 46 {
-            if index == 0 { return name }
-            return name.slice(0, index)
+        if last.byte_at(index) == 46 {
+            if index == 0 { return last }
+            return last.slice(0, index)
         }
     }
-    return name
+    return last
 }

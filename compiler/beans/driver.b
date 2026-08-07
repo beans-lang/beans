@@ -6,6 +6,7 @@ import std.os
 import std.path
 import std.process
 import std.random
+import std.time
 
 // ---- std.encoding native bridges ----
 //
@@ -48,8 +49,8 @@ fn encoding_compiler_identity(compiler: string) -> string {
     probe.arg("--version")
     match probe.run() {
         ok(done) => {
-            if done.ok() {
-                return "{compiler}|{done.text().trim()}"
+            if done.succeeded() {
+                return "{compiler}|{done.stdout_text().trim()}"
             }
         }
         err(_) => {}
@@ -293,9 +294,9 @@ class NativeBuildDriver {
                 name: string) -> bool {
         match command.run() {
             ok(done) => {
-                if done.ok() { return true }
+                if done.succeeded() { return true }
                 var message: string =
-                    done.error_text().trim()
+                    done.stderr_text().trim()
                 if message == "" {
                     message =
                         "{name} failed (exit {done.status})"
@@ -485,7 +486,7 @@ class NativeBuildDriver {
                 staging = "{object}.{seed.get_u64(0)}"
             }
             err(_) => {
-                staging = "{object}.{os.now_ms()}"
+                staging = "{object}.{time.wall_millis()}"
             }
         }
         if !self.compile_encoding_object(
@@ -575,7 +576,7 @@ class NativeBuildDriver {
                 staging = "{object}.{seed.get_u64(0)}"
             }
             err(_) => {
-                staging = "{object}.{os.now_ms()}"
+                staging = "{object}.{time.wall_millis()}"
             }
         }
         if !self.compile_object(
@@ -605,7 +606,7 @@ class NativeBuildDriver {
                 tmp = "{target}.tmp{seed.get_u64(0)}"
             }
             err(_) => {
-                tmp = "{target}.tmp{os.now_ms()}"
+                tmp = "{target}.tmp{time.wall_millis()}"
             }
         }
         match fs.write(tmp, text) {
@@ -682,7 +683,7 @@ class NativeBuildDriver {
                 output = artifact_name
             }
         }
-        match Dir.make_all("build") {
+        match Dir.create_all("build") {
             ok(_) => {}
             err(error) => {
                 self.fail(

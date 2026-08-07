@@ -6,7 +6,7 @@ import std.fs
 import std.reader
 
 fn main() {
-    let p: string = "{Dir.temp()}/beans_reader_example.txt"
+    let p: string = "{Dir.temp_path()}/beans_reader_example.txt"
     fs.write(p, "alpha\nbeta\n\ngamma with spaces\nlast no newline").expect("seed")
 
     let f: File = File.open(p, "r").expect("open")

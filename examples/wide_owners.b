@@ -31,7 +31,7 @@ fn boxed<T>(value: T) -> Box<T> {
 }
 
 fn store_one<T>(arena: Arena<T>, value: T) -> int {
-    return arena.put(value)
+    return arena.add(value)
 }
 
 fn make_cycles() {
@@ -41,7 +41,7 @@ fn make_cycles() {
 
     let seed_arena: Arena<ArenaEdge> = new Arena(1)
     let arena_owner: ArenaOwner = new ArenaOwner(move seed_arena)
-    arena_owner.inner.put(ArenaEdge { target: arena_owner })
+    arena_owner.inner.add(ArenaEdge { target: arena_owner })
 }
 
 fn main() {
@@ -58,7 +58,7 @@ fn main() {
 
     var events: Arena<Event> = new Arena(1)
     let one: int = store_one(events, Event { label: "one", value: 1 })
-    let two: int = events.put(Event { label: "two", value: 2 })
+    let two: int = events.add(Event { label: "two", value: 2 })
     let read: Event = events.get(one).or(Event { label: "none", value: 0 })
     let direct: Event = events.at(two)
     io.println("arena {one} {two} {events.len()} {read.label} {direct.label}")
@@ -66,13 +66,13 @@ fn main() {
     io.println("arena clear {events.len()} {events.get(one).or(Event { label: "missing", value: 0 }).label}")
 
     var decimals: Arena<decimal> = new Arena(0)
-    decimals.put(1.25)
-    decimals.put(2.50)
+    decimals.add(1.25)
+    decimals.add(2.50)
     io.println("arena decimal {decimals.at(0)} {decimals.get(1).or(0.0)}")
 
     var results: Arena<Result<Pair>> = new Arena(1)
-    results.put(ok(Pair { left: 3, right: 4 }))
-    results.put(err("arena error"))
+    results.add(ok(Pair { left: 3, right: 4 }))
+    results.add(err("arena error"))
     let result: Result<Pair> = results.at(1)
     match result {
         ok(value) => { io.println("bad {value.left}") },

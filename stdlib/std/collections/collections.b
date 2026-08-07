@@ -4,16 +4,6 @@
 
 package collections
 
-pub fn count_int(values: List<int>, needle: int) -> int {
-    var count: int = 0
-    for value: int in values {
-        if value == needle {
-            count += 1
-        }
-    }
-    return count
-}
-
 pub fn sum_int(values: List<int>) -> int {
     var total: int = 0
     for value: int in values {
@@ -32,20 +22,6 @@ pub fn frequencies(values: List<string>) -> Map<string, int> {
         }
     }
     return move counts
-}
-
-pub fn unique(values: List<string>) -> List<string> {
-    var seen: Map<string, bool> = {}
-    var result: List<string> = []
-    seen.reserve(values.len())
-    result.reserve(values.len())
-    for value: string in values {
-        if !seen.contains(value) {
-            seen[value] = true
-            result.push(value)
-        }
-    }
-    return move result
 }
 
 pub fn count<T implements Eq>(values: List<T>, needle: T) -> int {
@@ -74,13 +50,13 @@ pub fn transform<T implements Clone, U>(values: List<T>, apply: fn(T) -> U) -> L
     return move result
 }
 
-pub fn unique_of<T implements Eq & Hash & Clone>(values: List<T>) -> List<T> {
+pub fn unique<T implements Eq & Hash & Clone>(values: List<T>) -> List<T> {
     var seen: Map<T, bool> = {}
     var result: List<T> = []
     seen.reserve(values.len())
     result.reserve(values.len())
     for value: T in values {
-        if !seen.contains(value) {
+        if !seen.contains_key(value) {
             seen[value] = true
             result.push(value)
         }
@@ -101,7 +77,7 @@ pub fn increment<K implements Eq & Hash>(inout values: Map<K, int>, key: K, delt
     return next
 }
 
-pub fn get_or_insert<K implements Eq & Hash, V implements Clone>(
+pub fn get_or_insert_with<K implements Eq & Hash, V implements Clone>(
     inout values: Map<K, V>, key: K, make: fn() -> V) -> V {
     match values.get(key) {
         some(current) => { return current }
@@ -140,7 +116,7 @@ pub fn remove_if<K implements Eq & Hash & Clone, V implements Clone>(
     return removed
 }
 
-pub fn map_values<K implements Eq & Hash & Clone, V implements Clone, U>(
+pub fn map_values_with_key<K implements Eq & Hash & Clone, V implements Clone, U>(
     values: Map<K, V>, apply: fn(K, V) -> U) -> Map<K, U> {
     var result: Map<K, U> = {}
     result.reserve(values.len())

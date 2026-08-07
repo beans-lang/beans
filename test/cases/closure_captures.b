@@ -64,7 +64,7 @@ fn main() {
     io.println("{read_fixed()} {read_changed()} {bump()} {bump()}")
     io.println(matched_or_fallback(some("matched"), false))
     io.println(matched_or_fallback(none, true))
-    io.println("pattern weak {weak_after_pattern().expired()}")
+    io.println("pattern weak {weak_after_pattern().is_expired()}")
 
     // an object whose field holds a closure made in this same frame
     // still runs its deinit at end of scope: the closure captures its

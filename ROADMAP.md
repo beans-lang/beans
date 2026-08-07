@@ -491,7 +491,7 @@ instead of delaying the retain until return or assignment. Calls can record an
 internal ownership-taking ABI separately from the language parameter mode;
 `thread.spawn` now transfers its closure environment directly to the runtime.
 Fluent borrowed-receiver calls carry their receiver alias, and allocation-free
-`Channel.recv().or`, `Map.get().or`, and `List.pop().or` fusions are explicit
+`Channel.receive().or`, `Map.get().or`, and `List.pop().or` fusions are explicit
 verified MIR shapes. Nontrivial `inout` values are borrowed addresses, never
 owned pointees. Class generic arguments are substituted in field defaults, and
 heap class types resolve lazily so MIR setup cannot weaken guarded
@@ -1393,7 +1393,7 @@ let elapsed: int = time.monotonic_nanos() - started
 match random.bytes(32) { ok(key) => ..., err(e) => ... }
 ```
 
-Both clocks already existed as `os.now_ms` and `os.ticks_ms`; what was missing was
+Both clocks already existed in millisecond form; what was missing was
 nanosecond resolution and, more importantly, names that make the choice between them
 unmistakable. `monotonic_nanos` never goes backwards and has no meaning as a moment;
 `wall_nanos` names a moment and can jump when the clock is set. Measuring a duration
@@ -1441,9 +1441,9 @@ Access score: 67/100 -> **68/100** (`os/secure-random-and-clocks`).
 ### 7.4 shared memory
 
 ```beans
-match MMap.open_shared("/name", 128, true) { ok(region) => region.put_u64(0, 7), ... }
-match MMap.open_shared("/name", 128, false) { ok(region) => region.get_u64(0), ... }
-match MMap.unlink_shared("/name") { ... }
+match MMap.open_shared_memory("/name", 128, true) { ok(region) => region.put_u64(0, 7), ... }
+match MMap.open_shared_memory("/name", 128, false) { ok(region) => region.get_u64(0), ... }
+match MMap.unlink_shared_memory("/name") { ... }
 ```
 
 A POSIX shared-memory object comes back as an ordinary **`MMap`**, because shared
@@ -1484,7 +1484,7 @@ Access score: 68/100 -> **69/100** (`os/shared-memory`).
 ```beans
 var cmd: process.Command = new process.Command("/bin/echo")
 cmd.arg("hello").arg("two words")
-match cmd.run() { ok(done) => done.text(), err(e) => e.kind }
+match cmd.run() { ok(done) => done.stdout_text(), err(e) => e.kind }
 ```
 
 **One runtime primitive does the whole job** — spawn, feed stdin, drain both output
@@ -1557,8 +1557,8 @@ row:
 
 | was | is now |
 |---|---|
-| `shm.open(name, size, create)` | `MMap.open_shared(name, size, create)` |
-| `shm.unlink(name)` | `MMap.unlink_shared(name)` |
+| `shm.open(name, size, create)` | `MMap.open_shared_memory(name, size, create)` |
+| `shm.unlink(name)` | `MMap.unlink_shared_memory(name)` |
 | `process.run(program)` | `new Command(program).run()` |
 
 The shm pair is the clearer error: it returned an `MMap`, whose own `open` is a static
@@ -1590,7 +1590,7 @@ report one.
 **The address family is resolved, never chosen.** Every entry point runs the host
 through `getaddrinfo` and tries the candidates in order, so `"localhost"`, `"127.0.0.1"`
 and `"::1"` all work with no flag to get wrong, and IPv6 support is not a separate code
-path that can rot. `Address` is an ordinary value; `text()` brackets an IPv6 host
+path that can rot. `Address` is an ordinary value; `to_string()` brackets an IPv6 host
 (`[::1]:80`) because that is the form that reads back.
 
 **Partial by contract.** `read(max)` returns what arrived and `write(data)` returns what
@@ -1642,7 +1642,7 @@ Access score: 71/100 -> **74/100** (`os/sockets-and-dns`).
 
 ```beans
 let watch: poll.Poller = poll.Poller.open()?
-watch.add(server.handle(), 1, poll.Interest.read_only())?
+watch.add(server.poll_handle(), 1, poll.Interest.read_only())?
 for event: poll.Event in watch.wait(64, 500)? { ... }
 ```
 
@@ -1667,7 +1667,7 @@ excludes *every* class, not only `unique` ones — an ordinary class is a local 
 reference — so nothing but a scalar crosses `thread.spawn`. The obvious fix, handing out
 the wake descriptor as an `int`, is unsafe: once the poller closes, that number belongs
 to something else and a late wake writes a stray byte into an unrelated file. So
-`signal_handle()` returns a **slot plus generation**. Closing clears the slot and bumps
+`wake_handle()` returns a **slot plus generation**. Closing clears the slot and bumps
 the generation under the same lock a wake takes, which makes three things true and tested:
 a wake after close reports kind `closed`, a made-up handle reports it too, and a new
 poller reusing the freed slot gets a different handle rather than inheriting the old

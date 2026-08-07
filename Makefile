@@ -216,6 +216,7 @@ else
 	./test/lsp_probe.sh
 	./test/lsp_server.sh
 	./test/stdlib_source.sh
+	bash ./test/api_names.sh
 	./test/fs_source.sh
 	./test/reader_source.sh
 	./test/dependencies.sh
@@ -369,6 +370,7 @@ test-core: $(BIN)
 	bash ./test/closure_captures.sh
 	bash ./test/async.sh
 	./test/stdlib_source.sh
+	bash ./test/api_names.sh
 	bash ./test/encoding.sh
 	bash ./test/encoding_symbols.sh
 	bash ./test/encoding_outputs.sh

@@ -1,15 +1,16 @@
 // stdlib phase 2: File and Dir — statics, handles, positional I/O, errors.
-// Everything happens inside a scratch dir under Dir.temp(); output is
+// Everything happens inside a scratch dir under Dir.temp_path(); output is
 // deterministic, so run vs build must be byte-identical.
 import std.io
 import std.fs
 import std.os
 import std.path
+import std.time
 
 fn main() {
-    let base: string = "{Dir.temp()}/beans_files_example"
+    let base: string = "{Dir.temp_path()}/beans_files_example"
     Dir.remove_all(base)
-    Dir.make_all("{base}/sub").expect("make_all")
+    Dir.create_all("{base}/sub").expect("create_all")
     io.println("{Dir.exists(base)} {Dir.exists("{base}/nope")}")
 
     let f1: string = "{base}/hello.txt"
@@ -21,7 +22,7 @@ fn main() {
 
     // binary round-trip
     let page: Bytes = new Bytes(32)
-    page.put_u32(0, 7).put_u64(4, 123456789).append_str("tail")
+    page.put_u32(0, 7).put_u64(4, 123456789).append_string("tail")
     fs.write_bytes("{base}/page.bin", page).expect("write_bytes")
     let back: Bytes = fs.read_bytes("{base}/page.bin").expect("read_bytes")
     io.println("{back.len()} {back.get_u32(0)} {back.get_u64(4)}")
@@ -36,8 +37,8 @@ fn main() {
 
     // Path is pure string math — join/parent/base/ext/stem
     let deep: string = path.join(path.join(base, "sub"), "a.txt")
-    io.println("{path.base(deep)} {path.ext(deep)} {path.stem(deep)}")
-    io.println("{path.parent("/a/b/c")} {path.join("a/", "/abs")} {path.ext(".bashrc")}")
+    io.println("{path.name(deep)} {path.extension(deep)} {path.stem(deep)}")
+    io.println("{path.parent("/a/b/c")} {path.join("a/", "/abs")} {path.extension(".bashrc")}")
 
     // copy / rename / remove
     io.println("{fs.copy(f1, "{base}/copy.txt").expect("copy")}")
@@ -54,7 +55,7 @@ fn main() {
     let got: Bytes = f.read_at(4, 4).expect("read_at")
     io.println("{got.get_u32(0)}")
     io.println("{f.size().expect("fsize")} {f.tell()}")
-    io.println("{f.seek_end(0)} {f.seek(2)}")
+    io.println("{f.seek_from_end(0)} {f.seek(2)}")
     let cur: Bytes = f.read(2).expect("cursor read")
     io.println("{cur.get(0)} {cur.get(1)} {f.tell()}")
     f.truncate(8).expect("truncate")
@@ -86,8 +87,8 @@ fn main() {
         some(p) => io.println("set?"),
         none => io.println("unset"),
     }
-    io.println("{os.ticks_ms() >= 0} {os.now_ms() > 0}")
-    os.sleep_ms(1)
+    io.println("{time.monotonic_millis() >= 0} {time.wall_millis() > 0}")
+    time.sleep_millis(1)
     io.eprintln("stderr says hi")
 
     Dir.remove_all(base).expect("cleanup")

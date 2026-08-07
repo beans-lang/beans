@@ -39,26 +39,26 @@ fn main() {
         send_one(messages, Event { label: "from worker", value: 41 })
         return [7, 8]
     })
-    let event: Event = messages.recv().expect("event")
+    let event: Event = messages.receive().expect("event")
     let result: [i64; 2] = sender.join()
     io.println("channel {event.label} {event.value}")
     io.println("thread array {result[0]} {result[1]}")
     messages.close()
-    io.println("channel closed {messages.recv().is_none()}")
+    io.println("channel closed {messages.receive().is_none()}")
 
     let integers: Channel<int> = new Channel(1)
     integers.send(12)
-    let integer: int = integers.recv().or(-1)
+    let integer: int = integers.receive().or(-1)
     io.println("channel int {integer}")
 
     let decimals: Channel<decimal> = new Channel(2)
     decimals.send(1.25)
     decimals.send(2.50)
-    io.println("channel decimal {decimals.recv().or(0.0) + decimals.recv().or(0.0)}")
+    io.println("channel decimal {decimals.receive().or(0.0) + decimals.receive().or(0.0)}")
 
     let guarded: Channel<Result<Pair>> = new Channel(1)
     guarded.send(err("channel error"))
-    match guarded.recv().expect("result") {
+    match guarded.receive().expect("result") {
         ok(pair) => { io.println("bad {pair.left}") },
         err(error) => { io.println("channel result {error.msg}") },
     }

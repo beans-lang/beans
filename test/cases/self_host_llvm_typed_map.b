@@ -11,8 +11,8 @@ fn main() {
     by_key["two"] = Entry { name: "second", score: 2 }
     by_key["one"] = Entry { name: "first2", score: 11 }
     io.println(by_key.len())
-    io.println(by_key.contains("one"))
-    io.println(by_key.contains("zero"))
+    io.println(by_key.contains_key("one"))
+    io.println(by_key.contains_key("zero"))
     let found: Entry = by_key["one"]
     io.println("{found.name}:{found.score}")
 

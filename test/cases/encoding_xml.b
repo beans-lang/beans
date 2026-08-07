@@ -22,11 +22,11 @@ fn escaped_node() -> xml.Node {
         }
         err(_) => {}
     }
-    match xml.Document.new_document().append_element("fallback") {
+    match xml.Document.empty().append_element("fallback") {
         ok(node) => { return node }
         err(_) => {}
     }
-    return xml.Document.new_document().append_element("fallback").expect("node")
+    return xml.Document.empty().append_element("fallback").expect("node")
 }
 
 fn check_parse_error(label: string, text: string) {
@@ -196,7 +196,7 @@ fn main() {
     bom_bad.push(0xef)
     bom_bad.push(0xbb)
     bom_bad.push(0xbf)
-    bom_bad.append_str("<a><b></a>")
+    bom_bad.append_string("<a><b></a>")
     match xml.parse_bytes(bom_bad) {
         ok(_) => io.println("bom mismatch accepted"),
         err(e) => io.println("bom mismatch: {e.msg}"),
@@ -210,7 +210,7 @@ fn main() {
     // defined, and the unknown reference stays literal text
     var permissive: xml.Options = new xml.Options()
     permissive.allow_doctype = true
-    match xml.parse_with("<!DOCTYPE r [<!ENTITY x SYSTEM \"file:///etc/passwd\">]><r>&x;</r>", permissive) {
+    match xml.parse_with_options("<!DOCTYPE r [<!ENTITY x SYSTEM \"file:///etc/passwd\">]><r>&x;</r>", permissive) {
         ok(doc) => {
             for node: xml.Node in doc.nodes() {
                 io.println("permissive {node.kind()}")
@@ -238,7 +238,7 @@ fn main() {
     }
     var spacey: xml.Options = new xml.Options()
     spacey.preserve_space_text = true
-    match xml.parse_with("<a> <b/> </a>", spacey) {
+    match xml.parse_with_options("<a> <b/> </a>", spacey) {
         ok(doc) => {
             match doc.root() {
                 ok(root) => io.println("preserved children {root.children().len()}"),
@@ -253,14 +253,14 @@ fn main() {
     io.println("survivor [{survivor.name()}] [{survivor.text()}]")
 
     // builders: declaration, nesting, attributes, escaping, pretty output
-    let built: xml.Document = xml.Document.new_document()
+    let built: xml.Document = xml.Document.empty()
     built.append_declaration("1.0", "UTF-8").expect("decl")
     built.append_comment(" made by beans ").expect("comment")
     match built.append_element("order") {
         ok(order) => {
-            order.set_attr("id", "7").expect("attr")
-            order.set_attr("note", "a<b&\"c\"").expect("attr")
-            match order.set_attr("id", "8") {
+            order.set_attribute("id", "7").expect("attr")
+            order.set_attribute("note", "a<b&\"c\"").expect("attr")
+            match order.set_attribute("id", "8") {
                 ok(_) => io.println("dup attr accepted"),
                 err(e) => io.println("dup attr {e.kind}"),
             }
@@ -271,7 +271,7 @@ fn main() {
                 }
                 err(e) => io.println("err {e.msg}"),
             }
-            order.append_instruction("target", "data here").expect("pi")
+            order.append_processing_instruction("target", "data here").expect("pi")
         }
         err(e) => io.println("err {e.msg}"),
     }

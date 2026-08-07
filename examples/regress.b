@@ -23,12 +23,12 @@ fn eq_checks() {
     io.println(dm[2.5])
     var fm: Map<float, string> = {}
     fm[0.0] = "zero"
-    io.println("{fm.contains(0.0 - 0.0)}")
+    io.println("{fm.contains_key(0.0 - 0.0)}")
 }
 
 // C1: decimal literals passed to builtins used to arrive as floats in interp
 fn fmt_checks() {
-    io.println(fmt.dec(19.995, 2))
+    io.println(fmt.decimal(19.995, 2))
     var ds: List<decimal> = [1.50]
     ds.push(2.250)
     io.println("{ds} {ds.contains(1.50)}")

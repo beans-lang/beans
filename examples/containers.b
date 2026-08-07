@@ -85,7 +85,7 @@ fn main() {
     io.println(m.keys())
     io.println(m.values())
     m.clear()
-    io.println("{m.len()} {m.contains("one")}")
+    io.println("{m.len()} {m.contains_key("one")}")
 
     var byid: Map<int, string> = {}
     byid[7] = "seven"

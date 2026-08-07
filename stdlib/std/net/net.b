@@ -53,7 +53,7 @@ pub class Address {
 
     /// `127.0.0.1:8080`, or `[::1]:8080` for IPv6 — brackets because an IPv6 host is
     /// full of colons, and that is the form that reads back correctly.
-    pub fn text() -> string {
+    pub fn to_string() -> string {
         if self.is_ipv6() {
             return "[{self.host}]:{self.port}"
         }
@@ -85,7 +85,7 @@ pub class Datagram {
 fn unpack_address(packed: Bytes) -> Address {
     let port: int = packed.get_i64(0)
     let host_len: int = packed.get_i64(8)
-    return new Address(packed.slice(16, 16 + host_len).to_string_full(), port)
+    return new Address(packed.slice(16, 16 + host_len).to_string(), port)
 }
 
 fn unpack_datagram(packed: Bytes) -> Datagram {
@@ -197,13 +197,13 @@ pub unique class TcpStream {
     }
 
     /// The address on the other end.
-    pub fn peer() -> Result<Address> {
+    pub fn peer_address() -> Result<Address> {
         if !self.live { return err("peer: socket is closed", "closed") }
         return ok(unpack_address(sock.address(self.fd, true)?))
     }
 
     /// This socket's own address.
-    pub fn local() -> Result<Address> {
+    pub fn local_address() -> Result<Address> {
         if !self.live { return err("local: socket is closed", "closed") }
         return ok(unpack_address(sock.address(self.fd, false)?))
     }
@@ -245,7 +245,7 @@ pub unique class TcpStream {
     /// The raw descriptor, **borrowed** — for registering with a poller. Never
     /// ownership: closing this number behind the handle's back is exactly the bug
     /// `unique` exists to prevent.
-    pub fn handle() -> int {
+    pub fn poll_handle() -> int {
         return self.fd
     }
 }
@@ -272,11 +272,11 @@ pub unique class TcpListener {
     /// back with `port()`, which is how a test binds without picking a number and
     /// hoping nothing else has it.
     pub static fn bind(host: string, port: int) -> Result<TcpListener> {
-        return TcpListener.bind_backlog(host, port, 128)
+        return TcpListener.bind_with_backlog(host, port, 128)
     }
 
     /// Listens with a specific accept-queue depth.
-    pub static fn bind_backlog(host: string, port: int, depth: int) -> Result<TcpListener> {
+    pub static fn bind_with_backlog(host: string, port: int, depth: int) -> Result<TcpListener> {
         return ok(new TcpListener(sock.listen(host, port, depth)?))
     }
 
@@ -296,14 +296,14 @@ pub unique class TcpListener {
 
     /// The address it is listening on. Read this after binding port 0 to learn which
     /// port the system picked.
-    pub fn local() -> Result<Address> {
+    pub fn local_address() -> Result<Address> {
         if !self.live { return err("local: socket is closed", "closed") }
         return ok(unpack_address(sock.address(self.fd, false)?))
     }
 
-    /// The port it is listening on. The short form of `local()`.
+    /// The port it is listening on. The short form of `local_address()`.
     pub fn port() -> Result<int> {
-        return ok(self.local()?.port)
+        return ok(self.local_address()?.port)
     }
 
     pub fn set_nonblocking(on: bool) -> Result<bool> {
@@ -318,7 +318,7 @@ pub unique class TcpListener {
     }
 
     /// The raw descriptor, borrowed — for a poller.
-    pub fn handle() -> int {
+    pub fn poll_handle() -> int {
         return self.fd
     }
 }
@@ -362,14 +362,14 @@ pub unique class UdpSocket {
     }
 
     /// This socket's own address. Read it after binding port 0.
-    pub fn local() -> Result<Address> {
+    pub fn local_address() -> Result<Address> {
         if !self.live { return err("local: socket is closed", "closed") }
         return ok(unpack_address(sock.address(self.fd, false)?))
     }
 
     /// The port it is bound to.
     pub fn port() -> Result<int> {
-        return ok(self.local()?.port)
+        return ok(self.local_address()?.port)
     }
 
     pub fn set_timeouts(read_ms: int, write_ms: int) -> Result<bool> {
@@ -389,7 +389,7 @@ pub unique class UdpSocket {
     }
 
     /// The raw descriptor, borrowed — for a poller.
-    pub fn handle() -> int {
+    pub fn poll_handle() -> int {
         return self.fd
     }
 }
@@ -400,15 +400,15 @@ pub unique class UdpSocket {
 // `MMap.open`. So it is `TcpListener.bind(...)`, not `net.listen(...)`.
 
 /// Suspends the calling async function until `handle` has data to read (or a
-/// connection to accept). The handle comes from `.handle()` on a socket — or is
-/// any readable descriptor, a pipe included. Level-triggered: if data is
+/// connection to accept). The handle comes from `.poll_handle()` on a socket —
+/// or is any readable descriptor, a pipe included. Level-triggered: if data is
 /// already there, this completes on the spot.
 ///
 /// The body below never runs: the async expander lowers a call to this into a
 /// parked readiness await on the hidden reactor, which the driver blocks on —
 /// no busy spin.
-pub async fn await_readable(handle: int) -> bool { return true }
+pub async fn readable(handle: int) -> bool { return true }
 
 /// Suspends the calling async function until `handle` has room to write.
-/// Otherwise exactly `await_readable`.
-pub async fn await_writable(handle: int) -> bool { return true }
+/// Otherwise exactly `readable`.
+pub async fn writable(handle: int) -> bool { return true }

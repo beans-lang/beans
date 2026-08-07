@@ -18,20 +18,20 @@ fn main() {
     io.println(fmt.float(3.14159, 2))
     io.println(fmt.float(-0.125, 4))
     let d: decimal = 19.995
-    io.println("{fmt.dec(d, 2)} {fmt.dec(d, 5)}")
+    io.println("{fmt.decimal(d, 2)} {fmt.decimal(d, 5)}")
     let w: decimal = 7
-    io.println(fmt.dec(w, 3))
+    io.println(fmt.decimal(w, 3))
     io.println("{fmt.hex(255)} {fmt.hex(-1)} {fmt.hex(0)}")
-    io.println("{fmt.bin(5)} {fmt.bin(0)}")
-    io.println(fmt.group(1234567, ","))
-    io.println("{fmt.group(-42, "_")} {fmt.group(123, " ")} {fmt.group(0, ",")}")
+    io.println("{fmt.binary(5)} {fmt.binary(0)}")
+    io.println(fmt.group_digits(1234567, ","))
+    io.println("{fmt.group_digits(-42, "_")} {fmt.group_digits(123, " ")} {fmt.group_digits(0, ",")}")
 
     // a right-aligned table, the way fmt is meant to be used
     let items: List<string> = ["nails", "hammers", "glue"]
     let counts: List<int> = [12040, 7, 331]
     var i: int = 0
     for i < items.len() {
-        io.println("{fmt.pad_right(items[i], 10)}{fmt.pad_left(fmt.group(counts[i], ","), 8)}")
+        io.println("{fmt.pad_right(items[i], 10)}{fmt.pad_left(fmt.group_digits(counts[i], ","), 8)}")
         i += 1
     }
 

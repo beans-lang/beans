@@ -49,5 +49,5 @@ fn main() {
         Pair { left: 7, right: 8 })] = 78
     enums[Key.event(event("same", 9))] = 9
 
-    io.println("maps {decimals[2.5]} {floats.contains(0.0 - 0.0)} {optional[same]} {optional[none]} {pairs[Pair { left: 1, right: 2 }].label} {pairs.contains(Pair { left: 3, right: 4 })} {pair_keys.len()} {arrays[[5, 6]]} {enums[Key.pair(Pair { left: 7, right: 8 })]} {enums.contains(Key.event(event("SAME".to_lower(), 9)))}")
+    io.println("maps {decimals[2.5]} {floats.contains_key(0.0 - 0.0)} {optional[same]} {optional[none]} {pairs[Pair { left: 1, right: 2 }].label} {pairs.contains_key(Pair { left: 3, right: 4 })} {pair_keys.len()} {arrays[[5, 6]]} {enums[Key.pair(Pair { left: 7, right: 8 })]} {enums.contains_key(Key.event(event("SAME".to_lower(), 9)))}")
 }

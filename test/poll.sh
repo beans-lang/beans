@@ -70,7 +70,7 @@ fn go() -> Result<bool> {
     let session: net.TcpStream = server.accept_timeout(2000)?
     client.write_text("ready")?
     let watch: poll.Poller = poll.Poller.open()?
-    watch.add(session.handle(), 71, poll.Interest.read_only())?
+    watch.add(session.poll_handle(), 71, poll.Interest.read_only())?
     var readable: bool = false
     var rounds: int = 0
     for !readable && rounds < 20 {
@@ -80,7 +80,7 @@ fn go() -> Result<bool> {
         }
         rounds += 1
     }
-    watch.modify(session.handle(), 71, poll.Interest.both())?
+    watch.modify(session.poll_handle(), 71, poll.Interest.both())?
     watch.wake()?
     let one: List<poll.Event> = watch.wait(1, 500)?
     let event: poll.Event = one.get(0).or(new poll.Event())
@@ -100,8 +100,8 @@ fn duplicate_tokens() -> Result<bool> {
     first_client.write_text("one")?
     second_client.write_text("two")?
     let watch: poll.Poller = poll.Poller.open()?
-    watch.add(first.handle(), 1, poll.Interest.read_only())?
-    watch.add(second.handle(), 2, poll.Interest.read_only())?
+    watch.add(first.poll_handle(), 1, poll.Interest.read_only())?
+    watch.add(second.poll_handle(), 2, poll.Interest.read_only())?
     var first_ready: bool = false
     var second_ready: bool = false
     var rounds: int = 0
@@ -113,8 +113,8 @@ fn duplicate_tokens() -> Result<bool> {
         }
         rounds += 1
     }
-    watch.modify(first.handle(), 99, poll.Interest.read_only())?
-    watch.modify(second.handle(), 99, poll.Interest.read_only())?
+    watch.modify(first.poll_handle(), 99, poll.Interest.read_only())?
+    watch.modify(second.poll_handle(), 99, poll.Interest.read_only())?
     let ready: List<poll.Event> = watch.wait(2, 500)?
     return ok(ready.len() == 2)
 }
@@ -179,7 +179,7 @@ fi
 echo "checking wake works from another thread, safely"
 # This is the poller's main job: a worker telling a blocked waiter to stop. A `Poller`
 # cannot cross thread.spawn — every class is a local ARC reference, so only a scalar can —
-# which is what signal_handle() is for.
+# which is what wake_handle() is for.
 #
 # It is deliberately not the descriptor. A stale descriptor would write a stray byte into
 # whatever inherited that number, so the handle names a slot and a generation and a wake
@@ -193,7 +193,7 @@ import std.time
 
 fn threaded() -> Result<int> {
     let watch: poll.Poller = poll.Poller.open()?
-    let signal: int = watch.signal_handle()
+    let signal: int = watch.wake_handle()
     let started: int = time.monotonic_nanos()
     let helper: Thread<bool> = thread.spawn(fn() -> bool {
         time.sleep_nanos(200000000)
@@ -212,7 +212,7 @@ fn threaded() -> Result<int> {
 fn stale_handles() -> Result<int> {
     var signal: int = 0
     let first: poll.Poller = poll.Poller.open()?
-    signal = first.signal_handle()
+    signal = first.wake_handle()
     io.println("a live handle wakes {poll.wake(signal).or(false)}")
     first.close()?
     match poll.wake(signal) {
@@ -230,7 +230,7 @@ fn stale_handles() -> Result<int> {
     // A new poller reuses the freed slot, and must get a different handle — otherwise
     // the old one would silently start waking the new poller.
     let second: poll.Poller = poll.Poller.open()?
-    io.println("a reused slot gets a new handle {second.signal_handle() != signal}")
+    io.println("a reused slot gets a new handle {second.wake_handle() != signal}")
     match poll.wake(signal) {
         ok(sent) => io.println("the old handle unexpectedly reached the new poller"),
         err(e) => io.println("the old handle is still refused: {e.kind}"),
@@ -309,8 +309,8 @@ fn go() -> Result<int> {
     for i < 600 {
         let c: net.TcpStream = net.TcpStream.connect("127.0.0.1", port)?
         let s: net.TcpStream = server.accept_timeout(2000)?
-        if s.handle() > highest { highest = s.handle() }
-        if c.handle() > highest { highest = c.handle() }
+        if s.poll_handle() > highest { highest = s.poll_handle() }
+        if c.poll_handle() > highest { highest = c.poll_handle() }
         held.push(move c)
         held.push(move s)
         i += 1
@@ -319,8 +319,8 @@ fn go() -> Result<int> {
     // Now watch a fresh high-numbered pair and prove readiness still works there.
     let last_client: net.TcpStream = net.TcpStream.connect("127.0.0.1", port)?
     let last_session: net.TcpStream = server.accept_timeout(2000)?
-    io.println("the watched one is high too {last_session.handle() > 1024}")
-    watch.add(last_session.handle(), 900, poll.Interest.read_only())?
+    io.println("the watched one is high too {last_session.poll_handle() > 1024}")
+    watch.add(last_session.poll_handle(), 900, poll.Interest.read_only())?
     last_client.write_text("high")?
     var saw: bool = false
     var rounds: int = 0
@@ -363,7 +363,7 @@ fn go() -> Result<int> {
     let server: net.TcpListener = net.TcpListener.bind("127.0.0.1", 0)?
     let client: net.TcpStream = net.TcpStream.connect("127.0.0.1", server.port()?)?
     var session: net.TcpStream = server.accept_timeout(2000)?
-    watch.add(session.handle(), 500, poll.Interest.read_only())?
+    watch.add(session.poll_handle(), 500, poll.Interest.read_only())?
     client.write_text("data")?
 
     var saw: bool = false
@@ -379,7 +379,7 @@ fn go() -> Result<int> {
 
     // Remove first, then close. This is the documented order, and the reason is that a
     // token outlives the fd number it was registered against.
-    watch.remove(session.handle())?
+    watch.remove(session.poll_handle())?
     session.close()?
     let after: List<poll.Event> = watch.wait(8, 100)?
     io.println("silent after remove and close {after.len() == 0}")
@@ -389,7 +389,7 @@ fn go() -> Result<int> {
     // batch you are part-way through handling.
     let second_client: net.TcpStream = net.TcpStream.connect("127.0.0.1", server.port()?)?
     var second: net.TcpStream = server.accept_timeout(2000)?
-    watch.add(second.handle(), 501, poll.Interest.read_only())?
+    watch.add(second.poll_handle(), 501, poll.Interest.read_only())?
     second_client.write_text("more")?
     second.close()?
     let orphaned: List<poll.Event> = watch.wait(8, 100)?
@@ -398,7 +398,7 @@ fn go() -> Result<int> {
     // Removing something that was never registered is success, not an error: it is the
     // state the caller asked for.
     let third: net.TcpStream = net.TcpStream.connect("127.0.0.1", server.port()?)?
-    io.println("removing an unregistered descriptor is fine {watch.remove(third.handle()).or(false)}")
+    io.println("removing an unregistered descriptor is fine {watch.remove(third.poll_handle()).or(false)}")
     return ok(1)
 }
 fn main() {
@@ -433,7 +433,7 @@ fn go() -> Result<int> {
     for i < 40 {
         var c: net.TcpStream = net.TcpStream.connect("127.0.0.1", port)?
         let s: net.TcpStream = server.accept_timeout(2000)?
-        watch.add(s.handle(), 600 + i, poll.Interest.read_only())?
+        watch.add(s.poll_handle(), 600 + i, poll.Interest.read_only())?
         c.write_text("x")?
         held.push(move c)
         held.push(move s)

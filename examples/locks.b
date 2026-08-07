@@ -11,7 +11,7 @@ import std.io
 import std.fs
 
 fn main() {
-    let p: string = "{Dir.temp()}/beans_locks_example.dat"
+    let p: string = "{Dir.temp_path()}/beans_locks_example.dat"
     fs.write(p, "guarded").expect("seed")
 
     let writer: File = File.open(p, "rw").expect("open writer")

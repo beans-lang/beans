@@ -5,7 +5,7 @@ import std.io
 import std.fs
 
 fn main() {
-    let p: string = "{Dir.temp()}/beans_mmap_example.dat"
+    let p: string = "{Dir.temp_path()}/beans_mmap_example.dat"
     fs.write_bytes(p, new Bytes(64)).expect("seed")
 
     let m: MMap = MMap.open(p, true).expect("open rw")
@@ -13,7 +13,7 @@ fn main() {
     m.put_u32(0, 4096).put_u64(8, 123456789).put_u8(16, 255)
     io.println("{m.get_u32(0)} {m.get_u64(8)} {m.get_u8(16)}")
     m.write(20, Bytes.from("hello"))
-    io.println(m.read(20, 5).to_string())
+    io.println(m.read(20, 5).to_string_until_nul())
     m.flush_range(0, 24).expect("flush_range")
     m.flush().expect("flush")
     m.close().expect("close")
@@ -24,7 +24,7 @@ fn main() {
 
     // the writes are durable: a fresh read-only map sees them
     let r: MMap = MMap.open(p, false).expect("open ro")
-    io.println("{r.get_u32(0)} {r.read(20, 5).to_string()}")
+    io.println("{r.get_u32(0)} {r.read(20, 5).to_string_until_nul()}")
     match r.flush_range(60, 10) {
         ok(x) => io.println("flushed?"),
         err(e) => io.println("{e.kind}: {e.msg}"),
@@ -33,7 +33,7 @@ fn main() {
         ok(x) => io.println("resized read-only?"),
         err(e) => io.println("{e.kind}: {e.msg}"),
     }
-    match MMap.open("{Dir.temp()}/beans_no_such.dat", false) {
+    match MMap.open("{Dir.temp_path()}/beans_no_such.dat", false) {
         ok(x) => io.println("opened?"),
         err(e) => io.println("kind {e.kind}"),
     }

@@ -4,6 +4,6 @@ fn go() -> Result<int> {
     var cmd: process.Command = new process.Command("/bin/sh")
     let child: process.Child = cmd.start()?
     let alias: process.Child = child
-    return ok(alias.id())
+    return ok(alias.process_id())
 }
 fn main() { let x: Result<int> = go() }

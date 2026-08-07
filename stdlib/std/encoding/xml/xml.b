@@ -179,7 +179,7 @@ fn node_name(handle: int) -> string {
         let view: RawPtr<u8> = RawPtr.from_address(block as u64)
         beans_enc_xml_name_copy(handle, view)
     }
-    let text: string = bytes_from_raw(block, length).to_string_full()
+    let text: string = bytes_from_raw(block, length).to_string()
     free_raw(block)
     return text
 }
@@ -195,7 +195,7 @@ fn node_value(handle: int) -> string {
         let view: RawPtr<u8> = RawPtr.from_address(block as u64)
         beans_enc_xml_value_copy(handle, view)
     }
-    let text: string = bytes_from_raw(block, length).to_string_full()
+    let text: string = bytes_from_raw(block, length).to_string()
     free_raw(block)
     return text
 }
@@ -382,14 +382,14 @@ pub class Node {
         return append_under(self.owner, self.handle, 4, "", value)
     }
 
-    pub fn append_instruction(name: string, value: string) -> Result<Node> {
+    pub fn append_processing_instruction(name: string, value: string) -> Result<Node> {
         return append_under(self.owner, self.handle, 5, name, value)
     }
 
     /// Adds one attribute. A duplicate qualified name on the same element is
     /// refused: parsed documents may carry duplicates (reported in order by
     /// `attributes()`), but building one on purpose is almost always a bug.
-    pub fn set_attr(name: string, value: string) -> Result<bool> {
+    pub fn set_attribute(name: string, value: string) -> Result<bool> {
         match self.attribute(name) {
             some(_) => {
                 return err("attribute {name} is already set on this element", "exists")
@@ -426,10 +426,10 @@ fn packed_text(view: RawPtr<u64>, cursor: int, len: int) -> string {
     unsafe {
         address = view.offset(cursor).address() as int
     }
-    return bytes_from_raw(address, len).to_string_full()
+    return bytes_from_raw(address, len).to_string()
 }
 
-/// A whole XML document. Parse one, or build one from `new_document()`.
+/// A whole XML document. Parse one, or build one from `Document.empty()`.
 pub class Document {
     owner: DocOwner
     root_handle: int
@@ -440,7 +440,7 @@ pub class Document {
     }
 
     /// An empty document to build into.
-    pub static fn new_document() -> Document {
+    pub static fn empty() -> Document {
         var handle: int = 0
         unsafe {
             handle = beans_enc_xml_new_doc()
@@ -493,7 +493,7 @@ pub class Document {
         return append_under(self.owner, 0, 4, "", value)
     }
 
-    pub fn append_instruction(name: string, value: string) -> Result<Node> {
+    pub fn append_processing_instruction(name: string, value: string) -> Result<Node> {
         return append_under(self.owner, 0, 5, name, value)
     }
 
@@ -501,9 +501,9 @@ pub class Document {
     /// encoding attribute.
     pub fn append_declaration(version: string, encoding: string) -> Result<Node> {
         let node: Node = append_under(self.owner, 0, 6, "", "")?
-        node.set_attr("version", version)?
+        node.set_attribute("version", version)?
         if encoding != "" {
-            node.set_attr("encoding", encoding)?
+            node.set_attribute("encoding", encoding)?
         }
         return ok(node)
     }
@@ -587,11 +587,11 @@ pub fn parse_bytes(data: Bytes) -> Result<Document> {
     return parse_data(data, new Options())
 }
 
-pub fn parse_with(text: string, options: Options) -> Result<Document> {
+pub fn parse_with_options(text: string, options: Options) -> Result<Document> {
     return parse_data(Bytes.from(text), options)
 }
 
-pub fn parse_bytes_with(data: Bytes, options: Options) -> Result<Document> {
+pub fn parse_bytes_with_options(data: Bytes, options: Options) -> Result<Document> {
     return parse_data(data, options)
 }
 
@@ -624,7 +624,7 @@ fn write_document(document: Document, mode: int, indent: string) -> Result<strin
         let view: RawPtr<u8> = RawPtr.from_address(block as u64)
         beans_enc_xml_take_buf(buffer, length, view)
     }
-    let text: string = bytes_from_raw(block, length).to_string_full()
+    let text: string = bytes_from_raw(block, length).to_string()
     free_raw(block)
     return ok(text)
 }

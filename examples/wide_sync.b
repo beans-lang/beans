@@ -33,7 +33,7 @@ fn dead_event() -> Weak<Event> {
     let shared: Shared<Event> = share(Event { label: "short", value: 3 })
     let weak: Weak<Event> = shared.downgrade()
     let value: Event = shared.get()
-    io.println("weak live {value.label} {weak.expired()}")
+    io.println("weak live {value.label} {weak.is_expired()}")
     return weak
 }
 
@@ -41,7 +41,7 @@ fn make_mutex_cycle() {
     let target: Box<Option<MutexOwner>> = new Box(none)
     let mutex: Mutex<MutexEdge> = new Mutex(MutexEdge { target: move target })
     let owner: MutexOwner = new MutexOwner(mutex)
-    owner.guard.with(fn(edge: MutexEdge) {
+    owner.guard.with_lock(fn(edge: MutexEdge) {
         edge.target.set(some(owner))
     })
 }
@@ -57,20 +57,20 @@ fn main() {
     io.println("shared values {numbers[0]} {numbers[1]} {amount.get() + 0.01}")
 
     let weak: Weak<Event> = dead_event()
-    io.println("weak dead {weak.expired()} {weak.upgrade().is_none()}")
+    io.println("weak dead {weak.is_expired()} {weak.upgrade().is_none()}")
 
     let mutex: Mutex<Event> = guard(Event { label: "locked", value: 9 })
-    mutex.with(fn(value: Event) {
+    mutex.with_lock(fn(value: Event) {
         io.println("mutex {value.label} {value.value}")
     })
 
     let decimal_mutex: Mutex<decimal> = new Mutex(2.50)
-    decimal_mutex.with(fn(value: decimal) {
+    decimal_mutex.with_lock(fn(value: decimal) {
         io.println("mutex decimal {value + 0.25}")
     })
 
     let result_mutex: Mutex<Result<Pair>> = new Mutex(err("guarded error"))
-    result_mutex.with(fn(value: Result<Pair>) {
+    result_mutex.with_lock(fn(value: Result<Pair>) {
         match value {
             ok(pair) => { io.println("bad {pair.left}") },
             err(error) => { io.println("mutex result {error.msg}") },

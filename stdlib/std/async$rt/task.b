@@ -16,7 +16,7 @@
 // This file is the profile-free core: no imports, no descriptors, no
 // poller. Everything that touches readiness lives in reactor.b beside
 // it, and the loader only reads that file when the program can reach
-// net.await_readable / net.await_writable — a pure-compute async
+// net.readable / net.writable — a pure-compute async
 // program links under every runtime profile because nothing here
 // references a poller symbol.
 

@@ -97,7 +97,7 @@ class CHeaderRenderer {
                     declaration.qualified
             }
         }
-        if !self.selected.contains(
+        if !self.selected.contains_key(
                declaration.qualified) {
             self.selected[
                 declaration.qualified] = true
@@ -130,7 +130,7 @@ class CHeaderRenderer {
                     return false
                 }
                 if declaration.is_opaque ||
-                   self.collecting.contains(
+                   self.collecting.contains_key(
                        declaration.qualified) {
                     return true
                 }
@@ -237,11 +237,11 @@ class CHeaderRenderer {
     fn emit_record(
         declaration: HirDeclaration) -> string {
         if declaration.is_opaque ||
-           self.emitted.contains(
+           self.emitted.contains_key(
                declaration.qualified) {
             return ""
         }
-        if self.emitting.contains(
+        if self.emitting.contains_key(
                declaration.qualified) {
             self.error =
                 "recursive C record '{declaration.name}' has no finite definition"
@@ -309,7 +309,7 @@ class CHeaderRenderer {
                 return err(
                     "C export symbol '{function.extern_name}' cannot be written in a C header")
             }
-            if symbols.contains(
+            if symbols.contains_key(
                    function.extern_name) {
                 return err(
                     "C export symbol '{function.extern_name}' is defined more than once")

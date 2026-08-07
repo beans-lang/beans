@@ -12,7 +12,7 @@ pub fn read_bytes(path: string) -> Result<Bytes> {
 
 pub fn read(path: string) -> Result<string> {
     let data: Bytes = read_bytes(path)?
-    return ok(data.to_string_full())
+    return ok(data.to_string())
 }
 
 pub fn write_bytes(path: string, data: Bytes) -> Result<int> {

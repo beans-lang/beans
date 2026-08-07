@@ -20,8 +20,8 @@ class Tracer {
 
 fn main() {
     let numbers: Arena<int> = new Arena<int>(4)
-    let first: int = numbers.put(10)
-    let second: int = numbers.put(20)
+    let first: int = numbers.add(10)
+    let second: int = numbers.add(20)
     io.println("len {numbers.len()}")
     io.println("{numbers.get(first).or(-1)} {numbers.get(second).or(-1)}")
     io.println("{numbers.get(99).or(-1)}")
@@ -29,7 +29,7 @@ fn main() {
     io.println("cleared {numbers.len()}")
 
     let names: Arena<string> = new Arena<string>(2)
-    let n0: int = names.put("alpha")
+    let n0: int = names.add("alpha")
     io.println("{names.get(n0).or("missing")}")
     io.println("{names.get(5).or("missing")}")
 
@@ -44,7 +44,7 @@ fn main() {
     io.println("{label.get()}")
 
     let owned: Arena<Tracer> = new Arena<Tracer>(2)
-    let t0: int = owned.put(new Tracer("kept"))
+    let t0: int = owned.add(new Tracer("kept"))
     io.println("put done")
     match owned.get(t0) {
         some(found) => { io.println("found {found.name}") }

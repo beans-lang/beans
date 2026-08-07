@@ -10,7 +10,7 @@ class KV {
     pub path: string = ""
 
     pub static fn open_in(dir: string) -> Result<KV> {
-        Dir.make_all(dir)?
+        Dir.create_all(dir)?
         let store: KV = new KV()
         store.dir = dir
         store.path = "{dir}/kv.dat"
@@ -20,7 +20,7 @@ class KV {
     pub fn set(key: string, value: string) -> Result<int> {
         var rec: Bytes = new Bytes(8)
         rec.put_u32(0, key.len()).put_u32(4, value.len())
-        rec.append_str(key).append_str(value)
+        rec.append_string(key).append_string(value)
         return fs.append_bytes(self.path, rec)
     }
 
@@ -37,9 +37,9 @@ class KV {
             if pos + 8 + kl + vl > data.len() {
                 break
             }
-            let k: string = data.slice(pos + 8, pos + 8 + kl).to_string()
+            let k: string = data.slice(pos + 8, pos + 8 + kl).to_string_until_nul()
             if k == key {
-                found = data.slice(pos + 8 + kl, pos + 8 + kl + vl).to_string()
+                found = data.slice(pos + 8 + kl, pos + 8 + kl + vl).to_string_until_nul()
                 have = true
             }
             pos = pos + 8 + kl + vl
@@ -67,8 +67,8 @@ class KV {
             if pos + 8 + kl + vl > data.len() {
                 break
             }
-            let k: string = data.slice(pos + 8, pos + 8 + kl).to_string()
-            let v: string = data.slice(pos + 8 + kl, pos + 8 + kl + vl).to_string()
+            let k: string = data.slice(pos + 8, pos + 8 + kl).to_string_until_nul()
+            let v: string = data.slice(pos + 8 + kl, pos + 8 + kl + vl).to_string_until_nul()
             if !names.contains(k) {
                 names.push(k)
             }
@@ -83,7 +83,7 @@ class KV {
             let v: string = latest[k]
             var rec: Bytes = new Bytes(8)
             rec.put_u32(0, k.len()).put_u32(4, v.len())
-            rec.append_str(k).append_str(v)
+            rec.append_string(k).append_string(v)
             out.append(rec)
             i += 1
         }
@@ -100,7 +100,7 @@ class KV {
 }
 
 fn main() {
-    let base: string = "{Dir.temp()}/beans_kv_example"
+    let base: string = "{Dir.temp_path()}/beans_kv_example"
     Dir.remove_all(base)
 
     let kv: KV = KV.open_in(base).expect("open")

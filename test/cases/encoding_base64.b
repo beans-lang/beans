@@ -9,7 +9,7 @@ import std.encoding.base64
 
 fn show_decode(label: string, outcome: Result<Bytes>) {
     match outcome {
-        ok(data) => io.println("{label}: ok [{data.to_string_full()}]"),
+        ok(data) => io.println("{label}: ok [{data.to_string()}]"),
         err(e) => io.println("{label}: {e.kind} - {e.msg}"),
     }
 }
@@ -21,7 +21,7 @@ fn main() {
         let encoded: string = base64.encode(Bytes.from(vector))
         var back: string = ""
         match base64.decode(encoded) {
-            ok(data) => { back = data.to_string_full() }
+            ok(data) => { back = data.to_string() }
             err(e) => { back = "err {e.kind}" }
         }
         let verdict: string = if back == vector { "ok" } else { "MISMATCH" }

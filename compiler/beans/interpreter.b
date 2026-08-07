@@ -469,7 +469,7 @@ class TreeFrame {
 
     fn assign(binding: int,
               value: TreeValue) -> bool {
-        if self.values.contains(binding) {
+        if self.values.contains_key(binding) {
             let current: TreeValue =
                 self.values[binding]
             if current.kind == "reference" {
@@ -2491,7 +2491,7 @@ class TreeInterpreter {
                                 format.places)
                         } else if value.kind ==
                                       "decimal" {
-                            piece = host_fmt.dec(
+                            piece = host_fmt.decimal(
                                 value.decimal_data,
                                 format.places)
                         }
@@ -3113,7 +3113,7 @@ class TreeInterpreter {
                         node))
             let handle: Thread<int> =
                 host_thread.spawn(fn() -> int {
-                    work.with(
+                    work.with_lock(
                         fn(state: TreeThreadWork) {
                             state.run()
                         })
@@ -3159,20 +3159,6 @@ class TreeInterpreter {
                 }
             }
         }
-        if node.resolved == "std.os.now_ms" {
-            return TreeValue.integer(
-                host_os.now_ms())
-        }
-        if node.resolved == "std.os.ticks_ms" {
-            return TreeValue.integer(
-                host_os.ticks_ms())
-        }
-        if node.resolved == "std.os.sleep_ms" &&
-           arguments.len() == 1 {
-            host_os.sleep_ms(
-                arguments[0].int_data)
-            return TreeValue.unit()
-        }
         if node.resolved == "std.os.exit" &&
            arguments.len() == 1 {
             host_os.exit(
@@ -3191,6 +3177,21 @@ class TreeInterpreter {
         if node.resolved == "std.time.sleep_nanos" &&
            arguments.len() == 1 {
             host_time.sleep_nanos(
+                arguments[0].int_data)
+            return TreeValue.unit()
+        }
+        if node.resolved ==
+               "std.time.monotonic_millis" {
+            return TreeValue.integer(
+                host_time.monotonic_millis())
+        }
+        if node.resolved == "std.time.wall_millis" {
+            return TreeValue.integer(
+                host_time.wall_millis())
+        }
+        if node.resolved == "std.time.sleep_millis" &&
+           arguments.len() == 1 {
+            host_time.sleep_millis(
                 arguments[0].int_data)
             return TreeValue.unit()
         }
@@ -3739,10 +3740,10 @@ class TreeInterpreter {
                     arguments[0].float_data,
                     arguments[1].int_data))
         }
-        if node.resolved == "std.fmt.dec" &&
+        if node.resolved == "std.fmt.decimal" &&
            arguments.len() == 2 {
             return TreeValue.string(
-                host_fmt.dec(
+                host_fmt.decimal(
                     arguments[0].decimal_data,
                     arguments[1].int_data))
         }
@@ -4013,9 +4014,9 @@ class TreeInterpreter {
                     "Bytes append source"))
             return some(receiver)
         }
-        if node.value == "append_str" &&
+        if node.value == "append_string" &&
            arguments.len() == 2 {
-            data.append_str(arguments[1].text)
+            data.append_string(arguments[1].text)
             return some(receiver)
         }
         if node.value == "append_i64" &&
@@ -4032,23 +4033,23 @@ class TreeInterpreter {
                 arguments[3].int_data)
             return some(receiver)
         }
+        if node.value == "to_string_until_nul" {
+            return some(TreeValue.string(
+                data.to_string_until_nul()))
+        }
         if node.value == "to_string" {
             return some(TreeValue.string(
                 data.to_string()))
         }
-        if node.value == "to_string_full" {
-            return some(TreeValue.string(
-                data.to_string_full()))
-        }
-        if node.value == "append_varint" &&
+        if node.value == "append_uvarint" &&
            arguments.len() == 2 {
-            data.append_varint(arguments[1].int_data)
+            data.append_uvarint(arguments[1].int_data)
             return some(receiver)
         }
-        if node.value == "get_varint" &&
+        if node.value == "get_uvarint" &&
            arguments.len() == 2 {
             return some(TreeValue.integer(
-                data.get_varint(
+                data.get_uvarint(
                     arguments[1].int_data)))
         }
         if node.value == "crc32" &&
@@ -4559,24 +4560,24 @@ class TreeInterpreter {
                     arguments[0].text,
                     arguments[1].text)))
         }
-        if node.resolved == "Dir.temp" {
+        if node.resolved == "Dir.temp_path" {
             return some(TreeValue.string(
-                Dir.temp()))
+                Dir.temp_path()))
         }
         if node.resolved == "Dir.exists" &&
            arguments.len() == 1 {
             return some(TreeValue.boolean(
                 Dir.exists(arguments[0].text)))
         }
-        if node.resolved == "Dir.make" &&
+        if node.resolved == "Dir.create" &&
            arguments.len() == 1 {
             return some(self.host_bool_result(
-                Dir.make(arguments[0].text)))
+                Dir.create(arguments[0].text)))
         }
-        if node.resolved == "Dir.make_all" &&
+        if node.resolved == "Dir.create_all" &&
            arguments.len() == 1 {
             return some(self.host_bool_result(
-                Dir.make_all(arguments[0].text)))
+                Dir.create_all(arguments[0].text)))
         }
         if node.resolved == "Dir.list" &&
            arguments.len() == 1 {
@@ -4610,19 +4611,19 @@ class TreeInterpreter {
                     arguments[0].text,
                     arguments[1].bool_data)))
         }
-        if node.resolved == "MMap.open_shared" &&
+        if node.resolved == "MMap.open_shared_memory" &&
            arguments.len() == 3 {
             return some(self.host_mmap_result(
-                MMap.open_shared(
+                MMap.open_shared_memory(
                     arguments[0].text,
                     arguments[1].int_data,
                     arguments[2].bool_data)))
         }
         if node.resolved ==
-               "MMap.unlink_shared" &&
+               "MMap.unlink_shared_memory" &&
            arguments.len() == 1 {
             return some(self.host_bool_result(
-                MMap.unlink_shared(
+                MMap.unlink_shared_memory(
                     arguments[0].text)))
         }
         return none
@@ -4671,10 +4672,10 @@ class TreeInterpreter {
             return some(TreeValue.integer(
                 file.seek(arguments[1].int_data)))
         }
-        if node.value == "seek_end" &&
+        if node.value == "seek_from_end" &&
            arguments.len() == 2 {
             return some(TreeValue.integer(
-                file.seek_end(
+                file.seek_from_end(
                     arguments[1].int_data)))
         }
         if node.value == "tell" {
@@ -5013,7 +5014,7 @@ class TreeInterpreter {
                 fn(result: RawPtr<u8>,
                    callback_arguments:
                        RawPtr<RawPtr<u8> >) {
-                    state.with(
+                    state.with_lock(
                         fn(value: TreeStoredState) {
                             let owner:
                                 TreeInterpreter =
@@ -5462,7 +5463,7 @@ class TreeInterpreter {
                            "atomic_load" {
                         var result: TreeValue =
                             TreeValue.unit()
-                        memory.atomic_guard.with(
+                        memory.atomic_guard.with_lock(
                             fn(locked: bool) {
                                 result =
                                     self.memory_read_value(
@@ -5517,7 +5518,7 @@ class TreeInterpreter {
                 some(memory) => {
                     if node.value ==
                            "atomic_store" {
-                        memory.atomic_guard.with(
+                        memory.atomic_guard.with_lock(
                             fn(locked: bool) {
                                 self.memory_write_value(
                                     node, memory,
@@ -5650,7 +5651,7 @@ class TreeInterpreter {
                 some(memory) => {
                     var old: TreeValue =
                         TreeValue.unit()
-                    memory.atomic_guard.with(
+                    memory.atomic_guard.with_lock(
                         fn(locked: bool) {
                             old =
                                 self.memory_read_value(
@@ -5702,7 +5703,7 @@ class TreeInterpreter {
                     node, receiver) {
                 some(memory) => {
                     var equal: bool = false
-                    memory.atomic_guard.with(
+                    memory.atomic_guard.with_lock(
                         fn(locked: bool) {
                             let old: TreeValue =
                                 self.memory_read_value(
@@ -5737,7 +5738,7 @@ class TreeInterpreter {
             TreeValue.unit()
         match receiver.mutex_cell {
             some(cell) => {
-                cell.with(fn(state: TreeMutexCell) {
+                cell.with_lock(fn(state: TreeMutexCell) {
                     result =
                         tree_value_copy(state.value)
                 })
@@ -5752,7 +5753,7 @@ class TreeInterpreter {
         value: TreeValue) {
         match receiver.mutex_cell {
             some(cell) => {
-                cell.with(fn(state: TreeMutexCell) {
+                cell.with_lock(fn(state: TreeMutexCell) {
                     state.value =
                         tree_value_copy(value)
                 })
@@ -5769,13 +5770,11 @@ class TreeInterpreter {
            receiver.mutex_cell.is_none() {
             return none
         }
-        if node.value == "load" ||
-           node.value == "get" {
+        if node.value == "load" {
             return some(
                 self.atomic_snapshot(receiver))
         }
-        if (node.value == "store" ||
-            node.value == "set") &&
+        if node.value == "store" &&
            arguments.len() >= 2 {
             self.atomic_replace(
                 receiver, arguments[1])
@@ -5787,7 +5786,7 @@ class TreeInterpreter {
                 TreeValue.unit()
             match receiver.mutex_cell {
                 some(cell) => {
-                    cell.with(fn(state: TreeMutexCell) {
+                    cell.with_lock(fn(state: TreeMutexCell) {
                         previous =
                             tree_value_copy(
                                 state.value)
@@ -5805,7 +5804,7 @@ class TreeInterpreter {
             var equal: bool = false
             match receiver.mutex_cell {
                 some(cell) => {
-                    cell.with(fn(state: TreeMutexCell) {
+                    cell.with_lock(fn(state: TreeMutexCell) {
                         equal =
                             tree_value_equal(
                                 state.value,
@@ -5826,13 +5825,17 @@ class TreeInterpreter {
             node.value == "fetch_and" ||
             node.value == "fetch_or" ||
             node.value == "fetch_xor" ||
-            node.value == "add") &&
+            node.value == "add_and_get") &&
            arguments.len() >= 2 {
             var previous: TreeValue =
                 TreeValue.unit()
+            // AtomicInt.add_and_get is the one op here that hands back the
+            // value it wrote; the fetch_* family reports what was there.
+            var updated: TreeValue =
+                TreeValue.unit()
             match receiver.mutex_cell {
                 some(cell) => {
-                    cell.with(fn(state: TreeMutexCell) {
+                    cell.with_lock(fn(state: TreeMutexCell) {
                         previous =
                             tree_value_copy(
                                 state.value)
@@ -5842,7 +5845,7 @@ class TreeInterpreter {
                             arguments[1].uint_data
                         var raw: u64 = left
                         if node.value == "fetch_add" ||
-                           node.value == "add" {
+                           node.value == "add_and_get" {
                             raw = left + right
                         } else if node.value ==
                                       "fetch_sub" {
@@ -5868,9 +5871,14 @@ class TreeInterpreter {
                                         previous.int_bits),
                                     previous.int_bits)
                             }
+                        updated =
+                            tree_value_copy(state.value)
                     })
                 }
                 none => {}
+            }
+            if node.value == "add_and_get" {
+                return some(updated)
             }
             return some(previous)
         }
@@ -5882,7 +5890,7 @@ class TreeInterpreter {
                     Option<Channel<int>> = none
                 match receiver.mutex_cell {
                     some(cell) => {
-                        cell.with(
+                        cell.with_lock(
                             fn(state: TreeMutexCell) {
                                 if tree_value_equal(
                                        state.value,
@@ -5905,7 +5913,7 @@ class TreeInterpreter {
                 }
                 match signal {
                     some(channel) => {
-                        channel.recv()
+                        channel.receive()
                     }
                     none => {}
                 }
@@ -5947,7 +5955,7 @@ class TreeInterpreter {
             var woke: int = 0
             match receiver.mutex_cell {
                 some(cell) => {
-                    cell.with(
+                    cell.with_lock(
                         fn(state: TreeMutexCell) {
                             if node.value ==
                                    "notify_one" {
@@ -6516,12 +6524,12 @@ class TreeInterpreter {
                 self.map_key(
                     receiver, arguments[1])
             let inserted: bool =
-                !receiver.map_values.contains(encoded)
+                !receiver.map_values.contains_key(encoded)
             if node.value == "insert" &&
                !inserted {
                 return TreeValue.boolean(false)
             }
-            if !receiver.map_values.contains(
+            if !receiver.map_values.contains_key(
                    encoded) {
                 receiver.map_keys.push(
                     tree_value_copy(arguments[1]))
@@ -6550,10 +6558,10 @@ class TreeInterpreter {
             }
         }
         if receiver.kind == "map" &&
-           node.value == "contains" &&
+           node.value == "contains_key" &&
            arguments.len() == 2 {
             return TreeValue.boolean(
-                receiver.map_values.contains(
+                receiver.map_values.contains_key(
                     self.map_key(
                         receiver, arguments[1])))
         }
@@ -6563,7 +6571,7 @@ class TreeInterpreter {
             let encoded: string =
                 self.map_key(
                     receiver, arguments[1])
-            if !receiver.map_values.contains(encoded) {
+            if !receiver.map_values.contains_key(encoded) {
                 return TreeValue.boolean(false)
             }
             receiver.map_values.remove(encoded)
@@ -6714,9 +6722,13 @@ class TreeInterpreter {
             }
         }
         if (receiver.kind == "box" ||
-            receiver.kind == "mutex" ||
-            receiver.kind == "atomic") &&
+            receiver.kind == "mutex") &&
            node.value == "get" &&
+           receiver.items.len() == 1 {
+            return receiver.items[0]
+        }
+        if receiver.kind == "atomic" &&
+           node.value == "load" &&
            receiver.items.len() == 1 {
             return receiver.items[0]
         }
@@ -6730,23 +6742,28 @@ class TreeInterpreter {
                 none => {}
             }
         }
-        if (receiver.kind == "box" ||
-            receiver.kind == "atomic") &&
+        if receiver.kind == "box" &&
            node.value == "set" &&
            arguments.len() == 2 {
             receiver.items[0] = arguments[1]
             return TreeValue.unit()
         }
         if receiver.kind == "atomic" &&
-           node.value == "add" &&
+           node.value == "store" &&
+           arguments.len() == 2 {
+            receiver.items[0] = arguments[1]
+            return TreeValue.unit()
+        }
+        if receiver.kind == "atomic" &&
+           node.value == "add_and_get" &&
            arguments.len() == 2 &&
            receiver.items.len() == 1 {
-            let previous: int =
-                receiver.items[0].int_data
+            let next: int =
+                receiver.items[0].int_data +
+                arguments[1].int_data
             receiver.items[0] =
-                TreeValue.integer(
-                    previous + arguments[1].int_data)
-            return TreeValue.integer(previous)
+                TreeValue.integer(next)
+            return TreeValue.integer(next)
         }
         if receiver.kind == "shared" &&
            node.value == "downgrade" {
@@ -6762,11 +6779,11 @@ class TreeInterpreter {
             return result
         }
         if receiver.kind == "weak" &&
-           node.value == "expired" {
+           node.value == "is_expired" {
             match receiver.weak_value {
                 some(value) => {
                     return TreeValue.boolean(
-                        value.expired())
+                        value.is_expired())
                 }
                 none => {}
             }
@@ -6793,7 +6810,7 @@ class TreeInterpreter {
             return TreeValue.option_none()
         }
         if receiver.kind == "arena" &&
-           node.value == "put" &&
+           node.value == "add" &&
            arguments.len() == 2 {
             let slot: int = receiver.items.len()
             receiver.items.push(
@@ -6860,15 +6877,15 @@ class TreeInterpreter {
             return TreeValue.unit()
         }
         if receiver.kind == "channel" &&
-           (node.value == "recv" ||
-            node.value == "try_recv") {
+           (node.value == "receive" ||
+            node.value == "try_receive") {
             match receiver.channel_value {
                 some(channel) => {
-                    match channel.recv() {
+                    match channel.receive() {
                         some(cell) => {
                             var value: TreeValue =
                                 TreeValue.unit()
-                            cell.with(
+                            cell.with_lock(
                                 fn(state: TreeMutexCell) {
                                     value =
                                         tree_value_copy(
@@ -6920,7 +6937,7 @@ class TreeInterpreter {
                 TreeValue.unit()
             match receiver.thread_work {
                 some(work) => {
-                    work.with(
+                    work.with_lock(
                         fn(state: TreeThreadWork) {
                             if state.failed {
                                 self.failed = true
@@ -6944,7 +6961,7 @@ class TreeInterpreter {
             return result
         }
         if receiver.kind == "mutex" &&
-           node.value == "with" &&
+           node.value == "with_lock" &&
            arguments.len() == 2 &&
            (arguments[1].kind == "closure" ||
             arguments[1].kind == "function") {
@@ -6952,7 +6969,7 @@ class TreeInterpreter {
                 TreeValue.unit()
             match receiver.mutex_cell {
                 some(cell) => {
-                    cell.with(
+                    cell.with_lock(
                         fn(state: TreeMutexCell) {
                             let holder: TreeFrame =
                                 new TreeFrame()
@@ -7164,7 +7181,7 @@ class TreeInterpreter {
                                 captured: TreeFrame) {
         if node.kind == "local" &&
            node.binding_id >= 0 &&
-           !captured.values.contains(node.binding_id) {
+           !captured.values.contains_key(node.binding_id) {
             match self.capture_cell(
                     frame, node.binding_id) {
                 some(cell) => {
@@ -7188,7 +7205,7 @@ class TreeInterpreter {
     // enclosing chain yet and comes back none.
     fn capture_cell(frame: TreeFrame,
                     binding: int) -> Option<TreeValue> {
-        if frame.values.contains(binding) {
+        if frame.values.contains_key(binding) {
             let current: TreeValue =
                 frame.values[binding]
             if current.kind == "reference" {
@@ -7364,10 +7381,10 @@ class TreeInterpreter {
                 Bytes.from(arguments[0].text))
         }
         if node.kind == "static_call" &&
-           node.resolved == "Bytes.varint_size" &&
+           node.resolved == "Bytes.uvarint_size" &&
            arguments.len() == 1 {
             return TreeValue.integer(
-                Bytes.varint_size(
+                Bytes.uvarint_size(
                     arguments[0].int_data))
         }
         if node.kind == "static_call" &&
@@ -8156,7 +8173,7 @@ class TreeInterpreter {
                 }
                 let encoded: string =
                     self.map_key(result, key)
-                if !result.map_values.contains(
+                if !result.map_values.contains_key(
                        encoded) {
                     result.map_keys.push(
                         tree_value_copy(key))
@@ -8429,7 +8446,7 @@ class TreeInterpreter {
             if receiver.kind == "map" {
                 let encoded: string =
                     self.map_key(receiver, key)
-                if !receiver.map_values.contains(
+                if !receiver.map_values.contains_key(
                        encoded) {
                     receiver.map_keys.push(
                         tree_value_copy(key))
@@ -9216,7 +9233,7 @@ class TreeInterpreter {
 
     fn ffi_pack_argument(
         packed: Bytes, value: string) {
-        packed.append_str(value)
+        packed.append_string(value)
         packed.push(0)
     }
 
@@ -9258,7 +9275,7 @@ class TreeInterpreter {
             self.ffi_bridge_sequence
         self.ffi_bridge_sequence += 1
         let stem: string =
-            "{Dir.temp()}/beans-ffi-{host_time.monotonic_nanos()}-{sequence}"
+            "{Dir.temp_path()}/beans-ffi-{host_time.monotonic_nanos()}-{sequence}"
         let c_path: string = "{stem}.c"
         let library_path: string =
             if self.program.target.os == "macos" {
@@ -9349,7 +9366,7 @@ class TreeInterpreter {
                             24 + out_size +
                                 err_size)
                     compiler_error =
-                        error_bytes.to_string_full()
+                        error_bytes.to_string()
                 }
             }
             err(error) => {
@@ -9632,7 +9649,7 @@ class TreeInterpreter {
         let library: string =
             "{cache_dir}/beans_enc_{feature}.{self.program.target.triple}.{hash}.{extension}"
         if File.exists(library) { return library }
-        match Dir.make_all(cache_dir) {
+        match Dir.create_all(cache_dir) {
             ok(_) => {}
             err(error) => {
                 self.encoding_error =
@@ -9698,7 +9715,7 @@ class TreeInterpreter {
                             24 + out_size,
                             24 + out_size + err_size)
                     compiler_error =
-                        error_bytes.to_string_full()
+                        error_bytes.to_string()
                 }
             }
             err(error) => {

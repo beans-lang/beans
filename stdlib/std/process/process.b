@@ -24,23 +24,23 @@ pub class Output {
     pub err: Bytes = new Bytes(0)
 
     /// True when the program exited 0. Anything else, including a signal, is a failure.
-    pub fn ok() -> bool {
+    pub fn succeeded() -> bool {
         return self.status == 0
     }
 
     /// True when a signal ended it rather than a return from main.
-    pub fn signalled() -> bool {
+    pub fn terminated_by_signal() -> bool {
         return self.status < 0
     }
 
     /// stdout as text. Stops at an embedded NUL, like any other Beans string.
-    pub fn text() -> string {
-        return self.out.to_string()
+    pub fn stdout_text() -> string {
+        return self.out.to_string_until_nul()
     }
 
     /// stderr as text.
-    pub fn error_text() -> string {
-        return self.err.to_string()
+    pub fn stderr_text() -> string {
+        return self.err.to_string_until_nul()
     }
 }
 
@@ -58,7 +58,7 @@ pub class Command {
     env_pairs: List<string> = []
     /// Empty means stay in this process's directory.
     dir: string = ""
-    stdin_bytes: Bytes = new Bytes(0)
+    stdin_data: Bytes = new Bytes(0)
     /// Bytes to keep from each stream. A program that prints forever must not be able
     /// to exhaust memory here, so there is always a limit.
     limit: int = 8388608
@@ -89,14 +89,14 @@ pub class Command {
 
     /// Bytes to write to the program's stdin. Its stdin closes once they are written,
     /// so a program that reads to EOF finishes.
-    pub fn input(data: Bytes) -> Command {
-        self.stdin_bytes = data
+    pub fn stdin_bytes(data: Bytes) -> Command {
+        self.stdin_data = data
         return self
     }
 
     /// Text to write to the program's stdin.
-    pub fn input_text(data: string) -> Command {
-        self.stdin_bytes = Bytes.from(data)
+    pub fn stdin_text(data: string) -> Command {
+        self.stdin_data = Bytes.from(data)
         return self
     }
 
@@ -115,38 +115,38 @@ pub class Command {
     pub fn run() -> Result<Output> {
         self.validate()?
         var argv: Bytes = new Bytes(0)
-        argv.append_str(self.program)
+        argv.append_string(self.program)
         argv.push(0)
         for a: string in self.args {
-            argv.append_str(a)
+            argv.append_string(a)
             argv.push(0)
         }
         var envp: Bytes = new Bytes(0)
         for pair: string in self.env_pairs {
-            envp.append_str(pair)
+            envp.append_string(pair)
             envp.push(0)
         }
-        let packed: Bytes = proc.run(argv, envp, self.dir, self.stdin_bytes,
+        let packed: Bytes = proc.run(argv, envp, self.dir, self.stdin_data,
                                      self.limit)?
         return ok(decode(packed))
     }
 
     /// Starts it and comes straight back, giving a `Child` to watch, talk to and stop.
     ///
-    /// `input`/`input_text` and `capture_limit` do not apply — the whole point is that
-    /// the streams stay open for you to use. Everything else does.
+    /// `stdin_bytes`/`stdin_text` and `capture_limit` do not apply — the whole point is
+    /// that the streams stay open for you to use. Everything else does.
     pub fn start() -> Result<Child> {
         self.validate()?
         var argv: Bytes = new Bytes(0)
-        argv.append_str(self.program)
+        argv.append_string(self.program)
         argv.push(0)
         for a: string in self.args {
-            argv.append_str(a)
+            argv.append_string(a)
             argv.push(0)
         }
         var envp: Bytes = new Bytes(0)
         for pair: string in self.env_pairs {
-            envp.append_str(pair)
+            envp.append_string(pair)
             envp.push(0)
         }
         let four: Bytes = proc.start(argv, envp, self.dir)?
@@ -281,7 +281,7 @@ pub class Stream {
     }
 
     /// The raw descriptor, borrowed — for a poller.
-    pub fn handle() -> int {
+    pub fn poll_handle() -> int {
         return self.fd
     }
 }
@@ -330,13 +330,13 @@ pub unique class Child {
 
     /// The process id, for logging. Signalling goes through the methods here, which know
     /// whether the child has already been reaped.
-    pub fn id() -> int {
+    pub fn process_id() -> int {
         return self.pid
     }
 
     /// True when it has finished. Reaps it if so, so this is safe to call in a loop
     /// without leaving a zombie.
-    pub fn finished() -> Result<bool> {
+    pub fn is_finished() -> Result<bool> {
         if self.reaped { return ok(true) }
         let state: Bytes = proc.status(self.pid, 0)?
         if state.get_i64(0) == 1 {
@@ -380,7 +380,7 @@ pub unique class Child {
     }
 
     /// Sends any signal by number.
-    pub fn send(number: int) -> Result<bool> {
+    pub fn send_signal(number: int) -> Result<bool> {
         if self.reaped { return err("this child has already finished", "closed") }
         return proc.signal(self.pid, number)
     }

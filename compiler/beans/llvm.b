@@ -620,7 +620,7 @@ class LlvmTextEmitter {
             program.declarations {
             self.declarations[
                 declaration.qualified] = declaration
-            if !self.declarations.contains(
+            if !self.declarations.contains_key(
                    declaration.name) {
                 self.declarations[
                     declaration.name] = declaration
@@ -1038,7 +1038,7 @@ class LlvmTextEmitter {
             some(found) => { return some(found) }
             none => {}
         }
-        if self.record_layout_building.contains(key) &&
+        if self.record_layout_building.contains_key(key) &&
            self.record_layout_building[key] {
             return none
         }
@@ -1048,7 +1048,7 @@ class LlvmTextEmitter {
                     declaration.kind != "union") ||
                    declaration.generics.len() != 0 ||
                    type.args.len() != 0 ||
-                   !self.record_ids.contains(
+                   !self.record_ids.contains_key(
                        declaration.qualified) {
                     return none
                 }
@@ -1542,7 +1542,7 @@ class LlvmTextEmitter {
                 some(base) => {
                     if base.kind != "class" ||
                        base.generics.len() != 0 ||
-                       !self.class_ids.contains(
+                       !self.class_ids.contains_key(
                            base.qualified) {
                         supported = false
                     } else {
@@ -1886,8 +1886,8 @@ class LlvmTextEmitter {
                 self.program.functions {
                 if !self.function_in_generic_family(
                        candidate.name) ||
-                   names.contains(candidate.name) ||
-                   !names.contains(candidate.parent) {
+                   names.contains_key(candidate.name) ||
+                   !names.contains_key(candidate.parent) {
                     continue
                 }
                 let parent: string = names[candidate.parent]
@@ -1908,7 +1908,7 @@ class LlvmTextEmitter {
         }
         for candidate: MirFunction in
             self.program.functions {
-            if !names.contains(candidate.name) ||
+            if !names.contains_key(candidate.name) ||
                candidate.name == template_name {
                 continue
             }
@@ -2012,7 +2012,7 @@ class LlvmTextEmitter {
 
     fn function_has_dispatch_slot(name: string,
                                   slot: string) -> bool {
-        return self.method_dispatch_slots.contains(
+        return self.method_dispatch_slots.contains_key(
             "{name}|{slot}")
     }
 
@@ -2028,7 +2028,7 @@ class LlvmTextEmitter {
             let owner: HirDeclaration = chain[nearest]
             let key: string =
                 "{owner.qualified}.{method}"
-            if self.function_symbols.contains(key) &&
+            if self.function_symbols.contains_key(key) &&
                (slot == "deinit" ||
                 self.function_has_dispatch_slot(key, slot)) {
                 return self.function_symbols[key]
@@ -2074,7 +2074,7 @@ class LlvmTextEmitter {
                current.name == target.name {
                 return true
             }
-            if seen.contains(current.name) {
+            if seen.contains_key(current.name) {
                 continue
             }
             seen[current.name] = true
@@ -2107,7 +2107,7 @@ class LlvmTextEmitter {
                     self.dispatch_method(slot)
                 let key: string =
                     "{declaration.qualified}.{method}"
-                if self.function_symbols.contains(key) &&
+                if self.function_symbols.contains_key(key) &&
                    self.function_has_dispatch_slot(key, slot) {
                     return self.function_symbols[key]
                 }
@@ -2142,7 +2142,7 @@ class LlvmTextEmitter {
                    declaration.qualified) {
                 continue
             }
-            if self.function_symbols.contains(
+            if self.function_symbols.contains_key(
                    "{candidate.qualified}.{name}") {
                 return true
             }
@@ -2166,7 +2166,7 @@ class LlvmTextEmitter {
                 }
                 var id: int = -1
                 if declaration.generics.len() == 0 {
-                    if !self.class_ids.contains(
+                    if !self.class_ids.contains_key(
                            declaration.qualified) {
                         return none
                     }
@@ -2179,7 +2179,7 @@ class LlvmTextEmitter {
                            0 {
                         return none
                     }
-                    if self.class_ids.contains(key) {
+                    if self.class_ids.contains_key(key) {
                         id = self.class_ids[key]
                     } else {
                         id = self.class_id_count
@@ -2441,7 +2441,7 @@ class LlvmTextEmitter {
     fn function_in_generic_family(name: string) -> bool {
         var current: string = name
         for unused: int in 0..self.program.functions.len() {
-            if self.generic_templates.contains(current) {
+            if self.generic_templates.contains_key(current) {
                 return true
             }
             var parent: string = ""
@@ -2487,7 +2487,7 @@ class LlvmTextEmitter {
                    function.name) {
                 continue
             }
-            if self.function_symbols.contains(function.name) {
+            if self.function_symbols.contains_key(function.name) {
                 self.fail_function(
                     function,
                     "LLVM emitter found duplicate function '{function.name}'")
@@ -2536,7 +2536,7 @@ class LlvmTextEmitter {
                 continue
             }
             for slot: string in function.dispatch_slots {
-                if self.selector_indices.contains(slot) {
+                if self.selector_indices.contains_key(slot) {
                     continue
                 }
                 self.selector_indices[slot] =
@@ -2544,7 +2544,7 @@ class LlvmTextEmitter {
                 self.selector_order.push(slot)
             }
             if function.name.ends_with(".deinit") &&
-               !self.selector_indices.contains("deinit") {
+               !self.selector_indices.contains_key("deinit") {
                 self.selector_indices["deinit"] =
                     self.selector_order.len()
                 self.selector_order.push("deinit")
@@ -4067,10 +4067,10 @@ class LlvmTextEmitter {
                     values: Map<int, string>,
                     id: int,
                     instruction: MirInstruction) -> string {
-        if self.inout_addresses.contains(id) {
+        if self.inout_addresses.contains_key(id) {
             return ""
         }
-        if self.selector_texts.contains(id) {
+        if self.selector_texts.contains_key(id) {
             return ""
         }
         match self.borrowed_local_of.get(id) {
@@ -4088,8 +4088,8 @@ class LlvmTextEmitter {
         // instruction release instead of an edge release. The iterator
         // owns a temporary list such as string.split(), so release that
         // collection on either path.
-        if self.iterator_kind.contains(id) {
-            if self.iterator_collection.contains(id) {
+        if self.iterator_kind.contains_key(id) {
+            if self.iterator_collection.contains_key(id) {
                 return "  call void @beans_release(ptr {self.iterator_collection[id]})\n"
             }
             return ""
@@ -4151,7 +4151,7 @@ class LlvmTextEmitter {
                         "  store {llvm} zeroinitializer, ptr {slot}\n"
                     for operand_id: int in
                         instruction.operands {
-                        if !self.field_init_names.contains(
+                        if !self.field_init_names.contains_key(
                                operand_id) {
                             self.fail(
                                 instruction,
@@ -4160,7 +4160,7 @@ class LlvmTextEmitter {
                         }
                         let name: string =
                             self.field_init_names[operand_id]
-                        if !layout.field_types.contains(
+                        if !layout.field_types.contains_key(
                                name) {
                             self.fail(
                                 instruction,
@@ -4195,7 +4195,7 @@ class LlvmTextEmitter {
                     0..instruction.operands.len() {
                     let operand_id: int =
                         instruction.operands[index]
-                    if !self.field_init_names.contains(
+                    if !self.field_init_names.contains_key(
                            operand_id) {
                         self.fail(
                             instruction,
@@ -4205,8 +4205,8 @@ class LlvmTextEmitter {
                     let name: string =
                         self.field_init_names[
                             operand_id]
-                    if !layout.field_indices.contains(name) ||
-                       !layout.field_types.contains(name) {
+                    if !layout.field_indices.contains_key(name) ||
+                       !layout.field_types.contains_key(name) {
                         self.fail(
                             instruction,
                             "LLVM emitter cannot find record field '{name}'")
@@ -4218,7 +4218,7 @@ class LlvmTextEmitter {
                             operand_id, instruction)
                     let field_type: HirType =
                         layout.field_types[name]
-                    if initialized.contains(name) &&
+                    if initialized.contains_key(name) &&
                        self.type_has_owned_refs(
                            field_type) {
                         let old: string =
@@ -4286,12 +4286,12 @@ class LlvmTextEmitter {
                         self.class_default_function(
                             layout, field)
                     var symbol: string = ""
-                    if self.function_symbols.contains(
+                    if self.function_symbols.contains_key(
                            default_name) {
                         symbol =
                             self.function_symbols[
                                 default_name]
-                    } else if self.generic_templates.contains(
+                    } else if self.generic_templates.contains_key(
                                   default_name) {
                         var bindings:
                             Map<string, HirType> = {}
@@ -4628,7 +4628,7 @@ class LlvmTextEmitter {
                         if initializer == "" {
                             return output
                         }
-                    } else if self.function_symbols.contains(
+                    } else if self.function_symbols.contains_key(
                                   instruction.resolved) {
                         initializer =
                             self.function_symbols[
@@ -4906,7 +4906,7 @@ class LlvmTextEmitter {
                    declaration.kind == "union" {
                     match self.record_layout(receiver_type) {
                         some(layout) => {
-                            if !layout.field_types.contains(
+                            if !layout.field_types.contains_key(
                                    instruction.text) {
                                 self.fail(
                                     instruction,
@@ -4960,9 +4960,9 @@ class LlvmTextEmitter {
         }
         match self.class_layout(receiver_type) {
             some(layout) => {
-                if !layout.field_offsets.contains(
+                if !layout.field_offsets.contains_key(
                        instruction.text) ||
-                   !layout.field_types.contains(
+                   !layout.field_types.contains_key(
                        instruction.text) {
                     self.fail(
                         instruction,
@@ -5063,16 +5063,16 @@ class LlvmTextEmitter {
             // assignment writes through the local's own storage
             match self.record_layout(receiver_type) {
                 some(layout) => {
-                    if !layout.field_indices.contains(
+                    if !layout.field_indices.contains_key(
                            name) ||
-                       !layout.field_types.contains(
+                       !layout.field_types.contains_key(
                            name) {
                         self.fail(
                             instruction,
                             "LLVM emitter cannot find field '{name}' in {render_hir_type(receiver_type)}")
                         return ""
                     }
-                    if !self.borrowed_local_of.contains(
+                    if !self.borrowed_local_of.contains_key(
                          receiver_id) {
                         self.fail(
                             instruction,
@@ -5134,8 +5134,8 @@ class LlvmTextEmitter {
         }
         match self.class_layout(receiver_type) {
             some(layout) => {
-                if !layout.field_offsets.contains(name) ||
-                   !layout.field_types.contains(name) {
+                if !layout.field_offsets.contains_key(name) ||
+                   !layout.field_types.contains_key(name) {
                     self.fail(
                         instruction,
                         "LLVM emitter cannot find field '{name}' in {render_hir_type(receiver_type)}")
@@ -7886,7 +7886,7 @@ class LlvmTextEmitter {
                 }
                 let generated: string =
                     "BeansFfiRecord{layout_id}"
-                if self.extern_functions.contains(
+                if self.extern_functions.contains_key(
                        emitted_key) {
                     return generated
                 }
@@ -7976,7 +7976,7 @@ class LlvmTextEmitter {
             "global-get:{global.qualified}"
         let setter_key: string =
             "global-set:{global.qualified}"
-        if self.extern_wrappers.contains(
+        if self.extern_wrappers.contains_key(
                getter_key) {
             return
         }
@@ -8545,7 +8545,7 @@ class LlvmTextEmitter {
         values: Map<int, string>) -> string {
         let name: string =
             "{function.name}.$closure.{instruction.closure_id}"
-        if !self.function_symbols.contains(name) {
+        if !self.function_symbols.contains_key(name) {
             self.fail(
                 instruction,
                 "LLVM emitter cannot find lifted closure '{name}'")
@@ -8627,7 +8627,7 @@ class LlvmTextEmitter {
     fn emit_function_value(
         instruction: MirInstruction,
         values: Map<int, string>) -> string {
-        if !self.function_symbols.contains(
+        if !self.function_symbols.contains_key(
                instruction.resolved) {
             self.fail(
                 instruction,
@@ -9263,7 +9263,7 @@ class LlvmTextEmitter {
             values[instruction.result] = result
             return "  {result} = call ptr @beans_weak_upgrade(ptr {receiver})\n"
         }
-        if instruction.text == "expired" {
+        if instruction.text == "is_expired" {
             let id: int = self.fresh()
             values[instruction.result] = result
             return "  %weak.raw{id} = call i64 @beans_weak_expired(ptr {receiver})\n  {result} = icmp ne i64 %weak.raw{id}, 0\n"
@@ -9277,7 +9277,7 @@ class LlvmTextEmitter {
     // one declare per foreign symbol, kept in first-use order
     fn require_declare(
         symbol: string, declaration: string) {
-        if self.used_builtin_symbols.contains(symbol) {
+        if self.used_builtin_symbols.contains_key(symbol) {
             return
         }
         self.used_builtin_symbols[symbol] = true
@@ -9400,7 +9400,7 @@ class LlvmTextEmitter {
                 "beans_feat_crc32c"
             let key: string =
                 "feature-wrapper:{wrapper}"
-            if !self.extern_functions.contains(key) {
+            if !self.extern_functions.contains_key(key) {
                 self.extern_functions[key] = true
                 if self.program.target.arch == "arm64" {
                     let symbol: string =
@@ -9440,7 +9440,7 @@ class LlvmTextEmitter {
             instruction.resolved == "std.asm.value"
         let want: int = if wants_value { 3 } else { 2 }
         if instruction.operands.len() != want ||
-           !self.selector_texts.contains(
+           !self.selector_texts.contains_key(
                instruction.operands[0]) {
             self.fail(
                 instruction,
@@ -9529,7 +9529,7 @@ class LlvmTextEmitter {
         } else if instruction.text == "offset_of" {
             match self.record_layout(queried) {
                 some(layout) => {
-                    if layout.field_offsets.contains(
+                    if layout.field_offsets.contains_key(
                            instruction.resolved) {
                         answer =
                             layout.field_offsets[
@@ -9740,7 +9740,7 @@ class LlvmTextEmitter {
     fn require_builtin_declare(
         row: RuntimeBuiltin,
         has_receiver: bool) {
-        if self.used_builtin_symbols.contains(
+        if self.used_builtin_symbols.contains_key(
                row.symbol) {
             return
         }
@@ -12960,7 +12960,7 @@ class LlvmTextEmitter {
                 "LLVM emitter does not support this index assignment yet")
             return ""
         }
-        if !self.borrowed_local_of.contains(array_id) {
+        if !self.borrowed_local_of.contains_key(array_id) {
             self.fail(
                 instruction,
                 "LLVM emitter needs a plain local behind this array assignment")
@@ -14656,9 +14656,9 @@ class LlvmTextEmitter {
             return ""
         }
         let iterable: int = instruction.operands[0]
-        if self.range_lower.contains(iterable) &&
-           self.range_upper.contains(iterable) &&
-           self.range_type.contains(iterable) {
+        if self.range_lower.contains_key(iterable) &&
+           self.range_upper.contains_key(iterable) &&
+           self.range_type.contains_key(iterable) {
             let type: HirType =
                 self.range_type[iterable]
             let llvm: string = self.type_text(type)
@@ -14772,9 +14772,9 @@ class LlvmTextEmitter {
             return ""
         }
         let iterator: int = instruction.operands[0]
-        if !self.iterator_current.contains(iterator) ||
-           !self.iterator_type.contains(iterator) ||
-           !self.iterator_kind.contains(iterator) {
+        if !self.iterator_current.contains_key(iterator) ||
+           !self.iterator_type.contains_key(iterator) ||
+           !self.iterator_kind.contains_key(iterator) {
             self.fail(
                 instruction,
                 "LLVM emitter cannot find iterator")
@@ -14837,9 +14837,9 @@ class LlvmTextEmitter {
             return ""
         }
         let iterator: int = instruction.operands[0]
-        if !self.iterator_current.contains(iterator) ||
-           !self.iterator_type.contains(iterator) ||
-           !self.iterator_kind.contains(iterator) {
+        if !self.iterator_current.contains_key(iterator) ||
+           !self.iterator_type.contains_key(iterator) ||
+           !self.iterator_kind.contains_key(iterator) {
             self.fail(
                 instruction,
                 "LLVM emitter cannot find iterator value")
@@ -14949,7 +14949,7 @@ class LlvmTextEmitter {
         // predecessors stored the incoming value on their edge; a
         // real LLVM phi would name values from blocks that are not
         // emitted yet
-        if !self.phi_slots.contains(
+        if !self.phi_slots.contains_key(
              instruction.result) {
             self.fail(
                 instruction,
@@ -15015,7 +15015,7 @@ class LlvmTextEmitter {
                 "void @beans_arena_clear(ptr)")
             return "  call void @beans_arena_clear(ptr {receiver})\n"
         }
-        if text == "put" {
+        if text == "add" {
             let value: string =
                 self.value(
                     function, values,
@@ -15435,14 +15435,14 @@ class LlvmTextEmitter {
                 function, values,
                 instruction.operands[0], instruction)
         let result: string = "%v{instruction.result}"
-        if instruction.text == "get" {
+        if instruction.text == "load" {
             self.require_declare(
                 "beans_atomic_get",
                 "i64 @beans_atomic_get(ptr)")
             values[instruction.result] = result
             return "  {result} = call i64 @beans_atomic_get(ptr {receiver})\n"
         }
-        if instruction.text == "set" &&
+        if instruction.text == "store" &&
            instruction.operands.len() == 2 {
             let value: string =
                 self.value(
@@ -15454,7 +15454,7 @@ class LlvmTextEmitter {
                 "void @beans_atomic_set(ptr, i64)")
             return "  call void @beans_atomic_set(ptr {receiver}, i64 {value})\n"
         }
-        if instruction.text == "add" &&
+        if instruction.text == "add_and_get" &&
            instruction.operands.len() == 2 {
             let value: string =
                 self.value(
@@ -15726,14 +15726,14 @@ class LlvmTextEmitter {
                     function, instruction, values, encoding_id)
             if lowered != "" { return lowered }
         }
-        if !self.function_symbols.contains(
+        if !self.function_symbols.contains_key(
                instruction.resolved) {
-            if self.extern_functions.contains(
+            if self.extern_functions.contains_key(
                    instruction.resolved) {
                 return self.emit_extern_call(
                     function, instruction, values)
             }
-            if self.generic_templates.contains(
+            if self.generic_templates.contains_key(
                    instruction.resolved) {
                 return self.emit_generic_call(
                     function, instruction, values)
@@ -15822,9 +15822,9 @@ class LlvmTextEmitter {
             self.program.declarations {
             if declaration.kind != "class" ||
                declaration.generics.len() != 0 ||
-               !self.class_ids.contains(
+               !self.class_ids.contains_key(
                    declaration.qualified) ||
-               !self.used_builtin_symbols.contains(
+               !self.used_builtin_symbols.contains_key(
                     "devirt:{declaration.qualified}") ||
                !self.class_conforms(
                    declaration, target) {
@@ -16137,7 +16137,7 @@ class LlvmTextEmitter {
         function: MirFunction,
         instruction: MirInstruction,
         values: Map<int, string>) -> string {
-        if !self.function_symbols.contains(
+        if !self.function_symbols.contains_key(
                instruction.resolved) {
             self.fail(
                 instruction,
@@ -17183,7 +17183,7 @@ class LlvmTextEmitter {
                 self.emit_super_call(
                     function, instruction, values)
         } else if instruction.op == "static_call" {
-            if self.function_symbols.contains(
+            if self.function_symbols.contains_key(
                    instruction.resolved) {
                 output =
                     self.emit_call(
@@ -17840,7 +17840,7 @@ class LlvmTextEmitter {
                     function, instruction,
                     values, true)
         } else if instruction.op == "builtin_method" &&
-                  instruction.text == "contains" &&
+                  instruction.text == "contains_key" &&
                   instruction.operands.len() != 0 &&
                   llvm_type_is_map(
                       self.value_type(
@@ -17982,7 +17982,7 @@ class LlvmTextEmitter {
                           function,
                           instruction.operands[0]).name) ==
                       "Mutex" &&
-                  instruction.text == "with" {
+                  instruction.text == "with_lock" {
             output =
                 self.emit_mutex_with(
                     function, instruction, values)
@@ -17998,7 +17998,7 @@ class LlvmTextEmitter {
                 output =
                     self.emit_channel_send(
                         function, instruction, values)
-            } else if instruction.text == "recv" {
+            } else if instruction.text == "receive" {
                 output =
                     self.emit_channel_recv(
                         function, instruction, values)
@@ -18175,7 +18175,7 @@ class LlvmTextEmitter {
                 candidate.instructions {
                 if instruction.removed { continue }
                 if instruction.op != "phi" { continue }
-                if !self.phi_slots.contains(
+                if !self.phi_slots.contains_key(
                      instruction.result) {
                     continue
                 }
@@ -18225,7 +18225,7 @@ class LlvmTextEmitter {
         var emitted: Map<int, bool> = {}
         for target: int in
             block.terminator.targets {
-            if emitted.contains(target) { continue }
+            if emitted.contains_key(target) { continue }
             emitted[target] = true
             var releases: int = 0
             for edge: MirEdgeRelease in
@@ -18246,9 +18246,9 @@ class LlvmTextEmitter {
                 block.edge_releases {
                 if edge.target != target { continue }
                 for released: int in edge.values {
-                    if self.iterator_kind.contains(
+                    if self.iterator_kind.contains_key(
                            released) {
-                        if self.iterator_collection.contains(
+                        if self.iterator_collection.contains_key(
                                released) {
                             output =
                                 "{output}  call void @beans_release(ptr {self.iterator_collection[released]})\n"
@@ -18708,7 +18708,7 @@ class LlvmTextEmitter {
         let owner_name: string =
             function.name.slice(
                 0, function.name.len() - 7)
-        if !self.declarations.contains(owner_name) {
+        if !self.declarations.contains_key(owner_name) {
             return ""
         }
         let owner: HirDeclaration =
@@ -18722,7 +18722,7 @@ class LlvmTextEmitter {
             index -= 1
             let candidate: string =
                 "{chain[index].qualified}.deinit"
-            if self.function_symbols.contains(candidate) {
+            if self.function_symbols.contains_key(candidate) {
                 parent_symbol =
                     self.function_symbols[candidate]
                 break
@@ -18762,7 +18762,7 @@ class LlvmTextEmitter {
                 none => {}
             }
             if cleanup_name == "" ||
-               !self.function_symbols.contains(
+               !self.function_symbols.contains_key(
                    cleanup_name) {
                 self.fail(
                     instruction,
@@ -19527,7 +19527,7 @@ class LlvmTextEmitter {
                               base_index]) {
                     some(base) => {
                         if base.kind == "class" &&
-                           self.class_ids.contains(
+                           self.class_ids.contains_key(
                                base.qualified) {
                             parent =
                                 self.class_ids[
@@ -19537,7 +19537,7 @@ class LlvmTextEmitter {
                     none => {}
                 }
             }
-            if self.class_ids.contains(
+            if self.class_ids.contains_key(
                    declaration.qualified) {
                 parent_of[
                     self.class_ids[

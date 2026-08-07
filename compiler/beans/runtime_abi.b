@@ -266,7 +266,7 @@ pub fn runtime_builtin_method(key: string) -> Option<RuntimeBuiltin> {
             ["bytes"],
             "self_recv", "beans_bytes_append", false))
     }
-    if key == "Bytes.append_str" {
+    if key == "Bytes.append_string" {
         return some(new RuntimeBuiltin(
             ["str"],
             "self_recv", "beans_bytes_append_str", false))
@@ -281,22 +281,22 @@ pub fn runtime_builtin_method(key: string) -> Option<RuntimeBuiltin> {
             ["bytes", "i64", "i64"],
             "self_recv", "beans_bytes_append_range", true))
     }
-    if key == "Bytes.to_string" {
+    if key == "Bytes.to_string_until_nul" {
         return some(new RuntimeBuiltin(
             [],
             "str", "beans_bytes_to_string", false))
     }
-    if key == "Bytes.to_string_full" {
+    if key == "Bytes.to_string" {
         return some(new RuntimeBuiltin(
             [],
             "str", "beans_bytes_to_string_full", false))
     }
-    if key == "Bytes.append_varint" {
+    if key == "Bytes.append_uvarint" {
         return some(new RuntimeBuiltin(
             ["i64"],
             "self_recv", "beans_bytes_append_varint", false))
     }
-    if key == "Bytes.get_varint" {
+    if key == "Bytes.get_uvarint" {
         return some(new RuntimeBuiltin(
             ["i64"],
             "i64", "beans_bytes_get_varint", true))
@@ -331,7 +331,7 @@ pub fn runtime_builtin_method(key: string) -> Option<RuntimeBuiltin> {
             ["i64"],
             "i64", "beans_file_seek", true))
     }
-    if key == "File.seek_end" {
+    if key == "File.seek_from_end" {
         return some(new RuntimeBuiltin(
             ["i64"],
             "i64", "beans_file_seek_end", true))
@@ -470,7 +470,7 @@ pub fn runtime_builtin_static(key: string) -> Option<RuntimeBuiltin> {
             ["str"],
             "bytes", "beans_bytes_from", false))
     }
-    if key == "Bytes.varint_size" {
+    if key == "Bytes.uvarint_size" {
         return some(new RuntimeBuiltin(
             ["i64"],
             "i64", "beans_bytes_varint_size", false))
@@ -500,12 +500,12 @@ pub fn runtime_builtin_static(key: string) -> Option<RuntimeBuiltin> {
             ["str", "str"],
             "res_file", "beans_file_open", false))
     }
-    if key == "Dir.make" {
+    if key == "Dir.create" {
         return some(new RuntimeBuiltin(
             ["str"],
             "res_bool", "beans_dir_make", false))
     }
-    if key == "Dir.make_all" {
+    if key == "Dir.create_all" {
         return some(new RuntimeBuiltin(
             ["str"],
             "res_bool", "beans_dir_make_all", false))
@@ -530,7 +530,7 @@ pub fn runtime_builtin_static(key: string) -> Option<RuntimeBuiltin> {
             ["str"],
             "bool", "beans_dir_exists", false))
     }
-    if key == "Dir.temp" {
+    if key == "Dir.temp_path" {
         return some(new RuntimeBuiltin(
             [],
             "str", "beans_dir_temp", false))
@@ -550,12 +550,12 @@ pub fn runtime_builtin_static(key: string) -> Option<RuntimeBuiltin> {
             ["str", "bool"],
             "res_mmap", "beans_mmap_open", false))
     }
-    if key == "MMap.open_shared" {
+    if key == "MMap.open_shared_memory" {
         return some(new RuntimeBuiltin(
             ["str", "i64", "bool"],
             "res_mmap", "beans_shm_open", false))
     }
-    if key == "MMap.unlink_shared" {
+    if key == "MMap.unlink_shared_memory" {
         return some(new RuntimeBuiltin(
             ["str"],
             "res_bool", "beans_shm_unlink", false))
@@ -588,21 +588,6 @@ pub fn runtime_builtin_fn(key: string) -> Option<RuntimeBuiltin> {
         return some(new RuntimeBuiltin(
             ["i64"],
             "unit", "beans_os_exit", false))
-    }
-    if key == "std.os.now_ms" {
-        return some(new RuntimeBuiltin(
-            [],
-            "i64", "beans_os_now_ms", false))
-    }
-    if key == "std.os.ticks_ms" {
-        return some(new RuntimeBuiltin(
-            [],
-            "i64", "beans_os_ticks_ms", false))
-    }
-    if key == "std.os.sleep_ms" {
-        return some(new RuntimeBuiltin(
-            ["i64"],
-            "unit", "beans_os_sleep_ms", false))
     }
     if key == "std.io.read_line" {
         return some(new RuntimeBuiltin(
@@ -909,6 +894,21 @@ pub fn runtime_builtin_fn(key: string) -> Option<RuntimeBuiltin> {
             [],
             "i64", "beans_time_wall_nanos", false))
     }
+    if key == "std.time.wall_millis" {
+        return some(new RuntimeBuiltin(
+            [],
+            "i64", "beans_os_now_ms", false))
+    }
+    if key == "std.time.monotonic_millis" {
+        return some(new RuntimeBuiltin(
+            [],
+            "i64", "beans_os_ticks_ms", false))
+    }
+    if key == "std.time.sleep_millis" {
+        return some(new RuntimeBuiltin(
+            ["i64"],
+            "unit", "beans_os_sleep_ms", false))
+    }
     if key == "std.time.sleep_nanos" {
         return some(new RuntimeBuiltin(
             ["i64"],
@@ -944,7 +944,7 @@ pub fn runtime_builtin_fn(key: string) -> Option<RuntimeBuiltin> {
             ["f64", "i64"],
             "str", "beans_fmt_float", false))
     }
-    if key == "std.fmt.dec" {
+    if key == "std.fmt.decimal" {
         return some(new RuntimeBuiltin(
             ["dec", "i64"],
             "str", "beans_decv_fmt", false))

@@ -445,7 +445,7 @@ class BindgenGenerator {
 
     fn selected(name: string) -> bool {
         return self.only.keys().len() == 0 ||
-               self.only.contains(name)
+               self.only.contains_key(name)
     }
 
     fn scalar(written: string) -> string {
@@ -816,12 +816,12 @@ fn run_self_bindgen(
     var ast: string = ""
     match command.run() {
         ok(result) => {
-            if !result.ok() {
+            if !result.succeeded() {
                 io.eprintln(
                     "bindgen: clang could not parse {header}")
                 return 1
             }
-            ast = result.text()
+            ast = result.stdout_text()
         }
         err(error) => {
             io.eprintln(
@@ -974,7 +974,7 @@ fn run_self_bindgen(
         generator.needed_records.keys() {
         match generator.records.get(name) {
             some(record) => {
-                if !emitted.contains(record.beans) {
+                if !emitted.contains_key(record.beans) {
                     emitted[record.beans] = true
                     output =
                         "{output}{generator.record_text(record)}"

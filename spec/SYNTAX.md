@@ -226,13 +226,13 @@ self, so page-building chains work: `new Bytes(4096).put_u32(0, root).put_u64(8,
 - `get(i)` / `set(i, v)` — one byte, panics out of range; `push(v)` appends one
   byte. These are low-level storage operations used by Beans-written formats.
 - `get_u8/u16/u32/u64/i64(pos)` / `put_...(pos, v)` — fixed width, little-endian, panics out of range
-- `slice(from, to)`, `copy_from(src, at)`, `append(other)`, `append_str(s)`,
+- `slice(from, to)`, `copy_from(src, at)`, `append(other)`, `append_string(s)`,
   `append_i64(v)` (little-endian), `append_range(src, from, to)` (no slice allocation)
-- `to_string()` — as text, stops at an embedded NUL; `to_string_full()` copies every
-  byte, including NUL (used by binary-safe source packages such as `std.reader`)
+- `to_string()` — every byte, NUL included (used by binary-safe source packages
+  such as `std.reader`); `to_string_until_nul()` stops at an embedded NUL
 - `==` / `!=` compare by value: length, then contents
-- `append_varint(v)` / `get_varint(pos)` — unsigned LEB128 over the 64-bit pattern
-  (negatives take 10 bytes); `Bytes.varint_size(v)` says how far to advance
+- `append_uvarint(v)` / `get_uvarint(pos)` — unsigned LEB128 over the 64-bit pattern
+  (negatives take 10 bytes); `Bytes.uvarint_size(v)` says how far to advance
 - `crc32(from, to)` — IEEE crc32 of a range, panics out of range
 
 ## Files and the OS (v0.5, implemented)
@@ -249,7 +249,7 @@ Class-first, like everything builtin. Errors are `Result<T>`; `Error.kind` carri
   truncate, close, and exact byte-to-string conversion; only that low-level layer
   stays native. The old native `File.read(path)` helper is gone.
 - **File methods**: positional I/O first — `read_at(pos, n)` → `Result<Bytes>` (short read at
-  EOF returns what's there), `write_at(pos, b)`; cursor `read(n)`/`write(b)`; `seek`/`seek_end`
+  EOF returns what's there), `write_at(pos, b)`; cursor `read(n)`/`write(b)`; `seek`/`seek_from_end`
   (return the new position, panic on a closed file), `tell`, `size`, `truncate`, `sync` (fsync —
   the durability call), `close` (double close is an error result). Dropping the last reference
   closes the fd as a safety net; `close()` is still the API.
@@ -258,8 +258,8 @@ Class-first, like everything builtin. Errors are `Result<T>`; `Error.kind` carri
   one file contend. Single-writer databases.
 - Every owned file descriptor is close-on-exec, so running a child cannot leak a live
   `File` into it.
-- **Dir statics**: `make`, `make_all`, `list` → `Result<List<string>>` (sorted), `remove`
-  (empty only), `remove_all` (recursive), `exists`, `temp`, `sync` — fsync a directory, the
+- **Dir statics**: `create`, `create_all`, `list` → `Result<List<string>>` (sorted), `remove`
+  (empty only), `remove_all` (recursive), `exists`, `temp_path`, `sync` — fsync a directory, the
   rename-commit pattern's second half; `walk(path)` → `Result<List<string>>` — recursive,
   files and symlinks only (never follows a link), paths relative to the argument, sorted.
 - **std.path** (pure Beans string math, no fs access): `join(a, b)` (absolute `b` wins),
@@ -272,22 +272,23 @@ Class-first, like everything builtin. Errors are `Result<T>`; `Error.kind` carri
   Buffering and line policy are Beans source; only `File.read_at` stays native. The old
   native `BufReader` type is gone.
 - **std.os**: `args()` (`beansc run f.b -- a b` passes them; the native binary uses argv),
-  `env(name)` → `Option<string>`, `exit(code)`, `now_ms`, `ticks_ms`, `sleep_ms`.
+  `env(name)` → `Option<string>`, `exit(code)`. The millisecond clocks live in
+  `std.time` as `wall_millis`, `monotonic_millis` and `sleep_millis`.
 - **std.io**: `println`/`print`, `eprintln`/`eprint` (stderr), `read_line()` → `Option<string>`
 
 High-level compiler-shipped packages are normal Beans source under `stdlib/std`.
-`std.collections` provides `count_int`, `sum_int`, `frequencies`, `unique`, and
-the generic `count`, `filter`, `transform`, and `unique_of` functions. Its
-`increment`, `get_or_insert`, `merge_with`, `remove_if`, and `map_values`
+`std.collections` provides `sum_int` and `frequencies`, and the generic `count`,
+`filter`, `transform`, and `unique` functions. Its `increment`,
+`get_or_insert_with`, `merge_with`, `remove_if`, and `map_values_with_key`
 functions mutate a caller Map through `inout`; these are ordinary generic Beans
 functions, including for structural wide keys.
 `Option` provides instance methods `map`, `and_then`, and `filter`; `Result`
 provides instance methods `map`, `and_then`, and `recover`. There are no
 `std.option` or `std.result` packages. `std.math`
-provides `clamp_int` and `gcd`; `std.bytes` provides Beans-written `crc32`,
-`varint_size`, `encode_varint`, `append_varint`, `decode_varint`, and
-`decode_varint_at_or`; `std.path` is fully
-Beans-written; `std.fmt` implements `hex`, `bin`, and `group` in Beans; and
+provides `clamp` and `gcd`; `std.bytes` provides Beans-written `crc32`,
+`uvarint_size`, `encode_uvarint`, `append_uvarint`, `decode_uvarint`, and
+`decode_uvarint_at_or`; `std.path` is fully
+Beans-written; `std.fmt` implements `hex`, `binary`, and `group_digits` in Beans; and
 `std.fs` implements the high-level whole-file byte/write/copy helpers in Beans;
 `std.reader` implements buffered line reading in Beans.
 Floating-point/decimal conversion and guarded padding remain native. These go through
@@ -330,11 +331,11 @@ Interpolation assembles, fmt formats. No printf — the language has no varargs.
 - `pad_left(s, width)` / `pad_right(s, width)` — spaces, byte width; already-wide input
   comes back unchanged.
 - `float(x, places)` — fixed decimals (`3.14`), places clamped to 0..100.
-- `dec(d, places)` — exact decimals: rounds half-even when narrowing, zero-pads
-  when widening. `fmt.dec(19.995, 2)` is `"20.00"`.
-- `hex(n)` / `bin(n)` — the 64-bit two's-complement pattern, lowercase, no prefix:
+- `decimal(d, places)` — exact decimals: rounds half-even when narrowing, zero-pads
+  when widening. `fmt.decimal(19.995, 2)` is `"20.00"`.
+- `hex(n)` / `binary(n)` — the 64-bit two's-complement pattern, lowercase, no prefix:
   `hex(-1)` is 16 f's.
-- `group(n, sep)` — thousands grouping: `group(1234567, ",")` is `"1,234,567"`.
+- `group_digits(n, sep)` — thousands grouping: `group_digits(1234567, ",")` is `"1,234,567"`.
 
 ## std.encoding (v0.9, implemented)
 
@@ -384,7 +385,7 @@ import std.encoding.json
 let root: json.Value = json.parse("\{\"a\":[1, 2.5, \"x\"]\}")?
 match root.get("a") {
     some(list) => {
-        for item: json.Value in list.items()? {
+        for item: json.Value in list.elements()? {
             io.println("{item.kind()}")
         }
     }
@@ -410,7 +411,7 @@ let text: string = json.stringify(root)?
   `floating`, the reading every RFC 8259 parser gives it.
 - Typed access returns `Result`: `to_bool`, `to_int` (signed, or unsigned
   when it fits), `to_uint`, `to_float` (floating only), `number()` (any
-  numeric, converted), `to_string`. Arrays: `len`, `at(index)`, `items()`.
+  numeric, converted), `to_string`. Arrays: `len`, `at(index)`, `elements()`.
   Objects: `len`, `get(key)` → `Option<Value>`, `entries()` →
   `List<Entry>`.
 - Object entries keep document order, duplicates included: `entries()`
@@ -420,7 +421,7 @@ let text: string = json.stringify(root)?
   drops. Nothing is eagerly copied into Beans collections — this is a DOM
   API over yyjson's tree, not a converter. Typed struct decoding would be a
   separate compiler feature; this version does not pretend to reflect.
-- Building: `Value.of_null/of_bool/of_int/of_uint/of_float/of_string`,
+- Building: `Value.null/from_bool/from_int/from_uint/from_float/from_string`,
   `Value.array()`, `Value.object()`, then `push(item)` and
   `add(key, item)`. Inserts deep-copy the argument, so a value can be
   inserted twice or across documents safely. Values from `parse` are
@@ -473,9 +474,9 @@ let out: string = xml.stringify_pretty(doc, "  ")?
 - **Ownership**: `Document` and `Node` share one owner; a child node stays
   valid after the binding that held its document is gone, and the native
   document is freed with the last reference.
-- Building: `Document.new_document()`, `append_declaration(version,
+- Building: `Document.empty()`, `append_declaration(version,
   encoding)`, `append_element`, `append_text`, `append_cdata`,
-  `append_comment`, `append_instruction`, `set_attr` (duplicate attribute
+  `append_comment`, `append_processing_instruction`, `set_attribute` (duplicate attribute
   names on one element are refused with kind `exists`). Escaping and
   serialization are pugixml's writer; `stringify` is compact,
   `stringify_pretty(doc, indent)` takes any indent up to 16 bytes.
@@ -541,8 +542,8 @@ let value: u32 = binary.read_u32(wire, 0, binary.ByteOrder.big)?
   `std.intrinsic`, and float conversion borrows one scoped stack slot
   (`RawPtr.with_local`) rather than allocating.
 - Varints: `append_uvarint`/`read_uvarint` are unsigned LEB128 — the same
-  wire format as `Bytes.append_varint`, whose raw two's-complement
-  behaviour is unchanged. `append_varint`/`read_varint` are the signed
+  wire format as `Bytes.append_uvarint`, whose raw two's-complement
+  behaviour is unchanged. `append_uvarint`/`read_varint` are the signed
   zigzag form matching Go's `PutVarint`. Reads report the value and its
   consumed byte count; running past ten bytes or 64 bits is kind
   `overflow`.
@@ -632,7 +633,7 @@ value.set(9)
 let owned: Box<int> = move value
 
 var arena: Arena<string> = new Arena(1024)
-let handle: int = arena.put("bean")
+let handle: int = arena.add("bean")
 let word: string = arena.at(handle)       // checked; panics on a bad handle
 let maybe: Option<string> = arena.get(handle)
 arena.clear()                             // drops all values in one pass
@@ -644,7 +645,7 @@ boxed chains do not recurse during teardown. Structs, fixed arrays, SIMD,
 slices, inline Option/Result values, and decimals keep their real inline layout;
 nested ARC fields are retained and dropped recursively.
 
-`new Arena(capacity)` needs a declared `Arena<T>` type or an explicit type argument. `put(value)` appends and
+`new Arena(capacity)` needs a declared `Arena<T>` type or an explicit type argument. `add(value)` appends and
 returns a stable integer handle; `len`, `at`, `get`, and `clear` operate on the
 current region. `clear` keeps capacity but invalidates every old handle. This
 arena stores typed-width values in one contiguous region. Wide values and
@@ -659,7 +660,7 @@ observes the same control block without keeping the value alive:
 let shared: Shared<string> = new Shared("beans")
 let weak: Weak<string> = shared.downgrade()
 let live: Option<Shared<string>> = weak.upgrade()
-let gone: bool = weak.expired()
+let gone: bool = weak.is_expired()
 ```
 
 `get()` returns a copy of the value. Wide values and decimals stay inline in a
@@ -867,7 +868,7 @@ let u: User = new User("jul")
 - `new Class(...)` is the only class-construction form and always follows the
   class's `init` rules. Class field literals and plain `Class(...)` calls are errors.
 - Named statics remain for fallible or non-construction operations, including
-  `File.open`, `MMap.open`, `MMap.open_shared`, `KV.open_in`, `Bytes.from`,
+  `File.open`, `MMap.open`, `MMap.open_shared_memory`, `KV.open_in`, `Bytes.from`,
   `RawPtr.alloc`, `Slice.from_raw`, `TcpListener.bind`, `TcpStream.connect`,
   `UdpSocket.bind`, `Address.resolve`, and every SIMD family's `splat`, `of`, `load`
   and `load_unaligned`.
@@ -875,7 +876,7 @@ let u: User = new User("jul")
   named static — never as a module function. A module function is for work that yields
   no object: `io.println`, `os.args`, `time.monotonic_nanos`, `random.below`,
   `cpu.has`, `intrinsic.popcount`, `fmt.pad_left`. So it is `TcpListener.bind(...)`,
-  not `net.listen(...)`, and `MMap.open_shared(...)`, not `shm.open(...)`. This is the
+  not `net.listen(...)`, and `MMap.open_shared_memory(...)`, not `shm.open(...)`. This is the
   line between the OOP surface and the handful of free functions, and it is the one
   rule to check when adding to `stdlib/std`.
 - Infallible constructor-like builtins use `new`: `Bytes`, `Box`, `Arena`,
@@ -1156,7 +1157,7 @@ match code {
 **Statement position** additionally allows block arms — several statements, no value (v0.4):
 
 ```
-match ch.recv() {
+match ch.receive() {
     some(v) => {
         total += v
         io.println("got {v}")
@@ -1212,21 +1213,21 @@ let n: int = t.join()               // wait + get the value
 
 // mutex wraps the data itself — no way to touch it without holding the lock
 let ledger: Mutex<Ledger> = new Mutex(new Ledger())
-ledger.with(fn(l: Ledger) {
+ledger.with_lock(fn(l: Ledger) {
     l.post(entry)                   // locked for exactly this block, auto-unlock
 })
 
 // channels move work between threads
 let ch: Channel<string> = new Channel(64)      // buffered
 ch.send("job")
-let job: Option<string> = ch.recv()            // none when closed and empty
+let job: Option<string> = ch.receive()         // none when closed and empty
 
 // atomics for plain counters
 let hits: AtomicInt = new AtomicInt(0)
 hits.add(1)
 ```
 
-- `Mutex<T>` holds the value inside it — `with` locks, runs your closure, unlocks on any exit path. No forgotten unlocks.
+- `Mutex<T>` holds the value inside it — `with_lock` locks, runs your closure, unlocks on any exit path. No forgotten unlocks.
 - A `thread.spawn` closure may capture only `Send` values and must return a
   `Send` value. Plain class references, List, Map, Box, Arena, Bytes, File, and
   MMap are non-`Send`. Scalars, immutable strings, AtomicInt, Mutex, a Channel
@@ -1350,9 +1351,9 @@ async fn main() {
   thread. Long CPU work therefore blocks every other task — put it on
   `std.thread`. Cancellation is cooperative: it takes effect at suspension
   points, never mid-statement.
-- **Readiness awaits.** `await net.await_readable(handle)` (and
-  `await_writable`) suspends until the descriptor is ready — a socket's
-  `.handle()`, or any pollable descriptor on POSIX (Windows readiness is
+- **Readiness awaits.** `await net.readable(handle)` (and
+  `writable`) suspends until the descriptor is ready — a socket's
+  `.poll_handle()`, or any pollable descriptor on POSIX (Windows readiness is
   socket-handle only). Before the hidden reactor opens, POSIX validates with
   allocation-free `fcntl(F_GETFD)` and Windows with `getsockopt(SO_TYPE)`.
   An invalid watched number therefore cannot be reused for the reactor's own
@@ -1389,7 +1390,7 @@ async fn main() {
   while the number stays unused, and cannot be told apart from a live
   descriptor once the number is reused — close through the handle, not
   behind it. The same borrow rule guards the other direction: a
-  `.handle()` number is borrowed, so closing the handle and reusing the
+  `.poll_handle()` number is borrowed, so closing the handle and reusing the
   number *before* a child that holds the number first suspends means
   that child watches whatever the number means by then.
 - **Runtime profiles.** Pure-compute async — `async fn`, `await`,
@@ -1750,7 +1751,7 @@ Atomic.fence(MemoryOrder.seq_cst)
 - A narrow cell wraps inside its own width in both backends: `Atomic<u8>` holding
   250 plus 10 is 4. `Atomic<bool>` is a one-byte cell holding 0 or 1, because LLVM
   cannot do an atomic on a type that is not byte-sized.
-- `AtomicInt` stays as it was — sequentially consistent, `get`/`set`/`add` — and is
+- `AtomicInt` stays as it was — sequentially consistent, `load`/`store`/`add_and_get` — and is
   unaffected.
 
 `wait` and `notify` park and wake threads instead of spinning:
@@ -1894,15 +1895,16 @@ match random.below(6) { ok(roll) => ..., err(e) => ... }
   the whole problem.
 - Invalid input (a negative count, a non-positive bound) is a `Result` with kind
   `invalid`, not a panic: these are ordinary failures.
-- `os.now_ms` and `os.ticks_ms` are unchanged; the nanosecond forms are the ones to
+- The millisecond clocks are `time.wall_millis` and `time.monotonic_millis`; the
+  nanosecond forms are the ones to
   reach for when resolution matters.
 
 ### Shared memory (v0.8, implemented)
 
 ```beans
-match MMap.open_shared("/name", 128, true) { ok(r) => r.put_u64(0, 7), err(e) => ... }
-match MMap.open_shared("/name", 128, false) { ok(r) => r.get_u64(0), err(e) => ... }
-match MMap.unlink_shared("/name") { ok(gone) => ..., err(e) => ... }
+match MMap.open_shared_memory("/name", 128, true) { ok(r) => r.put_u64(0, 7), err(e) => ... }
+match MMap.open_shared_memory("/name", 128, false) { ok(r) => r.get_u64(0), err(e) => ... }
+match MMap.unlink_shared_memory("/name") { ok(gone) => ..., err(e) => ... }
 ```
 
 - A POSIX shared-memory object comes back as an ordinary **`MMap`** — shared memory is
@@ -1917,7 +1919,7 @@ match MMap.unlink_shared("/name") { ok(gone) => ..., err(e) => ... }
 - The mapping is always readable and writable, and the descriptor is closed once the
   mapping exists — so `resize()` is not available on a shm mapping, which is correct:
   the size is fixed when the object is created.
-- `MMap.unlink_shared(name)` removes the **name**. Mappings that already exist keep working
+- `MMap.unlink_shared_memory(name)` removes the **name**. Mappings that already exist keep working
   until their last user drops them, exactly like unlinking an open file. Opening the
   name afterwards fails with kind `not_found`.
 
@@ -1937,16 +1939,17 @@ match cmd.run() {
 - **There is no shell.** A command is a program name and a list of arguments, and they
   reach `execvp` untouched. A filename containing a space, a quote or a semicolon is
   just a filename, so there is nothing to escape.
-- `Command` is built up and then run: `arg`, `cwd`, `env`, `input`/`input_text`,
+- `Command` is built up and then run: `arg`, `cwd`, `env`, `stdin_bytes`/`stdin_text`,
   `capture_limit`. `new process.Command(program).run()` is the short form; there is no
   module-level `run`, because a static `run` beside the instance `run` would read as
   two different things wearing one name.
 - **A program that could not be started is `err`; a program that ran and failed is
   `ok` with a non-zero status.** Telling those apart needs a close-on-exec pipe in the
   runtime — without it "no such file" and "exited 127" are the same observation.
-- `Output` carries `status`, `out` and `err` as `Bytes`, with `ok()`, `signalled()`,
-  `text()` and `error_text()`. A signal reports the **negative** signal number, so a
-  clean exit and a kill stay distinguishable without a second field.
+- `Output` carries `status`, `out` and `err` as `Bytes`, with `succeeded()`,
+  `terminated_by_signal()`, `stdout_text()` and `stderr_text()`. A signal reports the
+  **negative** signal number, so a clean exit and a kill stay distinguishable without
+  a second field.
 - Both output streams are drained **at once**, so a program writing heavily to both
   cannot deadlock. Capture is capped (8 MiB by default), and bytes past the cap are
   drained and discarded; the parent does not close the pipe early and change the
@@ -2028,8 +2031,8 @@ match net.Address.resolve("localhost", 80) {
   `unique` rules apply: a socket cannot be copied, cannot cross `thread.spawn`
   (`unique` ⇒ not `Clone` ⇒ not `Send`), and a socket trapped in a reference cycle never
   runs `deinit`.
-- **`Address` is an ordinary value**: `host` and `port`, with `text()`, `is_ipv6()` and
-  `is_loopback()`. `text()` brackets an IPv6 host (`[::1]:80`) because that is the form
+- **`Address` is an ordinary value**: `host` and `port`, with `to_string()`, `is_ipv6()` and
+  `is_loopback()`. `to_string()` brackets an IPv6 host (`[::1]:80`) because that is the form
   that round-trips.
 - **IPv4 and IPv6 both work, and the family is never chosen by the caller.** Every entry
   point resolves the host through `getaddrinfo` and tries each candidate in turn, so
@@ -2043,8 +2046,8 @@ match net.Address.resolve("localhost", 80) {
   spurious failure.
 - Timeouts are set per socket (`set_timeouts(read_ms, write_ms)`) and `connect` and
   `accept` take one directly. A timeout is an `err` with kind `timeout`, never a hang.
-- `set_nonblocking(on)` and `handle()` exist so a socket can be handed to a readiness
-  poller; `handle()` is a borrow of the descriptor, never ownership.
+- `set_nonblocking(on)` and `poll_handle()` exist so a socket can be handed to a readiness
+  poller; `poll_handle()` is a borrow of the descriptor, never ownership.
 - Errors are `Result` with a specific `kind`: `refused`, `in_use`, `timeout`, `reset`,
   `unreachable`, `not_found` (a name that does not resolve), `closed` (using a socket
   after `close`), `eof`, `invalid`, `permission`, `io`.
@@ -2062,16 +2065,16 @@ match net.Address.resolve("localhost", 80) {
 import std.poll
 
 let watch: poll.Poller = poll.Poller.open()?
-watch.add(server.handle(), 1, poll.Interest.read_only())?      // 1 = the caller's token
-watch.add(stream.handle(), 2, poll.Interest.both())?
-watch.modify(stream.handle(), 2, poll.Interest.write_only())?
+watch.add(server.poll_handle(), 1, poll.Interest.read_only())? // 1 = the caller's token
+watch.add(stream.poll_handle(), 2, poll.Interest.both())?
+watch.modify(stream.poll_handle(), 2, poll.Interest.write_only())?
 
 for event: poll.Event in watch.wait(64, 500)? {
     if event.token == 1 && event.readable { ... }
-    if event.hangup { watch.remove(stream.handle())? }
+    if event.hangup { watch.remove(stream.poll_handle())? }
 }
 watch.wake()?                                             // from this thread
-let signal: int = watch.signal_handle()                   // an int crosses threads
+let signal: int = watch.wake_handle()                   // an int crosses threads
 poll.wake(signal)?                                        // from a worker
 ```
 
@@ -2099,7 +2102,7 @@ poll.wake(signal)?                                        // from a worker
 - **`wake()` makes a blocking `wait` return promptly**, and repeated wakes collapse into
   one: it writes one byte to an internal pipe the poller registered with itself, and the
   wake is never reported as an event.
-- **To wake from another thread, pass `signal_handle()`** — an `int`, because only scalars
+- **To wake from another thread, pass `wake_handle()`** — an `int`, because only scalars
   cross a thread boundary (every class is a local ARC reference) — and call
   `poll.wake(signal)` there. The handle is deliberately **not the descriptor**: after the
   poller closes that number belongs to something else, and a late wake would write a stray
@@ -2121,12 +2124,12 @@ poll.wake(signal)?                                        // from a worker
 import std.signal
 
 let want: int = signal.Signal.interrupt()?
-let watch: signal.Signals = signal.Signals.watch_one(want)?
+let watch: signal.Signals = signal.Signals.watch_signal(want)?
 
 // A readable descriptor, so signals and sockets wait in the same call
-poller.add(watch.handle(), 1, poll.Interest.read_only())?
+poller.add(watch.poll_handle(), 1, poll.Interest.read_only())?
 
-for n: int in watch.pending()? { io.println("got {signal.Signal.name_of(n)?}") }
+for n: int in watch.drain()? { io.println("got {signal.Signal.name(n)?}") }
 watch.close()?
 ```
 
@@ -2136,7 +2139,7 @@ watch.close()?
   cycle collection — so running Beans code there is not something to be careful about, it
   is something to make impossible. `signalfd` on Linux; a private `kqueue` with
   `EVFILT_SIGNAL` on macOS, whose descriptor is itself readable so it nests in the poller.
-- **`Signals` is a `unique class`.** `watch`/`watch_one` block the signals, `pending()`
+- **`Signals` is a `unique class`.** `watch`/`watch_signal` block the signals, `drain()`
   reads and consumes them, `close()` (or `deinit`) unblocks.
 - Signal mask ownership is counted per thread. Two `Signals` values may overlap;
   closing one leaves a number blocked until the last watcher for it closes.
@@ -2146,7 +2149,7 @@ watch.close()?
   `ill`, because those are **synchronous** — they name an instruction that already failed,
   so deferring one and continuing re-runs it forever. Offering them would be offering a
   hang. Names are the portable part; the numbers differ per platform.
-- **`pending()` never blocks**, and reports each signal **at most once per call** however
+- **`drain()` never blocks**, and reports each signal **at most once per call** however
   many times it arrived. That is what Linux guarantees (pending signals are a bitmask, so
   repeats collapse) and macOS's per-signal count is discarded to match.
 - **Reading consumes; closing discards.** A signal taken from the descriptor is removed
@@ -2155,7 +2158,7 @@ watch.close()?
   signal the program had chosen to handle.
 - Watch **before** spawning threads: the block applies to the calling thread and is
   inherited by threads created later, not by ones already running.
-- `Signal.raise_self(n)` sends a signal to this process, so handling is testable in one
+- `Signal.send_to_self(n)` sends a signal to this process, so handling is testable in one
   process. The low-level layer is `std.sig`.
 
 ### std.dylib (v0.8, implemented)
@@ -2665,7 +2668,7 @@ declares one, so `package` stays usable as an ordinary identifier.
 - Named field literals remain for structs; classes construct only with `new`
 - No `+` on strings — interpolation / `std.fmt` / `join` only (v0.3)
 - Private by default everywhere, `pub` to expose (confirmed v0.3)
-- OS threads + checked `Send` captures/returns + `Mutex<T>.with` + `Channel<T>`
+- OS threads + checked `Send` captures/returns + `Mutex<T>.with_lock` + `Channel<T>`
 - `decimal` built-in for money (v0.2)
 - Go-style remote imports from git hosts + beans.pot (v0.2)
 - `Result<T>`, error type defaults to built-in `Error`

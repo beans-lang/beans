@@ -71,8 +71,8 @@ fn doctor_tool_line(program: string, flag: string) -> string {
     command.arg(flag)
     match command.run() {
         ok(done) => {
-            if !done.ok() { return "" }
-            for line: string in done.text().lines() {
+            if !done.succeeded() { return "" }
+            for line: string in done.stdout_text().lines() {
                 let trimmed: string = line.trim()
                 if trimmed != "" { return trimmed }
             }

@@ -75,5 +75,5 @@ fn main() {
     }
     let exact: decimal = "7.25".to_decimal().expect("must parse")
     io.println("expected {exact}")
-    io.println("formatted {fmt.dec(a, 4)}")
+    io.println("formatted {fmt.decimal(a, 4)}")
 }

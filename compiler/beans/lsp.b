@@ -216,7 +216,7 @@ fn lsp_uri_path(uri: string) -> string {
         bytes.push(byte)
         index += 1
     }
-    return bytes.to_string_full()
+    return bytes.to_string()
 }
 
 fn lsp_path_uri(file_path: string) -> string {
@@ -406,7 +406,7 @@ fn lsp_project(entry: string,
         }
     }
     if project.files.len() == 0 &&
-       documents.contains(lsp_path_uri(entry)) {
+       documents.contains_key(lsp_path_uri(entry)) {
         project.files.push(
             new LspFile(
                 entry,
@@ -1264,7 +1264,7 @@ fn lsp_request_word(
     documents: Map<string, LspDocument>) ->
     LspWord {
     let uri: string = lsp_document_uri(params)
-    if !documents.contains(uri) {
+    if !documents.contains_key(uri) {
         return new LspWord("", 0, 0, 0)
     }
     var line: int = 0
@@ -1303,7 +1303,7 @@ fn lsp_read_message() -> Option<string> {
         if matched == 4 { break }
     }
     let header_text: string =
-        header.to_string_full()
+        header.to_string()
     var length: int = -1
     for line: string in header_text.lines() {
         let clean: string = line.trim()
@@ -1323,7 +1323,7 @@ fn lsp_read_message() -> Option<string> {
         if byte < 0 { return none }
         body.set(index, byte)
     }
-    return some(body.to_string_full())
+    return some(body.to_string())
 }
 
 fn lsp_write_message(message: string) {
@@ -1370,7 +1370,7 @@ class SelfLspServer {
     }
 
     fn publish(uri: string) {
-        if !self.documents.contains(uri) { return }
+        if !self.documents.contains_key(uri) { return }
         let document: LspDocument =
             self.documents[uri]
         let project: LspProject =
@@ -1508,7 +1508,7 @@ class SelfLspServer {
         let word: LspWord =
             lsp_request_word(params, self.documents)
         if word.text == "" ||
-           !self.documents.contains(uri) {
+           !self.documents.contains_key(uri) {
             self.reply(id, "null")
             return
         }
@@ -1549,7 +1549,7 @@ class SelfLspServer {
     fn definition(id: BindgenJson,
                   params: BindgenJson) {
         let uri: string = lsp_document_uri(params)
-        if !self.documents.contains(uri) {
+        if !self.documents.contains_key(uri) {
             self.reply(id, "null")
             return
         }
@@ -1572,7 +1572,7 @@ class SelfLspServer {
     fn references(id: BindgenJson,
                   params: BindgenJson) {
         let uri: string = lsp_document_uri(params)
-        if !self.documents.contains(uri) {
+        if !self.documents.contains_key(uri) {
             self.reply(id, "[]")
             return
         }
@@ -1591,7 +1591,7 @@ class SelfLspServer {
     fn signature_help(id: BindgenJson,
                       params: BindgenJson) {
         let uri: string = lsp_document_uri(params)
-        if !self.documents.contains(uri) {
+        if !self.documents.contains_key(uri) {
             self.reply(id, "null")
             return
         }
@@ -1663,7 +1663,7 @@ class SelfLspServer {
     fn document_symbols(id: BindgenJson,
                         params: BindgenJson) {
         let uri: string = lsp_document_uri(params)
-        if !self.documents.contains(uri) {
+        if !self.documents.contains_key(uri) {
             self.reply(id, "[]")
             return
         }
@@ -1705,7 +1705,7 @@ class SelfLspServer {
     fn semantic_tokens(id: BindgenJson,
                        params: BindgenJson) {
         let uri: string = lsp_document_uri(params)
-        if !self.documents.contains(uri) {
+        if !self.documents.contains_key(uri) {
             self.reply(
                 id,
                 lsp_object([
@@ -1753,7 +1753,7 @@ class SelfLspServer {
     fn rename(id: BindgenJson,
               params: BindgenJson) {
         let uri: string = lsp_document_uri(params)
-        if !self.documents.contains(uri) {
+        if !self.documents.contains_key(uri) {
             self.reply(id, "null")
             return
         }
@@ -1806,7 +1806,7 @@ class SelfLspServer {
     fn completion(id: BindgenJson,
                   params: BindgenJson) {
         let uri: string = lsp_document_uri(params)
-        if !self.documents.contains(uri) {
+        if !self.documents.contains_key(uri) {
             self.reply(
                 id,
                 lsp_object([
@@ -1939,7 +1939,7 @@ class SelfLspServer {
             match params.get("contentChanges") {
                 some(changes) => {
                     if changes.items.len() != 0 &&
-                       self.documents.contains(uri) {
+                       self.documents.contains_key(uri) {
                         let last: BindgenJson =
                             changes.items[
                                 changes.items.len() - 1]
@@ -1955,7 +1955,7 @@ class SelfLspServer {
         if method == "textDocument/didClose" {
             let uri: string =
                 lsp_document_uri(params)
-            if self.documents.contains(uri) {
+            if self.documents.contains_key(uri) {
                 let notice: string =
                     lsp_object([
                         lsp_member(

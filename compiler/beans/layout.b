@@ -217,7 +217,7 @@ class LayoutEngine {
         for field: HirField in declaration.fields {
             match self.inline_record(field.type) {
                 some(child) => {
-                    if nested.contains(child.qualified) {
+                    if nested.contains_key(child.qualified) {
                         self.fail_field(
                             field,
                             "recursive inline layout through field '{field.name}' has no finite size — use RawPtr or Box for the edge")
@@ -326,7 +326,7 @@ class LayoutEngine {
     fn layout_type_inner(type: HirType,
                          substitutions: Map<string, HirType>,
                          active: Map<string, bool>) -> LayoutAnswer {
-        if substitutions.contains(type.name) {
+        if substitutions.contains_key(type.name) {
             return self.layout_type_inner(
                 substitutions[type.name], substitutions, active)
         }
@@ -424,7 +424,7 @@ class LayoutEngine {
                 "{display_symbol(declaration.qualified)} is an opaque C type and has no known layout"))
         }
         let key: string = render_hir_type(type)
-        if active.contains(key) {
+        if active.contains_key(key) {
             return new RecordLayoutAnswer(layout_error(
                 "recursive inline layout for {key} has no finite size"))
         }

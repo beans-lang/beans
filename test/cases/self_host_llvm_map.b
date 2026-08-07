@@ -25,8 +25,8 @@ fn main() {
     codes["two"] = 2
     io.println(codes.insert("three", 3))
     io.println(codes.insert("three", 30))
-    io.println(codes.contains("one"))
-    io.println(codes.contains("missing"))
+    io.println(codes.contains_key("one"))
+    io.println(codes.contains_key("missing"))
     io.println(codes["two"])
 
     var text: string = "old"

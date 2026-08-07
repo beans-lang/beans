@@ -26,13 +26,13 @@ pub class Reader {
             if self.position == self.limit {
                 if self.eof {
                     if output.len() == 0 { return ok(none) }
-                    return ok(some(output.to_string_full()))
+                    return ok(some(output.to_string()))
                 }
                 let next: Bytes = self.file.read_at(self.offset, 8192)?
                 if next.len() == 0 {
                     self.eof = true
                     if output.len() == 0 { return ok(none) }
-                    return ok(some(output.to_string_full()))
+                    return ok(some(output.to_string()))
                 }
                 self.offset += next.len()
                 self.position = 0
@@ -46,7 +46,7 @@ pub class Reader {
             self.position = end
             if end < self.limit {
                 self.position += 1
-                return ok(some(output.to_string_full()))
+                return ok(some(output.to_string()))
             }
         }
         return ok(none)

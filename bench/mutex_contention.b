@@ -12,7 +12,7 @@ class Counter {
 fn bump_many(counter: Mutex<Counter>, n: int) -> int {
     var i: int = 0
     for i < n {
-        counter.with(fn(value: Counter) { value.value += 1 })
+        counter.with_lock(fn(value: Counter) { value.value += 1 })
         i += 1
     }
     return n
@@ -30,6 +30,6 @@ fn main() {
     let t3: Thread<int> = thread.spawn(fn() -> int { return bump_many(counter, n - q * 3) })
     let done: int = t0.join() + t1.join() + t2.join() + t3.join()
     var final: int = 0
-    counter.with(fn(value: Counter) { final = value.value })
+    counter.with_lock(fn(value: Counter) { final = value.value })
     io.println("mutex_contention {final} {done}")
 }

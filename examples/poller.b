@@ -28,7 +28,7 @@ import std.time
 fn accept_when_ready() -> Result<int> {
     let watch: poll.Poller = poll.Poller.open()?
     let server: net.TcpListener = net.TcpListener.bind("127.0.0.1", 0)?
-    watch.add(server.handle(), 100, poll.Interest.read_only())?
+    watch.add(server.poll_handle(), 100, poll.Interest.read_only())?
 
     // Nothing has connected, so a bounded wait comes back empty. Empty is not an
     // error — "nothing is ready" is an ordinary answer.
@@ -72,7 +72,7 @@ fn only_the_ready_ones() -> Result<int> {
     for i < 10 {
         var client: net.TcpStream = net.TcpStream.connect("127.0.0.1", port)?
         let session: net.TcpStream = server.accept_timeout(2000)?
-        watch.add(session.handle(), 200 + i, poll.Interest.read_only())?
+        watch.add(session.poll_handle(), 200 + i, poll.Interest.read_only())?
         // Clients 2, 5 and 7 say something, and then are stored like the rest.
         if i == 2 || i == 5 || i == 7 {
             client.write_text("hi")?
@@ -112,7 +112,7 @@ fn hangup_is_its_own_signal() -> Result<int> {
     let server: net.TcpListener = net.TcpListener.bind("127.0.0.1", 0)?
     let client: net.TcpStream = net.TcpStream.connect("127.0.0.1", server.port()?)?
     let session: net.TcpStream = server.accept_timeout(2000)?
-    watch.add(session.handle(), 300, poll.Interest.read_only())?
+    watch.add(session.poll_handle(), 300, poll.Interest.read_only())?
 
     client.write_text("bye")?
     client.shutdown_write()?
@@ -132,7 +132,7 @@ fn hangup_is_its_own_signal() -> Result<int> {
     // And the data it sent before closing is still there to read: a socket can be both
     // hung up and worth reading, which is why they are separate flags.
     let last: Bytes = session.read(8)?
-    io.println("with its last words intact [{last.to_string_full()}]")
+    io.println("with its last words intact [{last.to_string()}]")
     io.println("readable was reported too {readable}")
     return ok(1)
 }
@@ -145,13 +145,13 @@ fn interest_can_change() -> Result<int> {
     let session: net.TcpStream = server.accept_timeout(2000)?
 
     // A fresh connected socket has room, so write-readiness is immediate.
-    watch.add(session.handle(), 400, poll.Interest.write_only())?
+    watch.add(session.poll_handle(), 400, poll.Interest.write_only())?
     let writable: List<poll.Event> = watch.wait(8, 500)?
     io.println("a fresh socket is writable {writable.len() == 1}")
     io.println("and not readable {!writable.get(0).or(new poll.Event()).readable}")
 
     // Switch to watching for data instead. Nothing has arrived, so it goes quiet.
-    watch.modify(session.handle(), 400, poll.Interest.read_only())?
+    watch.modify(session.poll_handle(), 400, poll.Interest.read_only())?
     let quiet: List<poll.Event> = watch.wait(8, 50)?
     io.println("after switching to reads it is quiet {quiet.len() == 0}")
 
@@ -165,7 +165,7 @@ fn interest_can_change() -> Result<int> {
     // burn every retry before the data lands. Waiting for readability first, with
     // writability out of the picture, is what makes the merge deterministic.
     client.write_text("data")?
-    watch.modify(session.handle(), 400, poll.Interest.read_only())?
+    watch.modify(session.poll_handle(), 400, poll.Interest.read_only())?
     var arrived: bool = false
     var rounds: int = 0
     for !arrived && rounds < 20 {
@@ -175,7 +175,7 @@ fn interest_can_change() -> Result<int> {
         }
         rounds += 1
     }
-    watch.modify(session.handle(), 400, poll.Interest.both())?
+    watch.modify(session.poll_handle(), 400, poll.Interest.both())?
     var merged: bool = false
     let together: List<poll.Event> = watch.wait(8, 500)?
     for e: poll.Event in together {
@@ -184,7 +184,7 @@ fn interest_can_change() -> Result<int> {
     io.println("readable and writable arrive as one event {merged}")
 
     // Unregister, and it stops being reported even though data is still waiting.
-    watch.remove(session.handle())?
+    watch.remove(session.poll_handle())?
     let gone: List<poll.Event> = watch.wait(8, 50)?
     io.println("removed means not reported {gone.len() == 0}")
     return ok(1)
@@ -214,13 +214,13 @@ fn waking_a_blocked_wait() -> Result<int> {
 // The real use of a wake: a worker on another thread telling the waiter to stop.
 //
 // A `Poller` cannot cross `thread.spawn` — every class is a local ARC reference, so
-// nothing but a scalar can. `signal_handle()` is that scalar. It is deliberately *not*
+// nothing but a scalar can. `wake_handle()` is that scalar. It is deliberately *not*
 // the descriptor: after the poller closes, the number belongs to something else, and a
 // late wake would write a stray byte into an unrelated file. The handle names a slot and
 // a generation instead, so a wake to a closed poller is reported.
 fn woken_from_another_thread() -> Result<int> {
     let watch: poll.Poller = poll.Poller.open()?
-    let signal: int = watch.signal_handle()
+    let signal: int = watch.wake_handle()
     let started: int = time.monotonic_nanos()
     let helper: Thread<bool> = thread.spawn(fn() -> bool {
         // Long enough that the main thread is certainly inside wait.

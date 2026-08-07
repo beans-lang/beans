@@ -31,8 +31,8 @@ fn main() {
     var hits: int = 0
     i = 0
     for i < n {
-        if m.contains(i + seed) { hits += 1 }
-        if m.contains(i + n + seed) { hits += 1 }
+        if m.contains_key(i + seed) { hits += 1 }
+        if m.contains_key(i + n + seed) { hits += 1 }
         i += 1
     }
 

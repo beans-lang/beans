@@ -140,7 +140,7 @@ fn main() {
     for piece: int in bad_bytes {
         var probe: Bytes = Bytes.from("[\"")
         probe.push(piece)
-        probe.append_str("\"]")
+        probe.append_string("\"]")
         match json.parse_bytes(probe) {
             ok(_) => { utf8_tally.note(true) }
             err(_) => { utf8_tally.note(false) }
@@ -183,22 +183,22 @@ fn main() {
     var byte_tally: Tally = new Tally()
     var json_nul: Bytes = Bytes.from("[")
     json_nul.push(0)
-    json_nul.append_str("]")
+    json_nul.append_string("]")
     match json.parse_bytes(json_nul) {
         ok(_) => { byte_tally.note(true) }
         err(_) => { byte_tally.note(false) }
     }
     var xml_nul: Bytes = Bytes.from("<a>")
     xml_nul.push(0)
-    xml_nul.append_str("</a>")
+    xml_nul.append_string("</a>")
     match xml.parse_bytes(xml_nul) {
         ok(_) => { byte_tally.note(true) }
         err(_) => { byte_tally.note(false) }
     }
     var b64_high: Bytes = new Bytes(0)
     b64_high.push(0x80)
-    b64_high.append_str("AAA")
-    base64_probe(byte_tally, b64_high.to_string_full())
+    b64_high.append_string("AAA")
+    base64_probe(byte_tally, b64_high.to_string())
     io.println(byte_tally.line("embedded NUL and high bytes"))
 
     // ---- truncation sweep: every prefix of a valid document ----
@@ -251,7 +251,7 @@ fn main() {
                 err(_) => { mutated.note(false) }
             }
         } else {
-            match base64.decode(sample.to_string_full()) {
+            match base64.decode(sample.to_string()) {
                 ok(_) => { mutated.note(true) }
                 err(_) => { mutated.note(false) }
             }
@@ -282,13 +282,13 @@ fn main() {
     }
     var padding_run: Bytes = new Bytes(0)
     for index: int in 0..10000 { padding_run.push(61) }
-    match base64.decode(padding_run.to_string_full()) {
+    match base64.decode(padding_run.to_string()) {
         ok(data) => io.println("padding run accepted {data.len()}"),
         err(e) => io.println("padding run {e.kind}"),
     }
     var alphabet_run: Bytes = new Bytes(0)
     for index: int in 0..10000 { alphabet_run.push(65 + index % 26) }
-    match base64.decode(alphabet_run.to_string_full()) {
+    match base64.decode(alphabet_run.to_string()) {
         ok(data) => io.println("alphabet run decoded {data.len()}"),
         err(e) => io.println("alphabet run {e.kind}"),
     }

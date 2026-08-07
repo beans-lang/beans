@@ -324,11 +324,11 @@ class CAbiTextBuilder {
                             generated
                     }
                 }
-                if self.emitted.contains(
+                if self.emitted.contains_key(
                        declaration.qualified) {
                     return generated
                 }
-                if self.active.contains(
+                if self.active.contains_key(
                        declaration.qualified) {
                     return generated
                 }

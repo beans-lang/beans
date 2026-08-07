@@ -12,8 +12,8 @@ fn main() {
     counts_copy["one"] = 10
     counts_copy["three"] = 3
     counts_copy.remove("two")
-    io.println("{counts.len()} {counts.get("one").or(-1)} {counts.contains("three")}")
-    io.println("{counts_copy.len()} {counts_copy.get("one").or(-1)} {counts_copy.contains("two")}")
+    io.println("{counts.len()} {counts.get("one").or(-1)} {counts.contains_key("three")}")
+    io.println("{counts_copy.len()} {counts_copy.get("one").or(-1)} {counts_copy.contains_key("two")}")
 
     var ordered: OrderedMap<int, string> = {1: "first", 2: "second"}
     var ordered_copy: OrderedMap<int, string> = ordered.clone()

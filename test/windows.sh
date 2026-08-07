@@ -208,7 +208,7 @@ declare -a refused_names=()
 # No TMPDIR games: wine requires an absolute TMPDIR for its own sockets (a
 # relative one aborts wine itself), and the fs examples are already proven
 # temp-path independent — make test runs them on macOS and Linux, whose
-# TMPDIRs differ, with byte-identical output. They use Dir.temp() as a base
+# TMPDIRs differ, with byte-identical output. They use Dir.temp_path() as a base
 # and never print it.
 #
 # A bare wine64 prefix synthesizes no Path variable at all, and files.b
@@ -291,11 +291,11 @@ fn main() {
     let child_path: string = os.env("BEANS_GATE_CHILD").or("missing")
     var child: process.Command = new process.Command(child_path)
     child.arg("alpha").arg("two words")
-    child.input_text("over the pipe\n")
+    child.stdin_text("over the pipe\n")
     match child.run() {
         ok(done) => {
-            io.println("out [{done.text().trim()}]")
-            io.println("err [{done.error_text().trim()}]")
+            io.println("out [{done.stdout_text().trim()}]")
+            io.println("err [{done.stderr_text().trim()}]")
             io.println("status {done.status}")
         }
         err(e) => io.println("spawn failed: {e.kind}"),
@@ -338,7 +338,7 @@ import std.signal
 fn main() {
     match signal.Signal.user1() {
         ok(number) => {
-            match signal.Signals.watch_one(number) {
+            match signal.Signals.watch_signal(number) {
                 ok(_) => io.println("watch unexpectedly worked"),
                 err(e) => io.println("watch refused: {e.kind}: {e.msg}"),
             }

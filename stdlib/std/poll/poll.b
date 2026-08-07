@@ -152,13 +152,13 @@ pub unique class Poller {
     /// after this poller closes reports kind `closed` instead of writing a stray byte
     /// into whatever inherited the descriptor number. Hand it to a worker and let the
     /// worker call `poll.wake(signal)`.
-    pub fn signal_handle() -> int {
+    pub fn wake_handle() -> int {
         return self.signal
     }
 
     /// Closes it now and reports any error. `deinit` closes anyway but cannot report.
     ///
-    /// Every `signal_handle()` handed out becomes stale here, so a worker that wakes a
+    /// Every `wake_handle()` handed out becomes stale here, so a worker that wakes a
     /// closed poller gets an error rather than corrupting an unrelated descriptor.
     pub fn close() -> Result<bool> {
         if !self.live { return err("poller: closed", "closed") }
@@ -167,7 +167,7 @@ pub unique class Poller {
     }
 }
 
-/// Wakes a poller from anywhere, given the `int` from its `signal_handle()`.
+/// Wakes a poller from anywhere, given the `int` from its `wake_handle()`.
 ///
 /// A module function rather than a method because the whole point is that the caller
 /// does *not* hold the `Poller` — it is on another thread. A stale handle, from a poller

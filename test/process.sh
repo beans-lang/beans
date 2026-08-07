@@ -112,9 +112,9 @@ import std.io
 import std.process
 fn main() {
     var cmd: process.Command = new process.Command("/bin/cat")
-    cmd.input_text("exactly this")
+    cmd.stdin_text("exactly this")
     match cmd.run() {
-        ok(done) => io.println("[{done.text()}] status {done.status}"),
+        ok(done) => io.println("[{done.stdout_text()}] status {done.status}"),
         err(e) => io.println("failed {e.msg}"),
     }
 }
@@ -199,7 +199,7 @@ fn go() -> Result<int> {
     io.println("fresh environment still searches PATH {by_path.status == 0}")
 
     let term: int = signal.Signal.terminate()?
-    let watch: signal.Signals = signal.Signals.watch_one(term)?
+    let watch: signal.Signals = signal.Signals.watch_signal(term)?
     var masked: process.Command = new process.Command("$tmp/proc_probe")
     masked.arg("mask")
     let clean: process.Output = masked.run()?
@@ -212,7 +212,7 @@ fn go() -> Result<int> {
     inherited.arg("inherit").arg("$tmp/owned")
     let clean_fds: process.Output = inherited.run()?
     if clean_fds.status != 0 {
-        io.println("inherit detail [{clean_fds.error_text().trim()}]")
+        io.println("inherit detail [{clean_fds.stderr_text().trim()}]")
     }
     io.println("owned descriptors are close-on-exec {clean_fds.status == 0}")
     let still_file: bool = owned.size()? == 1
@@ -252,8 +252,8 @@ import std.process
 fn main() {
     var bytes: Bytes = Bytes.from("left")
     bytes.push(0)
-    bytes.append_str("right")
-    let bad: string = bytes.to_string_full()
+    bytes.append_string("right")
+    let bad: string = bytes.to_string()
 
     var program: process.Command = new process.Command(bad)
     match program.run() {
@@ -302,7 +302,7 @@ fn main() {
     var failures: int = 0
     for i < 50 {
         match new process.Command("/usr/bin/true").run() {
-            ok(done) => { if !done.ok() { failures += 1 } }
+            ok(done) => { if !done.succeeded() { failures += 1 } }
             err(e) => { failures += 1 }
         }
         i += 1

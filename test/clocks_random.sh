@@ -82,6 +82,69 @@ SLEEP
 diff -u "$tmp/sleep.interp" "$tmp/sleep.native"
 grep -q '^no sleep came back early true$' "$tmp/sleep.interp"
 
+echo "checking the millisecond clocks live in std.time and match the nanosecond ones"
+# The millisecond clocks moved out of std.os, where their names said nothing about
+# which clock they read. Same two clocks as the nanosecond forms, coarser, and
+# std.os must no longer answer to the old spellings in either compiler.
+cat >"$tmp/millis.b" <<'MILLIS'
+import std.io
+import std.time
+fn main() {
+    let wall_ms: int = time.wall_millis()
+    let wall_ns: int = time.wall_nanos()
+    io.println("wall_millis agrees with wall_nanos {(wall_ns / 1000000) - wall_ms < 1000}")
+    io.println("wall_millis is a real date {wall_ms > 1600000000000}")
+    let before: int = time.monotonic_millis()
+    time.sleep_millis(5)
+    let waited: int = time.monotonic_millis() - before
+    io.println("sleep_millis waited {waited >= 4}")
+    io.println("monotonic_millis is not the wall clock {wall_ms > before * 2}")
+    var backwards: int = 0
+    var last: int = time.monotonic_millis()
+    var i: int = 0
+    for i < 2000 {
+        let now: int = time.monotonic_millis()
+        if now < last { backwards += 1 }
+        last = now
+        i += 1
+    }
+    io.println("monotonic_millis never goes backwards {backwards == 0}")
+}
+MILLIS
+./build/beansc run "$tmp/millis.b" >"$tmp/millis.interp"
+./build/beansc0 run "$tmp/millis.b" >"$tmp/millis.stage0"
+./build/beansc build "$tmp/millis.b" -o "$tmp/millis" >/dev/null 2>&1
+"$tmp/millis" >"$tmp/millis.native"
+diff -u "$tmp/millis.interp" "$tmp/millis.native"
+diff -u "$tmp/millis.interp" "$tmp/millis.stage0"
+diff -u - "$tmp/millis.interp" <<'EXPECTED'
+wall_millis agrees with wall_nanos true
+wall_millis is a real date true
+sleep_millis waited true
+monotonic_millis is not the wall clock true
+monotonic_millis never goes backwards true
+EXPECTED
+
+# The std.os spellings are gone, and both compilers say so in the same words.
+cat >"$tmp/old_clock.b" <<'OLD'
+import std.io
+import std.os
+fn main() {
+    let stamp: int = os.now_ms()
+    io.println(stamp)
+}
+OLD
+set +e
+./build/beansc0 check "$tmp/old_clock.b" >"$tmp/old0" 2>&1; r0=$?
+./build/beansc  check "$tmp/old_clock.b" >"$tmp/old1" 2>&1; r1=$?
+set -e
+if [[ "$r0" -eq 0 || "$r1" -eq 0 ]]; then
+    echo "std.os still answers to now_ms (stage0=$r0 selfhost=$r1)" >&2
+    exit 1
+fi
+diff -u "$tmp/old0" "$tmp/old1"
+grep -q "has no function 'now_ms'" "$tmp/old0"
+
 echo "checking random output is actually random"
 # Not a statistical test — a shape test. A generator stuck at a constant, or one
 # seeded identically each run, is the failure worth catching, and both show up as

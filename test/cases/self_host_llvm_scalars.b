@@ -69,7 +69,7 @@ fn main() {
 
     let strong: Shared<Node> = new Shared(new Node("kept"))
     let weak: Weak<Node> = strong.downgrade()
-    io.println("expired before {weak.expired()}")
+    io.println("expired before {weak.is_expired()}")
     match weak.upgrade() {
         some(again) => { io.println("upgraded {again.get().label}") }
         none => { io.println("gone") }

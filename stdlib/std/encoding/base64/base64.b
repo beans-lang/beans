@@ -178,7 +178,7 @@ pub enum Encoding {
         if borrowed == 0 { free_raw(source) }
         if out_borrowed == 0 { free_raw(target) }
         if wrote < 0 { return "" }
-        return out.to_string_full()
+        return out.to_string()
     }
 
     /// Strict RFC 4648 decoding. See the module comment for the contract.

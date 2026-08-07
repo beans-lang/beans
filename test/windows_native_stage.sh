@@ -88,7 +88,7 @@ mkdir -p "$OUT"
 rm -f "$OUT"/*.exe "$OUT"/*.expected "$OUT"/manifest.tsv
 : > "$OUT/manifest.tsv"
 
-# The fs examples use Dir.temp() as a base and never print it — make test
+# The fs examples use Dir.temp_path() as a base and never print it — make test
 # already proves their output identical across machines whose temp paths
 # differ, which is exactly what lets expectations recorded here hold on a
 # Windows machine with a completely different temp directory.

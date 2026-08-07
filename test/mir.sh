@@ -93,7 +93,7 @@ done
 grep -Eq 'builtin_method set .*Bytes' build/test-mir-self-bytes.txt
 grep -Eq 'builtin_method put_u16 .*Bytes' build/test-mir-self-containers.txt
 grep -Eq 'spawn .*std[.]thread[.]spawn' build/test-mir-self-shared_weak.txt
-grep -Eq 'recv .*Channel' build/test-mir-self-wide_concurrency.txt
+grep -Eq 'receive .*Channel' build/test-mir-self-wide_concurrency.txt
 grep -Eq 'move .*local=l[0-9]+' build/test-mir-self-move_ok.txt
 
 "$beansc" build test/cases/mir_control.b \
