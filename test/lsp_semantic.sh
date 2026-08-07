@@ -334,3 +334,44 @@ builds=$(probe builds "$fixture:1:1" | sed -n 's/^builds //p')
 [ "$builds" = 1 ] ||
     fail "nine snapshot requests at one revision should build once, built $builds"
 echo "ok snapshot reuse: 9 requests, 1 check"
+
+# ---------------------------------------------------------------------------
+# Interpolation positions belong to the syntax tree, not the checked tree
+# ---------------------------------------------------------------------------
+# A `{}` piece is re-lexed as its own little source, so it starts at line 1.
+# The semantic index moves it onto the bytes it really occupies, which is what
+# lets an editor answer inside a string. That fix-up must land on the syntax
+# tree only: the checked tree feeds diagnostics and the position a runtime
+# panic prints, and stage 0 has no such fix-up, so moving the node before
+# checking makes the two compilers disagree about where a program failed.
+echo "checking interpolation positions"
+
+cat >"$scratch/interp.b" <<'BEANS'
+package main
+
+import std.io
+
+fn main() {
+    let b: Bytes = new Bytes(8)
+    io.println("{b.get_u64(9223372036854775800)}")
+}
+BEANS
+
+# the editor side: the piece resolves at the columns it really occupies —
+# `b` is the local, `get_u64` is the built-in method on it
+expect_line symbol "$scratch/interp.b:7:18" 'symbol local:fn:main::main#0'
+expect_line symbol "$scratch/interp.b:7:20" 'symbol builtin:Bytes.get_u64'
+
+# the compiler side: the panic keeps the sub-source position, so the
+# self-hosted compiler and stage 0 print the same words
+# the program is meant to panic, so the non-zero exit is the point
+panic=$("$bin" run "$scratch/interp.b" 2>&1 | tail -1 || true)
+case "$panic" in
+*"panic at 1:"*)
+    ;;
+*)
+    fail "a panic inside an interpolation must report the sub-source
+position, the way stage 0 does, or test/self_host.sh breaks. Got: $panic"
+    ;;
+esac
+echo "ok interpolation: real columns for the editor, sub-source for the checker"
