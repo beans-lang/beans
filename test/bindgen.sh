@@ -181,6 +181,187 @@ grep -F 'length: u32' "$tmp/probe/probe32.b" >"$tmp/match"
     --target x86_64-pc-windows-gnu >"$tmp/probewin.out"
 grep -F 'bytes: u64' "$tmp/probe/probewin.b" >"$tmp/match"
 
+# The C scalar types whose width is the target's choice, not the host's. Each
+# expectation below is what Clang itself reports for that target, which is
+# where bindgen gets the answer too.
+cat >"$tmp/scalars.h" <<'C'
+#include <stddef.h>
+long l_value(long a, unsigned long b);
+size_t s_value(size_t a, ptrdiff_t b);
+char c_value(char a, signed char b, unsigned char c);
+short h_value(short a, unsigned short b);
+int i_value(int a, unsigned int b);
+long long q_value(long long a, unsigned long long b);
+double d_value(float a, double b);
+C
+scalars() { # target, then the greps that must match
+    local target=$1
+    shift
+    "$beansc" bindgen "$tmp/scalars.h" -o "$tmp/scalars.b" \
+        --target "$target" >"$tmp/scalars.out"
+    local wanted
+    for wanted in "$@"; do
+        grep -F "$wanted" "$tmp/scalars.b" >"$tmp/match" || {
+            echo "bindgen: $target did not produce '$wanted'" >&2
+            cat "$tmp/scalars.b" >&2
+            exit 1
+        }
+    done
+}
+# LP64: long follows the pointer.
+scalars x86_64-unknown-linux-gnu \
+    'fn l_value(a: i64, b: u64) -> i64' \
+    'fn s_value(a: u64, b: i64) -> u64' \
+    'fn c_value(a: i8, b: i8, c: u8) -> i8'
+# LLP64: pointers are 64-bit and long is not. Mapping long through the pointer
+# width, or size_t through unsigned long, gets exactly this target wrong.
+scalars x86_64-pc-windows-msvc \
+    'fn l_value(a: i32, b: u32) -> i32' \
+    'fn s_value(a: u64, b: i64) -> u64'
+# ILP32: everything narrows together.
+scalars i686-unknown-linux-gnu \
+    'fn l_value(a: i32, b: u32) -> i32' \
+    'fn s_value(a: u32, b: i32) -> u32'
+# Plain char is unsigned here while `signed char` still is not, which is a
+# distinction a fixed i8 mapping cannot make.
+scalars aarch64-unknown-linux-gnu \
+    'fn c_value(a: u8, b: i8, c: u8) -> u8' \
+    'fn l_value(a: i64, b: u64) -> i64'
+# The widths that do not move stay put on every one of them.
+for target in x86_64-unknown-linux-gnu x86_64-pc-windows-msvc \
+              i686-unknown-linux-gnu aarch64-unknown-linux-gnu; do
+    scalars "$target" \
+        'fn h_value(a: i16, b: u16) -> i16' \
+        'fn i_value(a: i32, b: u32) -> i32' \
+        'fn q_value(a: i64, b: u64) -> i64' \
+        'fn d_value(a: f32, b: f64) -> f64'
+done
+
+# An enum binds when Clang gave it the plain signed-int representation, and
+# only then. Implicit successors and negative values have to survive exactly.
+cat >"$tmp/enum_ok.h" <<'C'
+typedef enum Normal { NORM_A = 0, NORM_B = -3, NORM_C } Normal;
+Normal normal_of(int value);
+C
+"$beansc" bindgen "$tmp/enum_ok.h" -o "$tmp/enum_ok.b" >"$tmp/enum.out"
+"$beansc" check "$tmp/enum_ok.b" >"$tmp/enum.check"
+grep -F 'fn norm_a() -> i32 { return 0 }' "$tmp/enum_ok.b" >"$tmp/match"
+grep -F 'fn norm_b() -> i32 { return -3 }' "$tmp/enum_ok.b" >"$tmp/match"
+grep -F 'fn norm_c() -> i32 { return -2 }' "$tmp/enum_ok.b" >"$tmp/match"
+
+refuse() { # file, expected message fragment, description
+    if "$beansc" bindgen "$1" -o "$tmp/refused.b" ${4:+-- $4} \
+        >"$tmp/refused.out" 2>&1; then
+        echo "bindgen accepted $3" >&2
+        cat "$tmp/refused.out" >&2
+        exit 1
+    fi
+    grep -F "$2" "$tmp/refused.out" >"$tmp/match" || {
+        echo "bindgen: $3 gave the wrong diagnostic" >&2
+        cat "$tmp/refused.out" >&2
+        exit 1
+    }
+}
+
+# A value past int makes Clang widen the whole enum, which would change what
+# every constant in it means.
+cat >"$tmp/enum_big.h" <<'C'
+typedef enum Big { BIG_A = 0, BIG_B = 2147483648u } Big;
+void use_big(Big value);
+C
+refuse "$tmp/enum_big.h" "rather than int" "an enum widened past int"
+cat >"$tmp/enum_fixed.h" <<'C'
+typedef enum Fixed : unsigned char { FIX_A = 1 } Fixed;
+void use_fixed(Fixed value);
+C
+refuse "$tmp/enum_fixed.h" "fixed underlying type" "a fixed-underlying enum" \
+    -std=c23
+
+# ABI features bindgen cannot reproduce exactly have to fail loudly. Producing
+# a plausible-looking declaration for any of these is worse than refusing.
+cat >"$tmp/packed.h" <<'C'
+struct __attribute__((packed)) Packed { int a; long long b; };
+void use_packed(struct Packed value);
+C
+refuse "$tmp/packed.h" "is packed" "a packed record"
+cat >"$tmp/aligned.h" <<'C'
+struct __attribute__((aligned(32))) Aligned { int a; };
+void use_aligned(struct Aligned value);
+C
+refuse "$tmp/aligned.h" "explicit alignment" "an over-aligned record"
+cat >"$tmp/pragma.h" <<'C'
+#pragma pack(push, 1)
+struct Pragma { int a; long long b; };
+#pragma pack(pop)
+void use_pragma(struct Pragma value);
+C
+refuse "$tmp/pragma.h" "#pragma pack" "a #pragma pack record"
+cat >"$tmp/atomic.h" <<'C'
+struct Counter { _Atomic int value; };
+void use_counter(struct Counter value);
+C
+refuse "$tmp/atomic.h" "_Atomic" "an atomic field"
+cat >"$tmp/anon.h" <<'C'
+struct Outer { struct { int x; int y; }; };
+void use_outer(struct Outer value);
+C
+refuse "$tmp/anon.h" "anonymous record" "an anonymous record"
+# stdcall only exists on 32-bit x86 — Clang drops it elsewhere, so the target
+# has to be one where the convention is real.
+cat >"$tmp/conv.h" <<'C'
+int __attribute__((stdcall)) conv(int value);
+C
+if "$beansc" bindgen "$tmp/conv.h" -o "$tmp/conv.b" \
+    --target i686-unknown-linux-gnu >"$tmp/conv.out" 2>&1; then
+    echo "bindgen accepted a non-default calling convention" >&2
+    exit 1
+fi
+grep -F 'ABI attribute' "$tmp/conv.out" >"$tmp/match"
+cat >"$tmp/bitfield.h" <<'C'
+struct Bits { unsigned a : 3; unsigned b : 5; };
+void use_bits(struct Bits value);
+C
+refuse "$tmp/bitfield.h" "bitfield" "a bitfield"
+# Types Beans cannot represent exactly are refused rather than rounded to a
+# near-enough one.
+for spelling in 'long double' '__int128' '_Complex double'; do
+    printf 'void takes(%s value);\n' "$spelling" >"$tmp/exact.h"
+    refuse "$tmp/exact.h" "unsupported C type" "the C type $spelling"
+done
+
+# Success has to mean the bindings are worth having. A header whose only
+# declarations cannot be bound must say so rather than write a lone comment.
+cat >"$tmp/hidden.h" <<'C'
+static int helper(void) { return 1; }
+C
+refuse "$tmp/hidden.h" "could be bound" "a header with nothing bindable"
+# A header that declares nothing is a different case and stays legal.
+printf '/* deliberately empty */\n' >"$tmp/blank.h"
+"$beansc" bindgen "$tmp/blank.h" -o "$tmp/blank.b" >"$tmp/blank.out"
+"$beansc" check "$tmp/blank.b" >"$tmp/blank.check"
+
+# --only has to answer for a name it could not deliver.
+cat >"$tmp/linkage.h" <<'C'
+#include <stdint.h>
+static int32_t helper(int32_t x) { return x; }
+static inline int32_t inline_helper(int32_t x) { return x; }
+static int32_t hidden_global;
+extern int32_t beans_bindgen_probe_global;
+int32_t beans_bindgen_probe_double(int32_t value);
+C
+if "$beansc" bindgen "$tmp/linkage.h" -o "$tmp/only.b" --only helper \
+    >"$tmp/only.out" 2>&1; then
+    echo "bindgen bound a static function through --only" >&2
+    exit 1
+fi
+grep -F 'not externally linkable' "$tmp/only.out" >"$tmp/match"
+if "$beansc" bindgen "$tmp/linkage.h" -o "$tmp/only.b" --only absent \
+    >"$tmp/miss.out" 2>&1; then
+    echo "bindgen reported success for an unmatched --only" >&2
+    exit 1
+fi
+grep -F 'does not declare' "$tmp/miss.out" >"$tmp/match"
+
 # The two bindgen implementations have to agree byte for byte. Without the
 # stage-0 compiler there is nothing to compare against, so say so rather than
 # passing quietly.
@@ -188,6 +369,17 @@ if [ -x "$stage0" ]; then
     "$stage0" bindgen "$tmp/probe/probe.h" -o "$tmp/probe/stage0.b" \
         --target x86_64-unknown-linux-gnu >"$tmp/probe.stage0.out"
     cmp "$probe" "$tmp/probe/stage0.b"
+    for target in x86_64-unknown-linux-gnu x86_64-pc-windows-msvc \
+                  i686-unknown-linux-gnu aarch64-unknown-linux-gnu; do
+        "$stage0" bindgen "$tmp/scalars.h" -o "$tmp/scalars.stage0.b" \
+            --target "$target" >"$tmp/scalars.stage0.out"
+        "$beansc" bindgen "$tmp/scalars.h" -o "$tmp/scalars.self.b" \
+            --target "$target" >"$tmp/scalars.self.out"
+        cmp "$tmp/scalars.stage0.b" "$tmp/scalars.self.b"
+    done
+    "$stage0" bindgen "$tmp/enum_ok.h" -o "$tmp/enum.stage0.b" \
+        >"$tmp/enum.stage0.out"
+    cmp "$tmp/enum_ok.b" "$tmp/enum.stage0.b"
 else
     echo "bindgen: no $stage0, skipping the stage-0 output comparison" >&2
 fi

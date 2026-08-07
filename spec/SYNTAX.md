@@ -2431,19 +2431,52 @@ beansc build --target riscv32imac-unknown-none-elf --runtime freestanding f.b --
   Unregister first, then call `close()`; close waits for active calls. The value
   is move-only, and a panic never unwinds through C.
 
+A **borrowed callback** is an `fn(...)` parameter on an `extern "C" fn`. It is
+lent to C for the length of that one call, so a Beans closure can be passed
+directly and no lifetime question arises. A callback C *stores* is a different
+thing and needs `StoredCallback`, whose value stays alive until you `close()`
+it — close after unregistering, because it waits for calls already running.
+A callback type is not storage: an `extern "C" struct` field cannot hold one,
+so bindgen writes a C function-pointer field as `RawPtr<u8>`. The field is
+still one pointer wide and a `StoredCallback`'s `function()` fits in it, but
+the signature is not carried in the type. A typed C function-pointer value is
+not implemented yet.
+
 `beansc bindgen header.h -o bindings.b [--only symbol]*` asks Clang for the
 selected target's JSON AST. It handles typedefs, opaque and complete records,
 unions, arrays, enums, globals, TLS, functions, and function pointers. C
 nullability annotations (`_Nullable`, `_Nonnull`, `_Null_unspecified`) are
-ignored for type mapping. `size_t` maps to an unsigned integer as wide as the
-target's pointer, not through its C spelling. A record field holding a C
-function pointer binds as `RawPtr<u8>`, because a struct field cannot hold a
-callback type.
-Varargs, bitfields, flexible arrays, vectors, and C++ declarations fail unless
-`--allow-unsupported` is given. Extra Clang options follow `--`. `--package
-name` writes a `package` clause above the bindings: every file in a package
-declares it, so generated bindings dropped beside your own sources need one.
-Without it the output has no clause, which loads only as a file on its own.
+ignored for type mapping.
+
+The **common C scalar types** are mapped from what Clang reports for the
+selected target, never from the host or from the pointer width. `long` is 8
+bytes on 64-bit Linux and macOS and 4 on 64-bit Windows; plain `char` follows
+the target's signedness and is a distinct type from `signed char`; `size_t`,
+`ptrdiff_t`, `intptr_t` and `uintptr_t` each take their own reported width. A
+width Beans has no exact integer for is an error, not a near-enough type.
+
+A C **enum** binds only where Clang gives it the plain signed-`int`
+representation. A fixed underlying type, or a constant that pushes the enum to
+an unsigned or wider representation, is refused rather than reinterpreted.
+
+Only declarations with an **external symbol** are imported. `static` functions
+and variables, and C `inline` definitions with no external definition, are
+skipped; naming one through `--only` reports that it is not linkable, and
+`--only` with no match reports that too. A header whose declarations all turn
+out to be unbindable is an error rather than a file holding one comment.
+
+Constructs whose ABI bindgen cannot reproduce exactly are refused: varargs,
+bitfields, flexible arrays, vectors, `_Atomic` members, packed or explicitly
+aligned records, `#pragma pack` layouts, anonymous records, non-default
+calling conventions and other ABI attributes, and C++ declarations. Types with
+no exact Beans equivalent — `long double`, 128-bit integers, `_Complex`,
+`_BitInt`, extended and decimal floating types — are refused for the same
+reason. `--allow-unsupported` skips the affected declaration with a generated
+comment; it never invents a usable-looking type in its place. Extra Clang
+options follow `--`. `--package name` writes a `package` clause above the
+bindings: every file in a package declares it, so generated bindings dropped
+beside your own sources need one. Without it the output has no clause, which
+loads only as a file on its own.
 - **SIMD vector families** (v0.8): a vector type's name *is* its shape — `Simd` +
   lane count + element. `Simd4i32` is four 32-bit signed integers, `Simd16u8` is
   sixteen bytes, `Simd2f64` is two doubles, `Simd4f32` is four floats. Elements are

@@ -308,6 +308,119 @@ fn bindgen_function_arguments_open(
     }
 }
 
+// What the C types are actually worth on the target being bound. Every one of
+// these is asked of Clang rather than guessed, because the rules do not follow
+// from the pointer width: `long` is 8 bytes on 64-bit Linux and macOS and 4 on
+// 64-bit Windows, and plain `char` is unsigned on AArch64 Linux and signed on
+// Apple's AArch64.
+class BindgenTargetFacts {
+    char_bytes: int
+    short_bytes: int
+    int_bytes: int
+    long_bytes: int
+    long_long_bytes: int
+    pointer_bytes: int
+    size_bytes: int
+    ptrdiff_bytes: int
+    float_bytes: int
+    double_bytes: int
+    char_unsigned: bool
+
+    fn init() {
+        self.char_bytes = 0
+        self.short_bytes = 0
+        self.int_bytes = 0
+        self.long_bytes = 0
+        self.long_long_bytes = 0
+        self.pointer_bytes = 0
+        self.size_bytes = 0
+        self.ptrdiff_bytes = 0
+        self.float_bytes = 0
+        self.double_bytes = 0
+        self.char_unsigned = false
+    }
+}
+
+// Read one `#define NAME value` line out of Clang's `-dM -E` dump.
+fn bindgen_defined_number(macros: string,
+                          name: string) -> int {
+    let needle: string = "#define {name} "
+    var offset: int = 0
+    for offset < macros.len() {
+        let found: int =
+            bindgen_find(
+                macros.slice(offset, macros.len()),
+                needle)
+        if found < 0 { break }
+        let start: int = offset + found
+        if start == 0 ||
+           macros.byte_at(start - 1) == 10 {
+            var end: int = start + needle.len()
+            for end < macros.len() {
+                let byte: int = macros.byte_at(end)
+                if byte == 10 || byte == 13 { break }
+                end += 1
+            }
+            let digits: string =
+                macros.slice(
+                    start + needle.len(), end).trim()
+            match digits.to_int() {
+                ok(value) => { return value }
+                err(error) => { return 0 }
+            }
+        }
+        offset = start + needle.len()
+    }
+    return 0
+}
+
+fn bindgen_defined_flag(macros: string,
+                        name: string) -> bool {
+    let needle: string = "#define {name} "
+    if macros.starts_with(needle) { return true }
+    return bindgen_find(macros, "\n{needle}") >= 0
+}
+
+fn bindgen_read_target_facts(macros: string) ->
+    BindgenTargetFacts {
+    let facts: BindgenTargetFacts =
+        new BindgenTargetFacts()
+    facts.char_bytes =
+        bindgen_defined_number(
+            macros, "__CHAR_BIT__") / 8
+    facts.short_bytes =
+        bindgen_defined_number(
+            macros, "__SIZEOF_SHORT__")
+    facts.int_bytes =
+        bindgen_defined_number(
+            macros, "__SIZEOF_INT__")
+    facts.long_bytes =
+        bindgen_defined_number(
+            macros, "__SIZEOF_LONG__")
+    facts.long_long_bytes =
+        bindgen_defined_number(
+            macros, "__SIZEOF_LONG_LONG__")
+    facts.pointer_bytes =
+        bindgen_defined_number(
+            macros, "__SIZEOF_POINTER__")
+    facts.size_bytes =
+        bindgen_defined_number(
+            macros, "__SIZEOF_SIZE_T__")
+    facts.ptrdiff_bytes =
+        bindgen_defined_number(
+            macros, "__SIZEOF_PTRDIFF_T__")
+    facts.float_bytes =
+        bindgen_defined_number(
+            macros, "__SIZEOF_FLOAT__")
+    facts.double_bytes =
+        bindgen_defined_number(
+            macros, "__SIZEOF_DOUBLE__")
+    facts.char_unsigned =
+        bindgen_defined_flag(
+            macros, "__CHAR_UNSIGNED__")
+    return facts
+}
+
 fn bindgen_identifier_byte(byte: int) -> bool {
     return (byte >= 48 && byte <= 57) ||
            (byte >= 65 && byte <= 90) ||
@@ -486,7 +599,7 @@ fn bindgen_type_text(node: BindgenJson) -> string {
 }
 
 class BindgenGenerator {
-    pointer_bits: int
+    facts: BindgenTargetFacts
     only: Map<string, bool>
     allow_unsupported: bool
     records: Map<string, BindgenRecord>
@@ -496,10 +609,10 @@ class BindgenGenerator {
     needed_enums: Map<string, bool>
     errors: List<string>
 
-    fn init(pointer_bits: int,
+    fn init(facts: BindgenTargetFacts,
             only: Map<string, bool>,
             allow_unsupported: bool) {
-        self.pointer_bits = pointer_bits
+        self.facts = facts
         self.only = {}
         for name: string in only.keys() {
             self.only[name] = true
@@ -519,14 +632,52 @@ class BindgenGenerator {
                self.only.contains_key(name)
     }
 
+    // A C integer of a width Clang reported, or "" when Beans has no type of
+    // exactly that size. Returning "" rather than the nearest width is the
+    // point: a binding that is one byte off is worse than no binding.
+    fn integer_of(bytes: int,
+                  is_signed: bool) -> string {
+        if bytes == 1 {
+            return if is_signed { "i8" } else { "u8" }
+        }
+        if bytes == 2 {
+            return if is_signed { "i16" } else { "u16" }
+        }
+        if bytes == 4 {
+            return if is_signed { "i32" } else { "u32" }
+        }
+        if bytes == 8 {
+            return if is_signed { "i64" } else { "u64" }
+        }
+        return ""
+    }
+
+    fn sized(type: string, bytes: int,
+             is_signed: bool) -> string {
+        let result: string =
+            self.integer_of(bytes, is_signed)
+        if result != "" { return result }
+        self.errors.push(
+            "C type '{type}' is {bytes} bytes on this target, which Beans has no integer for")
+        return "unit"
+    }
+
     fn scalar(written: string) -> string {
         var type: string =
             written.replace("const ", "")
         type = type.replace("volatile ", "")
         type = type.replace("restrict ", "").trim()
-        if type.starts_with("_Atomic(") &&
-           type.ends_with(")") {
-            type = type.slice(8, type.len() - 1)
+        // `_Atomic` changes how a field may be accessed, not just its layout,
+        // and Beans has no way to say that about a C record member. Reading
+        // through the qualifier as if it were not there would hand back a
+        // binding that silently drops the atomicity.
+        if type.starts_with("_Atomic") &&
+           (type.len() == 7 ||
+            !bindgen_identifier_byte(
+                type.byte_at(7))) {
+            self.errors.push(
+                "_Atomic type '{type}' is unsupported")
+            return "unit"
         }
         if type == "int8_t" { return "i8" }
         if type == "uint8_t" { return "u8" }
@@ -540,71 +691,109 @@ class BindgenGenerator {
         if type == "_Bool" || type == "bool" {
             return "bool"
         }
-        if type == "char" ||
-           type == "signed char" { return "i8" }
-        if type == "unsigned char" { return "u8" }
+        // Plain `char` is its own type, and whether it is signed is the
+        // target's choice — Clang says so with __CHAR_UNSIGNED__.
+        if type == "char" {
+            return self.sized(
+                type, self.facts.char_bytes,
+                !self.facts.char_unsigned)
+        }
+        if type == "signed char" {
+            return self.sized(
+                type, self.facts.char_bytes, true)
+        }
+        if type == "unsigned char" {
+            return self.sized(
+                type, self.facts.char_bytes, false)
+        }
         if type == "short" || type == "short int" ||
            type == "signed short" ||
            type == "signed short int" {
-            return "i16"
+            return self.sized(
+                type, self.facts.short_bytes, true)
         }
         if type == "unsigned short" ||
            type == "unsigned short int" {
-            return "u16"
+            return self.sized(
+                type, self.facts.short_bytes, false)
         }
         if type == "int" || type == "signed" ||
-           type == "signed int" { return "i32" }
+           type == "signed int" {
+            return self.sized(
+                type, self.facts.int_bytes, true)
+        }
         if type == "unsigned" ||
-           type == "unsigned int" { return "u32" }
+           type == "unsigned int" {
+            return self.sized(
+                type, self.facts.int_bytes, false)
+        }
         if type == "long" || type == "long int" ||
            type == "signed long" ||
            type == "signed long int" {
-            return if self.pointer_bits == 64 {
-                "i64"
-            } else {
-                "i32"
-            }
+            return self.sized(
+                type, self.facts.long_bytes, true)
         }
         if type == "unsigned long" ||
            type == "unsigned long int" {
-            return if self.pointer_bits == 64 {
-                "u64"
-            } else {
-                "u32"
-            }
+            return self.sized(
+                type, self.facts.long_bytes, false)
         }
         if type == "long long" ||
            type == "long long int" ||
            type == "signed long long" ||
            type == "signed long long int" {
-            return "i64"
+            return self.sized(
+                type, self.facts.long_long_bytes,
+                true)
         }
         if type == "unsigned long long" ||
            type == "unsigned long long int" {
-            return "u64"
+            return self.sized(
+                type, self.facts.long_long_bytes,
+                false)
         }
         // The pointer-width typedefs are mapped by name rather than through
-        // their C spelling: `unsigned long` is 32 bits on Windows and 64 on
-        // every other 64-bit target, so `size_t` is not `unsigned long`.
-        if type == "size_t" || type == "rsize_t" ||
-           type == "uintptr_t" {
-            return if self.pointer_bits == 64 {
-                "u64"
-            } else {
-                "u32"
-            }
+        // their C spelling, because the spelling differs by platform while
+        // the meaning does not.
+        if type == "size_t" || type == "rsize_t" {
+            return self.sized(
+                type, self.facts.size_bytes, false)
         }
         if type == "ssize_t" ||
-           type == "ptrdiff_t" ||
-           type == "intptr_t" {
-            return if self.pointer_bits == 64 {
-                "i64"
-            } else {
-                "i32"
-            }
+           type == "ptrdiff_t" {
+            return self.sized(
+                type, self.facts.ptrdiff_bytes, true)
         }
-        if type == "float" { return "f32" }
-        if type == "double" { return "f64" }
+        if type == "uintptr_t" {
+            return self.sized(
+                type, self.facts.pointer_bytes, false)
+        }
+        if type == "intptr_t" {
+            return self.sized(
+                type, self.facts.pointer_bytes, true)
+        }
+        if type == "float" {
+            if self.facts.float_bytes == 4 {
+                return "f32"
+            }
+            if self.facts.float_bytes == 8 {
+                return "f64"
+            }
+            self.errors.push(
+                "C 'float' is not 4 or 8 bytes on this target")
+            return "unit"
+        }
+        if type == "double" {
+            if self.facts.double_bytes == 8 {
+                return "f64"
+            }
+            if self.facts.double_bytes == 4 {
+                return "f32"
+            }
+            self.errors.push(
+                "C 'double' is not 4 or 8 bytes on this target")
+            return "unit"
+        }
         if type.starts_with("enum ") {
             let name: string =
                 type.slice(5, type.len()).trim()
@@ -773,8 +962,84 @@ class BindgenGenerator {
         }
     }
 
+    // Attributes that move a record's fields around. Beans has no way to say
+    // any of them on an `extern "C" struct`, so a binding that ignored one
+    // would describe a layout the C side does not use.
+    fn check_record_attributes(
+        record: BindgenRecord) {
+        match record.node.get("inner") {
+            some(inner) => {
+                for child: BindgenJson in
+                    inner.items {
+                    let kind: string =
+                        child.string("kind")
+                    var what: string = ""
+                    if kind == "PackedAttr" {
+                        what = "is packed"
+                    } else if kind == "AlignedAttr" {
+                        what =
+                            "sets an explicit alignment"
+                    } else if kind ==
+                              "MaxFieldAlignmentAttr" {
+                        what =
+                            "is under #pragma pack"
+                    }
+                    if what != "" {
+                        self.errors.push(
+                            "record '{record.c_name}' {what}, which bindgen cannot reproduce exactly")
+                    }
+                }
+            }
+            none => {}
+        }
+    }
+
+    // A C enum binds only when Clang gave it the plain signed-int
+    // representation this compiler emits. Anything else — a fixed underlying
+    // type, or a value that pushed the whole enum to unsigned — would change
+    // what the constants mean.
+    fn enum_is_supported(
+        name: string,
+        node: BindgenJson) -> bool {
+        match node.get("fixedUnderlyingType") {
+            some(fixed) => {
+                self.errors.push(
+                    "enum '{name}' has a fixed underlying type, which is unsupported")
+                return false
+            }
+            none => {}
+        }
+        match node.get("inner") {
+            some(values) => {
+                for value: BindgenJson in
+                    values.items {
+                    if value.string("kind") !=
+                       "EnumConstantDecl" {
+                        continue
+                    }
+                    var written: string = ""
+                    match value.get("type") {
+                        some(type) => {
+                            written =
+                                type.string("qualType")
+                        }
+                        none => {}
+                    }
+                    if written != "int" {
+                        self.errors.push(
+                            "enum '{name}' is represented as '{written}' rather than int, which is unsupported")
+                        return false
+                    }
+                }
+            }
+            none => {}
+        }
+        return true
+    }
+
     fn record_text(record: BindgenRecord) ->
         string {
+        self.check_record_attributes(record)
         var output: string = "extern \"C\" "
         if !record.complete {
             return "{output}opaque struct {record.beans}\n\n"
@@ -801,13 +1066,25 @@ class BindgenGenerator {
                             "bitfield '{field.string("name")}' is unsupported")
                         continue
                     }
+                    let written: string =
+                        bindgen_type_text(field)
+                    // An unnamed inner record has no name to refer to, so the
+                    // field would point at a type the output never defines.
+                    if bindgen_find(
+                           written, "(unnamed") >= 0 ||
+                       bindgen_find(
+                           written, "(anonymous") >= 0 {
+                        self.errors.push(
+                            "anonymous record in '{record.c_name}' is unsupported")
+                        continue
+                    }
                     var name: string =
                         field.string("name")
                     if name == "" {
                         name = "field_{index}"
                     }
                     output =
-                        "{output}    {bindgen_name(name, false)}: {self.field_type(bindgen_type_text(field))}\n"
+                        "{output}    {bindgen_name(name, false)}: {self.field_type(written)}\n"
                     index += 1
                 }
             }
@@ -981,6 +1258,44 @@ fn run_self_bindgen(
             return 1
         }
     }
+    // How wide the C types are is the selected target's business, not this
+    // machine's, so it is asked of the same Clang with the same flags rather
+    // than assumed from the pointer width.
+    let probe: process.Command =
+        new process.Command(clang)
+    probe.arg("--target={target.llvm_triple()}")
+    probe.arg("-dM")
+    probe.arg("-E")
+    probe.arg("-x")
+    probe.arg("c-header")
+    if sysroot != "" {
+        probe.arg("--sysroot={sysroot}")
+    }
+    if cpu_name != "generic" {
+        probe.arg("-mcpu={cpu_name}")
+    }
+    for option: string in clang_options {
+        probe.arg(option)
+    }
+    probe.arg(header)
+    var macros: string = ""
+    match probe.run() {
+        ok(result) => {
+            if !result.succeeded() {
+                io.eprintln(
+                    "bindgen: clang could not describe {target.triple}")
+                return 1
+            }
+            macros = result.stdout_text()
+        }
+        err(error) => {
+            io.eprintln(
+                "bindgen: cannot start Clang: {error.msg}")
+            return 1
+        }
+    }
+    let facts: BindgenTargetFacts =
+        bindgen_read_target_facts(macros)
     let parser: BindgenJsonParser =
         new BindgenJsonParser(ast)
     let root: BindgenJson = parser.value()
@@ -1008,8 +1323,7 @@ fn run_self_bindgen(
     }
     let generator: BindgenGenerator =
         new BindgenGenerator(
-            target.pointer_bits, only,
-            allow_unsupported)
+            facts, only, allow_unsupported)
     for node: BindgenJson in nodes {
         let kind: string = node.string("kind")
         let name: string = node.string("name")
@@ -1078,18 +1392,57 @@ fn run_self_bindgen(
         }
     }
     var selected: List<BindgenJson> = []
+    var bindable: int = 0
+    var matched: Map<string, bool> = {}
     for node: BindgenJson in nodes {
         let kind: string = node.string("kind")
         let name: string = node.string("name")
-        if (kind != "FunctionDecl" &&
-            kind != "VarDecl") ||
-           !generator.selected(name) {
+        if kind != "FunctionDecl" &&
+           kind != "VarDecl" {
+            continue
+        }
+        bindable += 1
+        if !generator.selected(name) { continue }
+        matched[name] = true
+        // An import can only name a symbol the linker will find. A `static`
+        // declaration has none, and a C `inline` definition is not required
+        // to emit one either, so neither becomes an extern binding.
+        let storage: string =
+            node.string("storageClass")
+        // `extern inline` is the one spelling that does promise a definition;
+        // plain and `static` inline do not.
+        let inlined: bool =
+            node.boolean("inline") &&
+            storage != "extern"
+        if storage == "static" || inlined {
+            let why: string =
+                if storage == "static" {
+                    "has internal linkage"
+                } else {
+                    "is C inline with no external definition"
+                }
+            // Skipping is right for a sweep, but if the user asked for this
+            // name by hand, silence would look like it had been bound.
+            if only.keys().len() != 0 {
+                generator.errors.push(
+                    "--only names '{name}', which {why} and is not externally linkable")
+            }
             continue
         }
         if kind == "FunctionDecl" &&
            node.boolean("variadic") {
             generator.errors.push(
                 "variadic function '{name}' is unsupported")
+            continue
+        }
+        // Clang writes a non-default convention into the function's type.
+        // Calling one with the platform default would corrupt the stack.
+        let written: string =
+            bindgen_type_text(node)
+        if bindgen_find(
+               written, "__attribute__((") >= 0 {
+            generator.errors.push(
+                "declaration '{name}' carries an ABI attribute bindgen does not model: {written}")
             continue
         }
         selected.push(node)
@@ -1147,14 +1500,22 @@ fn run_self_bindgen(
             none => {}
         }
     }
+    var emitted_enums: int = 0
     for name: string in enum_names {
         match generator.enums.get(name) {
             some(declaration) => {
+                if !generator.enum_is_supported(
+                        name, declaration) {
+                    continue
+                }
                 var next: int = 0
+                var body: string = ""
+                var usable: bool = true
                 match declaration.get("inner") {
                     some(values) => {
                         for value: BindgenJson in
                             values.items {
+                            if !usable { continue }
                             if value.string("kind") !=
                                "EnumConstantDecl" {
                                 continue
@@ -1169,25 +1530,45 @@ fn run_self_bindgen(
                                         let stated: string =
                                             first.string("value")
                                         if stated != "" {
+                                            // Emitting a wrong constant is
+                                            // worse than emitting none, so a
+                                            // value this compiler cannot read
+                                            // exactly is an error rather than
+                                            // a silent zero.
                                             match stated.to_int() {
                                                 ok(number) => {
                                                     next = number
                                                 }
-                                                err(error) => {}
+                                                err(error) => {
+                                                    generator.errors.push(
+                                                        "enum '{name}' value '{value.string("name")}' = {stated} cannot be represented")
+                                                    usable = false
+                                                }
                                             }
                                         }
                                     }
                                 }
                                 none => {}
                             }
-                            output =
-                                "{output}fn {bindgen_name(value.string("name"), false)}() -> i32 \{ return {next} \}\n"
+                            if !usable { continue }
+                            if next < -2147483648 ||
+                               next > 2147483647 {
+                                generator.errors.push(
+                                    "enum '{name}' value '{value.string("name")}' does not fit in a signed 32-bit integer")
+                                usable = false
+                                continue
+                            }
+                            body =
+                                "{body}fn {bindgen_name(value.string("name"), false)}() -> i32 \{ return {next} \}\n"
                             next += 1
                         }
                     }
                     none => {}
                 }
-                output = "{output}\n"
+                if usable {
+                    output = "{output}{body}\n"
+                    emitted_enums += 1
+                }
             }
             none => {}
         }
@@ -1273,6 +1654,30 @@ fn run_self_bindgen(
         }
         output = "{output}\n"
     }
+    // A name the user asked for by hand that no declaration carries is a
+    // mistake worth reporting, not an empty file.
+    for wanted: string in only.keys() {
+        if !matched.contains_key(wanted) {
+            generator.errors.push(
+                "--only names '{wanted}', which the header does not declare")
+        }
+    }
+
+    // Reporting success after writing nothing but the header comment is how
+    // the macro-location bug stayed hidden. An empty header may legitimately
+    // produce an empty binding; a header full of declarations may not.
+    let produced: int =
+        emitted.keys().len() + emitted_enums +
+        selected.len()
+    if produced == 0 &&
+       (bindable != 0 ||
+        generator.records.keys().len() != 0 ||
+        generator.enums.keys().len() != 0) &&
+       only.keys().len() == 0 {
+        generator.errors.push(
+            "no declaration of {header} could be bound, so the output would hold nothing")
+    }
+
     if generator.errors.len() != 0 &&
        !allow_unsupported {
         for error: string in generator.errors {
