@@ -34,6 +34,22 @@ fn main() {
 }
 BEANS
 
+# --- where the mode is documented, and where it deliberately is not ---------
+# `beansc` usage is shared surface: test/cli_parity.sh compares it byte for
+# byte against the stage-0 bootstrap, which has no --debug. So the flag is
+# documented in the README and kept out of the usage text. Both halves are
+# pinned here — an undocumented flag is not discoverable, and a listed one
+# breaks parity — so whoever adds --debug to the bootstrap gets told to
+# update this test and the usage together.
+"$bin" >"$work/usage" 2>&1 || true
+if grep -q -- '--debug' "$work/usage"; then
+    fail "--debug must stay out of the usage text until the stage-0
+bootstrap has it too, or test/cli_parity.sh breaks. If the bootstrap now
+supports it, add the line back and update this check."
+fi
+grep -q -- 'beansc build --debug' README.md ||
+    fail "--debug is not in the README command table, so nothing documents it"
+
 # --- the mode is a real choice, and refuses the opposite one ----------------
 if "$bin" build --debug --release "$work/prog.b" -o "$work/never" \
        >"$work/conflict" 2>&1; then

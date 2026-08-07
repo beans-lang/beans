@@ -5,6 +5,11 @@ import std.io
 import std.os
 import std.path
 
+// This text is shared surface: `test/cli_parity.sh` compares it byte for
+// byte against the stage-0 bootstrap, so a CLI drift can never sit in one
+// compiler unnoticed. Anything the bootstrap does not have — `--debug`,
+// `debug-adapter`, `sem-probe` — therefore cannot be listed here, and is
+// documented in README.md instead until the bootstrap grows it too.
 fn print_usage() {
     io.eprintln("usage: beansc <lex|parse|check|mir|run> <file.b>...")
     io.eprintln("       beansc build [options] <file.b> [-o out]")
@@ -17,8 +22,6 @@ fn print_usage() {
     io.eprintln("")
     io.eprintln("build options:")
     io.eprintln("  --release              -O3, NDEBUG")
-    io.eprintln("  --debug                -O0, frame pointers, platform debug")
-    io.eprintln("                         information, no LTO")
     io.eprintln("  --lto                  link-time optimization")
     io.eprintln("  --target <triple>      {supported_target_names()}")
     io.eprintln("  --cpu <generic|native|name>")
