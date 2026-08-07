@@ -2435,7 +2435,10 @@ beansc build --target riscv32imac-unknown-none-elf --runtime freestanding f.b --
 selected target's JSON AST. It handles typedefs, opaque and complete records,
 unions, arrays, enums, globals, TLS, functions, and function pointers.
 Varargs, bitfields, flexible arrays, vectors, and C++ declarations fail unless
-`--allow-unsupported` is given. Extra Clang options follow `--`.
+`--allow-unsupported` is given. Extra Clang options follow `--`. `--package
+name` writes a `package` clause above the bindings: every file in a package
+declares it, so generated bindings dropped beside your own sources need one.
+Without it the output has no clause, which loads only as a file on its own.
 - **SIMD vector families** (v0.8): a vector type's name *is* its shape — `Simd` +
   lane count + element. `Simd4i32` is four 32-bit signed integers, `Simd16u8` is
   sixteen bytes, `Simd2f64` is two doubles, `Simd4f32` is four floats. Elements are

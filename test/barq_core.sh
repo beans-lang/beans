@@ -49,7 +49,11 @@ project="$tmp/beans-barq"
 mkdir -p "$project/native/lib"
 cp "$barq_library" "$project/native/lib/"
 
+# The bindings land in a beans.pot project beside main.b, so they are a file in
+# that package and have to say so — a generated file with no package clause only
+# loads on its own.
 "$beansc" bindgen "$barq/src/barq.h" -o "$project/barq_bindings.b" \
+    --package main \
     --only barq_get_library_version_numbers \
     --only barq_config_new \
     --only barq_config_set_in_memory \

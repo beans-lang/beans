@@ -46,4 +46,41 @@ fi
     --allow-unsupported >"$tmp/allowed.out"
 grep -F 'skipped: variadic function' "$tmp/allowed.b" >"$tmp/match"
 
+# Bindings are generated to be dropped into a real project, and every file in a
+# package declares that package. Without --package the output has no clause at
+# all, which loads only as a lone file — so a generated file beside a main.b was
+# refused by the loader and nothing here noticed, because this file only ever
+# checked the bindings on their own.
+project="$tmp/project"
+mkdir -p "$project"
+cat >"$project/beans.pot" <<'MOD'
+module bindgen_probe
+MOD
+cat >"$project/main.b" <<'BEANS'
+package main
+
+import std.io
+
+fn main() {
+    var seen: i32 = 0
+    unsafe { seen = version }
+    io.println("{seen}")
+}
+BEANS
+"$beansc" bindgen "$tmp/access.h" -o "$project/bindings.b" --package main \
+    >"$tmp/pkg.out"
+head -3 "$project/bindings.b" | grep -Fx 'package main' >"$tmp/match"
+"$beansc" check "$project/main.b" >"$tmp/pkg.check"
+
+# The same generation without --package is still a valid lone file, and it is
+# still refused inside the package — that refusal is the whole reason the option
+# exists, so it is checked rather than assumed.
+"$beansc" bindgen "$tmp/access.h" -o "$project/bindings.b" >"$tmp/nopkg.out"
+if "$beansc" check "$project/main.b" >"$tmp/nopkg.check" 2>&1; then
+    echo "bindgen: a clause-less file was accepted inside a package" >&2
+    cat "$tmp/nopkg.check" >&2
+    exit 1
+fi
+grep -F 'has no package clause' "$tmp/nopkg.check" >/dev/null
+
 echo "bindgen ok"
