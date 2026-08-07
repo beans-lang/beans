@@ -308,6 +308,77 @@ fn bindgen_function_arguments_open(
     }
 }
 
+fn bindgen_identifier_byte(byte: int) -> bool {
+    return (byte >= 48 && byte <= 57) ||
+           (byte >= 65 && byte <= 90) ||
+           (byte >= 97 && byte <= 122) ||
+           byte == 95
+}
+
+fn bindgen_strip_qualifier(
+    written: string,
+    qualifier: string) -> string {
+    var type: string = written
+    var offset: int = 0
+    for offset < type.len() {
+        let found: int =
+            bindgen_find(
+                type.slice(offset, type.len()),
+                qualifier)
+        if found < 0 { break }
+        let start: int = offset + found
+        var after: int = start + qualifier.len()
+        let joined: bool =
+            (start > 0 &&
+             bindgen_identifier_byte(
+                 type.byte_at(start - 1))) ||
+            (after < type.len() &&
+             bindgen_identifier_byte(
+                 type.byte_at(after)))
+        if joined {
+            offset = after
+            continue
+        }
+        var begin: int = start
+        if begin > 0 &&
+           type.byte_at(begin - 1) == 32 {
+            begin -= 1
+        } else if after < type.len() &&
+                  type.byte_at(after) == 32 {
+            after += 1
+        }
+        type =
+            "{type.slice(0, begin)}{type.slice(after, type.len())}"
+        offset = begin
+    }
+    return move type
+}
+
+// Clang writes its nullability qualifiers into the type strings we parse, as in
+// `ImpellerTexture  _Nonnull * _Nullable`. They say nothing about layout, so
+// they are dropped before anything reads the type. They are matched as whole
+// tokens: a header is free to name something `my_Nonnull_table`.
+fn bindgen_strip_nullability(
+    written: string) -> string {
+    var type: string =
+        bindgen_strip_qualifier(
+            written, "_Nullable")
+    type =
+        bindgen_strip_qualifier(type, "_Nonnull")
+    return bindgen_strip_qualifier(
+        type, "_Null_unspecified")
+}
+
+// One pointer level around an already-rendered type. Nested pointers close with
+// `> >`: the lexer reads `>>` as a shift and the parsers only recover it by
+// splitting the token, which the generated file should not lean on.
+fn bindgen_pointer_to(inner: string) -> string {
+    if inner.ends_with(">") {
+        return "RawPtr<{inner} >"
+    }
+    return "RawPtr<{inner}>"
+}
+
 fn bindgen_split_arguments(text: string) ->
     List<string> {
     var result: List<string> = []
@@ -512,6 +583,26 @@ class BindgenGenerator {
            type == "unsigned long long int" {
             return "u64"
         }
+        // The pointer-width typedefs are mapped by name rather than through
+        // their C spelling: `unsigned long` is 32 bits on Windows and 64 on
+        // every other 64-bit target, so `size_t` is not `unsigned long`.
+        if type == "size_t" || type == "rsize_t" ||
+           type == "uintptr_t" {
+            return if self.pointer_bits == 64 {
+                "u64"
+            } else {
+                "u32"
+            }
+        }
+        if type == "ssize_t" ||
+           type == "ptrdiff_t" ||
+           type == "intptr_t" {
+            return if self.pointer_bits == 64 {
+                "i64"
+            } else {
+                "i32"
+            }
+        }
         if type == "float" { return "f32" }
         if type == "double" { return "f64" }
         if type.starts_with("enum ") {
@@ -559,7 +650,8 @@ class BindgenGenerator {
     }
 
     fn c_type(written: string) -> string {
-        var type: string = written.trim()
+        var type: string =
+            bindgen_strip_nullability(written).trim()
         let function: int =
             bindgen_find(type, "(*)")
         if function >= 0 {
@@ -577,8 +669,11 @@ class BindgenGenerator {
             }
             let absolute_open: int =
                 function + 3 + open
+            // The text before the declarator is a whole C type, not just a
+            // scalar one: `void *(*)(void *)` returns a pointer. Recursion
+            // ends because that text is strictly shorter than the input.
             let result: string =
-                self.scalar(
+                self.c_type(
                     type.slice(0, function))
             let parameters: List<string> =
                 bindgen_split_arguments(
@@ -622,7 +717,19 @@ class BindgenGenerator {
         var result: string = self.scalar(type)
         for index: int in 0..stars {
             if result == "unit" { result = "u8" }
-            result = "RawPtr<{result}>"
+            result = bindgen_pointer_to(result)
+        }
+        return result
+    }
+
+    // A C record can hold a function pointer; a Beans struct field cannot hold
+    // a callback type. Such a field is still exactly one pointer wide, so it
+    // binds as a raw pointer: the record's layout is unchanged, and a
+    // StoredCallback's function pointer is what goes in it.
+    fn field_type(written: string) -> string {
+        let result: string = self.c_type(written)
+        if result.starts_with("fn(") {
+            return "RawPtr<u8>"
         }
         return result
     }
@@ -700,7 +807,7 @@ class BindgenGenerator {
                         name = "field_{index}"
                     }
                     output =
-                        "{output}    {bindgen_name(name, false)}: {self.c_type(bindgen_type_text(field))}\n"
+                        "{output}    {bindgen_name(name, false)}: {self.field_type(bindgen_type_text(field))}\n"
                     index += 1
                 }
             }
@@ -710,10 +817,48 @@ class BindgenGenerator {
     }
 }
 
-fn bindgen_file(node: BindgenJson) -> string {
+// Clang names files that are not really files, such as the `<scratch space>`
+// it invents for tokens a macro pasted together. Those never own a header.
+fn bindgen_real_file(name: string) -> bool {
+    return name != "" && !name.starts_with("<")
+}
+
+// The header a declaration belongs to, or "" when Clang left the location out
+// because it repeats the one before it.
+//
+// A declaration written out by hand carries `loc.file`. One created by a macro
+// carries a spelling location — where the tokens were written, which for a
+// pasted name is `<scratch space>` — and an expansion location, which is where
+// the macro was used. The expansion location is the one that says which header
+// the declaration belongs to.
+fn bindgen_declaration_file(
+    node: BindgenJson) -> string {
     match node.get("loc") {
         some(location) => {
-            return location.string("file")
+            let direct: string =
+                location.string("file")
+            if direct != "" { return direct }
+            match location.get("expansionLoc") {
+                some(expansion) => {
+                    let file: string =
+                        expansion.string("file")
+                    if bindgen_real_file(file) {
+                        return file
+                    }
+                }
+                none => {}
+            }
+            match location.get("spellingLoc") {
+                some(spelling) => {
+                    let file: string =
+                        spelling.string("file")
+                    if bindgen_real_file(file) {
+                        return file
+                    }
+                }
+                none => {}
+            }
+            return ""
         }
         none => { return "" }
     }
@@ -849,7 +994,8 @@ fn run_self_bindgen(
     match root.get("inner") {
         some(inner) => {
             for node: BindgenJson in inner.items {
-                let file: string = bindgen_file(node)
+                let file: string =
+                    bindgen_declaration_file(node)
                 if file != "" {
                     in_header =
                         file == header ||
@@ -979,9 +1125,17 @@ fn run_self_bindgen(
     if package_name != "" {
         output = "{output}package {package_name}\n\n"
     }
+    // Records and enums come out in name order. A map hands its keys back in
+    // whatever order it stored them, and the two bindgen implementations do not
+    // store them the same way — sorting is what makes their output identical.
+    var record_names: List<string> =
+        generator.needed_records.keys()
+    record_names.sort()
+    var enum_names: List<string> =
+        generator.needed_enums.keys()
+    enum_names.sort()
     var emitted: Map<string, bool> = {}
-    for name: string in
-        generator.needed_records.keys() {
+    for name: string in record_names {
         match generator.records.get(name) {
             some(record) => {
                 if !emitted.contains_key(record.beans) {
@@ -993,8 +1147,7 @@ fn run_self_bindgen(
             none => {}
         }
     }
-    for name: string in
-        generator.needed_enums.keys() {
+    for name: string in enum_names {
         match generator.enums.get(name) {
             some(declaration) => {
                 var next: int = 0

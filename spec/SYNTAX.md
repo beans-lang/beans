@@ -2433,7 +2433,12 @@ beansc build --target riscv32imac-unknown-none-elf --runtime freestanding f.b --
 
 `beansc bindgen header.h -o bindings.b [--only symbol]*` asks Clang for the
 selected target's JSON AST. It handles typedefs, opaque and complete records,
-unions, arrays, enums, globals, TLS, functions, and function pointers.
+unions, arrays, enums, globals, TLS, functions, and function pointers. C
+nullability annotations (`_Nullable`, `_Nonnull`, `_Null_unspecified`) are
+ignored for type mapping. `size_t` maps to an unsigned integer as wide as the
+target's pointer, not through its C spelling. A record field holding a C
+function pointer binds as `RawPtr<u8>`, because a struct field cannot hold a
+callback type.
 Varargs, bitfields, flexible arrays, vectors, and C++ declarations fail unless
 `--allow-unsupported` is given. Extra Clang options follow `--`. `--package
 name` writes a `package` clause above the bindings: every file in a package
