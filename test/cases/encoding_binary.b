@@ -181,10 +181,10 @@ fn main() {
         err(e) => io.println("varint long {e.kind}"),
     }
 
-    // the ten-byte pattern Bytes.append_varint uses for -1 stays readable
+    // the ten-byte pattern Bytes.append_uvarint uses for -1 stays readable
     var compat: Bytes = new Bytes(0)
-    compat.append_varint(-1)
-    io.println("legacy len {compat.len()} value {compat.get_varint(0)}")
+    compat.append_uvarint(-1)
+    io.println("legacy len {compat.len()} value {compat.get_uvarint(0)}")
     match binary.read_uvarint(compat, 0) {
         ok(read) => io.println("legacy as uvarint {read.value} size {read.size}"),
         err(e) => io.println("err {e.msg}"),

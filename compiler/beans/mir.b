@@ -564,7 +564,7 @@ class MirLowerer {
         for index > 0 {
             index -= 1
             let scope: MirScope = self.scopes[index]
-            if scope.bindings.contains(name) {
+            if scope.bindings.contains_key(name) {
                 return scope.bindings[name]
             }
         }
@@ -573,11 +573,11 @@ class MirLowerer {
 
     fn ensure_capture(node: HirNode) -> int {
         if node.binding_id < 0 ||
-           !self.capture_parent_bindings.contains(
+           !self.capture_parent_bindings.contains_key(
                node.binding_id) {
             return -1
         }
-        if self.current_bindings.contains(node.binding_id) {
+        if self.current_bindings.contains_key(node.binding_id) {
             return self.current_bindings[node.binding_id]
         }
         let source: int =
@@ -598,7 +598,7 @@ class MirLowerer {
 
     fn find_local(node: HirNode) -> int {
         if node.binding_id >= 0 {
-            if self.current_bindings.contains(
+            if self.current_bindings.contains_key(
                 node.binding_id) {
                 return self.current_bindings[
                     node.binding_id]
@@ -986,9 +986,9 @@ class MirLowerer {
     fn prepare_closure_sources(node: HirNode) {
         if node.kind == "local" &&
            node.binding_id >= 0 &&
-           !self.current_bindings.contains(
+           !self.current_bindings.contains_key(
                node.binding_id) &&
-           self.capture_parent_bindings.contains(
+           self.capture_parent_bindings.contains_key(
                node.binding_id) {
             self.ensure_capture(node)
         }
@@ -1342,10 +1342,10 @@ class MirLowerer {
                    node.value == "put_i64" ||
                    node.value == "copy_from" ||
                    node.value == "append" ||
-                   node.value == "append_str" ||
+                   node.value == "append_string" ||
                    node.value == "append_i64" ||
                    node.value == "append_range" ||
-                   node.value == "append_varint"
+                   node.value == "append_uvarint"
         }
         if receiver == "MMap" {
             return node.value == "put_u8" ||
@@ -4695,7 +4695,7 @@ class MirLowerer {
         var cleanup_ids: Map<int, bool> = {}
         for function: MirFunction in self.mir.functions {
             if function.closure_id >= 0 {
-                if closure_ids.contains(function.closure_id) {
+                if closure_ids.contains_key(function.closure_id) {
                     self.fail(
                         function.file, function.line, function.col,
                         "duplicate MIR closure id {function.closure_id}")
@@ -4703,7 +4703,7 @@ class MirLowerer {
                 closure_ids[function.closure_id] = true
             }
             if function.cleanup_id >= 0 {
-                if cleanup_ids.contains(function.cleanup_id) {
+                if cleanup_ids.contains_key(function.cleanup_id) {
                     self.fail(
                         function.file, function.line, function.col,
                         "duplicate MIR cleanup id {function.cleanup_id}")

@@ -841,7 +841,7 @@ class ExpressionChecker {
     fn declare(node: AstNode, type: HirType, mutable: bool,
                borrowed: bool, inout_parameter: bool) -> int {
         let at: int = self.scopes.len() - 1
-        if self.scopes[at].bindings.contains(node.value) {
+        if self.scopes[at].bindings.contains_key(node.value) {
             self.fail(
                 node, "'{node.value}' is already defined in this scope")
             return -1
@@ -869,7 +869,7 @@ class ExpressionChecker {
     fn local_scope_index(name: string) -> int {
         var found: int = -1
         for index: int in 0..self.scopes.len() {
-            if self.scopes[index].bindings.contains(name) {
+            if self.scopes[index].bindings.contains_key(name) {
                 found = index
             }
         }
@@ -995,7 +995,7 @@ class ExpressionChecker {
         type: HirType, generics: List<string>,
         inference: Map<string, HirType>) -> bool {
         if self.generic_name_in(type.name, generics) {
-            return !inference.contains(type.name)
+            return !inference.contains_key(type.name)
         }
         for argument: HirType in type.args {
             if self.has_unbound_generic(
@@ -1389,7 +1389,7 @@ class ExpressionChecker {
         type: HirType,
         inout seen: Map<string, bool>) -> bool {
         let key: string = hir_type_key(type)
-        if seen.contains(key) { return false }
+        if seen.contains_key(key) { return false }
         seen[key] = true
         if type.name == "array" &&
            type.args.len() == 1 {
@@ -1461,7 +1461,7 @@ class ExpressionChecker {
         for pending.len() != 0 {
             let current: HirType = pending.pop().expect("pending type")
             let key: string = hir_type_key(current)
-            if seen.contains(key) { continue }
+            if seen.contains_key(key) { continue }
             seen[key] = true
             match self.declaration_for(current) {
                 some(declaration) => {
@@ -1497,7 +1497,7 @@ class ExpressionChecker {
             let current: HirType =
                 pending.remove(0)
             let key: string = hir_type_key(current)
-            if seen.contains(key) { continue }
+            if seen.contains_key(key) { continue }
             seen[key] = true
             match self.declaration_for(current) {
                 some(declaration) => {
@@ -1561,7 +1561,7 @@ class ExpressionChecker {
         for pending.len() != 0 {
             let declaration: HirDeclaration =
                 pending.remove(0)
-            if seen.contains(declaration.qualified) {
+            if seen.contains_key(declaration.qualified) {
                 continue
             }
             seen[declaration.qualified] = true
@@ -1601,7 +1601,7 @@ class ExpressionChecker {
         for pending.len() != 0 {
             let relation: HirType =
                 pending.remove(0)
-            if seen.contains(relation.name) { continue }
+            if seen.contains_key(relation.name) { continue }
             seen[relation.name] = true
             match self.declaration_for(relation) {
                 some(declaration) => {
@@ -1753,7 +1753,7 @@ class ExpressionChecker {
         for pending.len() != 0 {
             let current: HirDeclaration =
                 pending.pop().expect("pending class")
-            if seen.contains(current.qualified) { continue }
+            if seen.contains_key(current.qualified) { continue }
             seen[current.qualified] = true
             match self.methods.get(
                 "{current.qualified}.init") {
@@ -2057,7 +2057,7 @@ class ExpressionChecker {
                 return some(new BuiltinSignature(
                     [key, value], boolean))
             }
-            if name == "remove" || name == "contains" {
+            if name == "remove" || name == "contains_key" {
                 return some(new BuiltinSignature(
                     [key], boolean))
             }
@@ -2100,7 +2100,7 @@ class ExpressionChecker {
         if receiver.name == "Arena" &&
            receiver.args.len() == 1 {
             let value: HirType = receiver.args[0]
-            if name == "put" {
+            if name == "add" {
                 return some(new BuiltinSignature(
                     [value], integer))
             }
@@ -2138,7 +2138,7 @@ class ExpressionChecker {
                     [], hir_option(hir_named(
                         "Shared", [value]))))
             }
-            if name == "expired" {
+            if name == "is_expired" {
                 return some(new BuiltinSignature([], boolean))
             }
         }
@@ -2151,7 +2151,7 @@ class ExpressionChecker {
         }
         if receiver.name == "Mutex" &&
            receiver.args.len() == 1 {
-            if name == "with" {
+            if name == "with_lock" {
                 return some(new BuiltinSignature(
                     [hir_function(
                         [receiver.args[0]], unit)], unit))
@@ -2163,7 +2163,7 @@ class ExpressionChecker {
             if name == "send" {
                 return some(new BuiltinSignature([value], unit))
             }
-            if name == "recv" {
+            if name == "receive" {
                 return some(new BuiltinSignature(
                     [], hir_option(value)))
             }
@@ -2172,14 +2172,14 @@ class ExpressionChecker {
             }
         }
         if receiver.name == "AtomicInt" {
-            if name == "add" {
+            if name == "add_and_get" {
                 return some(new BuiltinSignature(
                     [integer], integer))
             }
-            if name == "get" {
+            if name == "load" {
                 return some(new BuiltinSignature([], integer))
             }
-            if name == "set" {
+            if name == "store" {
                 return some(new BuiltinSignature(
                     [integer], unit))
             }
@@ -2314,28 +2314,28 @@ class ExpressionChecker {
             if name == "len" || name == "get" ||
                name == "get_u8" || name == "get_u16" ||
                name == "get_u32" || name == "get_u64" ||
-               name == "get_i64" || name == "get_varint" {
+               name == "get_i64" || name == "get_uvarint" {
                 let parameters: List<HirType> =
                     if name == "len" { [] } else { [integer] }
                 return some(new BuiltinSignature(
                     parameters, integer))
             }
             if name == "to_string" ||
-               name == "to_string_full" {
+               name == "to_string_until_nul" {
                 return some(new BuiltinSignature([], string))
             }
             if name == "slice" {
                 return some(new BuiltinSignature(
                     [integer, integer], receiver))
             }
-            if name == "append_str" {
+            if name == "append_string" {
                 return some(new BuiltinSignature(
                     [string], receiver))
             }
             if name == "push" || name == "reserve" ||
                name == "resize" || name == "fill" ||
                name == "append_i64" ||
-               name == "append_varint" {
+               name == "append_uvarint" {
                 return some(new BuiltinSignature(
                     [integer], receiver))
             }
@@ -2397,7 +2397,7 @@ class ExpressionChecker {
                     parameters, hir_result(boolean)))
             }
             if name == "seek" ||
-               name == "seek_end" {
+               name == "seek_from_end" {
                 return some(new BuiltinSignature(
                     [integer], integer))
             }
@@ -2572,17 +2572,17 @@ class ExpressionChecker {
                 return some(new BuiltinSignature(
                     [string], hir_result(hir_list(string))))
             }
-            if name == "make" || name == "make_all" ||
+            if name == "create" || name == "create_all" ||
                name == "remove" || name == "remove_all" ||
                name == "sync" {
                 return some(new BuiltinSignature(
                     [string], hir_result(boolean)))
             }
-            if name == "temp" {
+            if name == "temp_path" {
                 return some(new BuiltinSignature([], string))
             }
         }
-        if type_name == "Bytes" && name == "varint_size" {
+        if type_name == "Bytes" && name == "uvarint_size" {
             return some(new BuiltinSignature([integer], integer))
         }
         if type_name == "MMap" {
@@ -2591,12 +2591,12 @@ class ExpressionChecker {
                     [string, boolean],
                     hir_result(new HirType("MMap"))))
             }
-            if name == "open_shared" {
+            if name == "open_shared_memory" {
                 return some(new BuiltinSignature(
                     [string, integer, boolean],
                     hir_result(new HirType("MMap"))))
             }
-            if name == "unlink_shared" {
+            if name == "unlink_shared_memory" {
                 return some(new BuiltinSignature(
                     [string], hir_result(boolean)))
             }
@@ -2648,11 +2648,8 @@ class ExpressionChecker {
                 return some(new BuiltinSignature(
                     [string], hir_option(string)))
             }
-            if name == "exit" || name == "sleep_ms" {
+            if name == "exit" {
                 return some(new BuiltinSignature([integer], unit))
-            }
-            if name == "now_ms" || name == "ticks_ms" {
-                return some(new BuiltinSignature([], integer))
             }
         }
         if import_path == "std.target" {
@@ -2684,10 +2681,13 @@ class ExpressionChecker {
         }
         if import_path == "std.time" {
             if name == "monotonic_nanos" ||
-               name == "wall_nanos" {
+               name == "wall_nanos" ||
+               name == "monotonic_millis" ||
+               name == "wall_millis" {
                 return some(new BuiltinSignature([], integer))
             }
-            if name == "sleep_nanos" {
+            if name == "sleep_nanos" ||
+               name == "sleep_millis" {
                 return some(new BuiltinSignature(
                     [integer], unit))
             }
@@ -2703,7 +2703,7 @@ class ExpressionChecker {
                     [new HirType("float"), integer],
                     string))
             }
-            if name == "dec" {
+            if name == "decimal" {
                 return some(new BuiltinSignature(
                     [new HirType("decimal"), integer],
                     string))
@@ -3340,7 +3340,7 @@ class ExpressionChecker {
                 if declaration.kind != "enum" { return false }
                 let key: string = render_hir_type(type)
                 // self-recursive enums hold finite values
-                if seen.contains(key) { return true }
+                if seen.contains_key(key) { return true }
                 seen[key] = true
                 for variant: HirField in declaration.variants {
                     for payload: HirType in variant.type.args {
@@ -3424,7 +3424,7 @@ class ExpressionChecker {
                 if captured {
                     binding.borrowed = true
                     if binding.inout_parameter &&
-                       !self.bad_inout_captures.contains(
+                       !self.bad_inout_captures.contains_key(
                            node.value) {
                         self.bad_inout_captures[node.value] = true
                         self.fail(
@@ -3434,7 +3434,7 @@ class ExpressionChecker {
                     if self.require_send_captures &&
                        !self.trait_satisfied(
                            binding.type, "Send") &&
-                       !self.bad_send_captures.contains(
+                       !self.bad_send_captures.contains_key(
                            node.value) {
                         self.bad_send_captures[node.value] = true
                         self.fail(
@@ -3444,7 +3444,7 @@ class ExpressionChecker {
                     if self.require_sync_captures &&
                        !self.trait_satisfied(
                            binding.type, "Sync") &&
-                       !self.bad_sync_captures.contains(
+                       !self.bad_sync_captures.contains_key(
                            node.value) {
                         self.bad_sync_captures[node.value] = true
                         self.fail(
@@ -4178,7 +4178,7 @@ class ExpressionChecker {
             } else {
                 let name: string =
                     syntax.children[0].value
-                if inout_names.contains(name) {
+                if inout_names.contains_key(name) {
                     self.fail(
                         syntax,
                         "overlapping inout arguments for '{name}'")
@@ -4312,7 +4312,7 @@ class ExpressionChecker {
             result.argument_passing.push("")
         }
         for generic: string in function.generics {
-            if !inference.contains(generic) {
+            if !inference.contains_key(generic) {
                 self.fail(
                     node,
                     "can't infer generic type '{generic}' for '{function.name}'")
@@ -6000,7 +6000,7 @@ class ExpressionChecker {
                                 receiver_syntax.value == "MMap") &&
                                self.program.target.os != "wasi" &&
                                self.signature.runtime_profile != "full" &&
-                               !self.signature.refused_capabilities.contains("the filesystem") {
+                               !self.signature.refused_capabilities.contains_key("the filesystem") {
                                 self.signature.refused_capabilities["the filesystem"] = true
                                 self.fail(
                                     node,
@@ -6090,7 +6090,7 @@ class ExpressionChecker {
                         receiver.type.name == "MMap") &&
                        self.program.target.os != "wasi" &&
                        self.signature.runtime_profile != "full" &&
-                       !self.signature.refused_capabilities.contains("the filesystem") {
+                       !self.signature.refused_capabilities.contains_key("the filesystem") {
                         self.signature.refused_capabilities["the filesystem"] = true
                         self.fail(
                             node,
@@ -6668,7 +6668,7 @@ class ExpressionChecker {
                 var seen: Map<string, bool> = {}
                 for index: int in 1..node.children.len() {
                     let entry: AstNode = node.children[index]
-                    if seen.contains(entry.value) {
+                    if seen.contains_key(entry.value) {
                         self.fail(
                             entry,
                             "field '{entry.value}' is initialized twice")
@@ -6711,7 +6711,7 @@ class ExpressionChecker {
                     }
                 } else {
                     for field: HirField in declaration.fields {
-                        if seen.contains(field.name) {
+                        if seen.contains_key(field.name) {
                             continue
                         }
                         if !field.has_default {
@@ -7508,7 +7508,7 @@ class ExpressionChecker {
         if variants.len() != 0 {
             var missing: List<string> = []
             for variant: string in variants {
-                if !covered.contains(variant) {
+                if !covered.contains_key(variant) {
                     missing.push(variant)
                 }
             }

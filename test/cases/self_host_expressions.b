@@ -55,21 +55,21 @@ fn containers() {
     cell.set(cell.get() + copy.len())
 
     let arena: Arena<int> = new Arena(4)
-    let slot: int = arena.put(cell.get())
+    let slot: int = arena.add(cell.get())
     let saved: int = arena.get(slot).or(0)
 
     let shared: Shared<int> = new Shared(saved)
     let weak: Weak<int> = shared.downgrade()
-    let live: bool = !weak.expired()
+    let live: bool = !weak.is_expired()
 
     let channel: Channel<int> = new Channel(2)
     channel.send(shared.get())
-    let received: int = channel.recv().or(0)
+    let received: int = channel.receive().or(0)
     channel.close()
 
     let atomic: AtomicInt = new AtomicInt(received)
-    atomic.set(atomic.add(1))
-    let current: int = atomic.get()
+    atomic.store(atomic.add_and_get(1))
+    let current: int = atomic.load()
     let narrowed: i32 = current as i32
     let convert: fn(i32) -> int =
         fn(value: i32) -> int { return value as int }

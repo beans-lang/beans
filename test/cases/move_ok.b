@@ -100,7 +100,7 @@ fn main() {
     let owned_labels: Map<string, int> = move labels
     labels = {"b": 2}
     let copied_labels: Map<string, int> = owned_labels.clone()
-    io.println("{owned_labels.get("a").or(0)} {copied_labels.len()} {labels.contains("b")}")
+    io.println("{owned_labels.get("a").or(0)} {copied_labels.len()} {labels.contains_key("b")}")
 
     var payload: List<int> = [1, 2]
     let returned: List<int> = round_trip(move payload)

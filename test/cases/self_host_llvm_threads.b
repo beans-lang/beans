@@ -18,15 +18,15 @@ class Tally {
 
 fn main() {
     let guard: Mutex<Tally> = new Mutex(new Tally())
-    guard.with(fn(tally: Tally) {
+    guard.with_lock(fn(tally: Tally) {
         tally.add(5)
     })
-    guard.with(fn(tally: Tally) {
+    guard.with_lock(fn(tally: Tally) {
         io.println("tally opens at {tally.total}")
     })
 
     let flag: Mutex<bool> = new Mutex(false)
-    flag.with(fn(value: bool) {
+    flag.with_lock(fn(value: bool) {
         io.println("flag starts {value}")
     })
 
@@ -36,7 +36,7 @@ fn main() {
     queue.close()
     var drained: int = 0
     for round: int in 0..3 {
-        match queue.recv() {
+        match queue.receive() {
             some(value) => { drained += value }
             none => { io.println("queue is dry") }
         }
@@ -45,7 +45,7 @@ fn main() {
 
     let strings: Channel<string> = new Channel(2)
     strings.send("beans")
-    match strings.recv() {
+    match strings.receive() {
         some(word) => { io.println("channel carried {word}") }
         none => {}
     }
@@ -74,7 +74,7 @@ fn main() {
     for lane: int in 0..4 {
         lanes.push(thread.spawn(fn() -> int {
             for step: int in 0..500 {
-                counter.with(fn(tally: Tally) {
+                counter.with_lock(fn(tally: Tally) {
                     tally.add(1)
                 })
             }
@@ -88,12 +88,12 @@ fn main() {
     }
     var signals: int = 0
     for slot: int in 0..4 {
-        match done.recv() {
+        match done.receive() {
             some(lane) => { signals += 1 }
             none => {}
         }
     }
-    counter.with(fn(tally: Tally) {
+    counter.with_lock(fn(tally: Tally) {
         io.println("contended total {tally.total} joined {joined} signals {signals}")
     })
 

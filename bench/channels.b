@@ -22,9 +22,9 @@ fn main() {
     var checksum: int = 0
     var i: int = 0
     for i < n {
-        checksum += channel.recv().or(-1)
+        checksum += channel.receive().or(-1)
         i += 1
     }
     let sent: int = producer.join()
-    io.println("channels {checksum} {sent} {channel.recv().is_none()}")
+    io.println("channels {checksum} {sent} {channel.receive().is_none()}")
 }

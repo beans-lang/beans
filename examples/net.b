@@ -26,7 +26,7 @@ fn ephemeral() -> Result<int> {
     let server: net.TcpListener = net.TcpListener.bind("127.0.0.1", 0)?
     let port: int = server.port()?
     io.println("bound to a system-chosen port {port > 0}")
-    io.println("listener is loopback {server.local()?.is_loopback()}")
+    io.println("listener is loopback {server.local_address()?.is_loopback()}")
     return ok(port)
 }
 
@@ -40,8 +40,8 @@ fn round_trip() -> Result<int> {
     let session: net.TcpStream = server.accept_timeout(2000)?
 
     // The two ends agree about each other.
-    io.println("client's peer port is the server's {client.peer()?.port == port}")
-    io.println("server sees the client's own port {session.peer()?.port == client.local()?.port}")
+    io.println("client's peer port is the server's {client.peer_address()?.port == port}")
+    io.println("server sees the client's own port {session.peer_address()?.port == client.local_address()?.port}")
 
     client.write_text("hello")?
     // Saying "nothing more from me" without closing the half we still read from. The
@@ -49,14 +49,14 @@ fn round_trip() -> Result<int> {
     client.shutdown_write()?
 
     let asked: Bytes = session.read_to_end(64)?
-    io.println("server read [{asked.to_string_full()}]")
+    io.println("server read [{asked.to_string()}]")
     let after: Bytes = session.read(8)?
     io.println("and then EOF {after.len() == 0}")
 
     session.write_text("hi back")?
     session.shutdown_write()?
     let answered: Bytes = client.read_to_end(64)?
-    io.println("client read [{answered.to_string_full()}]")
+    io.println("client read [{answered.to_string()}]")
     return ok(answered.len())
 }
 
@@ -109,7 +109,7 @@ fn datagrams() -> Result<int> {
     listener.send_to(Bytes.from("pong"), note.from)?
     sender.set_timeouts(2000, 2000)?
     let back: net.Datagram = sender.recv_from(64)?
-    io.println("reply says [{back.data.to_string_full()}]")
+    io.println("reply says [{back.data.to_string()}]")
     return ok(back.data.len())
 }
 
@@ -129,8 +129,8 @@ fn names() -> Result<int> {
     // the host is full of colons and the port would be unreadable without them.
     let four: net.Address = new net.Address("127.0.0.1", 80)
     let six: net.Address = new net.Address("::1", 80)
-    io.println("v4 text {four.text()}")
-    io.println("v6 text {six.text()}")
+    io.println("v4 text {four.to_string()}")
+    io.println("v6 text {six.to_string()}")
     io.println("v6 is detected {six.is_ipv6()} and v4 is not {four.is_ipv6()}")
     return ok(found.len())
 }

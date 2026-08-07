@@ -66,7 +66,7 @@ fn main() {
     io.println("events {duplicate} {inserted} {found.label} {found.value} {missing.label} {direct.label} {events.len()} {copy.len()} {values.len()} {total}")
     io.println("remove {events.remove(5)} {events.remove(5)} {events.len()} {copy[5].label}")
     events.clear()
-    io.println("clear {events.len()} {copy.len()} {copy.contains(3)}")
+    io.println("clear {events.len()} {copy.len()} {copy.contains_key(3)}")
 
     var ordered: OrderedMap<int, [i64; 2]> = {}
     for i: int in 0..12 {
@@ -104,7 +104,7 @@ fn main() {
         Pair { left: 1, right: 2 }, event(9, 99))
     let pair_copy: Map<Pair, Event> = pairs.clone()
     let pair_keys: List<Pair> = pair_copy.keys()
-    io.println("wide keys {pair_duplicate} {pairs[Pair { left: 1, right: 2 }].label} {pairs.contains(Pair { left: 3, right: 4 })} {pairs.remove(Pair { left: 3, right: 4 })} {pairs.len()} {pair_copy.len()} {pair_keys.len()}")
+    io.println("wide keys {pair_duplicate} {pairs[Pair { left: 1, right: 2 }].label} {pairs.contains_key(Pair { left: 3, right: 4 })} {pairs.remove(Pair { left: 3, right: 4 })} {pairs.len()} {pair_copy.len()} {pair_keys.len()}")
 
     var arrays: OrderedMap<[i64; 2], int> = {}
     arrays[[1, 2]] = 12
@@ -122,7 +122,7 @@ fn main() {
 
     var events_by_event: Map<Event, int> = {}
     events_by_event[event(7, 70)] = 1
-    let same_event: bool = events_by_event.contains(event(7, 70))
+    let same_event: bool = events_by_event.contains_key(event(7, 70))
     let arc_label: string = events_by_event.keys()[0].label
     io.println("arc key {same_event} {arc_label}")
 

@@ -62,5 +62,5 @@ fn main() {
     keyed[Payload.pair(Pair { left: 1, right: 2 })] = 12
     keyed[Payload.array([3, 4])] = 34
     keyed[Payload.event(Event { label: "same", value: 5 })] = 55
-    io.println("keys {keyed[Payload.pair(Pair { left: 1, right: 2 })]} {keyed.contains(Payload.array([3, 4]))} {keyed.contains(Payload.event(Event { label: "same", value: 5 }))} {keyed.len()}")
+    io.println("keys {keyed[Payload.pair(Pair { left: 1, right: 2 })]} {keyed.contains_key(Payload.array([3, 4]))} {keyed.contains_key(Payload.event(Event { label: "same", value: 5 }))} {keyed.len()}")
 }

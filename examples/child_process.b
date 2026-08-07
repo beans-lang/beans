@@ -27,8 +27,8 @@ import std.time
 fn a_conversation() -> Result<int> {
     var cmd: process.Command = new process.Command("/bin/cat")
     let child: process.Child = cmd.start()?
-    io.println("it has a real pid {child.id() > 0}")
-    io.println("and it has not finished {!child.finished()?}")
+    io.println("it has a real pid {child.process_id() > 0}")
+    io.println("and it has not finished {!child.is_finished()?}")
 
     // cat echoes what it is given. Closing stdin is what tells it to finish — a program
     // reading to EOF waits forever otherwise.
@@ -40,12 +40,12 @@ fn a_conversation() -> Result<int> {
     // Building the expected text with interpolation rather than escapes: a newline inside
     // a string literal is not something this language spells with a backslash.
     var expected: Bytes = new Bytes(0)
-    expected.append_str("first line")
+    expected.append_string("first line")
     expected.push(10)
-    expected.append_str("second line")
+    expected.append_string("second line")
     expected.push(10)
     io.println("it echoed {said.len()} bytes")
-    io.println("and they are exactly what was sent {said.to_string_full() == expected.to_string_full()}")
+    io.println("and they are exactly what was sent {said.to_string() == expected.to_string()}")
     io.println("then it exited {child.wait()?}")
     return ok(1)
 }
@@ -138,7 +138,7 @@ fn dropping_one_is_safe() -> Result<int> {
     cmd.arg("-c")
     cmd.arg("while true; do sleep 0.05; done")
     let forgotten: process.Child = cmd.start()?
-    io.println("started one and will not wait for it {forgotten.id() > 0}")
+    io.println("started one and will not wait for it {forgotten.process_id() > 0}")
     // `forgotten` is dropped here. deinit terminates, kills if needed, and reaps — so
     // this function leaves behind neither a running process nor a zombie.
     return ok(1)

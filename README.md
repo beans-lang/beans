@@ -406,7 +406,7 @@ packages from `stdlib/std/`; `std.collections`, `std.math`, `std.bytes`,
 `std.path`, `std.fmt`, `std.fs`, `std.reader`, and the four
 `std.encoding` packages are the first ones. Generic collection
 `filter`/`transform`, inout Map increment/insert/merge/remove/map policies,
-Option and Result combinators, `frequencies`, `unique`, `gcd`, `clamp_int`,
+Option and Result combinators, `frequencies`, `unique`, `gcd`, `clamp`,
 CRC32, unsigned varint append/encoding/decoding, path handling,
 integer hex/binary/group formatting, high-level whole-file text/byte/write/copy
 helpers, and buffered line reading are normal `.b` functions. Only their current

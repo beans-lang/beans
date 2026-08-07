@@ -57,8 +57,8 @@ fn main() {
             let expected: int = if at < 0 { -1 } else { model_values.get(at).or(-1) }
             if plain.get(key).or(-1) != expected { errors += 1 }
             if ordered.get(key).or(-1) != expected { errors += 1 }
-            if plain.contains(key) != (at >= 0) { errors += 1 }
-            if ordered.contains(key) != (at >= 0) { errors += 1 }
+            if plain.contains_key(key) != (at >= 0) { errors += 1 }
+            if ordered.contains_key(key) != (at >= 0) { errors += 1 }
         }
         if plain.len() != model_keys.len() { errors += 1 }
         if ordered.len() != model_keys.len() { errors += 1 }
@@ -85,7 +85,7 @@ fn main() {
     var value_sum: int = 0
     for key: int in plain_keys {
         if !seen.insert(key, true) { errors += 1 }
-        if !plain.contains(key) { errors += 1 }
+        if !plain.contains_key(key) { errors += 1 }
     }
     for value: int in plain_values { value_sum += value }
     var model_sum: int = 0

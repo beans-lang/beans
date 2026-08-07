@@ -5,14 +5,14 @@ import std.thread
 import std.time
 
 async fn watcher(fd: int) -> int {
-    let woke: bool = await net.await_readable(fd)
+    let woke: bool = await net.readable(fd)
     return if woke { 1 } else { 0 }
 }
 
 fn probe_fd() -> int {
     let probe: net.TcpListener =
         net.TcpListener.bind("127.0.0.1", 0).expect("probe")
-    return probe.handle()
+    return probe.poll_handle()
 }
 
 async fn close_without_reuse(server_fd: int, port: int) -> int {
@@ -48,11 +48,11 @@ async fn close_and_reuse(server_fd: int, port: int) -> int {
     let old: int = await parked
     let replacement: int = worker.join()
     let reused: bool = replacement == victim
-    let fresh: bool = await net.await_readable(replacement)
+    let fresh: bool = await net.readable(replacement)
     let byte: Bytes = sock.recv(replacement, 1).expect("replacement read")
     let replacement_closed: Result<bool> = sock.close(replacement)
     let sender_closed: Result<bool> = sock.close(sender)
-    return if old == 0 && reused && fresh && byte.to_string_full() == "x" {
+    return if old == 0 && reused && fresh && byte.to_string() == "x" {
         1
     } else {
         0
@@ -61,7 +61,7 @@ async fn close_and_reuse(server_fd: int, port: int) -> int {
 
 async fn abandon(victim: int, gate_read: int) -> int {
     async let doomed: int = watcher(victim)
-    let gate: bool = await net.await_readable(gate_read)
+    let gate: bool = await net.readable(gate_read)
     // Returning without awaiting doomed cancels it after the worker's close
     // notification marked its token dead.
     return if gate { 1 } else { 0 }
@@ -90,8 +90,8 @@ async fn cancel_after_close(server_fd: int, port: int) -> int {
 async fn main() {
     let server: net.TcpListener =
         net.TcpListener.bind("127.0.0.1", 0).expect("bind")
-    let port: int = server.local().expect("local").port
-    let server_fd: int = server.handle()
+    let port: int = server.local_address().expect("local").port
+    let server_fd: int = server.poll_handle()
 
     let plain: int = await close_without_reuse(server_fd, port)
     io.println("plain {plain}")

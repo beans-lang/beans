@@ -17,7 +17,7 @@ fn main() {
     var echo: process.Command = new process.Command("/bin/echo")
     echo.arg("hello").arg("two words")
     match echo.run() {
-        ok(done) => io.println("echo said [{done.text().trim()}] status {done.status}"),
+        ok(done) => io.println("echo said [{done.stdout_text().trim()}] status {done.status}"),
         err(e) => io.println("echo could not start: {e.kind}"),
     }
 
@@ -26,15 +26,15 @@ fn main() {
     var literal: process.Command = new process.Command("/bin/echo")
     literal.arg("; rm -rf /")
     match literal.run() {
-        ok(done) => io.println("passed through literally [{done.text().trim()}]"),
+        ok(done) => io.println("passed through literally [{done.stdout_text().trim()}]"),
         err(e) => io.println("failed: {e.kind}"),
     }
 
     // stdin in, stdout out.
     var cat: process.Command = new process.Command("/bin/cat")
-    cat.input_text("fed through a pipe")
+    cat.stdin_text("fed through a pipe")
     match cat.run() {
-        ok(done) => io.println("cat returned [{done.text()}]"),
+        ok(done) => io.println("cat returned [{done.stdout_text()}]"),
         err(e) => io.println("cat failed: {e.kind}"),
     }
 
@@ -42,7 +42,7 @@ fn main() {
     var both: process.Command = new process.Command("/bin/sh")
     both.arg("-c").arg("echo to-stdout; echo to-stderr >&2")
     match both.run() {
-        ok(done) => io.println("out [{done.text().trim()}] err [{done.error_text().trim()}]"),
+        ok(done) => io.println("out [{done.stdout_text().trim()}] err [{done.stderr_text().trim()}]"),
         err(e) => io.println("failed: {e.kind}"),
     }
 
@@ -51,7 +51,7 @@ fn main() {
     var exits: process.Command = new process.Command("/bin/sh")
     exits.arg("-c").arg("exit 3")
     match exits.run() {
-        ok(done) => io.println("exited {done.status}, ok {done.ok()}, signalled {done.signalled()}"),
+        ok(done) => io.println("exited {done.status}, ok {done.succeeded()}, signalled {done.terminated_by_signal()}"),
         err(e) => io.println("failed: {e.kind}"),
     }
 
@@ -60,7 +60,7 @@ fn main() {
     var killed: process.Command = new process.Command("/bin/sh")
     killed.arg("-c").arg("kill -TERM $$")
     match killed.run() {
-        ok(done) => io.println("signalled {done.signalled()} status below zero {done.status < 0}"),
+        ok(done) => io.println("signalled {done.terminated_by_signal()} status below zero {done.status < 0}"),
         err(e) => io.println("failed: {e.kind}"),
     }
 
@@ -77,7 +77,7 @@ fn main() {
     var elsewhere: process.Command = new process.Command("/bin/pwd")
     elsewhere.cwd("/definitely/not/a/directory")
     match elsewhere.run() {
-        ok(done) => io.println("unexpected [{done.text()}]"),
+        ok(done) => io.println("unexpected [{done.stdout_text()}]"),
         err(e) => io.println("bad directory: {e.kind}"),
     }
 
@@ -85,7 +85,7 @@ fn main() {
     var here: process.Command = new process.Command("/bin/pwd")
     here.cwd("/")
     match here.run() {
-        ok(done) => io.println("ran in [{done.text().trim()}]"),
+        ok(done) => io.println("ran in [{done.stdout_text().trim()}]"),
         err(e) => io.println("failed: {e.kind}"),
     }
 
@@ -94,7 +94,7 @@ fn main() {
     var envd: process.Command = new process.Command("/bin/sh")
     envd.arg("-c").arg("echo $BEANS_EXAMPLE").env("BEANS_EXAMPLE", "set-by-beans")
     match envd.run() {
-        ok(done) => io.println("environment [{done.text().trim()}]"),
+        ok(done) => io.println("environment [{done.stdout_text().trim()}]"),
         err(e) => io.println("failed: {e.kind}"),
     }
 

@@ -57,7 +57,7 @@ echo "checking the example never touches the network"
 # rejected on purpose, or "a..b" — an empty DNS label, which is not a legal name and so
 # is refused locally. A reserved name like "x.invalid" would cost a round trip, and a
 # resolver that hijacks unknown names could answer it and change the output.
-hosts=$(grep -oE '\b(bind|bind_backlog|connect|connect_timeout|resolve|Address)\("[^"]*"' \
+hosts=$(grep -oE '\b(bind|bind_with_backlog|connect|connect_timeout|resolve|Address)\("[^"]*"' \
     examples/net.b | sed 's/.*("//; s/"$//' | sort -u)
 while IFS= read -r host; do
     case "$host" in
@@ -288,7 +288,7 @@ fn serve(port_file: string) -> Result<int> {
     f.close()?
     let session: net.TcpStream = server.accept_timeout(10000)?
     let asked: Bytes = session.read_to_end(64)?
-    session.write_text("re: {asked.to_string_full()}")?
+    session.write_text("re: {asked.to_string()}")?
     session.shutdown_write()?
     return ok(1)
 }
@@ -298,7 +298,7 @@ fn speak(port: int) -> Result<int> {
     client.write_text("knock")?
     client.shutdown_write()?
     let answered: Bytes = client.read_to_end(64)?
-    io.println("client heard [{answered.to_string_full()}]")
+    io.println("client heard [{answered.to_string()}]")
     return ok(1)
 }
 
@@ -400,7 +400,7 @@ import std.net
 import std.process
 fn go() -> Result<int> {
     let server: net.TcpListener = net.TcpListener.bind("127.0.0.1", 0)?
-    let fd: int = server.handle()
+    let fd: int = server.poll_handle()
     // A child that reports whether it inherited that descriptor number.
     var probe: process.Command = new process.Command("/bin/sh")
     probe.arg("-c")
@@ -410,7 +410,7 @@ fn go() -> Result<int> {
     // not there — and would have gone on reporting it for any fd number reuse.
     probe.arg("if [ -S /dev/fd/{fd} ]; then echo inherited; else echo clean; fi")
     let done: process.Output = probe.run()?
-    io.println("child says {done.text()}")
+    io.println("child says {done.stdout_text()}")
     return ok(fd)
 }
 fn main() {

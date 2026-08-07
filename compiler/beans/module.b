@@ -5,6 +5,7 @@ import std.os
 import std.path
 import std.process
 import std.random
+import std.time
 
 // ---- canonical identity -----------------------------------------------
 //
@@ -508,7 +509,7 @@ class ModuleLoader {
                           "unsafe dependency path '{words[1]}'")
                 continue
             }
-            if self.lock_entries.contains(words[1]) {
+            if self.lock_entries.contains_key(words[1]) {
                 self.fail(lock_path, line_number, 1,
                           "dependency '{words[1]}' appears twice")
                 continue
@@ -553,7 +554,7 @@ class ModuleLoader {
         }
         let lock_path: string = path.join(self.root, "beans.lock")
         let temporary: string =
-            "{lock_path}.tmp-{os.ticks_ms()}-{nonce}"
+            "{lock_path}.tmp-{time.monotonic_millis()}-{nonce}"
         if File.exists(temporary) {
             self.fail(temporary, 0, 0,
                       "stale temporary lockfile blocks the update")
@@ -826,17 +827,17 @@ class ModuleLoader {
             self.run_git(["rev-parse", "HEAD"], dir)
         let tree: process.Output =
             self.run_git(["show", "-s", "--format=%T", "HEAD"], dir)
-        if !head.ok() || !tree.ok() {
+        if !head.succeeded() || !tree.succeeded() {
             self.fail(dir, 0, 0,
                       "cached checkout is not a readable git repository")
             return false
         }
-        if head.text().trim() != entry.commit {
+        if head.stdout_text().trim() != entry.commit {
             self.fail(dir, 0, 0,
                       "cached checkout commit differs from beans.lock")
             return false
         }
-        if tree.text().trim() != entry.tree {
+        if tree.stdout_text().trim() != entry.tree {
             self.fail(dir, 0, 0,
                       "cached checkout content hash differs from beans.lock")
             return false
@@ -844,7 +845,7 @@ class ModuleLoader {
         let status: process.Output =
             self.run_git(["status", "--porcelain", "--untracked-files=all"],
                          dir)
-        if !status.ok() || status.text().trim() != "" {
+        if !status.succeeded() || status.stdout_text().trim() != "" {
             self.fail(dir, 0, 0,
                       "cached checkout has local content changes")
             return false
@@ -865,7 +866,7 @@ class ModuleLoader {
             (self.update_module == "" ||
              self.update_module == remote_path)
         let use_lock: bool =
-            self.lock_entries.contains(remote_path) && !refresh
+            self.lock_entries.contains_key(remote_path) && !refresh
         var resolved: LockEntry = LockEntry {
             path: remote_path,
             requested: requested,
@@ -907,7 +908,7 @@ class ModuleLoader {
             return ""
         }
 
-        match Dir.make_all(base) {
+        match Dir.create_all(base) {
             ok(_) => {}
             err(error) => {
                 self.fail(base, 0, 0,
@@ -923,7 +924,7 @@ class ModuleLoader {
         }
         let temporary: string =
             path.join(base,
-                      "clone.tmp-{os.ticks_ms()}-{nonce}-{self.clone_number}")
+                      "clone.tmp-{time.monotonic_millis()}-{nonce}-{self.clone_number}")
         if Dir.exists(temporary) {
             self.fail(temporary, 0, 0,
                       "temporary dependency directory already exists")
@@ -941,7 +942,7 @@ class ModuleLoader {
         clone_args.push("https://{remote_path}.git")
         clone_args.push(temporary)
         let cloned: process.Output = self.run_git(clone_args, "")
-        if !cloned.ok() {
+        if !cloned.succeeded() {
             self.remove_temporary(temporary)
             self.fail(self.root, 0, 0,
                       "could not fetch {remote_path}")
@@ -955,7 +956,7 @@ class ModuleLoader {
                 ["-c", "advice.detachedHead=false", "checkout", "--quiet",
                  "--detach", checkout_ref],
                 temporary)
-            if !checkout.ok() {
+            if !checkout.succeeded() {
                 self.remove_temporary(temporary)
                 self.fail(self.root, 0, 0,
                           "requested ref {checkout_ref} is not available from {remote_path}")
@@ -967,9 +968,9 @@ class ModuleLoader {
             self.run_git(["rev-parse", "HEAD"], temporary)
         let tree: process.Output =
             self.run_git(["show", "-s", "--format=%T", "HEAD"], temporary)
-        resolved.commit = head.text().trim()
-        resolved.tree = tree.text().trim()
-        if !head.ok() || !tree.ok() ||
+        resolved.commit = head.stdout_text().trim()
+        resolved.tree = tree.stdout_text().trim()
+        if !head.succeeded() || !tree.succeeded() ||
            !safe_git_id(resolved.commit) || !safe_git_id(resolved.tree) {
             self.remove_temporary(temporary)
             self.fail(self.root, 0, 0,
@@ -1224,7 +1225,7 @@ class ModuleLoader {
             return
         }
         // The readiness half (reactor.b) rides along only when std.net is
-        // loaded — net.await_readable / net.await_writable are the only
+        // loaded — net.readable / net.writable are the only
         // operations that can park an await, and they cannot be named
         // without that import. Everything the loader loads is emitted, so
         // this is what keeps poller symbols out of pure async programs and
@@ -1304,7 +1305,7 @@ class ModuleLoader {
         self.bind_imports()
         if self.locked || self.offline {
             for locked_path: string in self.lock_entries.keys() {
-                if !self.resolved_entries.contains(locked_path) {
+                if !self.resolved_entries.contains_key(locked_path) {
                     self.fail(path.join(self.root, "beans.lock"), 0, 0,
                               "beans.lock contains unused dependency {locked_path}")
                 }
@@ -1312,7 +1313,7 @@ class ModuleLoader {
         }
         if self.errors.len() == 0 && self.lock_mode != "use" {
             if self.update_module != "" &&
-               !self.resolved_entries.contains(self.update_module) {
+               !self.resolved_entries.contains_key(self.update_module) {
                 self.fail(path.join(self.root, "beans.pot"), 0, 0,
                           "cannot update unknown dependency {self.update_module}")
             } else {

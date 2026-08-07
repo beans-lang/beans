@@ -117,7 +117,7 @@ fn main() {
     io.println(t.join())
 
     let shared: Mutex<Counter> = new Mutex(new Counter("shared"))
-    shared.with(fn(c: Counter) {
+    shared.with_lock(fn(c: Counter) {
         c.bump(5)
     })
 

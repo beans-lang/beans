@@ -15,7 +15,7 @@ fn hex_impl(value: int) -> string {
         out.set(index, digits.byte_at(digit))
         remaining = remaining >> 4
     }
-    return out.slice(index, 16).to_string()
+    return out.slice(index, 16).to_string_until_nul()
 }
 
 fn bin_impl(value: int) -> string {
@@ -28,7 +28,7 @@ fn bin_impl(value: int) -> string {
         out.set(index, 48 + ((remaining & 1) as int))
         remaining = remaining >> 1
     }
-    return out.slice(index, 64).to_string()
+    return out.slice(index, 64).to_string_until_nul()
 }
 
 fn magnitude_text(value: int) -> string {
@@ -42,7 +42,7 @@ fn magnitude_text(value: int) -> string {
         out.set(index, 48 + ((magnitude % 10) as int))
         magnitude = magnitude / 10
     }
-    return out.slice(index, 20).to_string()
+    return out.slice(index, 20).to_string_until_nul()
 }
 
 fn group_impl(value: int, separator: string) -> string {
@@ -64,7 +64,7 @@ fn group_impl(value: int, separator: string) -> string {
 }
 
 pub fn hex(value: int) -> string { return hex_impl(value) }
-pub fn bin(value: int) -> string { return bin_impl(value) }
-pub fn group(value: int, separator: string) -> string {
+pub fn binary(value: int) -> string { return bin_impl(value) }
+pub fn group_digits(value: int, separator: string) -> string {
     return group_impl(value, separator)
 }

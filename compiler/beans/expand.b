@@ -650,7 +650,7 @@ class AsyncExpander {
                              names: Map<string, bool>) -> bool {
         if node.kind == "assign" &&
            node.children[0].kind == "name" &&
-           names.contains(node.children[0].value) {
+           names.contains_key(node.children[0].value) {
             return true
         }
         for child: AstNode in node.children {
@@ -749,7 +749,7 @@ class AsyncExpander {
         return false
     }
 
-    // net.await_readable / net.await_writable are compiler-known: their
+    // net.readable / net.writable are compiler-known: their
     // declared bodies never run. The call swaps for a parked readiness
     // await on the hidden reactor, argument already decomposed in place.
     fn readiness_swap(operand: AstNode) -> AstNode {
@@ -761,8 +761,8 @@ class AsyncExpander {
         // std.net is a source package, so its functions carry canonical
         // symbols; matching the short spelling here would silently stop
         // parking awaits.
-        if target != package_symbol("std.net", "await_readable") &&
-           target != package_symbol("std.net", "await_writable") {
+        if target != package_symbol("std.net", "readable") &&
+           target != package_symbol("std.net", "writable") {
             return operand
         }
         let park: AstNode = self.node("call", "", operand)
@@ -772,7 +772,7 @@ class AsyncExpander {
         park.add(callee)
         park.add(operand.children[1])
         park.add(self.bool_literal(
-            target == package_symbol("std.net", "await_writable"),
+            target == package_symbol("std.net", "writable"),
             operand))
         return park
     }
@@ -1177,7 +1177,7 @@ class AsyncExpander {
 
     fn local_needs_slot(node: AstNode) -> bool {
         if node.note == "async_hoist" { return true }
-        if self.defer_names.contains(node.value) { return true }
+        if self.defer_names.contains_key(node.value) { return true }
         return false
     }
 

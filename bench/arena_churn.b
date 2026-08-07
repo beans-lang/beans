@@ -11,7 +11,7 @@ fn main() {
     var sum: int = 0
     for i: int in 0..n {
         state = (state * 48271 + i + 1) % 2147483647
-        let handle: int = arena.put(state)
+        let handle: int = arena.add(state)
         let pick: int = (state + i) % (handle + 1)
         state = (state + arena.at(pick)) % 2147483647
         sum += state

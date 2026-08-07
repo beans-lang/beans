@@ -122,7 +122,7 @@ class Resolver {
                     }
                     let qualified: string =
                         self.package_qualified(package, name)
-                    if self.symbols.contains(qualified) {
+                    if self.symbols.contains_key(qualified) {
                         declaration.resolved = qualified
                         let first: SemanticSymbol =
                             self.symbols[qualified]
@@ -185,12 +185,12 @@ class Resolver {
                          self_type: string, node: AstNode,
                          unknown_is_bound: bool) -> string {
         if name == "Self" && self_type != "" { return self_type }
-        if builtin_type(name) || generics.contains(name) { return name }
+        if builtin_type(name) || generics.contains_key(name) { return name }
 
         var resolved: string = ""
         if name.contains(".") {
             let qualifier: string = self.first_part(name)
-            if aliases.contains(qualifier) {
+            if aliases.contains_key(qualifier) {
                 let import_path: string = aliases[qualifier]
                 if !self.is_loaded_package(import_path) {
                     self.fail(file.path, node,
@@ -200,7 +200,7 @@ class Resolver {
                 resolved =
                     package_symbol(import_path,
                                    self.after_first_part(name))
-            } else if self.symbols.contains(name) {
+            } else if self.symbols.contains_key(name) {
                 resolved = name
             } else {
                 if unknown_is_bound { return name }
@@ -212,7 +212,7 @@ class Resolver {
             resolved = self.package_qualified(package, name)
         }
 
-        if !self.symbols.contains(resolved) {
+        if !self.symbols.contains_key(resolved) {
             if unknown_is_bound { return name }
             self.fail(file.path, node, "unknown type '{name}'")
             return ""

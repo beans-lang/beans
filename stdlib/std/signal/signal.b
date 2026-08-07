@@ -55,19 +55,19 @@ pub class Signal {
 
     /// The number for any watchable signal name. `not_found` for anything else,
     /// including the ones deliberately excluded.
-    pub static fn by_name(name: string) -> Result<int> {
+    pub static fn number(name: string) -> Result<int> {
         return sig.number(name)
     }
 
     /// The name for a number, for printing.
-    pub static fn name_of(number: int) -> Result<string> {
+    pub static fn name(number: int) -> Result<string> {
         return sig.name(number)
     }
 
     /// Sends a signal to this process. Exists so signal handling can be tested without a
     /// second process; it goes through the same table, so it cannot deliver something
     /// unwatchable.
-    pub static fn raise_self(number: int) -> Result<bool> {
+    pub static fn send_to_self(number: int) -> Result<bool> {
         return sig.raise(number)
     }
 }
@@ -106,7 +106,7 @@ pub unique class Signals {
     }
 
     /// Blocks one signal. The short form of `watch`.
-    pub static fn watch_one(number: int) -> Result<Signals> {
+    pub static fn watch_signal(number: int) -> Result<Signals> {
         return Signals.watch([number])
     }
 
@@ -117,7 +117,7 @@ pub unique class Signals {
     /// That is what the kernel promises on Linux (pending signals are a bitmask, so
     /// repeats collapse) and the macOS count is ignored to match: "it arrived" is a fact
     /// both platforms can agree on, "it arrived four times" is not.
-    pub fn pending() -> Result<List<int>> {
+    pub fn drain() -> Result<List<int>> {
         if !self.live { return err("signal source is closed", "closed") }
         let packed: Bytes = sig.pending(self.fd, 32)?
         let count: int = packed.get_i64(0)
@@ -130,14 +130,9 @@ pub unique class Signals {
         return ok(move out)
     }
 
-    /// True when this signal has arrived. Consumes it, like `pending`.
-    pub fn arrived(number: int) -> Result<bool> {
-        return ok(self.pending()?.contains(number))
-    }
-
     /// The descriptor, **borrowed** — register it with a `poll.Poller` as readable and a
     /// signal wakes the same wait a socket does. Never ownership.
-    pub fn handle() -> int {
+    pub fn poll_handle() -> int {
         return self.fd
     }
 

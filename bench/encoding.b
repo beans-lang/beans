@@ -255,7 +255,7 @@ fn bench_json(entries: int, iterations: int) {
             started = time.monotonic_nanos()
             match root.get("rows") {
                 some(rows) => {
-                    match rows.items() {
+                    match rows.elements() {
                         ok(values) => {
                             for value: json.Value in values {
                                 match value.get("id") {

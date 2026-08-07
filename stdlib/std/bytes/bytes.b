@@ -23,7 +23,7 @@ pub fn crc32(data: Bytes) -> u32 {
     return crc ^ 0xffffffff
 }
 
-pub fn varint_size(value: u64) -> int {
+pub fn uvarint_size(value: u64) -> int {
     var remaining: u64 = value
     var size: int = 1
     for remaining >= 128 {
@@ -33,7 +33,7 @@ pub fn varint_size(value: u64) -> int {
     return size
 }
 
-pub fn encode_varint(value: u64) -> Bytes {
+pub fn encode_uvarint(value: u64) -> Bytes {
     var out: Bytes = new Bytes(10)
     var remaining: u64 = value
     var index: int = 0
@@ -46,7 +46,7 @@ pub fn encode_varint(value: u64) -> Bytes {
     return out.slice(0, index + 1)
 }
 
-pub fn append_varint(data: Bytes, value: u64) {
+pub fn append_uvarint(data: Bytes, value: u64) {
     var remaining: u64 = value
     for {
         var byte: u64 = remaining & 0x7f
@@ -57,7 +57,7 @@ pub fn append_varint(data: Bytes, value: u64) {
     }
 }
 
-pub fn decode_varint(data: Bytes) -> Option<u64> {
+pub fn decode_uvarint(data: Bytes) -> Option<u64> {
     var result: u64 = 0
     var shift: u64 = 0
     var index: int = 0
@@ -72,7 +72,7 @@ pub fn decode_varint(data: Bytes) -> Option<u64> {
     return none
 }
 
-pub fn decode_varint_at_or(data: Bytes, start: int, fallback: u64) -> u64 {
+pub fn decode_uvarint_at_or(data: Bytes, start: int, fallback: u64) -> u64 {
     if start < 0 || start >= data.len() { return fallback }
     var result: u64 = 0
     var shift: u64 = 0

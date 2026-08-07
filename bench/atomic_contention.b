@@ -6,7 +6,7 @@ import std.thread
 fn add_many(counter: AtomicInt, n: int) -> int {
     var i: int = 0
     for i < n {
-        counter.add(1)
+        counter.add_and_get(1)
         i += 1
     }
     return n
@@ -23,5 +23,5 @@ fn main() {
     let t2: Thread<int> = thread.spawn(fn() -> int { return add_many(counter, q) })
     let t3: Thread<int> = thread.spawn(fn() -> int { return add_many(counter, n - q * 3) })
     let done: int = t0.join() + t1.join() + t2.join() + t3.join()
-    io.println("atomic_contention {counter.get()} {done}")
+    io.println("atomic_contention {counter.load()} {done}")
 }

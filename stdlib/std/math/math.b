@@ -7,7 +7,7 @@ package math
 /// When to use: keeping an index or measurement within known bounds without
 /// writing the two comparisons by hand. Returns `low` if `value < low`, `high`
 /// if `value > high`, otherwise `value` unchanged.
-pub fn clamp_int(value: int, low: int, high: int) -> int {
+pub fn clamp(value: int, low: int, high: int) -> int {
     if value < low {
         return low
     }

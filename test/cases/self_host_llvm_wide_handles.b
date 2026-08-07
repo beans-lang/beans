@@ -17,7 +17,7 @@ fn main() {
     box.set(event("set", 2))
 
     let arena: Arena<Event> = new Arena(1)
-    let handle: int = arena.put(event("arena", 3))
+    let handle: int = arena.add(event("arena", 3))
     let found: Event =
         arena.get(handle).or(event("missing", 0))
     let direct: Event = arena.at(handle)
@@ -28,14 +28,14 @@ fn main() {
 
     let mutex: Mutex<Event> =
         new Mutex(event("mutex", 5))
-    mutex.with(fn(value: Event) {
+    mutex.with_lock(fn(value: Event) {
         io.println("guard {value.label} {value.value}")
     })
 
     let channel: Channel<Event> = new Channel(1)
     channel.send(event("channel", 6))
     let received: Event =
-        channel.recv().expect("message")
+        channel.receive().expect("message")
 
     let worker: Thread<[i64; 2]> =
         thread.spawn(fn() -> [i64; 2] {

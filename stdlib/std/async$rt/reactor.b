@@ -1,7 +1,7 @@
 // The readiness half of the async runtime: the hidden reactor. This
 // file exists beside task.b in the compiler-owned package, but the
 // loader only reads it when the program loads std.net — the only
-// package whose operations (net.await_readable / net.await_writable)
+// package whose operations (net.readable / net.writable)
 // can park an await on a descriptor. A program that never touches
 // readiness gets task.b alone, so no poller symbol is emitted or
 // linked and the minimal and freestanding runtime profiles stay free
@@ -108,8 +108,8 @@ fn unpark(fd: int, token: int, dead: bool) {
 /// dead flag — set by the runtime's own close paths — is what tells this
 /// await apart from one freshly parked on the reused number. A dead park
 /// finishes false without touching the number again. Only the async
-/// expander calls this, for the compiler-known net.await_readable /
-/// net.await_writable operations.
+/// expander calls this, for the compiler-known net.readable /
+/// net.writable operations.
 pub fn reactor_park(fd: int, write: bool) -> Task<bool> {
     var token_cell: List<int> = []
     var fired_cell: List<bool> = []

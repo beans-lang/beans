@@ -87,7 +87,7 @@ fn once() -> Result<int> {
     cmd.arg("while true; do sleep 0.05; done")
     // Never waited for. deinit must terminate, kill if needed, and reap.
     let forgotten: process.Child = cmd.start()?
-    return ok(forgotten.id())
+    return ok(forgotten.process_id())
 }
 fn main() {
     var started: int = 0
@@ -182,8 +182,8 @@ import std.signal
 fn go() -> Result<int> {
     // Block TERM in this process first, exactly as a server watching signals would.
     let term: int = signal.Signal.terminate()?
-    let watch: signal.Signals = signal.Signals.watch_one(term)?
-    io.println("the parent is watching terminate {watch.handle() > 0}")
+    let watch: signal.Signals = signal.Signals.watch_signal(term)?
+    io.println("the parent is watching terminate {watch.poll_handle() > 0}")
 
     var cmd: process.Command = new process.Command("/bin/sh")
     cmd.arg("-c")
@@ -228,10 +228,10 @@ fn go() -> Result<int> {
     // Write in pieces; cat echoes each as it arrives.
     child.stdin.write_text("one ")?
     let first: Bytes = child.stdout.read(16)?
-    io.println("read back [{first.to_string_full()}]")
+    io.println("read back [{first.to_string()}]")
     child.stdin.write_text("two ")?
     let second: Bytes = child.stdout.read(16)?
-    io.println("read back [{second.to_string_full()}]")
+    io.println("read back [{second.to_string()}]")
     // Closing stdin is the only thing that ends a program reading to EOF.
     child.stdin.close()?
     let rest: Bytes = child.stdout.read(16)?

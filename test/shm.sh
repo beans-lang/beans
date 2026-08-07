@@ -31,7 +31,7 @@ cat >"$tmp/writer.b" <<WRITER
 import std.io
 
 fn main() {
-    match MMap.open_shared("$name", 64, true) {
+    match MMap.open_shared_memory("$name", 64, true) {
         ok(region) => {
             region.put_u64(0, 1234567890123)
             region.put_u32(8, 4242)
@@ -46,7 +46,7 @@ cat >"$tmp/reader.b" <<READER
 import std.io
 
 fn main() {
-    match MMap.open_shared("$name", 64, false) {
+    match MMap.open_shared_memory("$name", 64, false) {
         ok(region) => io.println("reader {region.get_u64(0)} {region.get_u32(8)} {region.get_u8(12)}"),
         err(e) => io.println("reader failed {e.kind}"),
     }
@@ -56,7 +56,7 @@ cat >"$tmp/unlink.b" <<UNLINK
 import std.io
 
 fn main() {
-    match MMap.unlink_shared("$name") {
+    match MMap.unlink_shared_memory("$name") {
         ok(gone) => io.println("unlinked"),
         err(e) => io.println("already gone"),
     }
@@ -89,7 +89,7 @@ cat >"$tmp/missing.b" <<'MISSING'
 import std.io
 
 fn main() {
-    match MMap.open_shared("/beans_definitely_absent_9174", 64, false) {
+    match MMap.open_shared_memory("/beans_definitely_absent_9174", 64, false) {
         ok(region) => io.println("unexpected {region.len()}"),
         err(e) => io.println("absent: {e.kind}"),
     }

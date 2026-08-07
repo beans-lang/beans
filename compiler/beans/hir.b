@@ -409,7 +409,7 @@ class SignatureChecker {
                     let capability: string =
                         self.capability_name(import_path)
                     if capability == "" ||
-                       self.refused_capabilities.contains(capability) {
+                       self.refused_capabilities.contains_key(capability) {
                         continue
                     }
                     let needed: string =
@@ -481,7 +481,7 @@ class SignatureChecker {
             }
             return
         }
-        if self.generic_arity.contains(name) {
+        if self.generic_arity.contains_key(name) {
             let expected: int = self.generic_arity[name]
             if count != expected {
                 self.fail(file, node,
@@ -547,7 +547,7 @@ class SignatureChecker {
                 // vector shape — but only when the name belongs to no
                 // registered user declaration; a class by a non-vector
                 // name is an ordinary type.
-                if !self.generic_arity.contains(name) &&
+                if !self.generic_arity.contains_key(name) &&
                    name.len() > 4 &&
                    name.starts_with("Simd") &&
                    name.byte_at(4) >= 48 &&
@@ -631,7 +631,7 @@ class SignatureChecker {
             if child.kind != "generic" { continue }
             let constraint: HirGeneric =
                 new HirGeneric(generic_name(child.value))
-            if names.contains(constraint.name) {
+            if names.contains_key(constraint.name) {
                 self.fail(
                     file, child,
                     "type parameter '{constraint.name}' is declared twice")
@@ -861,7 +861,7 @@ class SignatureChecker {
                 }
             } else if child.kind == "field" {
                 let field_name: string = declaration_name(child.value)
-                if member_names.contains(field_name) {
+                if member_names.contains_key(field_name) {
                     self.fail(file.path, child,
                               "duplicate member '{field_name}'")
                 }
@@ -900,7 +900,7 @@ class SignatureChecker {
             } else if child.kind == "variant" {
                 let variant_name: string =
                     declaration_name(child.value)
-                if member_names.contains(variant_name) {
+                if member_names.contains_key(variant_name) {
                     self.fail(file.path, child,
                               "duplicate variant '{variant_name}'")
                 }
@@ -923,7 +923,7 @@ class SignatureChecker {
             } else if child.kind == "fn" {
                 let method_name: string =
                     declaration_name(child.value)
-                if member_names.contains(method_name) {
+                if member_names.contains_key(method_name) {
                     self.fail(file.path, child,
                               "duplicate member '{method_name}'")
                 }
@@ -1072,7 +1072,7 @@ class SignatureChecker {
                current.name == declaration.name {
                 return true
             }
-            if seen.contains(current.name) { continue }
+            if seen.contains_key(current.name) { continue }
             seen[current.name] = true
             match self.declaration_for_name(current.name) {
                 some(parent) => {

@@ -369,7 +369,7 @@ pub class Value {
             let view: RawPtr<u8> = RawPtr.from_address(target as u64)
             beans_enc_json_str_copy(self.owner.handle, self.node, view)
         }
-        let text: string = bytes_from_raw(target, length).to_string_full()
+        let text: string = bytes_from_raw(target, length).to_string()
         free_raw(target)
         return ok(text)
     }
@@ -403,7 +403,7 @@ pub class Value {
 
     /// Every array element, in order. One bridge crossing however long the
     /// array is.
-    pub fn items() -> Result<List<Value>> {
+    pub fn elements() -> Result<List<Value>> {
         var count: int = -1
         var kind_raw: int = -1
         unsafe {
@@ -475,7 +475,7 @@ pub class Value {
                     view.offset(cursor).address() as int
                 cursor += (key_len + 7) / 8
                 found.push(Entry {
-                    key: bytes_from_raw(key_address, key_len).to_string_full(),
+                    key: bytes_from_raw(key_address, key_len).to_string(),
                     value: new Value(self.owner, handle),
                 })
             }
@@ -486,7 +486,7 @@ pub class Value {
 
     // ---- building ----
 
-    pub static fn of_null() -> Value {
+    pub static fn null() -> Value {
         let doc: Doc = fresh_doc()
         var node: int = 0
         unsafe {
@@ -495,7 +495,7 @@ pub class Value {
         return new Value(doc, node)
     }
 
-    pub static fn of_bool(value: bool) -> Value {
+    pub static fn from_bool(value: bool) -> Value {
         let doc: Doc = fresh_doc()
         var node: int = 0
         unsafe {
@@ -504,7 +504,7 @@ pub class Value {
         return new Value(doc, node)
     }
 
-    pub static fn of_int(value: int) -> Value {
+    pub static fn from_int(value: int) -> Value {
         let doc: Doc = fresh_doc()
         var node: int = 0
         unsafe {
@@ -513,7 +513,7 @@ pub class Value {
         return new Value(doc, node)
     }
 
-    pub static fn of_uint(value: u64) -> Value {
+    pub static fn from_uint(value: u64) -> Value {
         let doc: Doc = fresh_doc()
         var node: int = 0
         unsafe {
@@ -522,7 +522,7 @@ pub class Value {
         return new Value(doc, node)
     }
 
-    pub static fn of_float(value: float) -> Value {
+    pub static fn from_float(value: float) -> Value {
         let doc: Doc = fresh_doc()
         var node: int = 0
         unsafe {
@@ -531,7 +531,7 @@ pub class Value {
         return new Value(doc, node)
     }
 
-    pub static fn of_string(value: string) -> Value {
+    pub static fn from_string(value: string) -> Value {
         let doc: Doc = fresh_doc()
         let data: Bytes = Bytes.from(value)
         let block: int = raw_from_bytes(data)
@@ -683,11 +683,11 @@ pub fn parse_bytes(data: Bytes) -> Result<Value> {
 }
 
 /// Parse with explicit extension opt-ins.
-pub fn parse_with(text: string, options: Options) -> Result<Value> {
+pub fn parse_with_options(text: string, options: Options) -> Result<Value> {
     return parse_data(Bytes.from(text), options)
 }
 
-pub fn parse_bytes_with(data: Bytes, options: Options) -> Result<Value> {
+pub fn parse_bytes_with_options(data: Bytes, options: Options) -> Result<Value> {
     return parse_data(data, options)
 }
 
@@ -721,7 +721,7 @@ fn write_value(value: Value, mode: int) -> Result<string> {
         let view: RawPtr<u8> = RawPtr.from_address(block as u64)
         beans_enc_json_take_buf(buffer, length, view)
     }
-    let text: string = bytes_from_raw(block, length).to_string_full()
+    let text: string = bytes_from_raw(block, length).to_string()
     free_raw(block)
     return ok(text)
 }

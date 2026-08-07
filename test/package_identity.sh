@@ -506,7 +506,7 @@ import std_shadow.math
 
 fn main() {
     io.println(math.clamp(1, 2, 3))
-    io.println(stdmath.clamp_int(9, 0, 4))
+    io.println(stdmath.clamp(9, 0, 4))
 }
 EOF
 printf '6\n4\n' >"$tmp/shadow.expected"
