@@ -675,6 +675,10 @@ jobs:
           cp tools/install-release.sh assets/beans-install.sh
           cp tools/install-release.ps1 assets/beans-install.ps1
           chmod +x assets/beans-install.sh
+          # The SBOM action opens its output file directly and does not create
+          # the directory on the way, so an absent sbom/ is an ENOENT after the
+          # scan has already run — every release so far died right here.
+          mkdir -p sbom
 
       # Built before the checksum list so the SBOM is itself covered by it. It is
       # written outside assets/ first, because a scan of assets/ must not have to
