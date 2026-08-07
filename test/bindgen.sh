@@ -19,10 +19,17 @@ typedef union Word {
     uint32_t bits;
     float value;
 } Word;
+typedef int32_t (*Operation)(void*, int32_t);
+typedef struct CallbackSlot {
+    Operation function;
+    void* context;
+} CallbackSlot;
 typedef enum Status { STATUS_OK = 0, STATUS_BAD = 2 } Status;
 extern const int32_t version;
 extern _Thread_local int32_t counter;
+extern Operation active_operation;
 Handle* make_handle(void);
+Operation get_operation(void);
 int32_t take(Handle*, Pair, Word, void (*callback)(void*, int32_t));
 C
 "$beansc" bindgen "$tmp/access.h" -o "$tmp/bindings.b" >"$tmp/bindgen.out"
@@ -33,6 +40,12 @@ grep -F 'bytes: [u8; 4]' "$tmp/bindings.b" >"$tmp/match"
 grep -F 'thread_local var counter: i32' "$tmp/bindings.b" >"$tmp/match"
 grep -F 'fn make_handle() -> RawPtr<Handle>' "$tmp/bindings.b" >"$tmp/match"
 grep -F 'callback' "$tmp/bindings.b" >"$tmp/match"
+grep -F 'function: CFunctionPtr<fn(RawPtr<u8>, i32) -> i32>' \
+    "$tmp/bindings.b" >"$tmp/match"
+grep -F 'var active_operation: CFunctionPtr<fn(RawPtr<u8>, i32) -> i32>' \
+    "$tmp/bindings.b" >"$tmp/match"
+grep -F 'fn get_operation() -> CFunctionPtr<fn(RawPtr<u8>, i32) -> i32>' \
+    "$tmp/bindings.b" >"$tmp/match"
 grep -F 'fn status_bad() -> i32 { return 2 }' "$tmp/bindings.b" >"$tmp/match"
 
 cat >"$tmp/unsupported.h" <<'C'
@@ -289,6 +302,12 @@ struct __attribute__((aligned(32))) Aligned { int a; };
 void use_aligned(struct Aligned value);
 C
 refuse "$tmp/aligned.h" "explicit alignment" "an over-aligned record"
+cat >"$tmp/field_aligned.h" <<'C'
+struct FieldAligned { char first; int value __attribute__((aligned(32))); };
+void use_field_aligned(struct FieldAligned value);
+C
+refuse "$tmp/field_aligned.h" "field 'value' in record 'FieldAligned' carries a layout attribute" \
+    "an over-aligned record field"
 cat >"$tmp/pragma.h" <<'C'
 #pragma pack(push, 1)
 struct Pragma { int a; long long b; };
@@ -328,6 +347,35 @@ for spelling in 'long double' '__int128' '_Complex double'; do
     printf 'void takes(%s value);\n' "$spelling" >"$tmp/exact.h"
     refuse "$tmp/exact.h" "unsupported C type" "the C type $spelling"
 done
+
+# In allow mode an unsafe declaration must disappear as one unit. Anything
+# whose layout depends on it must disappear too. Valid unrelated declarations
+# remain usable.
+cat >"$tmp/partly_unsupported.h" <<'C'
+struct Good { int value; };
+struct __attribute__((packed)) Bad { int value; long long wide; };
+struct DependsOnBad { struct Bad bad; int tail; };
+void use_good(struct Good value);
+void use_bad(struct Bad value);
+void use_depends(struct DependsOnBad value);
+C
+"$beansc" bindgen "$tmp/partly_unsupported.h" \
+    -o "$tmp/partly_unsupported.b" --allow-unsupported \
+    >"$tmp/partly_unsupported.out"
+grep -F 'extern "C" struct Good' "$tmp/partly_unsupported.b" >"$tmp/match"
+grep -F 'fn use_good(value: Good)' "$tmp/partly_unsupported.b" >"$tmp/match"
+for unsafe_decl in \
+    'extern "C" struct Bad' \
+    'extern "C" struct DependsOnBad' \
+    'fn use_bad(' \
+    'fn use_depends('; do
+    if grep -F "$unsafe_decl" "$tmp/partly_unsupported.b" >/dev/null; then
+        echo "bindgen emitted unsafe declaration '$unsafe_decl' in allow mode" >&2
+        cat "$tmp/partly_unsupported.b" >&2
+        exit 1
+    fi
+done
+"$beansc" check "$tmp/partly_unsupported.b" >"$tmp/partly_unsupported.check"
 
 # Success has to mean the bindings are worth having. A header whose only
 # declarations cannot be bound must say so rather than write a lone comment.
@@ -380,6 +428,13 @@ if [ -x "$stage0" ]; then
     "$stage0" bindgen "$tmp/enum_ok.h" -o "$tmp/enum.stage0.b" \
         >"$tmp/enum.stage0.out"
     cmp "$tmp/enum_ok.b" "$tmp/enum.stage0.b"
+    "$stage0" bindgen "$tmp/access.h" -o "$tmp/access.stage0.b" \
+        >"$tmp/access.stage0.out"
+    cmp "$tmp/bindings.b" "$tmp/access.stage0.b"
+    "$stage0" bindgen "$tmp/partly_unsupported.h" \
+        -o "$tmp/partly_unsupported.stage0.b" --allow-unsupported \
+        >"$tmp/partly_unsupported.stage0.out"
+    cmp "$tmp/partly_unsupported.b" "$tmp/partly_unsupported.stage0.b"
 else
     echo "bindgen: no $stage0, skipping the stage-0 output comparison" >&2
 fi

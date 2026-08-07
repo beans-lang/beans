@@ -22,14 +22,23 @@ pub extern "C" fn pair_sum(value: Pair) -> i32 as "beans_access_pair_sum" {
 pub extern "C" fn handle_accepted(value: RawPtr<Handle>) -> bool as "beans_access_handle_accepted" {
     return true
 }
+pub extern "C" fn call_operation(
+    operation: CFunctionPtr<fn(i32) -> i32>, value: i32
+) -> i32 as "beans_access_call_operation" {
+    unsafe {
+        return operation.call(value)
+    }
+}
 BEANS
 cat >"$tmp/caller.c" <<'C'
 #include <stdio.h>
 #include "library.h"
+static int32_t add_two(int32_t value) { return value + 2; }
 int main(void) {
-    printf("%d %d %d\n", beans_access_add(20, 22),
+    printf("%d %d %d %d\n", beans_access_add(20, 22),
            beans_access_pair_sum((Pair){20, 22}),
-           beans_access_handle_accepted((Handle*)0));
+           beans_access_handle_accepted((Handle*)0),
+           beans_access_call_operation(add_two, 40));
     return 0;
 }
 C
@@ -78,9 +87,13 @@ grep -F 'int32_t beans_access_add(int32_t a, int32_t b);' \
     "$tmp/library.h" >"$tmp/match"
 grep -F 'bool beans_access_handle_accepted(Handle* value);' \
     "$tmp/library.h" >"$tmp/match"
+grep -F 'typedef int32_t (*BeansFfiFunction0)(int32_t value0);' \
+    "$tmp/library.h" >"$tmp/match"
+grep -F 'int32_t beans_access_call_operation(BeansFfiFunction0 operation, int32_t value);' \
+    "$tmp/library.h" >"$tmp/match"
 clang -I"$tmp" "$tmp/caller.c" "${shared_link[@]}" -o "$tmp/shared_caller"
 env "$library_path=$tmp" "$tmp/shared_caller" >"$tmp/shared.out"
-grep -Fx '42 42 1' "$tmp/shared.out" >"$tmp/match"
+grep -Fx '42 42 1 42' "$tmp/shared.out" >"$tmp/match"
 clang++ -I"$tmp" "$tmp/cpp_caller.cpp" "${shared_link[@]}" \
     -o "$tmp/cpp_caller"
 env "$library_path=$tmp" "$tmp/cpp_caller"

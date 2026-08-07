@@ -2398,8 +2398,9 @@ beansc build --target riscv32imac-unknown-none-elf --runtime freestanding f.b --
   alias leaves every other alias dangling.
 - `extern "C" fn name(args) -> T` declares an unmangled host C symbol. Calls
   require `unsafe {}`. The ABI supports any number of integer, bool, `RawPtr`,
-  `f32`, `f64`, or `extern "C" struct`/`union` arguments and the same return
-  types (or no return), including arguments past every register bank.
+  `CFunctionPtr`, `f32`, `f64`, or `extern "C" struct`/`union` arguments and
+  the same return types (or no return), including arguments past every
+  register bank.
   Aggregates may contain nested C-layout records and
   fixed arrays. Clang owns the platform ABI lowering: native builds link a
   generated pointer-ABI wrapper, and the interpreter compiles and caches a tiny
@@ -2427,20 +2428,26 @@ beansc build --target riscv32imac-unknown-none-elf --runtime freestanding f.b --
   be a raw-memory-safe inline type.
 - `StoredCallback<F>.create(userdata_index, closure)` makes an explicitly owned
   callback for C code that stores it or calls it on another thread.
-  `function()` and `context()` are passed to C. Captures must be `Send + Sync`.
-  Unregister first, then call `close()`; close waits for active calls. The value
-  is move-only, and a panic never unwinds through C.
+  Pass `function()` to a borrowed C callback parameter. Use
+  `function_pointer()` when C stores the callable address in a
+  `CFunctionPtr<F>` field, global, parameter, or return value. `context()` is
+  the separate userdata pointer. Captures must be `Send + Sync`. Unregister
+  first, then call `close()`; close waits for active calls. The value is
+  move-only, and a panic never unwinds through C.
 
 A **borrowed callback** is an `fn(...)` parameter on an `extern "C" fn`. It is
 lent to C for the length of that one call, so a Beans closure can be passed
 directly and no lifetime question arises. A callback C *stores* is a different
 thing and needs `StoredCallback`, whose value stays alive until you `close()`
 it — close after unregistering, because it waits for calls already running.
-A callback type is not storage: an `extern "C" struct` field cannot hold one,
-so bindgen writes a C function-pointer field as `RawPtr<u8>`. The field is
-still one pointer wide and a `StoredCallback`'s `function()` fits in it, but
-the signature is not carried in the type. A typed C function-pointer value is
-not implemented yet.
+A callback type is not storage: an `extern "C" struct` field cannot hold a
+plain `fn(...)`. C function-pointer storage uses `CFunctionPtr<F>`, which is
+one pointer wide but stays distinct from `RawPtr` and ordinary Beans function
+values. It is valid in C-layout records, extern globals, parameters, returns,
+and exported C headers. `CFunctionPtr.null()` creates a null value,
+`is_null()` tests it, and unsafe `call(...)` invokes a non-null pointer with
+its exact C signature. Bindgen uses this type for C function-pointer fields,
+globals, and returns.
 
 `beansc bindgen header.h -o bindings.b [--only symbol]*` asks Clang for the
 selected target's JSON AST. It handles typedefs, opaque and complete records,
@@ -2471,8 +2478,9 @@ aligned records, `#pragma pack` layouts, anonymous records, non-default
 calling conventions and other ABI attributes, and C++ declarations. Types with
 no exact Beans equivalent — `long double`, 128-bit integers, `_Complex`,
 `_BitInt`, extended and decimal floating types — are refused for the same
-reason. `--allow-unsupported` skips the affected declaration with a generated
-comment; it never invents a usable-looking type in its place. Extra Clang
+reason. `--allow-unsupported` skips the affected declaration and declarations
+whose layout depends on it, with generated comments; it never invents a
+usable-looking type in their place. Extra Clang
 options follow `--`. `--package name` writes a `package` clause above the
 bindings: every file in a package declares it, so generated bindings dropped
 beside your own sources need one. Without it the output has no clause, which

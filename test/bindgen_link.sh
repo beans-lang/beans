@@ -22,6 +22,12 @@ static inline int32_t link_probe_bump(int32_t value) {
   return link_probe_scale(value) + 1;
 }
 
+/* GNU extern-inline semantics also do not promise an out-of-line symbol. */
+extern inline __attribute__((gnu_inline))
+int32_t link_probe_gnu_inline(int32_t value) {
+  return value + 3;
+}
+
 extern int32_t link_probe_base;
 int32_t link_probe_double(int32_t value);
 C
@@ -59,7 +65,7 @@ grep -F 'extern "C" fn link_probe_double(value: i32) -> i32' \
 grep -F 'extern "C" var link_probe_base: i32' \
     "$tmp/project/bindings.b" >"$tmp/match"
 # ... and the ones with no symbol behind them are not, under any spelling.
-for internal in link_probe_scale link_probe_bump; do
+for internal in link_probe_scale link_probe_bump link_probe_gnu_inline; do
     if grep -F "$internal" "$tmp/project/bindings.b" >/dev/null; then
         echo "bindgen imported '$internal', which has no external symbol" >&2
         cat "$tmp/project/bindings.b" >&2

@@ -1499,14 +1499,22 @@ class TreeInterpreter {
                 return TreeValue.floating(
                     pointer.read())
             }
-            if name == "RawPtr" {
+            if name == "RawPtr" ||
+               name == "CFunctionPtr" {
                 let slot: RawPtr<RawPtr<u8> > =
                     RawPtr.from_address(
                         address as u64)
                 let pointer: RawPtr<u8> =
                     slot.read()
+                let pointer_type: HirType =
+                    if name == "CFunctionPtr" &&
+                       global.type.args.len() == 1 {
+                        global.type.args[0]
+                    } else {
+                        global.type
+                    }
                 return TreeValue.host_pointer(
-                    pointer.address(), global.type)
+                    pointer.address(), pointer_type)
             }
         }
         return self.fail(
@@ -1613,7 +1621,8 @@ class TreeInterpreter {
                 pointer.write(value.float_data)
                 return
             }
-            if name == "RawPtr" {
+            if name == "RawPtr" ||
+               name == "CFunctionPtr" {
                 let slot: RawPtr<RawPtr<u8> > =
                     RawPtr.from_address(
                         address as u64)
@@ -1775,7 +1784,8 @@ class TreeInterpreter {
                     value.float_data, bits))
             return true
         }
-        if name == "RawPtr" {
+        if name == "RawPtr" ||
+           name == "CFunctionPtr" {
             self.memory_write_uint(
                 memory, address,
                 self.program.target.pointer_size(),
@@ -1938,7 +1948,8 @@ class TreeInterpreter {
                         memory, address, bits / 8),
                     bits))
         }
-        if name == "RawPtr" {
+        if name == "RawPtr" ||
+           name == "CFunctionPtr" {
             let pointer_address: u64 =
                 self.memory_read_uint(
                     memory, address,
@@ -1949,6 +1960,10 @@ class TreeInterpreter {
                 } else {
                     new HirType("u8")
                 }
+            if name == "CFunctionPtr" {
+                return TreeValue.host_pointer(
+                    pointer_address, element)
+            }
             match self.find_memory(pointer_address) {
                 some(target) => {
                     return TreeValue.raw_pointer(
@@ -5084,6 +5099,16 @@ class TreeInterpreter {
                         callback.function
                     return some(result)
                 }
+                if node.value == "function_pointer" {
+                    var callback_type: HirType =
+                        new HirType("poison")
+                    if node.type.args.len() == 1 {
+                        callback_type = node.type.args[0]
+                    }
+                    return some(TreeValue.host_pointer(
+                        callback.function as u64,
+                        callback_type))
+                }
                 if node.value == "context" {
                     unsafe {
                         return some(
@@ -5110,6 +5135,70 @@ class TreeInterpreter {
             }
         }
         return none
+    }
+
+    fn c_function_pointer_method(
+        node: HirNode,
+        receiver: TreeValue,
+        arguments: List<TreeValue>) ->
+        Option<TreeValue> {
+        if node.children.len() == 0 ||
+           canonical_hir_name(
+               node.children[0].type.name) !=
+               "CFunctionPtr" {
+            return none
+        }
+        if node.value == "is_null" {
+            return some(TreeValue.boolean(
+                receiver.memory_address == 0))
+        }
+        if node.value != "call" {
+            return none
+        }
+        if receiver.memory_address == 0 {
+            return some(self.fail(
+                node,
+                "cannot call a null CFunctionPtr"))
+        }
+        var callback: HirType =
+            new HirType("poison")
+        match receiver.memory_type {
+            some(type) => { callback = type }
+            none => {}
+        }
+        if callback.name != "fn" {
+            return some(self.fail(
+                node,
+                "CFunctionPtr has no callback signature"))
+        }
+        let function: HirFunction =
+            new HirFunction(
+                "CFunctionPtr.call", "", "",
+                false, node.file,
+                node.line, node.col)
+        for index: int in 0..callback.fn_parameter_count {
+            function.parameters.push(
+                new HirParameter(
+                    "arg{index}", "",
+                    callback.args[index],
+                    node.file, node.line, node.col))
+        }
+        if callback.fn_parameter_count <
+               callback.args.len() {
+            function.result =
+                callback.args[
+                    callback.fn_parameter_count]
+        }
+        var call_arguments: List<TreeValue> = []
+        for index: int in 1..arguments.len() {
+            call_arguments.push(arguments[index])
+        }
+        let builder: CAbiTextBuilder =
+            new CAbiTextBuilder(self.program)
+        return some(self.call_extern_bridge(
+            function, call_arguments,
+            receiver.memory_address as int,
+            builder.describe(function)))
     }
 
     fn raw_static(node: HirNode,
@@ -5992,6 +6081,11 @@ class TreeInterpreter {
             return self.fail(node, "method has no receiver")
         }
         let receiver: TreeValue = arguments[0]
+        match self.c_function_pointer_method(
+                node, receiver, arguments) {
+            some(value) => { return value }
+            none => {}
+        }
         match self.stored_callback_method(
                 node, receiver) {
             some(value) => { return value }
@@ -7361,6 +7455,17 @@ class TreeInterpreter {
                "StoredCallback.create:") {
             return self.create_stored_callback(
                 node, arguments)
+        }
+        if node.kind == "static_call" &&
+           node.resolved == "CFunctionPtr.null" {
+            let callback_type: HirType =
+                if node.type.args.len() == 1 {
+                    node.type.args[0]
+                } else {
+                    new HirType("poison")
+                }
+            return TreeValue.host_pointer(
+                0, callback_type)
         }
         if node.kind == "static_call" {
             match self.file_static(
@@ -8886,7 +8991,8 @@ class TreeInterpreter {
         bridges: List<TreeFfiMemory>) -> bool {
         let name: string =
             canonical_hir_name(type.name)
-        if name == "RawPtr" {
+        if name == "RawPtr" ||
+           name == "CFunctionPtr" {
             self.memory_write_uint(
                 memory, address,
                 self.program.target.pointer_size(),
@@ -9529,7 +9635,10 @@ class TreeInterpreter {
             if function.result.name != "unit" {
                 if canonical_hir_name(
                        function.result.name) ==
-                   "RawPtr" {
+                   "RawPtr" ||
+                   canonical_hir_name(
+                       function.result.name) ==
+                   "CFunctionPtr" {
                     // A returned pointer can land inside one of the host
                     // copies made for the pointer arguments. Map it back to
                     // the interpreter memory the copy mirrors — exactly what
@@ -9549,11 +9658,24 @@ class TreeInterpreter {
                         raw_address =
                             slot.read() as u64
                     }
-                    result =
-                        self.ffi_pointer_result(
-                            function.result,
-                            raw_address as int,
-                            pointer_bridges)
+                    if canonical_hir_name(
+                           function.result.name) ==
+                       "CFunctionPtr" {
+                        let callback_type: HirType =
+                            if function.result.args.len() == 1 {
+                                function.result.args[0]
+                            } else {
+                                new HirType("poison")
+                            }
+                        result = TreeValue.host_pointer(
+                            raw_address, callback_type)
+                    } else {
+                        result =
+                            self.ffi_pointer_result(
+                                function.result,
+                                raw_address as int,
+                                pointer_bridges)
+                    }
                 } else {
                     result =
                         self.ffi_read_host_storage(
@@ -9882,7 +10004,8 @@ class TreeInterpreter {
                 canonical_hir_name(
                     parameter_type.name)
             var native_bytes: int = 0
-            if name == "RawPtr" {
+            if name == "RawPtr" ||
+               name == "CFunctionPtr" {
                 native_bytes = host_pointer_bytes
             } else if hir_is_integer(
                           parameter_type) &&
@@ -9903,6 +10026,7 @@ class TreeInterpreter {
             direct_words = false
         } else if result_name != "unit" &&
                   result_name != "RawPtr" &&
+                  result_name != "CFunctionPtr" &&
                   (!hir_is_integer(function.result) ||
                    tree_integer_bits(
                        result_name) < 32) {
@@ -9925,7 +10049,8 @@ class TreeInterpreter {
                 function.parameters[index].type
             let name: string =
                 canonical_hir_name(type.name)
-            if name == "RawPtr" {
+            if name == "RawPtr" ||
+               name == "CFunctionPtr" {
                 words.push(
                     self.ffi_pointer_word(
                         function, arguments[index],
@@ -9951,6 +10076,7 @@ class TreeInterpreter {
         if !word_signature ||
            (result_name != "unit" &&
             result_name != "RawPtr" &&
+            result_name != "CFunctionPtr" &&
             result_name != "bool" &&
             !hir_is_integer(function.result)) {
             self.ffi_sync_and_free(bridges)
@@ -9994,6 +10120,15 @@ class TreeInterpreter {
         if result_name == "RawPtr" {
             result = self.ffi_pointer_result(
                 function.result, raw, bridges)
+        } else if result_name == "CFunctionPtr" {
+            let callback_type: HirType =
+                if function.result.args.len() == 1 {
+                    function.result.args[0]
+                } else {
+                    new HirType("poison")
+                }
+            result = TreeValue.host_pointer(
+                raw as u64, callback_type)
         } else if result_name != "unit" {
             result = self.ffi_integer_result(
                 function.result, raw)

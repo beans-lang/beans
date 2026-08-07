@@ -492,6 +492,54 @@ fn bindgen_pointer_to(inner: string) -> string {
     return "RawPtr<{inner}>"
 }
 
+fn bindgen_function_pointer_to(inner: string) -> string {
+    if inner.ends_with(">") {
+        return "CFunctionPtr<{inner} >"
+    }
+    return "CFunctionPtr<{inner}>"
+}
+
+fn bindgen_has_kind(node: BindgenJson,
+                    wanted: string) -> bool {
+    if node.string("kind") == wanted { return true }
+    match node.get("inner") {
+        some(inner) => {
+            for child: BindgenJson in inner.items {
+                if bindgen_has_kind(child, wanted) {
+                    return true
+                }
+            }
+        }
+        none => {}
+    }
+    return false
+}
+
+fn bindgen_contains_identifier(
+    text: string, wanted: string) -> bool {
+    if wanted == "" || wanted.len() > text.len() {
+        return false
+    }
+    for index: int in
+        0..(text.len() - wanted.len() + 1) {
+        if text.slice(index, index + wanted.len()) !=
+           wanted {
+            continue
+        }
+        let left_ok: bool =
+            index == 0 ||
+            !bindgen_identifier_byte(
+                text.byte_at(index - 1))
+        let right: int = index + wanted.len()
+        let right_ok: bool =
+            right == text.len() ||
+            !bindgen_identifier_byte(
+                text.byte_at(right))
+        if left_ok && right_ok { return true }
+    }
+    return false
+}
+
 fn bindgen_split_arguments(text: string) ->
     List<string> {
     var result: List<string> = []
@@ -911,14 +959,20 @@ class BindgenGenerator {
         return result
     }
 
-    // A C record can hold a function pointer; a Beans struct field cannot hold
-    // a callback type. Such a field is still exactly one pointer wide, so it
-    // binds as a raw pointer: the record's layout is unchanged, and a
-    // StoredCallback's function pointer is what goes in it.
+    // A callback parameter is borrowed for one call and keeps the plain `fn`
+    // spelling. Stored C function addresses use a distinct pointer type.
     fn field_type(written: string) -> string {
         let result: string = self.c_type(written)
         if result.starts_with("fn(") {
-            return "RawPtr<u8>"
+            return bindgen_function_pointer_to(result)
+        }
+        return result
+    }
+
+    fn stored_type(written: string) -> string {
+        let result: string = self.c_type(written)
+        if result.starts_with("fn(") {
+            return bindgen_function_pointer_to(result)
         }
         return result
     }
@@ -987,6 +1041,24 @@ class BindgenGenerator {
                     if what != "" {
                         self.errors.push(
                             "record '{record.c_name}' {what}, which bindgen cannot reproduce exactly")
+                    }
+                    if kind == "FieldDecl" {
+                        match child.get("inner") {
+                            some(attributes) => {
+                                for attribute: BindgenJson in
+                                    attributes.items {
+                                    let attribute_kind: string =
+                                        attribute.string("kind")
+                                    if attribute_kind == "AlignedAttr" ||
+                                       attribute_kind == "PackedAttr" ||
+                                       attribute_kind == "MaxFieldAlignmentAttr" {
+                                        self.errors.push(
+                                            "field '{child.string("name")}' in record '{record.c_name}' carries a layout attribute bindgen cannot reproduce exactly")
+                                    }
+                                }
+                            }
+                            none => {}
+                        }
                     }
                 }
             }
@@ -1409,11 +1481,13 @@ fn run_self_bindgen(
         // to emit one either, so neither becomes an extern binding.
         let storage: string =
             node.string("storageClass")
-        // `extern inline` is the one spelling that does promise a definition;
-        // plain and `static` inline do not.
+        // GNU extern-inline normally suppresses an out-of-line symbol. C99
+        // extern-inline may be linkable, so only keep it when GNU semantics
+        // are not attached to the declaration.
         let inlined: bool =
             node.boolean("inline") &&
-            storage != "extern"
+            (storage != "extern" ||
+             bindgen_has_kind(node, "GNUInlineAttr"))
         if storage == "static" || inlined {
             let why: string =
                 if storage == "static" {
@@ -1473,6 +1547,16 @@ fn run_self_bindgen(
         }
     }
     generator.close_dependencies()
+    // Dependency discovery calls the same type parser as rendering. Keep its
+    // diagnostics for the final report, then render from a clean checkpoint so
+    // each declaration can be accepted or rejected as one unit.
+    var preflight_errors: List<string> = []
+    if allow_unsupported {
+        for error: string in generator.errors {
+            preflight_errors.push(error)
+        }
+        generator.errors = []
+    }
     var output: string =
         "// Generated by beansc bindgen for {target.triple}.\n\n"
     if package_name != "" {
@@ -1488,14 +1572,63 @@ fn run_self_bindgen(
         generator.needed_enums.keys()
     enum_names.sort()
     var emitted: Map<string, bool> = {}
+    var record_output: Map<string, string> = {}
+    var record_order: List<string> = []
+    var unsupported_records: Map<string, bool> = {}
     for name: string in record_names {
         match generator.records.get(name) {
             some(record) => {
                 if !emitted.contains_key(record.beans) {
                     emitted[record.beans] = true
-                    output =
-                        "{output}{generator.record_text(record)}"
+                    record_order.push(record.beans)
+                    let before: int = generator.errors.len()
+                    let rendered: string =
+                        generator.record_text(record)
+                    if generator.errors.len() != before {
+                        unsupported_records[record.beans] = true
+                    } else {
+                        record_output[record.beans] = rendered
+                    }
                 }
+            }
+            none => {}
+        }
+    }
+    // A record that stores an unsupported record inline is unsafe too. Close
+    // that dependency transitively before any usable-looking text is emitted.
+    var changed_records: bool = true
+    for changed_records {
+        changed_records = false
+        for beans: string in record_order {
+            if unsupported_records.contains_key(beans) {
+                continue
+            }
+            match record_output.get(beans) {
+                some(rendered) => {
+                    for unsupported: string in
+                        unsupported_records.keys() {
+                        if bindgen_contains_identifier(
+                               rendered, unsupported) {
+                            unsupported_records[beans] = true
+                            generator.errors.push(
+                                "record '{beans}' depends on unsupported record '{unsupported}'")
+                            changed_records = true
+                        }
+                    }
+                }
+                none => {}
+            }
+        }
+    }
+    var emitted_records: int = 0
+    for beans: string in record_order {
+        if unsupported_records.contains_key(beans) {
+            continue
+        }
+        match record_output.get(beans) {
+            some(rendered) => {
+                output = "{output}{rendered}"
+                emitted_records += 1
             }
             none => {}
         }
@@ -1573,11 +1706,14 @@ fn run_self_bindgen(
             none => {}
         }
     }
+    var emitted_declarations: int = 0
     for node: BindgenJson in selected {
         let kind: string = node.string("kind")
         let c_name: string = node.string("name")
         let local: string =
             bindgen_name(c_name, false)
+        let before: int = generator.errors.len()
+        var declaration_output: string = ""
         if kind == "VarDecl" {
             var qualified: string = ""
             match node.get("type") {
@@ -1587,9 +1723,10 @@ fn run_self_bindgen(
                 }
                 none => {}
             }
-            output = "{output}extern \"C\" "
+            declaration_output = "extern \"C\" "
             if node.string("tls") != "" {
-                output = "{output}thread_local "
+                declaration_output =
+                    "{declaration_output}thread_local "
             }
             let binding: string =
                 if qualified.contains("const ") {
@@ -1597,62 +1734,85 @@ fn run_self_bindgen(
                 } else {
                     "var"
                 }
-            output =
-                "{output}{binding} {local}: {generator.c_type(bindgen_type_text(node))}"
+            declaration_output =
+                "{declaration_output}{binding} {local}: {generator.stored_type(bindgen_type_text(node))}"
             if local != c_name {
-                output =
-                    "{output} as \"{c_name}\""
+                declaration_output =
+                    "{declaration_output} as \"{c_name}\""
             }
-            output = "{output}\n"
-            continue
-        }
-        output =
-            "{output}extern \"C\" fn {local}("
-        var count: int = 0
-        match node.get("inner") {
-            some(parameters) => {
-                for parameter: BindgenJson in
-                    parameters.items {
-                    if parameter.string("kind") !=
-                       "ParmVarDecl" {
-                        continue
+            declaration_output =
+                "{declaration_output}\n"
+        } else {
+            declaration_output =
+                "extern \"C\" fn {local}("
+            var count: int = 0
+            match node.get("inner") {
+                some(parameters) => {
+                    for parameter: BindgenJson in
+                        parameters.items {
+                        if parameter.string("kind") !=
+                           "ParmVarDecl" {
+                            continue
+                        }
+                        if count != 0 {
+                            declaration_output =
+                                "{declaration_output}, "
+                        }
+                        var parameter_name: string =
+                            parameter.string("name")
+                        if parameter_name == "" {
+                            parameter_name =
+                                "arg{count}"
+                        }
+                        declaration_output =
+                            "{declaration_output}{bindgen_name(parameter_name, false)}: {generator.c_type(bindgen_type_text(parameter))}"
+                        count += 1
                     }
-                    if count != 0 {
-                        output = "{output}, "
-                    }
-                    var parameter_name: string =
-                        parameter.string("name")
-                    if parameter_name == "" {
-                        parameter_name =
-                            "arg{count}"
-                    }
-                    output =
-                        "{output}{bindgen_name(parameter_name, false)}: {generator.c_type(bindgen_type_text(parameter))}"
-                    count += 1
                 }
+                none => {}
             }
-            none => {}
+            declaration_output =
+                "{declaration_output})"
+            let signature: string =
+                bindgen_type_text(node)
+            let open: int =
+                bindgen_function_arguments_open(
+                    signature)
+            let result: string =
+                generator.stored_type(
+                    if open < 0 {
+                        "void"
+                    } else {
+                        signature.slice(0, open)
+                    })
+            if result != "unit" {
+                declaration_output =
+                    "{declaration_output} -> {result}"
+            }
+            if local != c_name {
+                declaration_output =
+                    "{declaration_output} as \"{c_name}\""
+            }
+            declaration_output =
+                "{declaration_output}\n"
         }
-        output = "{output})"
-        let signature: string =
-            bindgen_type_text(node)
-        let open: int =
-            bindgen_function_arguments_open(
-                signature)
-        let result: string =
-            generator.c_type(
-                if open < 0 {
-                    "void"
-                } else {
-                    signature.slice(0, open)
-                })
-        if result != "unit" {
-            output = "{output} -> {result}"
+        var unsafe_dependency: string = ""
+        for unsupported: string in
+            unsupported_records.keys() {
+            if bindgen_contains_identifier(
+                   declaration_output, unsupported) {
+                unsafe_dependency = unsupported
+            }
         }
-        if local != c_name {
-            output = "{output} as \"{c_name}\""
+        if unsafe_dependency != "" {
+            generator.errors.push(
+                "declaration '{c_name}' depends on unsupported record '{unsafe_dependency}'")
         }
-        output = "{output}\n"
+        if generator.errors.len() == before &&
+           unsafe_dependency == "" {
+            output = "{output}{declaration_output}"
+            emitted_declarations += 1
+        }
     }
     // A name the user asked for by hand that no declaration carries is a
     // mistake worth reporting, not an empty file.
@@ -1667,8 +1827,8 @@ fn run_self_bindgen(
     // the macro-location bug stayed hidden. An empty header may legitimately
     // produce an empty binding; a header full of declarations may not.
     let produced: int =
-        emitted.keys().len() + emitted_enums +
-        selected.len()
+        emitted_records + emitted_enums +
+        emitted_declarations
     if produced == 0 &&
        (bindable != 0 ||
         generator.records.keys().len() != 0 ||
@@ -1686,9 +1846,20 @@ fn run_self_bindgen(
         return 1
     }
     if allow_unsupported {
+        var reported: Map<string, bool> = {}
+        for error: string in preflight_errors {
+            if !reported.contains_key(error) {
+                reported[error] = true
+                output =
+                    "{output}\n// skipped: {error}\n"
+            }
+        }
         for error: string in generator.errors {
-            output =
-                "{output}\n// skipped: {error}\n"
+            if !reported.contains_key(error) {
+                reported[error] = true
+                output =
+                    "{output}\n// skipped: {error}\n"
+            }
         }
     }
     match fs.write(output_path, output) {

@@ -405,6 +405,7 @@ fn mir_type_is_trivial(type: HirType) -> bool {
            name == "u32" || name == "u64" ||
            name == "float" || name == "f32" ||
            name == "decimal" || name == "RawPtr" ||
+           name == "CFunctionPtr" ||
            name == "StoredCallback" ||
            name == "Slice" || name == "CpuFeature" ||
            name == "MemoryOrder" || name == "RoundingMode"
@@ -414,7 +415,8 @@ fn mir_capture_by_value_type(type: HirType) -> bool {
     return type.name == "bool" ||
            hir_is_integer(type) ||
            hir_is_float(type) ||
-           canonical_hir_name(type.name) == "RawPtr"
+           canonical_hir_name(type.name) == "RawPtr" ||
+           canonical_hir_name(type.name) == "CFunctionPtr"
 }
 
 fn mir_type_ownership(type: HirType) -> string {
@@ -2485,7 +2487,7 @@ class MirLowerer {
                name == "u32" || name == "u64" ||
                name == "float" || name == "f32" ||
                name == "decimal" || name == "bool" ||
-               name == "RawPtr"
+               name == "RawPtr" || name == "CFunctionPtr"
     }
 
     fn simple_scalar_initializer(name: string) -> bool {
