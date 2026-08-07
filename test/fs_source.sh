@@ -21,10 +21,10 @@ assert_defined() {
         END { if (!found) exit 1 }
     ' build/fs_source.ll
 }
-assert_defined fs.read_bytes
-assert_defined fs.read
-assert_defined fs.write_bytes
-assert_defined fs.copy
+assert_defined std.fs.read_bytes
+assert_defined std.fs.read
+assert_defined std.fs.write_bytes
+assert_defined std.fs.copy
 if grep -Eq 'beans_file_(read_all|read_all_b|write_all|append_all|write_all_b|append_all_b|copy)' \
     build/beans_rt.c; then
     echo "migrated file helpers still exist in the native runtime" >&2

@@ -1,13 +1,151 @@
+package main
+
 import std.fs
 import std.os
 import std.path
 import std.process
 import std.random
 
-struct ParsedModuleFile {
+// ---- canonical identity -----------------------------------------------
+//
+// A declaration's identity is its package's import path plus its declared
+// name, joined by "::". Neither an identifier nor an import path can hold a
+// colon, so the split is unambiguous and no phase has to guess where the
+// package ends. Builtins keep bare names, so they live in their own
+// namespace with no "::" at all.
+fn package_symbol(package_id: string, name: string) -> string {
+    return "{package_id}::{name}"
+}
+
+// "" for a bare builtin name.
+fn symbol_package(key: string) -> string {
+    match key.find("::") {
+        some(cut) => { return key.slice(0, cut) }
+        none => { return "" }
+    }
+}
+
+fn symbol_name(key: string) -> string {
+    match key.find("::") {
+        some(cut) => { return key.slice(cut + 2, key.len()) }
+        none => { return key }
+    }
+}
+
+// A canonical name written for a person: the import path and the declared
+// name, joined the way source would spell them. Diagnostics use this so the
+// internal "::" never reaches a message.
+fn display_symbol(key: string) -> string {
+    let package_id: string = symbol_package(key)
+    if package_id == "" { return key }
+    return "{package_id}.{symbol_name(key)}"
+}
+
+// One piece of a symbol name. A package path can carry '/' and '-', neither
+// of which is legal in a linker symbol or an LLVM identifier, so each is
+// escaped through '$'.
+fn symbol_escape(text: string) -> string {
+    var out: string = ""
+    for index: int in 0..text.len() {
+        let byte: int = text.byte_at(index)
+        let plain: bool =
+            (byte >= 97 && byte <= 122) ||
+            (byte >= 65 && byte <= 90) ||
+            (byte >= 48 && byte <= 57) ||
+            byte == 95 || byte == 46
+        if plain {
+            out = "{out}{text.slice(index, index + 1)}"
+        } else if byte == 36 {
+            out = "{out}$$"
+        } else if byte == 47 {
+            out = "{out}$s"
+        } else if byte == 45 {
+            out = "{out}$d"
+        } else {
+            // Unreachable for validated paths and identifiers; kept so no
+            // future path spelling can silently produce a bad symbol.
+            out = "{out}$u{byte}."
+        }
+    }
+    return out
+}
+
+// The "::" becomes a single '$', and the package path keeps its dots, so
+// "shop.money::Money" reads as "shop.money$Money". An identifier never
+// contains '$', so the last '$' is always the separator and the mapping stays
+// injective.
+fn symbol_text(key: string) -> string {
+    match key.find("::") {
+        some(cut) => {
+            let package_id: string = key.slice(0, cut)
+            let name: string = key.slice(cut + 2, key.len())
+            return "{symbol_escape(package_id)}${symbol_escape(name)}"
+        }
+        none => { return symbol_escape(key) }
+    }
+}
+
+// The compiler-owned async runtime. '$' keeps the path unspellable by an
+// import, so the compiler is its only importer and names it directly.
+fn async_rt_package() -> string {
+    return "std.async$rt"
+}
+
+fn async_rt_symbol(name: string) -> string {
+    return package_symbol(async_rt_package(), name)
+}
+
+// One import written in one file. The source spelling is kept apart from the
+// canonical target: a local import inside a git checkout resolves onto the
+// path its dependents use, and diagnostics still show what was written.
+class ModuleImport {
+    path: string      // verbatim source spelling
+    alias: string     // `as` name, "" if none
+    resolved: string  // canonical Package ID, "" for a native std namespace
+    binding: string   // the name this import binds in its own file
+    node: AstNode
+    line: int
+    col: int
+
+    fn init(path: string, alias: string, node: AstNode) {
+        self.path = path
+        self.alias = alias
+        self.resolved = ""
+        self.binding = ""
+        self.node = node
+        self.line = node.line
+        self.col = node.col
+    }
+}
+
+class ParsedModuleFile {
     source_id: int
     path: string
     ast: AstNode
+    // The package clause, or "" when the file has none.
+    package_name: string
+    package_line: int
+    package_col: int
+    imports: List<ModuleImport>
+
+    fn init(source_id: int, path: string, ast: AstNode) {
+        self.source_id = source_id
+        self.path = path
+        self.ast = ast
+        self.package_name = ""
+        self.package_line = 0
+        self.package_col = 0
+        self.imports = []
+    }
+}
+
+// One import edge of the package graph, kept with the exact source spot that
+// wrote it so a cycle can be printed in full.
+struct ImportEdge {
+    from: string
+    to: string
+    file: string
+    line: int
 }
 
 struct LockEntry {
@@ -24,20 +162,45 @@ struct ModuleLink {
     root: string
 }
 
+// One package = one directory of .b files sharing a namespace.
+//
+// `import_path` is the package's identity: the canonical path every importer
+// resolves to. `name` is only source-facing — the declared `package` clause,
+// used as the default import binding and in diagnostics. Two packages may
+// share a name; they can never share an import_path.
 class LoadedPackage {
     import_path: string
-    prefix: string
+    name: string
     dir: string
     files: List<ParsedModuleFile>
     imports: List<string>
 
-    fn init(import_path: string, prefix: string, dir: string) {
+    fn init(import_path: string, dir: string) {
         self.import_path = import_path
-        self.prefix = prefix
+        self.name = ""
         self.dir = dir
         self.files = []
         self.imports = []
     }
+}
+
+// A legal package name is a lowercase snake_case identifier: the same rule
+// the language already documents for package directories.
+fn legal_package_name(name: string) -> bool {
+    if name == "" { return false }
+    let first: int = name.byte_at(0)
+    if !(first >= 97 && first <= 122) { return false }
+    if name.byte_at(name.len() - 1) == 95 { return false }
+    var previous_underscore: bool = false
+    for index: int in 0..name.len() {
+        let byte: int = name.byte_at(index)
+        let lower: bool = byte >= 97 && byte <= 122
+        let digit: bool = byte >= 48 && byte <= 57
+        if !lower && !digit && byte != 95 { return false }
+        if byte == 95 && previous_underscore { return false }
+        previous_underscore = byte == 95
+    }
+    return true
 }
 
 fn module_words(line: string) -> List<string> {
@@ -49,7 +212,9 @@ fn module_words(line: string) -> List<string> {
     return move words
 }
 
-fn package_prefix(import_path: string) -> string {
+// The final segment of an import path. Only a native std namespace with no
+// source package uses this as its name; every loaded package declares one.
+fn last_path_segment(import_path: string) -> string {
     let parts: List<string> = import_path.replace("/", ".").split(".")
     return parts[parts.len() - 1]
 }
@@ -122,7 +287,7 @@ class ModuleLoader {
     packages: List<LoadedPackage>
     errors: List<Diagnostic>
     state: Map<string, int>
-    prefix_paths: Map<string, string>
+    package_names: Map<string, string>
     requirements: Map<string, string>
     lock_entries: Map<string, LockEntry>
     resolved_entries: Map<string, LockEntry>
@@ -135,6 +300,10 @@ class ModuleLoader {
     links: List<ModuleLink>
     overlays: Map<string, string>
     want_reactor: bool
+    // The depth-first stack of packages being loaded, and the import edge
+    // that pushed each one (stack_edges[i] led to stack[i]).
+    stack: List<string>
+    stack_edges: List<ImportEdge>
 
     fn init(sources: SourceManager, locked: bool, offline: bool,
             lock_mode: string, update_module: string) {
@@ -145,7 +314,7 @@ class ModuleLoader {
         self.packages = []
         self.errors = []
         self.state = {}
-        self.prefix_paths = {}
+        self.package_names = {}
         self.requirements = {}
         self.lock_entries = {}
         self.resolved_entries = {}
@@ -158,6 +327,8 @@ class ModuleLoader {
         self.links = []
         self.overlays = {}
         self.want_reactor = false
+        self.stack = []
+        self.stack_edges = []
     }
 
     fn set_overlay(file_path: string, text: string) {
@@ -436,10 +607,180 @@ class ModuleLoader {
             self.fail(file_path, diagnostic.line, diagnostic.col,
                       diagnostic.message)
         }
-        return ParsedModuleFile {
-            source_id: source_id,
-            path: file_path,
-            ast: ast,
+        let parsed: ParsedModuleFile =
+            new ParsedModuleFile(source_id, file_path, ast)
+        for declaration: AstNode in ast.children {
+            if declaration.kind == "package" &&
+               parsed.package_name == "" {
+                parsed.package_name = declaration.value
+                parsed.package_line = declaration.line
+                parsed.package_col = declaration.col
+            }
+            if declaration.kind != "import" { continue }
+            var imported: string = declaration.value
+            if imported.starts_with("pub ") {
+                imported = imported.slice(4, imported.len())
+            }
+            var alias: string = ""
+            for child: AstNode in declaration.children {
+                if child.kind == "alias" { alias = child.value }
+            }
+            parsed.imports.push(
+                new ModuleImport(imported, alias, declaration))
+        }
+        return parsed
+    }
+
+    // Import positions read best relative to the module root; an absolute
+    // build directory says nothing about the program.
+    fn display_path(file: string) -> string {
+        if self.root != "" && file.starts_with("{self.root}/") {
+            return file.slice(self.root.len() + 1, file.len())
+        }
+        return file
+    }
+
+    // The import that closed a cycle knows only its own edge. The load stack
+    // holds the rest, so the whole chain prints in the order the imports were
+    // followed.
+    fn report_cycle(target: string, from_file: string, line: int,
+                    col: int) {
+        var start: int = 0
+        for start < self.stack.len() && self.stack[start] != target {
+            start += 1
+        }
+        var message: string = "package import cycle:"
+        for index: int in (start + 1)..self.stack.len() {
+            let edge: ImportEdge = self.stack_edges[index]
+            message =
+                "{message}\n  {edge.from} imports {edge.to} at {self.display_path(edge.file)}:{edge.line}"
+        }
+        var closing_from: string = target
+        if self.stack.len() != 0 {
+            closing_from = self.stack[self.stack.len() - 1]
+        }
+        message =
+            "{message}\n  {closing_from} imports {target} at {self.display_path(from_file)}:{line}"
+        self.fail(from_file, line, col, message)
+    }
+
+    // Validates the `package` clauses of one directory and settles the
+    // package's declared name. `role` is one of root_application,
+    // root_library, imported or single_file.
+    fn check_package_clause(package: LoadedPackage, role: string) {
+        var named: Option<ParsedModuleFile> = none
+        for file: ParsedModuleFile in package.files {
+            if file.package_name == "" {
+                if role == "single_file" { continue }
+                self.fail(
+                    file.path, 1, 1,
+                    "this file has no package clause — every file in a package starts with 'package <name>'")
+                continue
+            }
+            match named {
+                none => {
+                    named = some(file)
+                    package.name = file.package_name
+                    if !legal_package_name(package.name) {
+                        self.fail(
+                            file.path, file.package_line,
+                            file.package_col,
+                            "package name '{package.name}' is not a lowercase snake_case name")
+                    }
+                }
+                some(first) => {
+                    if file.package_name != first.package_name {
+                        self.fail(
+                            file.path, file.package_line,
+                            file.package_col,
+                            "this file declares package '{file.package_name}' but {self.display_path(first.path)} declares package '{first.package_name}' — one directory is one package")
+                    }
+                }
+            }
+        }
+
+        if package.name == "" {
+            // Keep going with a usable name so later phases still report real
+            // problems rather than cascading on an empty qualifier.
+            if role == "single_file" {
+                package.name = "main"
+            } else {
+                package.name = last_path_segment(package.import_path)
+            }
+        }
+
+        var where: Option<ParsedModuleFile> = named
+        var line: int = 1
+        var col: int = 1
+        match named {
+            some(file) => {
+                line = file.package_line
+                col = file.package_col
+            }
+            none => {
+                if package.files.len() != 0 {
+                    where = some(package.files[0])
+                }
+            }
+        }
+        var anchor: ParsedModuleFile = new ParsedModuleFile(
+            0, "", new AstNode("module", "", 0, 0))
+        match where {
+            some(file) => { anchor = file }
+            none => { return }
+        }
+        if role == "root_application" && package.name != "main" {
+            self.fail(
+                anchor.path, line, col,
+                "the root of an application declares 'package main', not '{package.name}'")
+        } else if role == "root_library" && package.name == "main" {
+            self.fail(
+                anchor.path, line, col,
+                "a library root declares a normal package name, not 'main'")
+        } else if role == "imported" && package.name == "main" {
+            self.fail(
+                anchor.path, line, col,
+                "package '{package.import_path}' is imported, so it cannot declare 'package main'")
+        } else if role == "single_file" && named.is_some() &&
+                  package.name != "main" {
+            self.fail(
+                anchor.path, line, col,
+                "a single file without a beans.pot declares 'package main' or no package clause at all")
+        }
+    }
+
+    // Import bindings are per file, so they are settled once every package's
+    // declared name is known — an import's default name is what its target
+    // declares, not the last segment of the path that reached it.
+    fn bind_imports() {
+        for package: LoadedPackage in self.packages {
+            for file: ParsedModuleFile in package.files {
+                var bound: Map<string, string> = {}
+                for imported: ModuleImport in file.imports {
+                    if imported.alias != "" {
+                        imported.binding = imported.alias
+                    } else {
+                        var target: string = imported.resolved
+                        if target == "" { target = imported.path }
+                        // A std path with no source package is a native
+                        // namespace; it declares nothing, so its last
+                        // segment names it.
+                        let fallback: string =
+                            last_path_segment(imported.path)
+                        imported.binding =
+                            self.package_names.get(target).or(fallback)
+                    }
+                    let previous: string =
+                        bound.get(imported.binding).or("")
+                    if previous != "" {
+                        self.fail(
+                            file.path, imported.line, imported.col,
+                            "import name '{imported.binding}' is already taken in this file by '{previous}' — give one of them a different name with 'as'")
+                    } else {
+                        bound[imported.binding] = imported.path
+                    }
+                }
+            }
         }
     }
 
@@ -671,178 +1012,161 @@ class ModuleLoader {
     }
 
     fn record_file(package: LoadedPackage, parsed: ParsedModuleFile) {
-        for declaration: AstNode in parsed.ast.children {
-            if declaration.kind == "import" {
-                var imported: string = declaration.value
-                if imported.starts_with("pub ") {
-                    imported = imported.slice(4, imported.len())
-                }
-                package.imports.push(imported)
-            }
-        }
         package.files.push(parsed)
-    }
-
-    fn rewrite_import(package: LoadedPackage, original: string,
-                      canonical: string) {
-        if original == canonical { return }
-        for file: ParsedModuleFile in package.files {
-            for declaration: AstNode in file.ast.children {
-                if declaration.kind != "import" { continue }
-                let public: bool = declaration.value.starts_with("pub ")
-                var value: string = declaration.value
-                if public { value = value.slice(4, value.len()) }
-                if value == original {
-                    declaration.value =
-                        if public { "pub {canonical}" } else { canonical }
-                }
-            }
-        }
-    }
-
-    // Report an import problem at the import statement that asked for
-    // it, matching the stage-0 loader's positions.
-    fn import_error_at(package: LoadedPackage, imported: string,
-                       message: string) {
-        for file: ParsedModuleFile in package.files {
-            for declaration: AstNode in file.ast.children {
-                if declaration.kind != "import" { continue }
-                var value: string = declaration.value
-                if value.starts_with("pub ") {
-                    value = value.slice(4, value.len())
-                }
-                if value == imported {
-                    self.fail(file.path, declaration.line,
-                              declaration.col, message)
-                    return
-                }
-            }
-        }
-        self.fail(package.dir, 0, 0, message)
     }
 
     fn resolve_package_imports(package: LoadedPackage, dir: string,
                                context_name: string, context_root: string,
                                context_canon: string) {
-        for import_index: int in 0..package.imports.len() {
-            let imported: string = package.imports[import_index]
-            if imported.starts_with("std.") {
-                let standard_root: string = stdlib_root()
-                let relative: string =
-                    imported.slice(4, imported.len()).replace(".", "/")
-                let standard_dir: string =
-                    path.join(standard_root, relative)
-                if Dir.exists(standard_dir) {
-                    self.load_package(imported, standard_dir,
-                                      package_prefix(imported),
-                                      "std", standard_root, "")
-                }
-                continue
-            }
-            if context_name != "" &&
-               (imported == context_name ||
-                imported.starts_with("{context_name}.")) {
-                if imported == context_name {
-                    self.fail(dir, 0, 0,
-                              "a package cannot import its own module root")
-                    continue
-                }
-                let imported_dir: string =
-                    self.local_import_dir(imported, context_name,
-                                          context_root)
-                let relative: string =
-                    imported.slice(context_name.len() + 1,
-                                   imported.len()).replace(".", "/")
-                if !Dir.exists(imported_dir) {
-                    self.import_error_at(
-                        package, imported,
-                        "package directory {relative} doesn't exist")
-                    continue
-                }
-                let canonical: string =
-                    if context_canon == "" {
-                        imported
-                    } else {
-                        path.join(context_canon, relative)
+        for file: ParsedModuleFile in package.files {
+            for entry: ModuleImport in file.imports {
+                let imported: string = entry.path
+                if imported.starts_with("std.") {
+                    let standard_root: string = stdlib_root()
+                    let relative: string =
+                        imported.slice(4, imported.len()).replace(".", "/")
+                    let standard_dir: string =
+                        path.join(standard_root, relative)
+                    if Dir.exists(standard_dir) {
+                        entry.resolved = imported
+                        entry.node.resolved = imported
+                        package.imports.push(imported)
+                        self.load_package(imported, standard_dir,
+                                          "std", standard_root, "",
+                                          file.path, entry.line, entry.col)
                     }
-                package.imports[import_index] = canonical
-                self.rewrite_import(package, imported, canonical)
-                self.load_package(canonical, imported_dir,
-                                  package_prefix(imported),
-                                  context_name, context_root,
-                                  context_canon)
-                continue
-            }
-
-            let remote_parts: List<string> = imported.split("/")
-            if remote_parts.len() >= 3 &&
-               remote_parts[0].contains(".") {
-                let remote_path: string =
-                    "{remote_parts[0]}/{remote_parts[1]}/{remote_parts[2]}"
-                let checkout: string = self.ensure_remote(remote_path)
-                if checkout == "" { continue }
-                var remote_name: string =
-                    self.remote_names.get(checkout).or("")
-                if remote_name == "" {
-                    remote_name = self.read_module_name(checkout)
-                    if remote_name == "" { continue }
-                    self.remote_names[checkout] = remote_name
+                    // a missing directory may still be a native std namespace
+                    continue
                 }
-                var imported_dir: string = checkout
-                for index: int in 3..remote_parts.len() {
-                    imported_dir =
-                        path.join(imported_dir, remote_parts[index])
+                if context_name != "" &&
+                   (imported == context_name ||
+                    imported.starts_with("{context_name}.")) {
+                    if imported == context_name {
+                        self.fail(file.path, entry.line, entry.col,
+                                  "a package cannot import its own module root")
+                        continue
+                    }
+                    let imported_dir: string =
+                        self.local_import_dir(imported, context_name,
+                                              context_root)
+                    let relative: string =
+                        imported.slice(context_name.len() + 1,
+                                       imported.len()).replace(".", "/")
+                    if !Dir.exists(imported_dir) {
+                        self.fail(
+                            file.path, entry.line, entry.col,
+                            "package directory {relative} doesn't exist")
+                        continue
+                    }
+                    // inside a git checkout, `dep.sub` and the app's
+                    // `github.com/x/dep/sub` are the same directory — one
+                    // canonical identity, or the program loads it twice
+                    let canonical: string =
+                        if context_canon == "" {
+                            imported
+                        } else {
+                            path.join(context_canon, relative)
+                        }
+                    entry.resolved = canonical
+                    entry.node.resolved = canonical
+                    package.imports.push(canonical)
+                    self.load_package(canonical, imported_dir,
+                                      context_name, context_root,
+                                      context_canon,
+                                      file.path, entry.line, entry.col)
+                    continue
                 }
-                self.load_package(imported, imported_dir,
-                                  package_prefix(imported),
-                                  remote_name, checkout, remote_path)
-                continue
-            }
 
-            if context_name == "" {
-                self.fail(dir, 0, 0,
-                          "unknown package '{imported}' — local packages need a beans.pot")
-            } else {
-                self.fail(dir, 0, 0,
-                          "unknown package '{imported}' — expected std.*, {context_name}.*, or a git host path")
+                let remote_parts: List<string> = imported.split("/")
+                if remote_parts.len() >= 3 &&
+                   remote_parts[0].contains(".") {
+                    let remote_path: string =
+                        "{remote_parts[0]}/{remote_parts[1]}/{remote_parts[2]}"
+                    let checkout: string = self.ensure_remote(remote_path)
+                    if checkout == "" { continue }
+                    var remote_name: string =
+                        self.remote_names.get(checkout).or("")
+                    if remote_name == "" {
+                        remote_name = self.read_module_name(checkout)
+                        if remote_name == "" { continue }
+                        self.remote_names[checkout] = remote_name
+                    }
+                    var imported_dir: string = checkout
+                    for index: int in 3..remote_parts.len() {
+                        imported_dir =
+                            path.join(imported_dir, remote_parts[index])
+                    }
+                    entry.resolved = imported
+                    entry.node.resolved = imported
+                    package.imports.push(imported)
+                    self.load_package(imported, imported_dir,
+                                      remote_name, checkout, remote_path,
+                                      file.path, entry.line, entry.col)
+                    continue
+                }
+
+                if context_name == "" {
+                    self.fail(file.path, entry.line, entry.col,
+                              "unknown package '{imported}' — local packages need a beans.pot")
+                } else {
+                    self.fail(file.path, entry.line, entry.col,
+                              "unknown package '{imported}' — expected std.*, {context_name}.*, or a git host path")
+                }
             }
         }
     }
 
-    fn load_package(import_path: string, dir: string, prefix: string,
+    fn push_stack(import_path: string, from_file: string, line: int) {
+        var from: string = ""
+        if self.stack.len() != 0 {
+            from = self.stack[self.stack.len() - 1]
+        }
+        self.stack.push(import_path)
+        self.stack_edges.push(ImportEdge {
+            from: from,
+            to: import_path,
+            file: from_file,
+            line: line,
+        })
+    }
+
+    fn pop_stack() {
+        self.stack.pop()
+        self.stack_edges.pop()
+    }
+
+    fn load_package(import_path: string, dir: string,
                     context_name: string, context_root: string,
-                    context_canon: string) {
+                    context_canon: string, from_file: string,
+                    line: int, col: int) {
         let status: int = self.state.get(import_path).or(0)
+        // one instance per Package ID; same-name packages at different
+        // paths are separate and never land here
         if status == 2 { return }
         if status == 1 {
-            self.fail(dir, 0, 0,
-                      "package import cycle at {import_path}")
+            self.report_cycle(import_path, from_file, line, col)
             return
         }
-        let previous: string = self.prefix_paths.get(prefix).or("")
-        if previous != "" && previous != import_path {
-            self.fail(dir, 0, 0,
-                      "two packages both named '{prefix}' ({previous} and {import_path})")
-            return
-        }
-        self.prefix_paths[prefix] = import_path
         self.state[import_path] = 1
+        self.push_stack(import_path, from_file, line)
 
         if !Dir.exists(dir) {
-            self.fail(dir, 0, 0,
+            self.fail(from_file, line, col,
                       "package directory does not exist")
             self.state[import_path] = 2
+            self.pop_stack()
             return
         }
         let package: LoadedPackage =
-            new LoadedPackage(import_path, prefix, dir)
-        let names: List<string> = Dir.list(dir).expect("list package")
+            new LoadedPackage(import_path, dir)
+        var names: List<string> = Dir.list(dir).expect("list package")
+        names.sort()
         for name: string in names {
             if !name.ends_with(".b") { continue }
             // The async runtime's readiness half only loads when the
             // program can reach it (see load_async_runtime): a pure
             // async program must not emit or link poller symbols.
-            if import_path == "std.async$rt" &&
+            if import_path == async_rt_package() &&
                name == "reactor.b" && !self.want_reactor {
                 continue
             }
@@ -851,14 +1175,17 @@ class ModuleLoader {
             self.record_file(package, parsed)
         }
         if package.files.len() == 0 {
-            self.fail(dir, 0, 0,
+            self.fail(from_file, line, col,
                       "package has no .b files")
         }
+        self.check_package_clause(package, "imported")
+        self.package_names[import_path] = package.name
 
         self.resolve_package_imports(package, dir, context_name,
                                      context_root, context_canon)
         self.packages.push(package)
         self.state[import_path] = 2
+        self.pop_stack()
     }
 
     // Any program that declares an async function needs the internal task
@@ -904,8 +1231,36 @@ class ModuleLoader {
         // lets them link under the minimal and freestanding profiles.
         self.want_reactor =
             self.state.get("std.net").or(0) == 2
-        self.load_package("std.async$rt", dir, "async$rt",
-                          "std", stdlib_root(), "")
+        self.load_package(async_rt_package(), dir,
+                          "std", stdlib_root(), "", "", 1, 1)
+    }
+
+    // The root package: the same directory walk as an imported one, but its
+    // clause obeys the manifest's kind instead of the imported-package rule.
+    fn load_root_package() {
+        self.state[self.module_name] = 1
+        self.push_stack(self.module_name, self.root, 1)
+        let package: LoadedPackage =
+            new LoadedPackage(self.module_name, self.root)
+        var names: List<string> = Dir.list(self.root).expect("list package")
+        names.sort()
+        for name: string in names {
+            if !name.ends_with(".b") { continue }
+            let file_path: string = path.join(self.root, name)
+            self.record_file(package, self.parse_file(file_path))
+        }
+        if package.files.len() == 0 {
+            self.fail(self.root, 0, 0, "package has no .b files")
+        }
+        var role: string = "root_application"
+        if self.kind == "library" { role = "root_library" }
+        self.check_package_clause(package, role)
+        self.package_names[self.module_name] = package.name
+        self.resolve_package_imports(package, self.root,
+                                     self.module_name, self.root, "")
+        self.pop_stack()
+        self.packages.push(package)
+        self.state[self.module_name] = 2
     }
 
     fn load(entry: string) -> bool {
@@ -918,15 +1273,19 @@ class ModuleLoader {
             }
             self.module_name = "main"
             let package: LoadedPackage =
-                new LoadedPackage("main", "", path.parent(entry))
+                new LoadedPackage("main", path.parent(entry))
             self.record_file(package, self.parse_file(entry))
-            self.prefix_paths[""] = "main"
             self.state["main"] = 1
+            self.push_stack("main", entry, 1)
+            self.check_package_clause(package, "single_file")
+            self.package_names["main"] = package.name
             self.resolve_package_imports(package, path.parent(entry),
                                          "", "", "")
+            self.pop_stack()
             self.packages.push(package)
             self.state["main"] = 2
             self.load_async_runtime()
+            self.bind_imports()
             return self.errors.len() == 0
         }
 
@@ -940,9 +1299,9 @@ class ModuleLoader {
                       "entry file must sit next to beans.pot")
             return false
         }
-        self.load_package(self.module_name, self.root, "",
-                          self.module_name, self.root, "")
+        self.load_root_package()
         self.load_async_runtime()
+        self.bind_imports()
         if self.locked || self.offline {
             for locked_path: string in self.lock_entries.keys() {
                 if !self.resolved_entries.contains(locked_path) {
@@ -968,12 +1327,17 @@ fn render_module_graph(loader: ModuleLoader) -> string {
     var out: string =
         "module {loader.module_name} kind={loader.kind} root={loader.root}"
     for package: LoadedPackage in loader.packages {
-        out = "{out}\npackage {package.import_path} prefix={package.prefix}"
+        out = "{out}\npackage {package.import_path} name={package.name}"
+        // Imports sit under the file that wrote them: a binding belongs to
+        // one file, never to the package.
         for file: ParsedModuleFile in package.files {
             out = "{out}\n  file {file.path}"
-        }
-        for imported: string in package.imports {
-            out = "{out}\n  import {imported}"
+            for imported: ModuleImport in file.imports {
+                var target: string = imported.resolved
+                if target == "" { target = imported.path }
+                out =
+                    "{out}\n    import {target} as {imported.binding}"
+            }
         }
     }
     return out

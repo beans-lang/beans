@@ -8,29 +8,29 @@ out=build/test-mir-self.txt
 "$beansc" mir test/cases/mir_control.b >"$out"
 
 for signature in \
-    'fn choose -> int' \
-    'fn select -> int' \
-    'fn branch_owned -> string' \
-    'fn formatted -> string' \
-    'fn interpolation_closure -> string' \
-    'fn temporary_order -> int' \
-    'fn lazy -> bool' \
-    'fn make_adder -> fn(int) -> int' \
-    'fn make_nested -> fn() -> fn() -> int' \
-    'fn unwrap -> int' \
-    'fn move_then_replace -> string' \
-    'fn deferred -> Result<int>' \
-    'fn deferred_capture -> unit' \
-    'fn build_defaults -> unit' \
-    'fn loop_owner -> int' \
-    'fn walk -> int' \
-    'fn optimized_value -> int' \
-    'fn escaping_value -> string' \
-    'fn scalar_partial_escape -> int' \
-    'fn scalar_no_escape -> int' \
-    'fn scalar_default_order -> int' \
-    'fn scalar_fixed_array -> int' \
-    'fn main -> unit'
+    'fn main::choose -> int' \
+    'fn main::select -> int' \
+    'fn main::branch_owned -> string' \
+    'fn main::formatted -> string' \
+    'fn main::interpolation_closure -> string' \
+    'fn main::temporary_order -> int' \
+    'fn main::lazy -> bool' \
+    'fn main::make_adder -> fn(int) -> int' \
+    'fn main::make_nested -> fn() -> fn() -> int' \
+    'fn main::unwrap -> int' \
+    'fn main::move_then_replace -> string' \
+    'fn main::deferred -> Result<int>' \
+    'fn main::deferred_capture -> unit' \
+    'fn main::build_defaults -> unit' \
+    'fn main::loop_owner -> int' \
+    'fn main::walk -> int' \
+    'fn main::optimized_value -> int' \
+    'fn main::escaping_value -> string' \
+    'fn main::scalar_partial_escape -> int' \
+    'fn main::scalar_no_escape -> int' \
+    'fn main::scalar_default_order -> int' \
+    'fn main::scalar_fixed_array -> int' \
+    'fn main::main -> unit'
 do
     grep -Fqx "$signature" "$out"
 done
@@ -68,7 +68,7 @@ for function in \
     scalar_capture_fallback \
     scalar_two_escapes_fallback
 do
-    if awk -v target="$function" '
+    if awk -v target="main::$function" '
         $0 == "fn " target " -> int" ||
         $0 == "fn " target " -> bool" { inside = 1; next }
         inside && /^(fn|closure|cleanup|extern|declare) / { inside = 0 }
@@ -102,7 +102,7 @@ grep -Eq 'move .*local=l[0-9]+' build/test-mir-self-move_ok.txt
 function_body() {
     local name=$1
     local destination=$2
-    awk -v marker="; $name" '
+    awk -v marker="; main.$name" '
         $0 == marker { inside = 1 }
         inside { print }
         inside && /^}/ { exit }

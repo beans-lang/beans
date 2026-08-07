@@ -1,4 +1,5 @@
-// package util — shared helpers for the shop
+// shared helpers for the shop
+package util
 import std.io
 
 pub interface Device {

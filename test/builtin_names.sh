@@ -115,6 +115,8 @@ EOF
     mkdir -p "$tmp/freeq_$name/pk"
     printf 'module freeq\n' > "$tmp/freeq_$name/beans.pot"
     cat > "$tmp/freeq_$name/pk/pk.b" <<EOF
+package pk
+
 pub class $name {
     stamp: int
 
@@ -130,6 +132,8 @@ pub fn make() -> $name {
 }
 EOF
     cat > "$tmp/freeq_$name/main.b" <<EOF
+package main
+
 import std.io
 import freeq.pk
 
@@ -230,6 +234,8 @@ cat > "$tmp/proj/beans.pot" <<'EOF'
 module names
 EOF
 cat > "$tmp/proj/main.b" <<'EOF'
+package main
+
 import std.io
 import names.pkg
 
@@ -238,6 +244,8 @@ fn main() {
 }
 EOF
 cat > "$tmp/proj/pkg/pkg.b" <<'EOF'
+package pkg
+
 pub class Box {
     pub fn init() {}
 }
@@ -317,6 +325,8 @@ both_reject_same "$tmp/arity_super.b"
 mkdir -p "$tmp/arityq/pk"
 printf 'module arityq\n' > "$tmp/arityq/beans.pot"
 cat > "$tmp/arityq/pk/pk.b" <<'EOF'
+package pk
+
 pub class Part {
     v: int
 
@@ -326,6 +336,8 @@ pub class Part {
 }
 EOF
 cat > "$tmp/arityq/main.b" <<'EOF'
+package main
+
 import arityq.pk
 
 fn main() {

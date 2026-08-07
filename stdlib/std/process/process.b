@@ -10,6 +10,8 @@
 // reach `execvp` untouched. A filename containing a space, a quote or a semicolon is
 // just a filename, so there is nothing to escape and nothing to get wrong.
 
+package process
+
 import std.proc
 
 /// What a finished program left behind.

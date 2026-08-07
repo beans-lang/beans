@@ -20,14 +20,14 @@ grep -q 'call i64 @beans_arena_put_typed' build/wide_owners.ll
 grep -q 'call i64 @beans_arena_get_typed' build/wide_owners.ll
 grep -q 'call void @beans_arena_at_typed' build/wide_owners.ll
 awk '
-    /^; boxed[$][(]Event[)]/ { found = 1; next }
-    found && /^define ptr @[^ (]+\(%bs[.]Event / { exit 0 }
+    /^; main[.]boxed[$][(]main[.]Event[)]/ { found = 1; next }
+    found && /^define ptr @[^ (]+\(%bs[.]main[$]Event / { exit 0 }
     found { exit 1 }
     END { if (!found) exit 1 }
 ' build/wide_owners.ll
 awk '
-    /^; store_one[$][(]Arena<Event>[)]/ { found = 1; next }
-    found && /^define i64 @[^ (]+\(ptr [^,]+, %bs[.]Event / { exit 0 }
+    /^; main[.]store_one[$][(]Arena<main[.]Event>[)]/ { found = 1; next }
+    found && /^define i64 @[^ (]+\(ptr [^,]+, %bs[.]main[$]Event / { exit 0 }
     found { exit 1 }
     END { if (!found) exit 1 }
 ' build/wide_owners.ll

@@ -1,4 +1,6 @@
 // same package as main.b — no import needed between files of one package
+package main
+
 import std.io
 import shop.money
 

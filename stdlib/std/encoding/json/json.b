@@ -25,6 +25,8 @@
 // Values from `parse` are read-only: `push`/`add` on them report kind
 // "immutable".
 
+package json
+
 extern "C" fn beans_enc_json_parse(source: RawPtr<u8>, req: RawPtr<u64>) -> int
 extern "C" fn beans_enc_json_free_doc(doc: int) -> int
 extern "C" fn beans_enc_json_kind(doc: int, val: int) -> int

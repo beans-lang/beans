@@ -12,15 +12,15 @@ echo "checking inline Option value and ABI parity"
 diff -u test/cases/inline_option.out "$tmp/interp"
 diff -u test/cases/inline_option.out "$tmp/native.out"
 awk '
-    $0 == "; pass" { found = 1; next }
-    found && /^define \{ ?i1, %bs[.]Pair ?\} @[^ (]+\(\{ ?i1, %bs[.]Pair ?\}/ {
+    $0 == "; main.pass" { found = 1; next }
+    found && /^define \{ ?i1, %bs[.]main[$]Pair ?\} @[^ (]+\(\{ ?i1, %bs[.]main[$]Pair ?\}/ {
         exit 0
     }
     found { exit 1 }
     END { if (!found) exit 1 }
 ' build/inline_options.ll
-grep -Eq 'insertvalue \{ ?i1, %bs[.]Pair ?\} zeroinitializer, i1 true, 0' \
+grep -Eq 'insertvalue \{ ?i1, %bs[.]main[$]Pair ?\} zeroinitializer, i1 true, 0' \
     build/inline_options.ll
-grep -Eq '\{ ?i1, \{ ?i1, %bs[.]Pair ?\} ?\}' build/inline_options.ll
+grep -Eq '\{ ?i1, \{ ?i1, %bs[.]main[$]Pair ?\} ?\}' build/inline_options.ll
 
 echo "ok Option methods across scalars, ARC, structs, arrays, SIMD, slices, and nesting"

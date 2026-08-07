@@ -1,3 +1,5 @@
+package main
+
 struct SourceFile {
     id: int
     path: string

@@ -1,3 +1,5 @@
+package main
+
 class HirType {
     name: string
     args: List<HirType>
@@ -43,13 +45,13 @@ class HirGeneric {
     }
 }
 
+// A private method's dispatch slot is owned by the declaring package, so the
+// slot carries the whole Package ID. Two same-named packages therefore keep
+// separate slots and cannot override each other's private methods.
 fn hir_method_slot(owner: string, name: string,
                    is_public: bool) -> string {
     if is_public { return "pub:{name}" }
-    let parts: List<string> = owner.split(".")
-    let package: string =
-        if parts.len() > 1 { parts[0] } else { "" }
-    return "pkg:{package}:{name}"
+    return "pkg:{symbol_package(owner)}:{name}"
 }
 
 class HirFunction {
@@ -228,6 +230,9 @@ class HirProgram {
     c_globals: List<HirCGlobal>
     functions: List<HirFunction>
     errors: List<Diagnostic>
+    // The entry point's canonical symbol, "<root package>::main". A `main`
+    // in any other package is an ordinary function, not the entry.
+    entry_symbol: string
 
     fn init(target: TargetDescription) {
         self.target = target
@@ -235,6 +240,7 @@ class HirProgram {
         self.c_globals = []
         self.functions = []
         self.errors = []
+        self.entry_symbol = package_symbol("main", "main")
     }
 }
 
@@ -299,6 +305,8 @@ class SignatureChecker {
             runtime_profile: string) {
         self.resolver = resolver
         self.hir = new HirProgram(target)
+        self.hir.entry_symbol =
+            package_symbol(resolver.loader.module_name, "main")
         self.runtime_profile = runtime_profile
         self.generic_arity = {}
         self.refused_capabilities = {}
@@ -732,10 +740,10 @@ class SignatureChecker {
     fn validate_async_function(node: AstNode, file: ParsedModuleFile,
                                function: HirFunction) {
         var task_known: bool = false
-        match self.resolver.symbols.get("async$rt.Task") {
+        match self.resolver.symbols.get(async_rt_symbol("Task")) {
             some(symbol) => {
                 task_known =
-                    symbol.package_path == "std.async$rt"
+                    symbol.package_path == async_rt_package()
             }
             none => {}
         }
@@ -1090,7 +1098,7 @@ class SignatureChecker {
                         declaration.name,
                         declaration.line,
                         declaration.col),
-                    "inheritance cycle involving '{declaration.name}'")
+                    "inheritance cycle involving '{display_symbol(declaration.qualified)}'")
             }
         }
     }
@@ -1126,6 +1134,10 @@ class SignatureChecker {
     }
 }
 
+// How a type is written for a person: the package's import path and the
+// declared name, spelled the way source would. Always qualified, so
+// `retail.Cart` and `wholesale.Cart` never read the same, and the internal
+// "::" never reaches a diagnostic or a dump.
 fn render_hir_type(type: HirType) -> string {
     if type.name == "array" {
         return "[{render_hir_type(type.args[0])}; {type.array_length}]"
@@ -1142,12 +1154,13 @@ fn render_hir_type(type: HirType) -> string {
         }
         return "fn({parts.join(", ")}) -> {result}"
     }
-    if type.args.len() == 0 { return type.name }
+    let shown: string = display_symbol(type.name)
+    if type.args.len() == 0 { return shown }
     var parts: List<string> = []
     for item: HirType in type.args {
         parts.push(render_hir_type(item))
     }
-    return "{type.name}<{parts.join(", ")}>"
+    return "{shown}<{parts.join(", ")}>"
 }
 
 fn render_hir(program: HirProgram) -> string {

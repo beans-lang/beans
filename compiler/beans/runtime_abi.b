@@ -5,6 +5,8 @@
 // changes, this table must change with it; the differential runs in
 // test/self_host.sh are what catch the drift.
 
+package main
+
 pub class RuntimeBuiltin {
     pub parameters: List<string>
     pub result: string

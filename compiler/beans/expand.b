@@ -1,3 +1,5 @@
+package main
+
 import std.io
 import std.os
 
@@ -213,7 +215,7 @@ class AsyncExpander {
         self.slot_names = []
         self.has_reactor = false
         for function: HirFunction in self.program.functions {
-            if function.qualified == "async$rt.driver_wait" {
+            if function.qualified == async_rt_symbol("driver_wait") {
                 self.has_reactor = true
             }
         }
@@ -756,18 +758,22 @@ class AsyncExpander {
             some(checked) => { target = checked.resolved }
             none => {}
         }
-        if target != "net.await_readable" &&
-           target != "net.await_writable" {
+        // std.net is a source package, so its functions carry canonical
+        // symbols; matching the short spelling here would silently stop
+        // parking awaits.
+        if target != package_symbol("std.net", "await_readable") &&
+           target != package_symbol("std.net", "await_writable") {
             return operand
         }
         let park: AstNode = self.node("call", "", operand)
         let callee: AstNode = self.node(
             "name", "reactor_park", operand)
-        callee.resolved = "async$rt.reactor_park"
+        callee.resolved = async_rt_symbol("reactor_park")
         park.add(callee)
         park.add(operand.children[1])
         park.add(self.bool_literal(
-            target == "net.await_writable", operand))
+            target == package_symbol("std.net", "await_writable"),
+            operand))
         return park
     }
 
@@ -793,7 +799,7 @@ class AsyncExpander {
         // signature flip really hands back the internal task.
         let value_type: HirType = self.checked_type(node.children[0])
         let task_type: HirType =
-            hir_named("async$rt.Task", [value_type])
+            hir_named(async_rt_symbol("Task"), [value_type])
         let wait: string = self.fresh_name("await_")
         self.slot_decls.push(
             self.slot_declaration(wait, task_type, node))
@@ -853,7 +859,7 @@ class AsyncExpander {
     fn drain_task_slot(wait: string, value_type: HirType,
                        node: AstNode) -> AstNode {
         let task_type: HirType =
-            hir_named("async$rt.Task", [value_type])
+            hir_named(async_rt_symbol("Task"), [value_type])
         let poll_state: int = self.new_state(node)
         self.emit_transition(poll_state, node)
         self.enter_state(poll_state)
@@ -1192,7 +1198,7 @@ class AsyncExpander {
             // the task still in the slot cancels it (Task.deinit runs the
             // armed cleanup, children cascade).
             let task_type: HirType = hir_named(
-                "async$rt.Task", [declared])
+                async_rt_symbol("Task"), [declared])
             match value {
                 some(initializer) => {
                     // Interpolated pieces and thread closures in the
@@ -2131,13 +2137,13 @@ class AsyncExpander {
         cancel_closure.add(cancel_body)
 
         let task_hir: HirType = hir_named(
-            "async$rt.Task", [function.body_result])
+            async_rt_symbol("Task"), [function.body_result])
         let task_new: AstNode = self.node("new", "", anchor)
         task_new.add(self.type_ast(task_hir, anchor))
         task_new.add(poll_closure)
         task_new.add(take_closure)
         task_new.add(cancel_closure)
-        if function.qualified == "main" {
+        if function.qualified == self.program.entry_symbol {
             // The entry point cannot hand a task to anyone, so it drives
             // its own: this loop is the hidden executor's root. main keeps
             // the unit result, so the native entry ABI is unchanged.
@@ -2162,7 +2168,7 @@ class AsyncExpander {
                 let shutdown_call: AstNode = self.node("call", "", anchor)
                 let shutdown_callee: AstNode = self.node(
                     "name", "driver_shutdown", anchor)
-                shutdown_callee.resolved = "async$rt.driver_shutdown"
+                shutdown_callee.resolved = async_rt_symbol("driver_shutdown")
                 shutdown_call.add(shutdown_callee)
                 leave_block.add(self.statement_of(shutdown_call))
             }
@@ -2175,7 +2181,7 @@ class AsyncExpander {
                 let wait_call: AstNode = self.node("call", "", anchor)
                 let wait_callee: AstNode = self.node(
                     "name", "driver_wait", anchor)
-                wait_callee.resolved = "async$rt.driver_wait"
+                wait_callee.resolved = async_rt_symbol("driver_wait")
                 wait_call.add(wait_callee)
                 drive_body.add(self.statement_of(wait_call))
             } else {
@@ -2186,7 +2192,7 @@ class AsyncExpander {
                 let stall_call: AstNode = self.node("call", "", anchor)
                 let stall_callee: AstNode = self.node(
                     "name", "driver_stall", anchor)
-                stall_callee.resolved = "async$rt.driver_stall"
+                stall_callee.resolved = async_rt_symbol("driver_stall")
                 stall_call.add(stall_callee)
                 drive_body.add(self.statement_of(stall_call))
             }
@@ -2209,7 +2215,7 @@ class AsyncExpander {
         }
         fresh_syntax.add(maker)
         function.syntax = fresh_syntax
-        if function.qualified != "main" {
+        if function.qualified != self.program.entry_symbol {
             function.result = task_hir
             function.body_result = task_hir
         }
@@ -2232,7 +2238,7 @@ class AsyncExpander {
         for function: HirFunction in self.program.functions {
             if function.is_async && !function.expanded {
                 let task: HirType = hir_named(
-                    "async$rt.Task", [function.body_result])
+                    async_rt_symbol("Task"), [function.body_result])
                 function.result = task
                 function.body_result = task
                 function.expanded = true

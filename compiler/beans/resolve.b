@@ -1,9 +1,15 @@
+package main
+
 struct SemanticSymbol {
     name: string
     qualified: string
     kind: string
     package_path: string
     is_public: bool
+    // where it was declared, so a second declaration of the same name in the
+    // package can point at both sites
+    file: string
+    line: int
 }
 
 fn declaration_name(value: string) -> string {
@@ -79,9 +85,11 @@ class Resolver {
         })
     }
 
+    // Every declaration carries its package's identity, the root included:
+    // an empty qualifier would make two roots indistinguishable and would
+    // collide with the builtins' bare names.
     fn package_qualified(package: LoadedPackage, name: string) -> string {
-        if package.prefix == "" { return name }
-        return "{package.prefix}.{name}"
+        return package_symbol(package.import_path, name)
     }
 
     fn register_declarations() {
@@ -116,8 +124,11 @@ class Resolver {
                         self.package_qualified(package, name)
                     if self.symbols.contains(qualified) {
                         declaration.resolved = qualified
-                        self.fail(file.path, declaration,
-                                  "duplicate declaration '{qualified}'")
+                        let first: SemanticSymbol =
+                            self.symbols[qualified]
+                        self.fail(
+                            file.path, declaration,
+                            "'{name}' is already declared in this package at {first.file}:{first.line}")
                         continue
                     }
                     self.symbols[qualified] = SemanticSymbol {
@@ -127,6 +138,8 @@ class Resolver {
                         package_path: package.import_path,
                         is_public:
                             declaration.value.starts_with("pub "),
+                        file: file.path,
+                        line: declaration.line,
                     }
                     declaration.resolved = qualified
                 }
@@ -134,35 +147,23 @@ class Resolver {
         }
     }
 
-    fn package_prefix_for(import_path: string) -> string {
+    // True when the path names a package the program loaded. Anything else
+    // is a native std namespace, which declares nothing of its own.
+    fn is_loaded_package(import_path: string) -> bool {
         for package: LoadedPackage in self.loader.packages {
-            if package.import_path == import_path {
-                return package.prefix
-            }
+            if package.import_path == import_path { return true }
         }
-        return ""
+        return false
     }
 
+    // The bindings of one file: the loader settled each name and reported
+    // duplicates, so this only collects them.
     fn aliases_for(file: ParsedModuleFile) -> Map<string, string> {
         var aliases: Map<string, string> = {}
-        for declaration: AstNode in file.ast.children {
-            if declaration.kind != "import" { continue }
-            var import_path: string = declaration.value
-            if import_path.starts_with("pub ") {
-                import_path = import_path.slice(4, import_path.len())
-            }
-            var alias: string = package_prefix(import_path)
-            for child: AstNode in declaration.children {
-                if child.kind == "alias" { alias = child.value }
-            }
-            let previous: string = aliases.get(alias).or("")
-            if previous != "" && previous != import_path {
-                self.fail(file.path, declaration,
-                          "import name '{alias}' refers to both {previous} and {import_path}")
-            } else {
-                aliases[alias] = import_path
-                declaration.resolved = import_path
-            }
+        for imported: ModuleImport in file.imports {
+            var target: string = imported.resolved
+            if target == "" { target = imported.path }
+            aliases[imported.binding] = target
         }
         return move aliases
     }
@@ -191,15 +192,14 @@ class Resolver {
             let qualifier: string = self.first_part(name)
             if aliases.contains(qualifier) {
                 let import_path: string = aliases[qualifier]
-                let imported_prefix: string =
-                    self.package_prefix_for(import_path)
-                if imported_prefix == "" {
+                if !self.is_loaded_package(import_path) {
                     self.fail(file.path, node,
                               "package '{import_path}' does not declare type '{name}'")
                     return ""
                 }
                 resolved =
-                    "{imported_prefix}.{self.after_first_part(name)}"
+                    package_symbol(import_path,
+                                   self.after_first_part(name))
             } else if self.symbols.contains(name) {
                 resolved = name
             } else {
@@ -224,18 +224,12 @@ class Resolver {
                       "'{name}' is a function, not a type")
             return ""
         }
+        // Visibility is decided by Package ID equality, never by a declared
+        // name or an alias.
         if symbol.package_path != package.import_path &&
            !symbol.is_public {
-            var pkg_name: string = symbol.package_path
-            match pkg_name.rfind(".") {
-                some(dot) => {
-                    pkg_name = pkg_name.slice(
-                        dot + 1, pkg_name.len())
-                }
-                none => {}
-            }
             self.fail(file.path, node,
-                      "type '{resolved}' isn't pub in package '{pkg_name}'")
+                      "type '{name}' isn't pub in package '{symbol.package_path}'")
             return ""
         }
         return resolved

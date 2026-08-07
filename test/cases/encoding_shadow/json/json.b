@@ -5,6 +5,9 @@
 // None of these may be lowered as an intrinsic: they do not live under the
 // compiler-shipped stdlib root. Each body therefore has to run, and each
 // leaves an observable mark that an intrinsic lowering could not produce.
+
+package json
+
 pub fn enc_copy_to_raw(data: Bytes, from: int, address: int, count: int) {
     data.set(0, 42)
 }

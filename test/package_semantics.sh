@@ -55,6 +55,8 @@ cat >"$valid/beans.pot" <<'EOF'
 module package_semantics
 EOF
 cat >"$valid/base/base.b" <<'EOF'
+package base
+
 pub struct Point {
     pub x: int
     hidden: int = 9
@@ -85,6 +87,8 @@ pub class Base {
 }
 EOF
 cat >"$valid/child/child.b" <<'EOF'
+package child
+
 import package_semantics.base
 
 pub class Middle extends base.Base {
@@ -125,6 +129,8 @@ pub fn point() -> base.Point {
 }
 EOF
 cat >"$valid/main.b" <<'EOF'
+package main
+
 import std.io
 import package_semantics.child
 
@@ -156,6 +162,8 @@ cat >"$visibility/beans.pot" <<'EOF'
 module visibility_bad
 EOF
 cat >"$visibility/base/base.b" <<'EOF'
+package base
+
 fn hidden() -> int { return 1 }
 
 class Hidden {}
@@ -178,6 +186,8 @@ pub struct Record {
 }
 EOF
 cat >"$visibility/main.b" <<'EOF'
+package main
+
 import std.io
 import visibility_bad.base
 
@@ -204,10 +214,14 @@ cat >"$leak/beans.pot" <<'EOF'
 module unqualified_leak
 EOF
 cat >"$leak/base/base.b" <<'EOF'
+package base
+
 pub fn exposed() -> int { return 1 }
 pub class Exposed {}
 EOF
 cat >"$leak/main.b" <<'EOF'
+package main
+
 import unqualified_leak.base
 
 fn main() {
@@ -224,12 +238,16 @@ cat >"$override/beans.pot" <<'EOF'
 module private_override_bad
 EOF
 cat >"$override/base/base.b" <<'EOF'
+package base
+
 pub class Base {
     pub fn init() {}
     fn hook() -> string { return "base" }
 }
 EOF
 cat >"$override/child/child.b" <<'EOF'
+package child
+
 import private_override_bad.base
 
 pub class Child extends base.Base {
@@ -238,6 +256,8 @@ pub class Child extends base.Base {
 }
 EOF
 cat >"$override/main.b" <<'EOF'
+package main
+
 import private_override_bad.child
 fn main() { let value: child.Child = new child.Child() }
 EOF
@@ -282,12 +302,16 @@ cat >"$super_private/beans.pot" <<'EOF'
 module super_private_bad
 EOF
 cat >"$super_private/base/base.b" <<'EOF'
+package base
+
 pub class Base {
     pub fn init() {}
     fn secret() -> int { return 1 }
 }
 EOF
 cat >"$super_private/child/child.b" <<'EOF'
+package child
+
 import super_private_bad.base
 
 pub class Child extends base.Base {
@@ -296,6 +320,8 @@ pub class Child extends base.Base {
 }
 EOF
 cat >"$super_private/main.b" <<'EOF'
+package main
+
 import super_private_bad.child
 fn main() { let value: child.Child = new child.Child() }
 EOF

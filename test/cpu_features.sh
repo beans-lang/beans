@@ -103,7 +103,7 @@ echo "checking only the marked function carries the permission"
 # The attribute is what stops LLVM speculating a feature-requiring instruction out
 # of the callee into a caller that never checked.
 awk '
-    /^; mix_fast$/ {
+    /^; main[.]mix_fast$/ {
         getline
         if ($0 ~ /^define i64 @[^ (]+\(.*\) "target-features"="\+aes" \{$/) {
             found = 1

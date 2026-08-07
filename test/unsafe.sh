@@ -130,7 +130,7 @@ fi
 grep -q "extern C call 'llabs' requires unsafe" "$tmp/ffi.bad"
 grep -q 'extern parameter needs an integer, float, bool, RawPtr, extern "C" struct/union, or C callback' "$tmp/ffi.bad"
 grep -q 'extern return needs an integer, float, bool, RawPtr, extern "C" struct/union, or no value' "$tmp/ffi.bad"
-grep -q "got Plain" "$tmp/ffi.bad"
+grep -q "got main.Plain" "$tmp/ffi.bad"
 grep -Fq "got fn(string) -> i32" "$tmp/ffi.bad"
 grep -q "extern parameters cannot use move or inout" "$tmp/ffi.bad"
 grep -q "extern functions cannot be generic" "$tmp/ffi.bad"

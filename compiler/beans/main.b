@@ -1,3 +1,5 @@
+package main
+
 import std.fs
 import std.io
 import std.os
@@ -598,7 +600,7 @@ fn main() {
                    command == "hir" { os.exit(1) }
                 var root_main: Option<HirFunction> = none
                 for function: HirFunction in checker.hir.functions {
-                    if function.qualified == "main" {
+                    if function.qualified == checker.hir.entry_symbol {
                         root_main = some(function)
                     }
                 }
@@ -918,6 +920,7 @@ fn main() {
                 var declaration_count: int = 0
                 for child: AstNode in module.children {
                     if child.kind != "import" &&
+                       child.kind != "package" &&
                        child.kind != "error" {
                         declaration_count += 1
                     }

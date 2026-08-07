@@ -20,6 +20,8 @@
 // pattern, ten bytes for negatives); the two signed conventions are
 // different formats, named differently on purpose.
 
+package binary
+
 import std.intrinsic
 import std.target
 

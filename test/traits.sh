@@ -17,10 +17,10 @@ if ./build/beansc check test/cases/traits_bad.b >"$tmp/bad" 2>&1; then
 fi
 grep -q "generic bound 'Magic' is not an interface" "$tmp/bad"
 grep -q "List<T> has no method 'clone'" "$tmp/bad"
-grep -q "needs T implements Order, got Local" "$tmp/bad"
-grep -q "cannot capture 'local' of non-Send type Local" "$tmp/bad"
-grep -q "cannot capture 'shared' of non-Send type Shared<Local>" "$tmp/bad"
-grep -q "closure returns non-Send type Local" "$tmp/bad"
+grep -q "needs T implements Order, got main.Local" "$tmp/bad"
+grep -q "cannot capture 'local' of non-Send type main.Local" "$tmp/bad"
+grep -q "cannot capture 'shared' of non-Send type Shared<main.Local>" "$tmp/bad"
+grep -q "closure returns non-Send type main.Local" "$tmp/bad"
 grep -q "Map key needs Eq, got Shared<int>" "$tmp/bad"
 grep -q "Map key needs Hash, got Shared<int>" "$tmp/bad"
 

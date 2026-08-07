@@ -1,3 +1,5 @@
+package main
+
 fn c_header_identifier(value: string) -> bool {
     if value == "" { return false }
     let first: int = value.byte_at(0)

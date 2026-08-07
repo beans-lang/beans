@@ -1,6 +1,8 @@
 // Buffered line reading in Beans. File.read_at remains the native syscall
 // primitive; buffering, offsets, newline scanning, and EOF policy live here.
 
+package reader
+
 pub class Reader {
     file: File
     buffer: Bytes

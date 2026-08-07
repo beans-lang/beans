@@ -25,6 +25,8 @@ link all search "."
 link all library "stack_fixture"
 MOD
 cat >"$tmp/main.b" <<'BEANS'
+package main
+
 import std.io
 extern "C" fn bump(value: RawPtr<i32>) as "stack_bump"
 fn main() {

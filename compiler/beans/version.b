@@ -4,6 +4,8 @@
 // a C++ header, so it reads the same numbers from here. Bump compiler/version.h
 // and rebuild — test/version.sh refuses a stale copy.
 
+package main
+
 fn compiler_version() -> string {
     return "0.1.1"
 }

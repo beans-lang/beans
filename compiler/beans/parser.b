@@ -1,3 +1,5 @@
+package main
+
 fn binary_precedence(kind: string) -> int {
     if kind == ".." || kind == "..=" { return 1 }
     if kind == "||" { return 1 }
@@ -139,12 +141,49 @@ class Parser {
         }
     }
 
+    // `package name` — contextual, so `package` stays an ordinary identifier
+    // everywhere else. A clause found later is still recognised so the
+    // diagnostic can say what is wrong instead of "expected a declaration".
+    fn at_package_clause() -> bool {
+        return self.check("ident") &&
+               self.current().text == "package" &&
+               self.tokens[self.pos + 1].kind == "ident"
+    }
+
+    fn parse_package_clause(first: bool, declared: bool) -> AstNode {
+        let start: Token = self.advance()
+        let name: Token = self.advance()
+        let result: AstNode = self.node("package", name.text, start)
+        if !first {
+            if declared {
+                self.fail(start, "a file declares its package once")
+            } else {
+                self.fail(
+                    start,
+                    "the package clause must come before every import and declaration")
+            }
+        }
+        self.finish_statement()
+        return result
+    }
+
     fn parse_module() -> AstNode {
         let start: Token = self.current()
         let module: AstNode = self.node("module", "", start)
         self.skip_newlines()
+        var declared: bool = false
+        if self.at_package_clause() {
+            module.add(self.parse_package_clause(true, false))
+            declared = true
+            self.skip_newlines()
+        }
         for !self.at_end() {
-            module.add(self.parse_declaration())
+            if self.at_package_clause() {
+                module.add(
+                    self.parse_package_clause(false, declared))
+            } else {
+                module.add(self.parse_declaration())
+            }
             self.skip_newlines()
         }
         return module

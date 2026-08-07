@@ -1,14 +1,14 @@
 module shop kind=application root=examples/shop
-package shop.money prefix=money
+package shop.money name=money
   file examples/shop/money/money.b
-package shop.util prefix=util
+package shop.util name=util
   file examples/shop/util/util.b
-  import std.io
-package shop prefix=
+    import std.io as io
+package shop name=main
   file examples/shop/helpers.b
+    import std.io as io
+    import shop.money as money
   file examples/shop/main.b
-  import std.io
-  import shop.money
-  import std.io
-  import shop.money
-  import shop.util
+    import std.io as io
+    import shop.money as money
+    import shop.util as u

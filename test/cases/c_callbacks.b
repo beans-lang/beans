@@ -1,3 +1,5 @@
+package main
+
 import std.io
 
 extern "C" struct Point {

@@ -1,3 +1,5 @@
+package main
+
 enum Severity {
     error
     warning

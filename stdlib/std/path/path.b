@@ -1,6 +1,8 @@
 // Pure path operations in Beans. These functions do not touch the file
 // system and use '/' on every supported target.
 
+package path
+
 fn end_without_slashes(value: string) -> int {
     var end: int = value.len()
     for end > 0 && value.byte_at(end - 1) == 47 {

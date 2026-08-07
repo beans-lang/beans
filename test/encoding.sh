@@ -98,11 +98,11 @@ assert_defined() {
         END { if (!found) exit 1 }
     ' "build/$2.ll"
 }
-assert_defined json.parse encoding_json
-assert_defined json.stringify encoding_json
-assert_defined xml.parse encoding_xml
-assert_defined base64.encode encoding_base64
-assert_defined binary.read_uvarint encoding_binary
+assert_defined std.encoding.json.parse encoding_json
+assert_defined std.encoding.json.stringify encoding_json
+assert_defined std.encoding.xml.parse encoding_xml
+assert_defined std.encoding.base64.encode encoding_base64
+assert_defined std.encoding.binary.read_uvarint encoding_binary
 echo "ok Beans-source API definitions in the IR"
 
 # The marshalling helpers must lower to memcpy in native code rather than a

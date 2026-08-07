@@ -1,4 +1,5 @@
-// package money — exact decimal money math
+// exact decimal money math
+package money
 
 pub class Money {
     pub amount: decimal

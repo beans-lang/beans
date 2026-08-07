@@ -28,6 +28,8 @@ link all search "."
 link all library "access_globals"
 MOD
 cat >"$tmp/main.b" <<'BEANS'
+package main
+
 import std.c
 import std.io
 import std.thread

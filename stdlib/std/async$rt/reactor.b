@@ -7,6 +7,8 @@
 // linked and the minimal and freestanding runtime profiles stay free
 // of polling code.
 
+package async_rt
+
 import std.ready
 
 // Thread-local state lives in the runtime's task slots because Beans has no

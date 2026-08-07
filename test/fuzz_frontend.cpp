@@ -45,7 +45,11 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     (void)beans::dump(file->mod);
 
     auto package = std::make_unique<beans::Package>();
-    package->prefix = "";
+    // The loader normally settles both of these from the file's `package`
+    // clause. The fuzzer hands the checker arbitrary bytes without going
+    // through the loader, so it stands in for it with the identity a
+    // manifestless single file gets.
+    package->name = "main";
     package->import_path = "main";
     package->dir = ".";
     package->files.push_back(std::move(file));

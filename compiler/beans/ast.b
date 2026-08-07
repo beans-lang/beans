@@ -1,3 +1,5 @@
+package main
+
 class AstNode {
     kind: string
     value: string
@@ -641,6 +643,10 @@ fn render_cli_ast(node: AstNode) -> string {
         return cli_ast_expression(node, 0)
     }
     var output: string = ""
+    for child: AstNode in node.children {
+        if child.kind != "package" { continue }
+        output = "{output}package {child.value}\n\n"
+    }
     var import_count: int = 0
     for child: AstNode in node.children {
         if child.kind != "import" { continue }
@@ -655,7 +661,7 @@ fn render_cli_ast(node: AstNode) -> string {
     }
     if import_count != 0 { output = "{output}\n" }
     for child: AstNode in node.children {
-        if child.kind == "import" { continue }
+        if child.kind == "import" || child.kind == "package" { continue }
         output = "{output}{cli_ast_declaration(child)}"
     }
     return output

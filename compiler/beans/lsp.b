@@ -1,3 +1,5 @@
+package main
+
 import std.fs
 import std.io
 import std.path
@@ -33,11 +35,63 @@ class LspDocument {
 class LspProject {
     files: List<LspFile>
     diagnostics: List<Diagnostic>
+    // The loaded package graph, so a qualified reference can be answered by
+    // the package its own file bound the qualifier to.
+    packages: List<LoadedPackage>
 
     fn init() {
         self.files = []
         self.diagnostics = []
+        self.packages = []
     }
+}
+
+// The Package ID `qualifier` names in `from_path`, or "" when that file binds
+// no such name. Bindings belong to one file, never to its package.
+fn lsp_binding_target(project: LspProject, from_path: string,
+                      qualifier: string) -> string {
+    for package: LoadedPackage in project.packages {
+        for parsed: ParsedModuleFile in package.files {
+            if parsed.path != from_path { continue }
+            for imported: ModuleImport in parsed.imports {
+                if imported.binding != qualifier { continue }
+                if imported.resolved != "" {
+                    return imported.resolved
+                }
+                return imported.path
+            }
+        }
+    }
+    return ""
+}
+
+// Every file of one package, so a search can be confined to it.
+fn lsp_package_files(project: LspProject,
+                     package_id: string) -> List<string> {
+    var paths: List<string> = []
+    for package: LoadedPackage in project.packages {
+        if package.import_path != package_id { continue }
+        for parsed: ParsedModuleFile in package.files {
+            paths.push(parsed.path)
+        }
+    }
+    return move paths
+}
+
+// The names this one file binds with `import`. An alias belongs to the file
+// that wrote it, so a sibling's alias never appears.
+fn lsp_file_bindings(project: LspProject,
+                     from_path: string) -> List<string> {
+    var names: List<string> = []
+    for package: LoadedPackage in project.packages {
+        for parsed: ParsedModuleFile in package.files {
+            if parsed.path != from_path { continue }
+            for imported: ModuleImport in parsed.imports {
+                names.push(imported.binding)
+            }
+        }
+    }
+    return move names
 }
 
 class LspWord {
@@ -266,6 +320,26 @@ fn lsp_word(text: string, line_number: int,
         lsp_utf16_index(line, end))
 }
 
+// `wholesale.Cart` when the cursor sits on the `Cart` of a qualified
+// reference, otherwise just the word itself.
+fn lsp_qualified_word(text: string,
+                      word: LspWord) -> string {
+    if word.text == "" { return "" }
+    let line: string = lsp_line(text, word.line)
+    var start: int = lsp_byte_index(line, word.start)
+    if start == 0 || line.byte_at(start - 1) != 46 { return word.text }
+    var qualifier_end: int = start - 1
+    var qualifier_start: int = qualifier_end
+    for qualifier_start > 0 &&
+        lsp_ident_byte(line.byte_at(qualifier_start - 1)) {
+        qualifier_start -= 1
+    }
+    if qualifier_start == qualifier_end { return word.text }
+    let qualifier: string =
+        line.slice(qualifier_start, qualifier_end)
+    return "{qualifier}.{word.text}"
+}
+
 fn lsp_position(line: int, character: int) -> string {
     return lsp_object([
         lsp_member("line", "{line}"),
@@ -323,6 +397,7 @@ fn lsp_project(entry: string,
     lsp_copy_diagnostics(
         loader.errors, project)
     for package: LoadedPackage in loader.packages {
+        project.packages.push(package)
         for parsed: ParsedModuleFile in package.files {
             let source: SourceFile =
                 sources.get(parsed.source_id)
@@ -410,10 +485,13 @@ fn lsp_decl_name(line: string,
         lsp_utf16_index(line, end))
 }
 
-fn lsp_find_declaration(
-    project: LspProject,
-    name: string) -> Option<string> {
+fn lsp_find_declaration_in(
+    project: LspProject, name: string,
+    only: List<string>) -> Option<string> {
     for file: LspFile in project.files {
+        if only.len() != 0 && !only.contains(file.path) {
+            continue
+        }
         let lines: List<string> = file.text.lines()
         for line_number: int in 0..lines.len() {
             let line: string = lines[line_number]
@@ -432,6 +510,34 @@ fn lsp_find_declaration(
         }
     }
     return none
+}
+
+// A qualified reference is answered by the package its own file bound the
+// qualifier to — never by the first same-named declaration in the program.
+fn lsp_find_declaration_from(
+    project: LspProject, name: string,
+    from_path: string) -> Option<string> {
+    if name.contains(".") {
+        let parts: List<string> = name.split(".")
+        if parts.len() == 2 {
+            let target: string =
+                lsp_binding_target(project, from_path, parts[0])
+            if target != "" {
+                return lsp_find_declaration_in(
+                    project, parts[1],
+                    lsp_package_files(project, target))
+            }
+        }
+    }
+    var empty: List<string> = []
+    return lsp_find_declaration_in(project, name, move empty)
+}
+
+fn lsp_find_declaration(
+    project: LspProject,
+    name: string) -> Option<string> {
+    var empty: List<string> = []
+    return lsp_find_declaration_in(project, name, move empty)
 }
 
 fn lsp_signature(project: LspProject,
@@ -1449,12 +1555,13 @@ class SelfLspServer {
         }
         let word: LspWord =
             lsp_request_word(params, self.documents)
+        let document: LspDocument = self.documents[uri]
         let project: LspProject =
-            lsp_project(
-                self.documents[uri].path,
-                self.documents, false)
-        match lsp_find_declaration(
-                  project, word.text) {
+            lsp_project(document.path, self.documents, false)
+        let qualified: string =
+            lsp_qualified_word(document.text, word)
+        match lsp_find_declaration_from(
+                  project, qualified, document.path) {
             some(location) => {
                 self.reply(id, location)
             }
@@ -1709,8 +1816,17 @@ class SelfLspServer {
             return
         }
         var items: Map<string, int> = {}
+        let document: LspDocument = self.documents[uri]
+        // This file's own import bindings. A sibling file's alias is not in
+        // scope here, so it never reaches the list.
+        let project: LspProject =
+            lsp_project(document.path, self.documents, false)
+        for binding: string in
+            lsp_file_bindings(project, document.path) {
+            items[binding] = 9
+        }
         let lines: List<string> =
-            self.documents[uri].text.lines()
+            document.text.lines()
         for line: string in lines {
             let clean: string = line.trim()
             if clean.starts_with("fn ") {

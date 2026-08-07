@@ -51,6 +51,8 @@ link all search "."
 link all library "stored_fixture"
 MOD
 cat >"$tmp/main.b" <<'BEANS'
+package main
+
 import std.io
 extern "C" fn register(
     callback: fn(RawPtr<u8>, i32) -> i32,
@@ -87,6 +89,8 @@ diff -u "$tmp/interp" "$tmp/native.out"
 grep -Fx '42' "$tmp/native.out" >"$tmp/match"
 
 cat >"$tmp/closed_twice.b" <<'BEANS'
+package main
+
 fn bad() {
     let callback: StoredCallback<fn(RawPtr<u8>, i32) -> i32> =
         StoredCallback.create(0, fn(value: i32) -> i32 { return value })

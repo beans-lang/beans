@@ -1,6 +1,8 @@
 // High-level file helpers in Beans. File.open and positional/cursor I/O stay
 // native because they are the syscall boundary.
 
+package fs
+
 pub fn read_bytes(path: string) -> Result<Bytes> {
     let file: File = File.open(path, "r")?
     defer file.close()

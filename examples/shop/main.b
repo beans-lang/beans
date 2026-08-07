@@ -1,4 +1,6 @@
 // beans multi-file demo: packages, pub, cross-package everything
+package main
+
 import std.io
 import shop.money
 import shop.util as u

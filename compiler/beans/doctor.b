@@ -7,6 +7,8 @@
 // Nothing here is allowed to fail: a missing optional tool is a report line, not
 // an error.
 
+package main
+
 import std.fs
 import std.io
 import std.os

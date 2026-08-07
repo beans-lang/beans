@@ -10,10 +10,10 @@ trap 'rm -rf "$tmp"' EXIT
 "$tmp/native" >"$tmp/native.out"
 diff -u test/cases/move_ok.out "$tmp/interp"
 diff -u test/cases/move_ok.out "$tmp/native.out"
-grep -q '^; swap$' build/move_ok.ll
+grep -q '^; main.swap$' build/move_ok.ll
 grep -q '^define void @.next.fn[0-9]*(ptr %l0, ptr %l1)' \
     build/move_ok.ll
-grep -q '^; replace$' build/move_ok.ll
+grep -q '^; main.replace$' build/move_ok.ll
 grep -q '^define void @.next.fn[0-9]*(ptr %l0, ptr %arg1)' \
     build/move_ok.ll
 
@@ -52,7 +52,7 @@ grep -q "binding 'copied_map' needs 'move map' because Map<string, int> is move-
 grep -q "List<List<int>> has no method 'clone'" "$tmp/collection-bad"
 grep -q "consume.*move argument 1 needs 'move values'" "$tmp/collection-bad"
 grep -q "has ownership parameters and cannot be stored as a value yet" "$tmp/collection-bad"
-grep -q "because Packet is move-only" "$tmp/collection-bad"
+grep -q "because main.Packet is move-only" "$tmp/collection-bad"
 grep -q "inout argument 1 must be 'inout var_name'" "$tmp/collection-bad"
 grep -q "inout needs var, but 'fixed' is a let" "$tmp/collection-bad"
 grep -q "overlapping inout arguments for 'left'" "$tmp/collection-bad"

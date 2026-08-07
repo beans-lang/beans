@@ -11,7 +11,7 @@ echo "checking typed-width user-enum payload storage"
 BEANS_NO_POOL=1 "$tmp/native" >"$tmp/native.out"
 diff -u test/cases/wide_enum.out "$tmp/interp"
 diff -u test/cases/wide_enum.out "$tmp/native.out"
-grep -q 'store %bs.Pair' build/wide_enums.ll
+grep -q 'store %bs.main$Pair' build/wide_enums.ll
 grep -q 'store \[2 x i64\]' build/wide_enums.ll
 grep -Eq 'define internal i64 @[^ (]*[.]eq[0-9]*\(' build/wide_enums.ll
 grep -Eq 'define internal i64 @[^ (]*wide[.]eq' build/wide_enums.ll
