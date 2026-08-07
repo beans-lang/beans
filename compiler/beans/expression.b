@@ -3275,6 +3275,12 @@ class ExpressionChecker {
             if lexer.errors.len() == 0 &&
                parser.errors.len() == 0 {
                 self.qualify_unresolved_types(expression)
+                // Editor queries answer inside interpolations too, so the
+                // piece keeps a handle on the literal it came from, moved
+                // onto the file position its bytes occupy.
+                ast_place_interpolation(
+                    expression, node.line, node.col + start - 1)
+                node.interpolations.push(expression)
                 let piece: HirNode = self.check_expression(
                     expression, no_hir_type())
                 // Stage 0 refuses non-printable pieces at check time;

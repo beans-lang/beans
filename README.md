@@ -212,7 +212,10 @@ The subcommands:
 | `beansc build file.b [-o out]` | compile to a native binary via LLVM |
 | `beansc build --emit static --header api.h file.b` | build a C-facing Beans library |
 | `beansc build --release --lto --cpu native file.b` | optimized native build |
+| `beansc build --debug file.b -o out` | unoptimized native build with platform debug information |
 | `beansc build --target <triple> file.b` | compile for another machine |
+| `beansc lsp` | language server on stdio |
+| `beansc debug-adapter` | debug adapter (DAP) on stdio |
 | `beansc bindgen header.h -o bindings.b` | generate Beans C declarations with Clang |
 | `beansc mod tidy` | resolve used modules and write `beans.lock` |
 | `beansc mod update [module]` | refresh all locked modules, or one module |
@@ -308,10 +311,60 @@ the v1 dependency source; a central package registry is not required.
 
 ### Editor support
 
-Syntax highlighting, live diagnostics, hover docs, and completion for **VS Code**
-and **Zed** live in
-[beans-lang/editors](https://github.com/beans-lang/editors) — thin editor
-clients over the compiler's built-in language server (`beansc lsp`).
+Editor integrations for **VS Code** and **Zed** live in
+[beans-lang/editors](https://github.com/beans-lang/editors). They are thin
+clients: every answer comes from the compiler.
+
+`beansc lsp` is the language server. It keeps one checked view of the project
+and answers from it, so a position becomes an exact symbol rather than a name
+that happens to match. It provides diagnostics, completion (including members
+of the receiver's real type, built-in receivers included), hover, signature
+help, go to definition, declaration, implementation and type definition,
+references, document highlights, document and workspace symbols, call and type
+hierarchy, semantic tokens, and rename. Two same-named methods on two
+same-named types in two packages stay two different symbols, so a rename never
+reaches past the one you meant — and a rename that *would* rebind something
+else, such as a local taking a name already in scope, is refused with a reason
+rather than applied.
+
+Renaming a member checks the whole hierarchy it sits in, not just the part
+above it. A base member cannot take a name a subtype already declares, however
+many levels down it is: for a method the subtype would start hiding it, and
+for a field the two would quietly share one slot and the base would read the
+child's value. A method that is part of an override family — an interface or
+base declaration and every implementation of it — is renamed as one family,
+from whichever end you start, because a virtual name belongs to all of them.
+
+`$/cancelRequest` is accepted and ignored: the server answers strictly in
+order, so a cancellation always arrives after its request was answered.
+
+`beansc debug-adapter` is the debugger. It speaks the Debug Adapter Protocol on
+stdio and runs your program with the reference interpreter, so there is no
+build step: breakpoints are Beans file and line positions, frames name Beans
+functions, and locals come from the interpreter's own frames with the binding
+ids the checker allocated — a shadowed local stays two separate variables.
+
+### Debugging
+
+```bash
+beansc debug-adapter         # what an editor starts; DAP over stdio
+```
+
+Press F5 in VS Code on a `.b` file. You get breakpoints, stop-on-entry, a Beans
+call stack, `self`/parameters/locals, paging through large lists, maps and
+objects, watch expressions over variable paths, step over/into/out, continue,
+and a stop on a runtime panic with the stack still standing.
+
+**Native debugging is a different thing and is not available yet.** `beansc
+build --debug` gives an unoptimized binary (`-O0`, frame pointers kept, LTO
+off) carrying the platform's debug information — DWARF on macOS and Linux,
+CodeView where the toolchain targets MSVC — for the Beans C runtime. That makes
+a native backtrace, a crash report or a profiler readable, and it is the
+foundation a native debugger needs. It is not Beans source-level debugging: the
+LLVM emitter writes no line table for Beans statements, so lldb and gdb cannot
+stop on a Beans line. `test/native_debug.sh` asserts that boundary and fails if
+the emitter starts writing debug metadata, so this paragraph cannot go stale
+without someone noticing.
 
 ## Developing
 

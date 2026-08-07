@@ -215,6 +215,10 @@ else
 	./test/parse_recovery.sh
 	./test/lsp_probe.sh
 	./test/lsp_server.sh
+	./test/lsp_semantic.sh
+	./test/lsp_navigation.sh
+	./test/dap.sh
+	./test/native_debug.sh
 	./test/stdlib_source.sh
 	bash ./test/api_names.sh
 	./test/fs_source.sh
@@ -381,6 +385,10 @@ test-core: $(BIN)
 	bash ./test/default_eval_order.sh
 	./test/lsp_probe.sh
 	./test/lsp_server.sh
+	./test/lsp_semantic.sh
+	./test/lsp_navigation.sh
+	./test/dap.sh
+	./test/native_debug.sh
 	./test/fs_source.sh
 	./test/reader_source.sh
 	./test/inline_options.sh
