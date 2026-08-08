@@ -294,20 +294,6 @@ fn bindgen_rfind(text: string,
     }
 }
 
-fn bindgen_function_arguments_open(
-    signature: string) -> int {
-    let spaced: int =
-        bindgen_find(signature, " (")
-    if spaced >= 0 { return spaced + 1 }
-    let pointer: int =
-        bindgen_find(signature, "*(")
-    return if pointer < 0 {
-        -1
-    } else {
-        pointer + 1
-    }
-}
-
 // What the C types are actually worth on the target being bound. Every one of
 // these is asked of Clang rather than guessed, because the rules do not follow
 // from the pointer width: `long` is 8 bytes on 64-bit Linux and macOS and 4 on
@@ -515,6 +501,47 @@ fn bindgen_has_kind(node: BindgenJson,
     return false
 }
 
+fn bindgen_owned_tag_id(node: BindgenJson) -> string {
+    match node.get("ownedTagDecl") {
+        some(tag) => {
+            let id: string = tag.string("id")
+            if id != "" { return id }
+        }
+        none => {}
+    }
+    match node.get("inner") {
+        some(inner) => {
+            for child: BindgenJson in inner.items {
+                let found: string =
+                    bindgen_owned_tag_id(child)
+                if found != "" { return found }
+            }
+        }
+        none => {}
+    }
+    return ""
+}
+
+fn bindgen_collect_type_nodes(
+    node: BindgenJson,
+    inout output: List<BindgenJson>) {
+    let kind: string = node.string("kind")
+    if kind == "RecordDecl" ||
+       kind == "EnumDecl" ||
+       kind == "TypedefDecl" {
+        output.push(node)
+    }
+    match node.get("inner") {
+        some(inner) => {
+            for child: BindgenJson in inner.items {
+                bindgen_collect_type_nodes(
+                    child, inout output)
+            }
+        }
+        none => {}
+    }
+}
+
 fn bindgen_contains_identifier(
     text: string, wanted: string) -> bool {
     if wanted == "" || wanted.len() > text.len() {
@@ -538,39 +565,6 @@ fn bindgen_contains_identifier(
         if left_ok && right_ok { return true }
     }
     return false
-}
-
-fn bindgen_split_arguments(text: string) ->
-    List<string> {
-    var result: List<string> = []
-    var start: int = 0
-    var depth: int = 0
-    var index: int = 0
-    for index <= text.len() {
-        let byte: int =
-            if index < text.len() {
-                text.byte_at(index)
-            } else {
-                44
-            }
-        if byte == 40 || byte == 91 {
-            depth += 1
-        }
-        if byte == 41 || byte == 93 {
-            depth -= 1
-        }
-        if byte == 44 && depth == 0 {
-            result.push(
-                text.slice(start, index).trim())
-            start = index + 1
-        }
-        index += 1
-    }
-    if result.len() == 1 &&
-       result[0] == "void" {
-        return []
-    }
-    return move result
 }
 
 fn bindgen_name(value: string,
@@ -639,10 +633,297 @@ fn bindgen_type_text(node: BindgenJson) -> string {
         some(type) => {
             let desugared: string =
                 type.string("desugaredQualType")
+            if node.string("kind") == "TypedefDecl" &&
+               desugared == node.string("name") {
+                return type.string("qualType")
+            }
             if desugared != "" { return desugared }
             return type.string("qualType")
         }
         none => { return "" }
+    }
+}
+
+// Clang's JSON AST leaves declaration types as C text. C declarators are
+// recursive, so a search for the first "(*)" cannot distinguish a callback,
+// a callback returning another callback, or a pointer to a callback slot.
+// Parse the abstract declarator into a tree before rendering it.
+class BindgenCType {
+    kind: string
+    text: string
+    children: List<BindgenCType>
+
+    fn init(kind: string) {
+        self.kind = kind
+        self.text = ""
+        self.children = []
+    }
+}
+
+class BindgenCDeclaratorOp {
+    kind: string
+    text: string
+    parameters: List<BindgenCType>
+
+    fn init(kind: string) {
+        self.kind = kind
+        self.text = ""
+        self.parameters = []
+    }
+}
+
+class BindgenCTypeParser {
+    original: string
+    tokens: List<string>
+    position: int
+    failed: bool
+    errors: List<string>
+
+    fn init(source: string) {
+        self.original = source
+        self.tokens = []
+        self.position = 0
+        self.failed = false
+        self.errors = []
+        self.tokenize()
+    }
+
+    fn symbol(byte: int) -> bool {
+        return byte == 40 || byte == 41 ||
+               byte == 42 || byte == 44 ||
+               byte == 91 || byte == 93
+    }
+
+    fn tokenize() {
+        var word: string = ""
+        for index: int in 0..self.original.len() {
+            let byte: int = self.original.byte_at(index)
+            let whitespace: bool =
+                byte == 32 || byte == 9 ||
+                byte == 10 || byte == 13
+            if whitespace || self.symbol(byte) {
+                if word != "" {
+                    self.tokens.push(word)
+                    word = ""
+                }
+                if !whitespace {
+                    self.tokens.push(
+                        self.original.slice(index, index + 1))
+                }
+            } else {
+                word =
+                    "{word}{self.original.slice(index, index + 1)}"
+            }
+        }
+        if word != "" { self.tokens.push(word) }
+    }
+
+    fn pointer_qualifier(token: string) -> bool {
+        return token == "const" ||
+               token == "volatile" ||
+               token == "restrict" ||
+               token == "_Nullable" ||
+               token == "_Nonnull" ||
+               token == "_Null_unspecified"
+    }
+
+    fn join(first: int, last: int) -> string {
+        var output: string = ""
+        for index: int in first..last {
+            if output != "" { output = "{output} " }
+            output = "{output}{self.tokens[index]}"
+        }
+        return output.trim()
+    }
+
+    fn fail() -> BindgenCType {
+        if !self.failed {
+            self.errors.push(
+                "unsupported C declarator '{self.original}'")
+            self.failed = true
+        }
+        let result: BindgenCType =
+            new BindgenCType("base")
+        result.text = "void"
+        return result
+    }
+
+    fn grouped_declarator() -> bool {
+        if self.position + 1 >= self.tokens.len() ||
+           self.tokens[self.position] != "(" {
+            return false
+        }
+        let next: string = self.tokens[self.position + 1]
+        return next == "*" || next == "(" || next == "["
+    }
+
+    fn parse_slice(first: int, last: int) -> BindgenCType {
+        let source: string = self.join(first, last)
+        if source == "..." {
+            self.errors.push(
+                "variadic C callback type is unsupported")
+            let result: BindgenCType =
+                new BindgenCType("base")
+            result.text = "void"
+            return result
+        }
+        let parser: BindgenCTypeParser =
+            new BindgenCTypeParser(source)
+        let result: BindgenCType = parser.parse()
+        for error: string in parser.errors {
+            self.errors.push(error)
+        }
+        return result
+    }
+
+    fn function_suffix() -> BindgenCDeclaratorOp {
+        self.position += 1
+        let operation: BindgenCDeclaratorOp =
+            new BindgenCDeclaratorOp("function")
+        var start: int = self.position
+        var depth: int = 0
+        for self.position < self.tokens.len() {
+            let token: string = self.tokens[self.position]
+            if token == "(" || token == "[" {
+                depth += 1
+            } else if token == ")" {
+                if depth == 0 {
+                    if start != self.position {
+                        operation.parameters.push(
+                            self.parse_slice(start, self.position))
+                    }
+                    self.position += 1
+                    if operation.parameters.len() == 1 &&
+                       operation.parameters[0].kind == "base" &&
+                       operation.parameters[0].text == "void" {
+                        operation.parameters = []
+                    }
+                    return operation
+                }
+                depth -= 1
+            } else if token == "]" {
+                depth -= 1
+            } else if token == "," && depth == 0 {
+                if start == self.position {
+                    self.fail()
+                } else {
+                    operation.parameters.push(
+                        self.parse_slice(start, self.position))
+                }
+                start = self.position + 1
+            }
+            self.position += 1
+        }
+        self.fail()
+        return operation
+    }
+
+    fn array_suffix() -> BindgenCDeclaratorOp {
+        self.position += 1
+        let operation: BindgenCDeclaratorOp =
+            new BindgenCDeclaratorOp("array")
+        let start: int = self.position
+        var depth: int = 0
+        for self.position < self.tokens.len() {
+            let token: string = self.tokens[self.position]
+            if token == "[" {
+                depth += 1
+            } else if token == "]" {
+                if depth == 0 {
+                    operation.text =
+                        self.join(start, self.position)
+                    self.position += 1
+                    return operation
+                }
+                depth -= 1
+            }
+            self.position += 1
+        }
+        self.fail()
+        return operation
+    }
+
+    fn declarator() -> List<BindgenCDeclaratorOp> {
+        var pointers: int = 0
+        for self.position < self.tokens.len() &&
+            self.tokens[self.position] == "*" {
+            pointers += 1
+            self.position += 1
+            for self.position < self.tokens.len() &&
+                self.pointer_qualifier(
+                    self.tokens[self.position]) {
+                self.position += 1
+            }
+        }
+        var operations: List<BindgenCDeclaratorOp> = []
+        if self.grouped_declarator() {
+            self.position += 1
+            operations = self.declarator()
+            if self.position >= self.tokens.len() ||
+               self.tokens[self.position] != ")" {
+                self.fail()
+                return move operations
+            }
+            self.position += 1
+        }
+        for self.position < self.tokens.len() {
+            if self.tokens[self.position] == "(" {
+                operations.push(self.function_suffix())
+            } else if self.tokens[self.position] == "[" {
+                operations.push(self.array_suffix())
+            } else {
+                break
+            }
+        }
+        for index: int in 0..pointers {
+            operations.push(
+                new BindgenCDeclaratorOp("pointer"))
+        }
+        return move operations
+    }
+
+    fn parse() -> BindgenCType {
+        if self.tokens.len() == 0 { return self.fail() }
+        if self.tokens[0] == "_Atomic" ||
+           self.tokens[0] == "_BitInt" {
+            let result: BindgenCType =
+                new BindgenCType("base")
+            result.text = self.original
+            return result
+        }
+        var base_end: int = 0
+        for base_end < self.tokens.len() &&
+            self.tokens[base_end] != "*" &&
+            self.tokens[base_end] != "(" &&
+            self.tokens[base_end] != "[" {
+            base_end += 1
+        }
+        if base_end == 0 { return self.fail() }
+        var result: BindgenCType =
+            new BindgenCType("base")
+        result.text = self.join(0, base_end)
+        self.position = base_end
+        let operations: List<BindgenCDeclaratorOp> =
+            self.declarator()
+        if self.position != self.tokens.len() {
+            return self.fail()
+        }
+        for offset: int in 0..operations.len() {
+            let operation: BindgenCDeclaratorOp =
+                operations[operations.len() - offset - 1]
+            let wrapped: BindgenCType =
+                new BindgenCType(operation.kind)
+            wrapped.text = operation.text
+            wrapped.children.push(result)
+            if operation.kind == "function" {
+                for parameter: BindgenCType in
+                    operation.parameters {
+                    wrapped.children.push(parameter)
+                }
+            }
+            result = wrapped
+        }
+        return result
     }
 }
 
@@ -655,6 +936,7 @@ class BindgenGenerator {
     enums: Map<string, BindgenJson>
     needed_records: Map<string, bool>
     needed_enums: Map<string, bool>
+    resolving_typedefs: Map<string, bool>
     errors: List<string>
 
     fn init(facts: BindgenTargetFacts,
@@ -672,6 +954,7 @@ class BindgenGenerator {
         self.enums = {}
         self.needed_records = {}
         self.needed_enums = {}
+        self.resolving_typedefs = {}
         self.errors = []
     }
 
@@ -873,108 +1156,152 @@ class BindgenGenerator {
             }
             none => {}
         }
-        match self.typedefs.get(type) {
-            some(alias) => {
-                if alias != type {
-                    return self.c_type(alias)
-                }
-            }
-            none => {}
-        }
         self.errors.push(
             "unsupported C type '{type}'")
         return "unit"
     }
 
-    fn c_type(written: string) -> string {
-        var type: string =
+    fn parse_type(written: string) -> BindgenCType {
+        let type: string =
             bindgen_strip_nullability(written).trim()
-        let function: int =
-            bindgen_find(type, "(*)")
-        if function >= 0 {
-            let open: int =
-                bindgen_find(
-                    type.slice(
-                        function + 3, type.len()),
-                    "(")
-            let close: int =
-                bindgen_rfind(type, ")")
-            if open < 0 || close < 0 {
-                self.errors.push(
-                    "unsupported function pointer '{type}'")
-                return "fn()"
-            }
-            let absolute_open: int =
-                function + 3 + open
-            // The text before the declarator is a whole C type, not just a
-            // scalar one: `void *(*)(void *)` returns a pointer. Recursion
-            // ends because that text is strictly shorter than the input.
-            let result: string =
-                self.c_type(
-                    type.slice(0, function))
-            let parameters: List<string> =
-                bindgen_split_arguments(
-                    type.slice(
-                        absolute_open + 1,
-                        close))
-            var output: string = "fn("
-            for index: int in
-                0..parameters.len() {
-                if index != 0 {
-                    output = "{output}, "
-                }
-                output =
-                    "{output}{self.c_type(parameters[index])}"
-            }
-            output = "{output})"
-            if result != "unit" {
-                output = "{output} -> {result}"
-            }
-            return output
+        if type.contains("__attribute__((") {
+            self.errors.push(
+                "C type carries an ABI attribute bindgen does not model: {type}")
+            let result: BindgenCType =
+                new BindgenCType("base")
+            result.text = "void"
+            return result
         }
-        let array: int = bindgen_rfind(type, "[")
-        if array >= 0 && type.ends_with("]") {
-            let length: string =
-                type.slice(
-                    array + 1,
-                    type.len() - 1).trim()
-            if length == "" {
+        let parser: BindgenCTypeParser =
+            new BindgenCTypeParser(type)
+        let result: BindgenCType = parser.parse()
+        for error: string in parser.errors {
+            self.errors.push(error)
+        }
+        return result
+    }
+
+    fn render_function(type: BindgenCType) -> string {
+        if type.children.len() > 7 {
+            self.errors.push(
+                "C callback has more than 6 parameters, which is unsupported")
+            return "fn()"
+        }
+        var output: string = "fn("
+        for index: int in 1..type.children.len() {
+            if index != 1 { output = "{output}, " }
+            // A callback passed through another callback is a stored C
+            // address, not a callback borrowed by the outer Beans import.
+            output =
+                "{output}{self.render_type(type.children[index], false)}"
+        }
+        output = "{output})"
+        let result: string =
+            if type.children.len() == 0 {
+                "unit"
+            } else {
+                self.render_type(type.children[0], false)
+            }
+        if result != "unit" {
+            output = "{output} -> {result}"
+        }
+        return output
+    }
+
+    fn render_type(type: BindgenCType,
+                   borrowed_callback: bool) -> string {
+        if type.kind == "pointer" {
+            if type.children.len() == 0 {
+                self.errors.push(
+                    "C pointer has no pointee type")
+                return "RawPtr<u8>"
+            }
+            let inner: BindgenCType = type.children[0]
+            if inner.kind == "function" {
+                let function: string =
+                    self.render_function(inner)
+                return if borrowed_callback {
+                    function
+                } else {
+                    bindgen_function_pointer_to(function)
+                }
+            }
+            var pointee: string =
+                self.render_type(inner, false)
+            if pointee == "unit" { pointee = "u8" }
+            return bindgen_pointer_to(pointee)
+        }
+        if type.kind == "array" {
+            if type.text == "" {
                 self.errors.push(
                     "flexible arrays are unsupported")
                 return "[u8; 0]"
             }
-            return "[{self.c_type(type.slice(0, array))}; {length}]"
+            if type.children.len() == 0 {
+                self.errors.push(
+                    "C array has no element type")
+                return "[u8; 0]"
+            }
+            return "[{self.render_type(type.children[0], false)}; {type.text}]"
         }
-        var stars: int = 0
-        for type.trim().ends_with("*") {
-            type = type.trim()
-            type = type.slice(0, type.len() - 1)
-            stars += 1
+        if type.kind == "function" {
+            return self.render_function(type)
         }
-        var result: string = self.scalar(type)
-        for index: int in 0..stars {
-            if result == "unit" { result = "u8" }
-            result = bindgen_pointer_to(result)
+        var name: string =
+            type.text.replace("const ", "")
+        name = name.replace("volatile ", "")
+        name = name.replace("restrict ", "").trim()
+        if !self.records.contains_key(name) {
+            match self.typedefs.get(name) {
+                some(alias) => {
+                    if alias != name {
+                        if self.resolving_typedefs.contains_key(
+                               name) {
+                            self.errors.push(
+                                "cyclic C typedef involving '{name}'")
+                            return "unit"
+                        }
+                        self.resolving_typedefs[name] = true
+                        let result: string =
+                            self.render_type(
+                                self.parse_type(alias),
+                                borrowed_callback)
+                        self.resolving_typedefs.remove(name)
+                        return result
+                    }
+                }
+                none => {}
+            }
         }
-        return result
+        return self.scalar(name)
+    }
+
+    fn c_type(written: string) -> string {
+        return self.render_type(
+            self.parse_type(written), true)
+    }
+
+    fn function_result(written: string) -> string {
+        let type: BindgenCType = self.parse_type(written)
+        if type.kind != "function" ||
+           type.children.len() == 0 {
+            self.errors.push(
+                "unsupported C function type '{written}'")
+            return "unit"
+        }
+        return self.render_type(type.children[0], false)
     }
 
     // A callback parameter is borrowed for one call and keeps the plain `fn`
     // spelling. Stored C function addresses use a distinct pointer type.
     fn field_type(written: string) -> string {
-        let result: string = self.c_type(written)
-        if result.starts_with("fn(") {
-            return bindgen_function_pointer_to(result)
-        }
-        return result
+        return self.render_type(
+            self.parse_type(written), false)
     }
 
     fn stored_type(written: string) -> string {
-        let result: string = self.c_type(written)
-        if result.starts_with("fn(") {
-            return bindgen_function_pointer_to(result)
-        }
-        return result
+        return self.render_type(
+            self.parse_type(written), false)
     }
 
     fn need(node: BindgenJson) {
@@ -1376,11 +1703,14 @@ fn run_self_bindgen(
             "bindgen: clang returned an invalid JSON AST")
         return 1
     }
+    var type_nodes: List<BindgenJson> = []
     var nodes: List<BindgenJson> = []
     var in_header: bool = false
     match root.get("inner") {
         some(inner) => {
             for node: BindgenJson in inner.items {
+                bindgen_collect_type_nodes(
+                    node, inout type_nodes)
                 let file: string =
                     bindgen_declaration_file(node)
                 if file != "" {
@@ -1396,10 +1726,18 @@ fn run_self_bindgen(
     let generator: BindgenGenerator =
         new BindgenGenerator(
             facts, only, allow_unsupported)
-    for node: BindgenJson in nodes {
+    // Type names form one translation-unit-wide environment. Public symbols
+    // still come only from the requested header, but their types may have been
+    // declared by any header it includes. Records and enums come first so a
+    // later typedef can safely give a tag its public alias.
+    var anonymous_records: Map<string, BindgenJson> = {}
+    var anonymous_enums: Map<string, BindgenJson> = {}
+    for node: BindgenJson in type_nodes {
         let kind: string = node.string("kind")
         let name: string = node.string("name")
-        if kind == "RecordDecl" && name != "" {
+        if kind == "RecordDecl" && name == "" {
+            anonymous_records[node.string("id")] = node
+        } else if kind == "RecordDecl" {
             let record: BindgenRecord =
                 new BindgenRecord(
                     name,
@@ -1421,8 +1759,18 @@ fn run_self_bindgen(
                     generator.records[name] = record
                 }
             }
-        } else if kind == "TypedefDecl" &&
-                  name != "" {
+        } else if kind == "EnumDecl" {
+            if name == "" {
+                anonymous_enums[node.string("id")] = node
+            } else {
+                generator.enums[name] = node
+            }
+        }
+    }
+    for node: BindgenJson in type_nodes {
+        let kind: string = node.string("kind")
+        let name: string = node.string("name")
+        if kind == "TypedefDecl" && name != "" {
             let type: string =
                 bindgen_type_text(node)
             generator.typedefs[name] = type
@@ -1434,6 +1782,24 @@ fn run_self_bindgen(
                     type.slice(
                         space + 1,
                         type.len()).trim()
+                if !generator.records.contains_key(tag) {
+                    let owned: string =
+                        bindgen_owned_tag_id(node)
+                    match anonymous_records.get(owned) {
+                        some(anonymous) => {
+                            generator.records[tag] =
+                                new BindgenRecord(
+                                    name,
+                                    bindgen_name(name, true),
+                                    anonymous.string("tagUsed") ==
+                                        "union",
+                                    anonymous.boolean(
+                                        "completeDefinition"),
+                                    anonymous)
+                        }
+                        none => {}
+                    }
+                }
                 match generator.records.get(tag) {
                     some(record) => {
                         let renamed: string =
@@ -1449,18 +1815,56 @@ fn run_self_bindgen(
                     }
                     none => {}
                 }
+            } else if type.starts_with("enum ") {
+                let tag: string =
+                    type.slice(5, type.len()).trim()
+                if !generator.enums.contains_key(tag) {
+                    let owned: string =
+                        bindgen_owned_tag_id(node)
+                    match anonymous_enums.get(owned) {
+                        some(anonymous) => {
+                            generator.enums[tag] = anonymous
+                        }
+                        none => {}
+                    }
+                }
             }
-        } else if kind == "EnumDecl" &&
-                  name != "" {
-            generator.enums[name] = node
         }
     }
+    var header_type_declarations: int = 0
     if only.keys().len() == 0 {
-        for name: string in generator.records.keys() {
-            generator.needed_records[name] = true
-        }
-        for name: string in generator.enums.keys() {
-            generator.needed_enums[name] = true
+        for node: BindgenJson in nodes {
+            let kind: string = node.string("kind")
+            let name: string = node.string("name")
+            if kind == "TypedefDecl" {
+                let type: string = bindgen_type_text(node)
+                if type.starts_with("struct ") ||
+                   type.starts_with("union ") {
+                    let space: int = bindgen_find(type, " ")
+                    let tag: string =
+                        type.slice(space + 1, type.len()).trim()
+                    if generator.records.contains_key(tag) {
+                        generator.needed_records[tag] = true
+                        header_type_declarations += 1
+                    }
+                } else if type.starts_with("enum ") {
+                    let tag: string =
+                        type.slice(5, type.len()).trim()
+                    if generator.enums.contains_key(tag) {
+                        generator.needed_enums[tag] = true
+                        header_type_declarations += 1
+                    }
+                }
+                continue
+            }
+            if name == "" { continue }
+            if kind == "RecordDecl" {
+                generator.needed_records[name] = true
+                header_type_declarations += 1
+            } else if kind == "EnumDecl" {
+                generator.needed_enums[name] = true
+                header_type_declarations += 1
+            }
         }
     }
     var selected: List<BindgenJson> = []
@@ -1523,15 +1927,8 @@ fn run_self_bindgen(
         if kind == "VarDecl" {
             generator.need(node)
         } else {
-            let signature: string =
-                bindgen_type_text(node)
-            let open: int =
-                bindgen_function_arguments_open(
-                    signature)
-            if open >= 0 {
-                generator.c_type(
-                    signature.slice(0, open))
-            }
+            generator.function_result(
+                bindgen_type_text(node))
         }
         match node.get("inner") {
             some(parameters) => {
@@ -1605,14 +2002,18 @@ fn run_self_bindgen(
             }
             match record_output.get(beans) {
                 some(rendered) => {
+                    var unsupported_names: List<string> =
+                        unsupported_records.keys()
+                    unsupported_names.sort()
                     for unsupported: string in
-                        unsupported_records.keys() {
+                        unsupported_names {
                         if bindgen_contains_identifier(
                                rendered, unsupported) {
                             unsupported_records[beans] = true
                             generator.errors.push(
                                 "record '{beans}' depends on unsupported record '{unsupported}'")
                             changed_records = true
+                            break
                         }
                     }
                 }
@@ -1773,18 +2174,9 @@ fn run_self_bindgen(
             }
             declaration_output =
                 "{declaration_output})"
-            let signature: string =
-                bindgen_type_text(node)
-            let open: int =
-                bindgen_function_arguments_open(
-                    signature)
             let result: string =
-                generator.stored_type(
-                    if open < 0 {
-                        "void"
-                    } else {
-                        signature.slice(0, open)
-                    })
+                generator.function_result(
+                    bindgen_type_text(node))
             if result != "unit" {
                 declaration_output =
                     "{declaration_output} -> {result}"
@@ -1831,8 +2223,7 @@ fn run_self_bindgen(
         emitted_declarations
     if produced == 0 &&
        (bindable != 0 ||
-        generator.records.keys().len() != 0 ||
-        generator.enums.keys().len() != 0) &&
+        header_type_declarations != 0) &&
        only.keys().len() == 0 {
         generator.errors.push(
             "no declaration of {header} could be bound, so the output would hold nothing")

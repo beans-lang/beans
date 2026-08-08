@@ -2453,7 +2453,11 @@ globals, and returns.
 selected target's JSON AST. It handles typedefs, opaque and complete records,
 unions, arrays, enums, globals, TLS, functions, and function pointers. C
 nullability annotations (`_Nullable`, `_Nonnull`, `_Null_unspecified`) are
-ignored for type mapping.
+ignored for type mapping. Public symbols still come only from the requested
+header, while types may come from any header it includes. Nested function
+pointers keep each level: only a callback passed directly to an imported
+function is borrowed as `fn(...)`; stored or nested callback addresses use
+`CFunctionPtr<F>`.
 
 The **common C scalar types** are mapped from what Clang reports for the
 selected target, never from the host or from the pointer width. `long` is 8
@@ -2474,7 +2478,7 @@ out to be unbindable is an error rather than a file holding one comment.
 
 Constructs whose ABI bindgen cannot reproduce exactly are refused: varargs,
 bitfields, flexible arrays, vectors, `_Atomic` members, packed or explicitly
-aligned records, `#pragma pack` layouts, anonymous records, non-default
+aligned records, `#pragma pack` layouts, anonymous record members, non-default
 calling conventions and other ABI attributes, and C++ declarations. Types with
 no exact Beans equivalent — `long double`, 128-bit integers, `_Complex`,
 `_BitInt`, extended and decimal floating types — are refused for the same
