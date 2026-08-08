@@ -119,7 +119,7 @@ $(BIN): $(SELF_HOST_SRC) $(RUNTIME_COPY)
 
 endif
 
-.PHONY: stage0 run clean install test test-ci test-core test-stage0 test-quick test-frontend test-semantics test-runtime test-ffi test-platform platform-status test-platform-manifest test-portable-int128 test-compiler-arch-objects test-stage0-windows test-windows-source-bootstrap test-musl-hosted test-armv6hf-hosted test-sanitize test-release-package test-install-release test-release-completeness test-clean-bootstrap test-c-abi-tier1 test-mir-stage0 test-barq-core fuzz-smoke fuzz-differential fuzz-differential-smoke test-linux test-linux-arch test-linux-hosted test-windows test-windows-native test-windows-native-i686 test-windows-native-arm64 test-windows-arch test-windows-hosted test-encoding-targets test-encoding-windows access-score self-host-next test-self-host test-self-host-full test-bootstrap bench-compiler bench-quick bench-full bench-verify bench-profile bench-compare
+.PHONY: stage0 run clean install test test-ci test-bootstrap-gitlink test-core test-stage0 test-quick test-frontend test-semantics test-runtime test-ffi test-platform platform-status test-platform-manifest test-portable-int128 test-compiler-arch-objects test-stage0-windows test-windows-source-bootstrap test-musl-hosted test-armv6hf-hosted test-sanitize test-release-package test-install-release test-release-completeness test-clean-bootstrap test-c-abi-tier1 test-mir-stage0 test-barq-core fuzz-smoke fuzz-differential fuzz-differential-smoke test-linux test-linux-arch test-linux-hosted test-windows test-windows-native test-windows-native-i686 test-windows-native-arm64 test-windows-arch test-windows-hosted test-encoding-targets test-encoding-windows access-score self-host-next test-self-host test-self-host-full test-bootstrap bench-compiler bench-quick bench-full bench-verify bench-profile bench-compare
 stage0: $(BOOTSTRAP_BIN)
 
 run: $(BIN)
@@ -146,6 +146,11 @@ else
 	@echo "stage 0 is not checked out, so the differential gates against it did"
 	@echo "not run. This is expected on a fork pull request."
 endif
+
+# This needs network access to the private bootstrap repository, so CI runs it
+# explicitly instead of including it in the normal local test gate.
+test-bootstrap-gitlink:
+	bash ./test/bootstrap_gitlink.sh
 
 # bench_compare.sh exercises the comparator binary, so a clean checkout's
 # `make test` must build it first rather than assume an earlier bench run left
