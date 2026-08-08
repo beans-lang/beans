@@ -52,6 +52,40 @@ The core correctness check compares interpreter output with native output over
 the example suite. Bootstrap validation requires stage 2 and stage 3 to emit
 byte-identical compiler IR.
 
+## Editor tooling
+
+`beansc lsp` and `beansc debug-adapter` are the language server and the
+debugger. Both live in the self-hosted compiler and both answer from the
+compiler's own checked view of a project — never from source text.
+
+- `compiler/beans/semantic.b` — the semantic workspace: one checked snapshot per
+  project revision, plus the indexes every editor query reads. Symbol identity
+  comes from the compiler: canonical package symbols for declarations, owner
+  plus name for members, and the expression checker's binding ids for locals.
+- `compiler/beans/completion.b` — semantic completion, including the built-in
+  member table, which is probed through the checker's own `builtin_method` so it
+  cannot offer something that would not type-check.
+- `compiler/beans/lsp_server.b` — the LSP request handlers and the capability
+  list. `compiler/beans/lsp.b` holds the JSON, framing and position helpers.
+- `compiler/beans/debug.b`, `compiler/beans/debug_adapter.b` — the DAP server.
+  The interpreter calls into it at every statement and every call.
+
+Two rules keep this honest:
+
+- **No text scanning for semantic answers.** Positions come from tokens the
+  parser recorded, names from what the resolver settled, types from the checked
+  HIR. A query returns a symbol, not a spelling.
+- **A feature is not claimed until an end-to-end test proves it.** The relevant
+  tests are `test/lsp_semantic.sh` (symbol identity, scopes, completion),
+  `test/lsp_navigation.sh` (the real LSP wire), `test/dap.sh` (a full
+  launch-to-exit debug session) and `test/native_debug.sh` (what `--debug`
+  really produces, and what it does not).
+
+`beansc sem-probe <mode> <file.b>:<line>:<col>` prints the semantic index as
+plain text — `symbol`, `refs`, `visible`, `members`, `complete`, `hierarchy`,
+`builds` — which is how the identity tests assert on exact symbols instead of on
+rendered editor output.
+
 ## Project layout
 
 - `compiler/beans/` — self-hosted compiler
@@ -62,6 +96,10 @@ byte-identical compiler IR.
 - `spec/` — language specification
 - `test/` — test scripts and fixtures
 - `examples/` — runnable Beans programs
+
+The editor clients live in a separate repository,
+[beans-lang/editors](https://github.com/beans-lang/editors). They are thin: a
+missing editor feature is a missing compiler capability.
 
 Keep changes focused, include tests for behavior changes, and avoid unrelated
 formatting in the same commit.

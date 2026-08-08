@@ -1219,6 +1219,11 @@ class TreeInterpreter {
     encoding_handles: Map<string, int>
     encoding_error: string
     stored_callbacks: Map<int, TreeStoredCallback>
+    // Set only by `beansc debug-adapter`. When present, every statement asks
+    // it whether to stop, every call tells it about the frame, and the
+    // program's own output is forwarded to the client instead of being
+    // written to the protocol stream.
+    debugger: Option<DebugSession>
 
     fn init(program: HirProgram,
             move arguments: List<string>) {
@@ -1235,6 +1240,7 @@ class TreeInterpreter {
         self.encoding_handles = {}
         self.encoding_error = ""
         self.stored_callbacks = {}
+        self.debugger = none
     }
 
     fn fail(node: HirNode, message: string) -> TreeValue {
@@ -1248,6 +1254,14 @@ class TreeInterpreter {
             self.failed = true
             self.panic_text =
                 "runtime panic at {node.line}:{col}: {message}"
+            // Stop with the frames still standing, so a person can see what
+            // the program was doing when it failed.
+            match self.debugger {
+                some(session) => {
+                    session.at_panic(self.panic_text)
+                }
+                none => {}
+            }
         }
         return TreeValue.unit()
     }
@@ -3088,6 +3102,23 @@ class TreeInterpreter {
                 } else {
                     tree_value_text(arguments[0])
                 }
+            let to_error: bool =
+                node.resolved == "std.io.eprintln" ||
+                node.resolved == "std.io.eprint"
+            let newline: bool =
+                node.resolved == "std.io.println" ||
+                node.resolved == "std.io.eprintln"
+            match self.debugger {
+                some(session) => {
+                    // stdout is the protocol stream under the debugger, so
+                    // the program's own output travels as an output event.
+                    session.program_output(
+                        if newline { "{shown}\n" } else { shown },
+                        if to_error { "stderr" } else { "stdout" })
+                    return TreeValue.unit()
+                }
+                none => {}
+            }
             if node.resolved == "std.io.println" {
                 io.println(shown)
             } else if node.resolved ==
@@ -8733,6 +8764,15 @@ class TreeInterpreter {
         if self.failed {
             return TreeExec.stopped("panic")
         }
+        match self.debugger {
+            some(session) => {
+                session.at_statement(node, frame)
+                if session.terminated || session.disconnected {
+                    return TreeExec.stopped("panic")
+                }
+            }
+            none => {}
+        }
         if node.kind == "block" ||
            node.kind == "unsafe" {
             let block: HirNode =
@@ -10181,6 +10221,12 @@ class TreeInterpreter {
                     argument)
             }
         }
+        match self.debugger {
+            some(session) => {
+                session.push_frame(function, frame)
+            }
+            none => {}
+        }
         var result: TreeValue = TreeValue.unit()
         for statement: HirNode in function.body {
             let flow: TreeExec =
@@ -10192,6 +10238,10 @@ class TreeInterpreter {
             if flow.kind != "next" { break }
         }
         self.run_defers(frame)
+        match self.debugger {
+            some(session) => { session.pop_frame() }
+            none => {}
+        }
         return result
     }
 

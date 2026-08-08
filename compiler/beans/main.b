@@ -5,6 +5,11 @@ import std.io
 import std.os
 import std.path
 
+// This text is shared surface: `test/cli_parity.sh` compares it byte for
+// byte against the stage-0 bootstrap, so a CLI drift can never sit in one
+// compiler unnoticed. Anything the bootstrap does not have — `--debug`,
+// `debug-adapter`, `sem-probe` — therefore cannot be listed here, and is
+// documented in README.md instead until the bootstrap grows it too.
 fn print_usage() {
     io.eprintln("usage: beansc <lex|parse|check|mir|run> <file.b>...")
     io.eprintln("       beansc build [options] <file.b> [-o out]")
@@ -173,6 +178,26 @@ fn main() {
         if status != 0 { os.exit(status) }
         return
     }
+    if command == "debug-adapter" {
+        if args.len() != 1 {
+            io.eprintln("usage: beansc debug-adapter")
+            os.exit(2)
+        }
+        let status: int = run_debug_adapter()
+        if status != 0 { os.exit(status) }
+        return
+    }
+    if command == "sem-probe" {
+        if args.len() != 3 {
+            io.eprintln(
+                "usage: beansc sem-probe <mode> <file.b>:<line>:<col>")
+            os.exit(2)
+        }
+        let status: int =
+            run_semantic_probe(args[1], args[2])
+        if status != 0 { os.exit(status) }
+        return
+    }
     if command == "bindgen" {
         let status: int = run_self_bindgen(args)
         if status != 0 { os.exit(status) }
@@ -251,6 +276,7 @@ fn main() {
     var runtime_profile: string = "full"
     var runtime_explicit: bool = false
     var release: bool = false
+    var debug_build: bool = false
     var lto: bool = false
     var sysroot: string = ""
     var compiler_path: string = ""
@@ -274,6 +300,8 @@ fn main() {
             passthrough = true
         } else if args[index] == "--release" {
             release = true
+        } else if args[index] == "--debug" {
+            debug_build = true
         } else if args[index] == "--lto" {
             lto = true
         } else if args[index] == "--locked" {
@@ -487,6 +515,11 @@ fn main() {
     let public_diagnostics: bool =
         command == "check" || command == "mir" ||
         command == "run" || command == "build"
+    if release && debug_build {
+        io.eprintln(
+            "error: --release and --debug ask for opposite builds; pick one")
+        os.exit(2)
+    }
     if command == "load" || command == "resolve" || command == "hir" ||
        command == "check" || command == "layout" ||
        command == "mir" || command == "llvm" ||
@@ -764,7 +797,7 @@ fn main() {
                                     new NativeBuildDriver(
                                         selected, cpu_name,
                                         runtime_profile,
-                                        release, lto,
+                                        release, debug_build, lto,
                                         sysroot, compiler_path,
                                         linker,
                                         loader.link_arguments(

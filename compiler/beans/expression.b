@@ -3365,8 +3365,24 @@ class ExpressionChecker {
             if lexer.errors.len() == 0 &&
                parser.errors.len() == 0 {
                 self.qualify_unresolved_types(expression)
+                node.interpolations.push(expression)
                 let piece: HirNode = self.check_expression(
                     expression, no_hir_type())
+                // Editor queries answer inside interpolations too, so the
+                // piece keeps a handle on the literal it came from, moved
+                // onto the file position its bytes occupy.
+                //
+                // This happens *after* checking, and it matters. A piece is
+                // re-lexed as its own little source, so it starts at line 1,
+                // and the HIR copies whatever position it is checked at — on
+                // into diagnostics and into the position a runtime panic
+                // prints. Stage 0 has no such fix-up, so moving the node
+                // first made the two compilers disagree about where
+                // `"{b.get_u64(...)}"` blew up, and test/self_host.sh said
+                // so. The syntax tree is the editor's view and can be
+                // corrected; the checked tree is shared surface and cannot.
+                ast_place_interpolation(
+                    expression, node.line, node.col + start - 1)
                 // Stage 0 refuses non-printable pieces at check time;
                 // without this gate the tree interpreter printed a
                 // placeholder and the LLVM emitter refused late, so the

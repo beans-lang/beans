@@ -9,8 +9,9 @@
 # object, and checks out nothing.
 #
 # Needs the network and read access to the private bootstrap repository, so it
-# is not part of `make test`. CI runs it in the stage-0 preflight, where the
-# checkout already has both.
+# is not part of `make test`. It has its own target, `make test-gitlink`, which
+# is what CI runs in the stage-0 preflight, where the checkout already has
+# both.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

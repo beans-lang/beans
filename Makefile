@@ -215,6 +215,10 @@ else
 	./test/parse_recovery.sh
 	./test/lsp_probe.sh
 	./test/lsp_server.sh
+	./test/lsp_semantic.sh
+	./test/lsp_navigation.sh
+	./test/dap.sh
+	./test/native_debug.sh
 	./test/stdlib_source.sh
 	bash ./test/api_names.sh
 	./test/fs_source.sh
@@ -383,6 +387,10 @@ test-core: $(BIN)
 	bash ./test/default_eval_order.sh
 	./test/lsp_probe.sh
 	./test/lsp_server.sh
+	./test/lsp_semantic.sh
+	./test/lsp_navigation.sh
+	./test/dap.sh
+	./test/native_debug.sh
 	./test/fs_source.sh
 	./test/reader_source.sh
 	./test/inline_options.sh
@@ -562,6 +570,14 @@ test-self-host-full: $(BIN) $(BOOTSTRAP_BIN)
 	bash ./test/self_host_full.sh
 
 endif
+
+# Asks the bootstrap remote what its main is, so it needs the network and read
+# access to a private repository — that is why it is not in `make test`, and
+# why CI calls it on its own. It also stays out of test-bootstrap: the
+# container gates bind-mount the tree as another user, and git refuses a
+# repository it does not think is yours.
+test-gitlink:
+	bash ./test/bootstrap_gitlink.sh
 
 # Both sides of this comparison are the self-hosted compiler, so it needs no
 # stage 0.

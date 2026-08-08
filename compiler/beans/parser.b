@@ -114,6 +114,15 @@ class Parser {
         return new AstNode(kind, value, token.line, token.col)
     }
 
+    // The node anchors where the grammar needs it — a declaration at its
+    // keyword, a member access at its dot — while the identifier a reader
+    // points at lives here.
+    fn named(result: AstNode, name: Token) -> AstNode {
+        result.name_line = name.line
+        result.name_col = name.col
+        return result
+    }
+
     fn finish_statement() {
         if self.recovered_statement_end {
             self.recovered_statement_end = false
@@ -445,13 +454,16 @@ class Parser {
 
     fn parse_import() -> AstNode {
         let start: Token = self.expect("import", "expected import")
+        let path_start: Token = self.current()
         var import_path: string = self.parse_import_segment()
         for self.check(".") || self.check("/") {
             let separator: string = self.advance().text
             let part: string = self.parse_import_segment()
             import_path = "{import_path}{separator}{part}"
         }
-        let result: AstNode = self.node("import", import_path, start)
+        let result: AstNode =
+            self.named(
+                self.node("import", import_path, start), path_start)
         if self.match_token("as") {
             let alias: Token =
                 self.expect("ident", "expected import alias")
@@ -495,7 +507,8 @@ class Parser {
     fn parse_function() -> AstNode {
         let start: Token = self.expect("fn", "expected fn")
         let name: Token = self.expect("ident", "expected function name")
-        let function: AstNode = self.node("fn", name.text, start)
+        let function: AstNode =
+            self.named(self.node("fn", name.text, start), name)
         self.parse_generic_parameters(function)
         self.expect("(", "expected '('")
         self.skip_newlines()
@@ -562,7 +575,8 @@ class Parser {
     fn parse_type_declaration() -> AstNode {
         let start: Token = self.advance()
         let name: Token = self.expect("ident", "expected type name")
-        let declaration: AstNode = self.node(start.kind, name.text, start)
+        let declaration: AstNode =
+            self.named(self.node(start.kind, name.text, start), name)
         self.parse_generic_parameters(declaration)
         if self.check(":") {
             self.advance()
@@ -710,7 +724,15 @@ class Parser {
             }
             self.skip_newlines()
         }
-        self.expect("\}", "expected '\}'")
+        let closed: bool = self.check("\}")
+        let close: Token = self.expect("\}", "expected '\}'")
+        if closed {
+            declaration.end_line = close.line
+            declaration.end_col = close.col
+        } else {
+            declaration.end_line = ast_open_end()
+            declaration.end_col = ast_open_end()
+        }
         self.finish_statement()
         return declaration
     }
@@ -773,7 +795,18 @@ class Parser {
             block.add(self.parse_statement())
             self.skip_newlines()
         }
-        self.expect("\}", "expected '\}'")
+        let closed: bool = self.check("\}")
+        let close: Token = self.expect("\}", "expected '\}'")
+        if closed {
+            block.end_line = close.line
+            block.end_col = close.col
+        } else {
+            // Unterminated while someone is still typing. The scope has to
+            // run past the cursor, or the block a person is writing inside
+            // would not be found and its locals would go missing.
+            block.end_line = ast_open_end()
+            block.end_col = ast_open_end()
+        }
         return block
     }
 
@@ -849,7 +882,8 @@ class Parser {
     fn parse_local() -> AstNode {
         let start: Token = self.advance()
         let name: Token = self.expect("ident", "expected local name")
-        let local: AstNode = self.node(start.kind, name.text, start)
+        let local: AstNode =
+            self.named(self.node(start.kind, name.text, start), name)
         if self.match_token(":") {
             local.add(self.parse_type())
         } else if self.check("=") {
@@ -1107,6 +1141,9 @@ class Parser {
                 let call: AstNode =
                     self.node("call", "", opening)
                 call.add(expression)
+                // parse_arguments records the closing paren on the node:
+                // signature help needs the argument list's extent to know
+                // which call a cursor sits inside.
                 self.parse_arguments(call)
                 expression = call
             } else if self.check(".") {
@@ -1130,7 +1167,9 @@ class Parser {
                         self.recovered_statement_end = true
                     }
                 }
-                let field: AstNode = self.node("field", field_name, dot)
+                let field: AstNode =
+                    self.named(
+                        self.node("field", field_name, dot), name)
                 field.add(expression)
                 expression = field
             } else if self.check("[") {
@@ -1184,7 +1223,15 @@ class Parser {
             self.skip_newlines()
         }
         self.allow_initializer = saved
-        self.expect(")", "expected ')'")
+        let closed: bool = self.check(")")
+        let close: Token = self.expect(")", "expected ')'")
+        if closed {
+            target.end_line = close.line
+            target.end_col = close.col
+        } else {
+            target.end_line = ast_open_end()
+            target.end_col = ast_open_end()
+        }
     }
 
     fn parse_initializer(type_name: AstNode) -> AstNode {
