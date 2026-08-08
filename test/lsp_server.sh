@@ -187,3 +187,62 @@ print("ok lsp server: init, overlay, diagnostics, hover, signature, completion, 
       "definition, references, symbols, semantic tokens, rename, close, malformed "
       "input, partial source, multi-package resolution")
 PY
+
+# ---------------------------------------------------------------------------
+# The command line a client actually uses
+# ---------------------------------------------------------------------------
+# `--stdio` is not optional politeness: vscode-languageclient appends it for
+# TransportKind.stdio, so VS Code runs `beansc lsp --stdio` and never asks.
+# Refusing it made the server print its usage and exit 2 before reading a
+# byte, which surfaced to the user as "connection got disposed" — a message
+# about the symptom, four layers away from the cause. Every test here had been
+# spelling `beansc lsp`, which is the one form a real client does not send.
+echo "checking the argv a client really sends"
+
+bin=${BEANSC:-./build/beansc}
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+
+handshake() { # <extra argv...>  -> prints the server's stdout
+    local body='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}'
+    # Measured, never guessed: a Content-Length that is off by one leaves the
+    # server waiting for bytes that never come, and the test would then pass
+    # or fail for the wrong reason.
+    printf 'Content-Length: %d\r\n\r\n%s' "${#body}" "$body" |
+        "$bin" lsp "$@" 2>"$work/err"
+}
+
+for argv in "" "--stdio"; do
+    # shellcheck disable=SC2086
+    out=$(handshake $argv) || true
+    case "$out" in
+    *'"capabilities"'*) ;;
+    *)
+        echo "FAIL: 'beansc lsp $argv' did not answer initialize." >&2
+        echo "  stdout: ${out:-<empty>}" >&2
+        echo "  stderr: $(cat "$work/err")" >&2
+        exit 1
+        ;;
+    esac
+done
+
+# A transport this server does not have must be refused by name, not accepted
+# and then silently unused — a client waiting on a socket nobody opened hangs.
+for bad in --node-ipc --socket=1234 --pipe=/tmp/x --port=9000; do
+    if "$bin" lsp "$bad" </dev/null >"$work/out" 2>"$work/err"; then
+        echo "FAIL: 'beansc lsp $bad' should be refused" >&2
+        exit 1
+    fi
+    grep -q "stdio only" "$work/err" ||
+        { echo "FAIL: refusing $bad should say why: $(cat "$work/err")" >&2; exit 1; }
+done
+
+# And an argument that means nothing still gets the usage line.
+if "$bin" lsp --nonsense </dev/null >"$work/out" 2>"$work/err"; then
+    echo "FAIL: an unknown lsp flag should be refused" >&2
+    exit 1
+fi
+grep -q -- "--stdio" "$work/err" ||
+    { echo "FAIL: the usage should name the flag it accepts" >&2; exit 1; }
+
+echo "ok argv: --stdio accepted, other transports refused by name"

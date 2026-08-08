@@ -160,8 +160,29 @@ fn main() {
         return
     }
     if command == "lsp" {
-        if args.len() != 1 {
-            io.eprintln("usage: beansc lsp")
+        // `--stdio` is what a client says to pick a transport, and clients
+        // send it without asking: vscode-languageclient appends it for
+        // TransportKind.stdio, so VS Code runs `beansc lsp --stdio`. Refusing
+        // it meant the server printed its usage and exited 2 before reading a
+        // byte, which reaches the user as "connection got disposed" — a
+        // message about the symptom, four layers from the cause.
+        //
+        // Stdio is the only transport this server has, so the flag is
+        // accepted and means nothing. The others are named and refused, so a
+        // client asking for a transport that does not exist is told plainly
+        // rather than left with a socket nobody is listening on.
+        for index: int in 1..args.len() {
+            let flag: string = args[index]
+            if flag == "--stdio" { continue }
+            if flag == "--node-ipc" || flag == "--socket" ||
+               flag.starts_with("--socket=") ||
+               flag.starts_with("--pipe") ||
+               flag.starts_with("--port") {
+                io.eprintln(
+                    "beansc lsp speaks stdio only, and was asked for '{flag}'")
+                os.exit(2)
+            }
+            io.eprintln("usage: beansc lsp [--stdio]")
             os.exit(2)
         }
         let status: int = run_self_lsp()
