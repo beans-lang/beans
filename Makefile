@@ -555,7 +555,6 @@ test-self-host: $(BOOTSTRAP_BIN) build/beansc-next
 # stage 1 (built by C++) compiles the compiler; the result must
 # answer like the reference and re-emit the compiler byte-identically
 test-bootstrap: $(BOOTSTRAP_BIN) $(STAGE1_BIN)
-	bash ./test/bootstrap_gitlink.sh
 	BEANSC0="./$(BOOTSTRAP_BIN)" \
 	BEANSC_STAGE1="./$(STAGE1_BIN)" \
 	bash ./test/bootstrap.sh
@@ -564,6 +563,14 @@ test-self-host-full: $(BIN) $(BOOTSTRAP_BIN)
 	bash ./test/self_host_full.sh
 
 endif
+
+# Asks the bootstrap remote what its main is, so it needs the network and read
+# access to a private repository — that is why it is not in `make test`, and
+# why CI calls it on its own. It also stays out of test-bootstrap: the
+# container gates bind-mount the tree as another user, and git refuses a
+# repository it does not think is yours.
+test-gitlink:
+	bash ./test/bootstrap_gitlink.sh
 
 # Both sides of this comparison are the self-hosted compiler, so it needs no
 # stage 0.
