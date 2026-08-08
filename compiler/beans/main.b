@@ -160,29 +160,7 @@ fn main() {
         return
     }
     if command == "lsp" {
-        // `--stdio` is what a client says to pick a transport, and clients
-        // send it without asking: vscode-languageclient appends it for
-        // TransportKind.stdio, so VS Code runs `beansc lsp --stdio`. Refusing
-        // it meant the server printed its usage and exited 2 before reading a
-        // byte, which reaches the user as "connection got disposed" — a
-        // message about the symptom, four layers from the cause.
-        //
-        // Stdio is the only transport this server has, so the flag is
-        // accepted and means nothing.
-        //
-        // Anything else still gets `usage: beansc lsp`, spelled exactly as
-        // stage 0 spells it. test/cli_parity.sh runs `beansc lsp extra`
-        // against both compilers and compares stderr byte for byte, so this
-        // line is shared surface: saying "[--stdio]" here, however much
-        // friendlier, breaks the gate. The one divergence left is that this
-        // compiler accepts --stdio and stage 0 does not, which is the fix
-        // itself and which cli_parity does not exercise.
-        for index: int in 1..args.len() {
-            if args[index] == "--stdio" { continue }
-            io.eprintln("usage: beansc lsp")
-            os.exit(2)
-        }
-        let status: int = run_self_lsp()
+        let status: int = run_self_lsp(args)
         if status != 0 { os.exit(status) }
         return
     }

@@ -11,6 +11,51 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # What kind of change is this? Editor tooling reads a checked program and
+  # prints JSON — it cannot reach codegen, the runtime or a target model — so
+  # a change confined to it does not need the platform matrix underneath. It
+  # does need the LSP gate, and it still gets every preflight, which is what
+  # actually catches a compile break.
+  #
+  # Anything outside that set, including main.b, is a compiler change and runs
+  # the lot. The `full-ci` label forces the lot regardless, for when the
+  # judgement above turns out to be wrong.
+  scope:
+    name: scope
+    runs-on: ubuntu-latest
+    outputs:
+      editor_only: ${{ steps.decide.outputs.editor_only }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Which files does this change touch?
+        id: decide
+        env:
+          FORCED: ${{ contains(github.event.pull_request.labels.*.name, 'full-ci') }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" != "pull_request" ] || [ "$FORCED" = "true" ]; then
+            echo "editor_only=false" >> "$GITHUB_OUTPUT"
+            echo "running everything: $( [ "$FORCED" = true ] && echo 'full-ci label' || echo 'not a pull request' )"
+            exit 0
+          fi
+          base=$(git merge-base "origin/${{ github.base_ref }}" HEAD)
+          changed=$(git diff --name-only "$base" HEAD)
+          echo "changed files:"; echo "$changed" | sed 's/^/  /'
+          # Every path that is editor tooling and nothing else.
+          outside=$(echo "$changed" | grep -vE \
+            '^(compiler/beans/(lsp|lsp_server|semantic|semantic_probe|completion|debug|debug_adapter)\.b|test/(lsp_[a-z]+|dap|native_debug)\.sh|test/cases/(semantic|debug)/|editors/)' \
+            || true)
+          if [ -z "$outside" ]; then
+            echo "editor_only=true" >> "$GITHUB_OUTPUT"
+            echo "editor tooling only: the platform matrix is skipped"
+          else
+            echo "editor_only=false" >> "$GITHUB_OUTPUT"
+            echo "not editor-only, because of:"; echo "$outside" | sed 's/^/  /'
+          fi
+
   # Four parallel preflight depths. Each fails at its own cost, so the
   # cheapest reproducer reports first: a workflow or coverage-map mistake in
   # under a minute, a stage-0 semantic break in a few minutes, compiler
@@ -182,10 +227,73 @@ jobs:
 
   # Native Linux/x86-64 is split by failure area too. The compiler build is
   # cheap compared with the gates, and three parallel jobs report a frontend,
+  # The editor gate. Every LSP and DAP suite, over the real protocol wire,
+  # on every change — an editor-only change skips the platform matrix but
+  # never skips this. It waits only on the two cheap preflights, so a broken
+  # server reports in minutes rather than after the full chain.
+  #
+  # cli_parity is here too: `beansc lsp` argument handling is compared byte
+  # for byte against stage 0, and that comparison is how the friendlier usage
+  # line got caught.
+  lsp-gate:
+    name: lsp gate (editor tooling)
+    needs: [preflight-validate, preflight-stage0]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: ${{ secrets.BOOTSTRAP_TOKEN != '' && 'recursive' || '' }}
+          token: ${{ secrets.BOOTSTRAP_TOKEN || github.token }}
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang lld llvm file binutils ripgrep
+
+      - name: Toolchain fingerprint
+        run: |
+          echo "CLANG_VER=$(clang++ --version | head -1 | tr -c 'A-Za-z0-9.' '-')" >> "$GITHUB_ENV"
+
+      - name: Restore preflight compiler build
+        uses: actions/cache@v4
+        with:
+          path: build
+          key: beansc-${{ runner.os }}-${{ runner.arch }}-${{ env.CLANG_VER }}-${{ hashFiles('compiler/**', 'Makefile', 'runtime/**', 'stdlib/**') }}
+
+      - name: Build the compiler
+        run: make
+
+      - name: Language server
+        run: |
+          ./test/lsp_probe.sh
+          ./test/lsp_server.sh
+          ./test/lsp_semantic.sh
+          ./test/lsp_navigation.sh
+
+      - name: Debugger
+        run: |
+          ./test/dap.sh
+          ./test/native_debug.sh
+
+      - name: Recovery and documentation
+        run: |
+          ./test/parse_recovery.sh
+          ./test/docs.sh
+
+      - name: CLI parity with stage 0
+        run: |
+          if [ -f compiler/bootstrap/main.cpp ]; then
+            bash ./test/cli_parity.sh
+          else
+            echo "stage 0 absent (fork PR): the parity gate runs where it exists"
+          fi
+
   # sanitizer/ABI, or bootstrap/target failure much sooner than one long chain.
   linux-x86_64:
     name: core gate (linux/x86-64, native)
-    needs: [preflight-validate, preflight-stage0, preflight-parity, preflight-smoke]
+    needs: [scope, preflight-validate, preflight-stage0, preflight-parity, preflight-smoke]
+    if: needs.scope.outputs.editor_only != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -241,7 +349,8 @@ jobs:
 
   linux-x86_64-safety:
     name: safety + ABI gate (linux/x86-64, native)
-    needs: [preflight-validate, preflight-stage0, preflight-parity, preflight-smoke]
+    needs: [scope, preflight-validate, preflight-stage0, preflight-parity, preflight-smoke]
+    if: needs.scope.outputs.editor_only != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -306,7 +415,8 @@ jobs:
 
   linux-x86_64-bootstrap:
     name: bootstrap + targets gate (linux/x86-64, native)
-    needs: [preflight-validate, preflight-stage0, preflight-parity, preflight-smoke]
+    needs: [scope, preflight-validate, preflight-stage0, preflight-parity, preflight-smoke]
+    if: needs.scope.outputs.editor_only != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -355,7 +465,8 @@ jobs:
   # source-bootstrap loops.
   linux-cross:
     name: linux cross + hosted (${{ matrix.arch }})
-    needs: [preflight-validate, preflight-stage0, preflight-parity, preflight-smoke]
+    needs: [scope, preflight-validate, preflight-stage0, preflight-parity, preflight-smoke]
+    if: needs.scope.outputs.editor_only != 'true'
     runs-on: ubuntu-latest
     # One arch lane plus its hosted loop measures 5-8 minutes on a dev
     # machine; a runner with apt and a cold build lands near 30-45. 90 keeps
@@ -403,7 +514,8 @@ jobs:
   linux-cross-exhaustive:
     name: linux cross + hosted (${{ matrix.arch }})
     if: github.event_name != 'pull_request'
-    needs: [preflight-validate, preflight-stage0, preflight-parity, preflight-smoke]
+    needs: [scope, preflight-validate, preflight-stage0, preflight-parity, preflight-smoke]
+    if: needs.scope.outputs.editor_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     strategy:
@@ -451,7 +563,8 @@ jobs:
   linux-armv6hf:
     name: hosted gate (linux/armv6 hard-float, Raspbian)
     if: github.event_name != 'pull_request'
-    needs: [preflight-validate, preflight-stage0, preflight-parity, preflight-smoke]
+    needs: [scope, preflight-validate, preflight-stage0, preflight-parity, preflight-smoke]
+    if: needs.scope.outputs.editor_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 240
     steps:
@@ -493,7 +606,8 @@ jobs:
   barq-core:
     name: Barq Core C API (linux/x86-64)
     if: github.event_name != 'pull_request'
-    needs: [preflight-validate, preflight-stage0, preflight-parity, preflight-smoke]
+    needs: [scope, preflight-validate, preflight-stage0, preflight-parity, preflight-smoke]
+    if: needs.scope.outputs.editor_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -520,7 +634,8 @@ jobs:
   # Linux/arm64 gets the same required gate as x86-64.
   linux-arm64:
     name: full gate (linux/arm64, native)
-    needs: [preflight-validate, preflight-stage0, preflight-parity, preflight-smoke]
+    needs: [scope, preflight-validate, preflight-stage0, preflight-parity, preflight-smoke]
+    if: needs.scope.outputs.editor_only != 'true'
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
@@ -572,7 +687,8 @@ jobs:
   # macOS owns the kqueue backend, so its full differential suite must gate too.
   macos-arm64:
     name: differential gate (macos/arm64)
-    needs: [preflight-validate, preflight-stage0, preflight-parity, preflight-smoke]
+    needs: [scope, preflight-validate, preflight-stage0, preflight-parity, preflight-smoke]
+    if: needs.scope.outputs.editor_only != 'true'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
@@ -640,7 +756,8 @@ jobs:
   docker-linux:
     name: docker container gate
     if: github.event_name != 'pull_request'
-    needs: [preflight-validate, preflight-stage0, preflight-parity, preflight-smoke]
+    needs: [scope, preflight-validate, preflight-stage0, preflight-parity, preflight-smoke]
+    if: needs.scope.outputs.editor_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:

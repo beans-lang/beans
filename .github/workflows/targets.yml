@@ -33,6 +33,19 @@ on:
       - "test/docker/**"
       - "targets/**"
       - ".github/workflows/targets.yml"
+      # Editor tooling is compiled into the compiler like everything else, but
+      # it cannot reach codegen, the runtime or a target model: it reads a
+      # checked program and prints JSON. Building it for Windows, musl, wasm
+      # and three embedded boards proves nothing a stage-0 check has not
+      # already proved, and costs a full matrix per keystroke. Excluded last,
+      # because GitHub applies these in order.
+      - "!compiler/beans/lsp.b"
+      - "!compiler/beans/lsp_server.b"
+      - "!compiler/beans/semantic.b"
+      - "!compiler/beans/semantic_probe.b"
+      - "!compiler/beans/completion.b"
+      - "!compiler/beans/debug.b"
+      - "!compiler/beans/debug_adapter.b"
   schedule:
     - cron: "23 4 * * 2"
 
