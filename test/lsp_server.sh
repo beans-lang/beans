@@ -187,3 +187,60 @@ print("ok lsp server: init, overlay, diagnostics, hover, signature, completion, 
       "definition, references, symbols, semantic tokens, rename, close, malformed "
       "input, partial source, multi-package resolution")
 PY
+
+# ---------------------------------------------------------------------------
+# The command line a client actually uses
+# ---------------------------------------------------------------------------
+# `--stdio` is not optional politeness: vscode-languageclient appends it for
+# TransportKind.stdio, so VS Code runs `beansc lsp --stdio` and never asks.
+# Refusing it made the server print its usage and exit 2 before reading a
+# byte, which surfaced to the user as "connection got disposed" — a message
+# about the symptom, four layers away from the cause. Every test here had been
+# spelling `beansc lsp`, which is the one form a real client does not send.
+echo "checking the argv a client really sends"
+
+bin=${BEANSC:-./build/beansc}
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+
+handshake() { # <extra argv...>  -> prints the server's stdout
+    local body='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}'
+    # Measured, never guessed: a Content-Length that is off by one leaves the
+    # server waiting for bytes that never come, and the test would then pass
+    # or fail for the wrong reason.
+    printf 'Content-Length: %d\r\n\r\n%s' "${#body}" "$body" |
+        "$bin" lsp "$@" 2>"$work/err"
+}
+
+for argv in "" "--stdio"; do
+    # shellcheck disable=SC2086
+    out=$(handshake $argv) || true
+    case "$out" in
+    *'"capabilities"'*) ;;
+    *)
+        echo "FAIL: 'beansc lsp $argv' did not answer initialize." >&2
+        echo "  stdout: ${out:-<empty>}" >&2
+        echo "  stderr: $(cat "$work/err")" >&2
+        exit 1
+        ;;
+    esac
+done
+
+# Everything else is still refused, and refused in stage 0's exact words:
+# test/cli_parity.sh runs `beansc lsp extra` against both compilers and
+# compares stderr byte for byte, so this line cannot be made friendlier here
+# alone. A transport this server does not speak is therefore rejected rather
+# than accepted and quietly ignored, which is what matters — a client waiting
+# on a socket nobody opened hangs, and hanging is worse than being told no.
+for bad in --node-ipc --socket=1234 --pipe=/tmp/x --port=9000 --nonsense extra; do
+    if "$bin" lsp "$bad" </dev/null >"$work/out" 2>"$work/err"; then
+        echo "FAIL: 'beansc lsp $bad' should be refused" >&2
+        exit 1
+    fi
+    [ "$(cat "$work/err")" = "usage: beansc lsp" ] ||
+        { echo "FAIL: refusing '$bad' must print stage 0's exact usage line," >&2
+          echo "  or test/cli_parity.sh breaks. Got: $(cat "$work/err")" >&2
+          exit 1; }
+done
+
+echo "ok argv: --stdio accepted, anything else refused in stage 0's words"

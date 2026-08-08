@@ -333,7 +333,25 @@ fn lsp_dump_json(value: BindgenJson) -> string {
     return lsp_object(fields)
 }
 
-fn run_self_lsp() -> int {
+// `beansc lsp [--stdio]` — argument handling included, so that changing it
+// is an editor-tooling change and nothing else. It lived in main.b, which is
+// the dispatcher for every command; a diff there is a diff to the compiler's
+// whole command line, and CI has to treat it as one.
+//
+// `--stdio` is not optional politeness: vscode-languageclient appends it for
+// TransportKind.stdio, so VS Code runs `beansc lsp --stdio` and never asks.
+// Stdio is the only transport this server has, so the flag is accepted and
+// means nothing.
+//
+// Anything else gets `usage: beansc lsp`, spelled exactly as stage 0 spells
+// it. test/cli_parity.sh runs `beansc lsp extra` against both compilers and
+// compares stderr byte for byte, so this line is shared surface.
+fn run_self_lsp(args: List<string>) -> int {
+    for index: int in 1..args.len() {
+        if args[index] == "--stdio" { continue }
+        io.eprintln("usage: beansc lsp")
+        return 2
+    }
     return run_beans_lsp()
 }
 

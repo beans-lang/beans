@@ -160,11 +160,7 @@ fn main() {
         return
     }
     if command == "lsp" {
-        if args.len() != 1 {
-            io.eprintln("usage: beansc lsp")
-            os.exit(2)
-        }
-        let status: int = run_self_lsp()
+        let status: int = run_self_lsp(args)
         if status != 0 { os.exit(status) }
         return
     }
