@@ -72,11 +72,52 @@ jobs:
         run: |
           bash test/ci_coverage.sh
           python3 - <<'EOF'
-          import yaml
+          import sys, yaml
+
+          # yaml.safe_load accepts a duplicate key and silently keeps the last
+          # one. GitHub does not: it refuses the whole file and the run fails
+          # with no jobs and no log. A second `if:` on a job that already had
+          # one got through this check exactly that way, so parsing is not
+          # enough — the loader has to object.
+          class Strict(yaml.SafeLoader):
+              pass
+
+          def no_duplicates(loader, node, deep=False):
+              seen = {}
+              for key_node, value_node in node.value:
+                  key = loader.construct_object(key_node, deep=deep)
+                  if key in seen:
+                      raise yaml.YAMLError(
+                          f"duplicate key {key!r} at line "
+                          f"{key_node.start_mark.line + 1}, first seen at line "
+                          f"{seen[key] + 1}")
+                  seen[key] = key_node.start_mark.line
+              return yaml.SafeLoader.construct_mapping(loader, node, deep)
+
+          Strict.add_constructor(
+              yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, no_duplicates)
+
           for f in ("ci.yml", "differential-fuzz.yml", "targets.yml",
                     "fuzz.yml", "benchmark.yml"):
-              yaml.safe_load(open(".github/workflows/" + f))
-          print("workflows parse")
+              path = ".github/workflows/" + f
+              try:
+                  parsed = yaml.load(open(path), Strict)
+              except yaml.YAMLError as error:
+                  sys.exit(f"{path}: {error}")
+              # A `needs` naming a job that does not exist is the other way to
+              # get a run with no jobs.
+              jobs = parsed.get("jobs", {})
+              for name, job in jobs.items():
+                  # `needs` is a list or a bare string; iterating the string
+                  # would compare one letter at a time.
+                  needs = job.get("needs") or []
+                  if isinstance(needs, str):
+                      needs = [needs]
+                  for dep in needs:
+                      if dep not in jobs:
+                          sys.exit(f"{path}: job {name} needs {dep}, "
+                                   f"which is not a job in this workflow")
+          print("workflows parse, with no duplicate keys and no dangling needs")
           EOF
 
   preflight-stage0:
@@ -513,9 +554,8 @@ jobs:
 
   linux-cross-exhaustive:
     name: linux cross + hosted (${{ matrix.arch }})
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && needs.scope.outputs.editor_only != 'true'
     needs: [scope, preflight-validate, preflight-stage0, preflight-parity, preflight-smoke]
-    if: needs.scope.outputs.editor_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     strategy:
@@ -562,9 +602,8 @@ jobs:
 
   linux-armv6hf:
     name: hosted gate (linux/armv6 hard-float, Raspbian)
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && needs.scope.outputs.editor_only != 'true'
     needs: [scope, preflight-validate, preflight-stage0, preflight-parity, preflight-smoke]
-    if: needs.scope.outputs.editor_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 240
     steps:
@@ -605,9 +644,8 @@ jobs:
   # the small local ABI fixtures depend on an external repository.
   barq-core:
     name: Barq Core C API (linux/x86-64)
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && needs.scope.outputs.editor_only != 'true'
     needs: [scope, preflight-validate, preflight-stage0, preflight-parity, preflight-smoke]
-    if: needs.scope.outputs.editor_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -755,9 +793,8 @@ jobs:
   # used to hide a late architecture failure behind about an hour of duplicates.
   docker-linux:
     name: docker container gate
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && needs.scope.outputs.editor_only != 'true'
     needs: [scope, preflight-validate, preflight-stage0, preflight-parity, preflight-smoke]
-    if: needs.scope.outputs.editor_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
