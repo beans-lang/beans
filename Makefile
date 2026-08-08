@@ -294,6 +294,7 @@ else
 	./test/link_manifest.sh
 	./test/library_output.sh
 	./test/bindgen.sh
+	./test/bindgen_link.sh
 	./test/stack_pointer.sh
 	./test/stored_callbacks.sh
 	./test/simd.sh
@@ -365,6 +366,7 @@ test-core: $(BIN)
 	./test/link_manifest.sh
 	./test/library_output.sh
 	./test/bindgen.sh
+	./test/bindgen_link.sh
 	./test/stack_pointer.sh
 	./test/stored_callbacks.sh
 	bash ./test/closure_captures.sh

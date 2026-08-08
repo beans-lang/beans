@@ -375,6 +375,7 @@ class LayoutEngine {
             return layout_ok(32, 16)
         }
         if type.name == "string" || type.name == "RawPtr" ||
+           type.name == "CFunctionPtr" ||
            type.name == "StoredCallback" ||
            is_reference_builtin(type.name) {
             return self.pointer()

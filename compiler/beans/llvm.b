@@ -259,7 +259,7 @@ fn llvm_type(type: HirType) -> string {
         return "ptr"
     }
     // unmanaged: an address the ARC discipline never touches
-    if (name == "RawPtr" ||
+    if (name == "RawPtr" || name == "CFunctionPtr" ||
         name == "StoredCallback") &&
        type.args.len() == 1 {
         return "ptr"
@@ -523,6 +523,7 @@ class LlvmTextEmitter {
     phi_slots: Map<int, string>
     ffi_source: string
     extern_functions: Map<string, bool>
+    c_function_names: Map<string, string>
     extern_wrappers: Map<string, string>
     callback_dispatches: Map<string, string>
     ffi_functions: List<string>
@@ -584,6 +585,7 @@ class LlvmTextEmitter {
         self.phi_slots = {}
         self.ffi_source = ""
         self.extern_functions = {}
+        self.c_function_names = {}
         self.extern_wrappers = {}
         self.callback_dispatches = {}
         self.ffi_functions = []
@@ -3753,8 +3755,10 @@ class LlvmTextEmitter {
     }
 
     fn type_is_raw_pointer(type: HirType) -> bool {
-        return canonical_hir_name(type.name) ==
-                   "RawPtr" &&
+        let name: string =
+            canonical_hir_name(type.name)
+        return (name == "RawPtr" ||
+                name == "CFunctionPtr") &&
                type.args.len() == 1
     }
 
@@ -7940,6 +7944,52 @@ class LlvmTextEmitter {
 
     // the C spelling of a value crossing the host ABI; "" refuses a
     // shape the wrapper cannot carry yet
+    fn c_extern_function_pointer(type: HirType) -> string {
+        if type.args.len() != 1 ||
+           type.args[0].name != "fn" {
+            return ""
+        }
+        let callback: HirType = type.args[0]
+        let key: string = render_hir_type(callback)
+        var generated: string = ""
+        match self.c_function_names.get(key) {
+            some(name) => { generated = name }
+            none => {
+                generated =
+                    "BeansFfiFunction{self.c_function_names.len()}"
+                self.c_function_names[key] = generated
+            }
+        }
+        let emitted_key: string = "c-function:{key}"
+        if self.extern_functions.contains_key(emitted_key) {
+            return generated
+        }
+        self.extern_functions[emitted_key] = true
+        var result_type: string = "void"
+        if callback.fn_parameter_count >= 0 &&
+           callback.fn_parameter_count < callback.args.len() {
+            result_type = self.c_extern_type(
+                callback.args[callback.fn_parameter_count])
+        }
+        var parameters: List<string> = []
+        for index: int in 0..callback.fn_parameter_count {
+            parameters.push(self.c_extern_declaration(
+                callback.args[index], "value{index}"))
+        }
+        let parameter_text: string =
+            if parameters.len() == 0 {
+                "void"
+            } else {
+                parameters.join(", ")
+            }
+        if self.ffi_source == "" {
+            self.ffi_source = "#include <stdint.h>\n"
+        }
+        self.ffi_source =
+            "{self.ffi_source}typedef {result_type} (*{generated})({parameter_text});\n"
+        return generated
+    }
+
     fn c_extern_type(type: HirType) -> string {
         let name: string =
             canonical_hir_name(type.name)
@@ -7955,6 +8005,9 @@ class LlvmTextEmitter {
         if name == "float" { return "double" }
         if name == "bool" { return "_Bool" }
         if name == "RawPtr" { return "void*" }
+        if name == "CFunctionPtr" {
+            return self.c_extern_function_pointer(type)
+        }
         if name == "unit" { return "void" }
         return self.c_extern_record_type(type)
     }
@@ -11049,6 +11102,15 @@ class LlvmTextEmitter {
             values[instruction.result] = receiver
             return ""
         }
+        if instruction.text == "function_pointer" {
+            self.require_declare(
+                "beans_stored_callback_function",
+                "ptr @beans_stored_callback_function(ptr)")
+            let result: string =
+                "%v{instruction.result}"
+            values[instruction.result] = result
+            return "  {result} = call ptr @beans_stored_callback_function(ptr {receiver})\n"
+        }
         if instruction.text == "context" {
             values[instruction.result] = receiver
             return ""
@@ -11063,6 +11125,149 @@ class LlvmTextEmitter {
             instruction,
             "LLVM emitter does not support StoredCallback.{instruction.text} yet")
         return ""
+    }
+
+    fn c_function_pointer_wrapper(
+        instruction: MirInstruction,
+        pointer_type: HirType) -> string {
+        let key: string =
+            "c-function-call:{render_hir_type(pointer_type)}"
+        match self.extern_wrappers.get(key) {
+            some(symbol) => { return symbol }
+            none => {}
+        }
+        if pointer_type.args.len() != 1 ||
+           pointer_type.args[0].name != "fn" {
+            self.fail(
+                instruction,
+                "LLVM emitter needs a CFunctionPtr callback signature")
+            return ""
+        }
+        let callback: HirType = pointer_type.args[0]
+        let pointer_c: string =
+            self.c_extern_type(pointer_type)
+        if pointer_c == "" { return "" }
+        let result_type: HirType =
+            if callback.fn_parameter_count <
+                   callback.args.len() {
+                callback.args[
+                    callback.fn_parameter_count]
+            } else {
+                new HirType("unit")
+            }
+        let result_c: string =
+            self.c_extern_type(result_type)
+        var parameters: List<string> = []
+        var call_arguments: List<string> = []
+        for index: int in 0..callback.fn_parameter_count {
+            let parameter: string =
+                self.c_extern_declaration(
+                    callback.args[index],
+                    "value{index}")
+            if parameter == "" { return "" }
+            parameters.push(parameter)
+            call_arguments.push(
+                "*({self.c_extern_type(callback.args[index])}*)args[{index}]")
+        }
+        let wrapper: string =
+            "beans_ffi_call_{self.extern_wrappers.len()}"
+        self.extern_wrappers[key] = wrapper
+        if self.ffi_source == "" {
+            self.ffi_source = "#include <stdint.h>\n"
+        }
+        var source: string =
+            "void {wrapper}(void* raw_function, void* result, void** args) \{\n  {pointer_c} function = ({pointer_c})raw_function;\n  "
+        if canonical_hir_name(result_type.name) !=
+               "unit" {
+            source = "{source}{result_c} call_result = "
+        }
+        source =
+            "{source}function({call_arguments.join(", ")});\n"
+        if canonical_hir_name(result_type.name) !=
+               "unit" {
+            source =
+                "{source}  *({result_c}*)result = call_result;\n"
+        }
+        self.ffi_source =
+            "{self.ffi_source}{source}\}\n"
+        self.require_declare(
+            wrapper,
+            "void @{wrapper}(ptr, ptr, ptr)")
+        return wrapper
+    }
+
+    fn emit_c_function_pointer_method(
+        function: MirFunction,
+        instruction: MirInstruction,
+        values: Map<int, string>) -> string {
+        if instruction.operands.len() == 0 {
+            self.fail(
+                instruction,
+                "LLVM emitter needs a CFunctionPtr receiver")
+            return ""
+        }
+        let receiver: string =
+            self.value(
+                function, values,
+                instruction.operands[0],
+                instruction)
+        if instruction.text == "is_null" {
+            let result: string =
+                "%v{instruction.result}"
+            values[instruction.result] = result
+            return "  {result} = icmp eq ptr {receiver}, null\n"
+        }
+        if instruction.text != "call" {
+            self.fail(
+                instruction,
+                "LLVM emitter does not support CFunctionPtr.{instruction.text} yet")
+            return ""
+        }
+        let pointer_type: HirType =
+            self.value_type(
+                function,
+                instruction.operands[0])
+        let wrapper: string =
+            self.c_function_pointer_wrapper(
+                instruction, pointer_type)
+        if wrapper == "" { return "" }
+        let id: int = self.fresh()
+        var slots: int =
+            instruction.operands.len() - 1
+        if slots == 0 { slots = 1 }
+        self.function_allocas.push(
+            "  %ffi.call.args{id} = alloca [{slots} x ptr]\n")
+        var output: string =
+            "  %ffi.call.null{id} = icmp eq ptr {receiver}, null\n  br i1 %ffi.call.null{id}, label %ffi.call.bad{id}, label %ffi.call.ok{id}\nffi.call.bad{id}:\n  call void @beans_panic(ptr {self.string_pointer("cannot call a null CFunctionPtr")}, i64 {instruction.line}, i64 {instruction.col})\n  unreachable\nffi.call.ok{id}:\n"
+        for index: int in 1..instruction.operands.len() {
+            let type: HirType =
+                self.value_type(
+                    function,
+                    instruction.operands[index])
+            let llvm: string = self.type_text(type)
+            let value: string =
+                self.value(
+                    function, values,
+                    instruction.operands[index],
+                    instruction)
+            let slot: string =
+                self.spill_slot(llvm, "ffi.call")
+            output =
+                "{output}  store {llvm} {value}, ptr {slot}\n  %ffi.call.place{id}.{index} = getelementptr [{slots} x ptr], ptr %ffi.call.args{id}, i64 0, i64 {index - 1}\n  store ptr {slot}, ptr %ffi.call.place{id}.{index}\n"
+        }
+        if canonical_hir_name(
+               instruction.type.name) == "unit" {
+            return "{output}  call void @{wrapper}(ptr {receiver}, ptr null, ptr %ffi.call.args{id})\n"
+        }
+        let result_llvm: string =
+            self.type_text(instruction.type)
+        let result_slot: string =
+            self.spill_slot(
+                result_llvm, "ffi.call.result")
+        let result: string =
+            "%v{instruction.result}"
+        values[instruction.result] = result
+        return "{output}  call void @{wrapper}(ptr {receiver}, ptr {result_slot}, ptr %ffi.call.args{id})\n  {result} = load {result_llvm}, ptr {result_slot}\n"
     }
 
     fn emit_string_to_int(
@@ -17195,6 +17400,10 @@ class LlvmTextEmitter {
                     self.emit_stored_callback_create(
                         function, instruction,
                         values)
+            } else if instruction.resolved ==
+                          "CFunctionPtr.null" {
+                values[instruction.result] = "null"
+                output = ""
             } else if instruction.resolved.starts_with(
                           "RawPtr.") {
                 output =
@@ -17951,6 +18160,17 @@ class LlvmTextEmitter {
                               instruction.operands[0]).name)).is_some() {
             output =
                 self.emit_simd_method(
+                    function, instruction, values)
+        } else if instruction.op ==
+                      "builtin_method" &&
+                  instruction.operands.len() != 0 &&
+                  canonical_hir_name(
+                      self.value_type(
+                          function,
+                          instruction.operands[0]).name) ==
+                      "CFunctionPtr" {
+            output =
+                self.emit_c_function_pointer_method(
                     function, instruction, values)
         } else if instruction.op ==
                       "builtin_method" &&

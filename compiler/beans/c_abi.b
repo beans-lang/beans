@@ -82,7 +82,12 @@ class CAbiChecker {
     fn is_c_abi_type(type: HirType, allow_unit: bool) -> bool {
         if allow_unit && type.name == "unit" { return true }
         if self.is_scalar(type) { return true }
-        if type.name == "RawPtr" && type.args.len() == 1 {
+        if (type.name == "RawPtr" ||
+            type.name == "CFunctionPtr") &&
+           type.args.len() == 1 {
+            if type.name == "CFunctionPtr" {
+                return self.is_c_callback(type.args[0])
+            }
             return true
         }
         return self.is_c_record(type)
@@ -112,7 +117,9 @@ class CAbiChecker {
 
     fn is_inline_c_storage(type: HirType) -> bool {
         if self.is_scalar(type) { return true }
-        if type.name == "RawPtr" && type.args.len() == 1 {
+        if (type.name == "RawPtr" ||
+            type.name == "CFunctionPtr") &&
+           type.args.len() == 1 {
             return true
         }
         if type.name == "array" && type.args.len() == 1 {
@@ -282,6 +289,8 @@ class CAbiTextBuilder {
     names: Map<string, string>
     emitted: Map<string, bool>
     active: Map<string, bool>
+    function_names: Map<string, string>
+    function_emitted: Map<string, bool>
     definitions: string
 
     fn init(program: HirProgram) {
@@ -289,7 +298,51 @@ class CAbiTextBuilder {
         self.names = {}
         self.emitted = {}
         self.active = {}
+        self.function_names = {}
+        self.function_emitted = {}
         self.definitions = ""
+    }
+
+    fn function_pointer(type: HirType) -> string {
+        if type.args.len() != 1 ||
+           type.args[0].name != "fn" {
+            return "void*"
+        }
+        let callback: HirType = type.args[0]
+        let key: string = render_hir_type(callback)
+        var generated: string = ""
+        match self.function_names.get(key) {
+            some(name) => { generated = name }
+            none => {
+                generated =
+                    "BeansFfiFunction{self.function_names.len()}"
+                self.function_names[key] = generated
+            }
+        }
+        if self.function_emitted.contains_key(key) {
+            return generated
+        }
+        self.function_emitted[key] = true
+        var result_type: string = "void"
+        if callback.fn_parameter_count >= 0 &&
+           callback.fn_parameter_count < callback.args.len() {
+            result_type = self.base(
+                callback.args[callback.fn_parameter_count])
+        }
+        var parameters: List<string> = []
+        for index: int in 0..callback.fn_parameter_count {
+            parameters.push(self.declaration(
+                callback.args[index], "value{index}"))
+        }
+        let parameter_text: string =
+            if parameters.len() == 0 {
+                "void"
+            } else {
+                parameters.join(", ")
+            }
+        self.definitions =
+            "{self.definitions}typedef {result_type} (*{generated})({parameter_text});\n"
+        return generated
     }
 
     fn record_declaration(type: HirType) ->
@@ -391,6 +444,9 @@ class CAbiTextBuilder {
         if name == "float" { return "double" }
         if name == "bool" { return "_Bool" }
         if name == "RawPtr" { return "void*" }
+        if name == "CFunctionPtr" {
+            return self.function_pointer(type)
+        }
         if name == "unit" { return "void" }
         return self.record(type)
     }
