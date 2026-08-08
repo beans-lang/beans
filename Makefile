@@ -119,7 +119,7 @@ $(BIN): $(SELF_HOST_SRC) $(RUNTIME_COPY)
 
 endif
 
-.PHONY: stage0 run clean install test test-ci test-core test-stage0 test-quick test-frontend test-semantics test-runtime test-ffi test-platform platform-status test-platform-manifest test-portable-int128 test-compiler-arch-objects test-stage0-windows test-windows-source-bootstrap test-musl-hosted test-armv6hf-hosted test-sanitize test-release-package test-install-release test-release-completeness test-clean-bootstrap test-c-abi-tier1 test-mir-stage0 test-barq-core fuzz-smoke fuzz-differential fuzz-differential-smoke test-linux test-linux-arch test-linux-hosted test-windows test-windows-native test-windows-native-i686 test-windows-native-arm64 test-windows-arch test-windows-hosted test-encoding-targets test-encoding-windows access-score self-host-next test-self-host test-self-host-full test-bootstrap bench-compiler bench-quick bench-full bench-verify bench-profile bench-compare
+.PHONY: stage0 run clean install test test-ci test-core test-stage0 test-quick test-frontend test-semantics test-runtime test-ffi test-platform platform-status test-platform-manifest test-portable-int128 test-compiler-arch-objects test-stage0-windows test-windows-source-bootstrap test-musl-hosted test-armv6hf-hosted test-sanitize test-release-package test-install-release test-release-completeness test-clean-bootstrap test-c-abi-tier1 test-mir-stage0 test-barq-core test-bootstrap-gitlink fuzz-smoke fuzz-differential fuzz-differential-smoke test-linux test-linux-arch test-linux-hosted test-windows test-windows-native test-windows-native-i686 test-windows-native-arm64 test-windows-arch test-windows-hosted test-encoding-targets test-encoding-windows access-score self-host-next test-self-host test-self-host-full test-bootstrap bench-compiler bench-quick bench-full bench-verify bench-profile bench-compare
 stage0: $(BOOTSTRAP_BIN)
 
 run: $(BIN)
@@ -499,6 +499,13 @@ endif
 # scorecard so local C interop work depends only on the small fixtures.
 test-barq-core: $(BIN)
 	bash ./test/barq_core.sh
+
+# The gitlink has to name a commit on the bootstrap repo's main, or a shallow
+# submodule fetch resolves nothing. Needs the network and read access to a
+# private repository, so it is out of `make test` for the same reason as the
+# integration gate above; CI runs it in the stage-0 preflight.
+test-bootstrap-gitlink:
+	bash ./test/bootstrap_gitlink.sh
 
 build/beansc-asan-ubsan: $(SRC) $(HDR) $(RUNTIME_COPY)
 	@mkdir -p build
