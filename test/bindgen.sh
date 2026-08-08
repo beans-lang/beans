@@ -120,7 +120,8 @@ void nested_install(void (**slot)(int));
 NestedOwner* nested_owner(NestedOwner* owner);
 C
 "$beansc" bindgen "$tmp/nested_callbacks.h" \
-    -o "$tmp/nested_callbacks.b" >"$tmp/nested.out"
+    -o "$tmp/nested_callbacks.b" \
+    --target x86_64-unknown-linux-gnu >"$tmp/nested.out"
 "$beansc" check "$tmp/nested_callbacks.b" >"$tmp/nested.check"
 grep -F 'factory: CFunctionPtr<fn(i32) -> CFunctionPtr<fn(i32) -> i32> >' \
     "$tmp/nested_callbacks.b" >"$tmp/match"
@@ -537,7 +538,8 @@ if [ -x "$stage0" ]; then
         -o "$tmp/included.empty.stage0.b" >"$tmp/included.empty.stage0.out"
     cmp "$tmp/included/empty.b" "$tmp/included.empty.stage0.b"
     "$stage0" bindgen "$tmp/nested_callbacks.h" \
-        -o "$tmp/nested_callbacks.stage0.b" >"$tmp/nested.stage0.out"
+        -o "$tmp/nested_callbacks.stage0.b" \
+        --target x86_64-unknown-linux-gnu >"$tmp/nested.stage0.out"
     cmp "$tmp/nested_callbacks.b" "$tmp/nested_callbacks.stage0.b"
     "$stage0" bindgen "$tmp/partly_unsupported.h" \
         -o "$tmp/partly_unsupported.stage0.b" --allow-unsupported \
