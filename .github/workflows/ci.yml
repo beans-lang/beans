@@ -62,7 +62,7 @@ jobs:
       - name: Bootstrap gitlink names bootstrap main
         run: |
           if [ -f compiler/bootstrap/main.cpp ]; then
-            make test-bootstrap-gitlink
+            make test-gitlink
           else
             echo "stage 0 absent (fork PR): nothing to compare the gitlink against"
           fi

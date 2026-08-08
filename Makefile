@@ -119,7 +119,7 @@ $(BIN): $(SELF_HOST_SRC) $(RUNTIME_COPY)
 
 endif
 
-.PHONY: stage0 run clean install test test-ci test-bootstrap-gitlink test-core test-stage0 test-quick test-frontend test-semantics test-runtime test-ffi test-platform platform-status test-platform-manifest test-portable-int128 test-compiler-arch-objects test-stage0-windows test-windows-source-bootstrap test-musl-hosted test-armv6hf-hosted test-sanitize test-release-package test-install-release test-release-completeness test-clean-bootstrap test-c-abi-tier1 test-mir-stage0 test-barq-core fuzz-smoke fuzz-differential fuzz-differential-smoke test-linux test-linux-arch test-linux-hosted test-windows test-windows-native test-windows-native-i686 test-windows-native-arm64 test-windows-arch test-windows-hosted test-encoding-targets test-encoding-windows access-score self-host-next test-self-host test-self-host-full test-bootstrap bench-compiler bench-quick bench-full bench-verify bench-profile bench-compare
+.PHONY: stage0 run clean install test test-ci test-core test-stage0 test-quick test-frontend test-semantics test-runtime test-ffi test-platform platform-status test-platform-manifest test-portable-int128 test-compiler-arch-objects test-stage0-windows test-windows-source-bootstrap test-musl-hosted test-armv6hf-hosted test-sanitize test-release-package test-install-release test-release-completeness test-clean-bootstrap test-c-abi-tier1 test-mir-stage0 test-barq-core test-bootstrap-gitlink fuzz-smoke fuzz-differential fuzz-differential-smoke test-linux test-linux-arch test-linux-hosted test-windows test-windows-native test-windows-native-i686 test-windows-native-arm64 test-windows-arch test-windows-hosted test-encoding-targets test-encoding-windows access-score self-host-next test-self-host test-self-host-full test-bootstrap bench-compiler bench-quick bench-full bench-verify bench-profile bench-compare
 stage0: $(BOOTSTRAP_BIN)
 
 run: $(BIN)
@@ -146,11 +146,6 @@ else
 	@echo "stage 0 is not checked out, so the differential gates against it did"
 	@echo "not run. This is expected on a fork pull request."
 endif
-
-# This needs network access to the private bootstrap repository, so CI runs it
-# explicitly instead of including it in the normal local test gate.
-test-bootstrap-gitlink:
-	bash ./test/bootstrap_gitlink.sh
 
 # bench_compare.sh exercises the comparator binary, so a clean checkout's
 # `make test` must build it first rather than assume an earlier bench run left
@@ -220,6 +215,10 @@ else
 	./test/parse_recovery.sh
 	./test/lsp_probe.sh
 	./test/lsp_server.sh
+	./test/lsp_semantic.sh
+	./test/lsp_navigation.sh
+	./test/dap.sh
+	./test/native_debug.sh
 	./test/stdlib_source.sh
 	bash ./test/api_names.sh
 	./test/fs_source.sh
@@ -388,6 +387,10 @@ test-core: $(BIN)
 	bash ./test/default_eval_order.sh
 	./test/lsp_probe.sh
 	./test/lsp_server.sh
+	./test/lsp_semantic.sh
+	./test/lsp_navigation.sh
+	./test/dap.sh
+	./test/native_debug.sh
 	./test/fs_source.sh
 	./test/reader_source.sh
 	./test/inline_options.sh
@@ -505,6 +508,13 @@ endif
 test-barq-core: $(BIN)
 	bash ./test/barq_core.sh
 
+# The gitlink has to name a commit on the bootstrap repo's main, or a shallow
+# submodule fetch resolves nothing. Needs the network and read access to a
+# private repository, so it is out of `make test` for the same reason as the
+# integration gate above; CI runs it in the stage-0 preflight.
+test-bootstrap-gitlink:
+	bash ./test/bootstrap_gitlink.sh
+
 build/beansc-asan-ubsan: $(SRC) $(HDR) $(RUNTIME_COPY)
 	@mkdir -p build
 	$(CXX) $(CPPFLAGS) -std=c++20 -Wall -Wextra -O1 -g -pthread \
@@ -560,6 +570,14 @@ test-self-host-full: $(BIN) $(BOOTSTRAP_BIN)
 	bash ./test/self_host_full.sh
 
 endif
+
+# Asks the bootstrap remote what its main is, so it needs the network and read
+# access to a private repository — that is why it is not in `make test`, and
+# why CI calls it on its own. It also stays out of test-bootstrap: the
+# container gates bind-mount the tree as another user, and git refuses a
+# repository it does not think is yours.
+test-gitlink:
+	bash ./test/bootstrap_gitlink.sh
 
 # Both sides of this comparison are the self-hosted compiler, so it needs no
 # stage 0.

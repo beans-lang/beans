@@ -122,6 +122,10 @@ class NativeBuildDriver {
     cpu: string
     runtime_profile: string
     release: bool
+    // A build made to be looked at: no optimization, frame pointers kept, no
+    // link-time optimization, and the platform's debug information asked for.
+    // It never turns on with --release; the two are opposite requests.
+    debug: bool
     lto: bool
     sysroot: string
     compiler: string
@@ -135,6 +139,7 @@ class NativeBuildDriver {
             cpu: string,
             runtime_profile: string,
             release: bool,
+            debug: bool,
             lto: bool,
             sysroot: string,
             compiler: string,
@@ -146,7 +151,10 @@ class NativeBuildDriver {
         self.cpu = cpu
         self.runtime_profile = runtime_profile
         self.release = release
-        self.lto = lto
+        self.debug = debug
+        // A debug build with link-time optimization is not a debug build:
+        // LTO is what erases the boundaries a person is trying to look at.
+        self.lto = lto && !debug
         self.sysroot = sysroot
         self.compiler = compiler
         self.linker = linker
@@ -312,6 +320,26 @@ class NativeBuildDriver {
         return false
     }
 
+    // -O0 in a debug build: an optimized build reorders and inlines away the
+    // very code a person set out to look at.
+    fn optimization_flag() -> string {
+        if self.debug { return "-O0" }
+        if self.release { return "-O3" }
+        return "-O2"
+    }
+
+    // What the platform's debugger needs. `-g` is the portable spelling; on
+    // macOS and Linux clang writes DWARF, and on Windows targeting MSVC it
+    // writes CodeView, both from this one flag. Frame pointers are kept so a
+    // stack can be walked without unwind tables.
+    fn debug_flags() -> List<string> {
+        var flags: List<string> = []
+        if !self.debug { return move flags }
+        flags.push("-g")
+        flags.push("-fno-omit-frame-pointer")
+        return move flags
+    }
+
     fn compile_object(compiler: string,
                       source: string,
                       output: string,
@@ -319,9 +347,11 @@ class NativeBuildDriver {
                       runtime_source: bool) -> bool {
         let command: process.Command =
             new process.Command(compiler)
-        command.arg(
-            if self.release { "-O3" } else { "-O2" })
+        command.arg(self.optimization_flag())
         if self.release { command.arg("-DNDEBUG") }
+        for flag: string in self.debug_flags() {
+            command.arg(flag)
+        }
         if self.lto { command.arg("-flto") }
         let wasi: bool = self.target.os == "wasi"
         if self.runtime_profile == "freestanding" ||
@@ -385,9 +415,11 @@ class NativeBuildDriver {
             flags.push("-fno-exceptions")
             flags.push("-fno-rtti")
         }
-        flags.push(
-            if self.release { "-O3" } else { "-O2" })
+        flags.push(self.optimization_flag())
         if self.release { flags.push("-DNDEBUG") }
+        for flag: string in self.debug_flags() {
+            flags.push(flag)
+        }
         if self.lto { flags.push("-flto") }
         let wasi: bool = self.target.os == "wasi"
         if wasi {
@@ -435,7 +467,7 @@ class NativeBuildDriver {
         blob = "{blob}|{feature}"
         blob = "{blob}|{self.target.triple}|{self.target.llvm_triple()}"
         blob = "{blob}|{self.cpu}|{self.target.features.join(",")}"
-        blob = "{blob}|{self.runtime_profile}|{self.release}|{self.lto}|{pic}"
+        blob = "{blob}|{self.runtime_profile}|{self.release}|{self.debug}|{self.lto}|{pic}"
         blob = "{blob}|{self.sysroot}"
         blob =
             "{blob}|{encoding_compiler_identity(compiler)}"
@@ -547,7 +579,7 @@ class NativeBuildDriver {
             err(_) => {}
         }
         let key: string =
-            "{self.target.triple}|{self.cpu}|{self.target.features.join(",")}|{self.runtime_profile}|{self.release}|{self.lto}|{pic}|{source}"
+            "{self.target.triple}|{self.cpu}|{self.target.features.join(",")}|{self.runtime_profile}|{self.release}|{self.debug}|{self.lto}|{pic}|{source}"
         var hash: int = 0
         for index: int in 0..key.len() {
             hash =
@@ -915,9 +947,11 @@ class NativeBuildDriver {
             }
             let wasm: process.Command =
                 new process.Command(compiler)
-            wasm.arg(
-                if self.release { "-O3" } else { "-O2" })
+            wasm.arg(self.optimization_flag())
             if self.release { wasm.arg("-DNDEBUG") }
+            for flag: string in self.debug_flags() {
+                wasm.arg(flag)
+            }
             if self.lto { wasm.arg("-flto") }
             wasm.arg("-nostdlib")
             wasm.arg("-ffreestanding")
@@ -974,9 +1008,11 @@ class NativeBuildDriver {
             self.cached_runtime_object(
                 compiler, runtime, emit == "shared")
         if runtime_object == "" { return false }
-        command.arg(
-            if self.release { "-O3" } else { "-O2" })
+        command.arg(self.optimization_flag())
         if self.release { command.arg("-DNDEBUG") }
+        for flag: string in self.debug_flags() {
+            command.arg(flag)
+        }
         if self.lto { command.arg("-flto") }
         if self.runtime_profile == "freestanding" {
             command.arg("-ffreestanding")
