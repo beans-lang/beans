@@ -530,7 +530,7 @@ fn builtin_generic_arity(name: string) -> int {
        name == "Channel" || name == "Box" || name == "Arena" ||
        name == "Shared" || name == "Weak" || name == "RawPtr" ||
        name == "Slice" || name == "Atomic" ||
-       name == "StoredCallback" {
+       name == "StoredCallback" || name == "CFunctionPtr" {
         return 1
     }
     return -1
@@ -546,7 +546,7 @@ fn builtin_class_name(name: string) -> bool {
            name == "Weak" || name == "Mutex" ||
            name == "Atomic" || name == "Channel" ||
            name == "Thread" || name == "AtomicInt" ||
-           name == "StoredCallback" ||
+           name == "StoredCallback" || name == "CFunctionPtr" ||
            simd_description(name).is_some()
 }
 
@@ -706,7 +706,8 @@ class ExpressionChecker {
     fn is_inline_c_storage(type: HirType) -> bool {
         if hir_is_numeric(type) ||
            type.name == "bool" ||
-           (type.name == "RawPtr" &&
+           ((type.name == "RawPtr" ||
+             type.name == "CFunctionPtr") &&
             type.args.len() == 1) {
             return true
         }
@@ -742,7 +743,8 @@ class ExpressionChecker {
     fn is_fixed_array_element(type: HirType) -> bool {
         if hir_is_numeric(type) ||
            type.name == "bool" ||
-           type.name == "RawPtr" {
+           (type.name == "RawPtr" ||
+            type.name == "CFunctionPtr") {
             return true
         }
         if type.name == "array" &&
@@ -766,6 +768,58 @@ class ExpressionChecker {
                type.name == "bool" ||
                (type.name == "RawPtr" &&
                 type.args.len() == 1)
+    }
+
+    fn is_c_function_pointer_value(
+        type: HirType, allow_unit: bool) -> bool {
+        if allow_unit && type.name == "unit" {
+            return true
+        }
+        if hir_is_numeric(type) ||
+           type.name == "bool" ||
+           (type.name == "RawPtr" &&
+            type.args.len() == 1) {
+            return true
+        }
+        if type.name == "CFunctionPtr" &&
+           type.args.len() == 1 {
+            return self.is_c_function_pointer_callback(
+                type.args[0])
+        }
+        match self.declarations.get(type.name) {
+            some(declaration) => {
+                return (declaration.kind == "struct" ||
+                        declaration.kind == "union") &&
+                       declaration.is_c_layout &&
+                       !declaration.is_opaque &&
+                       declaration.generics.len() == 0
+            }
+            none => { return false }
+        }
+    }
+
+    fn is_c_function_pointer_callback(
+        type: HirType) -> bool {
+        if type.name != "fn" ||
+           type.fn_parameter_count < 0 ||
+           type.fn_parameter_count > 6 {
+            return false
+        }
+        for index: int in
+            0..type.fn_parameter_count {
+            if !self.is_c_function_pointer_value(
+                   type.args[index], false) {
+                return false
+            }
+        }
+        let result: HirType =
+            if type.fn_parameter_count < type.args.len() {
+                type.args[type.fn_parameter_count]
+            } else {
+                new HirType("unit")
+            }
+        return self.is_c_function_pointer_value(
+            result, true)
     }
 
     fn feature_is_available(feature: string) -> bool {
@@ -1087,7 +1141,8 @@ class ExpressionChecker {
             return trait == "Clone" || trait == "Eq" ||
                    trait == "Send" || trait == "Sync"
         }
-        if type.name == "RawPtr" {
+        if type.name == "RawPtr" ||
+           type.name == "CFunctionPtr" {
             return trait == "Clone" || trait == "Eq" ||
                    trait == "Hash" || trait == "Send" ||
                    trait == "Sync"
@@ -2495,6 +2550,12 @@ class ExpressionChecker {
                 return some(new BuiltinSignature(
                     [], receiver.args[0]))
             }
+            if name == "function_pointer" {
+                return some(new BuiltinSignature(
+                    [], hir_named(
+                        "CFunctionPtr",
+                        [receiver.args[0]])))
+            }
             if name == "context" {
                 return some(new BuiltinSignature(
                     [], hir_named(
@@ -2504,6 +2565,27 @@ class ExpressionChecker {
             if name == "close" {
                 return some(new BuiltinSignature(
                     [], unit))
+            }
+        }
+        if receiver.name == "CFunctionPtr" &&
+           receiver.args.len() == 1 &&
+           receiver.args[0].name == "fn" {
+            let callback: HirType = receiver.args[0]
+            if name == "is_null" {
+                return some(new BuiltinSignature([], boolean))
+            }
+            if name == "call" {
+                var parameters: List<HirType> = []
+                for index: int in 0..callback.fn_parameter_count {
+                    parameters.push(callback.args[index])
+                }
+                let result: HirType =
+                    if callback.fn_parameter_count < callback.args.len() {
+                        callback.args[callback.fn_parameter_count]
+                    } else {
+                        unit
+                    }
+                return some(new BuiltinSignature(parameters, result))
             }
         }
         if receiver.name == "Slice" &&
@@ -3095,6 +3177,14 @@ class ExpressionChecker {
             self.fail(
                 node,
                 "StoredCallback needs a C callback function type")
+        }
+        if type.name == "CFunctionPtr" &&
+           type.args.len() == 1 &&
+           !self.is_c_function_pointer_callback(
+               type.args[0]) {
+            self.fail(
+                node,
+                "CFunctionPtr needs a C callback function type")
         }
         if (type.name == "RawPtr" ||
             type.name == "Slice") &&
@@ -5645,6 +5735,30 @@ class ExpressionChecker {
                     }
                 }
                 if builtin_class_name(receiver_syntax.value) {
+                    if receiver_syntax.value == "CFunctionPtr" &&
+                       callee.value == "null" {
+                        var type: HirType = expected
+                        if type.name != "CFunctionPtr" ||
+                           type.args.len() != 1 ||
+                           type.args[0].name != "fn" {
+                            self.fail(
+                                node,
+                                "can't tell CFunctionPtr's callback type from this call")
+                            type = hir_named(
+                                "CFunctionPtr",
+                                [poison_hir_type()])
+                        }
+                        let result: HirNode =
+                            self.make_node(
+                                node, "static_call",
+                                "null", type)
+                        result.resolved = "CFunctionPtr.null"
+                        self.check_builtin_arguments(
+                            node, 1,
+                            new BuiltinSignature([], type),
+                            result)
+                        return result
+                    }
                     if receiver_syntax.value ==
                            "StoredCallback" {
                         let result: HirNode =
@@ -6143,6 +6257,11 @@ class ExpressionChecker {
                         self.require_unsafe(
                             node,
                             "{receiver.type.name}.{callee.value}")
+                    }
+                    if receiver.type.name == "CFunctionPtr" &&
+                       callee.value == "call" {
+                        self.require_unsafe(
+                            node, "CFunctionPtr.call")
                     }
                     if receiver.type.name == "RawPtr" &&
                        receiver.type.args.len() == 1 &&
@@ -8441,6 +8560,8 @@ class ExpressionChecker {
         }
         self.scopes = []
         self.push_scope()
+        self.validate_target_type(
+            function.syntax, function.result)
         if function.owner != "" && !function.is_static {
             let self_node: AstNode =
                 new AstNode("name", "self",
@@ -8454,6 +8575,8 @@ class ExpressionChecker {
                 new AstNode(
                     "param", parameter.name,
                     parameter.line, parameter.col)
+            self.validate_target_type(
+                parameter_node, parameter.type)
             parameter.binding_id = self.declare(
                 parameter_node, parameter.type,
                 parameter.passing == "inout",
@@ -8495,6 +8618,12 @@ class ExpressionChecker {
             self.scopes = []
             self.push_scope()
             for field: HirField in declaration.fields {
+                let field_node: AstNode =
+                    new AstNode(
+                        "field", field.name,
+                        field.line, field.col)
+                self.validate_target_type(
+                    field_node, field.type)
                 match field.default_syntax {
                     some(syntax) => {
                         field.default_value =

@@ -54,7 +54,7 @@ fn builtin_type(name: string) -> bool {
            name == "RawSlice" ||
            name == "AtomicInt" || name == "MemoryOrder" ||
            name == "RoundingMode" || name == "CpuFeature" ||
-           name == "StoredCallback" ||
+           name == "StoredCallback" || name == "CFunctionPtr" ||
            name == "Self" || simd_description(name).is_some()
 }
 

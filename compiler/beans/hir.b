@@ -458,7 +458,7 @@ class SignatureChecker {
            name == "Channel" || name == "Box" || name == "Arena" ||
            name == "Shared" || name == "Weak" || name == "RawPtr" ||
            name == "Slice" || name == "Atomic" || name == "Option" ||
-           name == "StoredCallback" {
+           name == "StoredCallback" || name == "CFunctionPtr" {
             return 1
         }
         return -1

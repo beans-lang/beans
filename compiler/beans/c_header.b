@@ -46,6 +46,9 @@ class CHeaderRenderer {
     collecting: Map<string, bool>
     emitting: Map<string, bool>
     emitted: Map<string, bool>
+    callback_names: Map<string, string>
+    callback_types: Map<string, HirType>
+    callback_order: List<string>
     error: string
 
     fn init(program: HirProgram) {
@@ -57,6 +60,9 @@ class CHeaderRenderer {
         self.collecting = {}
         self.emitting = {}
         self.emitted = {}
+        self.callback_names = {}
+        self.callback_types = {}
+        self.callback_order = []
         self.error = ""
         for declaration: HirDeclaration in
             program.declarations {
@@ -117,6 +123,38 @@ class CHeaderRenderer {
             self.error =
                 "C exports with callback types cannot produce a header yet"
             return false
+        }
+        if name == "CFunctionPtr" {
+            if type.args.len() != 1 ||
+               canonical_hir_name(
+                   type.args[0].name) != "fn" {
+                self.error =
+                    "CFunctionPtr in a C header needs a C callback function type"
+                return false
+            }
+            let callback: HirType = type.args[0]
+            let key: string = render_hir_type(callback)
+            if !self.callback_names.contains_key(key) {
+                self.callback_names[key] =
+                    "BeansFfiFunction{self.callback_names.len()}"
+                self.callback_types[key] = callback
+                self.callback_order.push(key)
+            }
+            for index: int in
+                0..callback.fn_parameter_count {
+                if !self.collect(callback.args[index]) {
+                    return false
+                }
+            }
+            if callback.fn_parameter_count >= 0 &&
+               callback.fn_parameter_count < callback.args.len() {
+                if !self.collect(
+                       callback.args[
+                           callback.fn_parameter_count]) {
+                    return false
+                }
+            }
+            return true
         }
         if name == "RawPtr" {
             if type.args.len() == 1 {
@@ -187,6 +225,23 @@ class CHeaderRenderer {
             if self.error != "" { return "" }
             if pointee == "void" { return "void*" }
             return "{pointee}*"
+        }
+        if name == "CFunctionPtr" &&
+           type.args.len() == 1 &&
+           canonical_hir_name(
+               type.args[0].name) == "fn" {
+            let key: string =
+                render_hir_type(type.args[0])
+            match self.callback_names.get(key) {
+                some(generated) => {
+                    return generated
+                }
+                none => {
+                    self.error =
+                        "internal: C header callback type was not collected"
+                    return ""
+                }
+            }
         }
         match self.declaration_for(type) {
             some(declaration) => {
@@ -373,6 +428,39 @@ class CHeaderRenderer {
         }
         if self.selected_order.len() != 0 {
             output = "{output}\n"
+        }
+        var callback_definitions: string = ""
+        for key: string in self.callback_order {
+            let callback: HirType =
+                self.callback_types[key]
+            let generated: string =
+                self.callback_names[key]
+            var result_type: string = "void"
+            if callback.fn_parameter_count >= 0 &&
+               callback.fn_parameter_count <
+                   callback.args.len() {
+                result_type = self.type_text(
+                    callback.args[
+                        callback.fn_parameter_count])
+            }
+            var parameters: List<string> = []
+            for index: int in
+                0..callback.fn_parameter_count {
+                parameters.push(self.declaration(
+                    callback.args[index], "value{index}"))
+            }
+            let parameter_text: string =
+                if parameters.len() == 0 {
+                    "void"
+                } else {
+                    parameters.join(", ")
+                }
+            callback_definitions =
+                "typedef {result_type} (*{generated})({parameter_text});\n{callback_definitions}"
+        }
+        if callback_definitions != "" {
+            output =
+                "{output}{callback_definitions}\n"
         }
         output =
             "{output}{definitions}#ifdef __cplusplus\nextern \"C\" \{\n#endif\n\n"
