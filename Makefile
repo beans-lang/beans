@@ -555,6 +555,7 @@ test-self-host: $(BOOTSTRAP_BIN) build/beansc-next
 # stage 1 (built by C++) compiles the compiler; the result must
 # answer like the reference and re-emit the compiler byte-identically
 test-bootstrap: $(BOOTSTRAP_BIN) $(STAGE1_BIN)
+	bash ./test/bootstrap_gitlink.sh
 	BEANSC0="./$(BOOTSTRAP_BIN)" \
 	BEANSC_STAGE1="./$(STAGE1_BIN)" \
 	bash ./test/bootstrap.sh
