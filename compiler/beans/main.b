@@ -168,21 +168,18 @@ fn main() {
         // message about the symptom, four layers from the cause.
         //
         // Stdio is the only transport this server has, so the flag is
-        // accepted and means nothing. The others are named and refused, so a
-        // client asking for a transport that does not exist is told plainly
-        // rather than left with a socket nobody is listening on.
+        // accepted and means nothing.
+        //
+        // Anything else still gets `usage: beansc lsp`, spelled exactly as
+        // stage 0 spells it. test/cli_parity.sh runs `beansc lsp extra`
+        // against both compilers and compares stderr byte for byte, so this
+        // line is shared surface: saying "[--stdio]" here, however much
+        // friendlier, breaks the gate. The one divergence left is that this
+        // compiler accepts --stdio and stage 0 does not, which is the fix
+        // itself and which cli_parity does not exercise.
         for index: int in 1..args.len() {
-            let flag: string = args[index]
-            if flag == "--stdio" { continue }
-            if flag == "--node-ipc" || flag == "--socket" ||
-               flag.starts_with("--socket=") ||
-               flag.starts_with("--pipe") ||
-               flag.starts_with("--port") {
-                io.eprintln(
-                    "beansc lsp speaks stdio only, and was asked for '{flag}'")
-                os.exit(2)
-            }
-            io.eprintln("usage: beansc lsp [--stdio]")
+            if args[index] == "--stdio" { continue }
+            io.eprintln("usage: beansc lsp")
             os.exit(2)
         }
         let status: int = run_self_lsp()

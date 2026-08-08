@@ -226,23 +226,21 @@ for argv in "" "--stdio"; do
     esac
 done
 
-# A transport this server does not have must be refused by name, not accepted
-# and then silently unused — a client waiting on a socket nobody opened hangs.
-for bad in --node-ipc --socket=1234 --pipe=/tmp/x --port=9000; do
+# Everything else is still refused, and refused in stage 0's exact words:
+# test/cli_parity.sh runs `beansc lsp extra` against both compilers and
+# compares stderr byte for byte, so this line cannot be made friendlier here
+# alone. A transport this server does not speak is therefore rejected rather
+# than accepted and quietly ignored, which is what matters — a client waiting
+# on a socket nobody opened hangs, and hanging is worse than being told no.
+for bad in --node-ipc --socket=1234 --pipe=/tmp/x --port=9000 --nonsense extra; do
     if "$bin" lsp "$bad" </dev/null >"$work/out" 2>"$work/err"; then
         echo "FAIL: 'beansc lsp $bad' should be refused" >&2
         exit 1
     fi
-    grep -q "stdio only" "$work/err" ||
-        { echo "FAIL: refusing $bad should say why: $(cat "$work/err")" >&2; exit 1; }
+    [ "$(cat "$work/err")" = "usage: beansc lsp" ] ||
+        { echo "FAIL: refusing '$bad' must print stage 0's exact usage line," >&2
+          echo "  or test/cli_parity.sh breaks. Got: $(cat "$work/err")" >&2
+          exit 1; }
 done
 
-# And an argument that means nothing still gets the usage line.
-if "$bin" lsp --nonsense </dev/null >"$work/out" 2>"$work/err"; then
-    echo "FAIL: an unknown lsp flag should be refused" >&2
-    exit 1
-fi
-grep -q -- "--stdio" "$work/err" ||
-    { echo "FAIL: the usage should name the flag it accepts" >&2; exit 1; }
-
-echo "ok argv: --stdio accepted, other transports refused by name"
+echo "ok argv: --stdio accepted, anything else refused in stage 0's words"
