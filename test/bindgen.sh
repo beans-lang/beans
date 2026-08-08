@@ -48,6 +48,98 @@ grep -F 'fn get_operation() -> CFunctionPtr<fn(RawPtr<u8>, i32) -> i32>' \
     "$tmp/bindings.b" >"$tmp/match"
 grep -F 'fn status_bad() -> i32 { return 2 }' "$tmp/bindings.b" >"$tmp/match"
 
+# Types belong to the whole translation unit even when symbols belong only to
+# the requested header. A public declaration may use aliases, records, enums,
+# and callbacks from an included header; those definitions must be available
+# for type resolution, but unused included declarations must stay out.
+mkdir -p "$tmp/included"
+cat >"$tmp/included/dependency.h" <<'C'
+typedef unsigned int DependencyCount;
+typedef DependencyCount DependencySize;
+typedef struct {
+    int value;
+} DependencyRecord;
+typedef struct DependencyUnused {
+    int hidden;
+} DependencyUnused;
+typedef enum {
+    DEPENDENCY_OK = 0,
+    DEPENDENCY_BAD = 4
+} DependencyStatus;
+typedef int (*DependencyCallback)(DependencyRecord*, DependencySize);
+C
+cat >"$tmp/included/api.h" <<'C'
+#include "dependency.h"
+DependencySize dependency_size_of(DependencyRecord* record);
+DependencyStatus dependency_run(DependencyCallback callback,
+                                DependencyRecord* record);
+C
+included=$tmp/included/bindings.b
+"$beansc" bindgen "$tmp/included/api.h" -o "$included" \
+    >"$tmp/included.out"
+"$beansc" check "$included" >"$tmp/included.check"
+grep -F 'extern "C" struct DependencyRecord' "$included" >"$tmp/match"
+grep -F 'fn dependency_bad() -> i32 { return 4 }' "$included" >"$tmp/match"
+grep -F 'fn dependency_size_of(record: RawPtr<DependencyRecord>) -> u32' \
+    "$included" >"$tmp/match"
+grep -F 'callback: fn(RawPtr<DependencyRecord>, u32) -> i32' \
+    "$included" >"$tmp/match"
+if grep -F 'DependencyUnused' "$included" >/dev/null; then
+    echo "bindgen emitted an unused type from an included header" >&2
+    exit 1
+fi
+
+# Includes alone do not make a header non-empty and do not cause all included
+# declarations to leak into the generated file.
+printf '#include "dependency.h"\n' >"$tmp/included/empty_api.h"
+"$beansc" bindgen "$tmp/included/empty_api.h" \
+    -o "$tmp/included/empty.b" >"$tmp/included.empty.out"
+"$beansc" check "$tmp/included/empty.b" >"$tmp/included.empty.check"
+if grep -F 'Dependency' "$tmp/included/empty.b" >/dev/null; then
+    echo "bindgen emitted types for a header that only includes another header" >&2
+    exit 1
+fi
+
+# C declarators are recursive. These cover a callback returning a callback, a
+# callback receiving another callback, a pointer to a callback slot, and the
+# nested xDlSym shape used by sqlite3_vfs.
+cat >"$tmp/nested_callbacks.h" <<'C'
+typedef int (*InnerCallback)(int);
+typedef InnerCallback (*CallbackFactory)(int seed);
+typedef struct CallbackTable {
+    CallbackFactory factory;
+    void (*(*lookup)(void*, const char*))(void);
+} CallbackTable;
+typedef struct NestedOwner {
+    struct NestedChild { int value; } *child;
+} NestedOwner;
+CallbackFactory nested_factory(CallbackFactory factory);
+void (*nested_direct(void))(int);
+int nested_consume(int (*factory)(int (*callback)(int)));
+void nested_install(void (**slot)(int));
+NestedOwner* nested_owner(NestedOwner* owner);
+C
+"$beansc" bindgen "$tmp/nested_callbacks.h" \
+    -o "$tmp/nested_callbacks.b" \
+    --target x86_64-unknown-linux-gnu >"$tmp/nested.out"
+"$beansc" check "$tmp/nested_callbacks.b" >"$tmp/nested.check"
+grep -F 'factory: CFunctionPtr<fn(i32) -> CFunctionPtr<fn(i32) -> i32> >' \
+    "$tmp/nested_callbacks.b" >"$tmp/match"
+grep -F 'lookup: CFunctionPtr<fn(RawPtr<u8>, RawPtr<i8>) -> CFunctionPtr<fn()> >' \
+    "$tmp/nested_callbacks.b" >"$tmp/match"
+grep -F 'fn nested_factory(factory: fn(i32) -> CFunctionPtr<fn(i32) -> i32>) -> CFunctionPtr<fn(i32) -> CFunctionPtr<fn(i32) -> i32> >' \
+    "$tmp/nested_callbacks.b" >"$tmp/match"
+grep -F 'fn nested_direct() -> CFunctionPtr<fn(i32)>' \
+    "$tmp/nested_callbacks.b" >"$tmp/match"
+grep -F 'fn nested_consume(factory: fn(CFunctionPtr<fn(i32) -> i32>) -> i32) -> i32' \
+    "$tmp/nested_callbacks.b" >"$tmp/match"
+grep -F 'fn nested_install(slot: RawPtr<CFunctionPtr<fn(i32)> >)' \
+    "$tmp/nested_callbacks.b" >"$tmp/match"
+grep -F 'extern "C" struct NestedChild' \
+    "$tmp/nested_callbacks.b" >"$tmp/match"
+grep -F 'child: RawPtr<NestedChild>' \
+    "$tmp/nested_callbacks.b" >"$tmp/match"
+
 cat >"$tmp/unsupported.h" <<'C'
 int variadic(const char*, ...);
 C
@@ -341,6 +433,14 @@ struct Bits { unsigned a : 3; unsigned b : 5; };
 void use_bits(struct Bits value);
 C
 refuse "$tmp/bitfield.h" "bitfield" "a bitfield"
+cat >"$tmp/wide_callback.h" <<'C'
+struct WideCallback {
+    void (*callback)(int, int, int, int, int, int, int);
+};
+void use_wide_callback(struct WideCallback value);
+C
+refuse "$tmp/wide_callback.h" "more than 6 parameters" \
+    "a callback wider than the C callback bridge"
 # Types Beans cannot represent exactly are refused rather than rounded to a
 # near-enough one.
 for spelling in 'long double' '__int128' '_Complex double'; do
@@ -431,6 +531,16 @@ if [ -x "$stage0" ]; then
     "$stage0" bindgen "$tmp/access.h" -o "$tmp/access.stage0.b" \
         >"$tmp/access.stage0.out"
     cmp "$tmp/bindings.b" "$tmp/access.stage0.b"
+    "$stage0" bindgen "$tmp/included/api.h" -o "$tmp/included.stage0.b" \
+        >"$tmp/included.stage0.out"
+    cmp "$included" "$tmp/included.stage0.b"
+    "$stage0" bindgen "$tmp/included/empty_api.h" \
+        -o "$tmp/included.empty.stage0.b" >"$tmp/included.empty.stage0.out"
+    cmp "$tmp/included/empty.b" "$tmp/included.empty.stage0.b"
+    "$stage0" bindgen "$tmp/nested_callbacks.h" \
+        -o "$tmp/nested_callbacks.stage0.b" \
+        --target x86_64-unknown-linux-gnu >"$tmp/nested.stage0.out"
+    cmp "$tmp/nested_callbacks.b" "$tmp/nested_callbacks.stage0.b"
     "$stage0" bindgen "$tmp/partly_unsupported.h" \
         -o "$tmp/partly_unsupported.stage0.b" --allow-unsupported \
         >"$tmp/partly_unsupported.stage0.out"
