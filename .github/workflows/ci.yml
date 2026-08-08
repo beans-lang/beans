@@ -55,6 +55,18 @@ jobs:
       # The whole-compiler check is the deepest cheap semantic probe there
       # is: stage 0 parses, resolves and type-checks every line of the
       # self-hosted compiler without running codegen.
+      # A bootstrap pull request merges as a merge commit, so the branch tip
+      # the gitlink was built from stops being main. The tree is identical, so
+      # a full clone notices nothing and only a shallow submodule fetch breaks.
+      # Failing here on main is what keeps that from reaching anyone.
+      - name: Bootstrap gitlink names bootstrap main
+        run: |
+          if [ -f compiler/bootstrap/main.cpp ]; then
+            bash test/bootstrap_gitlink.sh
+          else
+            echo "stage 0 absent (fork PR): nothing to compare the gitlink against"
+          fi
+
       - name: Stage 0 builds and checks the compiler
         run: |
           if [ -f compiler/bootstrap/main.cpp ]; then
