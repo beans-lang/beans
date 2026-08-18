@@ -308,33 +308,56 @@ BEANS_NET_API long long beans_h2_take_events(long long handle, uint8_t* out,
     return taken;
 }
 
-// Submits one message's headers (and optionally a body).
+// Submits one message's headers, and optionally a body.
 //
-// `names` and `values` are flat buffers of NUL-free bytes described by
-// `req`: [0] header count, [1] names byte length, [2] values byte length,
-// [3] stream id (0 to open a new one, client side), [4] body length,
-// [5] 1 when this message ends the stream. The name and value lengths are
-// carried as a run of u64 pairs at the head of `lengths`.
+// Everything travels in ONE buffer, because a pointer smuggled through an
+// integer word is a synthetic address in the interpreter and only a real
+// RawPtr argument is materialized for C. The layout is:
+//
+//   [u64 name_len][u64 value_len] * count   little-endian length pairs
+//   [names and values, concatenated]
+//   [body]
+//
+// req describes it: [0] header count, [1] the length-pair region's size,
+// [2] the name/value region's size, [3] body length, [4] stream id (server
+// side), [5] reserved. Lengths are read byte-wise so the layout means the
+// same thing on a big-endian target as on a little-endian one.
+static uint64_t beans_h2_read_u64(const uint8_t* at) {
+    uint64_t value = 0;
+    for (int i = 0; i < 8; i++) value |= (uint64_t)at[i] << (i * 8);
+    return value;
+}
+
 BEANS_NET_API long long beans_h2_submit(long long handle,
-                                        const uint8_t* names,
+                                        const uint8_t* blob,
                                         const uint64_t* req) {
     beans_h2_session* s = beans_h2_of(handle);
-    if (!s || !req) return -(long long)BEANS_NET_ERR_INVALID;
+    if (!s || !req || !blob) return -(long long)BEANS_NET_ERR_INVALID;
     uint64_t count = beans_net_word(req, 0);
-    if (count == 0 || count > 256) return -(long long)BEANS_NET_ERR_INVALID;
-    const uint64_t* lengths = (const uint64_t*)(intptr_t)beans_net_word(req, 1);
-    const uint8_t* body = (const uint8_t*)(intptr_t)beans_net_word(req, 2);
+    uint64_t lengths_bytes = beans_net_word(req, 1);
+    uint64_t names_bytes = beans_net_word(req, 2);
     uint64_t body_len = beans_net_word(req, 3);
     int32_t stream_id = (int32_t)(long long)beans_net_word(req, 4);
-    int end_stream = (int)beans_net_word(req, 5);
-    if (!names || !lengths) return -(long long)BEANS_NET_ERR_INVALID;
+    if (count == 0 || count > 256) return -(long long)BEANS_NET_ERR_INVALID;
+    // The length region must describe exactly `count` pairs, and the pairs
+    // must add up to the name region: a mismatch would have nghttp2 read
+    // past the buffer.
+    if (lengths_bytes != count * 16) return -(long long)BEANS_NET_ERR_INVALID;
+    const uint8_t* lengths = blob;
+    const uint8_t* names = blob + lengths_bytes;
+    const uint8_t* body = blob + lengths_bytes + names_bytes;
+    uint64_t total = 0;
+    for (uint64_t i = 0; i < count * 2; i++) {
+        total += beans_h2_read_u64(lengths + i * 8);
+    }
+    if (total != names_bytes) return -(long long)BEANS_NET_ERR_INVALID;
 
     nghttp2_nv* nv = (nghttp2_nv*)calloc((size_t)count, sizeof(nghttp2_nv));
     if (!nv) return -(long long)BEANS_NET_ERR_MEMORY;
     size_t offset = 0;
     for (uint64_t i = 0; i < count; i++) {
-        size_t name_len = (size_t)lengths[i * 2];
-        size_t value_len = (size_t)lengths[i * 2 + 1];
+        size_t name_len = (size_t)beans_h2_read_u64(lengths + i * 16);
+        size_t value_len = (size_t)beans_h2_read_u64(lengths + i * 16 + 8);
         nv[i].name = (uint8_t*)(uintptr_t)(names + offset);
         nv[i].namelen = name_len;
         offset += name_len;
@@ -346,7 +369,7 @@ BEANS_NET_API long long beans_h2_submit(long long handle,
 
     nghttp2_data_provider provider;
     nghttp2_data_provider* provider_ptr = NULL;
-    if (body_len > 0 && body) {
+    if (body_len > 0) {
         s->pending_body.len = 0;
         if (!beans_h2_buf_push(&s->pending_body, body, (size_t)body_len)) {
             free(nv);
@@ -374,7 +397,6 @@ BEANS_NET_API long long beans_h2_submit(long long handle,
             result = (long long)opened;
         }
     }
-    (void)end_stream;
     free(nv);
     return result;
 }
