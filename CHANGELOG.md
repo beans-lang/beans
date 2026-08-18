@@ -6,6 +6,56 @@ This file records user-facing changes in each Beans release.
 
 ### Added
 
+- `std.http` speaks HTTP/1.1 and HTTP/2. The parser is push-based and
+  strict: `feed` takes whatever arrived and returns typed events, any
+  byte-split of the same input yields the same events, and what llhttp
+  rejects this package rejects. Header order and case are preserved,
+  because order is meaning in HTTP. The limits llhttp does not own — header
+  count, header bytes, target length — live here and report `too_large`
+  rather than truncating. `Client` and `Server` ride the parser for
+  ordinary work; `Http2Connection` carries streams with the same message
+  model, pseudo-headers included. Bodies with `Content-Encoding: gzip` or
+  `deflate` decompress under the same limit that bounds the body.
+- `std.websocket` implements RFC 6455 over `std.http`'s upgrade. `receive`
+  yields whole messages rather than frames, a ping is answered before you
+  see it, text payloads must be valid UTF-8 (checked on the assembled
+  message), and a protocol violation sends the close frame the RFC requires
+  before closing the connection. `max_message` bounds an assembled message
+  so a peer cannot make a server allocate by fragmenting forever.
+- `std.compress` does DEFLATE in three formats — `zlib`, `raw` and `gzip`,
+  multi-member gzip included. Every decompression names the most bytes it
+  will produce, and crossing that bound is an error of kind `limit`: a
+  decompression bomb is an API-level impossibility rather than a caller's
+  afterthought. `Deflater` and `Inflater` stream, with the limit enforced
+  across an Inflater's whole life.
+- `std.crypto` provides SHA-1, SHA-256 and HMAC from the platform's own
+  crypto library — CommonCrypto, CNG, or libcrypto loaded at runtime — so
+  no hash implementation ships here. It is minimal by design: SHA-1 exists
+  for the WebSocket handshake and SHA-256 for what comes after.
+- `std.tls` wraps a `TcpStream` as a filter with the platform's TLS:
+  SecureTransport on macOS, SChannel on Windows, OpenSSL 3 loaded at
+  runtime elsewhere. Chain building and hostname verification always belong
+  to the platform verifier; `connect_with_roots` adds anchors for a private
+  CA without replacing the system store. A stream cut without
+  `close_notify` is an error, not an end — the truncation attack surfaced
+  rather than hidden. One backend difference is worth knowing: macOS
+  SecureTransport negotiates TLS 1.2 at most, so a 1.3-only peer is cleanly
+  refused there and accepted everywhere else.
+- `std.net` gains multicast membership: `UdpSocket.join_multicast` and
+  `leave_multicast` take a numeric group address, because a name can
+  resolve to anything and membership of the wrong group is silent.
+- The socket layer can be made to fail on purpose. `BEANS_SOCK_FAILPOINTS`
+  takes `<seed>[:<rate>[:eintr]]` and injects `EINTR`, `EAGAIN`,
+  `ECONNRESET`, `EMFILE` and friends at the syscall sites, deterministically
+  per seed and replayable from the log (`BEANS_SOCK_FAILPOINTS_LOG=1`). The
+  `eintr` mode injects only interrupts, which every retry loop must absorb:
+  a program's output under an interrupt storm has to be byte-identical to
+  its output without one, and the suites hold it to that.
+- `make fuzz-net` and `make fuzz-net-soak` run the networking fuzzers:
+  seeded socket op-sequences with an fd census, poller op-streams with a
+  readiness oracle, HTTP chunking-invariance, compression mutation,
+  WebSocket garbage frames and HTTP/2 glue. Every case replays from its
+  seed.
 - Method chains span lines: a chain may break after a trailing `.` or before
   a leading `.name` — the newline rule already promised the first and now
   both work, in the parser and the lexer's lookahead. `..` stays a range

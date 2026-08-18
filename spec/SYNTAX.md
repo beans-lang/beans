@@ -2451,6 +2451,201 @@ poll.wake(signal)?                                        // from a worker
 - `Poller` is a `unique class`, closed by `deinit`, like every other resource. The
   low-level layer is `std.ready`.
 
+### std.http (v1.0, implemented)
+
+```beans
+import std.http
+
+// Parsing: push bytes in, take typed events out. Any byte-split of the same
+// input produces the same events.
+let parser: http.RequestParser = new http.RequestParser()
+for event: http.RequestEvent in parser.feed(arrived)? {
+    match event {
+        head(request) => { io.println("{request.method} {request.target}") }
+        body(chunk) => { collected.append(chunk) }
+        trailers(fields) => {}
+        done(keep_alive) => {}
+        upgraded(request, remainder) => {}   // the connection is no longer HTTP
+    }
+}
+
+// A client: one connection, sequential exchanges, keep-alive by default.
+let client: http.Client = http.Client.connect("127.0.0.1", port)?
+let answer: http.ClientResponse = client.get("/hello")?
+
+// A server: accept, read whole requests, frame responses.
+let server: http.Server = http.Server.bind("127.0.0.1", 0)?
+let conn: http.ServerConn = server.accept()?
+match conn.read_request()? {
+    some(request) => {
+        conn.respond(200, "OK", new http.Headers(), body, request.keep_alive)?
+    }
+    none => {}   // the client finished cleanly
+}
+
+// HTTP/2 is the same message model with streams named explicitly.
+let session: http.Http2Connection = http.Http2Connection.adopt(move socket, true)?
+for event: http.Http2Event in session.run()? {
+    match event {
+        message(exchange) => {
+            session.respond(exchange.id, 200, new http.Headers(), body)?
+        }
+        stream_closed(id, code) => {}
+        goaway(last, code) => {}
+    }
+}
+```
+
+- **Parsing is push-based and cannot block.** `feed` takes whatever arrived
+  and returns the events it completed. Any byte-split of the same input yields
+  the identical event stream, so the shape of a caller's read loop can never
+  change what it parses. The property is tested directly, and against llhttp's
+  own corpus split at every byte.
+- **Strict mode is the only mode.** The lenient flags that exist for ancient
+  peers and request-smuggling papers are not exposed. What llhttp rejects, this
+  package rejects: a malformed message is kind `protocol`, and the connection it
+  came from is finished. A parse failure does not discard the events that
+  arrived before it, so a pipelined buffer whose third message is malformed
+  still yields the first two.
+- **The limits llhttp does not own live here.** `Limits` bounds header count,
+  total header bytes and target length; crossing one is kind `too_large`, never
+  a truncation. `Client` and `ServerConn` bound the buffered body the same way.
+- **Header order and case are preserved.** `Headers` is an ordered list, not a
+  map: repeated fields combine in order and a proxy that reorders them changes
+  the message. Lookups are ASCII-case-insensitive and `get` answers the first
+  match, which is what a compliant reader must do.
+- **HTTP/2 is a property of the connection, not a different API.** Streams
+  carry the same `Headers`, pseudo-headers included in arrival order. There is
+  no h2c upgrade dance; a connection speaks HTTP/2 because ALPN said so or
+  because both sides knew in advance.
+- `Content-Encoding: gzip` and `deflate` responses decompress through
+  `std.compress` under the same body limit, so a compressed bomb is an error
+  rather than an allocation.
+- Error kinds: `protocol` (malformed), `too_large` (a bound crossed), `eof`
+  (cut short), `closed` (the connection is done), plus the transport's own.
+
+### std.websocket (v1.0, implemented)
+
+```beans
+import std.websocket
+
+// Client: TCP, the HTTP upgrade, then framing.
+let socket: websocket.Connection =
+    websocket.Connection.connect("127.0.0.1", port, "/chat")?
+socket.send_text("hello")?
+match socket.receive()? {
+    some(message) => {
+        match message {
+            text(body) => { io.println(body) }
+            binary(body) => {}
+            ping(body) => {}     // a pong already went out
+            pong(body) => {}
+            closed(code, reason) => {}
+        }
+    }
+    none => {}                   // the close handshake finished
+}
+socket.close(1000, "done")?
+
+// Server: std.http parses the upgrade, this takes the socket from there.
+let live: websocket.Connection =
+    websocket.Connection.accept(move stream, request)?
+```
+
+- **A message, not a frame.** `receive` yields whole messages; fragmentation,
+  continuation frames and interleaved control frames are handled underneath,
+  because every protocol built on WebSocket cares about messages.
+- **Text means valid UTF-8**, checked on the assembled message because a code
+  point may straddle a fragment boundary. Invalid UTF-8 is kind `protocol`.
+- **Ping is answered for you.** The pong is on the wire before the `ping`
+  reaches your loop. Received pings are still reported, for callers who count.
+- **Close is a handshake.** `close` sends the close frame and waits, bounded,
+  for the peer's. A protocol violation sends the close frame the RFC requires
+  and then closes the TCP connection immediately, as 7.1.1 demands.
+- `max_message` bounds an assembled message; crossing it is kind `too_large`.
+  A peer cannot make a server allocate by fragmenting forever.
+- The framing is wslay, vendored under `runtime/net`. The Autobahn TestSuite is
+  the gate, run against both an echo server and an echo client.
+
+### std.compress (v1.0, implemented)
+
+```beans
+import std.compress
+
+let packed: Bytes = compress.gzip_compress(data)?
+// The limit is not optional: it is what makes a decompression bomb an error
+// instead of an allocation.
+let back: Bytes = compress.gzip_decompress(packed, 1048576)?
+
+// Streaming, with one limit across the whole life of the Inflater.
+let press: compress.Deflater = compress.Deflater.open(compress.Format.zlib)?
+wire.append(press.push(first_half)?)
+wire.append(press.finish()?)
+```
+
+- **Decompression limits are mandatory.** Every inflate names the most bytes it
+  will produce, and crossing that bound is kind `limit` — never an allocation
+  racing a hostile ratio. A tiny input claiming gigabytes gets a bounded amount
+  of honest effort and an error.
+- **Three formats, spelled out**: `zlib` (RFC 1950), `raw` (RFC 1951) and
+  `gzip` (RFC 1952). gzip decoding reads multi-member files the way `gzip -d`
+  reads concatenated archives.
+- One-shot functions take and return whole `Bytes`; `Deflater` and `Inflater`
+  are move-only handles for data that arrives in pieces, with the limit
+  enforced across an Inflater's whole life.
+- The codec is zlib-ng in `ZLIB_COMPAT` mode, vendored under `runtime/net`.
+
+### std.crypto (v1.0, implemented)
+
+```beans
+import std.crypto
+
+let digest: Bytes = crypto.sha256(data)?
+let mac: Bytes = crypto.hmac(crypto.Algorithm.sha256, key, data)?
+
+let hasher: crypto.Hasher = crypto.Hasher.open(crypto.Algorithm.sha1)?
+hasher.update(first)?
+let whole: Bytes = hasher.finish()?
+```
+
+- **The hashes come from the platform**, never from an implementation shipped
+  here: CommonCrypto on macOS, CNG on Windows, libcrypto loaded at runtime on
+  Linux and BSD. `available()` reports whether a provider is present.
+- SHA-1 exists for the WebSocket handshake and SHA-256 for everything after;
+  HMAC is the standard construction built on top. This is not a general crypto
+  toolkit, and is not meant to become one.
+- A `Hasher` is spent by `finish`; using it again is kind `closed`.
+
+### std.tls (v1.0, implemented)
+
+```beans
+import std.tls
+
+let secure: tls.TlsStream =
+    tls.TlsStream.connect("example.test", 443, "h2,http/1.1")?
+io.println(secure.protocol())            // the ALPN protocol that was agreed
+secure.write_all(request)?
+let reply: Bytes = secure.read(16384)?   // empty = the peer sent close_notify
+secure.close()?
+```
+
+- **The platform owns the cryptography.** macOS uses SecureTransport, Windows
+  SChannel, Linux and BSD OpenSSL 3 loaded at runtime. Chain building and
+  hostname verification always belong to the platform verifier and are never
+  reimplemented. `connect_with_roots` ADDS anchors for a private CA or a pin;
+  it never replaces the system store.
+- **A stream cut without `close_notify` is kind `eof`**, whether the transport
+  ended in FIN or RST. That is the truncation attack surfaced rather than
+  hidden; an empty `read` means a real, announced end.
+- **macOS negotiates TLS 1.2 at most.** SecureTransport never gained 1.3, so a
+  1.3-only peer is refused with kind `handshake` there and accepted elsewhere —
+  a clean refusal, never a silent downgrade. The API is designed so a later
+  Network.framework backend changes nothing a caller can see.
+- A `TlsStream` wraps a `TcpStream` as a filter and owns it: bytes in, bytes
+  out, handshake driven by readiness like any other nonblocking IO.
+- Error kinds: `handshake` (certificate, hostname or protocol), `eof`
+  (truncation), `protocol` (record layer), `unsupported` (no backend).
+
 ### std.signal (v0.8, implemented)
 
 ```beans
