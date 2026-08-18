@@ -609,6 +609,13 @@ jobs:
           image: docker.io/tonistiigi/binfmt@sha256:8f58e6214f4cc9dc83ce8f5acad1ece508eb6b20e696a8c1e9f274481982c541 # qemu-v10.0.4
           platforms: arm
 
+      - name: Emit compiler IR for ARMv6 hard-float
+        run: |
+          mkdir -p build/bootstrap-ir
+          beansc build src/main.b --target arm-unknown-linux-gnueabihf \
+            --emit ir -o build/bootstrap-ir/beansc.ll
+          cp build/main_ffi.c build/bootstrap-ir/beansc_ffi.c
+
       - name: Self-hosted build and differential loop on ARMv6 hard-float
         run: |
           docker run --rm --platform linux/arm/v6 \
@@ -618,18 +625,16 @@ jobs:
               echo "phase apt start: $(date -u +%H:%M:%S)"
               apt-get update
               DEBIAN_FRONTEND=noninteractive apt-get install -y \
-                --no-install-recommends bash clang-16 lld-16 llvm-16 git file make curl ca-certificates
-              curl -fsSL \
-                https://github.com/beans-lang/beans/releases/latest/download/beans-install.sh \
-                -o /tmp/beans-install.sh
-              BEANS_TARGET=arm-unknown-linux-gnueabihf \
-                sh /tmp/beans-install.sh --no-modify-path
-              export PATH="${BEANS_HOME:-$HOME/.beans}/bin:$PATH"
+                --no-install-recommends bash g++ clang-16 lld-16 llvm-16 git file make
               echo "phase copy start: $(date -u +%H:%M:%S)"
               mkdir -p /work/beans
-              tar -cf - -C /src --exclude=./build --exclude=./.git \
+              tar -cf - -C /src --exclude=./build/beansc --exclude=./.git \
                 --exclude=./toolchains . | tar -xf - -C /work/beans
               cd /work/beans
+              BEANS_CC=clang-16 tools/link_compiler_ir.sh \
+                build/bootstrap-ir/beansc.ll \
+                build/bootstrap-ir/beansc_ffi.c build/beansc
+              export BEANSC_BOOT="$PWD/build/beansc"
               echo "phase gate start: $(date -u +%H:%M:%S)"
               BEANS_ARMV6HF_REQUIRE=1 bash test/armv6hf_hosted.sh
               echo "phase gate end: $(date -u +%H:%M:%S)"

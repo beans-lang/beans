@@ -29,6 +29,15 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/beans-compiler-link.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 
 common=(-O2 -pthread)
+# Clang in the ARMv6 container inherits a newer distro default even though the
+# process runs under an ARM1176 QEMU CPU. Pin every linked object to ARMv6 so
+# the first compiler can run before it is able to rebuild itself normally.
+if [[ $(uname -m) == armv6l ]]; then
+    common+=(
+        -march=armv6 -marm -mfpu=vfp -mfloat-abi=hard
+        -mno-unaligned-access
+    )
+fi
 "$cc" "${common[@]}" -DBEANS_RT_PROFILE=3 -DBEANS_RT_DECIMAL=1 \
     -Wno-override-module -c "$repo/runtime/beans_rt.c" -o "$work/runtime.o"
 "$cc" "${common[@]}" -fvisibility=hidden \
