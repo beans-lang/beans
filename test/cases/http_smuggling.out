@@ -1,0 +1,20 @@
+CL.TE both present: refused=true kind=protocol latched=true
+TE.CL both present: refused=true kind=protocol latched=true
+duplicate Content-Length: refused=true kind=protocol latched=true
+conflicting duplicate Transfer-Encoding: refused=true kind=protocol latched=true
+chunked before another coding: refused=true kind=protocol latched=true
+obs-fold continuation line: refused=true kind=protocol latched=true
+NUL in header value: refused=true kind=protocol latched=true
+NUL in target: refused=true kind=protocol latched=true
+high-bit byte in header name: refused=true kind=protocol latched=true
+bare LF line ending: refused=true kind=protocol latched=true
+bare CR line ending: refused=true kind=protocol latched=true
+space before colon: refused=true kind=protocol latched=true
+space inside target: refused=true kind=protocol latched=true
+tab inside status line: refused=true kind=protocol latched=true
+Content-Length with plus sign: refused=true kind=protocol latched=true
+Content-Length with embedded space: refused=true kind=protocol latched=true
+chunk size overflow: refused=true kind=protocol latched=true
+chunk size with sign: refused=true kind=protocol latched=true
+headers ending without final CRLF pair: refused=true kind=protocol latched=true
+version out of range: refused=true kind=protocol latched=true

@@ -171,6 +171,8 @@ test-runtime: $(BIN)
 	./test/net_torture.sh
 	./test/poll_semantics.sh
 	bash ./test/net_fuzz.sh smoke
+	./test/http.sh
+	./test/llhttp_corpus.sh
 	./test/signals.sh
 	./test/dylib.sh
 	./test/child.sh
@@ -318,6 +320,8 @@ test-core: $(BIN)
 	./test/net_torture.sh
 	./test/poll_semantics.sh
 	bash ./test/net_fuzz.sh smoke
+	./test/http.sh
+	./test/llhttp_corpus.sh
 	./test/signals.sh
 	./test/dylib.sh
 	./test/child.sh
