@@ -9,6 +9,7 @@
 // policy, and this is the mechanism it would pool.
 package http
 
+import std.compress
 import std.net
 
 /// A buffered response: the head plus its whole body.
@@ -173,6 +174,21 @@ pub unique class Client {
             if at_eof && !finished {
                 return err("the server closed mid-response", "eof")
             }
+        }
+        // Content-Encoding rides std.compress with the same body limit: a
+        // compressed body must also DECOMPRESS within max_body, so a bomb
+        // in a 200 OK is an error, not an allocation. Unknown codings pass
+        // through untouched with their header intact.
+        let coding: string = answer.headers.get("Content-Encoding").or("").trim().to_lower()
+        if coding == "gzip" && gathered.len() > 0 {
+            let opened: Bytes = compress.gzip_decompress(gathered, self.max_body)?
+            answer.body = opened
+            return ok(answer)
+        }
+        if coding == "deflate" && gathered.len() > 0 {
+            let opened: Bytes = compress.inflate(gathered, self.max_body)?
+            answer.body = opened
+            return ok(answer)
         }
         answer.body = gathered
         return ok(answer)

@@ -38,6 +38,7 @@ echo "building the fuzz drivers"
 "$beansc" build test/cases/sock_fuzz.b -o "$tmp/sock_fuzz" >/dev/null 2>&1
 "$beansc" build test/cases/poll_fuzz.b -o "$tmp/poll_fuzz" >/dev/null 2>&1
 "$beansc" build test/cases/http_fuzz.b -o "$tmp/http_fuzz" >/dev/null 2>&1
+"$beansc" build test/cases/compress_fuzz.b -o "$tmp/compress_fuzz" >/dev/null 2>&1
 
 fail() {
     echo "net fuzz FAILED: $*" >&2
@@ -90,6 +91,11 @@ elif [[ "$mode" == run ]]; then
             { cat "$tmp/out" >&2; fail "http_fuzz seed=$seed"; }
         grep -q "^ok http_fuzz" "$tmp/out" ||
             { cat "$tmp/out" >&2; fail "http_fuzz seed=$seed missing ok line"; }
+        echo "compress_fuzz seed=$seed cases=$ops"
+        "$tmp/compress_fuzz" "$seed" "$ops" >"$tmp/out" 2>&1 ||
+            { cat "$tmp/out" >&2; fail "compress_fuzz seed=$seed"; }
+        grep -q "^ok compress_fuzz" "$tmp/out" ||
+            { cat "$tmp/out" >&2; fail "compress_fuzz seed=$seed missing ok line"; }
     done
 elif [[ "$mode" == soak ]]; then
     # Wall-clock bounded; every iteration is still fully seeded, so any
@@ -104,8 +110,10 @@ elif [[ "$mode" == soak ]]; then
         case_native poll_fuzz "$seed" "$ops"
         "$tmp/http_fuzz" "$seed" "$ops" >"$tmp/out" 2>&1 ||
             { cat "$tmp/out" >&2; fail "http_fuzz seed=$seed"; }
+        "$tmp/compress_fuzz" "$seed" "$ops" >"$tmp/out" 2>&1 ||
+            { cat "$tmp/out" >&2; fail "compress_fuzz seed=$seed"; }
         seed=$((seed + 1))
-        cases=$((cases + 3))
+        cases=$((cases + 4))
     done
     echo "soak finished: $cases cases, seeds $start..$((seed - 1)), ${soak_seconds}s budget"
 else

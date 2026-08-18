@@ -274,21 +274,26 @@ fn net_bridge_inputs(root: string, feature: string) -> List<string> {
             root, "vendor/wslay/lib/includes/wslay/wslayver.h"))
     }
     if feature == "zlib" {
-        let lib: string = path.join(root, "vendor/zlib-ng")
-        match Dir.list(lib) {
-            ok(entries) => {
-                var names: List<string> = []
-                for entry: string in entries {
-                    if entry.ends_with(".c") || entry.ends_with(".h") {
-                        names.push(entry)
+        // The generated compat configuration is part of the contract, so it
+        // feeds the key beside the upstream sources.
+        for dir: string in ["zlib-config", "vendor/zlib-ng",
+                            "vendor/zlib-ng/arch/generic"] {
+            let lib: string = path.join(root, dir)
+            match Dir.list(lib) {
+                ok(entries) => {
+                    var names: List<string> = []
+                    for entry: string in entries {
+                        if entry.ends_with(".c") || entry.ends_with(".h") {
+                            names.push(entry)
+                        }
+                    }
+                    names.sort()
+                    for name: string in names {
+                        files.push(path.join(lib, name))
                     }
                 }
-                names.sort()
-                for name: string in names {
-                    files.push(path.join(lib, name))
-                }
+                err(_) => {}
             }
-            err(_) => {}
         }
     }
     return move files
@@ -312,6 +317,25 @@ fn net_feature_for_symbol(symbol: string) -> string {
 // the vendor include roots ride as -I flags, resolved against the net root.
 fn net_bridge_include_flags(root: string, feature: string) -> List<string> {
     var flags: List<string> = []
+    if feature == "zlib" {
+        // zlib-ng's compat lane: the generated headers first, then the
+        // vendor tree. The defines mirror upstream's cmake output for the
+        // generic (no arch dispatch) build; the compiler-feature probes are
+        // constants for Clang, the only C driver Beans uses.
+        let config: string = path.join(root, "zlib-config")
+        let lib: string = path.join(root, "vendor/zlib-ng")
+        flags.push("-I{config}")
+        flags.push("-I{lib}")
+        flags.push("-DZLIB_COMPAT")
+        flags.push("-DWITH_GZFILEOP")
+        flags.push("-DWITH_ALL_FALLBACKS")
+        flags.push("-DHAVE_ATTRIBUTE_ALIGNED")
+        flags.push("-DHAVE_BUILTIN_ASSUME_ALIGNED")
+        flags.push("-DHAVE_BUILTIN_CTZ")
+        flags.push("-DHAVE_BUILTIN_CTZLL")
+        flags.push("-DHAVE_VISIBILITY_HIDDEN")
+        flags.push("-DHAVE_VISIBILITY_INTERNAL")
+    }
     if feature == "h2" {
         let public: string = path.join(root, "vendor/nghttp2/lib/includes")
         let internal: string = path.join(root, "vendor/nghttp2/lib")

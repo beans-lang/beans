@@ -1,0 +1,5 @@
+round-trip identity held true
+limit boundary exact true
+streaming equals one-shot true
+bomb is tiny true
+bomb refused true
