@@ -1042,6 +1042,19 @@ class NativeBuildDriver {
         if self.linker != "" {
             command.arg("-fuse-ld={self.linker}")
         }
+        // PE linkers stamp the current time into the image header, so two
+        // otherwise identical links differ. The fixed-point gate compares
+        // stage binaries byte for byte and needs the reproducible spelling:
+        // MSVC-style linkers replace the stamp with a content hash, GNU-style
+        // ones write none.
+        if self.target.object_format == "coff" {
+            command.arg(
+                if self.target.env == "msvc" {
+                    "-Wl,/Brepro"
+                } else {
+                    "-Wl,--no-insert-timestamp"
+                })
+        }
         command.arg(ir_path)
         if ffi_path != "" {
             command.arg(ffi_path)

@@ -32,11 +32,20 @@ mv "$tmp/beansc" "$tmp/stage2"
 "$tmp/stage2" build src/main.b -o "$tmp/beansc" >"$tmp/stage3.log"
 mv "$tmp/beansc" "$tmp/stage3"
 
+# macOS ships shasum but not sha256sum; Git Bash on Windows is the reverse.
+digest() {
+    if command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$@"
+    else
+        sha256sum "$@"
+    fi
+}
+
 if ! cmp "$tmp/stage2" "$tmp/stage3"; then
     echo "the compiler does not reproduce itself" >&2
-    shasum -a 256 "$tmp/stage2" "$tmp/stage3" >&2
+    digest "$tmp/stage2" "$tmp/stage3" >&2
     exit 1
 fi
 
 echo "ok stage 2 and stage 3 are identical" \
-    "($(shasum -a 256 "$tmp/stage2" | cut -c1-16))"
+    "($(digest "$tmp/stage2" | cut -c1-16))"
