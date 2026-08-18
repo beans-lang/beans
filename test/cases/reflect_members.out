@@ -1,0 +1,15 @@
+2
+Child.label:string:true:false
+prefix:string:taken
+Parent.hidden:int:false:false
+Child.make:int:true:true
+value
+true
+idle:0
+named:2
+name:string
+count:int
+combine:int:true
+left:int:borrowed
+right:int:mutable
+Child

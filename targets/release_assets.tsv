@@ -1,0 +1,37 @@
+# Every package a complete release must contain, and its class.
+#
+# The publish job refuses to create a release unless the manifest it assembled
+# covers exactly these rows: a release is all of Beans' supported hosts or it is
+# not a release. Adding a target here without adding the job that builds it will
+# fail the publish job, which is the intent — this file is the contract.
+#
+# full: bundles a native C toolchain, so `beansc build` needs nothing else.
+# slim: check/run/llvm/--emit ir need nothing; a native build needs Clang.
+#
+# beans_target	class
+arm64-apple-darwin	slim
+x86_64-unknown-linux-gnu	full
+aarch64-unknown-linux-gnu	full
+x86_64-pc-windows-gnullvm	full
+aarch64-pc-windows-gnullvm	full
+i686-pc-windows-gnu	full
+x86_64-pc-windows-gnu	slim
+x86_64-pc-windows-msvc	slim
+i686-pc-windows-msvc	slim
+aarch64-pc-windows-msvc	slim
+x86_64-unknown-linux-musl	slim
+aarch64-unknown-linux-musl	slim
+riscv64-unknown-linux-musl	slim
+powerpc64le-unknown-linux-musl	slim
+loongarch64-unknown-linux-musl	slim
+powerpc64-unknown-linux-musl	slim
+riscv64-unknown-linux-gnu	slim
+powerpc64le-unknown-linux-gnu	slim
+i686-unknown-linux-gnu	slim
+armv7-unknown-linux-gnueabihf	slim
+arm-unknown-linux-gnueabi	slim
+arm-unknown-linux-gnueabihf	slim
+loongarch64-unknown-linux-gnu	slim
+powerpc-unknown-linux-gnu	slim
+powerpc64-unknown-linux-gnu	slim
+s390x-unknown-linux-gnu	slim

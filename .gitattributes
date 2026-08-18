@@ -1,0 +1,40 @@
+# Every text file keeps LF in the working tree, on every platform. Git decides
+# what is text; anything it detects as binary is left alone.
+#
+# The repository's toolchain is POSIX end to end — bash gates, a Makefile, and
+# greps that are frequently anchored — and a Windows clone with the default
+# `core.autocrlf=true` breaks all three at once. test/object_abi.sh is the
+# clearest case: it asserts the runtime's ABI constants with
+# `grep -q '^#define RT_HEADER_SIZE 16$' runtime/beans_rt.c`, and `$` anchors
+# before the newline but *after* a carriage return, so on a Windows checkout
+# the check that guards the object ABI silently could not match.
+* text=auto eol=lf
+
+# Spelled out below as well, because each of these was found the hard way and
+# the reason is worth keeping next to the rule.
+
+# Shell scripts must keep LF in the working tree, on every platform.
+#
+# This is not a style preference. Git stores them as LF, but a Windows clone
+# with the default `core.autocrlf=true` checks them out as CRLF, and bash then
+# reads `set -euo pipefail\r` and reports "pipefail: invalid option name". Every
+# gate in test/ dies on its second line. That includes the two gates whose whole
+# purpose is to run *on Windows* — test/windows_hosted.sh under Git Bash and
+# test/windows_native_run.sh on the windows runner — so without this the
+# Windows story is untestable on a stock Windows checkout.
+*.sh text eol=lf
+
+# make treats a trailing CR as part of the command it runs, so a recipe becomes
+# `clang++ ...\r` and the shell reports a command it appears to spell correctly.
+Makefile text eol=lf
+*.mk text eol=lf
+
+# The manifests the test scripts parse field-by-field. A trailing CR silently
+# becomes part of the last field, which turns an exit-code column into a string
+# that never compares equal.
+*.tsv text eol=lf
+
+# Documentation checks use line-oriented shell tools. Pin Markdown to LF so
+# those checks behave the same way on Windows, Linux, and macOS checkouts.
+*.md text eol=lf
+

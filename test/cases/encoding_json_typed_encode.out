@@ -1,0 +1,28 @@
+{"userId":7,"fullName":"Ada \"A\"","active":true,"score":1.5,"note":null,"alternate":{"city":"Ipoh","zip":30000},"links":["web"],"address":{"city":"KL","zip":50000},"tags":["one","two"]}
+{
+  "userId": 7,
+  "fullName": "Ada \"A\"",
+  "active": true,
+  "score": 1.5,
+  "note": null,
+  "alternate": {
+    "city": "Ipoh",
+    "zip": 30000
+  },
+  "links": [
+    "web"
+  ],
+  "address": {
+    "city": "KL",
+    "zip": 50000
+  },
+  "tags": [
+    "one",
+    "two"
+  ]
+}
+[{"userId":7,"fullName":"Ada \"A\"","active":true,"score":1.5,"note":null,"alternate":{"city":"Ipoh","zip":30000},"links":["web"],"address":{"city":"KL","zip":50000},"tags":["one","two"]}]
+[]
+{"s8":-8,"s16":-1600,"s32":-320000,"s64":-6400000000,"u8_value":8,"u16_value":1600,"u32_value":320000,"u64_value":6400000000,"small":0.25,"values":[-2,300]}
+[{"code":-3},{"code":400}]
+indent: invalid

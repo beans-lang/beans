@@ -1,0 +1,27 @@
+1:1	import	import
+1:8	ident	std
+1:11	.	.
+1:12	ident	io
+1:14	newline	
+3:1	fn	fn
+3:4	ident	main
+3:8	(	(
+3:9	)	)
+3:11	{	{
+4:5	let	let
+4:9	ident	name
+4:13	:	:
+4:15	ident	string
+4:22	=	=
+4:24	string	"beans"
+4:31	newline	
+5:5	ident	io
+5:7	.	.
+5:8	ident	println
+5:15	(	(
+5:16	string	"hello from {name}"
+5:35	)	)
+5:36	newline	
+6:1	}	}
+6:2	newline	
+7:1	eof	

@@ -1,0 +1,13 @@
+main.User
+User
+int
+List<main.User>
+struct_type
+list
+main.User
+main.Entity
+Entity.id:int:true:true
+Person.name:string:true:true
+Person.active:bool:false:true
+name
+true

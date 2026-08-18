@@ -1,0 +1,4 @@
+plain one,three,two 6
+ordered 2:two;1:one;3:three;
+wide 36
+replace 1:old-one;2:new-two;

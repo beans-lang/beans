@@ -1,0 +1,15 @@
+start:first
+start:second
+before:main.work:outer:1
+before:main.work:inner:2
+body:work
+after:main.work:inner:2
+after:main.work:outer:1
+before:main.Worker.run:method:3
+body:method
+after:main.Worker.run:method:3
+guard:main.guarded
+body:nested
+body:guarded
+stop:second
+stop:first

@@ -1,0 +1,10 @@
+json copy_to_raw mark 42
+json copy_from_raw mark 43
+json bytes_address 9901
+json string_address 9902
+xml copy_to_raw mark 52
+xml bytes_address 9903
+base64 copy_to_raw mark 62
+base64 bytes_address 9905
+base64 string_uninit user string 7
+user packages kept their own bodies

@@ -1,0 +1,34 @@
+vector [] -> [] ok
+vector [f] -> [Zg==] ok
+vector [fo] -> [Zm8=] ok
+vector [foo] -> [Zm9v] ok
+vector [foob] -> [Zm9vYg==] ok
+vector [fooba] -> [Zm9vYmE=] ok
+vector [foobar] -> [Zm9vYmFy] ok
+std      ++++
+std_raw  ++++
+url      ----
+url_raw  ----
+pad std  Zg==
+pad none Zg
+pad url  Zg==
+pad urlN Zg
+url decode 251 255
+plus in url: invalid - invalid base64 character at byte 2
+dash in std: invalid - invalid base64 character at byte 2
+strict ws: whitespace - whitespace at byte 4 is not allowed in strict base64
+strict tab: whitespace - whitespace at byte 0 is not allowed in strict base64
+missing pad: length - base64 input length leaves a lone trailing character at byte 6
+pad on raw: padding - base64 padding does not match this encoding at byte 6
+extra bits: bits - base64 trailing padding bits are not zero at byte 2
+lone char: length - base64 input length leaves a lone trailing character at byte 5
+inner pad: padding - base64 padding does not match this encoding at byte 2
+bang: invalid - invalid base64 character at byte 3
+forgiving ws: ok [foob]
+forgiving raw: ok [foob]
+forgiving bits: ok [A]
+forgiving bang: invalid - invalid base64 character at byte 3
+empty encode []
+empty decode: ok []
+big encoded len 4000000
+big round trip true crc 1145681115

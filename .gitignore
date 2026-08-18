@@ -1,0 +1,11 @@
+build/
+.DS_Store
+.idea/
+report.md
+__pycache__/
+# A repo-local LLVM-MinGW lives here (test/windows_toolchain.sh puts it there).
+# It is a downloaded toolchain, not source, and it is gigabytes.
+toolchains/
+# Where the packaging scripts and the release workflow put finished archives.
+dist/
+release-output/

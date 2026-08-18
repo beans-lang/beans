@@ -1,0 +1,60 @@
+name: Benchmark trend
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * 1"
+
+jobs:
+  full:
+    name: full benchmark (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    # `matrix` only exists inside the job. At workflow scope GitHub rejected this
+    # file before starting any job, leaving an empty failed run on every push.
+    concurrency:
+      group: benchmark-${{ github.ref }}-${{ matrix.os }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-beansc
+
+      - name: Install clang (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y clang
+
+      - name: Build
+        run: |
+          make
+          make bench-verify BENCH_RUN=ci
+
+      - name: Full correctness suite (Linux)
+        if: runner.os == 'Linux'
+        run: make test
+
+      - name: Parser smoke (macOS)
+        if: runner.os == 'macOS'
+        run: make run
+
+      # Hosted machines are useful for trends, not release claims. The full
+      # report still records every noisy row and marks it non-eligible.
+      - name: Full benchmark
+        env:
+          BENCH_ALLOW_NOISE_REASON: shared GitHub runner; trend data only
+        run: make bench-full BENCH_RUN=ci
+
+      - name: Upload raw samples and report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-${{ runner.os }}-${{ runner.arch }}
+          path: |
+            build/bench/results-full-ci.json
+            build/bench/report-full-ci.md
+            build/bench/compile-times-full-ci.tsv
+          if-no-files-found: error

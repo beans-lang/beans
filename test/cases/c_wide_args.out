@@ -1,0 +1,8 @@
+wide ints 385
+wide floats 192.5
+wide narrow 23999901760
+narrow registers 239602 -3
+wide mixed 455
+wide mixed off -455
+wide record size 12 900
+wide callback 228

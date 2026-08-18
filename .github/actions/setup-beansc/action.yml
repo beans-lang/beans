@@ -1,0 +1,45 @@
+name: Set up beansc
+description: >-
+  Install a released Beans compiler and put it on PATH.
+
+  Beans is self-hosted, so every job that builds the compiler needs a compiler
+  to build it with. This used to come from the C++ stage-0 submodule, which
+  each job checked out and compiled. With that gone, a released beansc is what
+  `make` bootstraps from, exactly as a contributor's first build does.
+
+  Note the floor this implies: the released compiler must already understand
+  every language feature `src/` uses. `make` checks that before it starts and
+  says so in one line if the release is too old.
+inputs:
+  version:
+    description: Release to install. Defaults to the latest.
+    required: false
+    default: latest
+runs:
+  using: composite
+  steps:
+    - name: Install a released beansc
+      if: runner.os != 'Windows'
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ "${{ inputs.version }}" = latest ]; then
+          url=https://github.com/beans-lang/beans/releases/latest/download/beans-install.sh
+          curl -fsSL "$url" | sh
+        else
+          url=https://github.com/beans-lang/beans/releases/latest/download/beans-install.sh
+          curl -fsSL "$url" | sh -s -- --version "${{ inputs.version }}"
+        fi
+        echo "${BEANS_HOME:-$HOME/.beans}/bin" >> "$GITHUB_PATH"
+
+    - name: Install a released beansc (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        Invoke-RestMethod https://github.com/beans-lang/beans/releases/latest/download/beans-install.ps1 | Invoke-Expression
+        "$env:LOCALAPPDATA\Beans\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+    - name: Report what will do the bootstrapping
+      shell: bash
+      run: beansc --version

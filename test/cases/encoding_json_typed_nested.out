@@ -1,0 +1,10 @@
+TechNova: 2
+LAP: tags=2 stock=2
+storage=SSD:1
+connectivity=none
+note=ready
+MOUSE: tags=0 stock=0
+storage=none
+connectivity=2
+note=none
+error: invalid

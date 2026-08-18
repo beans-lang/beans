@@ -1,0 +1,5 @@
+allowed: 7 -2 300
+depth: invalid
+zero: invalid
+negative: invalid
+tiny: -3 400

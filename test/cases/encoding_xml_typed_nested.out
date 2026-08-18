@@ -1,0 +1,11 @@
+fleet: 2
+labels=store,geo
+LAP: tags=2 stock=2 geo=2.7,101.7
+storage=SSD:1
+connectivity=none
+note=ready
+MOUSE: tags=1 stock=0 geo=3,102
+storage=none
+connectivity=2
+note=none
+error: invalid

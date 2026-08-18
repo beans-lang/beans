@@ -1,0 +1,7 @@
+before:pre-await
+body:pre-await
+after:pre-await
+before:post-await
+body:post-await
+after:post-await
+result 10

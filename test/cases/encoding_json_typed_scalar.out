@@ -1,0 +1,19 @@
+text: 7 Ada true -8 1.5 ok 42 cache
+nulls: 8 Lin false 0 2 none -1 cache
+bytes: 9 Jo true 127 0.25 none -1 cache
+in place: 11 Mia true 3 0.5 none -1 cache
+unknown: invalid
+duplicate: invalid
+missing: invalid
+range: invalid
+null: invalid
+root: invalid
+list: 2 30
+empty list: 0
+bad list: invalid
+fast: 1 A none
+fast shuffled: 2 B none
+fast duplicate: invalid
+fast partial: invalid
+fast in place: 7 H
+fast bad list: invalid

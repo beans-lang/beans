@@ -1,0 +1,44 @@
+# feature	source	mode	expected
+hello	examples/hello.b	ir	-
+modules	examples/shop/main.b	ir	-
+numbers	examples/regress.b	ir	-
+decimal	examples/freestanding.b	ir	-
+strings	examples/strings.b	ir	-
+bytes	examples/bytes.b	ir	-
+lists-and-maps	examples/containers.b	ir	-
+ordered-map	examples/ordered_map.b	ir	-
+classes-and-inheritance	examples/tour.b	ir	-
+enums	examples/wide_enums.b	ir	-
+option-niche	examples/option_niche.b	ir	-
+result-propagation	examples/chain.b	ir	-
+closures	examples/clones.b	ir	-
+cycles	examples/cycles.b	ir	-
+deep-destruction	examples/deep.b	ir	-
+move-only-resources	examples/resources.b	ir	-
+arena	examples/arena.b	ir	-
+box	examples/box.b	ir	-
+raw-slices	examples/raw_slices.b	ir	-
+c-struct-layout	examples/c_layout_structs.b	ir	-
+c-union-layout	examples/c_layout_unions.b	ir	-
+fixed-arrays	examples/fixed_arrays.b	ir	-
+packed-layout	examples/packed.b	ir	-
+c-imports	examples/ffi.b	ir	-
+c-callbacks	test/cases/c_callbacks.b	ir	-
+target-facts	examples/target_info.b	ir	-
+library-module	test/cases/wasm_library.b	library	-
+library-imports	test/cases/wasm_library_import.b	library	-
+browser-library	test/cases/wasm_library.b	browser-library	-
+environment	test/cases/wasm_hosted.b	wasi	-
+clocks-and-random	examples/clocks_random.b	wasi	-
+simd128	examples/simd.b	simd	-
+inline-assembly	examples/inline_asm.b	reject	is not wasm32 assembly
+cpu-dispatch	examples/cpu_dispatch.b	reject	is not a feature wasm32-wasip1 has
+threads	examples/threads.b	reject	target wasm32-wasip1 does not have
+filesystem	examples/files.b	wasi-full	-
+buffered-reader	test/cases/reader_source.b	wasi-full	-
+mmap	examples/mmap.b	reject	MMap is not available on target wasm32-wasip1
+processes	examples/processes.b	reject	target wasm32-wasip1 does not have
+sockets	examples/net.b	reject	target wasm32-wasip1 does not have
+polling	examples/poller.b	reject	target wasm32-wasip1 does not have
+signals	examples/signals.b	reject	target wasm32-wasip1 does not have
+dynamic-libraries	examples/dynamic_library.b	reject	target wasm32-wasip1 does not have

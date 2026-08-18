@@ -1,0 +1,18 @@
+text: 7 Ada true -8 1.5 ok 42
+shuffled: 8 Lin false 0 2 none -1
+bytes: 9 Jo true 127 0.25 none -1
+in place: 13 Mia true 3 0.5 none -1
+unknown: invalid
+duplicate: invalid
+missing: invalid
+range: invalid
+exponent: 2 x true 1 100 none -1
+float range: invalid
+root: invalid
+doctype default: invalid
+doctype option: 12 D true 1 1 none -1
+list: 2 30
+text field: 200 hello & bye
+space text: 201 3
+bad list: invalid
+bad wrapper: invalid

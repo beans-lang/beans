@@ -1,0 +1,22 @@
+# The one source of the compiler, language and runtime-ABI versions. Edit
+# here and nowhere else.
+#
+# tools/gen_version_b.sh copies these numbers into src/version.b, which is
+# what the compiler itself reads; test/version.sh refuses a stale copy. The
+# release packagers read this file to check a release tag matches what the
+# tree declares.
+#
+# This was compiler/version.h, a C++ header, because the stage-0 bootstrap
+# was C++ and included it. Nothing compiles it now — every reader parses it —
+# so it is a plain file in the format the installed toolchain already ships
+# its own VERSION in.
+#
+# The project is still in the public 1.0 bake, so do not call it 1.0.0 until
+# every release gate in ROADMAP.md has passed.
+compiler=0.1.19
+language=1.0
+
+# 6: compiled runtime hooks use per-thread enter/leave guard entry points.
+# Version 5 added the reflection registry, dynamic values, annotations, field
+# access, calls, and construction.
+runtime_abi=6

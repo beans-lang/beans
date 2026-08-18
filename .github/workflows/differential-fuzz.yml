@@ -1,0 +1,100 @@
+name: Semantic differential fuzz
+
+# Long, sharded runs of tools/differential_fuzz.py. Each shard fuzzes a
+# recorded, deterministic seed range; Linux and macOS run the same seeds,
+# and generation is byte-identical across hosts, so a divergence on one OS
+# reproduces from its seed and case number anywhere. The short smoke run
+# lives in normal CI (make fuzz-differential-smoke).
+
+on:
+  workflow_dispatch:
+    inputs:
+      cases:
+        description: Cases per shard
+        required: true
+        default: "400"
+      start_seed:
+        description: First shard's seed (shard N uses start_seed + N - 1)
+        required: true
+        default: "100"
+  schedule:
+    - cron: "47 3 * * 0"
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: seed sweep (${{ matrix.os }}, shard ${{ matrix.shard }}/4, ${{ matrix.groups }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        shard: [1, 2, 3, 4]
+        # half the shards run the scalar/struct/enum groups, half run
+        # every group together so cross-group interactions (class calls
+        # inside match arms, objects in struct-heavy code) stay fuzzed
+        groups:
+          - core,widths,strings,structs,enums
+          - core,widths,strings,structs,enums,classes,packages
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-beansc
+
+      - name: Install toolchain
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang lld llvm
+
+      - name: Build the compilers
+        run: make
+
+      - name: Fuzz one recorded seed
+        env:
+          INPUT_CASES: ${{ github.event_name == 'workflow_dispatch' && inputs.cases || '400' }}
+          INPUT_START_SEED: ${{ github.event_name == 'workflow_dispatch' && inputs.start_seed || '100' }}
+          SHARD: ${{ matrix.shard }}
+          FUZZ_GROUPS: ${{ matrix.groups }}
+        run: |
+          case "$INPUT_CASES" in ''|*[!0-9]*)
+            echo "cases must be a whole number" >&2; exit 2 ;; esac
+          case "$INPUT_START_SEED" in ''|*[!0-9]*)
+            echo "start_seed must be a whole number" >&2; exit 2 ;; esac
+          FUZZ_SEED=$(( INPUT_START_SEED + SHARD - 1 ))
+          # The recorded, non-overlapping seed range this shard owns — in the
+          # job summary so a failure names its reproducer without log digging.
+          echo "shard $SHARD: seed $FUZZ_SEED, cases 0..$(( INPUT_CASES - 1 )), groups $FUZZ_GROUPS" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+          export FUZZ_SEED
+          export FUZZ_CASES="$INPUT_CASES"
+          export FUZZ_LANES=all
+          export FUZZ_REDUCE=1
+          make fuzz-differential
+
+      - name: Fuzz OOP and generic-struct interactions
+        if: contains(matrix.groups, 'classes')
+        env:
+          INPUT_CASES: ${{ github.event_name == 'workflow_dispatch' && inputs.cases || '400' }}
+          INPUT_START_SEED: ${{ github.event_name == 'workflow_dispatch' && inputs.start_seed || '100' }}
+          SHARD: ${{ matrix.shard }}
+        run: |
+          OOP_FUZZ_SEED=$(( INPUT_START_SEED + SHARD - 1 ))
+          export OOP_FUZZ_SEED
+          export OOP_FUZZ_CASES="$INPUT_CASES"
+          export OOP_FUZZ_LANES=interp,debug,release,lto
+          make fuzz-oop
+
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: differential-fuzz-failures-${{ matrix.os }}-shard-${{ matrix.shard }}-${{ contains(matrix.groups, 'classes') && 'classes' || 'scalars' }}
+          path: |
+            build/differential-fuzz/failures/
+            build/oop-fuzz/failures/
+            build/fuzz-artifacts/
+          if-no-files-found: ignore

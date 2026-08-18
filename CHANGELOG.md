@@ -1,0 +1,249 @@
+# Changelog
+
+This file records user-facing changes in each Beans release.
+
+## Unreleased
+
+### Added
+
+- `partial class` writes one class across several files of a package. Every
+  part says `partial`, exactly one part carries the header — modifiers,
+  generic parameters, `extends` and `implements` — and the members of every
+  part belong to the one class. `partial` is contextual, so it stays available
+  as an ordinary name.
+- `make test-fixpoint` requires the compiler to build a compiler byte-identical
+  to itself.
+- `make test-sanitize` builds every checked program with this compiler and links
+  it under AddressSanitizer, UndefinedBehaviorSanitizer and ThreadSanitizer.
+
+### Changed
+
+- The C++ stage-0 bootstrap is gone. A released `beansc` builds the next one.
+  The differential gates that used stage 0 as their second implementation now
+  compare the tree interpreter against the native backend, and the generated
+  program fuzzers check both against an evaluator independent of any compiler.
+- Because the compiler is now the only compiler, `src/` can use a language
+  feature only once a compiler with it is what people bootstrap from. `make`
+  checks this before building and says so in one line when the bootstrap is
+  too old.
+- The version source moved from `compiler/version.h`, a C++ header nothing
+  compiled, to `VERSION`, in the same format the installed toolchain already
+  ships.
+
+### Fixed
+
+- The tree interpreter sign-extended unsigned range loops, so `for v: u8 in
+  254..=255` bound `-2` and `-1` instead of `254` and `255`.
+- The tree interpreter compared match range patterns as signed and treated
+  every range as inclusive, so `150u8` fell outside `100..=200` and `32768`
+  matched `0..32768`.
+- A native out-of-range list store reported no length, unlike every other
+  bounds panic, and the interpreter anchored the same panic on the assignment
+  rather than on the subscript.
+- `count_chars` with an out-of-range span reported a source position inside the
+  compiler instead of in the program being run.
+
+## [0.1.19] - 2026-08-15
+
+### Added
+
+- `beansc pot init <module-name>` creates a minimal `beans.pot` without
+  overwriting an existing manifest.
+- `beansc pot add` and `beansc pot remove` edit Git dependencies in
+  `beans.pot` and keep `beans.lock` in sync. `add` accepts `owner/repo`, a full
+  host path, or an HTTPS/SSH Git URL.
+- `beansc pot add`, `update`, and `remove --system` manage linker rows for
+  installed pkg-config C libraries. `beansc bindgen --system` finds their
+  headers and uses their compiler flags.
+- Linux, macOS, and Windows CI coverage for the system C package workflow,
+  plus real SQLite interpreter and native-build tests on Unix hosts.
+
+### Fixed
+
+- The interpreter now preserves embedded NUL bytes and handles host pointers
+  returned through C output-pointer arguments.
+
+## [0.1.18] - 2026-08-15
+
+### Added
+
+- Typed `json.encode<T>` and `json.encode_pretty<T>` for struct and
+  `List<Struct>` roots, including nested structs, lists, options, JSON naming,
+  ignored fields, and explicit JSON printing through `io.println`.
+- Typed JSON encoding in native code, the stage-0 compiler, the self-hosted
+  compiler, and both interpreters.
+
+### Fixed
+
+- `json.decode_with_options<T>` now applies comment, trailing-comma, and
+  Inf/NaN parser flags and enforces `max_depth`.
+- Typed JSON calls now reject unsupported roots and field shapes at compile
+  time instead of reaching a missing or partial lowering.
+
+## [0.1.17] - 2026-08-14
+
+### Added
+
+- Checked active annotations through `@runtime_hook`, with direct synchronous
+  `before` and `after_return` handlers on concrete functions and methods.
+- Root-application lifecycle callbacks through `@runtime_start` and
+  `@runtime_stop`.
+- Runtime-hook examples, exact compiler-parity tests, nested and cross-thread
+  dispatch coverage, async-boundary checks, and frontend fuzz seeds.
+
+### Changed
+
+- Runtime handlers run on the caller's thread. Nested handler dispatch is
+  suppressed per thread while a handler runs; nested function bodies still
+  execute normally.
+- The runtime ABI moves to version 6 for the runtime-hook guard entry points.
+
+## [0.1.16] - 2026-08-14
+
+### Added
+
+- Target-typed class construction with `new(...)` when a declaration,
+  assignment, return type, or function parameter supplies the class type.
+
+### Changed
+
+- Name, field, and method errors now suggest nearby valid names, constructor
+  arity uses natural pluralization, and user-facing types omit internal package
+  prefixes.
+
+### Fixed
+
+- Errors inside string interpolation now point at their real source position,
+  unresolved imports fail at the import line, and poisoned syntax no longer
+  produces duplicate follow-on errors.
+- The LSP now loads standalone standard-library source files in their real
+  package, so annotation hover and navigation work without a nearby
+  `beans.pot`.
+
+## [0.1.15] - 2026-08-13
+
+### Added
+
+- Direct text methods on `File` and examples for consumed JSON/XML byte input,
+  allocation-free collection iteration, and direct file/process/socket paths.
+- Focused copy, allocation, time, and peak-memory benchmarks for collections,
+  Base64, JSON, XML, files, process output, and datagrams.
+
+### Changed
+
+- Stable fixed-array, `List`, and `Map` loops now borrow existing storage when
+  the source cannot change and loop bindings cannot escape. Mutating loops and
+  APIs that return independent owned values keep their old snapshot behavior.
+- Temporary list and byte slices are fused into their immediate read-only
+  consumer when ownership analysis proves it safe.
+- Base64 encode writes its final string directly. Base64 decode shrinks its
+  result in place and validates unpadded tails without copying the input.
+- JSON and XML bridge calls borrow normal inputs directly. Their consumed
+  `decode_bytes_in_place` forms parse owned input storage in place, while
+  returned strings and collections stay independent owned values.
+- File reads fill final strings, writes use string storage directly, and file
+  copy uses the platform primitive with a fixed-size fallback.
+- Process output, TCP reads, and datagrams no longer join payloads only to slice
+  them apart again.
+
+### Fixed
+
+- The LSP completion catalog now includes the direct file, process, and socket
+  APIs.
+- Stage-0 and self-host tests now cover the zero-copy codec examples and every
+  temporary-slice fusion safety fallback.
+
+## [0.1.14] - 2026-08-13
+
+### Added
+
+- Direct `for key, value in map` iteration for `Map` and `OrderedMap`, without
+  allocating key/value lists or repeating a hash lookup for every entry.
+
+### Changed
+
+- Structural map mutation during direct iteration now panics before the next
+  entry is read. Replacing an existing value remains allowed.
+
+### Fixed
+
+- The self-hosted checker now rejects direct calls to class `init` and
+  `deinit`, matching the bootstrap checker and lifecycle rules.
+
+## [0.1.13] - 2026-08-13
+
+### Added
+
+- Generated `json.decode<T>` and `xml.decode<T>` paths that write directly
+  into concrete structs without building public DOM wrapper objects or doing
+  runtime-reflection lookups.
+- Nested structs, repeated `List<T>` fields, `List<string>`, optional structs,
+  optional lists, and nullable optional strings in typed decoders.
+- JSON mapping annotations for names, aliases, naming rules, ignored fields,
+  and unknown fields, plus the reserved byte-format contract for later Bytes
+  support.
+- XML mapping annotations for names, attributes, text, naming rules, unknown
+  fields, and namespace URI matching independent of prefixes. The ignore
+  annotation is declared but still rejected by the native decoder.
+- Private class fields and methods, static fields, singleton and abstract
+  classes, struct methods, mutating `inout` methods, and generic structs.
+- Long OOP fuzzing across the interpreter, debug, release, and LTO lanes.
+- Large JSON and XML benchmarks against handwritten C++, Go, and Bun.
+
+### Changed
+
+- Typed JSON and XML mappings check invalid roots, recursive schemas, duplicate
+  mapped names, and invalid annotations before native code is emitted.
+- The encoding bridges keep their dependency boundary to libc and their
+  vendored parser libraries. The runtime ABI remains version 5.
+
+## [0.1.12] - 2026-08-12
+
+### Added
+
+- Typed custom annotation declarations and uses in both the self-hosted
+  compiler and the C++ bootstrap compiler.
+- Annotation schemas with named constant arguments, defaults, target checks,
+  repeatability, package visibility, and `source`, `tool`, or `runtime`
+  retention.
+- Annotation metadata in AST, checked HIR, and semantic editor data.
+- Typed runtime reflection through `std.reflect`, including `type_of(T)`, type
+  and member descriptors, inheritance-aware lookup, executable registries, and
+  runtime annotation queries.
+- Safe owned dynamic values with checked boxing, unboxing, field reads and
+  writes, function and method calls, class and struct construction, and enum
+  variant creation.
+- Reflection support in both compilers, both interpreters, and both native
+  emitters, with stable errors for inaccessible or unsupported operations.
+- Valid, invalid, recovery, frontend fuzz, and semantic differential fuzz
+  coverage for annotations and reflection, plus a reflection action fuzzer.
+
+### Changed
+
+- Annotation names use `snake_case`, and annotation arguments are always named.
+- `@c_layout` and `@move_only` no longer have special token or parser handling.
+  Unknown annotations now use the normal annotation error path.
+- Reflection obeys normal visibility and ownership rules. It cannot expose
+  `deinit` or call open generic, async, extern, variadic, or `inout` signatures.
+- JSON and XML policy stays in `std.encoding`; reflection supplies the checked
+  metadata and operations needed by serializers.
+- The runtime ABI moves to version 5 for reflection registry, dynamic value,
+  annotation, field, construction, and call entry points.
+
+## [0.1.11] - 2026-08-11
+
+- Fixed nested native library entries and kept their runtime paths stable.
+
+## [0.1.10] - 2026-08-11
+
+- Added public C FFI generation and local module workflows.
+
+[0.1.18]: https://github.com/beans-lang/beans/compare/v0.1.17...v0.1.18
+[0.1.17]: https://github.com/beans-lang/beans/compare/v0.1.16...v0.1.17
+[0.1.16]: https://github.com/beans-lang/beans/compare/v0.1.15...v0.1.16
+[0.1.15]: https://github.com/beans-lang/beans/compare/v0.1.14...v0.1.15
+[0.1.14]: https://github.com/beans-lang/beans/compare/v0.1.13...v0.1.14
+[0.1.13]: https://github.com/beans-lang/beans/compare/v0.1.12...v0.1.13
+[0.1.12]: https://github.com/beans-lang/beans/compare/v0.1.11...v0.1.12
+[0.1.11]: https://github.com/beans-lang/beans/compare/v0.1.10...v0.1.11
+[0.1.10]: https://github.com/beans-lang/beans/compare/v0.1.9...v0.1.10

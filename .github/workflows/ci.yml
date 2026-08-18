@@ -1,0 +1,788 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # What kind of change is this? Editor tooling reads a checked program and
+  # prints JSON — it cannot reach codegen, the runtime or a target model — so
+  # a change confined to it does not need the platform matrix underneath. It
+  # does need the LSP gate, and it still gets every preflight, which is what
+  # actually catches a compile break.
+  #
+  # Anything outside that set, including main.b, is a compiler change and runs
+  # the lot. The `full-ci` label forces the lot regardless, for when the
+  # judgement above turns out to be wrong.
+  scope:
+    name: scope
+    runs-on: ubuntu-latest
+    outputs:
+      editor_only: ${{ steps.decide.outputs.editor_only }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Which files does this change touch?
+        id: decide
+        env:
+          FORCED: ${{ contains(github.event.pull_request.labels.*.name, 'full-ci') }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" != "pull_request" ] || [ "$FORCED" = "true" ]; then
+            echo "editor_only=false" >> "$GITHUB_OUTPUT"
+            echo "running everything: $( [ "$FORCED" = true ] && echo 'full-ci label' || echo 'not a pull request' )"
+            exit 0
+          fi
+          base=$(git merge-base "origin/${{ github.base_ref }}" HEAD)
+          changed=$(git diff --name-only "$base" HEAD)
+          echo "changed files:"; echo "$changed" | sed 's/^/  /'
+          # Every path that is editor tooling and nothing else. The source
+          # names are spelled out rather than globbed on purpose: a prefix
+          # pattern would quietly adopt any future file that happened to share
+          # the prefix, and adopting a codegen file here skips the platform
+          # matrix for it. test/ci_coverage.sh holds this list to files that
+          # exist and to the same set targets.yml excludes.
+          outside=$(echo "$changed" | grep -vE \
+            '^(src/(lsp|lsp_server|semantic|semantic_probe|sem_ids|sem_model|sem_position|sem_query|sem_text|sem_workspace|completion_builtins|completion_context|completion_imports|completion_model|completion_signature|debug|debug_adapter)\.b|test/(lsp_[a-z]+|dap|native_debug)\.sh|test/cases/(semantic|debug)/|editors/)' \
+            || true)
+          if [ -z "$outside" ]; then
+            echo "editor_only=true" >> "$GITHUB_OUTPUT"
+            echo "editor tooling only: the platform matrix is skipped"
+          else
+            echo "editor_only=false" >> "$GITHUB_OUTPUT"
+            echo "not editor-only, because of:"; echo "$outside" | sed 's/^/  /'
+          fi
+
+  # Four parallel preflight depths. Each fails at its own cost, so the
+  # cheapest reproducer reports first: a workflow or coverage-map mistake in
+  # under a minute, a whole-compiler semantic break in a few minutes, compiler
+  # parity and the deterministic fuzz smoke inside ten. Everything else fans
+  # out only after all four pass.
+  preflight-validate:
+    name: preflight 1 - sources and coverage map
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Coverage map and workflow sanity
+        run: |
+          bash test/ci_coverage.sh
+          python3 - <<'EOF'
+          import sys, yaml
+
+          # yaml.safe_load accepts a duplicate key and silently keeps the last
+          # one. GitHub does not: it refuses the whole file and the run fails
+          # with no jobs and no log. A second `if:` on a job that already had
+          # one got through this check exactly that way, so parsing is not
+          # enough — the loader has to object.
+          class Strict(yaml.SafeLoader):
+              pass
+
+          def no_duplicates(loader, node, deep=False):
+              seen = {}
+              for key_node, value_node in node.value:
+                  key = loader.construct_object(key_node, deep=deep)
+                  if key in seen:
+                      raise yaml.YAMLError(
+                          f"duplicate key {key!r} at line "
+                          f"{key_node.start_mark.line + 1}, first seen at line "
+                          f"{seen[key] + 1}")
+                  seen[key] = key_node.start_mark.line
+              return yaml.SafeLoader.construct_mapping(loader, node, deep)
+
+          Strict.add_constructor(
+              yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, no_duplicates)
+
+          for f in ("ci.yml", "differential-fuzz.yml", "targets.yml",
+                    "release.yml", "benchmark.yml"):
+              path = ".github/workflows/" + f
+              try:
+                  parsed = yaml.load(open(path), Strict)
+              except yaml.YAMLError as error:
+                  sys.exit(f"{path}: {error}")
+              # A `needs` naming a job that does not exist is the other way to
+              # get a run with no jobs.
+              jobs = parsed.get("jobs", {})
+              for name, job in jobs.items():
+                  # `needs` is a list or a bare string; iterating the string
+                  # would compare one letter at a time.
+                  needs = job.get("needs") or []
+                  if isinstance(needs, str):
+                      needs = [needs]
+                  for dep in needs:
+                      if dep not in jobs:
+                          sys.exit(f"{path}: job {name} needs {dep}, "
+                                   f"which is not a job in this workflow")
+          print("workflows parse, with no duplicate keys and no dangling needs")
+          EOF
+
+  preflight-check:
+    name: preflight 2 - whole-compiler check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang lld llvm
+
+      - name: Install a released compiler to build with
+        run: |
+          curl -fsSL https://github.com/beans-lang/beans/releases/latest/download/beans-install.sh | sh
+          echo "$HOME/.beans/bin" >> "$GITHUB_PATH"
+
+      # The whole-compiler check is the deepest cheap semantic probe there is:
+      # every line of the compiler parsed, resolved and type-checked without
+      # running codegen. It reports a semantic break in under a minute, long
+      # before any job that emits code.
+      - name: The compiler checks itself
+        run: |
+          beansc check src/main.b
+          beansc parse examples/hello.b examples/tour.b
+
+  preflight-parity:
+    name: preflight 3 - compiler parity
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-beansc
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang lld llvm file binutils ripgrep
+
+      - name: Toolchain fingerprint
+        run: |
+          echo "CLANG_VER=$(clang++ --version | head -1 | tr -c 'A-Za-z0-9.' '-')" >> "$GITHUB_ENV"
+
+      # Compiler binaries keyed by OS, architecture, compiler version and
+      # source hash: a hit skips the four-stage build; anything else rebuilds.
+      # Binaries never cross OS or architecture boundaries by construction.
+      - name: Cache compiler build
+        uses: actions/cache@v4
+        with:
+          path: build
+          key: beansc-${{ runner.os }}-${{ runner.arch }}-${{ env.CLANG_VER }}-${{ hashFiles('src/**', 'Makefile', 'runtime/**', 'stdlib/**') }}
+
+      - name: Parity gate
+        run: |
+          make -j4
+          ./test/parse_recovery.sh
+          bash test/package_semantics.sh
+          bash test/builtin_names.sh
+          ./test/deterministic_build.sh
+          bash test/unsafe.sh
+          make test-fixpoint
+
+      - name: Failure pointer
+        if: failure()
+        run: |
+          {
+            echo "### preflight parity failed"
+            echo "- host: $(uname -sm)"
+            echo "- reproduce with: \`make test-quick\` (each failing script names itself in the log)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  preflight-smoke:
+    name: preflight 4 - differential and fuzz smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-beansc
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang lld llvm file binutils ripgrep
+
+      - name: Toolchain fingerprint
+        run: |
+          echo "CLANG_VER=$(clang++ --version | head -1 | tr -c 'A-Za-z0-9.' '-')" >> "$GITHUB_ENV"
+
+      - name: Cache compiler build
+        uses: actions/cache@v4
+        with:
+          path: build
+          key: beansc-${{ runner.os }}-${{ runner.arch }}-${{ env.CLANG_VER }}-${{ hashFiles('src/**', 'Makefile', 'runtime/**', 'stdlib/**') }}
+
+      - name: Differential and semantic-fuzz smoke
+        run: |
+          make -j4
+          ./test/differential.sh
+          make fuzz-differential-smoke
+
+      - name: Upload fuzz failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: preflight-fuzz-failures
+          path: build/differential-fuzz/failures/
+          if-no-files-found: ignore
+
+  # Native Linux/x86-64 is split by failure area too. The compiler build is
+  # cheap compared with the gates, and three parallel jobs report a frontend,
+  # The editor gate. Every LSP and DAP suite, over the real protocol wire,
+  # on every change — an editor-only change skips the platform matrix but
+  # never skips this. It waits only on the two cheap preflights, so a broken
+  # server reports in minutes rather than after the full chain.
+  lsp-gate:
+    name: lsp gate (editor tooling)
+    needs: [preflight-validate, preflight-check]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-beansc
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang lld llvm file binutils ripgrep
+
+      - name: Toolchain fingerprint
+        run: |
+          echo "CLANG_VER=$(clang++ --version | head -1 | tr -c 'A-Za-z0-9.' '-')" >> "$GITHUB_ENV"
+
+      - name: Restore preflight compiler build
+        uses: actions/cache@v4
+        with:
+          path: build
+          key: beansc-${{ runner.os }}-${{ runner.arch }}-${{ env.CLANG_VER }}-${{ hashFiles('src/**', 'Makefile', 'runtime/**', 'stdlib/**') }}
+
+      - name: Build the compiler
+        run: make
+
+      - name: Language server
+        run: |
+          ./test/lsp_probe.sh
+          ./test/lsp_server.sh
+          ./test/lsp_semantic.sh
+          ./test/lsp_navigation.sh
+
+      - name: Debugger
+        run: |
+          ./test/dap.sh
+          ./test/native_debug.sh
+
+      - name: Recovery and documentation
+        run: |
+          ./test/parse_recovery.sh
+          ./test/docs.sh
+
+
+  # System C packages cross the CLI, process spawning, path syntax, bindgen,
+  # the interpreter, and the native linker. Keep one small native matrix for
+  # that complete path instead of assuming a Unix-only pkg-config contract.
+  system-packages:
+    name: system packages (${{ matrix.os }})
+    needs: [scope, preflight-validate, preflight-check]
+    if: needs.scope.outputs.editor_only != 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            runner: ubuntu-latest
+          - os: macos
+            runner: macos-latest
+          - os: windows
+            runner: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-beansc
+
+      - name: Install Linux tools and SQLite
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang lld llvm pkg-config libsqlite3-dev
+
+      - name: Install macOS tools and SQLite
+        if: runner.os == 'macOS'
+        run: brew install pkg-config sqlite
+
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
+        if: runner.os == 'Windows'
+        with:
+          arch: x64
+
+      - name: Build Unix compilers
+        if: runner.os != 'Windows'
+        run: make -j2
+
+      - name: Portable system-package contract
+        if: runner.os != 'Windows'
+        run: bash test/system_dependencies.sh
+
+      - name: Real SQLite package, interpreter, and native binary
+        if: runner.os != 'Windows'
+        env:
+          BEANS_SQLITE_REQUIRE: "1"
+        run: bash test/sqlite_system.sh
+
+
+  # sanitizer/ABI, or bootstrap/target failure much sooner than one long chain.
+  linux-x86_64:
+    name: core gate (linux/x86-64, native)
+    needs: [scope, preflight-validate, preflight-check, preflight-parity, preflight-smoke]
+    if: needs.scope.outputs.editor_only != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-beansc
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang lld llvm file binutils ripgrep
+
+      - name: Toolchain versions
+        run: |
+          clang++ --version
+          ld.lld --version
+          make --version | head -1
+
+      - name: Toolchain fingerprint
+        run: |
+          echo "CLANG_VER=$(clang++ --version | head -1 | tr -c 'A-Za-z0-9.' '-')" >> "$GITHUB_ENV"
+
+      # All native x86-64 jobs wait for preflight, whose parity/smoke jobs have
+      # already built and saved this exact key. Reuse it instead of compiling
+      # the same four-stage compiler again in every fan-out lane.
+      - name: Restore preflight compiler build
+        uses: actions/cache@v4
+        with:
+          path: build
+          key: beansc-${{ runner.os }}-${{ runner.arch }}-${{ env.CLANG_VER }}-${{ hashFiles('src/**', 'Makefile', 'runtime/**', 'stdlib/**') }}
+
+      - name: Build the compiler
+        run: make
+
+      - name: Smoke — parse the examples
+        run: make run
+
+      - name: Differential test suite
+        run: make test-ci
+
+      # The release archive and the real installer, on every change rather than
+      # only on a tag: a packaging regression found at release time is found too
+      # late. This is the full-package path, so it also proves the bundled
+      # toolchain builds with every system C tool hidden.
+      - name: Release package and installer
+        run: |
+          make test-release-package
+          make test-install-release
+
+  linux-x86_64-safety:
+    name: safety + ABI gate (linux/x86-64, native)
+    needs: [scope, preflight-validate, preflight-check, preflight-parity, preflight-smoke]
+    if: needs.scope.outputs.editor_only != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-beansc
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang lld llvm file binutils ripgrep
+
+      - name: Toolchain fingerprint
+        run: |
+          echo "CLANG_VER=$(clang++ --version | head -1 | tr -c 'A-Za-z0-9.' '-')" >> "$GITHUB_ENV"
+
+      - name: Restore preflight compiler build
+        uses: actions/cache@v4
+        with:
+          path: build
+          key: beansc-${{ runner.os }}-${{ runner.arch }}-${{ env.CLANG_VER }}-${{ hashFiles('src/**', 'Makefile', 'runtime/**', 'stdlib/**') }}
+
+      - name: Build the compiler
+        run: make
+
+      - name: Sanitizers (ASan, TSan)
+        run: make test-sanitize
+
+      - name: Tier-1 C ABI (stage 0 and self-hosted, native)
+        run: make test-c-abi-tier1
+
+
+      # Deterministic: seed 1, cases 0..14, plus the fuzzer's own
+      # self-tests and pinned checker/panic parity.
+      - name: Semantic differential fuzz smoke
+        run: make fuzz-differential-smoke
+
+      - name: Systems-access score
+        run: make access-score
+
+      # Two fuzzers run in this job and they write their reproducers to
+      # different places: libFuzzer drops a crashing input under
+      # build/fuzz-artifacts, the semantic fuzzer writes a failure directory.
+      # Both paths are collected, or a crash here leaves nothing to replay.
+      - name: Upload fuzz failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: safety-fuzz-failures
+          path: |
+            build/differential-fuzz/failures/
+            build/fuzz-artifacts/
+          if-no-files-found: ignore
+
+  linux-x86_64-bootstrap:
+    name: bootstrap + targets gate (linux/x86-64, native)
+    needs: [scope, preflight-validate, preflight-check, preflight-parity, preflight-smoke]
+    if: needs.scope.outputs.editor_only != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-beansc
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang lld llvm file binutils ripgrep \
+            gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
+            qemu-user-static
+
+      - name: Toolchain fingerprint
+        run: |
+          echo "CLANG_VER=$(clang++ --version | head -1 | tr -c 'A-Za-z0-9.' '-')" >> "$GITHUB_ENV"
+
+      - name: Restore preflight compiler build
+        uses: actions/cache@v4
+        with:
+          path: build
+          key: beansc-${{ runner.os }}-${{ runner.arch }}-${{ env.CLANG_VER }}-${{ hashFiles('src/**', 'Makefile', 'runtime/**', 'stdlib/**') }}
+
+      - name: Build the compiler
+        run: make
+
+      # the self-host suite already ran inside `make test`; only the
+      # bootstrap fixed point is extra here
+      - name: Bootstrap fixed point (stage 1 and stage 2 emit identically)
+        run: make test-fixpoint
+
+      - name: Target model and settings validation
+        run: bash test/targets.sh
+
+      - name: Cross link to aarch64 and run under qemu
+        run: bash test/cross_link.sh
+
+  # Pull requests keep one 64-bit little-endian, one 32-bit and one big-endian
+  # hosted lane. Main keeps the remaining architectures below. This preserves
+  # fast cross-host feedback without making every PR wait for all nine QEMU
+  # source-bootstrap loops.
+  linux-cross:
+    name: linux cross + hosted (${{ matrix.arch }})
+    needs: [scope, preflight-validate, preflight-check, preflight-parity, preflight-smoke]
+    if: needs.scope.outputs.editor_only != 'true'
+    runs-on: ubuntu-latest
+    # One arch lane plus its hosted loop measures 5-8 minutes on a dev
+    # machine; a runner with apt and a cold build lands near 30-45. 90 keeps
+    # a two-times margin without letting a hang eat three hours.
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: riscv64
+            packages: gcc-riscv64-linux-gnu g++-riscv64-linux-gnu libc6-dev-riscv64-cross
+          - arch: armv7
+            packages: gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf libc6-dev-armhf-cross
+          - arch: ppc64
+            packages: gcc-powerpc64-linux-gnu g++-powerpc64-linux-gnu libc6-dev-ppc64-cross
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-beansc
+
+      - name: Install ${{ matrix.arch }} toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang lld llvm file binutils qemu-user-static \
+            ${{ matrix.packages }}
+
+      - name: Build the compiler
+        run: make -j2
+
+      - name: Cross-build and run examples under qemu
+        env:
+          BEANS_LINUX_ARCH_REQUIRE: "1"
+        run: bash test/linux_arch.sh "${{ matrix.arch }}"
+
+      - name: Hosted compiler self-build under qemu
+        env:
+          BEANS_LINUX_ARCH_REQUIRE: "1"
+        run: bash test/linux_hosted.sh "${{ matrix.arch }}"
+
+  linux-cross-exhaustive:
+    name: linux cross + hosted (${{ matrix.arch }})
+    if: github.event_name != 'pull_request' && needs.scope.outputs.editor_only != 'true'
+    needs: [scope, preflight-validate, preflight-check, preflight-parity, preflight-smoke]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: ppc64le
+            packages: gcc-powerpc64le-linux-gnu g++-powerpc64le-linux-gnu libc6-dev-ppc64el-cross
+          - arch: i686
+            packages: gcc-i686-linux-gnu g++-i686-linux-gnu libc6-dev-i386-cross
+          - arch: armv6
+            packages: gcc-arm-linux-gnueabi g++-arm-linux-gnueabi libc6-dev-armel-cross
+          - arch: loongarch64
+            packages: gcc-14-loongarch64-linux-gnu g++-14-loongarch64-linux-gnu libc6-dev-loong64-cross
+          - arch: ppc
+            packages: gcc-powerpc-linux-gnu g++-powerpc-linux-gnu libc6-dev-powerpc-cross
+          - arch: s390x
+            packages: gcc-s390x-linux-gnu g++-s390x-linux-gnu libc6-dev-s390x-cross
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-beansc
+
+      - name: Install ${{ matrix.arch }} toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang lld llvm file binutils qemu-user-static \
+            ${{ matrix.packages }}
+
+      - name: Build the compiler
+        run: make -j2
+
+      - name: Cross-build and run examples under qemu
+        env:
+          BEANS_LINUX_ARCH_REQUIRE: "1"
+        run: bash test/linux_arch.sh "${{ matrix.arch }}"
+
+      - name: Hosted compiler self-build under qemu
+        env:
+          BEANS_LINUX_ARCH_REQUIRE: "1"
+        run: bash test/linux_hosted.sh "${{ matrix.arch }}"
+
+  linux-armv6hf:
+    name: hosted gate (linux/armv6 hard-float, Raspbian)
+    if: github.event_name != 'pull_request' && needs.scope.outputs.editor_only != 'true'
+    needs: [scope, preflight-validate, preflight-check, preflight-parity, preflight-smoke]
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-beansc
+
+      - uses: docker/setup-qemu-action@v3
+        with:
+          image: docker.io/tonistiigi/binfmt@sha256:8f58e6214f4cc9dc83ce8f5acad1ece508eb6b20e696a8c1e9f274481982c541 # qemu-v10.0.4
+          platforms: arm
+
+      - name: Self-hosted build and differential loop on ARMv6 hard-float
+        run: |
+          docker run --rm --platform linux/arm/v6 \
+            -v "$PWD:/src:ro" \
+            balenalib/raspberry-pi-debian@sha256:5e44b1697cd34bac1eaf43fbadab44c54d25246ff0b57144b054b8039d85141a sh -lc '
+              set -eu
+              echo "phase apt start: $(date -u +%H:%M:%S)"
+              apt-get update
+              DEBIAN_FRONTEND=noninteractive apt-get install -y \
+                --no-install-recommends bash clang-16 lld-16 llvm-16 git file make curl ca-certificates
+              curl -fsSL \
+                https://github.com/beans-lang/beans/releases/latest/download/beans-install.sh \
+                -o /tmp/beans-install.sh
+              BEANS_TARGET=arm-unknown-linux-gnueabihf \
+                sh /tmp/beans-install.sh --no-modify-path
+              export PATH="${BEANS_HOME:-$HOME/.beans}/bin:$PATH"
+              echo "phase copy start: $(date -u +%H:%M:%S)"
+              mkdir -p /work/beans
+              tar -cf - -C /src --exclude=./build --exclude=./.git \
+                --exclude=./toolchains . | tar -xf - -C /work/beans
+              cd /work/beans
+              echo "phase gate start: $(date -u +%H:%M:%S)"
+              BEANS_ARMV6HF_REQUIRE=1 bash test/armv6hf_hosted.sh
+              echo "phase gate end: $(date -u +%H:%M:%S)"
+            '
+
+  # This is separate from the score and normal local work. Barq Core is a
+  # pinned real-product check, and its network-heavy C++ build must not make
+  # the small local ABI fixtures depend on an external repository.
+  barq-core:
+    name: Barq Core C API (linux/x86-64)
+    if: github.event_name != 'pull_request' && needs.scope.outputs.editor_only != 'true'
+    needs: [scope, preflight-validate, preflight-check, preflight-parity, preflight-smoke]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-beansc
+
+      - name: Install Beans and Barq build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang cmake ninja-build git libssl-dev libuv1-dev zlib1g-dev
+
+      - name: Build Beans
+        run: make -j2
+
+      - name: Generate bindings and run against pinned Barq Core
+        run: make test-barq-core
+
+  # Linux/arm64 gets the same required gate as x86-64.
+  linux-arm64:
+    name: full gate (linux/arm64, native)
+    needs: [scope, preflight-validate, preflight-check, preflight-parity, preflight-smoke]
+    if: needs.scope.outputs.editor_only != 'true'
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-beansc
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang lld llvm file binutils ripgrep \
+            gcc-x86-64-linux-gnu libc6-dev-amd64-cross qemu-user-static
+
+      - name: Build the compiler
+        run: make
+
+      - name: Differential test suite
+        run: make test-ci
+
+      - name: Sanitizers (ASan, TSan)
+        run: make test-sanitize
+
+      - name: Tier-1 C ABI (stage 0 and self-hosted, native)
+        run: make test-c-abi-tier1
+
+      - name: Systems-access score
+        run: make access-score
+
+      # the self-host suite already ran inside `make test`; only the
+      # bootstrap fixed point is extra
+      - name: Bootstrap fixed point (stage 1 and stage 2 emit identically)
+        run: make test-fixpoint
+
+      - name: Target model and settings validation
+        run: bash test/targets.sh
+
+      - name: Cross link to x86-64 and run under qemu
+        run: bash test/cross_link.sh
+
+      - name: Release package and installer
+        run: |
+          make test-release-package
+          make test-install-release
+
+  # macOS owns the kqueue backend, so its full differential suite must gate too.
+  macos-arm64:
+    name: differential gate (macos/arm64)
+    needs: [scope, preflight-validate, preflight-check, preflight-parity, preflight-smoke]
+    if: needs.scope.outputs.editor_only != 'true'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-beansc
+
+      - name: Install test tools
+        run: brew install ripgrep
+
+      - name: Toolchain versions
+        run: |
+          clang++ --version
+          clang --print-targets | sed -n '1,20p'
+
+      - name: Build the compiler
+        run: make
+
+      - name: Smoke — parse the examples
+        run: make run
+
+      - name: Native backend smoke (build + run hello)
+        run: |
+          ./build/beansc build examples/hello.b -o hello_smoke
+          out=$(./hello_smoke)
+          echo "native output: $out"
+          test "$out" = "hello from beans"
+
+      - name: Differential test suite
+        run: make test-ci
+
+      # The same seeds as the Linux smoke: generation is byte-identical
+      # across hosts, so macOS runs the very same programs.
+      - name: Semantic differential fuzz smoke
+        run: make fuzz-differential-smoke
+
+      - name: Upload fuzz failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-fuzz-failures
+          path: build/differential-fuzz/failures/
+          if-no-files-found: ignore
+
+      - name: Tier-1 C ABI (stage 0 and self-hosted, native)
+        run: make test-c-abi-tier1
+
+      - name: Target model and settings validation
+        run: bash test/targets.sh
+
+      # macOS is the slim-package path, including the missing-Command-Line-Tools
+      # diagnostic that a user must never have to decode from a linker error.
+      - name: Release package and installer
+        run: |
+          make test-release-package
+          make test-install-release
+
+  # The native and per-architecture jobs above own correctness. This job proves
+  # the reproducible image builds, its entrypoint builds Beans, and its target
+  # model works. Repeating every native, cross and hosted gate in one container
+  # used to hide a late architecture failure behind about an hour of duplicates.
+  docker-linux:
+    name: docker container gate
+    if: github.event_name != 'pull_request' && needs.scope.outputs.editor_only != 'true'
+    needs: [scope, preflight-validate, preflight-check, preflight-parity, preflight-smoke]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build image and run its focused gate
+        run: bash test/linux_docker.sh -- bash test/targets.sh

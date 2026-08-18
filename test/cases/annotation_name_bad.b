@@ -1,0 +1,3 @@
+annotation BadName {}
+
+fn main() {}

@@ -1,0 +1,26 @@
+# rust_triple	rust_tier	beans_triple	program	compiler	bootstrap	archive	blocker
+aarch64-pc-windows-msvc	1	aarch64-pc-windows-msvc	pass	pass	missing	missing	windows-msvc-bootstrap-release
+aarch64-unknown-linux-gnu	1	aarch64-unknown-linux-gnu	pass	pass	pass	pass	-
+i686-pc-windows-msvc	1	i686-pc-windows-msvc	pass	pass	missing	missing	windows-msvc-bootstrap-release
+i686-unknown-linux-gnu	1	i686-unknown-linux-gnu	pass	pass	pass	missing	release-run
+x86_64-pc-windows-gnu	1	x86_64-pc-windows-gnu	pass	pass	missing	missing	windows-bootstrap-release
+x86_64-pc-windows-msvc	1	x86_64-pc-windows-msvc	pass	pass	missing	missing	windows-msvc-bootstrap-release
+x86_64-unknown-linux-gnu	1	x86_64-unknown-linux-gnu	pass	pass	pass	pass	-
+aarch64-pc-windows-gnullvm	2	aarch64-pc-windows-gnullvm	pass	pass	missing	missing	windows-bootstrap-release
+aarch64-unknown-linux-musl	2	aarch64-unknown-linux-musl	pass	pass	pass	missing	musl-release
+arm-unknown-linux-gnueabi	2	arm-unknown-linux-gnueabi	pass	pass	pass	missing	release-run
+arm-unknown-linux-gnueabihf	2	arm-unknown-linux-gnueabihf	pass	pass	pass	missing	release-run
+armv7-unknown-linux-gnueabihf	2	armv7-unknown-linux-gnueabihf	pass	pass	pass	missing	release-run
+i686-pc-windows-gnu	2	i686-pc-windows-gnu	pass	missing	missing	missing	windows-hosted-bootstrap-release
+loongarch64-unknown-linux-gnu	2	loongarch64-unknown-linux-gnu	pass	pass	pass	missing	release-run
+loongarch64-unknown-linux-musl	2	loongarch64-unknown-linux-musl	pass	pass	pass	missing	release-run
+powerpc-unknown-linux-gnu	2	powerpc-unknown-linux-gnu	pass	pass	pass	missing	release-run
+powerpc64-unknown-linux-gnu	2	powerpc64-unknown-linux-gnu	pass	pass	pass	missing	release-run
+powerpc64-unknown-linux-musl	2	powerpc64-unknown-linux-musl	pass	pass	pass	missing	release-run
+powerpc64le-unknown-linux-gnu	2	powerpc64le-unknown-linux-gnu	pass	pass	pass	pass	-
+powerpc64le-unknown-linux-musl	2	powerpc64le-unknown-linux-musl	pass	pass	pass	missing	musl-release
+riscv64gc-unknown-linux-gnu	2	riscv64-unknown-linux-gnu	pass	pass	pass	pass	-
+riscv64gc-unknown-linux-musl	2	riscv64-unknown-linux-musl	pass	pass	pass	missing	musl-release
+s390x-unknown-linux-gnu	2	s390x-unknown-linux-gnu	pass	pass	pass	missing	release-run
+x86_64-pc-windows-gnullvm	2	x86_64-pc-windows-gnullvm	pass	pass	missing	missing	windows-bootstrap-release
+x86_64-unknown-linux-musl	2	x86_64-unknown-linux-musl	pass	pass	pass	missing	musl-release
