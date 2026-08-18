@@ -133,6 +133,7 @@ class NativeBuildDriver {
     link_arguments: List<string>
     export_symbols: List<string>
     encoding_features: List<string>
+    csrc_sources: List<string>
     errors: List<Diagnostic>
 
     fn init(target: TargetDescription,
@@ -146,7 +147,8 @@ class NativeBuildDriver {
             linker: string,
             move link_arguments: List<string>,
             move export_symbols: List<string>,
-            move encoding_features: List<string>) {
+            move encoding_features: List<string>,
+            move csrc_sources: List<string>) {
         self.target = target
         self.cpu = cpu
         self.runtime_profile = runtime_profile
@@ -161,6 +163,7 @@ class NativeBuildDriver {
         self.link_arguments = move link_arguments
         self.export_symbols = move export_symbols
         self.encoding_features = move encoding_features
+        self.csrc_sources = move csrc_sources
         self.errors = []
     }
 
@@ -571,6 +574,62 @@ class NativeBuildDriver {
         return move objects
     }
 
+    fn csrc_cache_path(source: string,
+                       pic: bool) -> string {
+        var text: string = ""
+        match fs.read(source) {
+            ok(content) => { text = content }
+            err(_) => {}
+        }
+        let key: string =
+            "csrc|{self.target.triple}|{self.cpu}|{self.target.features.join(",")}|{self.runtime_profile}|{self.release}|{self.debug}|{self.lto}|{pic}|{source}|{text}"
+        let extension: string =
+            if self.lto { "bc" } else { "o" }
+        let stem: string = path.stem(source)
+        return path.join(
+            "build",
+            "beans_csrc.{stem}.{self.target.triple}.{csrc_key_hash(key)}.{extension}")
+    }
+
+    fn cached_csrc_object(compiler: string,
+                          source: string,
+                          pic: bool) -> string {
+        if !File.exists(source) {
+            self.fail(
+                source,
+                "csrc file does not exist")
+            return ""
+        }
+        let object: string =
+            self.csrc_cache_path(source, pic)
+        if File.exists(object) { return object }
+        let staging: string = csrc_staging_name(object)
+        if !self.compile_object(
+               compiler, source, staging, pic, false) {
+            return ""
+        }
+        csrc_publish(staging, object)
+        return object
+    }
+
+    fn cached_csrc_objects(compiler: string,
+                           pic: bool) -> List<string> {
+        var objects: List<string> = []
+        var failed: bool = false
+        for source: string in self.csrc_sources {
+            let object: string =
+                self.cached_csrc_object(
+                    compiler, source, pic)
+            if object == "" {
+                failed = true
+            } else {
+                objects.push(object)
+            }
+        }
+        if failed { objects.clear() }
+        return move objects
+    }
+
     fn runtime_cache_path(runtime: string,
                           pic: bool) -> string {
         var source: string = ""
@@ -838,6 +897,19 @@ class NativeBuildDriver {
             }
         }
 
+        // Manifest csrc rows compile with this build's own flags, cached
+        // by content hash, and ride every emit path beside the bridges.
+        var csrc_objects: List<string> = []
+        if self.csrc_sources.len() != 0 {
+            let recorded: int = self.errors.len()
+            csrc_objects =
+                self.cached_csrc_objects(
+                    compiler, emit == "shared")
+            if self.errors.len() != recorded {
+                return false
+            }
+        }
+
         if emit == "obj" {
             if !self.compile_object(
                     compiler, ir_path, output, false,
@@ -865,6 +937,19 @@ class NativeBuildDriver {
                         self.fail(
                             member,
                             "cannot place encoding bridge object: {error.msg}")
+                        return false
+                    }
+                }
+            }
+            for index: int in 0..csrc_objects.len() {
+                let member: string =
+                    "{output}_csrc_{path.stem(self.csrc_sources[index])}.o"
+                match fs.copy(csrc_objects[index], member) {
+                    ok(_) => { io.println("built {member}") }
+                    err(error) => {
+                        self.fail(
+                            member,
+                            "cannot place csrc object: {error.msg}")
                         return false
                     }
                 }
@@ -910,6 +995,9 @@ class NativeBuildDriver {
             archive.arg(runtime_object)
             for encoding_object: string in encoding_objects {
                 archive.arg(encoding_object)
+            }
+            for csrc_object: string in csrc_objects {
+                archive.arg(csrc_object)
             }
             if ffi_object != "" {
                 archive.arg(ffi_object)
@@ -976,6 +1064,9 @@ class NativeBuildDriver {
             if wasi_wasm { wasm.arg(wasm_host) }
             for encoding_object: string in encoding_objects {
                 wasm.arg(encoding_object)
+            }
+            for csrc_object: string in csrc_objects {
+                wasm.arg(csrc_object)
             }
             for argument: string in self.link_arguments {
                 wasm.arg(argument)
@@ -1062,6 +1153,9 @@ class NativeBuildDriver {
         command.arg(runtime_object)
         for encoding_object: string in encoding_objects {
             command.arg(encoding_object)
+        }
+        for csrc_object: string in csrc_objects {
+            command.arg(csrc_object)
         }
         for argument: string in self.link_arguments {
             command.arg(argument)

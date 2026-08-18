@@ -1560,6 +1560,114 @@ partial class LlvmTextEmitter {
         }
     }
 
+    // A weak slot holds a zeroing handle, never the object: reads go
+    // through beans_object_weak_get (retained result or null), writes wrap
+    // the object in a fresh handle via beans_object_weak_new. The slot's
+    // pointer-mask bit releases the handle with the owner, and cc_walk
+    // never looks inside a handle, so a weak edge cannot form a cycle.
+    fn emit_weak_field(
+        function: MirFunction,
+        instruction: MirInstruction,
+        values: Map<int, string>) -> string {
+        if instruction.operands.len() != 1 {
+            self.fail(
+                instruction,
+                "LLVM emitter needs one field receiver")
+            return ""
+        }
+        let receiver_id: int =
+            instruction.operands[0]
+        let receiver_type: HirType =
+            self.value_type(function, receiver_id)
+        match self.class_layout(receiver_type) {
+            some(layout) => {
+                if !layout.field_offsets.contains_key(
+                       instruction.text) {
+                    self.fail(
+                        instruction,
+                        "LLVM emitter cannot find field '{instruction.text}' in {render_hir_type(receiver_type)}")
+                    return ""
+                }
+                let receiver: string =
+                    self.value(
+                        function, values,
+                        receiver_id, instruction)
+                let address: int = self.fresh()
+                let result: string =
+                    "%v{instruction.result}"
+                values[instruction.result] = result
+                return "  %field.ptr{address} = getelementptr i8, ptr {receiver}, i64 {layout.field_offsets[instruction.text]}\n  %weak.handle{address} = load ptr, ptr %field.ptr{address}\n  {result} = call ptr @beans_object_weak_get(ptr %weak.handle{address})\n"
+            }
+            none => {
+                self.fail(
+                    instruction,
+                    "LLVM emitter does not support fields on '{render_hir_type(receiver_type)}' yet")
+                return ""
+            }
+        }
+    }
+
+    fn emit_weak_field_assignment(
+        function: MirFunction,
+        instruction: MirInstruction,
+        values: Map<int, string>) -> string {
+        if instruction.operands.len() != 2 {
+            self.fail(
+                instruction,
+                "LLVM emitter needs a field receiver and value")
+            return ""
+        }
+        var separator: int = -1
+        for index: int in 11..instruction.text.len() {
+            if instruction.text.byte_at(index) == 58 {
+                separator = index
+            }
+        }
+        if separator < 11 {
+            self.fail(
+                instruction,
+                "LLVM emitter found a malformed field assignment")
+            return ""
+        }
+        let name: string =
+            instruction.text.slice(11, separator)
+        let receiver_id: int =
+            instruction.operands[0]
+        let receiver_type: HirType =
+            self.value_type(function, receiver_id)
+        match self.class_layout(receiver_type) {
+            some(layout) => {
+                if !layout.field_offsets.contains_key(
+                       name) {
+                    self.fail(
+                        instruction,
+                        "LLVM emitter cannot find field '{name}' in {render_hir_type(receiver_type)}")
+                    return ""
+                }
+                let receiver: string =
+                    self.value(
+                        function, values,
+                        receiver_id, instruction)
+                let stored: string =
+                    self.value(
+                        function, values,
+                        instruction.operands[1],
+                        instruction)
+                let address: int = self.fresh()
+                // swap a fresh handle in, drop the old one, then drop
+                // the consumed object reference: the slot owns only the
+                // handle, so storing adds no count on the referent
+                return "  %field.assign.ptr{address} = getelementptr i8, ptr {receiver}, i64 {layout.field_offsets[name]}\n  %weak.new{address} = call ptr @beans_object_weak_new(ptr {stored})\n  %weak.old{address} = load ptr, ptr %field.assign.ptr{address}\n  store ptr %weak.new{address}, ptr %field.assign.ptr{address}\n  call void @beans_release(ptr %weak.old{address})\n  call void @beans_release(ptr {stored})\n"
+            }
+            none => {
+                self.fail(
+                    instruction,
+                    "LLVM emitter does not support fields on '{render_hir_type(receiver_type)}' yet")
+                return ""
+            }
+        }
+    }
+
     fn field_assignment_name(text: string) -> string {
         if !text.starts_with("field:") {
             return ""

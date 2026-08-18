@@ -34,6 +34,16 @@ class TreeInterpreter {
     failed: bool
     panic_text: string
     next_object_id: int
+    // Zeroing weak fields: the registry maps a weakly referenced object's
+    // id to an inner TreeValue sharing the same fields map, and the
+    // wrapper count says how many host-level wrappers stand for that one
+    // interpreted object (weak loads revive extra wrappers). The LAST
+    // wrapper's host deinit is the object's death: it runs the interpreted
+    // deinit chain and drops the registry entry, after which every weak
+    // slot reads none — the same order the native runtime keeps.
+    weak_track: bool
+    weak_registry: Map<int, TreeValue>
+    weak_wrappers: Map<int, int>
     singletons: TreeSingletonState
     memories: List<TreeMemory>
     next_memory_address: u64
@@ -66,6 +76,16 @@ class TreeInterpreter {
         self.failed = false
         self.panic_text = ""
         self.next_object_id = 0
+        self.weak_track = false
+        self.weak_registry = {}
+        self.weak_wrappers = {}
+        for declaration: HirDeclaration in program.declarations {
+            for weak_probe: HirField in declaration.fields {
+                if weak_probe.is_weak {
+                    self.weak_track = true
+                }
+            }
+        }
         self.singletons = new TreeSingletonState()
         self.memories = []
         self.next_memory_address = 1048576
@@ -96,6 +116,37 @@ class TreeInterpreter {
     }
 
     fn load_manifest_links() {
+        // csrc rows compile once into a cached host library, opened like
+        // any manifest library so extern symbols resolve through it.
+        let csrc_sources: List<string> =
+            csrc_selected(
+                self.program.csrc_rows,
+                self.program.target)
+        if csrc_sources.len() != 0 {
+            match csrc_run_library(
+                csrc_sources,
+                self.program.target.os) {
+                ok(library) => {
+                    match host_dl.open(library) {
+                        ok(handle) => {
+                            self.manifest_handles.push(handle)
+                        }
+                        err(error) => {
+                            self.failed = true
+                            self.panic_text =
+                                "error: cannot load csrc library: {error.msg}"
+                            return
+                        }
+                    }
+                }
+                err(error) => {
+                    self.failed = true
+                    self.panic_text =
+                        "error: {error.msg}"
+                    return
+                }
+            }
+        }
         var search_paths: List<string> = []
         for link: ModuleLink in self.program.links {
             if self.manifest_link_applies(link) &&
@@ -525,7 +576,7 @@ class TreeInterpreter {
                                field.annotations, "ignore").is_some() {
                             continue
                         }
-                        match value.fields.get(field.name) {
+                        match value.fields.entries.get(field.name) {
                             some(field_value) => {
                                 if written != 0 { output = "{output}," }
                                 if indent != 0 {
@@ -660,6 +711,8 @@ class TreeInterpreter {
             }
         }
         for field: HirField in declaration.fields {
+            // weak slots are invisible to reflection on both backends
+            if field.is_weak { continue }
             var replaced: int = -1
             for index: int in 0..result.len() {
                 if result[index].field.name == field.name {
@@ -1362,7 +1415,7 @@ class TreeInterpreter {
                                 self.reflect_error_message =
                                     "receiver type does not match"
                             } else if name == "field_get" {
-                                match receiver.fields.get(field_name) {
+                                match receiver.fields.entries.get(field_name) {
                                     some(value) => {
                                         let handle: int =
                                             self.next_reflect_value
@@ -1397,7 +1450,7 @@ class TreeInterpreter {
                                     match self.reflect_values.get(
                                               value_handle) {
                                         some(value) => {
-                                            receiver.fields[field_name] =
+                                            receiver.fields.entries[field_name] =
                                                 tree_value_copy(value)
                                             return TreeValue.boolean(true)
                                         }
@@ -1584,7 +1637,7 @@ class TreeInterpreter {
                             result.object_id = self.next_object_id
                             self.next_object_id += 1
                             for index: int in 0..declaration.fields.len() {
-                                result.fields[
+                                result.fields.entries[
                                     declaration.fields[index].name] =
                                     values[index]
                             }
@@ -2636,7 +2689,7 @@ class TreeInterpreter {
                 }
                 for field: HirField in
                     declaration.fields {
-                    match value.fields.get(field.name) {
+                    match value.fields.entries.get(field.name) {
                         some(field_value) => {
                             match record.offsets.get(
                                     field.name) {
@@ -2836,7 +2889,7 @@ class TreeInterpreter {
                     match record.offsets.get(
                             field.name) {
                         some(offset) => {
-                            result.fields[field.name] =
+                            result.fields.entries[field.name] =
                                 self.memory_read_value(
                                     node, memory,
                                     address +
@@ -2965,7 +3018,7 @@ class TreeInterpreter {
         value.bytes_data = some(memory.data)
         for field: HirField in
             declaration.fields {
-            value.fields[field.name] =
+            value.fields.entries[field.name] =
                 self.memory_read_value(
                     node, memory, 0, field.type)
         }
@@ -3109,7 +3162,7 @@ class TreeInterpreter {
                 var index: int =
                     declaration.fields.len() - 1
                 for index >= 0 {
-                    object.fields.remove(
+                    object.fields.entries.remove(
                         declaration.fields[index].name)
                     index -= 1
                 }
@@ -3363,7 +3416,7 @@ class TreeInterpreter {
                 package_symbol("std.reflect", "Type")
             result.object_id = self.next_object_id
             self.next_object_id += 1
-            result.fields["qualified"] =
+            result.fields.entries["qualified"] =
                 TreeValue.string(
                     render_hir_type(queried))
             return result
@@ -5812,7 +5865,8 @@ class TreeInterpreter {
 
     fn stored_callback_source(
         full: HirType,
-        context_index: int) -> string {
+        context_index: int,
+        same_thread: bool) -> string {
         let builder: CAbiTextBuilder =
             new CAbiTextBuilder(self.program)
         let result_type: HirType =
@@ -5851,12 +5905,26 @@ class TreeInterpreter {
             }
         var source: string =
             "#include <stdint.h>\n"
+        if same_thread {
+            source =
+                "{source}#include <stdio.h>\n#include <stdlib.h>\n#include <pthread.h>\n"
+        }
         source =
             "{source}typedef void (*BeansFfiDispatch)(void*, void*, void**);\n"
         source =
             "{source}static BeansFfiDispatch stored_dispatch;\n"
+        if same_thread {
+            // the bridge init runs on the registering thread, so it is
+            // the one to record; the entry checks every call after that
+            source =
+                "{source}static pthread_t stored_owner;\nstatic int stored_owner_set;\n"
+        }
         source =
             "{source}{c_result} beans_stored_entry({parameters}) \{\n  void* context = (void*)value{context_index};\n  void* arguments[{slots}] = \{{address_text}\};\n"
+        if same_thread {
+            source =
+                "{source}  if (stored_owner_set && !pthread_equal(stored_owner, pthread_self())) \{\n    fprintf(stderr, \"runtime panic: same-thread stored callback invoked from another thread\\n\");\n    abort();\n  \}\n"
+        }
         if c_result == "void" {
             source =
                 "{source}  stored_dispatch(context, 0, arguments);\n\}\n"
@@ -5867,7 +5935,11 @@ class TreeInterpreter {
         source =
             "{source}{ffi_export_attribute()}"
         source =
-            "{source}void beans_ffi_bridge(void* symbol, void* result, void** args, BeansFfiDispatch dispatch, void** contexts) \{\n  (void)symbol; (void)args; (void)contexts;\n  stored_dispatch = dispatch;\n  *(void**)result = (void*)(uintptr_t)&beans_stored_entry;\n\}\n"
+            if same_thread {
+                "{source}void beans_ffi_bridge(void* symbol, void* result, void** args, BeansFfiDispatch dispatch, void** contexts) \{\n  (void)symbol; (void)args; (void)contexts;\n  stored_dispatch = dispatch;\n  stored_owner = pthread_self();\n  stored_owner_set = 1;\n  *(void**)result = (void*)(uintptr_t)&beans_stored_entry;\n\}\n"
+            } else {
+                "{source}void beans_ffi_bridge(void* symbol, void* result, void** args, BeansFfiDispatch dispatch, void** contexts) \{\n  (void)symbol; (void)args; (void)contexts;\n  stored_dispatch = dispatch;\n  *(void**)result = (void*)(uintptr_t)&beans_stored_entry;\n\}\n"
+            }
         return source
     }
 
@@ -5880,8 +5952,15 @@ class TreeInterpreter {
                 node,
                 "StoredCallback.create needs an index and closure")
         }
+        let same_thread: bool =
+            node.resolved.starts_with(
+                "StoredCallback.create_same_thread:")
         let prefix: string =
-            "StoredCallback.create:"
+            if same_thread {
+                "StoredCallback.create_same_thread:"
+            } else {
+                "StoredCallback.create:"
+            }
         var context_index: int = -1
         if node.resolved.starts_with(prefix) {
             match node.resolved.slice(
@@ -5950,7 +6029,7 @@ class TreeInterpreter {
                 })
         let source: string =
             self.stored_callback_source(
-                full, context_index)
+                full, context_index, same_thread)
         let bridge: int =
             self.ffi_bridge(function, source)
         if self.failed {
@@ -8461,7 +8540,7 @@ class TreeInterpreter {
             result.text = node.type.name
             result.object_id = self.next_object_id
             self.next_object_id += 1
-            result.fields["handle"] =
+            result.fields.entries["handle"] =
                 TreeValue.integer(handle)
             return result
         }
@@ -8490,8 +8569,10 @@ class TreeInterpreter {
             return TreeValue.unit()
         }
         if node.kind == "static_call" &&
-           node.resolved.starts_with(
-               "StoredCallback.create:") {
+           (node.resolved.starts_with(
+                "StoredCallback.create:") ||
+            node.resolved.starts_with(
+                "StoredCallback.create_same_thread:")) {
             return self.create_stored_callback(
                 node, arguments)
         }
@@ -8757,11 +8838,77 @@ class TreeInterpreter {
     }
 
     fn object_value(name: string) -> TreeValue {
-        if self.needs_deinit(name) ||
+        // with weak fields anywhere in the program, every object needs
+        // the host deinit hook: any object may become a weak referent
+        if self.weak_track ||
+           self.needs_deinit(name) ||
            self.chain_frees_objects(name) {
             return (new TreeObjectValue(self)) as TreeValue
         }
         return new TreeValue("object")
+    }
+
+    // The host wrapper died. Without weak tracking that IS the object's
+    // death; with it, revived wrappers may still stand for the object.
+    fn object_wrapper_died(object: TreeValue) {
+        if !self.weak_track {
+            self.deinit_object(object)
+            return
+        }
+        match self.weak_wrappers.get(object.object_id) {
+            some(count) => {
+                if count > 1 {
+                    self.weak_wrappers[object.object_id] =
+                        count - 1
+                    return
+                }
+                self.weak_wrappers.remove(object.object_id)
+                self.weak_registry.remove(object.object_id)
+                self.deinit_object(object)
+            }
+            none => {
+                self.deinit_object(object)
+            }
+        }
+    }
+
+    fn weak_field(node: HirNode,
+                  frame: TreeFrame) -> TreeValue {
+        let receiver: TreeValue =
+            self.expression(node.children[0], frame)
+        if receiver.kind == "propagate" {
+            return receiver
+        }
+        match receiver.fields.entries.get(node.value) {
+            some(stored) => {
+                if stored.kind != "weak_ref" {
+                    return TreeValue.option_none()
+                }
+                match self.weak_registry.get(
+                    stored.int_data) {
+                    some(inner) => {
+                        // revive a wrapper over the same fields map
+                        // and identity; its own host death folds back
+                        // into the wrapper count
+                        let revived: TreeValue =
+                            (new TreeObjectValue(self)) as TreeValue
+                        revived.text = inner.text
+                        revived.fields = inner.fields
+                        revived.object_id = inner.object_id
+                        self.weak_wrappers[inner.object_id] =
+                            self.weak_wrappers.get(
+                                inner.object_id).or(1) + 1
+                        return TreeValue.option_some(revived)
+                    }
+                    none => {
+                        return TreeValue.option_none()
+                    }
+                }
+            }
+            none => {
+                return TreeValue.option_none()
+            }
+        }
     }
 
     fn new_object(node: HirNode,
@@ -8903,7 +9050,7 @@ class TreeInterpreter {
         for field: HirField in declaration.fields {
             match field.default_value {
                 some(value) => {
-                    object.fields[field.name] =
+                    object.fields.entries[field.name] =
                         tree_value_copy(
                             self.expression(value, frame))
                 }
@@ -8933,7 +9080,7 @@ class TreeInterpreter {
         if receiver.kind == "propagate" {
             return receiver
         }
-        match receiver.fields.get(node.value) {
+        match receiver.fields.entries.get(node.value) {
             some(value) => {
                 return tree_value_copy(value)
             }
@@ -9244,6 +9391,9 @@ class TreeInterpreter {
         if node.kind == "closure_call" {
             return self.closure_call(node, frame)
         }
+        if node.kind == "weak_field" {
+            return self.weak_field(node, frame)
+        }
         if node.kind == "match" {
             return self.match_expression(node, frame)
         }
@@ -9304,7 +9454,7 @@ class TreeInterpreter {
             for field: HirNode in node.children {
                 if field.kind == "field_init" &&
                    field.children.len() == 1 {
-                    result.fields[field.value] =
+                    result.fields.entries[field.value] =
                         tree_value_copy(
                             self.expression(
                                 field.children[0], frame))
@@ -9321,7 +9471,7 @@ class TreeInterpreter {
                                     node, result,
                                     declaration,
                                     field.value,
-                                    result.fields[
+                                    result.fields.entries[
                                         field.value])
                                 break
                             }
@@ -9350,7 +9500,7 @@ class TreeInterpreter {
                        node.children[0].type.name) ==
                        "std.reflect.Value" &&
                    node.type.args.len() == 1 {
-                    match value.fields.get("handle") {
+                    match value.fields.entries.get("handle") {
                         some(raw_handle) => {
                             let handle: int =
                                 raw_handle.int_data
@@ -9770,8 +9920,46 @@ class TreeInterpreter {
                 }
                 none => {}
             }
-            receiver.fields[target.value] =
+            receiver.fields.entries[target.value] =
                 tree_value_copy(value)
+            return TreeExec.next()
+        }
+        if target.kind == "weak_field" &&
+           target.children.len() != 0 {
+            let receiver: TreeValue =
+                self.expression(
+                    target.children[0], frame)
+            if receiver.kind == "propagate" {
+                return TreeExec.next()
+            }
+            let stored: TreeValue = tree_value_copy(value)
+            if stored.kind == "some" &&
+               stored.items.len() == 1 {
+                let referent: TreeValue = stored.items[0]
+                if !self.weak_registry.contains_key(
+                       referent.object_id) {
+                    // first weak reference to this object: snapshot an
+                    // inner value over the same fields map, and count
+                    // the single wrapper standing today
+                    let inner: TreeValue =
+                        new TreeValue("object")
+                    inner.text = referent.text
+                    inner.fields = referent.fields
+                    inner.object_id = referent.object_id
+                    self.weak_registry[
+                        referent.object_id] = inner
+                    self.weak_wrappers[
+                        referent.object_id] =
+                        self.weak_wrappers.get(
+                            referent.object_id).or(1)
+                }
+                let marker: TreeValue =
+                    new TreeValue("weak_ref")
+                marker.int_data = referent.object_id
+                receiver.fields.entries[target.value] = marker
+            } else {
+                receiver.fields.entries[target.value] = stored
+            }
             return TreeExec.next()
         }
         if target.kind == "index" &&
@@ -10378,7 +10566,7 @@ class TreeInterpreter {
                                        address +
                                            (offset as u64),
                                        field.type,
-                                       value.fields[field.name],
+                                       value.fields.entries[field.name],
                                        bridges) {
                                     return false
                                 }

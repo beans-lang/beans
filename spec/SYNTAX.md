@@ -173,6 +173,8 @@ link all search "native/lib"
 link all library "shop_native"
 link macos framework "CoreFoundation"
 link x86_64-unknown-linux-gnu library "platform_helper"
+csrc all "native/shim.c"
+csrc macos "native/shim_macos.c"
 ```
 
 `kind` is `application` or `library` and defaults to `application`. Applications
@@ -272,10 +274,26 @@ import gitlab.com/tools/csv as csvlib
   run` loads the same selected shared libraries and resolves extern symbols
   through their local handles. Link rows propagate from local and git
   dependencies, so a consumer does not repeat a native-backed library's rows.
+- `csrc <selector> "<file.c>"` declares a C source the package owns; the
+  toolchain compiles it, so a C-wrapping library vendors no prebuilt
+  binaries and pushes no make step onto consumers — `import
+  github.com/owner/lib` just works. Selectors and propagation follow `link`.
+  Native builds compile each selected file with the build's own Clang and
+  flags into a content-hash-cached object that rides every emit path (linked
+  into binaries and shared objects, archived into `--emit static`, placed
+  beside `--emit obj` output). `beansc run` compiles the selected set once
+  into a host shared library cached under `$BEANS_HOME/cache/csrc` and
+  resolves extern symbols through it. Quoted `#include "..."` headers resolve
+  beside each source; a missing file is a manifest error.
 
 ## Lexical
 
 - No semicolons. Newline ends a statement (Go-style: only after a token that can end one).
+- A member chain may break at a `.` on either side: a line ending in `.`
+  continues (the dot can never end a statement), and a newline is not a
+  terminator when the next line begins with `.name` — so fluent chains write
+  trailing-dot or leading-dot style. `..` stays a range operator and never
+  continues a line.
 - Style consequence, same as Go: `} else {` must be on one line.
 - Comments: `//` line, `/* */` block (nesting allowed).
 - Number literals can use `_` separators: `1_000_000`. Hex `0xFF`, binary `0b1010`.
@@ -793,7 +811,8 @@ let gone: bool = weak.is_expired()
 typed payload box, and nested ARC fields use normal copy ownership. The control block owns one value reference
 until its last strong handle dies; upgrade uses an atomic compare/exchange, so
 it cannot revive a dead value. A cycle made through `Shared` must be broken with
-`Weak`, like C++ `shared_ptr`/`weak_ptr`; the local-class cycle collector does
+`Weak`, like C++ `shared_ptr`/`weak_ptr` (plain class cycles use `weak`
+fields); the local-class cycle collector does
 not trace through explicit Shared control blocks. `Shared<T>` and `Weak<T>` are
 `Send` and `Sync` only when `T` is both. `Mutex<T>` is the explicit lock-based
 synchronization boundary, including for local ARC class values.
@@ -972,6 +991,24 @@ The checker rejects a body that can finish without returning. A path counts as r
 ends in `return`, an `if`/`else` where both sides return, a statement `match` whose arms all
 return, or a `for { }` with no `break` (which never finishes at all).
 
+**Trailing parameter defaults.** A parameter may declare a constant default —
+a literal, a negated numeric literal, or `none` — and every parameter after a
+defaulted one needs a default too. A call that leaves trailing arguments out
+gets the declared constants, materialized at the call site by the checker, so
+no ABI or backend knows defaults exist. Defaults are by-value only (`move` and
+`inout` parameters cannot have them), never on `extern "C"` signatures, and a
+function used as a value keeps its full arity. There are **no named
+arguments** and **no overloading** — one name, one signature; a defaulted
+tail is the one sanctioned way to make an argument optional.
+
+```
+fn greet(name: string, punct: string = "!", times: int = 1) -> string { ... }
+
+greet("hi")            // punct "!", times 1
+greet("hi", "?")       // times 1
+greet("hi", "?", 3)
+```
+
 ### Anonymous functions
 
 `fn` without a name is a closure. It captures the variables around it. `fn(int) -> int` is also the type of a function.
@@ -980,6 +1017,19 @@ return, or a `for { }` with no `break` (which never finishes at all).
 let double: fn(int) -> int = fn(x: int) -> int { return x * 2 }
 xs.map(fn(x: int) -> int { return x * 2 })
 ```
+
+**Capture by move.** `fn(...) move(a, b) -> T { ... }` captures the listed
+enclosing locals by move: the closure owns them, the enclosing bindings are
+spent (using one afterward is a use-after-move error), and each owned capture
+is released exactly once when the closure value dies. This is how a move-only
+value — a socket, a `Box`, a `List` — lives inside a callback and is torn
+down with it. Each listed name must be an enclosing local the body actually
+uses; `inout` parameters cannot be move-captured. Closure values stay
+ordinary shared `fn` values: copying one shares the same closure (and its
+captures) rather than duplicating them, so single-ownership of the capture is
+never violated. Inside the body a move capture still reads as a borrowed
+binding — it cannot be moved out again, because the closure may be called
+more than once.
 
 ## Classes
 
@@ -1169,8 +1219,37 @@ can still read them. Deterministic, like C++/Swift: no GC pause, no "sometime la
   is use-after-free by definition.
 - A panic inside `deinit` is fatal (same rule as defer).
 - An object that dies **inside a reference cycle** does not get its `deinit` — a cycle never
-  drops to zero on its own, so if it owns a resource, break the cycle by hand. (`weak`
-  references: later.)
+  drops to zero on its own, so if it owns a resource, break the cycle with a
+  `weak` field instead of building it.
+
+### weak fields (zeroing references)
+
+A class field may be declared `weak`. Its type must be `Option<C>` for a
+non-`unique` class `C`; the modifier sits right before the field name and
+composes with visibility (`pub weak next: Option<Node> = none`).
+
+```
+class Node {
+    child: Option<Node> = none        // owning: parent keeps child alive
+    weak parent: Option<Node> = none  // non-owning: zeroes when parent dies
+}
+```
+
+- A weak field holds **no ownership count** on its referent. Reads produce the
+  declared `Option<C>`: `some` while the referent is alive — the loaded value
+  is retained for the read, so it cannot die mid-use — and `none` from the
+  first moment of the referent's death, **before** its `deinit` body runs, so
+  a destructor can never resurrect itself through a weak slot.
+- The cycle collector never traces through a weak field, so parent/child
+  graphs and stored callbacks that point back at their owners stay acyclic:
+  build the back edge `weak` and both objects get their `deinit`. When the
+  collector does kill a strong cycle, weak fields pointing **into** that
+  cycle read `none` from the kill onward.
+- The slot's storage is a zeroing handle, not the object, so weak fields are
+  invisible to reflection, and a weak field's default must be `none`.
+- `weak` is for instance fields of classes only: no statics, no structs, no
+  locals — a local strong reference is what keeps an object alive while you
+  work with it.
 
 ## Inheritance and interfaces
 
@@ -1229,6 +1308,26 @@ implementation of a bodyless interface requirement does not need `override`.
 Private methods are not inherited and never satisfy or replace class or
 interface contracts, so they cannot be `abstract` or `override`. Interfaces
 cannot declare private methods. Beans has no `final` yet.
+
+**`Self` return type.** A class or interface instance method may declare
+`-> Self`: at every call site the result has the receiver expression's own
+static type, so a fluent chain inherited from a base class keeps the
+subclass's type instead of degrading mid-chain. The guarantee is enforced in
+the body — a Self-returning method must `return self` (or a chain of
+Self-returning calls on `self`, which provably evaluates to the receiver).
+`Self` matches only `Self` in overrides and interface conformance, carries
+the owner's own type parameters on a generic class, changes no layout or ABI
+(the stored result stays the declaring class), and is not available on
+static methods, free functions, or async methods.
+
+```
+class Base {
+    pub fn tune(v: int) -> Self { ...; return self }
+}
+class Special extends Base { pub fn only_here() { ... } }
+
+new Special().tune(1).only_here()   // tune returns Special here
+```
 
 ### Downcast
 
@@ -2670,6 +2769,14 @@ beansc build --target riscv32imac-unknown-none-elf --runtime freestanding f.b --
   the separate userdata pointer. Captures must be `Send + Sync`. Unregister
   first, then call `close()`; close waits for active calls. The value is
   move-only, and a panic never unwinds through C.
+- `StoredCallback<F>.create_same_thread(userdata_index, closure)` is the
+  same owned callback for the most common C event-loop shape: the library
+  stores the callback once and always invokes it on the thread that
+  registered it. Captures are unrestricted — no `Send`, no `Sync` — because
+  the registering thread is recorded and an invocation from any other thread
+  is a checked runtime abort, not a data race. Same `function()` /
+  `function_pointer()` / `context()` surface and the same
+  unregister-then-`close()` discipline.
 
 A **borrowed callback** is an `fn(...)` parameter on an `extern "C" fn`. It is
 lent to C for the length of that one call, so a Beans closure can be passed
@@ -2859,6 +2966,23 @@ declares one, so `package` stays usable as an ordinary identifier.
 
 ## Decided
 
+- Language gaps 1.0 (implemented): the nine findings of the 2026-08-18 gap
+  report, verified against interpreter and native both. Multi-line method
+  chains — a chain breaks before or after the `.`, since a dot can never end
+  a statement; fn-typed fields are callable through member syntax, with a
+  same-named method winning; covariant `Self` results on class and interface
+  instance methods, enforced by the return-self rule so no layout changes;
+  trailing constant parameter defaults, materialized at call sites — and the
+  standing decision recorded: no named arguments, no overloading; zeroing
+  `weak` fields for ARC classes, invisible to the cycle collector's trace and
+  nil'd before the referent's deinit; closure capture-by-move
+  (`fn() move(x) { ... }`), which lets a callback own a move-only resource
+  and release it exactly once with the closure; the same-thread stored
+  callback (`StoredCallback.create_same_thread`), unrestricted captures
+  guarded by a checked thread abort; the `csrc` manifest row, compiling a
+  package's own C sources for native links and `beansc run` alike, cached by
+  content hash; and backend error poisoning, so one unsupported construct is
+  one diagnostic instead of a cascade of MIR temporaries.
 - Public API names v0.9 (implemented): a name says what it does or it changes,
   and there are no aliases for the old spelling — a rename that leaves the old
   name working is a rename nobody finishes. The pairs that lied got fixed

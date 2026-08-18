@@ -6,6 +6,42 @@ This file records user-facing changes in each Beans release.
 
 ### Added
 
+- Method chains span lines: a chain may break after a trailing `.` or before
+  a leading `.name` — the newline rule already promised the first and now
+  both work, in the parser and the lexer's lookahead. `..` stays a range
+  operator and never continues a line.
+- Function-typed fields are callable through member syntax: `self.handler()`
+  and `widget.on_click(x)` call the stored function. A method of the same
+  name wins; the local-copy form still reaches the shadowed field.
+- Covariant `Self` return type on class and interface instance methods: the
+  call site's result is the receiver's own static type, so inherited fluent
+  chains keep the subclass. The body must return `self` (or a Self-returning
+  chain on self), overrides and conformances match `Self` only against
+  `Self`, and nothing about layout or ABI changes.
+- Trailing parameter defaults: `fn greet(name: string, punct: string = "!")`.
+  Defaults are constant literals (or `none`), only trailing, by-value only,
+  and materialized at each call site by the checker — no ABI change, no
+  effect on `fn` values. Named arguments and overloading stay out, now as a
+  recorded decision.
+- Zeroing `weak` fields for ARC classes: `weak parent: Option<Node> = none`
+  holds no count on its referent, reads `some` only while the referent is
+  alive (retained for the read), nils before the referent's `deinit` runs,
+  and is never traced by the cycle collector — the declarative way to break
+  parent/child and callback cycles that previously leaked their deinits.
+- Closure capture by move: `fn() move(sock) -> int { ... }` makes the
+  closure own the listed locals; the enclosing bindings are spent and each
+  owned capture is released exactly once with the closure. Move-only values
+  can finally live inside callbacks.
+- `StoredCallback.create_same_thread(index, closure)`: the stored callback
+  for C libraries that always invoke on the registering thread. Captures are
+  unrestricted — the registering thread is recorded and a call from any
+  other thread is a checked runtime abort. Same close() discipline.
+- `csrc` manifest rows: `csrc all "native/shim.c"` declares C sources the
+  package owns. Native builds compile them with the build's own Clang into
+  content-hash-cached objects on every emit path; `beansc run` compiles the
+  set into a cached host library and resolves extern symbols through it.
+  Rows select targets and propagate exactly like `link` rows, so a
+  C-wrapping library needs no vendored binaries and no external build step.
 - `partial class` writes one class across several files of a package. Every
   part says `partial`, exactly one part carries the header — modifiers,
   generic parameters, `extends` and `implements` — and the members of every
@@ -32,6 +68,9 @@ This file records user-facing changes in each Beans release.
 
 ### Fixed
 
+- One unsupported construct in the LLVM emitter is one error: the failed
+  instruction's destination is poisoned, so downstream uses no longer cascade
+  into "cannot find vN" noise naming MIR temporaries.
 - The tree interpreter sign-extended unsigned range loops, so `for v: u8 in
   254..=255` bound `-2` and `-1` instead of `254` and `255`.
 - The tree interpreter compared match range patterns as signed and treated

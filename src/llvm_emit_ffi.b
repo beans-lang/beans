@@ -1240,8 +1240,15 @@ partial class LlvmTextEmitter {
             return ""
         }
         var context_index: int = -1
+        let same_thread: bool =
+            instruction.resolved.starts_with(
+                "StoredCallback.create_same_thread:")
         let prefix: string =
-            "StoredCallback.create:"
+            if same_thread {
+                "StoredCallback.create_same_thread:"
+            } else {
+                "StoredCallback.create:"
+            }
         if instruction.resolved.starts_with(prefix) {
             match instruction.resolved.slice(
                     prefix.len(),
@@ -1267,9 +1274,15 @@ partial class LlvmTextEmitter {
                 instruction, full,
                 context_index)
         if trampoline == "" { return "" }
+        let entry: string =
+            if same_thread {
+                "beans_stored_callback_new_same_thread"
+            } else {
+                "beans_stored_callback_new"
+            }
         self.require_declare(
-            "beans_stored_callback_new",
-            "ptr @beans_stored_callback_new(ptr, ptr)")
+            entry,
+            "ptr @{entry}(ptr, ptr)")
         let closure: string =
             self.value(
                 function, values,
@@ -1278,7 +1291,7 @@ partial class LlvmTextEmitter {
         let result: string =
             "%v{instruction.result}"
         values[instruction.result] = result
-        return "  {result} = call ptr @beans_stored_callback_new(ptr {closure}, ptr @{trampoline})\n"
+        return "  {result} = call ptr @{entry}(ptr {closure}, ptr @{trampoline})\n"
     }
 
     fn emit_stored_callback_method(

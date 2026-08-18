@@ -1527,6 +1527,10 @@ static void cc_possible_root(void* p) {
 // iterative: a dropped million-node chain pushes children on an explicit
 // stack instead of recursing the C stack. The stack stays empty (no malloc)
 // unless a death actually cascades.
+// zeroing weak support, defined with the shared-handle machinery below
+static void rt_weak_invalidate(void* obj);
+static long long weak_live;
+
 void beans_release(void* p) {
     if (!p) return;
     ARC_ADD(arc_release_calls, 1);
@@ -1560,6 +1564,10 @@ void beans_release(void* p) {
             if (mt && cyclic && RC_COUNT(rc0) > 1) cc_possible_root(cur);
             long long nrc = rt_rc_dec(h);
             if (RC_COUNT(nrc) == 0) {
+                // weak handles must read "gone" before user deinit code
+                // can run and try to resurrect the dying object
+                if (__atomic_load_n(&weak_live, __ATOMIC_RELAXED))
+                    rt_weak_invalidate(cur);
                 long long meta = cc_meta(h);
                 // FIN is only ever set on class objects, so it alone decides
                 // `!= 0` is load-bearing, not style. __builtin_expect takes
@@ -1716,6 +1724,161 @@ void beans_box_set_typed(void* box, void* value, long long size,
     release_masked_value(box, ptr_mask);
     memcpy(box, value, (size_t)size);
     if (cycle_mask) cc_possible_root(box);
+}
+
+// ---- zeroing weak references to ARC class objects ----
+//
+// A `weak` field's slot holds a handle object (kind 6, extra 7) whose
+// control block points at the referent WITHOUT owning a count on it. The
+// side table below maps object -> control block, one entry per weakly
+// referenced object; the entry itself holds one weak count on the block.
+// When the referent dies — refcount zero, before its deinit runs, or the
+// cycle collector kills its cycle — the block's value is zeroed and the
+// entry dropped, so every handle reads back "gone". cc_walk has no kind-6
+// branch, which is exactly why a weak slot never forms a cycle edge.
+typedef struct {
+    void* obj;
+    BSharedCtrl* ctrl;
+} BWeakEntry;
+static BWeakEntry* weak_entries;
+static long long weak_cap; // power of two, open addressing
+static long long weak_len;
+static long long weak_live; // lock-free guard for the hot free path
+#if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
+static pthread_mutex_t weak_mu = PTHREAD_MUTEX_INITIALIZER;
+#define WEAK_LOCK() pthread_mutex_lock(&weak_mu)
+#define WEAK_UNLOCK() pthread_mutex_unlock(&weak_mu)
+#else
+#define WEAK_LOCK() ((void)0)
+#define WEAK_UNLOCK() ((void)0)
+#endif
+
+static long long weak_slot_for(void* obj, long long cap) {
+    unsigned long long h = (unsigned long long)(size_t)obj;
+    h ^= h >> 33;
+    h *= 0xff51afd7ed558ccdULL;
+    h ^= h >> 33;
+    return (long long)(h & (unsigned long long)(cap - 1));
+}
+
+static void weak_table_grow(void) {
+    long long cap = weak_cap ? weak_cap * 2 : 64;
+    BWeakEntry* grown = rt_zalloc((size_t)cap * sizeof(BWeakEntry));
+    if (!grown) beans_panic("out of memory", 0, 0);
+    for (long long i = 0; i < weak_cap; ++i) {
+        if (!weak_entries[i].obj) continue;
+        long long at = weak_slot_for(weak_entries[i].obj, cap);
+        while (grown[at].obj) at = (at + 1) & (cap - 1);
+        grown[at] = weak_entries[i];
+    }
+    rt_free(weak_entries);
+    weak_entries = grown;
+    weak_cap = cap;
+}
+
+// find-or-create must run under WEAK_LOCK
+static BSharedCtrl* weak_ctrl_for(void* obj) {
+    if (weak_cap == 0 || weak_len * 4 >= weak_cap * 3) weak_table_grow();
+    long long at = weak_slot_for(obj, weak_cap);
+    while (weak_entries[at].obj) {
+        if (weak_entries[at].obj == obj) return weak_entries[at].ctrl;
+        at = (at + 1) & (weak_cap - 1);
+    }
+    BSharedCtrl* ctrl = rt_zalloc(sizeof(BSharedCtrl));
+    if (!ctrl) beans_panic("out of memory", 0, 0);
+    ctrl->weak = 1; // the table's own hold
+    ctrl->value = (long long)obj;
+    weak_entries[at].obj = obj;
+    weak_entries[at].ctrl = ctrl;
+    weak_len += 1;
+    __atomic_store_n(&weak_live, weak_len, __ATOMIC_RELAXED);
+    return ctrl;
+}
+
+// Robin-Hood-free deletion for open addressing: re-place the cluster tail.
+static void weak_table_remove(long long at) {
+    weak_entries[at].obj = NULL;
+    weak_entries[at].ctrl = NULL;
+    long long next = (at + 1) & (weak_cap - 1);
+    while (weak_entries[next].obj) {
+        BWeakEntry moved = weak_entries[next];
+        weak_entries[next].obj = NULL;
+        weak_entries[next].ctrl = NULL;
+        long long slot = weak_slot_for(moved.obj, weak_cap);
+        while (weak_entries[slot].obj) slot = (slot + 1) & (weak_cap - 1);
+        weak_entries[slot] = moved;
+        next = (next + 1) & (weak_cap - 1);
+    }
+    weak_len -= 1;
+    __atomic_store_n(&weak_live, weak_len, __ATOMIC_RELAXED);
+}
+
+// The referent is dying: nil every handle and drop the table's hold.
+// Called with the object's count already at zero, before its deinit.
+static void rt_weak_invalidate(void* obj) {
+    if (!__atomic_load_n(&weak_live, __ATOMIC_RELAXED)) return;
+    BSharedCtrl* ctrl = NULL;
+    WEAK_LOCK();
+    if (weak_cap) {
+        long long at = weak_slot_for(obj, weak_cap);
+        while (weak_entries[at].obj) {
+            if (weak_entries[at].obj == obj) {
+                ctrl = weak_entries[at].ctrl;
+                ctrl->value = 0;
+                weak_table_remove(at);
+                break;
+            }
+            at = (at + 1) & (weak_cap - 1);
+        }
+    }
+    WEAK_UNLOCK();
+    if (ctrl && rt_ctrl_fetch_sub(&ctrl->weak) == 1) rt_free(ctrl);
+}
+
+// a retain that refuses to resurrect: succeeds only while the count is
+// still above zero
+static int rt_try_retain(void* p) {
+    BHead* h = head_of(p);
+    long long rc = rt_rc_load(h);
+    for (;;) {
+        if (rc >= BEANS_IMMORTAL) return 1;
+        if (RC_COUNT(rc) == 0) return 0;
+        if (cc_is_mt()) {
+            if (__atomic_compare_exchange_n(&h->rc, &rc, rc + 1, 0,
+                                            __ATOMIC_ACQ_REL,
+                                            __ATOMIC_RELAXED))
+                return 1;
+        } else {
+            h->rc = rc + 1;
+            return 1;
+        }
+    }
+}
+
+// NULL object -> NULL handle, so `none` stores stay a plain null slot.
+void* beans_object_weak_new(void* obj) {
+    if (!obj) return NULL;
+    WEAK_LOCK();
+    BSharedCtrl* ctrl = weak_ctrl_for(obj);
+    rt_ctrl_add(&ctrl->weak); // the new handle's hold
+    WEAK_UNLOCK();
+    BSharedHandle* handle = beans_alloc(sizeof(BSharedHandle), 6 | (7LL << 3));
+    handle->ctrl = ctrl;
+    return handle;
+}
+
+// NULL handle -> NULL; a live referent comes back retained (+1), a dead
+// one reads as NULL. The lock orders this against rt_weak_invalidate and
+// the count CAS refuses the race with a concurrent final release.
+void* beans_object_weak_get(void* p) {
+    if (!p) return NULL;
+    BSharedCtrl* ctrl = ((BSharedHandle*)p)->ctrl;
+    void* obj = NULL;
+    WEAK_LOCK();
+    obj = (void*)ctrl->value;
+    if (obj && !rt_try_retain(obj)) obj = NULL;
+    WEAK_UNLOCK();
+    return obj;
 }
 
 void* beans_shared_new(long long value, long long value_ptr) {
@@ -2009,6 +2172,11 @@ static void cc_collect(int force) {
         }
         cc_len = 0;
         ARC_ADD(arc_cycle_objects, dead.len);
+        // cycle members die without their deinit, but their weak handles
+        // still read "gone" from the first moment of the kill
+        if (__atomic_load_n(&weak_live, __ATOMIC_RELAXED))
+            for (long long i = 0; i < dead.len; i++)
+                rt_weak_invalidate(dead.v[i]);
         // nothing was freed while walking, so no stale pointer was ever
         // read; now the whole white set goes at once
         for (long long i = 0; i < dead.len; i++) {
@@ -8538,6 +8706,10 @@ typedef struct {
     void* function;
     unsigned active;
     int closing;
+    // the same-thread flavor: captures are unrestricted because every
+    // invocation is checked against the registering thread
+    int same_thread;
+    pthread_t owner;
 } BStoredCallback;
 
 void* beans_stored_callback_new(void* closure, void* function) {
@@ -8561,10 +8733,24 @@ void* beans_stored_callback_function(void* value) {
                : NULL;
 }
 
+void* beans_stored_callback_new_same_thread(void* closure, void* function) {
+    BStoredCallback* callback =
+        (BStoredCallback*)beans_stored_callback_new(closure, function);
+    callback->same_thread = 1;
+    callback->owner = pthread_self();
+    return callback;
+}
+
 void* beans_stored_callback_enter(void* value) {
     if (!value) return NULL;
     BStoredCallback* callback = (BStoredCallback*)value;
     if (callback->magic != BEANS_STORED_CALLBACK_MAGIC) return NULL;
+    // the whole same-thread contract, checked where every call begins;
+    // panics never unwind, so a wrong-thread call stops the program
+    if (callback->same_thread &&
+        !pthread_equal(callback->owner, pthread_self()))
+        beans_panic(
+            "same-thread stored callback invoked from another thread", 0, 0);
     pthread_mutex_lock(&callback->mutex);
     void* closure = NULL;
     if (!callback->closing) {

@@ -76,6 +76,55 @@ class Lexer {
         self.last_kind = "newline"
     }
 
+    // True when the next significant text begins a member access — `.name`
+    // — so the newline before it must not end the statement (a fluent chain
+    // may break before the dot). `..` stays a range operator and anything
+    // else ends the statement as usual. Looks ahead without consuming;
+    // comments are as transparent here as they are between tokens.
+    fn continues_with_dot() -> bool {
+        var at: int = self.pos
+        let len: int = self.source.len()
+        for at < len {
+            let value: int = self.source.byte_at(at)
+            if value == 32 || value == 9 || value == 13 || value == 10 {
+                at += 1
+                continue
+            }
+            if value == 47 && at + 1 < len &&
+               self.source.byte_at(at + 1) == 47 {
+                at += 2
+                for at < len && self.source.byte_at(at) != 10 {
+                    at += 1
+                }
+                continue
+            }
+            if value == 47 && at + 1 < len &&
+               self.source.byte_at(at + 1) == 42 {
+                at += 2
+                var depth: int = 1
+                for depth > 0 && at < len {
+                    if at + 1 < len && self.source.byte_at(at) == 47 &&
+                       self.source.byte_at(at + 1) == 42 {
+                        at += 2
+                        depth += 1
+                    } else if at + 1 < len &&
+                              self.source.byte_at(at) == 42 &&
+                              self.source.byte_at(at + 1) == 47 {
+                        at += 2
+                        depth -= 1
+                    } else {
+                        at += 1
+                    }
+                }
+                continue
+            }
+            if value != 46 { return false }
+            if at + 1 >= len { return false }
+            return is_alpha(self.source.byte_at(at + 1))
+        }
+        return false
+    }
+
     fn scan_ident(inout out: List<Token>, from: int, line: int, col: int) {
         for is_ident_byte(self.peek()) { self.advance() }
         let text: string = self.source.slice(from, self.pos)
@@ -234,7 +283,8 @@ class Lexer {
                 let line: int = self.line
                 let col: int = self.col
                 self.advance()
-                if self.have_token && ends_statement(self.last_kind) {
+                if self.have_token && ends_statement(self.last_kind) &&
+                   !self.continues_with_dot() {
                     self.add_newline(inout out, line, col)
                 }
                 continue

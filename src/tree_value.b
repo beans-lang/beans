@@ -1,5 +1,16 @@
 package main
 
+// One object's field storage, boxed so several host-level wrappers can
+// stand for one interpreted object (zeroing weak revival) while the map
+// itself keeps a single owner.
+class TreeFields {
+    entries: Map<string, TreeValue>
+
+    fn init() {
+        self.entries = {}
+    }
+}
+
 class TreeValue {
     kind: string
     bool_data: bool
@@ -12,7 +23,7 @@ class TreeValue {
     bytes_data: Option<Bytes>
     text: string
     items: List<TreeValue>
-    fields: Map<string, TreeValue>
+    fields: TreeFields
     map_keys: List<TreeValue>
     map_values: Map<string, TreeValue>
     map_version: int
@@ -50,7 +61,7 @@ class TreeValue {
         self.bytes_data = none
         self.text = ""
         self.items = []
-        self.fields = {}
+        self.fields = new TreeFields()
         self.map_keys = []
         self.map_values = {}
         self.map_version = 0
@@ -177,9 +188,9 @@ class TreeValue {
         let result: TreeValue =
             new TreeValue("error")
         result.text = "Error"
-        result.fields["msg"] =
+        result.fields.entries["msg"] =
             TreeValue.string(message)
-        result.fields["kind"] =
+        result.fields.entries["kind"] =
             TreeValue.string(kind)
         return result
     }
@@ -265,7 +276,7 @@ class TreeObjectValue extends TreeValue {
     fn deinit() {
         if self.deinit_active {
             self.deinit_active = false
-            self.interpreter.deinit_object(self)
+            self.interpreter.object_wrapper_died(self)
         }
     }
 }
@@ -375,13 +386,13 @@ fn tree_value_key(value: TreeValue) -> string {
     }
     if value.kind == "record" {
         var names: List<string> =
-            value.fields.keys()
+            value.fields.entries.keys()
         names.sort()
         var result: string =
             "r:{value.text.len()}:{value.text}"
         for name: string in names {
             let field_key: string =
-                tree_value_key(value.fields[name])
+                tree_value_key(value.fields.entries[name])
             result =
                 "{result}:{name.len()}:{name}:{field_key.len()}:{field_key}"
         }
@@ -462,14 +473,14 @@ fn tree_value_equal(left: TreeValue,
     }
     if left.kind == "record" {
         if left.text != right.text ||
-           left.fields.len() != right.fields.len() {
+           left.fields.entries.len() != right.fields.entries.len() {
             return false
         }
-        for name: string in left.fields.keys() {
-            match right.fields.get(name) {
+        for name: string in left.fields.entries.keys() {
+            match right.fields.entries.get(name) {
                 some(value) => {
                     if !tree_value_equal(
-                           left.fields[name], value) {
+                           left.fields.entries[name], value) {
                         return false
                     }
                 }
@@ -557,9 +568,9 @@ fn tree_value_copy(value: TreeValue) -> TreeValue {
             }
             none => {}
         }
-        for name: string in value.fields.keys() {
-            result.fields[name] =
-                tree_value_copy(value.fields[name])
+        for name: string in value.fields.entries.keys() {
+            result.fields.entries[name] =
+                tree_value_copy(value.fields.entries[name])
         }
         return result
     }

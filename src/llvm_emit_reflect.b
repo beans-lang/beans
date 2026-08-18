@@ -240,6 +240,9 @@ partial class LlvmTextEmitter {
                 }
             }
             for field: HirField in declaration.fields {
+                // a weak slot holds a zeroing handle, not the declared
+                // value; reflection stays away from it on both backends
+                if field.is_weak { continue }
                 var flags: int = 0
                 if field.is_public { flags = flags | 1 }
                 if field.has_default { flags = flags | 2 }

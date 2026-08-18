@@ -291,6 +291,12 @@ partial class LlvmTextEmitter {
                     function, instruction, values)
         } else if instruction.op == "assign" &&
                   instruction.text.starts_with(
+                      "weak_field:") {
+            output =
+                self.emit_weak_field_assignment(
+                    function, instruction, values)
+        } else if instruction.op == "assign" &&
+                  instruction.text.starts_with(
                       "index::") {
             output =
                 self.emit_map_assignment(
@@ -355,6 +361,10 @@ partial class LlvmTextEmitter {
             output =
                 self.emit_field(
                     function, instruction, values)
+        } else if instruction.op == "weak_field" {
+            output =
+                self.emit_weak_field(
+                    function, instruction, values)
         } else if instruction.op == "pattern_bind" {
             output =
                 self.emit_pattern_bind(
@@ -409,7 +419,9 @@ partial class LlvmTextEmitter {
                         function, instruction,
                         values)
             } else if instruction.resolved.starts_with(
-                          "StoredCallback.create:") {
+                          "StoredCallback.create:") ||
+                      instruction.resolved.starts_with(
+                          "StoredCallback.create_same_thread:") {
                 output =
                     self.emit_stored_callback_create(
                         function, instruction,
@@ -1501,6 +1513,8 @@ partial class LlvmTextEmitter {
             "{output}declare i64 @beans_thread_join(ptr)\n"
         output =
             "{output}declare ptr @beans_shared_new(i64, i64)\n"
+        output =
+            "{output}declare ptr @beans_object_weak_new(ptr)\ndeclare ptr @beans_object_weak_get(ptr)\n"
         output =
             "{output}declare i64 @beans_shared_get(ptr)\n"
         output =

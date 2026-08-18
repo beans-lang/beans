@@ -130,6 +130,9 @@ class HirParameter {
     name: string
     passing: string
     type: HirType
+    // Trailing default: a constant literal the checker materializes at
+    // call sites that leave the argument out. Never in the ABI.
+    default_syntax: Option<AstNode>
     file: string
     line: int
     col: int
@@ -141,6 +144,7 @@ class HirParameter {
         self.name = name
         self.passing = passing
         self.type = type
+        self.default_syntax = none
         self.file = file
         self.line = line
         self.col = col
@@ -198,6 +202,11 @@ class HirFunction {
     is_static: bool
     is_inout: bool
     is_abstract: bool
+    // Declared `-> Self` on a class or interface instance method: the
+    // result type field still holds the owner (the ABI never changes),
+    // while call sites type the result as the receiver's static type and
+    // the body may only return its own receiver.
+    returns_self: bool
     required_feature: string
     has_body: bool
     file: string
@@ -239,6 +248,7 @@ class HirFunction {
         self.is_static = false
         self.is_inout = false
         self.is_abstract = false
+        self.returns_self = false
         self.required_feature = ""
         self.has_body = false
         self.file = file
@@ -259,6 +269,10 @@ class HirField {
     is_public: bool
     is_private: bool
     is_static: bool
+    // A non-owning zeroing reference: holds Option<C> for an ARC class C,
+    // stores no strong count, reads none once the referent dies, and the
+    // cycle collector never traces through it.
+    is_weak: bool
     declared_align: int
     has_default: bool
     default_syntax: Option<AstNode>
@@ -279,6 +293,7 @@ class HirField {
         self.is_public = is_public
         self.is_private = is_private
         self.is_static = is_static
+        self.is_weak = false
         self.declared_align = declared_align
         self.has_default = has_default
         self.default_syntax = none
@@ -377,6 +392,7 @@ class HirCGlobal {
 class HirProgram {
     target: TargetDescription
     links: List<ModuleLink>
+    csrc_rows: List<ModuleLink>
     declarations: List<HirDeclaration>
     c_globals: List<HirCGlobal>
     functions: List<HirFunction>
@@ -389,6 +405,7 @@ class HirProgram {
     fn init(target: TargetDescription) {
         self.target = target
         self.links = []
+        self.csrc_rows = []
         self.declarations = []
         self.c_globals = []
         self.functions = []
@@ -406,6 +423,20 @@ fn type_child(node: AstNode) -> Option<AstNode> {
         }
     }
     return none
+}
+
+// The whole constant-expression grammar for parameter defaults: a
+// literal, a negated numeric literal, or `none`. Anything computed
+// belongs at the call site.
+fn constant_default(node: AstNode) -> bool {
+    if node.kind == "literal" { return true }
+    if node.kind == "name" && node.value == "none" { return true }
+    if node.kind == "unary" && node.value == "-" &&
+       node.children.len() == 1 &&
+       node.children[0].kind == "literal" {
+        return true
+    }
+    return false
 }
 
 fn layout_modifier_align(value: string) -> int {
@@ -461,6 +492,9 @@ class SignatureChecker {
         self.hir = new HirProgram(target)
         for link: ModuleLink in resolver.loader.links {
             self.hir.links.push(link)
+        }
+        for row: ModuleLink in resolver.loader.csrc_rows {
+            self.hir.csrc_rows.push(row)
         }
         self.hir.entry_symbol =
             package_symbol(resolver.loader.entry_package, "main")
@@ -1155,7 +1189,9 @@ class SignatureChecker {
     fn lower_function(node: AstNode, file: ParsedModuleFile,
                       owner: string,
                       owner_is_public_interface: bool,
-                      owner_is_interface: bool) {
+                      owner_is_interface: bool,
+                      owner_kind: string,
+                      owner_generics: List<string>) {
         let name: string = declaration_name(node.value)
         let qualified: string =
             if owner == "" { node.resolved } else { "{owner}.{name}" }
@@ -1227,6 +1263,41 @@ class SignatureChecker {
                                 self.lower_annotations(
                                     parameter.annotations,
                                     "parameter", file.path)
+                            for part: AstNode in parameter.children {
+                                if part.kind != "default" ||
+                                   part.children.len() == 0 {
+                                    continue
+                                }
+                                let value: AstNode = part.children[0]
+                                if function.is_extern_c {
+                                    self.fail(file.path, part,
+                                              "extern \"C\" parameters cannot have defaults")
+                                } else if passing != "" {
+                                    self.fail(file.path, part,
+                                              "a defaulted parameter passes by value, not '{passing}'")
+                                } else if !constant_default(value) {
+                                    self.fail(file.path, part,
+                                              "a parameter default must be a constant literal")
+                                } else {
+                                    lowered.default_syntax = some(value)
+                                }
+                            }
+                            match lowered.default_syntax {
+                                some(value) => {}
+                                none => {
+                                    if function.parameters.len() != 0 {
+                                        match function.parameters[
+                                            function.parameters.len() -
+                                            1].default_syntax {
+                                            some(value) => {
+                                                self.fail(file.path, parameter,
+                                                          "parameters after a defaulted parameter need defaults too")
+                                            }
+                                            none => {}
+                                        }
+                                    }
+                                }
+                            }
                             function.parameters.push(lowered)
                         }
                         none => {
@@ -1243,8 +1314,28 @@ class SignatureChecker {
                                 file.path, child,
                                 "inout applies to struct methods, not fields")
                         }
-                        function.result =
-                            self.lower_type(type_node, file.path)
+                        if type_node.kind == "type" &&
+                           type_node.value == "Self" &&
+                           !function.is_static &&
+                           (owner_kind == "class" ||
+                            owner_kind == "interface") {
+                            // built directly rather than through
+                            // lower_type: a generic owner's Self
+                            // carries the owner's own type
+                            // parameters, which the bare spelling
+                            // does not name
+                            let self_result: HirType =
+                                new HirType(owner)
+                            for generic: string in owner_generics {
+                                self_result.args.push(
+                                    new HirType(generic))
+                            }
+                            function.result = self_result
+                            function.returns_self = true
+                        } else {
+                            function.result =
+                                self.lower_type(type_node, file.path)
+                        }
                     }
                     none => {
                         self.fail(file.path, child,
@@ -1266,6 +1357,10 @@ class SignatureChecker {
             function.is_extern_c && function.has_body &&
             function.is_public
         function.body_result = function.result
+        if function.returns_self && function.is_async {
+            self.fail(file.path, node,
+                      "async methods cannot return Self yet")
+        }
         if function.is_async {
             self.validate_async_function(node, file, function)
         }
@@ -1511,6 +1606,16 @@ class SignatureChecker {
                             module_words(child.value).contains("static")
                         let is_private: bool =
                             module_words(child.note).contains("priv")
+                        let is_weak: bool =
+                            module_words(child.note).contains("weak")
+                        if is_weak && node.kind != "class" {
+                            self.fail(file.path, child,
+                                      "weak fields are supported only on classes")
+                        }
+                        if is_weak && is_static {
+                            self.fail(file.path, child,
+                                      "a static field cannot be weak")
+                        }
                         if child.value.starts_with("pub ") && is_private {
                             self.fail(file.path, child,
                                       "field cannot be both pub and priv")
@@ -1524,6 +1629,9 @@ class SignatureChecker {
                             layout_modifier_align(child.value),
                             has_default,
                             file.path, child.line, child.col)
+                        field.is_weak =
+                            is_weak && node.kind == "class" &&
+                            !is_static
                         field.annotations =
                             self.lower_annotations(
                                 child.annotations, "field", file.path)
@@ -1608,7 +1716,8 @@ class SignatureChecker {
                     child, file, node.resolved,
                     node.kind == "interface" &&
                     declaration.is_public,
-                    node.kind == "interface")
+                    node.kind == "interface",
+                    node.kind, declaration.generics)
             }
         }
     }
@@ -2124,7 +2233,7 @@ class SignatureChecker {
                 for declaration: AstNode in file.ast.children {
                     if declaration.kind == "fn" {
                         self.lower_function(
-                            declaration, file, "", false, false)
+                            declaration, file, "", false, false, "", [])
                     } else if declaration.kind == "c_global" {
                         self.lower_c_global(
                             declaration, file)

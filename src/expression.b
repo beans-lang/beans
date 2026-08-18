@@ -1900,10 +1900,55 @@ class ExpressionChecker {
         }
     }
 
+    // True for `self` and for chains of Self-returning calls rooted at
+    // self — each link provably evaluates to its receiver, so the chain's
+    // value is the receiver itself.
+    fn is_self_return(value: HirNode) -> bool {
+        var current: HirNode = value
+        for true {
+            if current.kind == "local" &&
+               current.value == "self" {
+                return true
+            }
+            if current.kind == "super_call" {
+                match self.methods.get(current.resolved) {
+                    some(callee) => {
+                        return callee.returns_self
+                    }
+                    none => { return false }
+                }
+            }
+            if current.kind == "method_call" {
+                match self.methods.get(current.resolved) {
+                    some(callee) => {
+                        if !callee.returns_self {
+                            return false
+                        }
+                    }
+                    none => { return false }
+                }
+                if current.children.len() == 0 {
+                    return false
+                }
+                current = current.children[0]
+                continue
+            }
+            return false
+        }
+        return false
+    }
+
     fn same_method_signature(left: HirFunction,
                              right: HirFunction) -> bool {
+        // Self results match only each other: the stored result type is
+        // each owner's own, so comparing those would wrongly reject an
+        // inherited `-> Self` and wrongly accept a concrete override.
+        if left.returns_self != right.returns_self {
+            return false
+        }
         if left.parameters.len() != right.parameters.len() ||
-           !hir_types_equal(left.result, right.result) {
+           (!left.returns_self &&
+            !hir_types_equal(left.result, right.result)) {
             return false
         }
         for index: int in 0..left.parameters.len() {
@@ -1921,7 +1966,13 @@ class ExpressionChecker {
         for parameter: HirParameter in function.parameters {
             parameters.push(render_hir_type(parameter.type))
         }
-        return "fn({parameters.join(", ")}) -> {render_hir_type(function.result)}"
+        let shown: string =
+            if function.returns_self {
+                "Self"
+            } else {
+                render_hir_type(function.result)
+            }
+        return "fn({parameters.join(", ")}) -> {shown}"
     }
 
     fn validate_override(function: HirFunction) {
@@ -4882,9 +4933,18 @@ class ExpressionChecker {
                     none => {}
                 }
                 self.expect_type(node, field.type, expected)
+                // weak fields read and write through their own node
+                // kind: the slot holds a zeroing handle, not the value,
+                // and both backends lower the difference.
                 let result: HirNode =
                     self.make_node(
-                        node, "field", node.value, field.type)
+                        node,
+                        if field.field.is_weak {
+                            "weak_field"
+                        } else {
+                            "field"
+                        },
+                        node.value, field.type)
                 result.children.push(receiver)
                 return result
             }
@@ -5114,7 +5174,10 @@ class ExpressionChecker {
                        shown: string,
                        result: HirNode) {
         let count: int = node.children.len() - first
-        if count != function.parameters.len() {
+        let required: int =
+            self.required_argument_count(function)
+        if count < required ||
+           count > function.parameters.len() {
             self.fail(
                 node,
                 takes_arguments_message(
@@ -5200,6 +5263,58 @@ class ExpressionChecker {
                 node.children[index + first], no_hir_type()))
             result.argument_passing.push("")
         }
+        if count >= required &&
+           count < function.parameters.len() {
+            self.append_default_arguments(
+                function, count, owner_declaration,
+                owner, result)
+        }
+    }
+
+    // Arguments a call must spell out: everything before the first
+    // trailing default.
+    fn required_argument_count(function: HirFunction) -> int {
+        var required: int = 0
+        for parameter: HirParameter in function.parameters {
+            match parameter.default_syntax {
+                some(value) => {}
+                none => { required += 1 }
+            }
+        }
+        return required
+    }
+
+    // The left-out trailing arguments, materialized from their declared
+    // constants at this call site — sugar in the checker, so no backend
+    // or ABI knows defaults exist.
+    fn append_default_arguments(
+        function: HirFunction, count: int,
+        owner_declaration: Option<HirDeclaration>,
+        owner: HirType, result: HirNode) {
+        for index: int in
+            count..function.parameters.len() {
+            match function.parameters[
+                index].default_syntax {
+                some(value) => {
+                    var parameter_type: HirType =
+                        function.parameters[index].type
+                    match owner_declaration {
+                        some(declaration) => {
+                            parameter_type =
+                                self.substitute_owner_type(
+                                    parameter_type,
+                                    declaration, owner)
+                        }
+                        none => {}
+                    }
+                    result.children.push(
+                        self.check_expression(
+                            value, parameter_type))
+                    result.argument_passing.push("")
+                }
+                none => {}
+            }
+        }
     }
 
     fn check_generic_arguments(
@@ -5214,7 +5329,10 @@ class ExpressionChecker {
                 function.generics, inout inference, node)
         }
         let count: int = node.children.len() - first
-        if count != function.parameters.len() {
+        let required: int =
+            self.required_argument_count(function)
+        if count < required ||
+           count > function.parameters.len() {
             self.fail(
                 node,
                 takes_arguments_message(
@@ -5272,6 +5390,36 @@ class ExpressionChecker {
                 node.children[index + first],
                 no_hir_type()))
             result.argument_passing.push("")
+        }
+        if count >= required &&
+           count < function.parameters.len() {
+            for index: int in
+                count..function.parameters.len() {
+                match function.parameters[
+                    index].default_syntax {
+                    some(value) => {
+                        let wanted: HirType =
+                            self.substitute_generic_type(
+                                function.parameters[index].type,
+                                function.generics,
+                                inference)
+                        result.children.push(
+                            self.check_expression(
+                                value,
+                                if self.has_unbound_generic(
+                                    function.parameters[
+                                        index].type,
+                                    function.generics,
+                                    inference) {
+                                    no_hir_type()
+                                } else {
+                                    wanted
+                                }))
+                        result.argument_passing.push("")
+                    }
+                    none => {}
+                }
+            }
         }
         for generic: string in function.generics {
             if !inference.contains_key(generic) {
@@ -6501,10 +6649,20 @@ class ExpressionChecker {
                         let owner: HirDeclaration =
                             self.declaration_for(target.owner).expect(
                                 "super method owner")
-                        let result_type: HirType =
+                        // super's receiver is still self, so a Self
+                        // result keeps this method's own type.
+                        var result_type: HirType =
                             self.substitute_owner_type(
                                 target.function.result,
                                 owner, target.owner)
+                        if target.function.returns_self {
+                            match self.find_local("self") {
+                                some(binding) => {
+                                    result_type = binding.type
+                                }
+                                none => {}
+                            }
+                        }
                         let result: HirNode =
                             self.make_node(
                                 node, "super_call",
@@ -6750,7 +6908,9 @@ class ExpressionChecker {
                             self.make_node(
                                 node, "static_call",
                                 callee.value, expected)
-                        if callee.value != "create" {
+                        if callee.value != "create" &&
+                           callee.value !=
+                               "create_same_thread" {
                             self.fail(
                                 node,
                                 "StoredCallback has no static '{callee.value}'")
@@ -6870,8 +7030,12 @@ class ExpressionChecker {
                             self.require_send_captures
                         let saved_sync: bool =
                             self.require_sync_captures
-                        self.require_send_captures = true
-                        self.require_sync_captures = true
+                        // the same-thread flavor checks its thread at
+                        // every call instead of restricting captures
+                        if callee.value == "create" {
+                            self.require_send_captures = true
+                            self.require_sync_captures = true
+                        }
                         let callback: HirNode =
                             self.check_expression(
                                 node.children[2],
@@ -6885,7 +7049,7 @@ class ExpressionChecker {
                             callback.type,
                             callback_type)
                         result.resolved =
-                            "StoredCallback.create:{context_index}"
+                            "StoredCallback.{callee.value}:{context_index}"
                         result.children.push(
                             checked_index)
                         result.children.push(callback)
@@ -7406,10 +7570,18 @@ class ExpressionChecker {
                     }
                     match owner {
                         some(declaration) => {
+                            // A Self result is the receiver's own static
+                            // type: the body provably returns its
+                            // receiver, so a chain keeps the type the
+                            // caller started with.
                             let result_type: HirType =
-                                self.substitute_owner_type(
-                                    function.result,
-                                    declaration, receiver.type)
+                                if function.returns_self {
+                                    receiver.type
+                                } else {
+                                    self.substitute_owner_type(
+                                        function.result,
+                                        declaration, receiver.type)
+                                }
                             let result: HirNode =
                                 self.make_node(
                                     node, "method_call",
@@ -7469,6 +7641,65 @@ class ExpressionChecker {
                             return result
                         }
                         none => {}
+                    }
+                }
+                none => {}
+            }
+            // A method wins over a function-typed field of the same name;
+            // with no method at all, a fn field is callable through member
+            // syntax like any other fn-typed callee expression.
+            match self.field_for(receiver.type, callee.value) {
+                some(field) => {
+                    if field.type.name == "fn" &&
+                       field.type.fn_parameter_count >= 0 &&
+                       field.type.fn_parameter_count <=
+                           field.type.args.len() {
+                        self.require_field_visible(
+                            node, field,
+                            "{render_hir_type(receiver.type)}.{callee.value}")
+                        match self.declaration_for(receiver.type) {
+                            some(declaration) => {
+                                if declaration.kind == "union" {
+                                    self.require_unsafe(
+                                        node,
+                                        "union field access")
+                                }
+                            }
+                            none => {}
+                        }
+                        let access: HirNode =
+                            self.make_node(
+                                callee, "field", callee.value,
+                                field.type)
+                        access.children.push(receiver)
+                        // no result entry in the args means unit
+                        let result_type: HirType =
+                            if field.type.fn_parameter_count <
+                               field.type.args.len() {
+                                field.type.args[
+                                    field.type.fn_parameter_count]
+                            } else {
+                                new HirType("unit")
+                            }
+                        var parameters: List<HirType> = []
+                        for index: int in
+                            0..field.type.fn_parameter_count {
+                            parameters.push(
+                                field.type.args[index])
+                        }
+                        let result: HirNode =
+                            self.make_node(
+                                node, "closure_call", "",
+                                result_type)
+                        result.children.push(access)
+                        self.check_builtin_arguments(
+                            node, 1,
+                            new BuiltinSignature(
+                                parameters, result_type),
+                            result)
+                        self.expect_type(
+                            node, result.type, expected)
+                        return result
                     }
                 }
                 none => {}
@@ -8363,6 +8594,7 @@ class ExpressionChecker {
         var parameter_nodes: List<AstNode> = []
         var result_type: HirType = new HirType("unit")
         var body_syntax: Option<AstNode> = none
+        var move_captures: Option<AstNode> = none
         for child: AstNode in node.children {
             if child.kind == "params" {
                 for parameter: AstNode in child.children {
@@ -8401,6 +8633,8 @@ class ExpressionChecker {
                         result_type = poison_hir_type()
                     }
                 }
+            } else if child.kind == "move_captures" {
+                move_captures = some(child)
             } else if child.kind == "block" {
                 body_syntax = some(child)
             }
@@ -8411,6 +8645,46 @@ class ExpressionChecker {
         self.expect_type(node, type, expected)
         let result: HirNode =
             self.make_node(node, "closure", "", type)
+        // move captures are validated against the enclosing scope before
+        // the closure's own scope opens
+        var moved_captures: List<LocalBinding> = []
+        var moved_names: Map<string, bool> = {}
+        match move_captures {
+            some(list) => {
+                for name_node: AstNode in list.children {
+                    if moved_names.contains_key(
+                           name_node.value) {
+                        self.fail(
+                            name_node,
+                            "'{name_node.value}' is listed twice in move(...)")
+                        continue
+                    }
+                    match self.find_local(name_node.value) {
+                        some(binding) => {
+                            moved_names[name_node.value] = true
+                            if binding.inout_parameter {
+                                self.fail(
+                                    name_node,
+                                    "closure cannot capture inout parameter '{name_node.value}'")
+                            } else if binding.move_state ==
+                                      "moved" {
+                                self.fail(
+                                    name_node,
+                                    "use of moved value '{name_node.value}'")
+                            } else {
+                                moved_captures.push(binding)
+                            }
+                        }
+                        none => {
+                            self.fail(
+                                name_node,
+                                "move(...) needs an enclosing local, and there is no '{name_node.value}'")
+                        }
+                    }
+                }
+            }
+            none => {}
+        }
         let saved_result: HirType = self.current.result
         let saved_body_result: HirType =
             self.current.body_result
@@ -8470,7 +8744,36 @@ class ExpressionChecker {
         self.current.body_result = saved_body_result
         self.capture_floor_depth = saved_capture_floor
         self.take_floor_depth = saved_take_floor
+        // an unreferenced move capture would never enter the closure's
+        // cell set, so nothing would own it; require the body to name it
+        for binding: LocalBinding in moved_captures {
+            if !self.closure_names_local(
+                   result, binding.name) {
+                self.fail(
+                    node,
+                    "move capture '{binding.name}' is never used in the closure body")
+            }
+        }
+        // the closure owns the listed captures now: the enclosing
+        // bindings are spent, exactly as if each was passed to a move
+        // parameter
+        for binding: LocalBinding in moved_captures {
+            binding.move_state = "moved"
+        }
         return result
+    }
+
+    fn closure_names_local(node: HirNode,
+                           name: string) -> bool {
+        if node.kind == "local" && node.value == name {
+            return true
+        }
+        for child: HirNode in node.children {
+            if self.closure_names_local(child, name) {
+                return true
+            }
+        }
+        return false
     }
 
     fn check_expression_block(block: AstNode,
@@ -9824,6 +10127,15 @@ class ExpressionChecker {
                 let value: HirNode = self.check_expression(
                     node.children[0],
                     self.current.body_result)
+                // The whole Self guarantee: every return is the receiver
+                // itself, which is what lets a call site keep the
+                // receiver's static type.
+                if self.current.returns_self &&
+                   !self.is_self_return(value) {
+                    self.fail(
+                        node.children[0],
+                        "a Self-returning method must return self, or a Self-returning method chain on self")
+                }
                 result.children.push(value)
                 self.require_move_source(
                     node.children[0], value.type,
@@ -10284,6 +10596,26 @@ class ExpressionChecker {
                         field.line, field.col)
                 self.validate_target_type(
                     field_node, field.type)
+                if field.is_weak {
+                    var weak_target: bool = false
+                    if field.type.name == "Option" &&
+                       field.type.args.len() == 1 {
+                        match self.declaration_for(
+                            field.type.args[0]) {
+                            some(target) => {
+                                weak_target =
+                                    target.kind == "class" &&
+                                    !target.is_unique
+                            }
+                            none => {}
+                        }
+                    }
+                    if !weak_target {
+                        self.fail(
+                            field_node,
+                            "a weak field needs type Option<C> for a non-unique class C, got {render_hir_type(field.type)}")
+                    }
+                }
                 field.annotations =
                     self.check_hir_annotations(
                         field.annotations)

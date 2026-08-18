@@ -1462,6 +1462,7 @@ class MirLowerer {
             var operands: List<int> = []
             var map_key_operand: int = -1
             if target.kind == "field" ||
+               target.kind == "weak_field" ||
                target.kind == "index" {
                 for index: int in
                     0..target.children.len() {
@@ -2839,7 +2840,11 @@ class MirLowerer {
             }
             if consumer.op == "local_init" ||
                consumer.op == "assign" {
-                return true
+                // a weak-field store keeps no count on the referent —
+                // the moved reference dies inside the store, so the
+                // source local must keep its own retain and its drop
+                return !consumer.text.starts_with(
+                    "weak_field:")
             }
             if consumer.op == "some" ||
                consumer.op == "ok" ||

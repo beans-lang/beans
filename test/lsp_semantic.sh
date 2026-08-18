@@ -421,10 +421,14 @@ done
 
 # Native packages and built-in names have no source declarations, but they are
 # still real checked language symbols and must complete.
+# `thread.` is followed by a keyword line: an identifier there would now
+# continue the member chain (multi-line chains are real syntax), which is
+# its own completion position, not a fresh-statement one.
 cat >"$scratch/builtin_completion.b" <<'BEANS'
 import std.thread
 fn main() {
     thread.
+    let hold: int = 1
     Memo
     MemoryOrder.
 }
@@ -433,11 +437,11 @@ got=$(complete "$scratch/builtin_completion.b:3:12")
 grep -q '^item function spawn builtin_module:std.thread.spawn$' <<<"$got" ||
     fail "thread. should offer spawn:
 $got"
-got=$(complete "$scratch/builtin_completion.b:4:9")
+got=$(complete "$scratch/builtin_completion.b:5:9")
 grep -q '^item class MemoryOrder builtin:MemoryOrder$' <<<"$got" ||
     fail "Memo should offer MemoryOrder:
 $got"
-got=$(complete "$scratch/builtin_completion.b:5:17")
+got=$(complete "$scratch/builtin_completion.b:6:17")
 for want in relaxed acquire release acq_rel seq_cst; do
     grep -q "^item enumMember $want builtin:MemoryOrder.$want$" <<<"$got" ||
         fail "MemoryOrder. should offer $want:

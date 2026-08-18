@@ -101,6 +101,7 @@ test-frontend: $(BIN)
 	./test/docs.sh
 	./test/version.sh
 	bash ./test/syntax_v07.sh
+	bash ./test/language_gaps.sh
 	bash ./test/private_fields.sh
 	bash ./test/private_methods.sh
 	bash ./test/abstract_classes.sh
@@ -182,12 +183,14 @@ test-ffi: $(BIN)
 	./test/c_opaque.sh
 	./test/c_globals.sh
 	./test/link_manifest.sh
+	bash ./test/csrc_build.sh
 	./test/library_output.sh
 	./test/bindgen.sh
 	./test/bindgen_link.sh
 	./test/sqlite_system.sh
 	./test/stack_pointer.sh
 	./test/stored_callbacks.sh
+	bash ./test/same_thread_callbacks.sh
 	./test/simd.sh
 	./test/intrinsics.sh
 	./test/packed_layout.sh
@@ -233,6 +236,7 @@ test-core: $(BIN)
 	./test/maps.sh
 	./test/traits.sh
 	bash ./test/syntax_v07.sh
+	bash ./test/language_gaps.sh
 	bash ./test/private_fields.sh
 	bash ./test/private_methods.sh
 	bash ./test/abstract_classes.sh
@@ -260,12 +264,14 @@ test-core: $(BIN)
 	./test/c_opaque.sh
 	./test/c_globals.sh
 	./test/link_manifest.sh
+	bash ./test/csrc_build.sh
 	./test/library_output.sh
 	./test/bindgen.sh
 	./test/bindgen_link.sh
 	./test/sqlite_system.sh
 	./test/stack_pointer.sh
 	./test/stored_callbacks.sh
+	bash ./test/same_thread_callbacks.sh
 	bash ./test/closure_captures.sh
 	bash ./test/async.sh
 	./test/stdlib_source.sh
