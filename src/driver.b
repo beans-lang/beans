@@ -369,7 +369,8 @@ fn net_bridge_platform_flags(
     }
     // MSVC has ptrdiff_t but no POSIX ssize_t. nghttp2's implementation
     // still exposes its old ssize_t wrappers beside the newer ptrdiff_t API.
-    if feature == "h2" && target_os == "windows" &&
+    if (feature == "h2" || feature == "ws") &&
+       target_os == "windows" &&
        target_env == "msvc" {
         flags.push("-Dssize_t=ptrdiff_t")
     }
