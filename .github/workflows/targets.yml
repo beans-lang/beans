@@ -78,20 +78,27 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - uses: ./.github/actions/setup-beansc
+
+      - name: Emit compiler IR for Alpine
+        run: |
+          mkdir -p build/bootstrap-ir
+          beansc build src/main.b --target x86_64-unknown-linux-musl \
+            --emit ir -o build/bootstrap-ir/beansc.ll
+          cp build/main_ffi.c build/bootstrap-ir/beansc_ffi.c
+
       - name: Self-hosted build and differential loop on Alpine
         run: |
           docker run --rm --platform linux/amd64 \
             -v "$PWD:/src:ro" alpine:3.22 sh -lc '
               set -eu
-              apk add --no-cache bash build-base clang lld llvm git file curl ca-certificates
-              curl -fsSL \
-                https://github.com/beans-lang/beans/releases/latest/download/beans-install.sh \
-                -o /tmp/beans-install.sh
-              BEANS_TARGET=x86_64-unknown-linux-musl \
-                sh /tmp/beans-install.sh --no-modify-path
-              export PATH="${BEANS_HOME:-$HOME/.beans}/bin:$PATH"
+              apk add --no-cache bash build-base clang lld llvm git file
               cp -a /src/. /work
               cd /work
+              tools/link_compiler_ir.sh \
+                build/bootstrap-ir/beansc.ll \
+                build/bootstrap-ir/beansc_ffi.c build/beansc
+              export BEANSC_BOOT="$PWD/build/beansc"
               BEANS_MUSL_REQUIRE=1 bash test/musl_hosted.sh x86_64
             '
 
@@ -132,25 +139,32 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - uses: ./.github/actions/setup-beansc
+
       - uses: docker/setup-qemu-action@v3
         with:
           image: docker.io/tonistiigi/binfmt@sha256:8f58e6214f4cc9dc83ce8f5acad1ece508eb6b20e696a8c1e9f274481982c541 # qemu-v10.0.4
           platforms: all
+
+      - name: Emit compiler IR for the target host
+        run: |
+          mkdir -p build/bootstrap-ir
+          beansc build src/main.b --target '${{ matrix.target }}' \
+            --emit ir -o build/bootstrap-ir/beansc.ll
+          cp build/main_ffi.c build/bootstrap-ir/beansc_ffi.c
 
       - name: Self-hosted build and differential loop on Alpine
         run: |
           docker run --rm --platform '${{ matrix.platform }}' \
             -v "$PWD:/src:ro" '${{ matrix.image }}' sh -lc '
               set -eu
-              apk add --no-cache bash build-base ${{ matrix.packages }} git file curl ca-certificates
-              curl -fsSL \
-                https://github.com/beans-lang/beans/releases/latest/download/beans-install.sh \
-                -o /tmp/beans-install.sh
-              BEANS_TARGET=${{ matrix.target }} \
-                sh /tmp/beans-install.sh --no-modify-path
-              export PATH="${BEANS_HOME:-$HOME/.beans}/bin:$PATH"
+              apk add --no-cache bash build-base ${{ matrix.packages }} git file
               cp -a /src/. /work
               cd /work
+              tools/link_compiler_ir.sh \
+                build/bootstrap-ir/beansc.ll \
+                build/bootstrap-ir/beansc_ffi.c build/beansc
+              export BEANSC_BOOT="$PWD/build/beansc"
               BEANS_MUSL_REQUIRE=1 bash test/musl_hosted.sh ${{ matrix.arch }}
             '
 

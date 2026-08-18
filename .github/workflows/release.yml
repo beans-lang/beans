@@ -276,10 +276,19 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      - uses: ./.github/actions/setup-beansc
+
       - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
         with:
           image: docker.io/tonistiigi/binfmt@sha256:8f58e6214f4cc9dc83ce8f5acad1ece508eb6b20e696a8c1e9f274481982c541 # qemu-v10.0.4
           platforms: all
+
+      - name: Emit compiler IR for the target host
+        run: |
+          mkdir -p build/bootstrap-ir
+          beansc build src/main.b --target '${{ matrix.target }}' \
+            --emit ir -o build/bootstrap-ir/beansc.ll
+          cp build/main_ffi.c build/bootstrap-ir/beansc_ffi.c
 
       - name: Build, gate, package and install-test on the musl host
         run: |
@@ -288,15 +297,13 @@ jobs:
             -v "$PWD:/src:ro" -v "$PWD/release-output:/artifacts" \
             '${{ matrix.image }}' sh -lc '
               set -eu
-              apk add --no-cache bash build-base ${{ matrix.packages }} git file curl ca-certificates
-              curl -fsSL \
-                https://github.com/beans-lang/beans/releases/latest/download/beans-install.sh \
-                -o /tmp/beans-install.sh
-              BEANS_TARGET=${{ matrix.target }} \
-                sh /tmp/beans-install.sh --no-modify-path
-              export PATH="${BEANS_HOME:-$HOME/.beans}/bin:$PATH"
+              apk add --no-cache bash build-base ${{ matrix.packages }} git file
               cp -a /src/. /work
               cd /work
+              tools/link_compiler_ir.sh \
+                build/bootstrap-ir/beansc.ll \
+                build/bootstrap-ir/beansc_ffi.c build/beansc
+              export BEANSC_BOOT="$PWD/build/beansc"
               BEANS_MUSL_REQUIRE=1 bash test/musl_hosted.sh ${{ matrix.arch }}
               BEANS_RELEASE_CLASS=slim bash test/install_release.sh
               BEANS_RELEASE_CLASS=slim \
@@ -412,10 +419,19 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      - uses: ./.github/actions/setup-beansc
+
       - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
         with:
           image: docker.io/tonistiigi/binfmt@sha256:8f58e6214f4cc9dc83ce8f5acad1ece508eb6b20e696a8c1e9f274481982c541 # qemu-v10.0.4
           platforms: arm
+
+      - name: Emit compiler IR for ARMv6 hard-float
+        run: |
+          mkdir -p build/bootstrap-ir
+          beansc build src/main.b --target arm-unknown-linux-gnueabihf \
+            --emit ir -o build/bootstrap-ir/beansc.ll
+          cp build/main_ffi.c build/bootstrap-ir/beansc_ffi.c
 
       - name: Build, gate, package and smoke-test on ARMv6 hard-float
         run: |
@@ -426,17 +442,15 @@ jobs:
               set -eu
               apt-get update
               DEBIAN_FRONTEND=noninteractive apt-get install -y \
-                --no-install-recommends bash g++ clang-16 lld-16 llvm-16 git file make curl ca-certificates
-              curl -fsSL \
-                https://github.com/beans-lang/beans/releases/latest/download/beans-install.sh \
-                -o /tmp/beans-install.sh
-              BEANS_TARGET=arm-unknown-linux-gnueabihf \
-                sh /tmp/beans-install.sh --no-modify-path
-              export PATH="${BEANS_HOME:-$HOME/.beans}/bin:$PATH"
+                --no-install-recommends bash g++ clang-16 lld-16 llvm-16 git file make
               mkdir -p /work/beans
-              tar -cf - -C /src --exclude=./build --exclude=./.git \
+              tar -cf - -C /src --exclude=./build/beansc --exclude=./.git \
                 --exclude=./toolchains . | tar -xf - -C /work/beans
               cd /work/beans
+              BEANS_CC=clang-16 tools/link_compiler_ir.sh \
+                build/bootstrap-ir/beansc.ll \
+                build/bootstrap-ir/beansc_ffi.c build/beansc
+              export BEANSC_BOOT="$PWD/build/beansc"
               BEANS_ARMV6HF_REQUIRE=1 bash test/armv6hf_hosted.sh
               BEANS_RELEASE_CLASS=slim \
                 tools/package_release.sh "${{ env.VERSION }}" \
