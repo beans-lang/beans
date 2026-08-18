@@ -120,6 +120,9 @@ cp -R "$repo/stdlib/std" "$root/lib/std"
 # with their licenses; builds and the interpreter's bridge cache compile from
 # these, offline.
 cp -R "$repo/runtime/encoding" "$root/lib/encoding"
+# The networking bridges and their pinned vendored sources (llhttp, zlib-ng,
+# wslay, nghttp2) with their licenses, for the same reason.
+cp -R "$repo/runtime/net" "$root/lib/net"
 cp "$repo/LICENSE" "$root/LICENSE"
 cp "$repo/tools/install-release.sh" "$root/libexec/beans-install.sh"
 cp "$repo/tools/install-release.ps1" "$root/libexec/beans-install.ps1"
@@ -227,7 +230,8 @@ BEANS_RUNTIME=${BEANS_RUNTIME:-$bin/beans_rt.c}
 BEANS_WASM_HOST=${BEANS_WASM_HOST:-$bin/wasm_host.c}
 BEANS_STDLIB=${BEANS_STDLIB:-$root/lib/std}
 BEANS_ENCODING=${BEANS_ENCODING:-$root/lib/encoding}
-export BEANS_HOME BEANS_RUNTIME BEANS_WASM_HOST BEANS_STDLIB BEANS_ENCODING
+BEANS_NET=${BEANS_NET:-$root/lib/net}
+export BEANS_HOME BEANS_RUNTIME BEANS_WASM_HOST BEANS_STDLIB BEANS_ENCODING BEANS_NET
 if [ -x "$root/toolchain/bin/clang" ]; then
     BEANS_CC=${BEANS_CC:-$root/toolchain/bin/clang}
     BEANS_AR=${BEANS_AR:-$root/toolchain/bin/llvm-ar}
