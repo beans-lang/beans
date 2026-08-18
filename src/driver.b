@@ -344,7 +344,9 @@ fn net_bridge_include_flags(root: string, feature: string) -> List<string> {
     }
     if feature == "ws" {
         let public: string = path.join(root, "vendor/wslay/lib/includes")
+        let internal: string = path.join(root, "vendor/wslay/lib")
         flags.push("-I{public}")
+        flags.push("-I{internal}")
     }
     return move flags
 }

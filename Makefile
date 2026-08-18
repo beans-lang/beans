@@ -175,6 +175,7 @@ test-runtime: $(BIN)
 	./test/llhttp_corpus.sh
 	./test/compress.sh
 	./test/tls.sh
+	./test/websocket.sh
 	./test/signals.sh
 	./test/dylib.sh
 	./test/child.sh
@@ -326,6 +327,7 @@ test-core: $(BIN)
 	./test/llhttp_corpus.sh
 	./test/compress.sh
 	./test/tls.sh
+	./test/websocket.sh
 	./test/signals.sh
 	./test/dylib.sh
 	./test/child.sh
