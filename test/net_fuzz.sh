@@ -39,6 +39,7 @@ echo "building the fuzz drivers"
 "$beansc" build test/cases/poll_fuzz.b -o "$tmp/poll_fuzz" >/dev/null 2>&1
 "$beansc" build test/cases/http_fuzz.b -o "$tmp/http_fuzz" >/dev/null 2>&1
 "$beansc" build test/cases/compress_fuzz.b -o "$tmp/compress_fuzz" >/dev/null 2>&1
+"$beansc" build test/cases/websocket_fuzz.b -o "$tmp/websocket_fuzz" >/dev/null 2>&1
 
 fail() {
     echo "net fuzz FAILED: $*" >&2
@@ -96,6 +97,15 @@ elif [[ "$mode" == run ]]; then
             { cat "$tmp/out" >&2; fail "compress_fuzz seed=$seed"; }
         grep -q "^ok compress_fuzz" "$tmp/out" ||
             { cat "$tmp/out" >&2; fail "compress_fuzz seed=$seed missing ok line"; }
+        # The websocket lane opens a socket pair per round, so it runs a
+        # tenth of the ops the buffer-only fuzzers do.
+        ws_ops=$(( ops / 10 ))
+        [ "$ws_ops" -lt 20 ] && ws_ops=20
+        echo "websocket_fuzz seed=$seed rounds=$ws_ops"
+        "$tmp/websocket_fuzz" "$seed" "$ws_ops" >"$tmp/out" 2>&1 ||
+            { cat "$tmp/out" >&2; fail "websocket_fuzz seed=$seed"; }
+        grep -q "^ok websocket_fuzz" "$tmp/out" ||
+            { cat "$tmp/out" >&2; fail "websocket_fuzz seed=$seed missing ok line"; }
     done
 elif [[ "$mode" == soak ]]; then
     # Wall-clock bounded; every iteration is still fully seeded, so any
@@ -112,8 +122,12 @@ elif [[ "$mode" == soak ]]; then
             { cat "$tmp/out" >&2; fail "http_fuzz seed=$seed"; }
         "$tmp/compress_fuzz" "$seed" "$ops" >"$tmp/out" 2>&1 ||
             { cat "$tmp/out" >&2; fail "compress_fuzz seed=$seed"; }
+        ws_ops=$(( ops / 10 ))
+        [ "$ws_ops" -lt 20 ] && ws_ops=20
+        "$tmp/websocket_fuzz" "$seed" "$ws_ops" >"$tmp/out" 2>&1 ||
+            { cat "$tmp/out" >&2; fail "websocket_fuzz seed=$seed"; }
         seed=$((seed + 1))
-        cases=$((cases + 4))
+        cases=$((cases + 5))
     done
     echo "soak finished: $cases cases, seeds $start..$((seed - 1)), ${soak_seconds}s budget"
 else

@@ -30,10 +30,19 @@
 // shared library, and by the loader's module walk when it is linked into an
 // executable. Objects are compiled with hidden default visibility, so the
 // public entry points opt back in explicitly.
-#if defined(_WIN32)
-  #define BEANS_NET_API __declspec(dllexport)
+// C linkage is part of the contract: a C++ bridge (the ws one reaches for
+// C++ only to keep its UTF-8 check tidy) must still export the same plain
+// symbol names both interpreters resolve by name.
+#if defined(__cplusplus)
+  #define BEANS_NET_LINKAGE extern "C"
 #else
-  #define BEANS_NET_API __attribute__((visibility("default")))
+  #define BEANS_NET_LINKAGE
+#endif
+
+#if defined(_WIN32)
+  #define BEANS_NET_API BEANS_NET_LINKAGE __declspec(dllexport)
+#else
+  #define BEANS_NET_API BEANS_NET_LINKAGE __attribute__((visibility("default")))
 #endif
 
 // Status codes shared by every networking bridge. 0 is success; each bridge
