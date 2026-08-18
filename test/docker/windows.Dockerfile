@@ -27,6 +27,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         git \
         file \
         binutils \
+        curl \
         ca-certificates \
         python3 \
         mingw-w64 \

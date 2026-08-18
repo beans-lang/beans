@@ -38,7 +38,17 @@ runs:
       run: |
         $ErrorActionPreference = 'Stop'
         Invoke-RestMethod https://github.com/beans-lang/beans/releases/latest/download/beans-install.ps1 | Invoke-Expression
-        "$env:LOCALAPPDATA\Beans\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+        $root = "$env:LOCALAPPDATA\Beans"
+        # Git Bash does not resolve beansc.cmd when a workflow invokes
+        # `beansc`. Keep the user-facing launcher, and expose an .exe copy for
+        # CI together with the environment that launcher normally sets.
+        Copy-Item "$root\bin\beansc.real.exe" "$root\bin\beansc.exe" -Force
+        "$root\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+        "BEANS_HOME=$root" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+        "BEANS_RUNTIME=$root\bin\beans_rt.c" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+        "BEANS_WASM_HOST=$root\bin\wasm_host.c" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+        "BEANS_STDLIB=$root\lib\std" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+        "BEANS_ENCODING=$root\lib\encoding" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
     # GITHUB_PATH changes are visible after this composite action returns, not
     # to a later run step inside the same action. Report through the installed
@@ -51,4 +61,4 @@ runs:
     - name: Report what will do the bootstrapping (Windows)
       if: runner.os == 'Windows'
       shell: pwsh
-      run: '& "$env:LOCALAPPDATA\Beans\bin\beansc.cmd" --version'
+      run: '& "$env:LOCALAPPDATA\Beans\bin\beansc.exe" --version'
