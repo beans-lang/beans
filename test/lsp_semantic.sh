@@ -380,6 +380,14 @@ for want in io thread encoding process; do
         fail "import std. should offer $want:
 $got"
 done
+# The networking packages are ordinary source packages, so they arrive here
+# through the same module walk as everything else — no compiler-side list to
+# keep in step. That is the property under test, not a spelling.
+for want in net poll http websocket compress tls crypto; do
+    grep -q "^item module $want import:std.$want$" <<<"$got" ||
+        fail "import std. should offer $want:
+$got"
+done
 if grep -q '^item keyword ' <<<"$got"; then
     fail "import std. offered statement keywords:
 $got"
@@ -445,6 +453,64 @@ got=$(complete "$scratch/builtin_completion.b:6:17")
 for want in relaxed acquire release acq_rel seq_cst; do
     grep -q "^item enumMember $want builtin:MemoryOrder.$want$" <<<"$got" ||
         fail "MemoryOrder. should offer $want:
+$got"
+done
+
+# --- the networking packages resolve like any other ------------------------
+#
+# A stdlib package that wraps vendored C is still just a package: its types,
+# methods and enum variants must be as visible to an editor as anything
+# written in Beans. These pin that, because the day a bridge starts leaking
+# C types into signatures is the day these stop reading cleanly.
+cat >"$scratch/net_stack.b" <<'BEANS'
+package main
+
+import std.compress
+import std.crypto
+import std.http
+import std.io
+import std.websocket
+
+fn main() {
+    let parser: http.RequestParser = new http.RequestParser()
+    let events: Result<List<http.RequestEvent>> = parser.feed(new Bytes(0))
+    let packed: Result<Bytes> = compress.gzip_compress(new Bytes(0))
+    let digest: Result<Bytes> = crypto.sha256(new Bytes(0))
+    let accept: Result<string> = websocket.accept_for_key("k")
+    io.println("{events.is_ok()} {packed.is_ok()} {digest.is_ok()} {accept.is_ok()}")
+}
+BEANS
+
+members=$(probe members "$scratch/net_stack.b:11:51")
+for want in feed finish; do
+    grep -q "^member method $want fn:std.http::RequestParser.$want$" <<<"$members" ||
+        fail "http.RequestParser should offer $want:
+$members"
+done
+grep -q "^type type:std.http::RequestParser$" <<<"$members" ||
+    fail "the receiver's type should be reported:
+$members"
+
+# Package members, from an incomplete line — the shape an editor actually
+# asks about, mid-keystroke.
+cat >"$scratch/net_members.b" <<'BEANS'
+package main
+
+import std.http
+
+fn main() {
+    let x: int = http.
+}
+BEANS
+got=$(complete "$scratch/net_members.b:6:23")
+for want in RequestParser ResponseParser Headers Request Response Client Server; do
+    grep -q "^item class $want type:std.http::$want$" <<<"$got" ||
+        fail "std.http should offer the class $want:
+$got"
+done
+for want in RequestEvent ResponseEvent; do
+    grep -q "^item enum $want type:std.http::$want$" <<<"$got" ||
+        fail "std.http should offer the enum $want:
 $got"
 done
 
