@@ -634,6 +634,13 @@ class Parser {
             }
             self.expect(":", "expected ':'")
             parameter.add(self.parse_type())
+            if self.check("=") {
+                let marker: Token = self.advance()
+                let fallback: AstNode =
+                    self.node("default", "", marker)
+                fallback.add(self.parse_expression())
+                parameter.add(fallback)
+            }
             parameters.add(parameter)
             if !self.match_token(",") {
                 self.skip_newlines()
@@ -757,6 +764,19 @@ class Parser {
                         modifier = "{modifier} {part}"
                     }
                     reading_modifiers = false
+                } else if self.check("ident") &&
+                          self.current().text == "weak" &&
+                          self.tokens[self.pos + 1].kind == "ident" &&
+                          self.tokens[self.pos + 2].kind == ":" {
+                    // `weak` is contextual: `weak next: Option<Node>`
+                    // declares a non-owning zeroing field, while a field
+                    // named weak keeps parsing as a field.
+                    let part: string = self.advance().text
+                    if modifier == "" {
+                        modifier = part
+                    } else {
+                        modifier = "{modifier} {part}"
+                    }
                 } else if self.check("ident") &&
                           self.current().text == "async" &&
                           self.tokens[self.pos + 1].kind == "fn" {
@@ -1328,10 +1348,9 @@ class Parser {
                 let dot: Token = self.advance()
                 let name: Token = self.current()
                 var field_name: string = ""
-                if self.check("ident") && name.line == dot.line {
+                if self.check("ident") {
                     field_name = self.advance().text
-                } else if self.check("new") &&
-                          name.line == dot.line {
+                } else if self.check("new") {
                     self.fail(
                         name,
                         "'.new(...)' was removed — use 'new Type(...)'")
@@ -1588,6 +1607,27 @@ class Parser {
         }
         self.expect(")", "expected ')'")
         closure.add(parameters)
+        // `fn(...) move(a, b)` — the listed locals are captured by move:
+        // the closure owns them and the enclosing binding is spent.
+        if self.check("move") {
+            let mover: Token = self.advance()
+            let moved: AstNode =
+                self.node("move_captures", "", mover)
+            self.expect("(", "expected '('")
+            self.skip_newlines()
+            for !self.check(")") && !self.at_end() {
+                let name: Token =
+                    self.expect("ident", "expected capture name")
+                moved.add(self.node("name", name.text, name))
+                if !self.match_token(",") {
+                    self.skip_newlines()
+                    break
+                }
+                self.skip_newlines()
+            }
+            self.expect(")", "expected ')'")
+            closure.add(moved)
+        }
         if self.match_token("->") {
             let result: AstNode = self.node("result", "", self.current())
             result.add(self.parse_type())

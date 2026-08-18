@@ -74,7 +74,7 @@ fn builtin_type(name: string) -> bool {
            name == "AtomicInt" || name == "MemoryOrder" ||
            name == "RoundingMode" || name == "CpuFeature" ||
            name == "StoredCallback" || name == "CFunctionPtr" ||
-           name == "Self" || simd_description(name).is_some()
+           simd_description(name).is_some()
 }
 
 fn copy_names(source: Map<string, bool>) -> Map<string, bool> {
@@ -215,9 +215,13 @@ class Resolver {
                     }
                     let name: string =
                         declaration_name(declaration.value)
+                    // `Self` is not a resolvable bare type anymore, but it
+                    // keeps its special meaning in method results, so a
+                    // declaration by that name stays refused.
                     if declaration.kind != "fn" &&
                        declaration.kind != "c_global" &&
-                       builtin_type(name) {
+                       (builtin_type(name) ||
+                        name == "Self") {
                         self.fail(file.path, declaration,
                                   "type name '{name}' already taken")
                         // The declaration must not exist downstream: no
@@ -362,7 +366,12 @@ class Resolver {
                          generics: Map<string, bool>,
                          self_type: string, node: AstNode,
                          unknown_is_bound: bool) -> string {
-        if name == "Self" && self_type != "" { return self_type }
+        if name == "Self" {
+            if self_type != "" { return self_type }
+            self.fail(file.path, node,
+                      "Self needs an enclosing class or interface")
+            return "poison"
+        }
         if builtin_type(name) || generics.contains_key(name) { return name }
 
         var resolved: string = ""

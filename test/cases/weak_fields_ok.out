@@ -1,0 +1,12 @@
+linked: parent root
+deinit root
+after-root-drop: parent gone
+alive: kept-renamed
+cleared: parent gone
+deinit child
+deinit kept-renamed
+family: parent family-parent
+deinit family-parent
+deinit family-child
+end
+deinit leaf

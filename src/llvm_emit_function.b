@@ -1534,8 +1534,17 @@ partial class LlvmTextEmitter {
             for instruction: MirInstruction in
                 block.instructions {
                 if instruction.removed { continue }
+                let errors_before: int = self.errors.len()
                 body =
                     "{body}{self.emit_instruction(function, instruction, values)}"
+                // An instruction that failed still defines its
+                // destination: the first error is the diagnosis, and a
+                // "cannot find vN" per downstream use would only bury it.
+                if self.errors.len() != errors_before &&
+                   instruction.result >= 0 &&
+                   !values.contains_key(instruction.result) {
+                    values[instruction.result] = "poison"
+                }
             }
             body =
                 "{body}{self.emit_terminator(function, block, values, is_main)}"

@@ -454,6 +454,7 @@ class ModuleLoader {
     local_names: Map<string, string>
     local_name_roots: Map<string, string>
     links: List<ModuleLink>
+    csrc_rows: List<ModuleLink>
     overlays: Map<string, string>
     want_reactor: bool
     has_local_dependencies: bool
@@ -486,6 +487,7 @@ class ModuleLoader {
         self.local_names = {}
         self.local_name_roots = {}
         self.links = []
+        self.csrc_rows = []
         self.overlays = {}
         self.want_reactor = false
         self.has_local_dependencies = false
@@ -675,6 +677,28 @@ class ModuleLoader {
                         selector: selector,
                         kind: kind,
                         value: words[3],
+                        root: root,
+                    })
+                }
+            } else if words[0] == "csrc" {
+                // csrc <selector> "<file.c>" — a C source this package
+                // owns; the toolchain compiles it, so the package ships
+                // no prebuilt binaries and pushes no build step onto
+                // consumers. Rows propagate exactly like link rows.
+                if words.len() != 3 {
+                    self.fail(
+                        mod_path, line_number, 1,
+                        "csrc needs 'csrc <selector> \"<file.c>\"'")
+                } else if !File.exists(
+                              path.join(root, words[2])) {
+                    self.fail(
+                        mod_path, line_number, 1,
+                        "csrc file does not exist: {words[2]}")
+                } else {
+                    self.csrc_rows.push(ModuleLink {
+                        selector: words[1],
+                        kind: "csrc",
+                        value: words[2],
                         root: root,
                     })
                 }

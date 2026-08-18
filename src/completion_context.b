@@ -13,6 +13,12 @@ fn semantic_dot_node(node: AstNode, line: int, col: int,
             hit = node.name_line == line &&
                   node.name_col <= col &&
                   col <= node.name_col + node.value.len()
+            // the chain continued onto a later line, so the cursor right
+            // behind the dot is still this member access — with nothing
+            // of the name typed yet
+            if !hit && node.name_line > node.line {
+                hit = node.line == line && node.col == col - 1
+            }
         }
         if hit { found.push(node) }
     }
@@ -44,7 +50,14 @@ fn semantic_completion_context(
                 }
             }
             context.mode = "member"
-            context.prefix = chosen.value
+            // a name that begins after the cursor's line is not typed
+            // yet: complete the member set unfiltered
+            context.prefix =
+                if chosen.name_line > line {
+                    ""
+                } else {
+                    chosen.value
+                }
             if chosen.children.len() != 0 {
                 let receiver: AstNode = chosen.children[0]
                 match receiver.checked {

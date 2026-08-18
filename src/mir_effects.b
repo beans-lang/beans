@@ -48,5 +48,10 @@ fn mir_effects_for(kind: string, resolved: string) -> string {
        kind == "cast" {
         return "panic"
     }
+    if kind == "weak_field" {
+        // produces a retained reference, and two reads can differ when
+        // the referent dies between them: never merged, never moved
+        return "allocate,mutate"
+    }
     return "none"
 }

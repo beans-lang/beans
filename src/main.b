@@ -1375,7 +1375,10 @@ fn main() {
                                             selected),
                                         move export_symbols,
                                         encoding_bridge_features(
-                                            loader.packages))
+                                            loader.packages),
+                                        csrc_selected(
+                                            loader.csrc_rows,
+                                            selected))
                                 let built: bool =
                                     driver.build(
                                         file_path, emitted,
