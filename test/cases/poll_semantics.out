@@ -1,0 +1,23 @@
+unready socket stays quiet true
+modify visible to the next wait true
+ready sockets reported true
+removed registration stays silent true
+wake unblocks a sleeping wait true
+waker thread clean true
+pending wake is not lost true
+wakes collapse into one true
+closed peer is reported true
+buffered bytes survive the hangup true
+EOF follows the drain true
+timeout returns empty, not an error true
+timeout is a floor true
+timeout is bounded true
+stale remove is idempotent true
+reused number fires the new token true
+old token never fires again true
+datagrams fed true
+every active socket reported true
+no idle socket invented an event true
+fairness within bounded rounds true
+abandoned await cancelled true
+descriptor parks again after cancel true

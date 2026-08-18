@@ -59,7 +59,7 @@ $(BIN): $(SELF_HOST_SRC) $(RUNTIME_COPY)
 	$(BEANSC_BOOT) build src/main.b -o $(BIN).new
 	rm -f $(BIN) && mv $(BIN).new $(BIN)
 
-.PHONY: run clean install test test-ci test-core test-quick test-frontend test-semantics test-runtime test-ffi test-platform platform-status test-platform-manifest test-compiler-arch-objects test-musl-hosted test-armv6hf-hosted test-release-package test-install-release test-release-completeness test-c-abi-tier1 test-barq-core test-sanitize fuzz-oop fuzz-oop-smoke fuzz-oop-long fuzz-reflection fuzz-reflection-smoke fuzz-differential fuzz-differential-smoke test-fixpoint test-clean-self-host test-linux test-linux-arch test-linux-hosted test-windows test-windows-native test-windows-native-i686 test-windows-native-arm64 test-windows-arch test-windows-hosted test-encoding-targets test-encoding-windows access-score self-host-next test-self-host test-self-host-full bench-compiler bench-quick bench-full bench-verify bench-profile
+.PHONY: run clean install test test-ci test-core test-quick test-frontend test-semantics test-runtime test-ffi test-platform platform-status test-platform-manifest test-compiler-arch-objects test-musl-hosted test-armv6hf-hosted test-release-package test-install-release test-release-completeness test-c-abi-tier1 test-barq-core test-sanitize fuzz-oop fuzz-oop-smoke fuzz-oop-long fuzz-reflection fuzz-reflection-smoke fuzz-net fuzz-net-soak fuzz-differential fuzz-differential-smoke test-fixpoint test-clean-self-host test-linux test-linux-arch test-linux-hosted test-windows test-windows-native test-windows-native-i686 test-windows-native-arm64 test-windows-arch test-windows-hosted test-encoding-targets test-encoding-windows access-score self-host-next test-self-host test-self-host-full bench-compiler bench-quick bench-full bench-verify bench-profile
 run: $(BIN)
 	./$(BIN) parse examples/hello.b examples/tour.b
 
@@ -168,6 +168,9 @@ test-runtime: $(BIN)
 	./test/clocks_random.sh
 	./test/net.sh
 	./test/poll.sh
+	./test/net_torture.sh
+	./test/poll_semantics.sh
+	bash ./test/net_fuzz.sh smoke
 	./test/signals.sh
 	./test/dylib.sh
 	./test/child.sh
@@ -312,6 +315,9 @@ test-core: $(BIN)
 	./test/clocks_random.sh
 	./test/net.sh
 	./test/poll.sh
+	./test/net_torture.sh
+	./test/poll_semantics.sh
+	bash ./test/net_fuzz.sh smoke
 	./test/signals.sh
 	./test/dylib.sh
 	./test/child.sh
@@ -393,6 +399,16 @@ fuzz-reflection-smoke: $(BIN)
 	REFLECT_FUZZ_SEEDS="$${REFLECT_FUZZ_SEEDS:-2}" \
 	REFLECT_FUZZ_CASES="$${REFLECT_FUZZ_CASES:-8}" \
 		bash ./test/reflection_fuzz.sh
+
+# Socket and poller fuzzing: seeded op sequences over live loopback sockets
+# with deterministic failpoint injection (BEANS_SOCK_FAILPOINTS), an fd
+# census, and a readiness oracle. `fuzz-net` is a configurable session;
+# `fuzz-net-soak` is the wall-clock nightly lane (NET_FUZZ_SECONDS).
+fuzz-net: $(BIN)
+	bash ./test/net_fuzz.sh run
+
+fuzz-net-soak: $(BIN)
+	bash ./test/net_fuzz.sh soak
 
 # Semantic differential fuzzing: generated typed programs whose expected
 # output comes from the independent evaluator in tools/differential_fuzz.py,
