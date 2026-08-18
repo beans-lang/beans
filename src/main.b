@@ -1376,6 +1376,8 @@ fn main() {
                                         move export_symbols,
                                         encoding_bridge_features(
                                             loader.packages),
+                                        net_bridge_features(
+                                            loader.packages),
                                         csrc_selected(
                                             loader.csrc_rows,
                                             selected))

@@ -9476,6 +9476,145 @@ static void* net_gai_err(const char* host, int rc) {
     return mk_error(b, kind);
 }
 
+// ---- failpoints ---------------------------------------------------------------
+//
+// Deterministic fault injection for the socket layer, off unless
+// BEANS_SOCK_FAILPOINTS is set. The value is "<seed>[:<rate>]": a 64-bit decimal
+// seed and an optional 1-in-<rate> injection chance per syscall attempt (default
+// 8, minimum 2). Every attempt draws from one splitmix64 stream indexed by a
+// global atomic counter, so a single-threaded run replays exactly from the seed,
+// and BEANS_SOCK_FAILPOINTS_LOG=1 names each injection's draw index on stderr so
+// a failure can be tied to the draw that caused it. EINTR is injected *inside*
+// the retry loops — injection exercises the same path a real signal would — and
+// every other errno surfaces through the ordinary kind mapping, so a failpoint
+// run can only produce errors the API already documents. The whole layer costs
+// one branch on a latched flag when the variable is unset.
+static int net_fp_on;
+static int net_fp_log;
+static int net_fp_eintr_only;
+static unsigned long long net_fp_seed;
+static unsigned long long net_fp_rate = 8;
+static unsigned long long net_fp_index;
+
+__attribute__((constructor)) static void net_fp_setup(void) {
+    const char* spec = getenv("BEANS_SOCK_FAILPOINTS");
+    if (!spec || !*spec) return;
+    char* rest = NULL;
+    net_fp_seed = strtoull(spec, &rest, 10);
+    if (rest && *rest == ':') {
+        unsigned long long rate = strtoull(rest + 1, &rest, 10);
+        if (rate >= 2) net_fp_rate = rate;
+        // "<seed>:<rate>:eintr" injects only EINTR — every retry loop must
+        // absorb it, so a run under this mode has to produce byte-identical
+        // output to a run with no failpoints at all.
+        if (rest && *rest == ':' && strcmp(rest + 1, "eintr") == 0)
+            net_fp_eintr_only = 1;
+    }
+    net_fp_log = getenv("BEANS_SOCK_FAILPOINTS_LOG") != NULL;
+    net_fp_on = 1;
+}
+
+// Op classes keep injected errnos plausible for the call they precede: recv
+// never reports EMFILE, accept never reports EPIPE. Windows only injects codes
+// net_errno_map carries back out, so both platforms map to the same kinds.
+enum {
+    NET_FP_RECV,
+    NET_FP_SEND,
+    NET_FP_ACCEPT,
+    NET_FP_CONNECT,
+    NET_FP_SOCKET,
+    NET_FP_WAIT
+};
+
+static void net_fp_raise(int e) {
+#if defined(_WIN32)
+    int w;
+    switch (e) {
+        case EINTR: w = WSAEINTR; break;
+        case EAGAIN: w = WSAEWOULDBLOCK; break;
+        case ECONNABORTED: w = WSAECONNABORTED; break;
+        case EMFILE: w = WSAEMFILE; break;
+        default: w = WSAECONNRESET; break;
+    }
+    WSASetLastError(w);
+#else
+    errno = e;
+#endif
+}
+
+static int net_fp(const char* op, int cls) {
+    if (!net_fp_on) return 0;
+    unsigned long long idx = __atomic_fetch_add(&net_fp_index, 1, __ATOMIC_RELAXED);
+    unsigned long long x = net_fp_seed + (idx + 1) * 0x9e3779b97f4a7c15ULL;
+    x ^= x >> 30; x *= 0xbf58476d1ce4e5b9ULL;
+    x ^= x >> 27; x *= 0x94d049bb133111ebULL;
+    x ^= x >> 31;
+    if (x % net_fp_rate != 0) return 0;
+    unsigned long long pick = x / net_fp_rate;
+    int e;
+    if (net_fp_eintr_only) {
+        // socket() has no EINTR to retry; injecting one would fabricate a
+        // failure no kernel produces there.
+        if (cls == NET_FP_SOCKET) return 0;
+        e = EINTR;
+        if (net_fp_log)
+            fprintf(stderr, "beans-sock-failpoint %llu %s errno=%d\n",
+                    idx, op, e);
+        net_fp_raise(e);
+        return e;
+    }
+    switch (cls) {
+        case NET_FP_RECV: {
+#if defined(_WIN32)
+            static const int table[] = {EINTR, EAGAIN, ECONNRESET};
+#else
+            static const int table[] = {EINTR, EAGAIN, ECONNRESET, ENOBUFS};
+#endif
+            e = table[pick % (sizeof table / sizeof table[0])];
+            break;
+        }
+        case NET_FP_SEND: {
+#if defined(_WIN32)
+            static const int table[] = {EINTR, EAGAIN, ECONNRESET};
+#else
+            static const int table[] = {EINTR, EAGAIN, ECONNRESET, EPIPE, ENOBUFS};
+#endif
+            e = table[pick % (sizeof table / sizeof table[0])];
+            break;
+        }
+        case NET_FP_ACCEPT: {
+            static const int table[] = {EINTR, ECONNABORTED, EMFILE};
+            e = table[pick % (sizeof table / sizeof table[0])];
+            break;
+        }
+        case NET_FP_CONNECT: {
+#if defined(_WIN32)
+            static const int table[] = {EINTR, ECONNRESET};
+#else
+            static const int table[] = {EINTR, ECONNRESET, ENOBUFS};
+#endif
+            e = table[pick % (sizeof table / sizeof table[0])];
+            break;
+        }
+        case NET_FP_SOCKET: {
+#if defined(_WIN32)
+            e = EMFILE;
+#else
+            static const int table[] = {EMFILE, ENOBUFS};
+            e = table[pick % (sizeof table / sizeof table[0])];
+#endif
+            break;
+        }
+        default:
+            e = EINTR;
+            break;
+    }
+    if (net_fp_log)
+        fprintf(stderr, "beans-sock-failpoint %llu %s errno=%d\n", idx, op, e);
+    net_fp_raise(e);
+    return e;
+}
+
 static long long net_millis(void) { return beans_time_monotonic_nanos() / 1000000LL; }
 
 static struct addrinfo* net_lookup(const char* host, long long port, int socktype,
@@ -9506,6 +9645,7 @@ static void net_set_cloexec(net_fd_t fd) {
 
 static net_fd_t net_socket(struct addrinfo* ai) {
     net_fd_t fd = NET_FD_NONE;
+    if (net_fp("socket", NET_FP_SOCKET)) return NET_FD_NONE;
 #ifdef SOCK_CLOEXEC
     // One call, no window in which a fork could inherit the descriptor.
     fd = socket(ai->ai_family, ai->ai_socktype | SOCK_CLOEXEC, ai->ai_protocol);
@@ -9539,6 +9679,9 @@ static int net_wait(net_fd_t fd, short events, long long timeout_ms) {
         pfd.fd = fd;
         pfd.events = events;
         pfd.revents = 0;
+        // An injected EINTR takes the same path a real signal would: recompute
+        // the budget from the clock and wait again.
+        if (net_fp("wait", NET_FP_WAIT)) continue;
         int budget = -1;
         if (timeout_ms >= 0) {
             long long left = deadline - net_millis();
@@ -9615,8 +9758,10 @@ static net_fd_t net_connect_one(struct addrinfo* ai, long long timeout_ms,
     if (flags >= 0) fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 #endif
     int rc;
-    do { rc = connect(fd, ai->ai_addr, ai->ai_addrlen); }
-    while (rc < 0 && net_errno() == EINTR);
+    do {
+        if (net_fp("connect", NET_FP_CONNECT)) { rc = -1; continue; }
+        rc = connect(fd, ai->ai_addr, ai->ai_addrlen);
+    } while (rc < 0 && net_errno() == EINTR);
     if (rc != 0) {
         int started = net_errno();
 #if defined(_WIN32)
@@ -9728,8 +9873,10 @@ BRes beans_net_accept(long long fd, long long timeout_ms) {
         if (ready == 0) return (BRes){0, net_err_op("accept", ETIMEDOUT)};
         if (ready < 0) return (BRes){0, net_err_op("accept", net_errno())};
         net_fd_t got;
-        do { got = accept(net_fd_of(fd), NULL, NULL); }
-        while (!net_fd_ok(got) && net_errno() == EINTR);
+        do {
+            if (net_fp("accept", NET_FP_ACCEPT)) { got = NET_FD_NONE; continue; }
+            got = accept(net_fd_of(fd), NULL, NULL);
+        } while (!net_fd_ok(got) && net_errno() == EINTR);
         if (net_fd_ok(got)) {
             net_set_cloexec(got);
 #ifdef SO_NOSIGPIPE
@@ -9763,6 +9910,7 @@ BRes beans_net_send(long long fd, BList* data, long long from) {
 #endif
     rt_ssize_t wrote;
     do {
+        if (net_fp("send", NET_FP_SEND)) { wrote = -1; continue; }
         wrote = send(net_fd_of(fd), (const char*)data->data + from, (size_t)want,
                      NET_NOSIGNAL);
     } while (wrote < 0 && net_errno() == EINTR);
@@ -9783,8 +9931,10 @@ BRes beans_net_send_text(long long fd, char* text, long long from) {
     if (want > 0x7fffffff) want = 0x7fffffff;
 #endif
     rt_ssize_t wrote;
-    do { wrote = send(net_fd_of(fd), text + from, (size_t)want, NET_NOSIGNAL); }
-    while (wrote < 0 && net_errno() == EINTR);
+    do {
+        if (net_fp("send", NET_FP_SEND)) { wrote = -1; continue; }
+        wrote = send(net_fd_of(fd), text + from, (size_t)want, NET_NOSIGNAL);
+    } while (wrote < 0 && net_errno() == EINTR);
     if (wrote < 0) return (BRes){0, net_err_op("send", net_errno())};
     return (BRes){(long long)wrote, NULL};
 }
@@ -9801,8 +9951,10 @@ BRes beans_net_recv(long long fd, long long max) {
 #endif
     BList* buf = bytes_mk(max);
     rt_ssize_t got;
-    do { got = recv(net_fd_of(fd), (char*)buf->data, (size_t)max, 0); }
-    while (got < 0 && net_errno() == EINTR);
+    do {
+        if (net_fp("recv", NET_FP_RECV)) { got = -1; continue; }
+        got = recv(net_fd_of(fd), (char*)buf->data, (size_t)max, 0);
+    } while (got < 0 && net_errno() == EINTR);
 #if defined(_WIN32)
     // A datagram larger than the buffer still fills it; POSIX truncates
     // silently, so the WSAEMSGSIZE dressing is stripped to match.
@@ -9829,9 +9981,11 @@ static BRes net_recv_many(long long fd, long long limit, int exact) {
         long long chunk = room < 8192 ? room : 8192;
         bytes_grow(out, out->len + chunk);
         rt_ssize_t got;
-        do { got = recv(net_fd_of(fd), (char*)out->data + out->len,
-                        (size_t)chunk, 0); }
-        while (got < 0 && net_errno() == EINTR);
+        do {
+            if (net_fp("recv", NET_FP_RECV)) { got = -1; continue; }
+            got = recv(net_fd_of(fd), (char*)out->data + out->len,
+                       (size_t)chunk, 0);
+        } while (got < 0 && net_errno() == EINTR);
         if (got < 0) {
             int e = net_errno();
             beans_release(out);
@@ -9914,6 +10068,7 @@ BRes beans_net_send_to(long long fd, BList* data, char* host, long long port) {
     for (struct addrinfo* ai = list; ai; ai = ai->ai_next) {
         rt_ssize_t wrote;
         do {
+            if (net_fp("send_to", NET_FP_SEND)) { wrote = -1; continue; }
             wrote = sendto(net_fd_of(fd), (const char*)data->data, (size_t)data->len,
                            NET_NOSIGNAL, ai->ai_addr, ai->ai_addrlen);
         } while (wrote < 0 && net_errno() == EINTR);
@@ -9943,6 +10098,7 @@ BRes beans_net_recv_from(long long fd, long long max) {
     rt_ssize_t got;
     do {
         len = sizeof sa;
+        if (net_fp("recv_from", NET_FP_RECV)) { got = -1; continue; }
         got = recvfrom(net_fd_of(fd), (char*)payload->data, (size_t)max, 0,
                        (struct sockaddr*)&sa, &len);
     } while (got < 0 && net_errno() == EINTR);

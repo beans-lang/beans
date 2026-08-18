@@ -20,6 +20,16 @@ fi
 # the reference counting and the cycle collector are all checked for real
 # memory errors rather than only for the right answer.
 
+# A program that imports std.net references the sockx networking bridge; a
+# hand link compiles the bridge source beside the runtime, the same road the
+# driver takes with cached objects.
+net_bridge_sources() {
+    local name=$1
+    if grep -q 'beans_sockx_' "build/$name.ll" "build/${name}_ffi.c" 2>/dev/null; then
+        echo runtime/net/beans_net_sockx.c
+    fi
+}
+
 run_asan() {
     local file=$1 name=$2 expected=${3:-0}
     echo "ASan checking $file"
@@ -29,6 +39,7 @@ run_asan() {
     if [[ -f "build/${name}_ffi.c" ]]; then
         ffi_sources+=("build/${name}_ffi.c")
     fi
+    ffi_sources+=($(net_bridge_sources "$name"))
     clang -O1 -g -pthread -fsanitize=address,undefined \
         -fno-sanitize-recover=undefined -Wno-override-module \
         "build/$name.ll" build/beans_rt.c "${ffi_sources[@]}" \
@@ -107,9 +118,16 @@ for file in examples/threads.b examples/shared_weak.b examples/wide_sync.b \
             test/cases/runtime_hooks_threads.b; do
     echo "TSan checking $file"
     name=$(basename "$file" .b)
+    rm -f "build/${name}_ffi.c"
     ./build/beansc build "$file" -o "$out/${name}_source" >/dev/null
+    tsan_extra=()
+    if [[ -f "build/${name}_ffi.c" ]]; then
+        tsan_extra+=("build/${name}_ffi.c")
+    fi
+    tsan_extra+=($(net_bridge_sources "$name"))
     if clang -O1 -g -pthread -fsanitize=thread -Wno-override-module \
-        "build/$name.ll" build/beans_rt.c -lm -o "$out/${name}_tsan"; then
+        "build/$name.ll" build/beans_rt.c "${tsan_extra[@]}" \
+        -lm -o "$out/${name}_tsan"; then
         # Not under `set -e`: a TSan binary can exit non-zero for reasons worth
         # reporting rather than aborting the whole sweep on, and the real signal
         # is the warning text plus the status compared to the expectation.

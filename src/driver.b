@@ -117,6 +117,215 @@ fn encoding_bridge_features(packages: List<LoadedPackage>) -> List<string> {
     return move features
 }
 
+// ---- runtime/net native bridges ----
+//
+// The networking stack follows the std.encoding shape exactly: each stdlib
+// package with a native side maps to one bridge translation unit under
+// runtime/net that includes its vendored library, compiled once per
+// configuration and cached by content. Importing a package pulls exactly its
+// own bridge object into the link; a program with no networking import links
+// none of them. The one addition over encoding is per-feature link
+// arguments, because the TLS and hash bridges stand on platform libraries
+// (Security.framework, bcrypt) rather than vendored code alone.
+
+fn net_source_root() -> string {
+    match os.env("BEANS_NET") {
+        some(root) => {
+            if root != "" { return root }
+        }
+        none => {}
+    }
+    if Dir.exists("runtime/net") { return "runtime/net" }
+    return path.join(path.parent(stdlib_root()), "net")
+}
+
+// Bump when a request-buffer layout, a status code, or the entry-point set
+// changes, so an object built against the old contract is never reused.
+fn net_bridge_abi() -> string {
+    return "net-abi-1"
+}
+
+fn net_bridge_is_cxx(feature: string) -> bool {
+    return feature == "ws"
+}
+
+// import path -> bridge features. One import can pull more than one bridge:
+// std.http owns both HTTP versions, so the h2 framing bridge rides with it.
+fn net_bridge_features(packages: List<LoadedPackage>) -> List<string> {
+    var features: List<string> = []
+    for loaded: LoadedPackage in packages {
+        var wanted: List<string> = []
+        if loaded.import_path == "std.net" {
+            wanted = ["sockx"]
+        } else if loaded.import_path == "std.http" {
+            wanted = ["h1", "h2"]
+        } else if loaded.import_path == "std.websocket" {
+            wanted = ["ws"]
+        } else if loaded.import_path == "std.compress" {
+            wanted = ["zlib"]
+        } else if loaded.import_path == "std.crypto" {
+            wanted = ["hash"]
+        } else if loaded.import_path == "std.tls" {
+            wanted = ["tls"]
+        }
+        for feature: string in wanted {
+            if !features.contains(feature) {
+                features.push(feature)
+            }
+        }
+    }
+    return move features
+}
+
+fn net_bridge_translation_unit(root: string, feature: string) -> string {
+    if feature == "ws" {
+        return path.join(root, "beans_net_{feature}.cpp")
+    }
+    return path.join(root, "beans_net_{feature}.c")
+}
+
+// Every file whose content shapes the compiled bridge, translation unit
+// first. All of them feed the cache key.
+fn net_bridge_inputs(root: string, feature: string) -> List<string> {
+    var files: List<string> = []
+    files.push(net_bridge_translation_unit(root, feature))
+    files.push(path.join(root, "beans_net_common.h"))
+    if feature == "h1" {
+        files.push(path.join(root, "vendor/llhttp/llhttp.h"))
+        files.push(path.join(root, "vendor/llhttp/llhttp.c"))
+        files.push(path.join(root, "vendor/llhttp/api.c"))
+        files.push(path.join(root, "vendor/llhttp/http.c"))
+    }
+    if feature == "h2" {
+        let lib: string = path.join(root, "vendor/nghttp2/lib")
+        match Dir.list(lib) {
+            ok(entries) => {
+                var names: List<string> = []
+                for entry: string in entries {
+                    if entry.ends_with(".c") || entry.ends_with(".h") {
+                        names.push(entry)
+                    }
+                }
+                names.sort()
+                for name: string in names {
+                    files.push(path.join(lib, name))
+                }
+            }
+            err(_) => {}
+        }
+        files.push(path.join(
+            root, "vendor/nghttp2/lib/includes/nghttp2/nghttp2.h"))
+        files.push(path.join(
+            root, "vendor/nghttp2/lib/includes/nghttp2/nghttp2ver.h"))
+    }
+    if feature == "ws" {
+        let lib: string = path.join(root, "vendor/wslay/lib")
+        match Dir.list(lib) {
+            ok(entries) => {
+                var names: List<string> = []
+                for entry: string in entries {
+                    if entry.ends_with(".c") || entry.ends_with(".h") {
+                        names.push(entry)
+                    }
+                }
+                names.sort()
+                for name: string in names {
+                    files.push(path.join(lib, name))
+                }
+            }
+            err(_) => {}
+        }
+        files.push(path.join(root, "vendor/wslay/lib/includes/wslay/wslay.h"))
+        files.push(path.join(
+            root, "vendor/wslay/lib/includes/wslay/wslayver.h"))
+    }
+    if feature == "zlib" {
+        let lib: string = path.join(root, "vendor/zlib-ng")
+        match Dir.list(lib) {
+            ok(entries) => {
+                var names: List<string> = []
+                for entry: string in entries {
+                    if entry.ends_with(".c") || entry.ends_with(".h") {
+                        names.push(entry)
+                    }
+                }
+                names.sort()
+                for name: string in names {
+                    files.push(path.join(lib, name))
+                }
+            }
+            err(_) => {}
+        }
+    }
+    return move files
+}
+
+// The feature owning one beans_* net symbol, or "" for a symbol no net
+// bridge provides. The interpreter uses this to load a bridge on first call.
+fn net_feature_for_symbol(symbol: string) -> string {
+    if symbol.starts_with("beans_sockx_") { return "sockx" }
+    if symbol.starts_with("beans_h1_") { return "h1" }
+    if symbol.starts_with("beans_h2_") { return "h2" }
+    if symbol.starts_with("beans_ws_") { return "ws" }
+    if symbol.starts_with("beans_zlib_") { return "zlib" }
+    if symbol.starts_with("beans_hash_") { return "hash" }
+    if symbol.starts_with("beans_tls_") { return "tls" }
+    return ""
+}
+
+// Include paths for the bridges whose vendored library is not amalgamated.
+// nghttp2 and wslay both use angle includes of their own public headers, so
+// the vendor include roots ride as -I flags, resolved against the net root.
+fn net_bridge_include_flags(root: string, feature: string) -> List<string> {
+    var flags: List<string> = []
+    if feature == "h2" {
+        let public: string = path.join(root, "vendor/nghttp2/lib/includes")
+        let internal: string = path.join(root, "vendor/nghttp2/lib")
+        flags.push("-I{public}")
+        flags.push("-I{internal}")
+    }
+    if feature == "ws" {
+        let public: string = path.join(root, "vendor/wslay/lib/includes")
+        flags.push("-I{public}")
+    }
+    return move flags
+}
+
+// Platform libraries a feature's bridge stands on, appended to the link and
+// to the interpreter's bridge-library build. The hash and TLS bridges use
+// the OS's own crypto rather than vendored implementations.
+fn net_bridge_link_arguments(
+    features: List<string>, target_os: string) -> List<string> {
+    var arguments: List<string> = []
+    if features.contains("tls") {
+        if target_os == "macos" {
+            arguments.push("-framework")
+            arguments.push("Security")
+            arguments.push("-framework")
+            arguments.push("CoreFoundation")
+        }
+        if target_os == "windows" {
+            arguments.push("-lsecur32")
+            arguments.push("-lcrypt32")
+        }
+        if target_os == "linux" {
+            // The OpenSSL backend loads libssl.so.3 at runtime; dlopen
+            // lives in libdl on pre-2.34 glibc and is absorbed by libc
+            // afterwards, where the flag is accepted and ignored.
+            arguments.push("-ldl")
+        }
+    }
+    if features.contains("hash") {
+        if target_os == "windows" {
+            arguments.push("-lbcrypt")
+        }
+        if target_os == "linux" {
+            arguments.push("-ldl")
+        }
+    }
+    return move arguments
+}
+
 class NativeBuildDriver {
     target: TargetDescription
     cpu: string
@@ -133,6 +342,7 @@ class NativeBuildDriver {
     link_arguments: List<string>
     export_symbols: List<string>
     encoding_features: List<string>
+    net_features: List<string>
     csrc_sources: List<string>
     errors: List<Diagnostic>
 
@@ -148,6 +358,7 @@ class NativeBuildDriver {
             move link_arguments: List<string>,
             move export_symbols: List<string>,
             move encoding_features: List<string>,
+            move net_features: List<string>,
             move csrc_sources: List<string>) {
         self.target = target
         self.cpu = cpu
@@ -163,6 +374,7 @@ class NativeBuildDriver {
         self.link_arguments = move link_arguments
         self.export_symbols = move export_symbols
         self.encoding_features = move encoding_features
+        self.net_features = move net_features
         self.csrc_sources = move csrc_sources
         self.errors = []
     }
@@ -574,6 +786,169 @@ class NativeBuildDriver {
         return move objects
     }
 
+    // ---- runtime/net bridge objects ----
+    // The same contract as the encoding bridges: hidden visibility, cached
+    // by content, staged then renamed. The only additions are per-feature
+    // include flags (nghttp2 and wslay are not amalgamated) and the C++
+    // lane for the ws bridge, which validates UTF-8 through simdutf.
+    fn net_compile_flags(feature: string,
+                         pic: bool) -> List<string> {
+        var flags: List<string> = []
+        if net_bridge_is_cxx(feature) {
+            flags.push("-x")
+            flags.push("c++")
+            flags.push("-std=c++17")
+            flags.push("-fno-exceptions")
+            flags.push("-fno-rtti")
+        }
+        flags.push(self.optimization_flag())
+        if self.release { flags.push("-DNDEBUG") }
+        for flag: string in self.debug_flags() {
+            flags.push(flag)
+        }
+        if self.lto { flags.push("-flto") }
+        let wasi: bool = self.target.os == "wasi"
+        if wasi {
+            flags.push("-fno-stack-protector")
+            flags.push("-D_FORTIFY_SOURCE=0")
+        } else if self.target.os != "windows" {
+            flags.push("-pthread")
+        }
+        flags.push("-fvisibility=hidden")
+        if pic { flags.push("-fPIC") }
+        for flag: string in
+            net_bridge_include_flags(net_source_root(), feature) {
+            flags.push(flag)
+        }
+        for flag: string in self.target_flag_list() {
+            flags.push(flag)
+        }
+        return move flags
+    }
+
+    fn compile_net_object(compiler: string,
+                          source: string,
+                          output: string,
+                          feature: string,
+                          pic: bool) -> bool {
+        let command: process.Command =
+            new process.Command(compiler)
+        for flag: string in
+            self.net_compile_flags(feature, pic) {
+            command.arg(flag)
+        }
+        command.arg("-c")
+        command.arg(source)
+        command.arg("-o")
+        command.arg(output)
+        return self.run_tool(command, source, "Clang")
+    }
+
+    fn net_cache_path(compiler: string,
+                      root: string,
+                      feature: string,
+                      pic: bool) -> string {
+        var blob: string = net_bridge_abi()
+        blob = "{blob}|{feature}"
+        blob = "{blob}|{self.target.triple}|{self.target.llvm_triple()}"
+        blob = "{blob}|{self.cpu}|{self.target.features.join(",")}"
+        blob = "{blob}|{self.runtime_profile}|{self.release}|{self.debug}|{self.lto}|{pic}"
+        blob = "{blob}|{self.sysroot}"
+        blob =
+            "{blob}|{encoding_compiler_identity(compiler)}"
+        blob =
+            "{blob}|{self.net_compile_flags(feature, pic).join(" ")}"
+        for input: string in net_bridge_inputs(root, feature) {
+            match fs.read(input) {
+                ok(text) => { blob = "{blob}|{text}" }
+                err(_) => { blob = "{blob}|missing:{input}" }
+            }
+        }
+        var hash: int = 0
+        var mixed: int = 0
+        for index: int in 0..blob.len() {
+            let byte: int = blob.byte_at(index)
+            hash = (hash * 131 + byte) % 2147483647
+            mixed = (mixed * 16777619 + byte + index % 7) % 2147483629
+        }
+        let extension: string =
+            if self.lto { "bc" } else { "o" }
+        return path.join(
+            "build",
+            "beans_net_{feature}.{self.target.triple}.{hash}x{mixed}.{extension}")
+    }
+
+    fn cached_net_object(compiler: string,
+                         root: string,
+                         feature: string,
+                         pic: bool) -> string {
+        let object: string =
+            self.net_cache_path(
+                compiler, root, feature, pic)
+        if File.exists(object) { return object }
+        let source: string =
+            net_bridge_translation_unit(root, feature)
+        if !File.exists(source) {
+            self.fail(
+                source,
+                "cannot find the networking bridge sources for '{feature}'; set BEANS_NET to the directory holding runtime/net")
+            return ""
+        }
+        var staging: string = object
+        match random.bytes(8) {
+            ok(seed) => {
+                staging = "{object}.{seed.get_u64(0)}"
+            }
+            err(_) => {
+                staging = "{object}.{time.wall_millis()}"
+            }
+        }
+        if !self.compile_net_object(
+               compiler, source, staging, feature, pic) {
+            return ""
+        }
+        match File.rename(staging, object) {
+            ok(_) => {}
+            err(_) => {
+                match File.remove(staging) {
+                    ok(_) => {}
+                    err(_) => {}
+                }
+            }
+        }
+        return object
+    }
+
+    fn cached_net_objects(compiler: string,
+                          pic: bool) -> List<string> {
+        var objects: List<string> = []
+        if self.net_features.len() == 0 {
+            return move objects
+        }
+        if self.runtime_profile == "freestanding" {
+            self.fail(
+                "std.net",
+                "the networking bridges need --runtime full; the freestanding profile has no C library for them to stand on")
+            return move objects
+        }
+        let root: string = net_source_root()
+        var failed: bool = false
+        for feature: string in self.net_features {
+            if !failed {
+                let object: string =
+                    self.cached_net_object(
+                        compiler, root, feature, pic)
+                if object == "" {
+                    failed = true
+                } else {
+                    objects.push(object)
+                }
+            }
+        }
+        if failed { objects.clear() }
+        return move objects
+    }
+
     fn csrc_cache_path(source: string,
                        pic: bool) -> string {
         var text: string = ""
@@ -897,6 +1272,19 @@ class NativeBuildDriver {
             }
         }
 
+        // Imported networking packages become cached bridge objects the
+        // same way, one per feature.
+        var net_objects: List<string> = []
+        if self.net_features.len() != 0 {
+            let recorded: int = self.errors.len()
+            net_objects =
+                self.cached_net_objects(
+                    compiler, emit == "shared")
+            if self.errors.len() != recorded {
+                return false
+            }
+        }
+
         // Manifest csrc rows compile with this build's own flags, cached
         // by content hash, and ride every emit path beside the bridges.
         var csrc_objects: List<string> = []
@@ -937,6 +1325,19 @@ class NativeBuildDriver {
                         self.fail(
                             member,
                             "cannot place encoding bridge object: {error.msg}")
+                        return false
+                    }
+                }
+            }
+            for index: int in 0..net_objects.len() {
+                let member: string =
+                    "{output}_net_{self.net_features[index]}.o"
+                match fs.copy(net_objects[index], member) {
+                    ok(_) => { io.println("built {member}") }
+                    err(error) => {
+                        self.fail(
+                            member,
+                            "cannot place networking bridge object: {error.msg}")
                         return false
                     }
                 }
@@ -995,6 +1396,9 @@ class NativeBuildDriver {
             archive.arg(runtime_object)
             for encoding_object: string in encoding_objects {
                 archive.arg(encoding_object)
+            }
+            for net_object: string in net_objects {
+                archive.arg(net_object)
             }
             for csrc_object: string in csrc_objects {
                 archive.arg(csrc_object)
@@ -1064,6 +1468,9 @@ class NativeBuildDriver {
             if wasi_wasm { wasm.arg(wasm_host) }
             for encoding_object: string in encoding_objects {
                 wasm.arg(encoding_object)
+            }
+            for net_object: string in net_objects {
+                wasm.arg(net_object)
             }
             for csrc_object: string in csrc_objects {
                 wasm.arg(csrc_object)
@@ -1154,10 +1561,20 @@ class NativeBuildDriver {
         for encoding_object: string in encoding_objects {
             command.arg(encoding_object)
         }
+        for net_object: string in net_objects {
+            command.arg(net_object)
+        }
         for csrc_object: string in csrc_objects {
             command.arg(csrc_object)
         }
         for argument: string in self.link_arguments {
+            command.arg(argument)
+        }
+        // Networking bridges that stand on platform libraries (TLS, hash)
+        // bring their own link arguments, after the objects that use them.
+        for argument: string in
+            net_bridge_link_arguments(
+                self.net_features, self.target.os) {
             command.arg(argument)
         }
         if self.target.os != "windows" { command.arg("-lm") }

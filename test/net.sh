@@ -480,9 +480,16 @@ done
 echo "checking no memory errors under ASan"
 # leaks cannot follow a fork, and this suite forks; ASan covers the whole thing and is
 # what catches a use-after-free the pool would otherwise hide.
+rm -f build/net_ffi.c
 ./build/beansc build examples/net.b --emit ir >/dev/null
+# std.net stands on the sockx bridge (multicast), so a hand link compiles
+# the bridge source and the generated extern wrappers beside the runtime —
+# the same set the driver links from its caches.
+extra_sources=(runtime/net/beans_net_sockx.c)
+if [[ -f build/net_ffi.c ]]; then extra_sources+=(build/net_ffi.c); fi
 clang -O1 -g -pthread -fsanitize=address -Wno-override-module \
-    build/net.ll build/beans_rt.c -lm -o "$tmp/asan" 2>"$tmp/asan.build"
+    build/net.ll build/beans_rt.c "${extra_sources[@]}" \
+    -lm -o "$tmp/asan" 2>"$tmp/asan.build"
 BEANS_NO_POOL=1 "$tmp/asan" >"$tmp/asan.out" 2>"$tmp/asan.err"
 if grep -q 'AddressSanitizer' "$tmp/asan.err"; then
     cat "$tmp/asan.err" >&2

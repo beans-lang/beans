@@ -28,6 +28,40 @@ package net
 
 import std.sock
 
+// Multicast membership lives in the sockx bridge (runtime/net), not the core
+// syscall layer: it is one setsockopt pair, per-address-family, and the
+// bridge road keeps the syscall layer's surface fixed. Statuses follow
+// beans_net_common.h; 100+errno carries an OS refusal out whole.
+extern "C" fn beans_sockx_multicast(fd: int, group: RawPtr<u8>, req: RawPtr<u64>) -> int
+
+fn multicast_change(fd: int, group: string, join: bool) -> Result<bool> {
+    let op: string = if join { "join_multicast" } else { "leave_multicast" }
+    if group == "" {
+        return err("{op}: a group address is required", "invalid")
+    }
+    let text: Bytes = Bytes.from(group)
+    var status: int = 0
+    unsafe {
+        let req: RawPtr<u64> = RawPtr.alloc(2)
+        req.write(text.len() as u64)
+        req.offset(1).write(if join { 1 as u64 } else { 0 as u64 })
+        status = beans_sockx_multicast(fd, text.as_ptr(), req)
+        req.free()
+    }
+    if status == 0 { return ok(true) }
+    if status == 1 {
+        return err("{op}: '{group}' is not a numeric address", "invalid")
+    }
+    if status == 2 {
+        return err("{op}: '{group}' is not a multicast group", "invalid")
+    }
+    if status >= 100 {
+        let code: int = status - 100
+        return err("{op} {group}: os error {code}", "io")
+    }
+    return err("{op} {group}: bridge status {status}", "io")
+}
+
 // ---- addresses --------------------------------------------------------------
 
 /// Where a socket is: a numeric host and a port. An ordinary value — copy it freely.
@@ -375,6 +409,23 @@ pub unique class UdpSocket {
     pub fn set_nonblocking(on: bool) -> Result<bool> {
         if !self.live { return err("set_nonblocking: socket is closed", "closed") }
         return sock.set_nonblocking(self.fd, on)
+    }
+
+    /// Joins a multicast group, so datagrams sent to the group arrive here.
+    /// The group is a **numeric** address — `"239.1.2.3"` or `"ff02::1"` —
+    /// because a name can resolve to anything, and membership of the wrong
+    /// group is silent. The socket must be bound to the same family.
+    pub fn join_multicast(group: string) -> Result<bool> {
+        if !self.live { return err("join_multicast: socket is closed", "closed") }
+        return multicast_change(self.fd, group, true)
+    }
+
+    /// Leaves a multicast group joined earlier. Leaving a group this socket
+    /// never joined is an `err` from the OS, not a silent no-op — it is
+    /// always a bookkeeping bug in the caller.
+    pub fn leave_multicast(group: string) -> Result<bool> {
+        if !self.live { return err("leave_multicast: socket is closed", "closed") }
+        return multicast_change(self.fd, group, false)
     }
 
     pub fn close() -> Result<bool> {

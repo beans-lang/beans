@@ -1,0 +1,27 @@
+partial io complete true
+partial io in order true
+partial io peer clean true
+connect to closed port refused true
+peer closed cleanly true
+write to closed peer reports reset true
+half-close question arrived true
+half-close EOF delivered true
+half-close reply sent true
+half-close reply readable true
+empty datagram sent whole true
+empty datagram arrived true
+empty datagram sender known true
+large datagram sent whole true
+truncated to the buffer true
+truncated prefix intact true
+localhost resolves true
+localhost candidates all loopback true
+localhost connects by name true
+backlog probes bounded true
+backlog outcomes documented true
+listener survives the storm true
+multicast join accepted true
+multicast leave accepted true
+double leave reported true
+unicast join refused true
+text join refused true

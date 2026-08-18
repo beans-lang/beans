@@ -53,6 +53,8 @@ class TreeInterpreter {
     manifest_handles: List<int>
     encoding_handles: Map<string, int>
     encoding_error: string
+    net_handles: Map<string, int>
+    net_error: string
     stored_callbacks: Map<int, TreeStoredCallback>
     reflect_values: Map<int, TreeValue>
     reflect_value_types: Map<int, string>
@@ -95,6 +97,8 @@ class TreeInterpreter {
         self.manifest_handles = []
         self.encoding_handles = {}
         self.encoding_error = ""
+        self.net_handles = {}
+        self.net_error = ""
         self.stored_callbacks = {}
         self.reflect_values = {}
         self.reflect_value_types = {}
@@ -11379,6 +11383,171 @@ class TreeInterpreter {
         return ""
     }
 
+    // Resolves and caches the shared bridge library for one networking
+    // feature, exactly the std.encoding mechanism: compiled once per host
+    // from the same sources `beansc build` links, cached content-addressed
+    // under BEANS_HOME, loaded RTLD_LOCAL.
+    fn ensure_net_bridge(feature: string) -> int {
+        match self.net_handles.get(feature) {
+            some(handle) => { return handle }
+            none => {}
+        }
+        let library: string =
+            self.net_bridge_library(feature)
+        if library == "" {
+            self.net_handles[feature] = 0
+            return 0
+        }
+        var handle: int = 0
+        match host_dl.open(library) {
+            ok(value) => { handle = value }
+            err(error) => {
+                self.net_error =
+                    "cannot load {library}: {error.msg}"
+            }
+        }
+        self.net_handles[feature] = handle
+        return handle
+    }
+
+    fn net_bridge_library(feature: string) -> string {
+        let root: string = net_source_root()
+        let source: string =
+            net_bridge_translation_unit(root, feature)
+        if !File.exists(source) {
+            self.net_error =
+                "cannot find the networking bridge sources under {root}; set BEANS_NET to the directory holding runtime/net"
+            return ""
+        }
+        var blob: string =
+            "{self.program.target.triple}|interp|{net_bridge_abi()}"
+        for input: string in
+            net_bridge_inputs(root, feature) {
+            match host_fs.read(input) {
+                ok(text) => { blob = "{blob}|{text}" }
+                err(_) => {
+                    blob = "{blob}|missing:{input}"
+                }
+            }
+        }
+        var hash: int = 0
+        for index: int in 0..blob.len() {
+            hash =
+                (hash * 131 + blob.byte_at(index)) %
+                2147483647
+        }
+        let extension: string =
+            if self.program.target.os == "macos" {
+                "dylib"
+            } else if self.program.target.os == "windows" {
+                "dll"
+            } else {
+                "so"
+            }
+        let cache_dir: string =
+            "{beans_home()}/cache/net"
+        let library: string =
+            "{cache_dir}/beans_net_{feature}.{self.program.target.triple}.{hash}.{extension}"
+        if File.exists(library) { return library }
+        match Dir.create_all(cache_dir) {
+            ok(_) => {}
+            err(error) => {
+                self.net_error =
+                    "cannot create {cache_dir}: {error.msg}"
+                return ""
+            }
+        }
+        let staging: string =
+            "{library}.{host_time.monotonic_nanos()}"
+        let c_driver: string = self.ffi_c_driver()
+        let argv: Bytes = new Bytes(0)
+        self.ffi_pack_argument(argv, c_driver)
+        if net_bridge_is_cxx(feature) {
+            self.ffi_pack_argument(argv, "-x")
+            self.ffi_pack_argument(argv, "c++")
+            self.ffi_pack_argument(argv, "-std=c++17")
+            self.ffi_pack_argument(argv, "-fno-exceptions")
+            self.ffi_pack_argument(argv, "-fno-rtti")
+        }
+        self.ffi_pack_argument(argv, "-O2")
+        self.ffi_pack_argument(argv, "-fvisibility=hidden")
+        for flag: string in
+            net_bridge_include_flags(root, feature) {
+            self.ffi_pack_argument(argv, flag)
+        }
+        if self.program.target.os == "macos" {
+            self.ffi_pack_argument(argv, "-dynamiclib")
+        } else {
+            self.ffi_pack_argument(argv, "-shared")
+            // See ffi_bridge above: -fPIC is not a thing to ask for on
+            // Windows, and clang errors on it for the MSVC targets.
+            if self.program.target.os != "windows" {
+                self.ffi_pack_argument(argv, "-fPIC")
+            }
+        }
+        if self.program.target.os == "windows" {
+            // The bridge is loaded into this process, so it has to match
+            // this process's ABI; see ffi_bridge above.
+            self.ffi_pack_argument(
+                argv,
+                "--target={self.program.target.llvm_triple()}")
+        }
+        self.ffi_pack_argument(argv, source)
+        // Platform libraries the feature stands on (Security.framework,
+        // bcrypt) join the bridge library's own link.
+        var only: List<string> = [feature]
+        for flag: string in
+            net_bridge_link_arguments(
+                only, self.program.target.os) {
+            self.ffi_pack_argument(argv, flag)
+        }
+        self.ffi_pack_argument(argv, "-o")
+        self.ffi_pack_argument(argv, staging)
+        let environment: Bytes = new Bytes(0)
+        self.ffi_forward_env(environment, "PATH")
+        self.ffi_forward_env(environment, "TMPDIR")
+        self.ffi_forward_env(environment, "TEMP")
+        self.ffi_forward_env(environment, "TMP")
+        self.ffi_forward_env(environment, "INCLUDE")
+        self.ffi_forward_env(environment, "LIB")
+        self.ffi_forward_env(environment, "LIBPATH")
+        var compiled: bool = false
+        var compiler_error: string = ""
+        match host_proc.run(
+                argv, environment, "",
+                new Bytes(0), 8388608) {
+            ok(output) => {
+                let status: int = output.get(0).expect("compiler status").get_i64(0)
+                let error_bytes: Bytes = output.get(2).expect("compiler stderr")
+                compiled = status == 0
+                if error_bytes.len() != 0 {
+                    compiler_error =
+                        error_bytes.to_string()
+                }
+            }
+            err(error) => {
+                compiler_error = error.msg
+            }
+        }
+        if !compiled {
+            File.remove(staging)
+            self.net_error =
+                "building the networking bridge with {c_driver} failed: {compiler_error.trim()}"
+            return ""
+        }
+        match File.rename(staging, library) {
+            ok(_) => {}
+            err(_) => {
+                // a concurrent run already published the same content
+                File.remove(staging)
+            }
+        }
+        if File.exists(library) { return library }
+        self.net_error =
+            "cannot place the networking bridge library at {library}"
+        return ""
+    }
+
     fn extern_symbol_address(
         function: HirFunction) -> int {
         match host_dl.global_symbol(
@@ -11412,6 +11581,26 @@ class TreeInterpreter {
                         function,
                         "std.encoding.{feature} bridge library is unavailable: {self.encoding_error}").int_data
                 }
+            }
+        }
+        // The networking bridges resolve the same way, through their own
+        // RTLD_LOCAL libraries keyed by symbol prefix.
+        let net_feature: string =
+            net_feature_for_symbol(function.extern_name)
+        if net_feature != "" {
+            let handle: int =
+                self.ensure_net_bridge(net_feature)
+            if handle != 0 {
+                match host_dl.symbol(
+                          handle,
+                          function.extern_name) {
+                    ok(address) => { return address }
+                    err(_) => {}
+                }
+            } else {
+                return self.fail_extern(
+                    function,
+                    "networking bridge '{net_feature}' is unavailable: {self.net_error}").int_data
             }
         }
         let builder: CAbiTextBuilder =
