@@ -33,7 +33,7 @@ extern "C" fn beans_h2_want_write(handle: int) -> int
 extern "C" fn beans_h2_want_read(handle: int) -> int
 extern "C" fn beans_h2_events_size(handle: int) -> int
 extern "C" fn beans_h2_take_events(handle: int, out: RawPtr<u8>, req: RawPtr<u64>) -> int
-extern "C" fn beans_h2_submit(handle: int, names: RawPtr<u8>, req: RawPtr<u64>) -> int
+extern "C" fn beans_h2_submit(handle: int, blob: RawPtr<u8>, req: RawPtr<u64>) -> int
 extern "C" fn beans_h2_goaway(handle: int) -> int
 extern "C" fn beans_h2_local_window(handle: int) -> int
 extern "C" fn beans_h2_remote_window(handle: int) -> int
@@ -299,36 +299,38 @@ pub unique class Http2Connection {
         return ok(move events)
     }
 
-    // Packs headers into the flat buffers the bridge expects and submits.
+    // Packs the message into ONE buffer the bridge reads as a real pointer
+    // argument: the length pairs, then the names and values, then the body.
+    // A pointer smuggled through an integer word would be a synthetic
+    // address in the interpreter, so nothing here does that.
     fn submit(fields: Headers, body: Bytes, stream_id: int) -> Result<int> {
         if fields.count() == 0 {
             return err("a message needs at least one header", "invalid")
         }
-        var names: Bytes = new Bytes(0)
         var lengths: Bytes = new Bytes(0)
+        var names: Bytes = new Bytes(0)
         for index: int in 0..fields.count() {
             let name: string = fields.name_at(index)
             let value: string = fields.value_at(index)
-            names.append_string(name)
-            names.append_string(value)
             lengths.append_i64(name.len())
             lengths.append_i64(value.len())
+            names.append_string(name)
+            names.append_string(value)
         }
+        var blob: Bytes = new Bytes(0)
+        blob.append(lengths)
+        blob.append(names)
+        blob.append(body)
         var result: int = 0
         unsafe {
             let req: RawPtr<u64> = RawPtr.alloc(6)
             req.write(fields.count() as u64)
-            req.offset(1).write(lengths.as_ptr().address())
-            let body_ptr: RawPtr<u8> = if body.len() == 0 {
-                RawPtr.null()
-            } else {
-                body.as_ptr()
-            }
-            req.offset(2).write(body_ptr.address())
+            req.offset(1).write(lengths.len() as u64)
+            req.offset(2).write(names.len() as u64)
             req.offset(3).write(body.len() as u64)
             req.offset(4).write(stream_id as u64)
-            req.offset(5).write(1 as u64)
-            result = beans_h2_submit(self.handle, names.as_ptr(), req)
+            req.offset(5).write(0 as u64)
+            result = beans_h2_submit(self.handle, blob.as_ptr(), req)
             req.free()
         }
         if result < 0 {
