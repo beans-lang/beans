@@ -11,6 +11,7 @@ upgrade. The same pattern as `runtime/encoding/vendor`.
 | --- | --- | --- | --- | --- | --- |
 | llhttp | 9.4.3 | `release/v9.4.3` | https://github.com/nodejs/llhttp/archive/refs/tags/release/v9.4.3.tar.gz | `1eb813c7437b31a87496a1cd3ed79f00746720f5e7e29c79b42c02cb69f36c39` | MIT (`llhttp/LICENSE-MIT`) |
 | zlib-ng | 2.3.3 | `2.3.3` | https://github.com/zlib-ng/zlib-ng/archive/refs/tags/2.3.3.tar.gz | `f9c65aa9c852eb8255b636fd9f07ce1c406f061ec19a2e7d508b318ca0c907d1` | zlib (`zlib-ng/LICENSE.md`) |
+| nghttp2 | 1.70.0 | `v1.70.0` | https://github.com/nghttp2/nghttp2/releases/download/v1.70.0/nghttp2-1.70.0.tar.gz | `aa317e2cf9dca6afa0aed68f8fad6ff303ec6982e25a78c75c0b65e2b9b3ded5` | MIT (`nghttp2/COPYING`) |
 | wslay | 1.1.1 | `release-1.1.1` | https://github.com/tatsuhiro-t/wslay/releases/download/release-1.1.1/wslay-1.1.1.tar.gz | `90ce68c6dfd614722d44fbb14563a3f6dacc68b548b20ae382ac4f4952c55268` | MIT (`wslay/COPYING`) |
 
 Files taken from each archive:
@@ -34,6 +35,12 @@ Files taken from each archive:
   ONE hand edit: `zconf.h`'s `Z_HAVE_UNISTD_H` is guarded by `!_WIN32`,
   because the generator baked in the host it ran on. Nothing else differs
   from upstream's output.
+
+- **nghttp2** — `lib/*.c`, `lib/*.h`, and the two public headers
+  `lib/includes/nghttp2/nghttp2.h` and `nghttp2ver.h`, plus `COPYING`. Only
+  the library is taken; the applications (nghttpd, nghttpx, h2load) are
+  not. No `config.h` is needed — every use is behind `HAVE_CONFIG_H`, which
+  is never defined — so the tree compiles as-is on every target.
 
 - **wslay** — `lib/*.c`, `lib/*.h`, `lib/includes/wslay/wslay.h` and
   `wslayver.h`, plus `COPYING`. No `config.h` is needed: every use is

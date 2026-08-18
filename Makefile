@@ -173,6 +173,7 @@ test-runtime: $(BIN)
 	bash ./test/net_fuzz.sh smoke
 	./test/http.sh
 	./test/llhttp_corpus.sh
+	./test/http2.sh
 	./test/compress.sh
 	./test/tls.sh
 	./test/websocket.sh
@@ -325,6 +326,7 @@ test-core: $(BIN)
 	bash ./test/net_fuzz.sh smoke
 	./test/http.sh
 	./test/llhttp_corpus.sh
+	./test/http2.sh
 	./test/compress.sh
 	./test/tls.sh
 	./test/websocket.sh

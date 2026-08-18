@@ -161,7 +161,7 @@ fn net_bridge_features(packages: List<LoadedPackage>) -> List<string> {
         if loaded.import_path == "std.net" {
             wanted = ["sockx"]
         } else if loaded.import_path == "std.http" {
-            wanted = ["h1"]
+            wanted = ["h1", "h2"]
         } else if loaded.import_path == "std.websocket" {
             wanted = ["ws"]
         } else if loaded.import_path == "std.compress" {

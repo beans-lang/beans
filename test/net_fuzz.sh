@@ -40,6 +40,7 @@ echo "building the fuzz drivers"
 "$beansc" build test/cases/http_fuzz.b -o "$tmp/http_fuzz" >/dev/null 2>&1
 "$beansc" build test/cases/compress_fuzz.b -o "$tmp/compress_fuzz" >/dev/null 2>&1
 "$beansc" build test/cases/websocket_fuzz.b -o "$tmp/websocket_fuzz" >/dev/null 2>&1
+"$beansc" build test/cases/http2_fuzz.b -o "$tmp/http2_fuzz" >/dev/null 2>&1
 
 fail() {
     echo "net fuzz FAILED: $*" >&2
@@ -106,6 +107,15 @@ elif [[ "$mode" == run ]]; then
             { cat "$tmp/out" >&2; fail "websocket_fuzz seed=$seed"; }
         grep -q "^ok websocket_fuzz" "$tmp/out" ||
             { cat "$tmp/out" >&2; fail "websocket_fuzz seed=$seed missing ok line"; }
+        # The h2 lane opens two full sessions per round, so it runs fewer
+        # still than the websocket one.
+        h2_ops=$(( ops / 20 ))
+        [ "$h2_ops" -lt 10 ] && h2_ops=10
+        echo "http2_fuzz seed=$seed rounds=$h2_ops"
+        "$tmp/http2_fuzz" "$seed" "$h2_ops" >"$tmp/out" 2>&1 ||
+            { cat "$tmp/out" >&2; fail "http2_fuzz seed=$seed"; }
+        grep -q "^ok http2_fuzz" "$tmp/out" ||
+            { cat "$tmp/out" >&2; fail "http2_fuzz seed=$seed missing ok line"; }
     done
 elif [[ "$mode" == soak ]]; then
     # Wall-clock bounded; every iteration is still fully seeded, so any
@@ -126,8 +136,12 @@ elif [[ "$mode" == soak ]]; then
         [ "$ws_ops" -lt 20 ] && ws_ops=20
         "$tmp/websocket_fuzz" "$seed" "$ws_ops" >"$tmp/out" 2>&1 ||
             { cat "$tmp/out" >&2; fail "websocket_fuzz seed=$seed"; }
+        h2_ops=$(( ops / 20 ))
+        [ "$h2_ops" -lt 10 ] && h2_ops=10
+        "$tmp/http2_fuzz" "$seed" "$h2_ops" >"$tmp/out" 2>&1 ||
+            { cat "$tmp/out" >&2; fail "http2_fuzz seed=$seed"; }
         seed=$((seed + 1))
-        cases=$((cases + 5))
+        cases=$((cases + 6))
     done
     echo "soak finished: $cases cases, seeds $start..$((seed - 1)), ${soak_seconds}s budget"
 else
