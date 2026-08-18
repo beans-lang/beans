@@ -1,0 +1,13 @@
+provider available true
+sha1 abc true
+sha1 empty true
+sha1 long true
+sha256 abc true
+sha256 empty true
+hmac-sha1 rfc2202-1 true
+hmac-sha1 rfc2202-2 true
+hmac-sha256 rfc4231-1 true
+hmac-sha256 rfc4231-6 true
+streaming equals one-shot true
+spent hasher refuses true
+rfc6455 accept true
