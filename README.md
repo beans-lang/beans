@@ -33,7 +33,7 @@ claim.
 | tooling | semantic LSP, interpreter DAP debugger, native debug artifacts and parser recovery for live edits |
 | reflection | checked type/member discovery, runtime annotations, dynamic values, field access, calls and construction through `std.reflect` |
 | encoding | strict DOM APIs, generated JSON encode/decode, and generated XML decode for nested structs, lists, options, field annotations and XML namespaces |
-| systems access | files, mappings, processes, sockets, DNS, polling, signals, shared memory, dynamic libraries, SIMD and intrinsics |
+| systems access | files, mappings, processes, sockets, DNS, polling, signals, shared memory, dynamic libraries, SIMD and intrinsics, HTTP/1.1 and HTTP/2, WebSocket, TLS, compression and platform hashes |
 
 The release workflow builds and install-tests all 26 required host packages and
 publishes checksums, an SPDX SBOM and GitHub attestations. That is release

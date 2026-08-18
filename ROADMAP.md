@@ -28,7 +28,7 @@ Beans stays small and readable:
 | C interop | imports, exports, headers, bindgen, records/unions, globals, TLS, errno and callbacks |
 | tooling | semantic LSP, interpreter DAP debugger and platform native debug artifacts |
 | reflection | runtime type/member metadata, annotations, dynamic values, checked access, calls and construction |
-| systems | files, mappings, processes, networking, polling, signals, shared memory, dynamic libraries, SIMD and intrinsics |
+| systems | files, mappings, processes, networking, polling, signals, shared memory, dynamic libraries, SIMD and intrinsics, HTTP/1.1 and HTTP/2, WebSocket, TLS, compression and platform hashes |
 | release | 26 required host archives, installers, checksums, SPDX SBOM and attestations |
 
 The public compiler lowers checked HIR to MIR and emits LLVM from that MIR. The
