@@ -40,6 +40,15 @@ runs:
         Invoke-RestMethod https://github.com/beans-lang/beans/releases/latest/download/beans-install.ps1 | Invoke-Expression
         "$env:LOCALAPPDATA\Beans\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
 
+    # GITHUB_PATH changes are visible after this composite action returns, not
+    # to a later run step inside the same action. Report through the installed
+    # path on Windows; callers still receive that directory on PATH.
     - name: Report what will do the bootstrapping
+      if: runner.os != 'Windows'
       shell: bash
       run: beansc --version
+
+    - name: Report what will do the bootstrapping (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: '& "$env:LOCALAPPDATA\Beans\bin\beansc.cmd" --version'
