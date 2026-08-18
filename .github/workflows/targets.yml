@@ -690,4 +690,4 @@ jobs:
       - name: The compiler rebuilds itself to a fixed point on MSVC
         shell: bash
         run: |
-          make test-fixpoint
+          make BEANSC_BOOT=build/windows_msvc/beansc.exe test-fixpoint
