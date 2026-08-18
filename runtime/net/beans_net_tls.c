@@ -3029,7 +3029,7 @@ BEANS_NET_API long long beans_tls_handshake(long long handle) {
         if (selected < 0) return BEANS_TLS_HANDSHAKE;
     }
     size_t offered = beans_tls_buf_available(&s->incoming);
-    SecBuffer input[2];
+    SecBuffer input[3];
     memset(input, 0, sizeof input);
     int input_count = 0;
     if (offered > 0) {
@@ -3038,6 +3038,11 @@ BEANS_NET_API long long beans_tls_handshake(long long handle) {
             ? ULONG_MAX : (ULONG)offered;
         offered = input[input_count].cbBuffer;
         input[input_count].pvBuffer = s->incoming.data + s->incoming.head;
+        input_count++;
+        // Schannel writes SECBUFFER_EXTRA or SECBUFFER_MISSING into this
+        // slot. Microsoft requires it as the second input buffer for both
+        // AcceptSecurityContext and InitializeSecurityContext.
+        input[input_count].BufferType = SECBUFFER_EMPTY;
         input_count++;
     } else if (s->is_server) {
         return BEANS_TLS_WANT_IO;
@@ -3050,13 +3055,16 @@ BEANS_NET_API long long beans_tls_handshake(long long handle) {
     input_desc.ulVersion = SECBUFFER_VERSION;
     input_desc.cBuffers = (ULONG)input_count;
     input_desc.pBuffers = input;
-    SecBuffer output;
-    memset(&output, 0, sizeof output);
-    output.BufferType = SECBUFFER_TOKEN;
+    SecBuffer output[2];
+    memset(output, 0, sizeof output);
+    output[0].BufferType = SECBUFFER_TOKEN;
+    // Schannel requires an alert output slot. On an error this carries the
+    // TLS alert the peer needs instead of seeing an unexplained truncation.
+    output[1].BufferType = SECBUFFER_ALERT;
     SecBufferDesc output_desc;
     output_desc.ulVersion = SECBUFFER_VERSION;
-    output_desc.cBuffers = 1;
-    output_desc.pBuffers = &output;
+    output_desc.cBuffers = 2;
+    output_desc.pBuffers = output;
     ULONG attributes = 0;
     TimeStamp expiry;
     SECURITY_STATUS status;
@@ -3084,7 +3092,9 @@ BEANS_NET_API long long beans_tls_handshake(long long handle) {
         s->context_valid = 1;
     beans_tls_win_consume_input(
         s, input, input_count, status, offered);
-    if (!beans_tls_win_append_output(s, &output)) return BEANS_TLS_PROTOCOL;
+    int output_ok = beans_tls_win_append_output(s, &output[0]);
+    output_ok = beans_tls_win_append_output(s, &output[1]) && output_ok;
+    if (!output_ok) return BEANS_TLS_PROTOCOL;
     if (status == SEC_E_OK) {
         if (!s->is_server && !beans_tls_win_verify(s))
             return BEANS_TLS_HANDSHAKE;
