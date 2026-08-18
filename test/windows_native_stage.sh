@@ -191,6 +191,13 @@ for case_name in encoding_json encoding_xml encoding_base64 encoding_binary \
     fi
 done
 
+# A package-owned C source must cross the Windows native compiler and linker,
+# not only the host interpreter's temporary shared-library path.
+"$BEANSC" build --target $TRIPLE --linker lld \
+    test/fixtures/windows_csrc/main.b -o "$OUT/windows_csrc.exe"
+printf 'windows csrc 42\n' > "$OUT/windows_csrc.expected"
+printf 'windows_csrc\t0\n' >> "$OUT/manifest.tsv"
+
 # The classes,packages differential-fuzz corpus (seed 47): class dispatch,
 # super calls, ARC drop order, and multi-package projects. Expectations come
 # from the generator's independent oracle — not from any compiler — so the
@@ -261,15 +268,35 @@ if [[ -f "$OUT/../$(basename "$OUT")/c_layout_structs.exe" ]] ||
         -o "$OUT/c_layout_structs.exe"
 fi
 
+# SChannel is exercised on the real Windows runner as both client and server.
+# The staging host creates short-lived test identities and carries them beside
+# the two PE binaries; no network outside loopback is involved.
+mkdir -p "$OUT/tls_certs"
+bash test/fixtures/tls_cert_corpus.sh "$OUT/tls_certs" >/dev/null
+openssl pkcs12 -export -out "$OUT/tls_server.p12" \
+    -inkey "$OUT/tls_certs/valid.key" -in "$OUT/tls_certs/valid.crt" \
+    -certfile "$OUT/tls_certs/ca.crt" -passout pass:beans >/dev/null 2>&1
+"$BEANSC" build --target $TRIPLE --linker lld test/cases/tls_server.b \
+    -o "$OUT/tls_server.exe"
+"$BEANSC" build --target $TRIPLE --linker lld \
+    test/cases/tls_server_client.b -o "$OUT/tls_server_client.exe"
+"$BEANSC" build --target $TRIPLE --linker lld \
+    test/cases/tls_listener_server.b -o "$OUT/tls_listener_server.exe"
+cp test/cases/tls_listener_server.out "$OUT/tls_listener_server.expected"
+"$BEANSC" build --target $TRIPLE --linker lld test/cases/tls_fuzz.b \
+    -o "$OUT/tls_fuzz.exe"
+"$BEANSC" build --target $TRIPLE --linker lld \
+    test/cases/tls_fuzz_server.b -o "$OUT/tls_fuzz_server.exe"
+
 # The floor is per target and is a measured number, not a number chosen to make
 # the run pass: it is what this target actually stages today, so a capability
 # skip that starts swallowing examples still fails the gate. i686 remains a bit
 # lower because its inline assembly set is smaller and one layout case uses a
 # target-specific golden instead of the cross-machine diff.
 case "$TRIPLE" in
-    i686-pc-windows-gnu | i686-pc-windows-msvc) floor=48 ;;
+    i686-pc-windows-gnu | i686-pc-windows-msvc) floor=49 ;;
     # The 64-bit Windows targets stage the whole set with nothing skipped.
-    *) floor=53 ;;
+    *) floor=54 ;;
 esac
 
 count=$(wc -l < "$OUT/manifest.tsv")

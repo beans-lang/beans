@@ -103,7 +103,7 @@ jobs:
               yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, no_duplicates)
 
           for f in ("ci.yml", "differential-fuzz.yml", "targets.yml",
-                    "release.yml", "benchmark.yml"):
+                    "release.yml", "benchmark.yml", "net-soak.yml"):
               path = ".github/workflows/" + f
               try:
                   parsed = yaml.load(open(path), Strict)
@@ -359,7 +359,19 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            clang lld llvm file binutils ripgrep
+            clang lld llvm file binutils ripgrep nghttp2-server
+
+      - name: Install pinned h2spec
+        run: |
+          tmp=$(mktemp -d)
+          archive="$tmp/h2spec.tar.gz"
+          curl -fsSL \
+            https://github.com/summerwind/h2spec/releases/download/v2.6.0/h2spec_linux_amd64.tar.gz \
+            -o "$archive"
+          echo "157ee0de702e01ad40e752dbf074b366027e550c8e7504f9450da2809e279318  $archive" \
+            | sha256sum -c -
+          tar -xzf "$archive" -C "$tmp"
+          sudo install -m 0755 "$tmp/h2spec" /usr/local/bin/h2spec
 
       - name: Toolchain versions
         run: |
@@ -387,6 +399,9 @@ jobs:
         run: make run
 
       - name: Differential test suite
+        env:
+          BEANS_H2SPEC_REQUIRE: "1"
+          BEANS_NGHTTPD_REQUIRE: "1"
         run: make test-ci
 
       # The release archive and the real installer, on every change rather than

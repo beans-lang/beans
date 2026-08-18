@@ -40,9 +40,16 @@ echo "checking a TLS backend is present"
 "$beansc" build test/cases/tls_verify.b -o "$tmp/verify" >"$tmp/build.log" 2>&1
 "$beansc" build test/cases/tls_truncation.b -o "$tmp/truncation" >>"$tmp/build.log" 2>&1
 "$beansc" build test/cases/tls_fuzz.b -o "$tmp/fuzz" >>"$tmp/build.log" 2>&1
+"$beansc" build test/cases/tls_server.b -o "$tmp/tls_server" >>"$tmp/build.log" 2>&1
+"$beansc" build test/cases/tls_server_client.b -o "$tmp/tls_server_client" >>"$tmp/build.log" 2>&1
+"$beansc" build test/cases/tls_listener_server.b -o "$tmp/tls_listener_server" >>"$tmp/build.log" 2>&1
+"$beansc" build test/cases/tls_listener_tls13_server.b -o "$tmp/tls_listener_tls13_server" >>"$tmp/build.log" 2>&1
 
 echo "generating the certificate corpus"
 bash test/fixtures/tls_cert_corpus.sh "$tmp/certs" >/dev/null
+openssl pkcs12 -export -out "$tmp/server.p12" \
+    -inkey "$tmp/certs/valid.key" -in "$tmp/certs/valid.crt" \
+    -certfile "$tmp/certs/ca.crt" -passout pass:beans >/dev/null 2>&1
 
 # Starts an s_server with one corpus certificate and sets PORT to the port
 # it took. Deliberately NOT a command substitution: a subshell would keep
@@ -64,15 +71,34 @@ start_server() {
     sleep 0.2
 }
 
+# The default certificate is valid only for localhost. The second is valid
+# only for sni.localhost and is selected by the TLS server-name extension.
+# A client that merely verifies a hostname but forgets to send SNI cannot
+# pass this check.
+start_sni_server() {
+    port_counter=$((port_counter + 1))
+    PORT=$port_counter
+    openssl s_server -accept "$PORT" \
+        -cert "$tmp/certs/valid.crt" -key "$tmp/certs/valid.key" \
+        -cert2 "$tmp/certs/sni.crt" -key2 "$tmp/certs/sni.key" \
+        -servername sni.localhost -servername_fatal -www -quiet \
+        >/dev/null 2>&1 &
+    servers+=($!)
+    sleep 0.2
+}
+
 # Runs the verifier, retrying while the listener is still coming up. A
 # refusal from a server that never binds is a harness fault, not a verdict.
 VERDICT=""
 run_verify() {
     local port=$1 alpn=$2
+    local host=${3:-localhost}
+    local address=${4:-$host}
     local attempt=0
     while [ "$attempt" -lt 40 ]; do
         attempt=$((attempt + 1))
-        VERDICT=$("$tmp/verify" "$tmp/certs/ca.crt" localhost "$port" "$alpn" 2>&1 | head -1)
+        VERDICT=$("$tmp/verify" "$tmp/certs/ca.crt" "$host" "$port" \
+            "$alpn" "$address" 2>&1 | head -1)
         case "$VERDICT" in
             "rejected refused"|"rejected timeout") sleep 0.1 ;;
             *) return 0 ;;
@@ -100,6 +126,130 @@ expect_verdict "not yet valid" future "rejected handshake"
 expect_verdict "wrong host" wronghost "rejected handshake"
 expect_verdict "self-signed" selfsigned "rejected handshake"
 
+echo "checking Beans TLS server identities"
+port_counter=$((port_counter + 1))
+beans_server_port=$port_counter
+if [[ $(uname -s) == Darwin ]]; then
+    # SecureTransport accepts a server ALPN list but does not expose a
+    # selected protocol in server mode. Its client ALPN path is tested below;
+    # the forced OpenSSL server lane tests server-side selection.
+    server_alpn=""
+    pem_alpn=""
+    p12_alpn=""
+else
+    server_alpn="h2,http/1.1"
+    pem_alpn="h2"
+    p12_alpn="http/1.1"
+fi
+"$tmp/tls_server" \
+    "$tmp/certs/valid.crt" "$tmp/certs/valid.key" \
+    "$tmp/certs/sni.crt" "$tmp/certs/sni.key" \
+    "$tmp/server.p12" "$tmp/certs/ca.crt" "$beans_server_port" \
+    "$server_alpn" "$pem_alpn" "$p12_alpn" \
+    >"$tmp/tls_server.out" 2>"$tmp/tls_server.err" &
+beans_server_pid=$!
+servers+=("$beans_server_pid")
+for _ in $(seq 1 50); do
+    grep -q '^listening$' "$tmp/tls_server.err" 2>/dev/null && break
+    kill -0 "$beans_server_pid" 2>/dev/null || break
+    sleep 0.1
+done
+"$tmp/tls_server_client" "$beans_server_port" "$tmp/certs/ca.crt" \
+    sni.localhost "$pem_alpn" "$pem_alpn" >"$tmp/tls_server_client.out"
+grep -q '^tls server client true$' "$tmp/tls_server_client.out" || {
+    cat "$tmp/tls_server.err" "$tmp/tls_server_client.out" >&2
+    exit 1
+}
+"$tmp/tls_server_client" "$beans_server_port" "$tmp/certs/ca.crt" \
+    localhost "$p12_alpn" "$p12_alpn" >"$tmp/tls_server_client.out"
+grep -q '^tls server client true$' "$tmp/tls_server_client.out" || {
+    cat "$tmp/tls_server.err" "$tmp/tls_server_client.out" >&2
+    exit 1
+}
+if ! wait "$beans_server_pid"; then
+    cat "$tmp/tls_server.err" "$tmp/tls_server.out" >&2
+    exit 1
+fi
+diff -u test/cases/tls_server.out "$tmp/tls_server.out"
+cat "$tmp/tls_server.out"
+
+echo "checking the TLS listener ALPN and SNI path"
+"$tmp/tls_listener_server" \
+    "$tmp/certs/valid.crt" "$tmp/certs/valid.key" \
+    "$tmp/certs/sni.crt" "$tmp/certs/sni.key" \
+    >"$tmp/tls_listener_server.out" 2>"$tmp/tls_listener_server.err" &
+tls_listener_pid=$!
+servers+=("$tls_listener_pid")
+tls_listener_port=""
+for _ in $(seq 1 50); do
+    tls_listener_port=$(sed -n 's/^listening //p' \
+        "$tmp/tls_listener_server.err" 2>/dev/null | head -1)
+    [[ -n "$tls_listener_port" ]] && break
+    kill -0 "$tls_listener_pid" 2>/dev/null || break
+    sleep 0.1
+done
+[[ -n "$tls_listener_port" ]] || {
+    cat "$tmp/tls_listener_server.err" "$tmp/tls_listener_server.out" >&2
+    exit 1
+}
+"$tmp/tls_server_client" "$tls_listener_port" "$tmp/certs/ca.crt" \
+    sni.localhost h2 h2 >"$tmp/tls_listener_client.out"
+grep -q '^tls server client true$' "$tmp/tls_listener_client.out" || {
+    cat "$tmp/tls_listener_server.err" "$tmp/tls_listener_client.out" >&2
+    exit 1
+}
+"$tmp/tls_server_client" "$tls_listener_port" "$tmp/certs/ca.crt" \
+    localhost http/1.1 http/1.1 >"$tmp/tls_listener_client.out"
+grep -q '^tls server client true$' "$tmp/tls_listener_client.out" || {
+    cat "$tmp/tls_listener_server.err" "$tmp/tls_listener_client.out" >&2
+    exit 1
+}
+if ! wait "$tls_listener_pid"; then
+    cat "$tmp/tls_listener_server.err" "$tmp/tls_listener_server.out" >&2
+    exit 1
+fi
+diff -u test/cases/tls_listener_server.out "$tmp/tls_listener_server.out"
+cat "$tmp/tls_listener_server.out"
+
+echo "checking the TLS listener accepts TLS 1.3"
+"$tmp/tls_listener_tls13_server" \
+    "$tmp/certs/valid.crt" "$tmp/certs/valid.key" \
+    >"$tmp/tls_listener_tls13_server.out" \
+    2>"$tmp/tls_listener_tls13_server.err" &
+tls_listener_tls13_pid=$!
+servers+=("$tls_listener_tls13_pid")
+tls_listener_tls13_port=""
+for _ in $(seq 1 50); do
+    tls_listener_tls13_port=$(sed -n 's/^listening //p' \
+        "$tmp/tls_listener_tls13_server.err" 2>/dev/null | head -1)
+    [[ -n "$tls_listener_tls13_port" ]] && break
+    kill -0 "$tls_listener_tls13_pid" 2>/dev/null || break
+    sleep 0.1
+done
+[[ -n "$tls_listener_tls13_port" ]] || {
+    cat "$tmp/tls_listener_tls13_server.err" >&2
+    exit 1
+}
+printf 'ping' | openssl s_client \
+    -connect "127.0.0.1:$tls_listener_tls13_port" \
+    -servername localhost -CAfile "$tmp/certs/ca.crt" \
+    -alpn h2 -tls1_3 -quiet >"$tmp/tls_listener_tls13_client.out" \
+    2>"$tmp/tls_listener_tls13_client.err"
+grep -q 'pong' "$tmp/tls_listener_tls13_client.out" || {
+    cat "$tmp/tls_listener_tls13_server.err" \
+        "$tmp/tls_listener_tls13_client.err" \
+        "$tmp/tls_listener_tls13_client.out" >&2
+    exit 1
+}
+if ! wait "$tls_listener_tls13_pid"; then
+    cat "$tmp/tls_listener_tls13_server.err" \
+        "$tmp/tls_listener_tls13_server.out" >&2
+    exit 1
+fi
+diff -u test/cases/tls_listener_tls13_server.out \
+    "$tmp/tls_listener_tls13_server.out"
+cat "$tmp/tls_listener_tls13_server.out"
+
 echo "checking the interop matrix"
 start_server valid -tls1_2
 tls12_port=$PORT
@@ -123,6 +273,12 @@ case "$got" in
     "rejected handshake") echo "  TLS 1.3: $got (backend maxes at 1.2)" ;;
     *) echo "TLS 1.3 produced no clean verdict: $got" >&2; exit 1 ;;
 esac
+
+start_sni_server
+run_verify "$PORT" "" sni.localhost 127.0.0.1
+got=$VERDICT
+[[ "$got" == accepted* ]] || { echo "SNI certificate selection failed: $got" >&2; exit 1; }
+echo "  SNI certificate selection: $got"
 
 start_server valid -alpn "h2,http/1.1"
 alpn_port=$PORT
@@ -201,10 +357,15 @@ if [ -z "$libssl" ]; then
 else
     if clang -O1 -U__APPLE__ -o "$tmp/ossl_probe" \
             test/fixtures/tls_openssl_probe.c runtime/net/beans_net_tls.c \
-            >"$tmp/ossl.build" 2>&1; then
+            >"$tmp/ossl.build" 2>&1 && \
+       clang -O1 -U__APPLE__ -o "$tmp/ossl_server" \
+            test/fixtures/tls_openssl_server.c runtime/net/beans_net_tls.c \
+            >>"$tmp/ossl.build" 2>&1; then
         ossl_verdict() {
+            local host=${3:-localhost}
+            local address=${4:-$host}
             BEANS_LIBSSL="$libssl" "$tmp/ossl_probe" "$tmp/certs/ca.crt" \
-                localhost "$1" "$2" 2>&1 | head -1
+                "$host" "$1" "$2" "$address" 2>&1 | head -1
         }
         for pair in "valid:accepted*" "expired:rejected handshake" \
                     "future:rejected handshake" "wronghost:rejected handshake" \
@@ -239,6 +400,52 @@ else
             exit 1
         }
         echo "  openssl TLS 1.3 + ALPN: $got"
+
+        start_sni_server
+        got=$(ossl_verdict "$PORT" "" sni.localhost 127.0.0.1)
+        [[ "$got" == accepted* ]] || {
+            echo "OpenSSL lane SNI selection failed: $got" >&2
+            exit 1
+        }
+        echo "  openssl SNI certificate selection: $got"
+
+        port_counter=$((port_counter + 1))
+        ossl_server_port=$port_counter
+        BEANS_LIBSSL="$libssl" "$tmp/ossl_server" \
+            "$tmp/certs/valid.crt" "$tmp/certs/valid.key" \
+            "$tmp/certs/sni.crt" "$tmp/certs/sni.key" \
+            "$tmp/server.p12" "$ossl_server_port" \
+            >"$tmp/ossl_server.out" 2>"$tmp/ossl_server.err" &
+        ossl_server_pid=$!
+        servers+=("$ossl_server_pid")
+        for _ in $(seq 1 50); do
+            grep -q '^listening$' "$tmp/ossl_server.err" 2>/dev/null && break
+            kill -0 "$ossl_server_pid" 2>/dev/null || break
+            sleep 0.1
+        done
+        "$tmp/tls_server_client" "$ossl_server_port" \
+            "$tmp/certs/ca.crt" sni.localhost h2 h2 \
+            >"$tmp/ossl_server_client.out"
+        grep -q '^tls server client true$' "$tmp/ossl_server_client.out" || {
+            cat "$tmp/ossl_server.err" "$tmp/ossl_server_client.out" >&2
+            exit 1
+        }
+        "$tmp/tls_server_client" "$ossl_server_port" \
+            "$tmp/certs/ca.crt" localhost http/1.1 http/1.1 \
+            >"$tmp/ossl_server_client.out"
+        grep -q '^tls server client true$' "$tmp/ossl_server_client.out" || {
+            cat "$tmp/ossl_server.err" "$tmp/ossl_server_client.out" >&2
+            exit 1
+        }
+        if ! wait "$ossl_server_pid"; then
+            cat "$tmp/ossl_server.err" "$tmp/ossl_server.out" >&2
+            exit 1
+        fi
+        grep -q '^openssl tls server pem sni alpn true$' \
+            "$tmp/ossl_server.out"
+        grep -q '^openssl tls server pkcs12 alpn true$' \
+            "$tmp/ossl_server.out"
+        cat "$tmp/ossl_server.out"
     else
         if [[ ${BEANS_TLS_TWO_BACKENDS:-0} == 1 ]]; then
             cat "$tmp/ossl.build" >&2
@@ -262,4 +469,4 @@ if grep -nE '^\s*pub .*(RawPtr|CFunctionPtr)' stdlib/std/tls/*.b stdlib/std/cryp
     exit 1
 fi
 
-echo "ok tls: corpus verdicts, 1.2/1.3, ALPN, truncation, partial-IO fuzz, crypto vectors"
+echo "ok tls: clients and servers, corpus, SNI, PEM/PKCS12, 1.2/1.3, ALPN, truncation, partial-IO fuzz, crypto vectors"

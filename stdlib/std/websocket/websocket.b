@@ -43,6 +43,16 @@ extern "C" fn beans_ws_want_read(handle: int) -> int
 extern "C" fn beans_ws_want_write(handle: int) -> int
 extern "C" fn beans_ws_peer_close_code(handle: int) -> int
 extern "C" fn beans_ws_close_code_sent(handle: int) -> int
+extern "C" fn beans_ws_available() -> int
+
+/// True when the native WebSocket framing bridge is available.
+pub fn available() -> bool {
+    var yes: int = 0
+    unsafe {
+        yes = beans_ws_available()
+    }
+    return yes == 1
+}
 
 /// The fixed UUID RFC 6455 concatenates with the client key. It is not a
 /// secret and never changes; it exists so a cache cannot be tricked into
@@ -77,6 +87,35 @@ fn opcode_close() -> int { return 8 }
 fn opcode_ping() -> int { return 9 }
 fn opcode_pong() -> int { return 10 }
 
+fn ascii_equals(left: string, right: string) -> bool {
+    return left.to_lower() == right.to_lower()
+}
+
+fn header_has_token(value: string, wanted: string) -> bool {
+    for part: string in value.split(",") {
+        if ascii_equals(part.trim(), wanted) { return true }
+    }
+    return false
+}
+
+fn headers_have_token(headers: http.Headers, name: string,
+                      wanted: string) -> bool {
+    for value: string in headers.all(name) {
+        if header_has_token(value, wanted) { return true }
+    }
+    return false
+}
+
+fn target_is_safe(target: string) -> bool {
+    if target.len() == 0 { return false }
+    let raw: Bytes = Bytes.from(target)
+    for index: int in 0..raw.len() {
+        let byte: int = raw.get(index)
+        if byte <= 32 || byte == 127 { return false }
+    }
+    return true
+}
+
 /// A WebSocket connection over an established TCP stream.
 ///
 /// `max_message` bounds an assembled message; crossing it is kind
@@ -86,16 +125,17 @@ fn opcode_pong() -> int { return 10 }
 /// Move-only: it owns the socket and closes it. Created by `connect` for a
 /// client, or by `accept` on a server that has already read the upgrade
 /// request through `std.http`.
-pub unique class Connection {
+pub unique class WebSocketTransport<T implements net.ByteStream> {
     handle: int = 0
-    stream: net.TcpStream
+    stream: T
     live: bool = true
     closing: bool = false
     peer_closed: bool = false
     socket_closed: bool = false
     pending: List<Message>
+    pending_head: int = 0
 
-    fn init(handle: int, move stream: net.TcpStream) {
+    fn init(handle: int, move stream: T) {
         self.handle = handle
         self.stream = move stream
         self.pending = []
@@ -111,19 +151,15 @@ pub unique class Connection {
         }
     }
 
-    /// Opens a client connection: TCP, the HTTP upgrade, then framing.
-    /// `target` is the request target (`"/chat"`), not a whole URL — the
-    /// scheme and host are already decided by `host` and `port`.
-    pub static fn connect(host: string, port: int, target: string) -> Result<Connection> {
-        return Connection.connect_timeout(host, port, target, 30000)
-    }
-
-    /// Connects with one deadline covering the TCP connect, the upgrade and
-    /// every later read and write.
-    pub static fn connect_timeout(host: string, port: int, target: string,
-                                  ms: int) -> Result<Connection> {
-        let socket: net.TcpStream = net.TcpStream.connect_timeout(host, port, ms)?
-        let tuned: Result<bool> = socket.set_timeouts(ms, ms)
+    /// Runs the client HTTP upgrade over an already connected byte stream.
+    pub static fn upgrade(move socket: T, host: string, port: int,
+                          target: string) -> Result<WebSocketTransport<T>> {
+        if !target_is_safe(target) {
+            return err("the WebSocket request target carries whitespace or a control byte", "invalid")
+        }
+        if !target_is_safe(host) {
+            return err("the WebSocket host is empty or carries whitespace or a control byte", "invalid")
+        }
         // A fresh 16-byte nonce per connection, base64'd — the value the
         // server must transform to prove it read this request.
         let nonce: Bytes = random.bytes(16)?
@@ -174,12 +210,30 @@ pub unique class Connection {
         if response.status != 101 {
             return err("the server refused the upgrade with status {response.status}", "handshake")
         }
+        if response.major != 1 || response.minor != 1 {
+            return err("the server's upgrade response is not HTTP/1.1", "handshake")
+        }
+        if !headers_have_token(response.headers, "Upgrade", "websocket") {
+            return err("the server's response has no Upgrade: websocket token", "handshake")
+        }
+        if !headers_have_token(response.headers, "Connection", "upgrade") {
+            return err("the server's response has no Connection: Upgrade token", "handshake")
+        }
+        if response.headers.has("Sec-WebSocket-Protocol") ||
+           response.headers.has("Sec-WebSocket-Extensions") {
+            return err("the server selected a WebSocket option the client did not offer", "handshake")
+        }
         let expected: string = accept_for_key(key)?
-        let offered: string = response.headers.get("Sec-WebSocket-Accept").or("")
+        let accepts: List<string> = response.headers.all("Sec-WebSocket-Accept")
+        if accepts.len() != 1 {
+            return err("the server must send exactly one Sec-WebSocket-Accept", "handshake")
+        }
+        let offered: string = accepts[0]
         if offered != expected {
             return err("the server's Sec-WebSocket-Accept does not match the key", "handshake")
         }
-        var connection: Connection = Connection.wrap(move socket, false)?
+        var connection: WebSocketTransport<T> =
+            WebSocketTransport.wrap(move socket, false)?
         if leftover.len() > 0 {
             connection.absorb(leftover)?
         }
@@ -190,8 +244,12 @@ pub unique class Connection {
     /// a server unmasks what it receives and sends unmasked, a client the
     /// reverse. Used by `accept`, and by a caller who ran the handshake
     /// themselves.
-    pub static fn wrap(move stream: net.TcpStream, server: bool,
-                       max_message: int = 8388608) -> Result<Connection> {
+    pub static fn wrap(move stream: T, server: bool,
+                       max_message: int = 8388608
+    ) -> Result<WebSocketTransport<T>> {
+        if !available() {
+            return err("WebSocket is not available on this target", "unsupported")
+        }
         // A negative limit would cast to a huge u64 and remove the cap
         // entirely, which is the opposite of what the caller asked for.
         if max_message <= 0 {
@@ -208,27 +266,57 @@ pub unique class Connection {
         if handle == 0 {
             return err("could not create a WebSocket session", "unsupported")
         }
-        return ok(new Connection(handle, move stream))
+        return ok(new WebSocketTransport<T>(handle, move stream))
     }
 
     /// Completes a server-side upgrade for a request `std.http` already
     /// parsed, then takes over the socket. The response is written here, so
     /// the caller hands over a socket that has not been answered yet.
-    pub static fn accept(move stream: net.TcpStream,
+    pub static fn accept(move stream: T,
                          request: http.Request,
-                         max_message: int = 8388608) -> Result<Connection> {
-        let upgrade: string = request.headers.get("Upgrade").or("").to_lower()
-        if upgrade != "websocket" {
+                         max_message: int = 8388608
+    ) -> Result<WebSocketTransport<T>> {
+        if request.method != "GET" {
+            return err("a WebSocket upgrade must use GET", "protocol")
+        }
+        if request.major != 1 || request.minor != 1 {
+            return err("a WebSocket upgrade must use HTTP/1.1", "protocol")
+        }
+        let hosts: List<string> = request.headers.all("Host")
+        if hosts.len() != 1 || hosts[0].trim().len() == 0 {
+            return err("a WebSocket upgrade must carry one Host header", "protocol")
+        }
+        if !headers_have_token(request.headers, "Upgrade", "websocket") {
             return err("the request is not a WebSocket upgrade", "protocol")
         }
-        let version: string = request.headers.get("Sec-WebSocket-Version").or("")
+        if !headers_have_token(request.headers, "Connection", "upgrade") {
+            return err("the request has no Connection: Upgrade token", "protocol")
+        }
+        let versions: List<string> = request.headers.all("Sec-WebSocket-Version")
+        if versions.len() != 1 {
+            return err("the request must carry one WebSocket version", "protocol")
+        }
+        let version: string = versions[0]
         if version != "13" {
             return err("only WebSocket version 13 is supported, not '{version}'", "unsupported")
         }
-        var key: string = ""
-        match request.headers.get("Sec-WebSocket-Key") {
-            some(value) => { key = value }
-            none => { return err("the upgrade carries no Sec-WebSocket-Key", "protocol") }
+        let keys: List<string> = request.headers.all("Sec-WebSocket-Key")
+        if keys.len() != 1 {
+            return err("the upgrade must carry one Sec-WebSocket-Key", "protocol")
+        }
+        let key: string = keys[0]
+        var decoded_key: Bytes = new Bytes(0)
+        match base64.decode(key) {
+            ok(value) => { decoded_key = value }
+            err(_) => {
+                return err("Sec-WebSocket-Key is not strict base64", "protocol")
+            }
+        }
+        if decoded_key.len() != 16 {
+            return err("Sec-WebSocket-Key must decode to 16 bytes", "protocol")
+        }
+        if request.chunked || request.content_length > 0 {
+            return err("a WebSocket upgrade request cannot carry a body", "protocol")
         }
         let accept: string = accept_for_key(key)?
         var response: Bytes = new Bytes(0)
@@ -238,7 +326,7 @@ pub unique class Connection {
         response.append_string("Sec-WebSocket-Accept: {accept}\r\n")
         response.append_string("\r\n")
         stream.write_all(response)?
-        return Connection.wrap(move stream, true, max_message)
+        return WebSocketTransport.wrap(move stream, true, max_message)
     }
 
     // Closing the socket happens on several paths — a protocol error, the
@@ -256,6 +344,9 @@ pub unique class Connection {
         unsafe {
             pending = beans_ws_outgoing_size(self.handle)
         }
+        if pending < 0 {
+            return err("the WebSocket framer reported an invalid output size", "protocol")
+        }
         for pending > 0 {
             let chunk: Bytes = new Bytes(pending)
             var got: int = 0
@@ -265,7 +356,9 @@ pub unique class Connection {
                 got = beans_ws_pull_outgoing(self.handle, chunk.as_ptr(), req)
                 req.free()
             }
-            if got <= 0 { break }
+            if got <= 0 {
+                return err("the WebSocket framer could not drain queued output", "protocol")
+            }
             chunk.resize(got)
             self.stream.write_all(chunk)?
             unsafe {
@@ -359,6 +452,11 @@ pub unique class Connection {
             let opcode: int = buffer.get_u8(pos)
             let length: int = buffer.get_u64(pos + 1)
             pos += 9
+            if length < 0 || pos + length < pos || pos + length > taken {
+                self.live = false
+                let closed: Result<bool> = self.shut()
+                return err("the WebSocket framer produced a malformed event", "protocol")
+            }
             let payload: Bytes = buffer.slice(pos, pos + length)
             pos += length
             if opcode == opcode_text() {
@@ -381,6 +479,11 @@ pub unique class Connection {
                 self.pending.push(Message.closed(code, reason))
             }
         }
+        if pos != taken {
+            self.live = false
+            let closed: Result<bool> = self.shut()
+            return err("the WebSocket framer produced a truncated event", "protocol")
+        }
         return ok(true)
     }
 
@@ -390,8 +493,13 @@ pub unique class Connection {
         var rounds: int = 0
         for rounds < 100000 {
             rounds += 1
-            if self.pending.len() > 0 {
-                let next: Message = self.pending.remove(0)
+            if self.pending_head < self.pending.len() {
+                let next: Message = self.pending[self.pending_head]
+                self.pending_head += 1
+                if self.pending_head >= self.pending.len() {
+                    self.pending.clear()
+                    self.pending_head = 0
+                }
                 return ok(some(next))
             }
             if self.peer_closed || !self.live {
@@ -523,4 +631,91 @@ pub unique class Connection {
     pub fn is_open() -> bool {
         return self.live && !self.peer_closed
     }
+
+    /// The underlying descriptor, borrowed for a poller.
+    pub fn poll_handle() -> int { return self.stream.poll_handle() }
+}
+
+/// Runs the WebSocket client upgrade over any connected byte stream.
+pub fn upgrade_websocket<T implements net.ByteStream>(
+    move stream: T, host: string, port: int, target: string
+) -> Result<WebSocketTransport<T>> {
+    return WebSocketTransport.upgrade(move stream, host, port, target)
+}
+
+/// Wraps a stream after a caller-managed HTTP upgrade.
+pub fn wrap_websocket<T implements net.ByteStream>(
+    move stream: T, server: bool, max_message: int = 8388608
+) -> Result<WebSocketTransport<T>> {
+    return WebSocketTransport.wrap(move stream, server, max_message)
+}
+
+/// Validates and answers a server upgrade over any byte stream.
+pub fn accept_websocket<T implements net.ByteStream>(
+    move stream: T, request: http.Request,
+    max_message: int = 8388608
+) -> Result<WebSocketTransport<T>> {
+    return WebSocketTransport.accept(move stream, request, max_message)
+}
+
+/// A WebSocket over raw TCP. Secure WebSockets use
+/// `WebSocketTransport<tls.TlsStream>` through `std.websocket_tls`.
+pub unique class Connection {
+    core: WebSocketTransport<net.TcpStream>
+
+    fn init(move core: WebSocketTransport<net.TcpStream>) {
+        self.core = move core
+    }
+
+    pub static fn connect(host: string, port: int,
+                          target: string) -> Result<Connection> {
+        return Connection.connect_timeout(host, port, target, 30000)
+    }
+
+    pub static fn connect_timeout(host: string, port: int, target: string,
+                                  ms: int) -> Result<Connection> {
+        if !target_is_safe(target) {
+            return err("the WebSocket request target carries whitespace or a control byte", "invalid")
+        }
+        if !target_is_safe(host) {
+            return err("the WebSocket host is empty or carries whitespace or a control byte", "invalid")
+        }
+        let socket: net.TcpStream =
+            net.TcpStream.connect_timeout(host, port, ms)?
+        socket.set_timeouts(ms, ms)?
+        let core: WebSocketTransport<net.TcpStream> =
+            upgrade_websocket(move socket, host, port, target)?
+        return ok(new Connection(move core))
+    }
+
+    pub static fn wrap(move stream: net.TcpStream, server: bool,
+                       max_message: int = 8388608) -> Result<Connection> {
+        let core: WebSocketTransport<net.TcpStream> =
+            wrap_websocket(move stream, server, max_message)?
+        return ok(new Connection(move core))
+    }
+
+    pub static fn accept(move stream: net.TcpStream,
+                         request: http.Request,
+                         max_message: int = 8388608) -> Result<Connection> {
+        let core: WebSocketTransport<net.TcpStream> =
+            accept_websocket(move stream, request, max_message)?
+        return ok(new Connection(move core))
+    }
+
+    pub fn receive() -> Result<Option<Message>> { return self.core.receive() }
+    pub fn send_text(body: string) -> Result<bool> {
+        return self.core.send_text(body)
+    }
+    pub fn send_binary(body: Bytes) -> Result<bool> {
+        return self.core.send_binary(body)
+    }
+    pub fn ping(body: Bytes) -> Result<bool> { return self.core.ping(body) }
+    pub fn pong(body: Bytes) -> Result<bool> { return self.core.pong(body) }
+    pub fn close(code: int, reason: string) -> Result<bool> {
+        return self.core.close(code, reason)
+    }
+    pub fn peer_close_code() -> int { return self.core.peer_close_code() }
+    pub fn is_open() -> bool { return self.core.is_open() }
+    pub fn poll_handle() -> int { return self.core.poll_handle() }
 }

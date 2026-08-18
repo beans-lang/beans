@@ -1,0 +1,54 @@
+name: Networking 24-hour soak
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 2 * * 6"
+
+permissions:
+  contents: read
+
+# GitHub-hosted jobs cannot run for 24 wall-clock hours. Five independent,
+# reproducible 4h50m shards give this gate just over 24 hours of aggregate
+# fuzz time each week without hiding a seed range inside one machine.
+jobs:
+  soak:
+    name: net soak shard ${{ matrix.shard }}/5
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { shard: 1, start: 1000000 }
+          - { shard: 2, start: 2000000 }
+          - { shard: 3, start: 3000000 }
+          - { shard: 4, start: 4000000 }
+          - { shard: 5, start: 5000000 }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-beansc
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang lld llvm
+
+      - name: Build
+        run: make
+
+      - name: Run recorded networking shard
+        env:
+          NET_FUZZ_START: ${{ matrix.start }}
+          NET_FUZZ_SECONDS: "17400"
+          NET_FUZZ_OPS: "1200"
+          POLL_SCALE_IDLE: "10000"
+        run: make fuzz-net-soak
+
+      - name: Upload reproducer logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: net-soak-${{ matrix.shard }}
+          path: build/fuzz-artifacts/
+          if-no-files-found: ignore

@@ -45,11 +45,14 @@ static int beans_zlib_window_bits(uint64_t format, int inflating) {
 
 // A conservative output bound for one-shot deflate of `len` bytes.
 BEANS_NET_API long long beans_zlib_bound(long long len, long long format) {
-    if (len < 0) return -1;
+    if (len < 0 || (uint64_t)len > (uint64_t)ULONG_MAX ||
+        format < 0 || format > 2) return -1;
     uLong bound = compressBound((uLong)len);
     // compressBound speaks for the zlib wrapper; gzip adds a 10-byte
     // header and an 8-byte trailer beyond it.
-    return (long long)bound + (format == 2 ? 18 : 0);
+    uLong extra = format == 2 ? 18 : 0;
+    if (bound > (uLong)LLONG_MAX - extra) return -1;
+    return (long long)(bound + extra);
 }
 
 // req: [0] srclen, [1] dstcap, [2] level (0..9, 6 default), [3] format;
@@ -62,8 +65,8 @@ BEANS_NET_API long long beans_zlib_deflate(const uint8_t* src,
         return BEANS_NET_ERR_RANGE;
     z_stream stream;
     memset(&stream, 0, sizeof stream);
+    if (req[2] > 9 || req[3] > 2) return BEANS_NET_ERR_INVALID;
     int level = (int)req[2];
-    if (level < 0 || level > 9) level = 6;
     if (deflateInit2(&stream, level, Z_DEFLATED,
                      beans_zlib_window_bits(req[3], 0), 8,
                      Z_DEFAULT_STRATEGY) != Z_OK)
@@ -92,6 +95,7 @@ BEANS_NET_API long long beans_zlib_inflate(const uint8_t* src,
     if (!req || (!src && req[0]) || (!dst && req[1])) return BEANS_NET_ERR_INVALID;
     if (!beans_zlib_fits(req[0]) || !beans_zlib_fits(req[1]))
         return BEANS_NET_ERR_RANGE;
+    if (req[2] > 2) return BEANS_NET_ERR_INVALID;
     z_stream stream;
     memset(&stream, 0, sizeof stream);
     if (inflateInit2(&stream, beans_zlib_window_bits(req[2], 1)) != Z_OK)
@@ -157,6 +161,7 @@ static beans_zlib_session* beans_zlib_of(long long handle) {
 // req: [0] kind (0 deflate, 1 inflate), [1] format, [2] level.
 BEANS_NET_API long long beans_zlib_stream_new(const uint64_t* req) {
     if (!req) return 0;
+    if (req[0] > 1 || req[1] > 2 || (!req[0] && req[2] > 9)) return 0;
     beans_zlib_session* s =
         (beans_zlib_session*)calloc(1, sizeof(beans_zlib_session));
     if (!s) return 0;
@@ -166,7 +171,6 @@ BEANS_NET_API long long beans_zlib_stream_new(const uint64_t* req) {
         rc = inflateInit2(&s->stream, beans_zlib_window_bits(req[1], 1));
     } else {
         int level = (int)req[2];
-        if (level < 0 || level > 9) level = 6;
         rc = deflateInit2(&s->stream, level, Z_DEFLATED,
                           beans_zlib_window_bits(req[1], 0), 8,
                           Z_DEFAULT_STRATEGY);
@@ -192,9 +196,15 @@ BEANS_NET_API long long beans_zlib_stream_run(const uint8_t* src,
     if ((!src && req[1]) || (!dst && req[2])) return BEANS_NET_ERR_INVALID;
     if (!beans_zlib_fits(req[1]) || !beans_zlib_fits(req[2]))
         return BEANS_NET_ERR_RANGE;
+    if (req[3] > 2) return BEANS_NET_ERR_INVALID;
     s->stream.next_in = (z_const Bytef*)src;
     s->stream.avail_in = (uInt)req[1];
-    s->stream.next_out = dst;
+    // zlib requires a non-null next_out even when avail_out is zero. A
+    // zero-capacity step is useful at an exact caller limit: it can consume
+    // the stream trailer and report STREAM_END without allocating one byte
+    // beyond that limit.
+    uint8_t zero_capacity_scratch = 0;
+    s->stream.next_out = req[2] == 0 ? &zero_capacity_scratch : dst;
     s->stream.avail_out = (uInt)req[2];
     int flush = req[3] == 2 ? Z_FINISH : req[3] == 1 ? Z_SYNC_FLUSH : Z_NO_FLUSH;
     int rc = s->inflating ? inflate(&s->stream, Z_NO_FLUSH)

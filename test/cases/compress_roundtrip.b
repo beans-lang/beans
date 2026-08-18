@@ -114,6 +114,21 @@ fn main() {
     }
     io.println("limit boundary exact {boundary_ok}")
 
+    var levels_refused: bool = true
+    match compress.deflate(Bytes.from("x"), -1) {
+        ok(_) => { levels_refused = false }
+        err(e) => { if e.kind != "invalid" { levels_refused = false } }
+    }
+    match compress.gzip_compress(Bytes.from("x"), 10) {
+        ok(_) => { levels_refused = false }
+        err(e) => { if e.kind != "invalid" { levels_refused = false } }
+    }
+    match compress.Deflater.open(compress.Format.raw, 99) {
+        ok(_) => { levels_refused = false }
+        err(e) => { if e.kind != "invalid" { levels_refused = false } }
+    }
+    io.println("invalid levels refused {levels_refused}")
+
     // Streaming with random push sizes and sync flushes equals one-shot.
     var flushes_seen: int = 0
     for round: int in 0..12 {

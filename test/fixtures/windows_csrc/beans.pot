@@ -1,0 +1,3 @@
+module windows_csrc
+kind application
+csrc all "native/add.c"

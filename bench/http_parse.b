@@ -2,9 +2,9 @@
 //
 // The same 465-byte request the raw-llhttp reference bench parses, pushed
 // through the public std.http RequestParser with all events consumed. The
-// done-gate from the net stack plan: parse-only throughput within 2x of
-// raw llhttp (empty settings), which is the cost budget for the event
-// buffer, the Beans-side decode, and the typed event objects.
+// The native bridge has its own near-llhttp gate. This lane constructs the
+// public Request, Headers, body, and event values too, and test/http.sh keeps
+// that typed work within 6x of the bridge on the same machine.
 //
 // Prints MB/s; test/http.sh compares against the C reference built from
 // the same vendored sources.

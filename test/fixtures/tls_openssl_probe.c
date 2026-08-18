@@ -4,7 +4,7 @@
 // ever tested. Compiled with -U__APPLE__ so beans_net_tls.c takes its
 // POSIX/dlopen path; BEANS_LIBSSL names the library.
 //
-//   tls_openssl_probe <ca.pem> <host> <port> [alpn]
+//   tls_openssl_probe <ca.pem> <host> <port> [alpn] [connect-address]
 //
 // Prints one line: "accepted alpn=<proto>" or "rejected <reason>", matching
 // the verdict vocabulary test/cases/tls_verify.b prints, so test/tls.sh can
@@ -68,6 +68,7 @@ int main(int argc, char** argv) {
     const char* host = argv[2];
     const char* port = argv[3];
     const char* alpn = argc > 4 ? argv[4] : "";
+    const char* address = argc > 5 ? argv[5] : host;
 
     if (!beans_tls_available()) { printf("rejected unsupported\n"); return 0; }
 
@@ -77,7 +78,7 @@ int main(int argc, char** argv) {
     size_t pem_len = fread(pem, 1, sizeof pem, f);
     fclose(f);
 
-    int fd = dial(host, port);
+    int fd = dial(address, port);
     if (fd < 0) { printf("rejected refused\n"); return 0; }
 
     uint64_t req[3] = { 0, strlen(host), strlen(alpn) };
@@ -105,7 +106,7 @@ int main(int argc, char** argv) {
             verdict_done = 1;
             break;
         }
-        if (status != 1) { printf("rejected handshake\n"); verdict_done = 1; break; }
+        if (status != 114) { printf("rejected handshake\n"); verdict_done = 1; break; }
         uint8_t in[16384];
         ssize_t n = read(fd, in, sizeof in);
         if (n <= 0) { printf("rejected handshake\n"); verdict_done = 1; break; }

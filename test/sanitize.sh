@@ -111,6 +111,58 @@ run_asan test/cases/runtime_hooks_ok.b runtime_hooks_ok
 run_asan test/cases/runtime_hooks_threads.b runtime_hooks_threads
 run_asan test/cases/runtime_hooks_async.b runtime_hooks_async
 
+# Build through the real driver with instrumentation enabled on every input:
+# generated IR, runtime, native shim, and every vendored C/C++ translation
+# unit. The older hand-link path above only knew about sockx, which left the
+# protocol bridges unsanitized even when their Beans fuzzers passed.
+run_bridge_asan() {
+    local file=$1 name=$2 marker=$3
+    shift 3
+    echo "ASan/UBSan checking native bridge in $file"
+    BEANS_SANITIZE=address,undefined \
+        ./build/beansc build "$file" -o "$out/${name}_bridge_asan" \
+        >"$out/${name}_bridge.build" 2>&1 || {
+            cat "$out/${name}_bridge.build" >&2
+            return 1
+        }
+    set +e
+    ASAN_OPTIONS="detect_leaks=$asan_detect_leaks:halt_on_error=1" \
+        BEANS_NO_POOL=1 "$out/${name}_bridge_asan" "$@" \
+        >"$out/${name}_bridge.stdout" 2>"$out/${name}_bridge.stderr"
+    local bridge_status=$?
+    set -e
+    if [[ "$bridge_status" -ne 0 ]] ||
+       grep -Eq 'AddressSanitizer|runtime error:' "$out/${name}_bridge.stderr" ||
+       ! grep -q "$marker" "$out/${name}_bridge.stdout"; then
+        echo "native bridge sanitizer failed: $file" >&2
+        sed -n '1,160p' "$out/${name}_bridge.stderr" >&2
+        sed -n '1,80p' "$out/${name}_bridge.stdout" >&2
+        return 1
+    fi
+    echo "ASan/UBSan ok native bridge in $file"
+}
+
+run_bridge_asan test/cases/sock_fuzz.b sockx 'ok sock_fuzz' 1 120
+run_bridge_asan test/cases/http_fuzz.b h1 'ok http_fuzz' 1 80
+run_bridge_asan test/cases/http2_fuzz.b h2 'ok http2_fuzz' 1 8
+run_bridge_asan test/cases/websocket_fuzz.b ws 'ok websocket_fuzz' 1 20
+run_bridge_asan test/cases/compress_fuzz.b zlib 'ok compress_fuzz' 1 80
+run_bridge_asan test/cases/crypto_vectors.b hash 'sha256 abc true'
+
+echo "ASan/UBSan checking the TLS bridge and partial-IO driver"
+ASAN_OPTIONS="detect_leaks=$asan_detect_leaks:halt_on_error=1" \
+    BEANS_SANITIZE=address,undefined BEANS_NO_POOL=1 \
+    bash ./test/tls.sh >"$out/tls_bridge.stdout" 2>"$out/tls_bridge.stderr" || {
+        sed -n '1,200p' "$out/tls_bridge.stderr" >&2
+        sed -n '1,120p' "$out/tls_bridge.stdout" >&2
+        exit 1
+    }
+if grep -Eq 'AddressSanitizer|runtime error:' "$out/tls_bridge.stderr"; then
+    sed -n '1,200p' "$out/tls_bridge.stderr" >&2
+    exit 1
+fi
+echo "ASan/UBSan ok TLS bridge"
+
 for file in examples/threads.b examples/shared_weak.b examples/wide_sync.b \
             examples/wide_concurrency.b test/cases/thread_deinit.b \
             test/cases/thread_cycles.b test/cases/async_cross_thread_close.b \

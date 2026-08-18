@@ -140,9 +140,8 @@ typedef struct {
     // Pending same-type byte-adjacent span merge.
     int span_type;
     uint64_t span_off;
-    uint8_t* span_bytes;
+    size_t span_event;
     size_t span_len;
-    size_t span_cap;
     // Corpus-runner knobs.
     int pause_on;
     int skip_body;
@@ -159,9 +158,17 @@ static beans_h1_session* beans_h1_of(long long handle) {
 }
 
 static int beans_h1_reserve(beans_h1_session* s, size_t more) {
-    if (s->events_len + more <= s->events_cap) return 1;
-    size_t cap = s->events_cap ? s->events_cap * 2 : 256;
-    while (cap < s->events_len + more) cap *= 2;
+    if (more > SIZE_MAX - s->events_len) {
+        s->out_of_memory = 1;
+        return 0;
+    }
+    size_t needed = s->events_len + more;
+    if (needed <= s->events_cap) return 1;
+    size_t cap = s->events_cap ? s->events_cap : 256;
+    while (cap < needed) {
+        if (cap > SIZE_MAX / 2) { cap = needed; break; }
+        cap *= 2;
+    }
     uint8_t* grown = (uint8_t*)realloc(s->events, cap);
     if (!grown) {
         s->out_of_memory = 1;
@@ -183,14 +190,6 @@ static uint64_t beans_h1_cursor(beans_h1_session* s, const char* p) {
 
 static void beans_h1_flush_span(beans_h1_session* s) {
     if (!s->span_type) return;
-    if (beans_h1_reserve(s, 1 + 8 + 8 + s->span_len)) {
-        uint8_t* at = s->events + s->events_len;
-        at[0] = (uint8_t)s->span_type;
-        beans_h1_put_u64(at + 1, s->span_off);
-        beans_h1_put_u64(at + 9, (uint64_t)s->span_len);
-        if (s->span_len) memcpy(at + 17, s->span_bytes, s->span_len);
-        s->events_len += 1 + 8 + 8 + s->span_len;
-    }
     s->span_type = 0;
     s->span_len = 0;
 }
@@ -217,25 +216,31 @@ static int beans_h1_span(beans_h1_session* s, int type,
 #endif
     uint64_t off = beans_h1_cursor(s, p);
     size_t len = (size_t)(endp - p);
-    if (!(s->span_type == type && s->span_off + s->span_len == off)) {
+    if (!(s->span_type == type &&
+          s->span_len <= UINT64_MAX - s->span_off &&
+          s->span_off + s->span_len == off)) {
         beans_h1_flush_span(s);
+        if (len > SIZE_MAX - 17 || !beans_h1_reserve(s, 17 + len))
+            return HPE_INTERNAL;
         s->span_type = type;
         s->span_off = off;
-        s->span_len = 0;
+        s->span_event = s->events_len;
+        uint8_t* at = s->events + s->events_len;
+        at[0] = (uint8_t)type;
+        beans_h1_put_u64(at + 1, off);
+        beans_h1_put_u64(at + 9, (uint64_t)len);
+        if (len) memcpy(at + 17, p, len);
+        s->events_len += 17 + len;
+        s->span_len = len;
+    } else {
+        if (len > SIZE_MAX - s->span_len ||
+            !beans_h1_reserve(s, len)) return HPE_INTERNAL;
+        if (len) memcpy(s->events + s->events_len, p, len);
+        s->events_len += len;
+        s->span_len += len;
+        beans_h1_put_u64(s->events + s->span_event + 9,
+                         (uint64_t)s->span_len);
     }
-    if (s->span_len + len > s->span_cap) {
-        size_t cap = s->span_cap ? s->span_cap * 2 : 128;
-        while (cap < s->span_len + len) cap *= 2;
-        uint8_t* grown = (uint8_t*)realloc(s->span_bytes, cap);
-        if (!grown) {
-            s->out_of_memory = 1;
-            return HPE_INTERNAL;
-        }
-        s->span_bytes = grown;
-        s->span_cap = cap;
-    }
-    if (len) memcpy(s->span_bytes + s->span_len, p, len);
-    s->span_len += len;
     if (s->pause_on == type) return HPE_PAUSED;
     return 0;
 }
@@ -357,7 +362,6 @@ BEANS_NET_API long long beans_h1_free(long long handle) {
     if (!s) return BEANS_NET_ERR_INVALID;
     s->magic = 0;
     free(s->events);
-    free(s->span_bytes);
     free(s);
     return BEANS_NET_OK;
 }
@@ -396,6 +400,7 @@ BEANS_NET_API long long beans_h1_execute(long long handle,
     if (!s || !req) return BEANS_NET_ERR_INVALID;
     uint64_t len = beans_net_word(req, 0);
     if (len && !data) return BEANS_NET_ERR_INVALID;
+    if (len > SIZE_MAX) return BEANS_NET_ERR_RANGE;
     // Feeding nothing is a no-op by definition — and must not reach llhttp:
     // its execute prologue rebases an open span's origin to the new buffer,
     // and a NULL buffer would poison the span a later feed continues.

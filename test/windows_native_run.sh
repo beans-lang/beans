@@ -116,12 +116,176 @@ fi
 # script's per-target floor: i686 stages slightly fewer because its assembly
 # surface is smaller and one layout case uses the positive golden above.
 case "$WANT_ARCH" in
-    i686) floor=48 ;;
+    i686) floor=49 ;;
     "") floor=30 ;;
-    *) floor=53 ;;
+    *) floor=54 ;;
 esac
 if [[ $ran -lt $floor ]]; then
     echo "FAIL: only $ran examples ran; the floor for ${WANT_ARCH:-this bundle} is $floor" >&2
+    fails=$((fails + 1))
+fi
+
+if [[ $fails -ne 0 ]]; then
+    echo "windows native gate: $fails failure(s) across $ran examples" >&2
+    exit 1
+fi
+
+# The public TlsListener must also use the portable SChannel byte pump on
+# Windows. This is separate from the accepted-TcpStream test below so the
+# listener's port-0, timeout, SNI, and ALPN contract cannot regress unseen.
+if [[ -x "$BUNDLE/tls_listener_server.exe" &&
+      -x "$BUNDLE/tls_server_client.exe" ]]; then
+    "$BUNDLE/tls_listener_server.exe" \
+        "$BUNDLE/tls_certs/valid.crt" "$BUNDLE/tls_certs/valid.key" \
+        "$BUNDLE/tls_certs/sni.crt" "$BUNDLE/tls_certs/sni.key" \
+        > "$BUNDLE/tls_listener_server.out" \
+        2> "$BUNDLE/tls_listener_server.err" &
+    tls_listener_pid=$!
+    tls_listener_port=""
+    for _ in $(seq 1 100); do
+        tr -d '\r' < "$BUNDLE/tls_listener_server.err" \
+            > "$BUNDLE/tls_listener_server.err.clean"
+        tls_listener_port=$(sed -n 's/^listening //p' \
+            "$BUNDLE/tls_listener_server.err.clean" | head -1)
+        [[ -n "$tls_listener_port" ]] && break
+        kill -0 "$tls_listener_pid" 2>/dev/null || break
+        sleep 0.1
+    done
+    if [[ -z "$tls_listener_port" ]]; then
+        echo "FAIL: SChannel TlsListener did not start" >&2
+        cat "$BUNDLE/tls_listener_server.err.clean" >&2
+        fails=$((fails + 1))
+    else
+        "$BUNDLE/tls_server_client.exe" "$tls_listener_port" \
+            "$BUNDLE/tls_certs/ca.crt" sni.localhost h2 h2 \
+            > "$BUNDLE/tls_listener_client.out" 2>&1
+        tr -d '\r' < "$BUNDLE/tls_listener_client.out" \
+            > "$BUNDLE/tls_listener_client.clean"
+        grep -q '^tls server client true$' \
+            "$BUNDLE/tls_listener_client.clean" || {
+                echo "FAIL: SChannel TlsListener SNI client failed" >&2
+                cat "$BUNDLE/tls_listener_client.clean" >&2
+                fails=$((fails + 1))
+            }
+        "$BUNDLE/tls_server_client.exe" "$tls_listener_port" \
+            "$BUNDLE/tls_certs/ca.crt" localhost http/1.1 http/1.1 \
+            > "$BUNDLE/tls_listener_client.out" 2>&1
+        tr -d '\r' < "$BUNDLE/tls_listener_client.out" \
+            > "$BUNDLE/tls_listener_client.clean"
+        grep -q '^tls server client true$' \
+            "$BUNDLE/tls_listener_client.clean" || {
+                echo "FAIL: SChannel TlsListener default client failed" >&2
+                cat "$BUNDLE/tls_listener_client.clean" >&2
+                fails=$((fails + 1))
+            }
+    fi
+    wait "$tls_listener_pid"
+    tls_listener_code=$?
+    tr -d '\r' < "$BUNDLE/tls_listener_server.out" \
+        > "$BUNDLE/tls_listener_server.clean"
+    if [[ $tls_listener_code -ne 0 ]] ||
+       ! cmp -s "$BUNDLE/tls_listener_server.clean" \
+           "$BUNDLE/tls_listener_server.expected"; then
+        echo "FAIL: SChannel TlsListener server failed" >&2
+        cat "$BUNDLE/tls_listener_server.err.clean" \
+            "$BUNDLE/tls_listener_server.clean" >&2
+        fails=$((fails + 1))
+    else
+        echo "SChannel TlsListener: port 0, timeout, SNI, and ALPN passed"
+    fi
+fi
+
+# The staged TLS pair uses SChannel at both ends. It proves PEM, PKCS#12,
+# named SNI selection, server ALPN, encrypted records, and close-notify on the
+# actual Windows kernel rather than Wine or a cross compiler.
+if [[ -x "$BUNDLE/tls_server.exe" && -x "$BUNDLE/tls_server_client.exe" ]]; then
+    case "$WANT_ARCH" in
+        i686) tls_port=15441 ;;
+        aarch64) tls_port=15442 ;;
+        *) tls_port=15443 ;;
+    esac
+    "$BUNDLE/tls_server.exe" \
+        "$BUNDLE/tls_certs/valid.crt" "$BUNDLE/tls_certs/valid.key" \
+        "$BUNDLE/tls_certs/sni.crt" "$BUNDLE/tls_certs/sni.key" \
+        "$BUNDLE/tls_server.p12" "$BUNDLE/tls_certs/ca.crt" "$tls_port" \
+        "h2,http/1.1" h2 http/1.1 \
+        > "$BUNDLE/tls_server.out" 2> "$BUNDLE/tls_server.err" &
+    tls_pid=$!
+    for _ in $(seq 1 100); do
+        grep -q '^listening' "$BUNDLE/tls_server.err" 2>/dev/null && break
+        kill -0 "$tls_pid" 2>/dev/null || break
+        sleep 0.1
+    done
+    "$BUNDLE/tls_server_client.exe" "$tls_port" \
+        "$BUNDLE/tls_certs/ca.crt" sni.localhost h2 h2 \
+        > "$BUNDLE/tls_client.out" 2>&1
+    tr -d '\r' < "$BUNDLE/tls_client.out" > "$BUNDLE/tls_client.clean"
+    if ! grep -q '^tls server client true$' "$BUNDLE/tls_client.clean"; then
+        echo "FAIL: SChannel PEM/SNI client failed" >&2
+        cat "$BUNDLE/tls_server.err" "$BUNDLE/tls_client.clean" >&2
+        fails=$((fails + 1))
+    fi
+    "$BUNDLE/tls_server_client.exe" "$tls_port" \
+        "$BUNDLE/tls_certs/ca.crt" localhost http/1.1 http/1.1 \
+        > "$BUNDLE/tls_client.out" 2>&1
+    tr -d '\r' < "$BUNDLE/tls_client.out" > "$BUNDLE/tls_client.clean"
+    if ! grep -q '^tls server client true$' "$BUNDLE/tls_client.clean"; then
+        echo "FAIL: SChannel PKCS#12 client failed" >&2
+        cat "$BUNDLE/tls_server.err" "$BUNDLE/tls_client.clean" >&2
+        fails=$((fails + 1))
+    fi
+    wait "$tls_pid"
+    tls_code=$?
+    tr -d '\r' < "$BUNDLE/tls_server.out" > "$BUNDLE/tls_server.clean"
+    if [[ $tls_code -ne 0 ]] ||
+       ! grep -q '^tls server pem sni true$' "$BUNDLE/tls_server.clean" ||
+       ! grep -q '^tls server pkcs12 true$' "$BUNDLE/tls_server.clean"; then
+        echo "FAIL: SChannel server failed" >&2
+        cat "$BUNDLE/tls_server.err" "$BUNDLE/tls_server.clean" >&2
+        fails=$((fails + 1))
+    else
+        echo "SChannel client/server: PEM, PKCS#12, SNI and ALPN passed"
+    fi
+else
+    echo "FAIL: the Windows bundle has no SChannel test pair" >&2
+    fails=$((fails + 1))
+fi
+
+if [[ -x "$BUNDLE/tls_fuzz.exe" && -x "$BUNDLE/tls_fuzz_server.exe" ]]; then
+    fuzz_port=$((tls_port + 10))
+    "$BUNDLE/tls_fuzz_server.exe" \
+        "$BUNDLE/tls_certs/valid.crt" "$BUNDLE/tls_certs/valid.key" \
+        "$fuzz_port" 2 \
+        > "$BUNDLE/tls_fuzz_server.out" \
+        2> "$BUNDLE/tls_fuzz_server.err" &
+    fuzz_pid=$!
+    for _ in $(seq 1 100); do
+        grep -q '^listening' "$BUNDLE/tls_fuzz_server.err" 2>/dev/null && break
+        kill -0 "$fuzz_pid" 2>/dev/null || break
+        sleep 0.1
+    done
+    "$BUNDLE/tls_fuzz.exe" "$BUNDLE/tls_certs/ca.crt" localhost \
+        "$fuzz_port" 1 2 > "$BUNDLE/tls_fuzz.out" 2>&1
+    fuzz_code=$?
+    wait "$fuzz_pid"
+    fuzz_server_code=$?
+    tr -d '\r' < "$BUNDLE/tls_fuzz.out" > "$BUNDLE/tls_fuzz.clean"
+    tr -d '\r' < "$BUNDLE/tls_fuzz_server.out" \
+        > "$BUNDLE/tls_fuzz_server.clean"
+    if [[ $fuzz_code -ne 0 || $fuzz_server_code -ne 0 ]] ||
+       ! grep -q '^ok tls_fuzz seed=1 rounds=2$' \
+           "$BUNDLE/tls_fuzz.clean" ||
+       ! grep -q '^tls fuzz server true$' \
+           "$BUNDLE/tls_fuzz_server.clean"; then
+        echo "FAIL: SChannel partial-IO contract failed" >&2
+        cat "$BUNDLE/tls_fuzz_server.err" "$BUNDLE/tls_fuzz.clean" \
+            "$BUNDLE/tls_fuzz_server.clean" >&2
+        fails=$((fails + 1))
+    else
+        echo "SChannel partial-IO fragmentation passed"
+    fi
+else
+    echo "FAIL: the Windows bundle has no SChannel partial-IO pair" >&2
     fails=$((fails + 1))
 fi
 

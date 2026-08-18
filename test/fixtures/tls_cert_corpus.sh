@@ -8,6 +8,7 @@
 set -euo pipefail
 out=${1:?usage: tls_cert_corpus.sh <out-dir>}
 mkdir -p "$out"
+out=$(cd "$out" && pwd -P)
 
 # Absolute UTC timestamp N days from now, in the ASN.1 form openssl wants.
 # BSD date (macOS) uses -v and needs an explicit sign; GNU date uses -d.
@@ -30,22 +31,48 @@ openssl req -x509 -newkey rsa:2048 -nodes -keyout "$out/ca.key" \
     -out "$out/ca.crt" -days 3650 -subj "/CN=Beans Test CA" \
     -addext "basicConstraints=critical,CA:TRUE" >/dev/null 2>&1
 
+# `openssl x509 -not_before/-not_after` is newer than the OpenSSL 3.0 shipped
+# by Ubuntu 24.04. The `ca` command has supported explicit validity dates for
+# years, so use its tiny throw-away database for the whole corpus.
+mkdir -p "$out/newcerts"
+touch "$out/index.txt"
+openssl rand -hex -out "$out/serial" 8
+
 # Signs a leaf CN=localhost / SAN=$4, with an explicit validity window in
 # days-from-now ($2 not-before, $3 not-after).
 leaf() {
     local name=$1 not_before=$2 not_after=$3 san=$4
     openssl req -newkey rsa:2048 -nodes -keyout "$out/$name.key" \
         -out "$out/$name.csr" -subj "/CN=$san" >/dev/null 2>&1
-    openssl x509 -req -in "$out/$name.csr" -CA "$out/ca.crt" \
-        -CAkey "$out/ca.key" -CAcreateserial -out "$out/$name.crt" \
-        -extfile <(printf "subjectAltName=DNS:%s\nextendedKeyUsage=serverAuth\n" "$san") \
-        -not_before "$(stamp "$not_before")" \
-        -not_after  "$(stamp "$not_after")" \
+    openssl ca -batch -notext \
+        -config <(printf '%s\n' \
+            '[ca]' \
+            'default_ca = beans_ca' \
+            '[beans_ca]' \
+            "database = $out/index.txt" \
+            "serial = $out/serial" \
+            "new_certs_dir = $out/newcerts" \
+            "certificate = $out/ca.crt" \
+            "private_key = $out/ca.key" \
+            'default_md = sha256' \
+            'default_days = 365' \
+            'unique_subject = no' \
+            'policy = beans_policy' \
+            'x509_extensions = server_cert' \
+            '[beans_policy]' \
+            'commonName = supplied' \
+            '[server_cert]' \
+            "subjectAltName = DNS:$san" \
+            'extendedKeyUsage = serverAuth') \
+        -in "$out/$name.csr" -out "$out/$name.crt" \
+        -startdate "$(stamp "$not_before")" \
+        -enddate "$(stamp "$not_after")" \
         >/dev/null 2>&1
     rm -f "$out/$name.csr"
 }
 
 leaf valid -1 365 localhost           # current window
+leaf sni -1 365 sni.localhost         # selected only when SNI is sent
 leaf expired -400 -30 localhost       # entirely in the past
 leaf future 30 400 localhost          # entirely in the future
 leaf wronghost -1 365 other.test      # valid window, wrong name

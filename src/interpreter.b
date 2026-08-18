@@ -129,7 +129,8 @@ class TreeInterpreter {
         if csrc_sources.len() != 0 {
             match csrc_run_library(
                 csrc_sources,
-                self.program.target.os) {
+                self.program.target.os,
+                self.program.target.triple) {
                 ok(library) => {
                     match host_dl.open(library) {
                         ok(handle) => {

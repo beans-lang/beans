@@ -13,8 +13,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/beans-websocket.XXXXXX")
 server_pid=""
+wss_pid=""
 cleanup() {
     [ -n "$server_pid" ] && kill "$server_pid" 2>/dev/null || true
+    [ -n "$wss_pid" ] && kill "$wss_pid" 2>/dev/null || true
     rm -rf "$tmp"
 }
 trap cleanup EXIT
@@ -33,6 +35,9 @@ run_both() {
 echo "checking the RFC 6455 vectors and a loopback exchange"
 run_both websocket_roundtrip
 
+echo "checking both sides reject incomplete HTTP upgrades"
+run_both websocket_handshake
+
 echo "checking garbage frames at fixed seeds"
 "$beansc" build test/cases/websocket_fuzz.b -o "$tmp/ws_fuzz" >/dev/null 2>&1
 for seed in 1 2; do
@@ -47,6 +52,89 @@ done
     exit 1
 }
 grep -q "^ok websocket_fuzz" "$tmp/fuzz.interp"
+
+echo "checking secure WebSocket transport"
+bash test/fixtures/tls_cert_corpus.sh "$tmp/certs" >/dev/null
+wss_port=$(( 20500 + RANDOM % 900 ))
+cat >"$tmp/wss_server.py" <<'PYEOF'
+import base64, hashlib, socket, ssl, struct, sys
+
+port, cert, key = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+context.load_cert_chain(cert, key)
+
+def exact(stream, count):
+    out = b""
+    while len(out) < count:
+        part = stream.recv(count - len(out))
+        if not part:
+            raise EOFError("short frame")
+        out += part
+    return out
+
+def read_frame(stream):
+    first, second = exact(stream, 2)
+    length = second & 127
+    if length == 126:
+        length = struct.unpack("!H", exact(stream, 2))[0]
+    elif length == 127:
+        length = struct.unpack("!Q", exact(stream, 8))[0]
+    mask = exact(stream, 4) if second & 128 else b""
+    body = exact(stream, length)
+    if mask:
+        body = bytes(value ^ mask[index % 4]
+                     for index, value in enumerate(body))
+    return first & 15, body
+
+listener = socket.socket()
+listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+listener.bind(("127.0.0.1", port))
+listener.listen(1)
+print("listening", flush=True)
+raw, _ = listener.accept()
+with context.wrap_socket(raw, server_side=True) as stream:
+    request = b""
+    while b"\r\n\r\n" not in request:
+        request += stream.recv(4096)
+    lines = request.decode("ascii").split("\r\n")
+    headers = dict(line.split(":", 1) for line in lines[1:] if ":" in line)
+    ws_key = next(value.strip() for name, value in headers.items()
+                  if name.lower() == "sec-websocket-key")
+    accept = base64.b64encode(hashlib.sha1(
+        (ws_key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest())
+    stream.sendall(b"HTTP/1.1 101 Switching Protocols\r\n"
+                   b"Upgrade: websocket\r\nConnection: Upgrade\r\n"
+                   b"Sec-WebSocket-Accept: " + accept + b"\r\n\r\n")
+    opcode, body = read_frame(stream)
+    if opcode != 1:
+        raise RuntimeError("expected text")
+    stream.sendall(bytes((0x81, len(body))) + body)
+    opcode, body = read_frame(stream)
+    if opcode == 8:
+        stream.sendall(bytes((0x88, len(body))) + body)
+listener.close()
+PYEOF
+python3 "$tmp/wss_server.py" "$wss_port" \
+    "$tmp/certs/valid.crt" "$tmp/certs/valid.key" \
+    >"$tmp/wss_server.log" 2>&1 &
+wss_pid=$!
+waited=0
+while ! grep -q '^listening' "$tmp/wss_server.log" 2>/dev/null; do
+    waited=$((waited + 1))
+    if [ "$waited" -gt 200 ]; then
+        cat "$tmp/wss_server.log" >&2
+        exit 1
+    fi
+    sleep 0.05
+done
+"$beansc" build test/cases/websocket_tls_client.b \
+    -o "$tmp/wss_client" >/dev/null 2>&1
+"$tmp/wss_client" "$wss_port" "$tmp/certs/ca.crt" \
+    >"$tmp/wss_client.out"
+grep -Fqx 'wss connected true' "$tmp/wss_client.out"
+grep -Fqx 'wss echoed true' "$tmp/wss_client.out"
+wait "$wss_pid"
+wss_pid=""
 
 echo "checking no C type escapes the std.websocket surface"
 if grep -nE '^\s*pub .*(RawPtr|CFunctionPtr)' stdlib/std/websocket/*.b; then

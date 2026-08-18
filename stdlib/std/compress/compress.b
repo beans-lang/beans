@@ -39,6 +39,9 @@ fn format_code(format: Format) -> int {
 }
 
 fn compress_one_shot(data: Bytes, level: int, format: Format) -> Result<Bytes> {
+    if level < 0 || level > 9 {
+        return err("deflate: level must be between 0 and 9", "invalid")
+    }
     var bound: int = 0
     unsafe {
         bound = beans_zlib_bound(data.len(), format_code(format))
@@ -143,7 +146,14 @@ fn drive_stream(handle: int,
     var rounds: int = 0
     for rounds < 100000 {
         rounds += 1
-        let chunk: int = 65536
+        var chunk: int = 65536
+        if total_limit > 0 {
+            let remaining: int = total_limit - produced_before - out.len()
+            if remaining < 0 {
+                return err("inflate: the output exceeds the declared limit of {total_limit} bytes", "limit")
+            }
+            if remaining < chunk { chunk = remaining }
+        }
         let start: int = out.len()
         out.resize(start + chunk)
         var status: int = 0
@@ -161,7 +171,12 @@ fn drive_stream(handle: int,
             } else {
                 data.as_ptr().offset(consumed_total)
             }
-            status = beans_zlib_stream_run(src, out.as_ptr().offset(start), req)
+            let dst: RawPtr<u8> = if chunk == 0 {
+                RawPtr.null()
+            } else {
+                out.as_ptr().offset(start)
+            }
+            status = beans_zlib_stream_run(src, dst, req)
             consumed = req.offset(4).read() as int
             produced = req.offset(5).read() as int
             done = req.offset(6).read() as int
@@ -181,6 +196,12 @@ fn drive_stream(handle: int,
                 let also: Bytes = state.set(1, 1)
             }
             return ok(out)
+        }
+        // With no caller-approved room left, one zero-capacity step lets
+        // zlib consume a trailer and announce an exact-boundary end. If it
+        // still needs output, the next byte would cross the limit.
+        if total_limit > 0 && chunk == 0 {
+            return err("inflate: the output exceeds the declared limit of {total_limit} bytes", "limit")
         }
         if consumed_total >= data.len() && produced < chunk {
             // Input drained and the last round had output room to spare:
@@ -216,6 +237,9 @@ pub unique class Deflater {
 
     /// A compressor for the given format. Level 0..9; 6 balances.
     pub static fn open(format: Format, level: int = 6) -> Result<Deflater> {
+        if level < 0 || level > 9 {
+            return err("deflater: level must be between 0 and 9", "invalid")
+        }
         var handle: int = 0
         unsafe {
             let req: RawPtr<u64> = RawPtr.alloc(3)
