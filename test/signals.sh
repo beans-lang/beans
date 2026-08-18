@@ -256,9 +256,16 @@ expect_error "is move-only" test/cases/signals_no_copy.b
 expect_error "init of 'signal.Signals' isn't pub" test/cases/signals_private_init.b
 
 echo "checking no memory errors under ASan"
+rm -f build/signals_ffi.c
 ./build/beansc build examples/signals.b --emit ir >/dev/null
+# The example imports std.net, which stands on the sockx bridge, so a hand
+# link compiles that source and the generated extern wrappers beside the
+# runtime — the same set the driver links from its caches.
+extra_sources=(runtime/net/beans_net_sockx.c)
+if [[ -f build/signals_ffi.c ]]; then extra_sources+=(build/signals_ffi.c); fi
 clang -O1 -g -pthread -fsanitize=address -Wno-override-module \
-    build/signals.ll build/beans_rt.c -lm -o "$tmp/asan" 2>"$tmp/asan.build"
+    build/signals.ll build/beans_rt.c "${extra_sources[@]}" \
+    -lm -o "$tmp/asan" 2>"$tmp/asan.build"
 BEANS_NO_POOL=1 "$tmp/asan" >"$tmp/asan.out" 2>"$tmp/asan.err"
 if grep -q 'AddressSanitizer' "$tmp/asan.err"; then
     cat "$tmp/asan.err" >&2
