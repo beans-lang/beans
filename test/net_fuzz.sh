@@ -35,12 +35,19 @@ soak_seconds=${NET_FUZZ_SECONDS:-300}
 ulimit -n 4096 2>/dev/null || true
 
 echo "building the fuzz drivers"
-"$beansc" build test/cases/sock_fuzz.b -o "$tmp/sock_fuzz" >/dev/null 2>&1
-"$beansc" build test/cases/poll_fuzz.b -o "$tmp/poll_fuzz" >/dev/null 2>&1
-"$beansc" build test/cases/http_fuzz.b -o "$tmp/http_fuzz" >/dev/null 2>&1
-"$beansc" build test/cases/compress_fuzz.b -o "$tmp/compress_fuzz" >/dev/null 2>&1
-"$beansc" build test/cases/websocket_fuzz.b -o "$tmp/websocket_fuzz" >/dev/null 2>&1
-"$beansc" build test/cases/http2_fuzz.b -o "$tmp/http2_fuzz" >/dev/null 2>&1
+# Report a build failure rather than dying silently under `set -e`: a soak
+# that ends one line into its log with no reason is a soak nobody trusts.
+build_driver() {
+    local name=$1
+    "$beansc" build "test/cases/$name.b" -o "$tmp/$name" >"$tmp/$name.build" 2>&1 || {
+        echo "could not build the $name driver:" >&2
+        cat "$tmp/$name.build" >&2
+        exit 1
+    }
+}
+for driver in sock_fuzz poll_fuzz http_fuzz compress_fuzz websocket_fuzz http2_fuzz; do
+    build_driver "$driver"
+done
 
 fail() {
     echo "net fuzz FAILED: $*" >&2
