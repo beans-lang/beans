@@ -133,6 +133,7 @@ fi
 # The public TlsListener must also use the portable SChannel byte pump on
 # Windows. This is separate from the accepted-TcpStream test below so the
 # listener's port-0, timeout, SNI, and ALPN contract cannot regress unseen.
+export BEANS_TLS_DEBUG=1
 if [[ -x "$BUNDLE/tls_listener_server.exe" &&
       -x "$BUNDLE/tls_server_client.exe" ]]; then
     "$BUNDLE/tls_listener_server.exe" \

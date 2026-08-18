@@ -42,33 +42,38 @@ openssl rand -hex -out "$out/serial" 8
 # days-from-now ($2 not-before, $3 not-after).
 leaf() {
     local name=$1 not_before=$2 not_after=$3 san=$4
+    local config="$out/$name.cnf"
     openssl req -newkey rsa:2048 -nodes -keyout "$out/$name.key" \
         -out "$out/$name.csr" -subj "/CN=$san" >/dev/null 2>&1
+    # Git Bash exposes process substitution as /dev/fd/N, but native Windows
+    # OpenSSL cannot open that POSIX-only path. A short-lived real file keeps
+    # certificate generation identical on Linux, macOS, and Windows.
+    printf '%s\n' \
+        '[ca]' \
+        'default_ca = beans_ca' \
+        '[beans_ca]' \
+        "database = $out/index.txt" \
+        "serial = $out/serial" \
+        "new_certs_dir = $out/newcerts" \
+        "certificate = $out/ca.crt" \
+        "private_key = $out/ca.key" \
+        'default_md = sha256' \
+        'default_days = 365' \
+        'unique_subject = no' \
+        'policy = beans_policy' \
+        'x509_extensions = server_cert' \
+        '[beans_policy]' \
+        'commonName = supplied' \
+        '[server_cert]' \
+        "subjectAltName = DNS:$san" \
+        'extendedKeyUsage = serverAuth' > "$config"
     openssl ca -batch -notext \
-        -config <(printf '%s\n' \
-            '[ca]' \
-            'default_ca = beans_ca' \
-            '[beans_ca]' \
-            "database = $out/index.txt" \
-            "serial = $out/serial" \
-            "new_certs_dir = $out/newcerts" \
-            "certificate = $out/ca.crt" \
-            "private_key = $out/ca.key" \
-            'default_md = sha256' \
-            'default_days = 365' \
-            'unique_subject = no' \
-            'policy = beans_policy' \
-            'x509_extensions = server_cert' \
-            '[beans_policy]' \
-            'commonName = supplied' \
-            '[server_cert]' \
-            "subjectAltName = DNS:$san" \
-            'extendedKeyUsage = serverAuth') \
+        -config "$config" \
         -in "$out/$name.csr" -out "$out/$name.crt" \
         -startdate "$(stamp "$not_before")" \
         -enddate "$(stamp "$not_after")" \
         >/dev/null 2>&1
-    rm -f "$out/$name.csr"
+    rm -f "$out/$name.csr" "$config"
 }
 
 leaf valid -1 365 localhost           # current window

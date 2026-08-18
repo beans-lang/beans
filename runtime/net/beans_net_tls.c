@@ -3108,6 +3108,8 @@ BEANS_NET_API long long beans_tls_handshake(long long handle) {
     if (status == SEC_I_CONTINUE_NEEDED ||
         status == SEC_E_INCOMPLETE_MESSAGE)
         return BEANS_TLS_WANT_IO;
+    beans_tls_win_debug(s->is_server
+        ? "server handshake" : "client handshake", status);
     return BEANS_TLS_HANDSHAKE;
 }
 
