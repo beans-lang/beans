@@ -142,7 +142,7 @@ fn net_source_root() -> string {
 // Bump when a request-buffer layout, a status code, or the entry-point set
 // changes, so an object built against the old contract is never reused.
 fn net_bridge_abi() -> string {
-    return "net-abi-2"
+    return "net-abi-3"
 }
 
 // C++ is per translation unit, by extension: a feature can mix its C++
@@ -347,6 +347,34 @@ fn net_bridge_include_flags(root: string, feature: string) -> List<string> {
         let internal: string = path.join(root, "vendor/wslay/lib")
         flags.push("-I{public}")
         flags.push("-I{internal}")
+    }
+    return move flags
+}
+
+// The vendored libraries normally get these defines from configure-generated
+// headers. Beans builds their sources directly, so keep the small platform
+// part of that configuration next to the shared include flags. Both native
+// builds and the interpreter use this list.
+fn net_bridge_platform_flags(
+    feature: string, target_os: string,
+    target_env: string) -> List<string> {
+    var flags: List<string> = []
+    if (feature == "h2" || feature == "ws") &&
+       target_os != "windows" {
+        flags.push("-DHAVE_ARPA_INET_H")
+        flags.push("-DHAVE_NETINET_IN_H")
+    }
+    if feature == "ws" && target_os == "windows" {
+        flags.push("-DHAVE_WINSOCK2_H")
+    }
+    // MSVC has ptrdiff_t but no POSIX ssize_t. nghttp2's implementation
+    // still exposes its old ssize_t wrappers beside the newer ptrdiff_t API.
+    if feature == "h2" && target_os == "windows" &&
+       target_env == "msvc" {
+        flags.push("-Dssize_t=ptrdiff_t")
+    }
+    if feature == "tls" && target_os == "macos" {
+        flags.push("-fblocks")
     }
     return move flags
 }
@@ -915,14 +943,10 @@ class NativeBuildDriver {
             net_bridge_include_flags(net_source_root(), feature) {
             flags.push(flag)
         }
-        // wslay normally learns this from its generated config.h. Beans
-        // builds the vendored sources directly, so name the Windows socket
-        // header explicitly when targeting Windows.
-        if feature == "ws" && self.target.os == "windows" {
-            flags.push("-DHAVE_WINSOCK2_H")
-        }
-        if feature == "tls" && self.target.os == "macos" {
-            flags.push("-fblocks")
+        for flag: string in
+            net_bridge_platform_flags(
+                feature, self.target.os, self.target.env) {
+            flags.push(flag)
         }
         for flag: string in self.target_flag_list() {
             flags.push(flag)

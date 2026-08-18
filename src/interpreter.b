@@ -11525,6 +11525,12 @@ class TreeInterpreter {
                     net_bridge_include_flags(root, feature) {
                     self.ffi_pack_argument(argv, flag)
                 }
+                for flag: string in
+                    net_bridge_platform_flags(
+                        feature, self.program.target.os,
+                        self.program.target.env) {
+                    self.ffi_pack_argument(argv, flag)
+                }
                 if self.program.target.os != "windows" {
                     // See ffi_bridge above: -fPIC is not a thing to ask
                     // for on Windows, and clang errors on it there.
