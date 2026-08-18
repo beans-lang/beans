@@ -2508,8 +2508,18 @@ for event: http.Http2Event in session.run()? {
   arrived before it, so a pipelined buffer whose third message is malformed
   still yields the first two.
 - **The limits llhttp does not own live here.** `Limits` bounds header count,
-  total header bytes and target length; crossing one is kind `too_large`, never
-  a truncation. `Client` and `ServerConn` bound the buffered body the same way.
+  total header bytes, target length, and — through `max_head_span_bytes` — every
+  other head field llhttp leaves unbounded, namely the status reason phrase and
+  the chunk-extension name and value. Crossing one is kind `too_large`, never a
+  truncation. `Client` and `ServerConn` bound the buffered body the same way,
+  and `Http2Connection.max_body` bounds a stream's body.
+- **The write side is as strict as the read side.** A header name or value
+  carrying CR, LF or NUL is refused with kind `invalid` before anything reaches
+  the socket, so an application that puts user input in a `Location` cannot
+  splice a second response into the stream. `http.field_is_safe(text)` answers
+  the same question for a caller that wants to check first. Names may not carry
+  `:` over HTTP/1.1; over HTTP/2 a leading one is the pseudo-header form and is
+  allowed.
 - **Header order and case are preserved.** `Headers` is an ordered list, not a
   map: repeated fields combine in order and a proxy that reorders them changes
   the message. Lookups are ASCII-case-insensitive and `get` answers the first

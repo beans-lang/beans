@@ -67,6 +67,7 @@ pub unique class Client {
         if !self.alive {
             return err("the connection is closed; connect again", "closed")
         }
+        check_headers(headers)?
         var head: Bytes = new Bytes(0)
         head.append_string("{method} {target} HTTP/1.1\r\n")
         if !headers.has("Host") {

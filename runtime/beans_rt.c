@@ -9489,6 +9489,16 @@ static void* net_gai_err(const char* host, int rc) {
 // every other errno surfaces through the ordinary kind mapping, so a failpoint
 // run can only produce errors the API already documents. The whole layer costs
 // one branch on a latched flag when the variable is unset.
+//
+// It is compiled out of release builds. Left in, an environment variable
+// anyone can set -- an inherited value, a shared CI runner, a container spec
+// -- would make roughly one in eight socket operations fail on a shipped
+// binary, and the constructor arms it before main runs.
+#ifndef NDEBUG
+#define BEANS_NET_FAILPOINTS 1
+#endif
+
+#ifdef BEANS_NET_FAILPOINTS
 static int net_fp_on;
 static int net_fp_log;
 static int net_fp_eintr_only;
@@ -9614,6 +9624,22 @@ static int net_fp(const char* op, int cls) {
     net_fp_raise(e);
     return e;
 }
+
+#else
+
+// Release builds carry no injector at all: the call sites below compile to
+// nothing, and BEANS_SOCK_FAILPOINTS in the environment does nothing.
+enum {
+    NET_FP_RECV,
+    NET_FP_SEND,
+    NET_FP_ACCEPT,
+    NET_FP_CONNECT,
+    NET_FP_SOCKET,
+    NET_FP_WAIT
+};
+static int net_fp(const char* op, int cls) { (void)op; (void)cls; return 0; }
+
+#endif // BEANS_NET_FAILPOINTS
 
 static long long net_millis(void) { return beans_time_monotonic_nanos() / 1000000LL; }
 

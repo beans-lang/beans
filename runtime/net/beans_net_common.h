@@ -25,6 +25,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
+#include <limits.h>
 
 // The API must be reachable by dlsym/GetProcAddress when the bridge is a
 // shared library, and by the loader's module walk when it is linked into an

@@ -67,10 +67,20 @@ BEANS_NET_API long long beans_hash_update(long long handle, const uint8_t* data,
     uint64_t len = beans_net_word(req, 0);
     if (len == 0) return BEANS_NET_OK;
     if (!data) return BEANS_NET_ERR_INVALID;
-    if (s->algorithm == BEANS_HASH_SHA1) {
-        CC_SHA1_Update(&s->state.sha1, data, (CC_LONG)len);
-    } else {
-        CC_SHA256_Update(&s->state.sha256, data, (CC_LONG)len);
+    // CC_LONG is uint32_t, so a single call cannot carry a buffer of 4 GiB or
+    // more. Feeding it `(CC_LONG)len` would hash only `len mod 2^32` bytes and
+    // report success -- a 4 GiB input would digest as the empty string. Walk
+    // the buffer in chunks that fit instead.
+    const CC_LONG step = (CC_LONG)0x40000000; // 1 GiB per call
+    while (len > 0) {
+        CC_LONG take = len > (uint64_t)step ? step : (CC_LONG)len;
+        if (s->algorithm == BEANS_HASH_SHA1) {
+            CC_SHA1_Update(&s->state.sha1, data, take);
+        } else {
+            CC_SHA256_Update(&s->state.sha256, data, take);
+        }
+        data += take;
+        len -= take;
     }
     return BEANS_NET_OK;
 }
@@ -142,8 +152,16 @@ BEANS_NET_API long long beans_hash_update(long long handle, const uint8_t* data,
     uint64_t len = beans_net_word(req, 0);
     if (len == 0) return BEANS_NET_OK;
     if (!data) return BEANS_NET_ERR_INVALID;
-    if (BCryptHashData(s->hash, (PUCHAR)data, (ULONG)len, 0) != 0)
-        return BEANS_NET_ERR_INVALID;
+    // ULONG is 32-bit; see the CommonCrypto path for why a single narrowed
+    // call would silently hash the wrong bytes and still report success.
+    const ULONG step = (ULONG)0x40000000; // 1 GiB per call
+    while (len > 0) {
+        ULONG take = len > (uint64_t)step ? step : (ULONG)len;
+        if (BCryptHashData(s->hash, (PUCHAR)data, take, 0) != 0)
+            return BEANS_NET_ERR_INVALID;
+        data += take;
+        len -= take;
+    }
     return BEANS_NET_OK;
 }
 

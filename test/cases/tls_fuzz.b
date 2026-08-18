@@ -194,7 +194,7 @@ fn one_round(host: string, port: int, roots: Bytes, rng: Rng,
         flush(session, socket)?
         if status == 0 {
             done = true
-        } else if status != 1 {
+        } else if status != 114 {
             unsafe {
                 let ignored: int = beans_tls_free(handle)
             }

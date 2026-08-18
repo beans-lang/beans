@@ -28,24 +28,31 @@
 
 #include "beans_net_common.h"
 
+// These sit above the shared BEANS_NET_ERR_* codes on purpose. WANT_IO used
+// to be 1 and CLOSED 2, which collide with BEANS_NET_ERR_INVALID and
+// BEANS_NET_ERR_RANGE in the same return word -- a rejected handle then read
+// back as "wants IO" and sent the caller round the handshake loop.
 enum {
     BEANS_TLS_OK = 0,
-    BEANS_TLS_WANT_IO = 1,       // needs more input, or has output to flush
-    BEANS_TLS_CLOSED = 2,        // peer sent close_notify
     BEANS_TLS_HANDSHAKE = 110,   // handshake failed (cert, protocol, alert)
     BEANS_TLS_PROTOCOL = 111,    // record-layer error
     BEANS_TLS_TRUNCATED = 112,   // stream cut without close_notify
     BEANS_TLS_UNSUPPORTED = 113, // no backend on this platform
+    BEANS_TLS_WANT_IO = 114,     // needs more input, or has output to flush
+    BEANS_TLS_CLOSED = 115,      // peer sent close_notify
 };
 
-// The read path returns a byte count (>= 0) for data, and these NEGATIVE
-// sentinels otherwise, so a one-byte read is never mistaken for a status.
+// The data paths — read and write — return a byte count (>= 0) and these
+// NEGATIVE sentinels otherwise, so a one-byte transfer is never mistaken for
+// a status. The status enum above is only for calls that carry no count;
+// mixing the two is how a 111-byte write reads back as BEANS_TLS_PROTOCOL.
 enum {
     BEANS_TLS_R_WANT_IO = -1,
     BEANS_TLS_R_CLOSED = -2,
     BEANS_TLS_R_TRUNCATED = -3,
     BEANS_TLS_R_PROTOCOL = -4,
     BEANS_TLS_R_INVALID = -5,
+    BEANS_TLS_R_UNSUPPORTED = -6,
 };
 
 // A growable byte queue for the buffers between TLS and the socket.
@@ -75,10 +82,14 @@ static int beans_tls_buf_reserve(beans_tls_buf* b, size_t more) {
     return 1;
 }
 
-static void beans_tls_buf_push(beans_tls_buf* b, const uint8_t* src, size_t n) {
-    if (!beans_tls_buf_reserve(b, n)) return;
+// Reports whether the bytes were taken. Dropping them silently would
+// desynchronize the record layer -- TLS has no way to resend what the
+// transport claims to have absorbed.
+static int beans_tls_buf_push(beans_tls_buf* b, const uint8_t* src, size_t n) {
+    if (!beans_tls_buf_reserve(b, n)) return 0;
     memcpy(b->data + b->len, src, n);
     b->len += n;
+    return 1;
 }
 
 static size_t beans_tls_buf_available(const beans_tls_buf* b) {
@@ -137,12 +148,19 @@ static OSStatus beans_tls_read_cb(SSLConnectionRef conn, void* data, size_t* len
 
 static OSStatus beans_tls_write_cb(SSLConnectionRef conn, const void* data, size_t* len) {
     beans_tls_session* s = (beans_tls_session*)conn;
-    beans_tls_buf_push(&s->outgoing, (const uint8_t*)data, *len);
+    if (!beans_tls_buf_push(&s->outgoing, (const uint8_t*)data, *len)) {
+        // Tell SecureTransport nothing went out, so it retries rather than
+        // believing records it never sent are on the wire.
+        *len = 0;
+        return errSSLWouldBlock;
+    }
     return noErr;
 }
 
-// req: [0] is_server, [1] host ptr, [2] host len, [3] min_version (0 = 1.2),
-//      [4] alpn ptr (comma-separated), [5] alpn len.
+// The certificate and key bytes travel as real pointer arguments, never as
+// integers smuggled through `req` -- req carries lengths and flags only.
+// req: [0] is_server, [1] host byte length, [2] alpn byte length.
+// Returns a handle, or 0 if the session could not be created.
 BEANS_NET_API long long beans_tls_client_new(const uint8_t* host,
                                              const uint8_t* alpn,
                                              const uint64_t* req) {
@@ -158,7 +176,16 @@ BEANS_NET_API long long beans_tls_client_new(const uint8_t* host,
     SSLSetProtocolVersionMin(s->ctx, kTLSProtocol12);
     if (!s->is_server) {
         uint64_t host_len = beans_net_word(req, 1);
-        if (host && host_len > 0 && host_len < sizeof s->host) {
+        // A name that does not fit must fail the session, never skip the
+        // check: silently dropping SNI here would leave a verified chain
+        // with no hostname binding at all.
+        if (host && host_len > 0) {
+            if (host_len >= sizeof s->host) {
+                SSLClose(s->ctx);
+                CFRelease(s->ctx);
+                free(s);
+                return 0;
+            }
             SSLSetPeerDomainName(s->ctx, (const char*)host, (size_t)host_len);
             memcpy(s->host, host, (size_t)host_len);
             s->host[host_len] = 0;
@@ -200,7 +227,11 @@ BEANS_NET_API long long beans_tls_feed(long long handle, const uint8_t* data,
     uint64_t len = beans_net_word(req, 0);
     if (len == 0) return BEANS_TLS_OK;
     if (!data) return BEANS_NET_ERR_INVALID;
-    beans_tls_buf_push(&s->incoming, data, (size_t)len);
+    // Reporting OK after dropping ciphertext would lose it for good -- Beans
+    // has already consumed those bytes from the socket.
+    if (!beans_tls_buf_push(&s->incoming, data, (size_t)len)) {
+        return BEANS_TLS_PROTOCOL;
+    }
     return BEANS_TLS_OK;
 }
 
@@ -280,32 +311,74 @@ BEANS_NET_API long long beans_tls_handshake(long long handle) {
     }
 }
 
+// Finds `needle` inside [hay, hay+n). Beans Bytes carry an explicit length
+// and are never NUL-terminated, so every scan over them must be bounded --
+// strstr here would run off the end of the allocation.
+static const uint8_t* beans_tls_find(const uint8_t* hay, size_t n,
+                                     const char* needle) {
+    size_t m = strlen(needle);
+    if (m == 0 || n < m) return NULL;
+    for (size_t i = 0; i + m <= n; i++) {
+        if (memcmp(hay + i, needle, m) == 0) return hay + i;
+    }
+    return NULL;
+}
+
+// Appends one DER blob to the session's extra trust anchors.
+static long long beans_tls_push_der(beans_tls_session* s,
+                                    const uint8_t* der, size_t n) {
+    CFDataRef blob = CFDataCreate(NULL, der, (CFIndex)n);
+    if (!blob) return BEANS_NET_ERR_MEMORY;
+    SecCertificateRef cert = SecCertificateCreateWithData(NULL, blob);
+    CFRelease(blob);
+    if (!cert) return BEANS_NET_ERR_INVALID;
+    if (!s->extra_roots) {
+        s->extra_roots = CFArrayCreateMutable(NULL, 0, &kCFTypeArrayCallBacks);
+        if (!s->extra_roots) { CFRelease(cert); return BEANS_NET_ERR_MEMORY; }
+    }
+    CFArrayAppendValue(s->extra_roots, cert);
+    CFRelease(cert);
+    return BEANS_NET_OK;
+}
+
 // Adds a PEM or DER certificate as an extra trust anchor, before the
-// handshake. Used for private CAs and pinning.
+// handshake. Used for private CAs and pinning. A PEM bundle may hold several
+// certificates; every one of them is added, matching the OpenSSL backend.
 BEANS_NET_API long long beans_tls_add_root(long long handle, const uint8_t* data,
                                            const uint64_t* req) {
     beans_tls_session* s = beans_tls_of(handle);
     if (!s || !data || !req) return BEANS_NET_ERR_INVALID;
     uint64_t len = beans_net_word(req, 0);
-    if (len == 0) return BEANS_NET_ERR_INVALID;
-    // Accept PEM by stripping the armor into DER; SecCertificateCreate wants
-    // DER. A leading "-----BEGIN" marks PEM.
-    CFDataRef der = NULL;
-    if (len > 10 && memcmp(data, "-----BEGIN", 10) == 0) {
-        // Decode the base64 body between the BEGIN/END lines.
-        const char* text = (const char*)data;
-        const char* body = strstr(text, "\n");
-        const char* end = strstr(text, "-----END");
-        if (!body || !end || end <= body) return BEANS_NET_ERR_INVALID;
-        // Base64-decode via CFData/SecTransform is heavy; do it by hand.
-        static const signed char b64[256] = {0};
-        // Build a small decoder inline.
-        unsigned char* out = (unsigned char*)malloc((size_t)(end - body));
+    if (len == 0 || len > (uint64_t)SIZE_MAX) return BEANS_NET_ERR_INVALID;
+    size_t n = (size_t)len;
+    // DER is passed through; PEM gets its armor stripped, because
+    // SecCertificateCreateWithData only speaks DER.
+    if (!(n > 10 && memcmp(data, "-----BEGIN", 10) == 0)) {
+        return beans_tls_push_der(s, data, n);
+    }
+    const uint8_t* cursor = data;
+    const uint8_t* limit = data + n;
+    long long added = 0;
+    while (cursor < limit) {
+        const uint8_t* begin =
+            beans_tls_find(cursor, (size_t)(limit - cursor), "-----BEGIN");
+        if (!begin) break;
+        // The base64 body starts after the BEGIN line's newline.
+        const uint8_t* body =
+            beans_tls_find(begin, (size_t)(limit - begin), "\n");
+        if (!body) break;
+        body++;
+        const uint8_t* end =
+            beans_tls_find(body, (size_t)(limit - body), "-----END");
+        // A bundle truncated mid-certificate is rejected outright rather than
+        // decoded to whatever happens to follow it.
+        if (!end) break;
+        unsigned char* out = (unsigned char*)malloc((size_t)(end - body) + 1);
         if (!out) return BEANS_NET_ERR_MEMORY;
         size_t olen = 0;
         int bits = 0, acc = 0;
-        for (const char* p = body; p < end; p++) {
-            char c = *p;
+        for (const uint8_t* p = body; p < end; p++) {
+            int c = (int)*p;
             int v = -1;
             if (c >= 'A' && c <= 'Z') v = c - 'A';
             else if (c >= 'a' && c <= 'z') v = c - 'a' + 26;
@@ -317,21 +390,14 @@ BEANS_NET_API long long beans_tls_add_root(long long handle, const uint8_t* data
             bits += 6;
             if (bits >= 8) { bits -= 8; out[olen++] = (unsigned char)(acc >> bits); }
         }
-        der = CFDataCreate(NULL, out, olen);
+        long long rc = olen > 0 ? beans_tls_push_der(s, out, olen)
+                                : BEANS_NET_ERR_INVALID;
         free(out);
-        (void)b64;
-    } else {
-        der = CFDataCreate(NULL, data, (CFIndex)len);
+        if (rc != BEANS_NET_OK) return rc;
+        added++;
+        cursor = end + 8 <= limit ? end + 8 : limit;
     }
-    if (!der) return BEANS_NET_ERR_INVALID;
-    SecCertificateRef cert = SecCertificateCreateWithData(NULL, der);
-    CFRelease(der);
-    if (!cert) return BEANS_NET_ERR_INVALID;
-    if (!s->extra_roots) {
-        s->extra_roots = CFArrayCreateMutable(NULL, 0, &kCFTypeArrayCallBacks);
-    }
-    CFArrayAppendValue(s->extra_roots, cert);
-    CFRelease(cert);
+    if (added == 0) return BEANS_NET_ERR_INVALID;
     return BEANS_NET_OK;
 }
 
@@ -359,17 +425,19 @@ BEANS_NET_API long long beans_tls_alpn(long long handle, uint8_t* out,
     return written;
 }
 
+// Writes app data. Return: bytes accepted (>=0), or a negative sentinel --
+// never a status code, or a 111-byte write would read back as an error.
 BEANS_NET_API long long beans_tls_write(long long handle, const uint8_t* data,
                                         const uint64_t* req) {
     beans_tls_session* s = beans_tls_of(handle);
-    if (!s || !req) return BEANS_NET_ERR_INVALID;
+    if (!s || !req) return BEANS_TLS_R_INVALID;
     uint64_t len = beans_net_word(req, 0);
     if (len == 0) return 0;
-    if (!data) return BEANS_NET_ERR_INVALID;
+    if (!data) return BEANS_TLS_R_INVALID;
     size_t processed = 0;
     OSStatus rc = SSLWrite(s->ctx, data, (size_t)len, &processed);
     if (rc == noErr || rc == errSSLWouldBlock) return (long long)processed;
-    return BEANS_TLS_PROTOCOL;
+    return BEANS_TLS_R_PROTOCOL;
 }
 
 // Reads decrypted app data into `out`. Return: bytes read (>=0),
@@ -615,15 +683,22 @@ BEANS_NET_API long long beans_tls_client_new(const uint8_t* host,
     } else {
         ossl.SSL_set_connect_state(s->ssl);
         uint64_t host_len = beans_net_word(req, 1);
+        // A name that does not fit must fail the session, never skip the
+        // check: silently dropping SSL_set1_host here would leave a verified
+        // chain with no hostname binding at all.
         if (host && host_len > 0) {
             char name[256];
-            if (host_len < sizeof name) {
-                memcpy(name, host, (size_t)host_len);
-                name[host_len] = 0;
-                // Enables hostname verification through the platform verifier.
-                ossl.SSL_set1_host(s->ssl, name);
-                s->verify_host = 1;
+            if (host_len >= sizeof name) {
+                ossl.SSL_free(s->ssl);
+                ossl.SSL_CTX_free(s->ctx);
+                free(s);
+                return 0;
             }
+            memcpy(name, host, (size_t)host_len);
+            name[host_len] = 0;
+            // Enables hostname verification through the platform verifier.
+            ossl.SSL_set1_host(s->ssl, name);
+            s->verify_host = 1;
         }
         ossl.SSL_set_verify(s->ssl, SSL_VERIFY_PEER, NULL);
     }
@@ -735,30 +810,39 @@ BEANS_NET_API long long beans_tls_alpn(long long handle, uint8_t* out,
     return 0;
 }
 
+// Writes app data. Return: bytes accepted (>=0), or a negative sentinel --
+// never a status code, or a 111-byte write would read back as an error.
 BEANS_NET_API long long beans_tls_write(long long handle, const uint8_t* data,
                                         const uint64_t* req) {
     beans_tls_session* s = beans_tls_of(handle);
-    if (!s || !req) return BEANS_NET_ERR_INVALID;
+    if (!s || !req) return BEANS_TLS_R_INVALID;
     uint64_t len = beans_net_word(req, 0);
     if (len == 0) return 0;
-    if (!data) return BEANS_NET_ERR_INVALID;
+    if (!data) return BEANS_TLS_R_INVALID;
+    if (len > (uint64_t)INT_MAX) len = (uint64_t)INT_MAX;
     int wrote = ossl.SSL_write(s->ssl, data, (int)len);
     if (wrote > 0) return (long long)wrote;
     int err = ossl.SSL_get_error(s->ssl, wrote);
     if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) return 0;
-    return BEANS_TLS_PROTOCOL;
+    return BEANS_TLS_R_PROTOCOL;
 }
 
 BEANS_NET_API long long beans_tls_read(long long handle, uint8_t* out,
                                        const uint64_t* req) {
     beans_tls_session* s = beans_tls_of(handle);
     if (!s || !out || !req) return BEANS_TLS_R_INVALID;
-    int got = ossl.SSL_read(s->ssl, out, (int)beans_net_word(req, 0));
+    uint64_t want = beans_net_word(req, 0);
+    if (want > (uint64_t)INT_MAX) want = (uint64_t)INT_MAX;
+    int got = ossl.SSL_read(s->ssl, out, (int)want);
     if (got > 0) return (long long)got;
     int err = ossl.SSL_get_error(s->ssl, got);
     if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE)
         return BEANS_TLS_R_WANT_IO;
     if (err == SSL_ERROR_ZERO_RETURN) return BEANS_TLS_R_CLOSED;
+    // A record-layer failure -- bad MAC, bad record, a fatal alert -- is
+    // active tampering, not a truncated stream. Reporting it as a plain cut
+    // hides the one case an operator most needs to see.
+    if (err == SSL_ERROR_SSL) return BEANS_TLS_R_PROTOCOL;
     return BEANS_TLS_R_TRUNCATED;
 }
 
@@ -796,8 +880,8 @@ BEANS_NET_API long long beans_tls_outgoing_size(long long h) { (void)h; return -
 BEANS_NET_API long long beans_tls_pull_outgoing(long long h, uint8_t* o, const uint64_t* r) { (void)h;(void)o;(void)r; return -1; }
 BEANS_NET_API long long beans_tls_handshake(long long h) { (void)h; return BEANS_TLS_UNSUPPORTED; }
 BEANS_NET_API long long beans_tls_alpn(long long h, uint8_t* o, const uint64_t* r) { (void)h;(void)o;(void)r; return 0; }
-BEANS_NET_API long long beans_tls_write(long long h, const uint8_t* d, const uint64_t* r) { (void)h;(void)d;(void)r; return BEANS_TLS_UNSUPPORTED; }
-BEANS_NET_API long long beans_tls_read(long long h, uint8_t* o, const uint64_t* r) { (void)h;(void)o;(void)r; return BEANS_TLS_R_PROTOCOL; }
+BEANS_NET_API long long beans_tls_write(long long h, const uint8_t* d, const uint64_t* r) { (void)h;(void)d;(void)r; return BEANS_TLS_R_UNSUPPORTED; }
+BEANS_NET_API long long beans_tls_read(long long h, uint8_t* o, const uint64_t* r) { (void)h;(void)o;(void)r; return BEANS_TLS_R_UNSUPPORTED; }
 BEANS_NET_API long long beans_tls_close_notify(long long h) { (void)h; return BEANS_TLS_UNSUPPORTED; }
 BEANS_NET_API long long beans_tls_free(long long h) { (void)h; return BEANS_NET_ERR_INVALID; }
 BEANS_NET_API long long beans_tls_available(void) { return 0; }

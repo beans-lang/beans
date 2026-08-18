@@ -24,8 +24,10 @@ package tls
 
 import std.net
 
-// The tls bridge (runtime/net/beans_net_tls.c). Statuses: 0 ok, 1 wants IO,
-// 2 closed, 110 handshake, 111 protocol, 112 truncated, 113 unsupported.
+// The tls bridge (runtime/net/beans_net_tls.c). Statuses: 0 ok, 110 handshake,
+// 111 protocol, 112 truncated, 113 unsupported, 114 wants IO, 115 closed.
+// None of these overlap the shared net error codes, so a rejected handle can
+// never read back as "wants IO".
 extern "C" fn beans_tls_client_new(host: RawPtr<u8>, alpn: RawPtr<u8>, req: RawPtr<u64>) -> int
 extern "C" fn beans_tls_add_root(handle: int, data: RawPtr<u8>, req: RawPtr<u64>) -> int
 extern "C" fn beans_tls_feed(handle: int, data: RawPtr<u8>, req: RawPtr<u64>) -> int
@@ -209,11 +211,15 @@ pub unique class TlsStream {
                 self.live = false
                 return err("the TLS handshake failed — certificate, hostname, or protocol", "handshake")
             }
-            if status != 1 {
+            if status == 113 {
+                self.live = false
+                return err("this build has no TLS backend", "unsupported")
+            }
+            if status != 114 {
                 self.live = false
                 return err("the TLS handshake failed (status {status})", "protocol")
             }
-            // Wants IO: send anything queued, then read more.
+            // Wants IO (114): send anything queued, then read more.
             match self.pump_incoming() {
                 ok(more) => {
                     if !more {
@@ -256,7 +262,21 @@ pub unique class TlsStream {
             wrote = beans_tls_write(self.handle, data.as_ptr(), req)
             req.free()
         }
-        if wrote < 0 { return err("write: the TLS stream failed", "protocol") }
+        // Like read, the write path returns a non-negative byte count and a
+        // negative sentinel for everything else, so a 111-byte write is never
+        // confused with a status code.
+        if wrote == -6 {
+            self.live = false
+            return err("write: this build has no TLS backend", "unsupported")
+        }
+        if wrote == -5 {
+            self.live = false
+            return err("write: the TLS handle is not valid", "invalid")
+        }
+        if wrote < 0 {
+            self.live = false
+            return err("write: the TLS stream failed (status {wrote})", "protocol")
+        }
         self.flush_outgoing()?
         return ok(wrote)
     }
@@ -307,6 +327,10 @@ pub unique class TlsStream {
             if status == -3 {
                 self.live = false
                 return err("the TLS stream was cut without close_notify", "eof")
+            }
+            if status == -6 {
+                self.live = false
+                return err("read: this build has no TLS backend", "unsupported")
             }
             if status != -1 {
                 self.live = false

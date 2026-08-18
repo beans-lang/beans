@@ -1,0 +1,12 @@
+plain value: safe=true expected=true
+value with CR: safe=false expected=false
+value with LF: safe=false expected=false
+value with CRLF: safe=false expected=false
+value with NUL: safe=false expected=false
+empty value: safe=true expected=true
+response splitting via CRLF: refused=true kind=invalid
+bare LF in a value: refused=true kind=invalid
+colon in a header name: refused=true kind=invalid
+well-formed header: refused=false kind=
+status reason phrase: refused=true kind=too_large rounds=4
+chunk extension name: refused=true kind=too_large rounds=3

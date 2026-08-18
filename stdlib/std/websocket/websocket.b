@@ -192,6 +192,11 @@ pub unique class Connection {
     /// themselves.
     pub static fn wrap(move stream: net.TcpStream, server: bool,
                        max_message: int = 8388608) -> Result<Connection> {
+        // A negative limit would cast to a huge u64 and remove the cap
+        // entirely, which is the opposite of what the caller asked for.
+        if max_message <= 0 {
+            return err("the message limit must be positive", "invalid")
+        }
         var handle: int = 0
         unsafe {
             let req: RawPtr<u64> = RawPtr.alloc(2)

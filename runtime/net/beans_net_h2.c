@@ -60,19 +60,73 @@ static int beans_h2_buf_push(beans_h2_buf* b, const uint8_t* src, size_t n) {
     return 1;
 }
 
+// One outgoing body, owned per stream. HTTP/2 is multiplexed, so a single
+// shared slot is wrong: a body deferred by flow control stays pending while
+// the caller opens other streams, and whichever submit ran last would steal
+// the slot and end the deferred stream early with END_STREAM.
+typedef struct {
+    beans_h2_buf body;
+    size_t offset;
+    int32_t stream;   // -1 when the slot is free
+} beans_h2_pending;
+
 typedef struct {
     nghttp2_session* session;
     beans_h2_buf events;
-    // Response/request bodies the Beans side handed us, keyed by stream: one
-    // pending body per stream is enough for request/response, and nghttp2
-    // pulls from it through the read callback below.
-    beans_h2_buf pending_body;
-    size_t pending_offset;
-    int32_t pending_stream;
+    // Bodies the Beans side handed us, one per in-flight stream; nghttp2
+    // pulls from them through the read callback below.
+    beans_h2_pending* pending;
+    size_t pending_count;
+    // Frame bytes nghttp2 handed over that did not fit the caller's buffer.
+    // mem_send commits a frame as it returns it, so the tail has to be kept
+    // here -- it cannot be re-fetched.
+    beans_h2_buf outgoing;
+    size_t outgoing_head;
     int is_server;
     int failed;
     uint64_t magic;
 } beans_h2_session;
+
+// Finds the slot holding `stream`'s body, or NULL.
+static beans_h2_pending* beans_h2_pending_find(beans_h2_session* s,
+                                               int32_t stream) {
+    for (size_t i = 0; i < s->pending_count; i++) {
+        if (s->pending[i].stream == stream) return &s->pending[i];
+    }
+    return NULL;
+}
+
+// Reuses a free slot or grows the table. Returns NULL only on OOM.
+static beans_h2_pending* beans_h2_pending_claim(beans_h2_session* s,
+                                                int32_t stream) {
+    beans_h2_pending* slot = beans_h2_pending_find(s, stream);
+    if (slot) { slot->body.len = 0; slot->offset = 0; return slot; }
+    slot = beans_h2_pending_find(s, -1);
+    if (!slot) {
+        size_t grown_count = s->pending_count + 1;
+        beans_h2_pending* grown = (beans_h2_pending*)realloc(
+            s->pending, grown_count * sizeof(beans_h2_pending));
+        if (!grown) return NULL;
+        s->pending = grown;
+        slot = &s->pending[s->pending_count];
+        memset(slot, 0, sizeof *slot);
+        s->pending_count = grown_count;
+    }
+    slot->stream = stream;
+    slot->body.len = 0;
+    slot->offset = 0;
+    return slot;
+}
+
+// Frees a slot for reuse. The buffer stays allocated; the table is small and
+// bounded by concurrent streams with bodies.
+static void beans_h2_pending_release(beans_h2_session* s, int32_t stream) {
+    beans_h2_pending* slot = beans_h2_pending_find(s, stream);
+    if (!slot) return;
+    slot->stream = -1;
+    slot->body.len = 0;
+    slot->offset = 0;
+}
 
 #define BEANS_H2_MAGIC 0x62656e7368320001ULL
 
@@ -163,6 +217,7 @@ static int beans_h2_on_stream_close(nghttp2_session* session, int32_t stream_id,
                                     uint32_t error_code, void* user) {
     (void)session;
     beans_h2_session* s = (beans_h2_session*)user;
+    beans_h2_pending_release(s, stream_id);
     beans_h2_event3(s, BEANS_H2_EV_STREAM_CLOSED, (uint64_t)stream_id,
                     (uint64_t)error_code);
     return 0;
@@ -175,15 +230,23 @@ static ssize_t beans_h2_read_body(nghttp2_session* session, int32_t stream_id,
                                   void* user) {
     (void)session; (void)source;
     beans_h2_session* s = (beans_h2_session*)user;
-    if (stream_id != s->pending_stream) {
+    beans_h2_pending* slot = beans_h2_pending_find(s, stream_id);
+    if (!slot) {
         *data_flags |= NGHTTP2_DATA_FLAG_EOF;
         return 0;
     }
-    size_t left = s->pending_body.len - s->pending_offset;
+    // Both sides are size_t, so the comparison guards a wrap: an offset past
+    // len would make `len - offset` underflow to near SIZE_MAX and copy
+    // whatever follows the buffer straight onto the wire.
+    if (slot->offset >= slot->body.len) {
+        *data_flags |= NGHTTP2_DATA_FLAG_EOF;
+        return 0;
+    }
+    size_t left = slot->body.len - slot->offset;
     size_t n = left < length ? left : length;
-    if (n) memcpy(buf, s->pending_body.data + s->pending_offset, n);
-    s->pending_offset += n;
-    if (s->pending_offset >= s->pending_body.len) {
+    if (n) memcpy(buf, slot->body.data + slot->offset, n);
+    slot->offset += n;
+    if (slot->offset >= slot->body.len) {
         *data_flags |= NGHTTP2_DATA_FLAG_EOF;
     }
     return (ssize_t)n;
@@ -197,7 +260,6 @@ BEANS_NET_API long long beans_h2_new(const uint64_t* req) {
     beans_h2_session* s = (beans_h2_session*)calloc(1, sizeof(beans_h2_session));
     if (!s) return 0;
     s->is_server = (int)beans_net_word(req, 0);
-    s->pending_stream = -1;
     nghttp2_session_callbacks* callbacks = NULL;
     if (nghttp2_session_callbacks_new(&callbacks) != 0) { free(s); return 0; }
     nghttp2_session_callbacks_set_on_header_callback(callbacks, beans_h2_on_header);
@@ -231,7 +293,9 @@ BEANS_NET_API long long beans_h2_free(long long handle) {
     if (!s) return BEANS_NET_ERR_INVALID;
     if (s->session) nghttp2_session_del(s->session);
     free(s->events.data);
-    free(s->pending_body.data);
+    free(s->outgoing.data);
+    for (size_t i = 0; i < s->pending_count; i++) free(s->pending[i].body.data);
+    free(s->pending);
     s->magic = 0;
     free(s);
     return BEANS_NET_OK;
@@ -259,6 +323,22 @@ BEANS_NET_API long long beans_h2_pull_outgoing(long long handle, uint8_t* out,
     if (!s || !out || !req) return -1;
     uint64_t cap = beans_net_word(req, 0);
     size_t written = 0;
+    // Anything left over from the previous call goes first, so frames leave
+    // in order.
+    size_t held = s->outgoing.len - s->outgoing_head;
+    if (held > 0) {
+        size_t take = held < cap ? held : (size_t)cap;
+        memcpy(out, s->outgoing.data + s->outgoing_head, take);
+        s->outgoing_head += take;
+        written += take;
+        if (s->outgoing_head == s->outgoing.len) {
+            s->outgoing.len = 0;
+            s->outgoing_head = 0;
+        } else {
+            // Still more held than the caller asked for; nothing new yet.
+            return (long long)written;
+        }
+    }
     while (written < cap) {
         const uint8_t* chunk = NULL;
         ssize_t n = nghttp2_session_mem_send(s->session, &chunk);
@@ -269,10 +349,17 @@ BEANS_NET_API long long beans_h2_pull_outgoing(long long handle, uint8_t* out,
         memcpy(out + written, chunk, take);
         written += take;
         if (take < (size_t)n) {
-            // The caller's buffer filled mid-frame. nghttp2 has already
-            // handed the whole frame over, so a partial copy would lose the
-            // tail: refuse instead of silently truncating.
-            return -1;
+            // The caller's buffer filled mid-frame. mem_send has already
+            // committed this frame and cannot replay it, so the tail is kept
+            // here and served at the head of the next call. Refusing instead
+            // would destroy the frame and kill the connection for any body
+            // that outgrows the caller's buffer.
+            if (!beans_h2_buf_push(&s->outgoing, chunk + take,
+                                   (size_t)n - take)) {
+                s->failed = 1;
+                return -1;
+            }
+            break;
         }
     }
     return (long long)written;
@@ -281,6 +368,9 @@ BEANS_NET_API long long beans_h2_pull_outgoing(long long handle, uint8_t* out,
 BEANS_NET_API long long beans_h2_want_write(long long handle) {
     beans_h2_session* s = beans_h2_of(handle);
     if (!s) return 0;
+    // Bytes held back from a straddling frame still need to go out, even
+    // when nghttp2 itself has nothing more queued.
+    if (s->outgoing.len > s->outgoing_head) return 1;
     return nghttp2_session_want_write(s->session) ? 1 : 0;
 }
 
@@ -299,10 +389,12 @@ BEANS_NET_API long long beans_h2_events_size(long long handle) {
 BEANS_NET_API long long beans_h2_take_events(long long handle, uint8_t* out,
                                              const uint64_t* req) {
     beans_h2_session* s = beans_h2_of(handle);
-    if (!s || !req) return -1;
+    // `out` is required, matching the ws bridge: accepting NULL here would
+    // skip the copy, still clear the queue, and destroy the events silently.
+    if (!s || !out || !req) return -1;
     uint64_t cap = beans_net_word(req, 0);
     if (cap < s->events.len) return -1;
-    if (s->events.len && out) memcpy(out, s->events.data, s->events.len);
+    if (s->events.len) memcpy(out, s->events.data, s->events.len);
     long long taken = (long long)s->events.len;
     s->events.len = 0;
     return taken;
@@ -369,13 +461,23 @@ BEANS_NET_API long long beans_h2_submit(long long handle,
 
     nghttp2_data_provider provider;
     nghttp2_data_provider* provider_ptr = NULL;
+    // The server knows its stream up front; the client only learns it from
+    // submit_request, so its body is staged under a placeholder and rebound
+    // once nghttp2 assigns the id.
+    beans_h2_pending* slot = NULL;
     if (body_len > 0) {
-        s->pending_body.len = 0;
-        if (!beans_h2_buf_push(&s->pending_body, body, (size_t)body_len)) {
+        slot = beans_h2_pending_claim(s, s->is_server ? stream_id : 0);
+        if (!slot) {
             free(nv);
             return -(long long)BEANS_NET_ERR_MEMORY;
         }
-        s->pending_offset = 0;
+        if (!beans_h2_buf_push(&slot->body, body, (size_t)body_len)) {
+            // Leave no half-filled slot behind: read_body would then serve a
+            // stale offset against an empty buffer.
+            slot->stream = -1;
+            free(nv);
+            return -(long long)BEANS_NET_ERR_MEMORY;
+        }
         provider.source.ptr = NULL;
         provider.read_callback = beans_h2_read_body;
         provider_ptr = &provider;
@@ -383,22 +485,43 @@ BEANS_NET_API long long beans_h2_submit(long long handle,
 
     long long result;
     if (s->is_server) {
-        s->pending_stream = stream_id;
         int rc = nghttp2_submit_response(s->session, stream_id, nv,
                                          (size_t)count, provider_ptr);
-        result = rc == 0 ? (long long)stream_id : -(long long)BEANS_H2_PROTOCOL;
+        if (rc != 0) {
+            if (slot) slot->stream = -1;
+            result = -(long long)BEANS_H2_PROTOCOL;
+        } else {
+            result = (long long)stream_id;
+        }
     } else {
         int32_t opened = nghttp2_submit_request(s->session, NULL, nv,
                                                 (size_t)count, provider_ptr, NULL);
         if (opened < 0) {
+            if (slot) slot->stream = -1;
             result = -(long long)BEANS_H2_PROTOCOL;
         } else {
-            s->pending_stream = opened;
+            if (slot) slot->stream = opened;
             result = (long long)opened;
         }
     }
     free(nv);
     return result;
+}
+
+// Cancels one stream without touching the rest of the connection --
+// RST_STREAM with the given error code. Used when a message crosses a limit
+// the peer should hear about.
+BEANS_NET_API long long beans_h2_rst_stream(long long handle,
+                                            const uint64_t* req) {
+    beans_h2_session* s = beans_h2_of(handle);
+    if (!s || !req) return BEANS_NET_ERR_INVALID;
+    int32_t stream_id = (int32_t)(long long)beans_net_word(req, 0);
+    uint32_t code = (uint32_t)beans_net_word(req, 1);
+    beans_h2_pending_release(s, stream_id);
+    if (nghttp2_submit_rst_stream(s->session, NGHTTP2_FLAG_NONE, stream_id,
+                                  code) != 0)
+        return BEANS_H2_PROTOCOL;
+    return BEANS_NET_OK;
 }
 
 // Ends the session politely: GOAWAY with NO_ERROR.
@@ -412,15 +535,21 @@ BEANS_NET_API long long beans_h2_goaway(long long handle) {
 
 // Flow-control accounting, for the fuzzer's balance invariant: the
 // connection-level send and receive windows as the session sees them.
+// Both window getters report a genuinely signed value -- the remote window
+// goes negative when the peer shrinks SETTINGS_INITIAL_WINDOW_SIZE below what
+// is already in flight -- so a bad handle cannot answer -1 without colliding
+// with a real reading. The sentinel sits below any legal window instead.
+enum { BEANS_H2_NO_WINDOW = -0x80000000LL - 1 };
+
 BEANS_NET_API long long beans_h2_local_window(long long handle) {
     beans_h2_session* s = beans_h2_of(handle);
-    if (!s) return -1;
+    if (!s) return BEANS_H2_NO_WINDOW;
     return (long long)nghttp2_session_get_local_window_size(s->session);
 }
 
 BEANS_NET_API long long beans_h2_remote_window(long long handle) {
     beans_h2_session* s = beans_h2_of(handle);
-    if (!s) return -1;
+    if (!s) return BEANS_H2_NO_WINDOW;
     return (long long)nghttp2_session_get_remote_window_size(s->session);
 }
 
