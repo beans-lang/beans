@@ -145,8 +145,11 @@ fn net_bridge_abi() -> string {
     return "net-abi-1"
 }
 
-fn net_bridge_is_cxx(feature: string) -> bool {
-    return feature == "ws"
+// C++ is per translation unit, by extension: a feature can mix its C++
+// shim with vendored C sources (the ws bridge validates UTF-8 through
+// simdutf while wslay itself is C).
+fn net_source_is_cxx(source: string) -> bool {
+    return source.ends_with(".cpp")
 }
 
 // import path -> bridge features. One import can pull more than one bridge:
@@ -158,7 +161,7 @@ fn net_bridge_features(packages: List<LoadedPackage>) -> List<string> {
         if loaded.import_path == "std.net" {
             wanted = ["sockx"]
         } else if loaded.import_path == "std.http" {
-            wanted = ["h1", "h2"]
+            wanted = ["h1"]
         } else if loaded.import_path == "std.websocket" {
             wanted = ["ws"]
         } else if loaded.import_path == "std.compress" {
@@ -177,18 +180,49 @@ fn net_bridge_features(packages: List<LoadedPackage>) -> List<string> {
     return move features
 }
 
-fn net_bridge_translation_unit(root: string, feature: string) -> string {
-    if feature == "ws" {
-        return path.join(root, "beans_net_{feature}.cpp")
+// The translation units one feature compiles, shim first. Vendored
+// libraries whose sources cannot share a translation unit — colliding
+// static helpers, or upstream files that disagree on internal signatures
+// across files — compile beside the shim as their own objects, all inside
+// the feature's one cache entry.
+fn net_bridge_translation_units(root: string, feature: string) -> List<string> {
+    var units: List<string> = []
+    if feature == "h1" {
+        units.push(path.join(root, "beans_net_h1.c"))
+        units.push(path.join(root, "vendor/llhttp/llhttp.c"))
+        return move units
     }
-    return path.join(root, "beans_net_{feature}.c")
+    if feature == "ws" {
+        units.push(path.join(root, "beans_net_ws.cpp"))
+        for input: string in net_bridge_inputs(root, feature) {
+            if input.ends_with(".c") && input.contains("/vendor/") {
+                units.push(input)
+            }
+        }
+        return move units
+    }
+    if feature == "h2" || feature == "zlib" {
+        units.push(path.join(root, "beans_net_{feature}.c"))
+        for input: string in net_bridge_inputs(root, feature) {
+            if input.ends_with(".c") && input.contains("/vendor/") {
+                units.push(input)
+            }
+        }
+        return move units
+    }
+    units.push(path.join(root, "beans_net_{feature}.c"))
+    return move units
 }
 
-// Every file whose content shapes the compiled bridge, translation unit
-// first. All of them feed the cache key.
+// Every file whose content shapes the compiled bridge — the shim, the
+// shared header, and the vendored sources. All of them feed the cache key.
 fn net_bridge_inputs(root: string, feature: string) -> List<string> {
     var files: List<string> = []
-    files.push(net_bridge_translation_unit(root, feature))
+    if feature == "ws" {
+        files.push(path.join(root, "beans_net_ws.cpp"))
+    } else {
+        files.push(path.join(root, "beans_net_{feature}.c"))
+    }
     files.push(path.join(root, "beans_net_common.h"))
     if feature == "h1" {
         files.push(path.join(root, "vendor/llhttp/llhttp.h"))
@@ -792,9 +826,10 @@ class NativeBuildDriver {
     // include flags (nghttp2 and wslay are not amalgamated) and the C++
     // lane for the ws bridge, which validates UTF-8 through simdutf.
     fn net_compile_flags(feature: string,
+                         source: string,
                          pic: bool) -> List<string> {
         var flags: List<string> = []
-        if net_bridge_is_cxx(feature) {
+        if net_source_is_cxx(source) {
             flags.push("-x")
             flags.push("c++")
             flags.push("-std=c++17")
@@ -834,7 +869,7 @@ class NativeBuildDriver {
         let command: process.Command =
             new process.Command(compiler)
         for flag: string in
-            self.net_compile_flags(feature, pic) {
+            self.net_compile_flags(feature, source, pic) {
             command.arg(flag)
         }
         command.arg("-c")
@@ -844,12 +879,16 @@ class NativeBuildDriver {
         return self.run_tool(command, source, "Clang")
     }
 
+    // One cache key per (feature, translation unit); every unit's key still
+    // hashes the feature's whole input set, so touching any vendored file
+    // rebuilds every object of that feature.
     fn net_cache_path(compiler: string,
                       root: string,
                       feature: string,
+                      source: string,
                       pic: bool) -> string {
         var blob: string = net_bridge_abi()
-        blob = "{blob}|{feature}"
+        blob = "{blob}|{feature}|{source}"
         blob = "{blob}|{self.target.triple}|{self.target.llvm_triple()}"
         blob = "{blob}|{self.cpu}|{self.target.features.join(",")}"
         blob = "{blob}|{self.runtime_profile}|{self.release}|{self.debug}|{self.lto}|{pic}"
@@ -857,7 +896,7 @@ class NativeBuildDriver {
         blob =
             "{blob}|{encoding_compiler_identity(compiler)}"
         blob =
-            "{blob}|{self.net_compile_flags(feature, pic).join(" ")}"
+            "{blob}|{self.net_compile_flags(feature, source, pic).join(" ")}"
         for input: string in net_bridge_inputs(root, feature) {
             match fs.read(input) {
                 ok(text) => { blob = "{blob}|{text}" }
@@ -873,21 +912,21 @@ class NativeBuildDriver {
         }
         let extension: string =
             if self.lto { "bc" } else { "o" }
+        let stem: string = path.stem(source)
         return path.join(
             "build",
-            "beans_net_{feature}.{self.target.triple}.{hash}x{mixed}.{extension}")
+            "beans_net_{feature}.{stem}.{self.target.triple}.{hash}x{mixed}.{extension}")
     }
 
     fn cached_net_object(compiler: string,
                          root: string,
                          feature: string,
+                         source: string,
                          pic: bool) -> string {
         let object: string =
             self.net_cache_path(
-                compiler, root, feature, pic)
+                compiler, root, feature, source, pic)
         if File.exists(object) { return object }
-        let source: string =
-            net_bridge_translation_unit(root, feature)
         if !File.exists(source) {
             self.fail(
                 source,
@@ -934,19 +973,36 @@ class NativeBuildDriver {
         let root: string = net_source_root()
         var failed: bool = false
         for feature: string in self.net_features {
-            if !failed {
-                let object: string =
-                    self.cached_net_object(
-                        compiler, root, feature, pic)
-                if object == "" {
-                    failed = true
-                } else {
-                    objects.push(object)
+            for source: string in
+                net_bridge_translation_units(root, feature) {
+                if !failed {
+                    let object: string =
+                        self.cached_net_object(
+                            compiler, root, feature, source, pic)
+                    if object == "" {
+                        failed = true
+                    } else {
+                        objects.push(object)
+                    }
                 }
             }
         }
         if failed { objects.clear() }
         return move objects
+    }
+
+    // Stable per-object labels for the --emit obj copies, parallel to
+    // cached_net_objects' return order.
+    fn net_object_labels() -> List<string> {
+        var labels: List<string> = []
+        let root: string = net_source_root()
+        for feature: string in self.net_features {
+            for source: string in
+                net_bridge_translation_units(root, feature) {
+                labels.push("{feature}_{path.stem(source)}")
+            }
+        }
+        return move labels
     }
 
     fn csrc_cache_path(source: string,
@@ -1329,9 +1385,10 @@ class NativeBuildDriver {
                     }
                 }
             }
+            let net_labels: List<string> = self.net_object_labels()
             for index: int in 0..net_objects.len() {
                 let member: string =
-                    "{output}_net_{self.net_features[index]}.o"
+                    "{output}_net_{net_labels[index]}.o"
                 match fs.copy(net_objects[index], member) {
                     ok(_) => { io.println("built {member}") }
                     err(error) => {

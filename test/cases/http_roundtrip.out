@@ -1,0 +1,4 @@
+first connection served 3
+second connection served 2
+client failures 0
+keep-alive, bodies, chunked, pipelining, close true
