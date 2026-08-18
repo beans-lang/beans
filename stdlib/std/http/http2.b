@@ -35,6 +35,7 @@ extern "C" fn beans_h2_events_size(handle: int) -> int
 extern "C" fn beans_h2_take_events(handle: int, out: RawPtr<u8>, req: RawPtr<u64>) -> int
 extern "C" fn beans_h2_submit(handle: int, blob: RawPtr<u8>, req: RawPtr<u64>) -> int
 extern "C" fn beans_h2_goaway(handle: int) -> int
+extern "C" fn beans_h2_rst_stream(handle: int, req: RawPtr<u64>) -> int
 extern "C" fn beans_h2_local_window(handle: int) -> int
 extern "C" fn beans_h2_remote_window(handle: int) -> int
 
@@ -88,6 +89,11 @@ pub unique class Http2Connection {
     // Exchanges under construction, keyed by stream id.
     building: Map<int, Stream>
     ready: List<Http2Event>
+    /// The largest body this connection will accumulate for one stream.
+    /// HTTP/1.1 bounds this on both sides and WebSocket has `max_message`;
+    /// without it here, nghttp2's automatic WINDOW_UPDATE means one client
+    /// posting DATA forever grows the buffer until the process dies.
+    pub max_body: int = 16777216
 
     fn init(handle: int, move stream: net.TcpStream, is_server: bool) {
         self.handle = handle
@@ -130,6 +136,22 @@ pub unique class Http2Connection {
     fn shut() -> Result<bool> {
         if self.socket_closed { return ok(true) }
         self.socket_closed = true
+        // A lingering close, not a bare one. Closing a socket that still has
+        // unread bytes in its receive buffer makes the kernel send RST rather
+        // than FIN, and the peer sees "connection reset" instead of the clean
+        // end GOAWAY just promised it. Half-close first, then read off what
+        // is already in flight so the FIN is what lands.
+        let half: Result<bool> = self.stream.shutdown_write()
+        var rounds: int = 0
+        for rounds < 64 {
+            rounds += 1
+            match self.stream.read(16384) {
+                ok(chunk) => {
+                    if chunk.len() == 0 { rounds = 64 }
+                }
+                err(_) => { rounds = 64 }
+            }
+        }
         return self.stream.close()
     }
 
@@ -208,6 +230,10 @@ pub unique class Http2Connection {
                 let name_len: int = buffer.get_u64(pos + 8)
                 let value_len: int = buffer.get_u64(pos + 16)
                 pos += 24
+                if name_len < 0 || value_len < 0 ||
+                   pos + name_len + value_len > taken {
+                    return err("the HTTP/2 bridge produced a malformed event", "protocol")
+                }
                 let name: string = buffer.slice(pos, pos + name_len).to_string()
                 pos += name_len
                 let value: string = buffer.slice(pos, pos + value_len).to_string()
@@ -218,7 +244,15 @@ pub unique class Http2Connection {
                 let id: int = buffer.get_u64(pos)
                 let length: int = buffer.get_u64(pos + 8)
                 pos += 16
+                if length < 0 || pos + length > taken {
+                    return err("the HTTP/2 bridge produced a malformed event", "protocol")
+                }
                 var exchange: Stream = self.exchange_for(id)
+                if exchange.body.len() + length > self.max_body {
+                    self.reset_stream(id)
+                    pos += length
+                    continue
+                }
                 exchange.body.append(buffer.slice(pos, pos + length))
                 pos += length
             } else if kind == 2 {
@@ -259,6 +293,21 @@ pub unique class Http2Connection {
                 self.building[id] = fresh
                 return fresh
             }
+        }
+    }
+
+    // Cancels one stream with RST_STREAM and forgets what was built for it.
+    // Error code 11 is ENHANCE_YOUR_CALM, which is what a peer that sent too
+    // much should hear. The connection itself carries on.
+    fn reset_stream(id: int) {
+        self.building.remove(id)
+        var ignored: int = 0
+        unsafe {
+            let req: RawPtr<u64> = RawPtr.alloc(2)
+            req.write(id as u64)
+            req.offset(1).write(11 as u64)
+            ignored = beans_h2_rst_stream(self.handle, req)
+            req.free()
         }
     }
 
@@ -306,6 +355,22 @@ pub unique class Http2Connection {
     fn submit(fields: Headers, body: Bytes, stream_id: int) -> Result<int> {
         if fields.count() == 0 {
             return err("a message needs at least one header", "invalid")
+        }
+        // Mirrors the bridge's own cap, so an oversized head reads as what it
+        // is rather than as "the session refused it".
+        if fields.count() > 256 {
+            return err("a message carries at most 256 headers", "invalid")
+        }
+        // HTTP/2 is binary-framed, so a colon in a name is not a separator
+        // here — the pseudo-headers `:method`, `:path`, `:scheme`,
+        // `:authority` and `:status` all begin with one. CR, LF and NUL are
+        // still refused: RFC 9113 forbids them in a field, and letting one
+        // through would corrupt whatever downgrades this to HTTP/1.1.
+        for index: int in 0..fields.count() {
+            if !field_is_safe(fields.name_at(index)) ||
+               !field_is_safe(fields.value_at(index)) {
+                return err("a header carries CR, LF or NUL", "invalid")
+            }
         }
         var lengths: Bytes = new Bytes(0)
         var names: Bytes = new Bytes(0)

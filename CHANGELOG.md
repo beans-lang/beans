@@ -11,8 +11,12 @@ This file records user-facing changes in each Beans release.
   byte-split of the same input yields the same events, and what llhttp
   rejects this package rejects. Header order and case are preserved,
   because order is meaning in HTTP. The limits llhttp does not own — header
-  count, header bytes, target length — live here and report `too_large`
-  rather than truncating. `Client` and `Server` ride the parser for
+  count, header bytes, target length, and every other head field llhttp
+  leaves unbounded — live here and report `too_large` rather than
+  truncating. The write side is held to the same standard: a header
+  carrying CR, LF or NUL is refused before it reaches the socket, so an
+  application cannot be talked into splicing a second response into the
+  stream. `Client` and `Server` ride the parser for
   ordinary work; `Http2Connection` carries streams with the same message
   model, pseudo-headers included. Bodies with `Content-Encoding: gzip` or
   `deflate` decompress under the same limit that bounds the body.

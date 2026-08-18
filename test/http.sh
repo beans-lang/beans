@@ -23,6 +23,9 @@ run_both() {
 echo "checking the smuggling corpus is refused end to end"
 run_both http_smuggling
 
+echo "checking the write side refuses splitting and bounds every head span"
+run_both http_write_rules
+
 echo "checking client and server speak over loopback"
 run_both http_roundtrip
 

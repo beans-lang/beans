@@ -56,6 +56,47 @@ pub class Field {
     }
 }
 
+/// Rejects a header name or value that would change the shape of the
+/// message once written. A value carrying CR or LF splices arbitrary extra
+/// headers — or a whole extra response — into the wire format, so both
+/// writers check every field before serializing it. The read side of this
+/// package is strict about what it accepts; the write side has to match, or
+/// an application that puts user input in a `Location` hands an attacker the
+/// response framing.
+///
+/// NUL is refused for the same reason: llhttp treats it as a terminator in
+/// several states, so a peer and this writer would disagree on where a field
+/// ends.
+pub fn field_is_safe(text: string) -> bool {
+    let raw: Bytes = Bytes.from(text)
+    for index: int in 0..raw.len() {
+        let byte: int = raw.get(index)
+        if byte == 13 || byte == 10 || byte == 0 { return false }
+    }
+    return true
+}
+
+// Names carry the same rule plus the separator itself: a name holding ':'
+// would forge a second field on the same line.
+fn header_name_is_safe(name: string) -> bool {
+    if name.len() == 0 { return false }
+    if !field_is_safe(name) { return false }
+    return !name.contains(":")
+}
+
+// The shared check both writers run before serializing a head.
+fn check_headers(headers: Headers) -> Result<bool> {
+    for index: int in 0..headers.count() {
+        if !header_name_is_safe(headers.name_at(index)) {
+            return err("the header name {index} is not a valid field name", "invalid")
+        }
+        if !field_is_safe(headers.value_at(index)) {
+            return err("the value of {headers.name_at(index)} carries CR, LF or NUL", "invalid")
+        }
+    }
+    return ok(true)
+}
+
 fn ascii_lower_equals(a: string, b: string) -> bool {
     if a.len() != b.len() { return false }
     for index: int in 0..a.len() {
@@ -167,6 +208,10 @@ pub class Limits {
     pub max_header_count: int = 128
     pub max_header_bytes: int = 65536
     pub max_target_bytes: int = 8192
+    /// Caps every other head field llhttp does not bound itself — the status
+    /// reason phrase and the chunk-extension name and value. Each of those
+    /// can otherwise run for as long as the peer keeps sending.
+    pub max_head_span_bytes: int = 16384
 
     pub fn init() {}
 }
@@ -410,6 +455,14 @@ class ParserCore {
                 pos += 8
                 let span_from: int = pos
                 pos += span_len
+                // The bridge writes every event reserve-then-commit, so a
+                // span should always be inside the buffer. Check anyway: a
+                // length that outran the bytes behind it would panic in the
+                // slice below rather than surface as a parse error.
+                if span_len < 0 || span_from + span_len > events.len() {
+                    self.latch("the HTTP parser produced a malformed event", "protocol")
+                    return ok(true)
+                }
                 if kind == 11 {
                     // A body chunk streams straight out, as its own Bytes —
                     // the caller keeps it after this buffer is reused.
@@ -439,6 +492,19 @@ class ParserCore {
                         self.header_bytes += span_len
                         if self.header_bytes > self.limits.max_header_bytes {
                             self.latch("the headers exceed {self.limits.max_header_bytes} bytes", "too_large")
+                            return ok(true)
+                        }
+                    }
+                    // Every other head span — the status reason phrase and
+                    // the chunk-extension name and value — accumulates here
+                    // too, and llhttp bounds none of them. Without this, a
+                    // peer sending `1;` and then token bytes forever, or a
+                    // reason phrase with no CRLF, grows this buffer until the
+                    // process dies. The extension text is discarded when the
+                    // span seals, so it is pure waste as well as a hazard.
+                    if kind != 3 && kind != 7 && kind != 8 {
+                        if self.pending_text.len() > self.limits.max_head_span_bytes {
+                            self.latch("an HTTP head field exceeds {self.limits.max_head_span_bytes} bytes", "too_large")
                             return ok(true)
                         }
                     }

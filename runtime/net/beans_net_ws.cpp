@@ -24,6 +24,12 @@
 // payload is the two-byte code (big-endian, RFC 6455 order) followed by the
 // reason text, or empty when the peer sent no body.
 
+// rand_s exists only under _CRT_RAND_S, and the knob has to precede every
+// include -- beans_net_common.h already pulls in <stdlib.h>.
+#if defined(_WIN32)
+#define _CRT_RAND_S 1
+#endif
+
 #include "beans_net_common.h"
 
 extern "C" {
@@ -31,6 +37,13 @@ extern "C" {
 }
 
 #include <stdio.h>
+
+#if !defined(_WIN32) && !defined(__APPLE__) && !defined(__FreeBSD__) && \
+    !defined(__OpenBSD__) && !defined(__NetBSD__)
+#include <errno.h>
+#include <unistd.h>
+#include <sys/syscall.h>
+#endif
 
 // Unicode Table 3-7, "Well-Formed UTF-8 Byte Sequences", exactly: the ranges
 // below are what make overlong encodings, surrogates (U+D800..U+DFFF) and
@@ -164,18 +177,48 @@ static ssize_t ws_send_cb(wslay_event_context_ptr ctx, const uint8_t* data,
     return (ssize_t)len;
 }
 
-// Client frames must be masked with unpredictable keys. The OS CSPRNG is
-// the only acceptable source, reached the same way std.random does.
+// Client frames must be masked with unpredictable keys. The OS CSPRNG is the
+// only acceptable source, reached the same way std.random does -- per
+// platform, not through /dev/urandom alone. Getting this wrong is not subtle:
+// with no Windows path at all, wslay cannot mask a frame, and RFC 6455
+// requires every client frame to be masked, so client sends fail outright.
 static int ws_genmask_cb(wslay_event_context_ptr ctx, uint8_t* buf, size_t len,
                          void* user) {
     (void)ctx; (void)user;
-    FILE* urandom = fopen("/dev/urandom", "rb");
-    if (urandom) {
-        size_t got = fread(buf, 1, len, urandom);
-        fclose(urandom);
-        if (got == len) return 0;
+#if defined(_WIN32)
+    size_t done = 0;
+    while (done < len) {
+        unsigned int word = 0;
+        if (rand_s(&word) != 0) return -1;
+        size_t take = len - done < sizeof word ? len - done : sizeof word;
+        memcpy(buf + done, &word, take);
+        done += take;
     }
-    return -1;
+    return 0;
+#elif defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
+    arc4random_buf(buf, len);
+    return 0;
+#else
+    size_t done = 0;
+    while (done < len) {
+        long got = syscall(SYS_getrandom, buf + done, len - done, 0);
+        if (got < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (got == 0) break;
+        done += (size_t)got;
+    }
+    if (done == len) return 0;
+    // Older kernels and seccomp sandboxes without getrandom still have the
+    // device; a single failed read is fatal rather than falling back to
+    // anything predictable.
+    FILE* urandom = fopen("/dev/urandom", "rb");
+    if (!urandom) return -1;
+    size_t got = fread(buf + done, 1, len - done, urandom);
+    fclose(urandom);
+    return got == len - done ? 0 : -1;
+#endif
 }
 
 static void ws_on_msg_cb(wslay_event_context_ptr ctx,
@@ -295,6 +338,9 @@ BEANS_NET_API long long beans_ws_close(long long handle, const uint8_t* reason,
     if (!s || !req) return BEANS_NET_ERR_INVALID;
     uint64_t code = beans_net_word(req, 0);
     uint64_t len = beans_net_word(req, 1);
+    // Same guard beans_ws_queue carries: a length with no bytes behind it
+    // would have wslay copy from a null pointer.
+    if (len > 0 && !reason) return BEANS_NET_ERR_INVALID;
     if (wslay_event_queue_close(s->ctx, (uint16_t)code, reason, (size_t)len) != 0)
         return BEANS_WS_PROTOCOL;
     if (wslay_event_send(s->ctx) != 0) return BEANS_WS_PROTOCOL;

@@ -167,6 +167,7 @@ pub unique class ServerConn {
         if !self.alive {
             return err("the connection is closed", "closed")
         }
+        check_headers(headers)?
         var head: Bytes = new Bytes(0)
         head.append_string("HTTP/1.1 {status} {reason}\r\n")
         head.append_string("Content-Length: {body.len()}\r\n")

@@ -28,6 +28,14 @@ enum {
     BEANS_ZLIB_TRUNCATED = 102,
 };
 
+// zlib counts through `uInt`, which is 32-bit. Narrowing a larger length
+// would set avail_in to `len mod 2^32` -- and at exactly 4 GiB that is zero,
+// so Z_FINISH returns Z_STREAM_END on no input and the caller gets an empty
+// stream reported as success. Refuse instead of narrowing.
+static int beans_zlib_fits(uint64_t n) {
+    return n <= (uint64_t)((uInt)-1);
+}
+
 // format: 0 = zlib wrapper, 1 = raw deflate, 2 = gzip wrapper.
 static int beans_zlib_window_bits(uint64_t format, int inflating) {
     if (format == 1) return -15;
@@ -50,6 +58,8 @@ BEANS_NET_API long long beans_zlib_deflate(const uint8_t* src,
                                            uint8_t* dst,
                                            uint64_t* req) {
     if (!req || (!src && req[0]) || !dst) return BEANS_NET_ERR_INVALID;
+    if (!beans_zlib_fits(req[0]) || !beans_zlib_fits(req[1]))
+        return BEANS_NET_ERR_RANGE;
     z_stream stream;
     memset(&stream, 0, sizeof stream);
     int level = (int)req[2];
@@ -80,6 +90,8 @@ BEANS_NET_API long long beans_zlib_inflate(const uint8_t* src,
                                            uint8_t* dst,
                                            uint64_t* req) {
     if (!req || (!src && req[0]) || (!dst && req[1])) return BEANS_NET_ERR_INVALID;
+    if (!beans_zlib_fits(req[0]) || !beans_zlib_fits(req[1]))
+        return BEANS_NET_ERR_RANGE;
     z_stream stream;
     memset(&stream, 0, sizeof stream);
     if (inflateInit2(&stream, beans_zlib_window_bits(req[2], 1)) != Z_OK)
@@ -178,6 +190,8 @@ BEANS_NET_API long long beans_zlib_stream_run(const uint8_t* src,
     beans_zlib_session* s = beans_zlib_of((long long)req[0]);
     if (!s) return BEANS_NET_ERR_CLOSED;
     if ((!src && req[1]) || (!dst && req[2])) return BEANS_NET_ERR_INVALID;
+    if (!beans_zlib_fits(req[1]) || !beans_zlib_fits(req[2]))
+        return BEANS_NET_ERR_RANGE;
     s->stream.next_in = (z_const Bytef*)src;
     s->stream.avail_in = (uInt)req[1];
     s->stream.next_out = dst;

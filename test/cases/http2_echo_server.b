@@ -109,16 +109,26 @@ fn main() {
                         wait_once(poller, ready)
                         for event: poll.Event in ready {
                             if event.token == 0 {
-                                match adopt_next(listener, connections) {
-                                    ok(handle) => {
-                                        let token: int = connections.len()
-                                        alive.push(true)
-                                        fds.push(handle)
-                                        let watched: Result<bool> =
-                                            poller.add(handle, token,
-                                                       poll.Interest.read_only())
+                                // Drain the whole backlog, not one connection
+                                // per readiness event: a conformance client
+                                // opens a fresh connection per case and can
+                                // land several between two polls. Leaving them
+                                // queued makes later cases time out, which
+                                // reads exactly like a protocol bug and is not
+                                // one.
+                                var accepting_more: bool = true
+                                for accepting_more {
+                                    match adopt_next(listener, connections) {
+                                        ok(handle) => {
+                                            let token: int = connections.len()
+                                            alive.push(true)
+                                            fds.push(handle)
+                                            let watched: Result<bool> =
+                                                poller.add(handle, token,
+                                                           poll.Interest.read_only())
+                                        }
+                                        err(_) => { accepting_more = false }
                                     }
-                                    err(_) => {}
                                 }
                             } else {
                                 let index: int = event.token - 1
