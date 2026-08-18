@@ -78,6 +78,20 @@ if [[ "$(grep -c 'call void @beans_bytes_ensure_padding(ptr' \
     echo "decode_bytes_in_place did not enable padded yyjson in-situ input" >&2
     exit 1
 fi
+if ! awk '
+    /call i64 @beans_enc_json_typed_decode_direct/ {
+        getline
+        if ($0 ~ /call void @beans_release\(ptr /) direct++
+    }
+    /call i64 @beans_enc_json_typed_free/ {
+        getline
+        if ($0 ~ /call void @beans_release\(ptr /) fallback++
+    }
+    END { exit direct >= 1 && fallback >= 2 ? 0 : 1 }
+' build/encoding_json_typed_scalar.ll; then
+    echo "decode_bytes_in_place did not release consumed JSON input" >&2
+    exit 1
+fi
 echo "ok typed JSON scalar struct fast path"
 
 ./build/beansc build test/cases/encoding_json_typed_nested.b \
@@ -127,6 +141,16 @@ fi
 if ! grep -q 'store i64 4, ptr %xml' \
         build/encoding_xml_typed_scalar.ll; then
     echo "decode_bytes_in_place did not enable pugixml in-place input" >&2
+    exit 1
+fi
+if ! awk '
+    /call i64 @beans_enc_xml_typed_decode_direct/ {
+        getline
+        if ($0 ~ /call void @beans_release\(ptr /) released++
+    }
+    END { exit released >= 1 ? 0 : 1 }
+' build/encoding_xml_typed_scalar.ll; then
+    echo "decode_bytes_in_place did not release consumed XML input" >&2
     exit 1
 fi
 echo "ok typed XML scalar struct fast path"

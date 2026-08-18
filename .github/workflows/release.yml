@@ -186,6 +186,7 @@ jobs:
         run: |
           bin=$(bash test/windows_toolchain.sh)
           echo "$bin" >> "$GITHUB_PATH"
+          echo "BEANS_CC=$(cygpath -w "$bin/clang.exe")" >> "$GITHUB_ENV"
           # The packaging script bundles the toolchain root, the directory that
           # holds bin/, lib/ and the <arch>-w64-mingw32 CRT trees.
           echo "BEANS_RELEASE_MINGW=$(cd "$bin/.." && pwd -P)" >> "$GITHUB_ENV"

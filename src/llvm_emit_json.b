@@ -650,6 +650,11 @@ partial class LlvmTextEmitter {
             "ptr @beans_list_new_typed_capacity(i64, i64, i64)")
         let source_value: string = self.value(
             function, values, instruction.operands[0], instruction)
+        var consume_source: string = ""
+        if decoder == 3 {
+            consume_source =
+                "  call void @beans_release(ptr {source_value})\n"
+        }
         let req: string = self.spill_slot(
             "[12 x i64]", "json.decode.direct.req")
         let result_slot: string = self.spill_slot(
@@ -701,7 +706,7 @@ partial class LlvmTextEmitter {
         output =
             "{output}  %json.direct.new.list{id} = ptrtoint ptr @beans_list_new_typed_capacity to i64\n  %json.direct.req.new.list{id} = getelementptr [12 x i64], ptr {req}, i64 0, i64 8\n  store i64 %json.direct.new.list{id}, ptr %json.direct.req.new.list{id}\n  %json.direct.req.append{id} = getelementptr [12 x i64], ptr {req}, i64 0, i64 9\n  store i64 0, ptr %json.direct.req.append{id}\n"
         output =
-            "{output}  %json.direct.allocate{id} = ptrtoint ptr @beans_alloc to i64\n  %json.direct.req.string{id} = getelementptr [12 x i64], ptr {req}, i64 0, i64 10\n  store i64 %json.direct.allocate{id}, ptr %json.direct.req.string{id}\n  %json.direct.release{id} = ptrtoint ptr @beans_release to i64\n  %json.direct.req.release{id} = getelementptr [12 x i64], ptr {req}, i64 0, i64 11\n  store i64 %json.direct.release{id}, ptr %json.direct.req.release{id}\n  %json.direct.status{id} = call i64 @beans_enc_json_typed_decode_direct(ptr {source}, ptr {req})\n  %json.direct.good{id} = icmp eq i64 %json.direct.status{id}, 0\n  br i1 %json.direct.good{id}, label %json.direct.success{id}, label %json.direct.failure{id}\njson.direct.success{id}:\n"
+            "{output}  %json.direct.allocate{id} = ptrtoint ptr @beans_alloc to i64\n  %json.direct.req.string{id} = getelementptr [12 x i64], ptr {req}, i64 0, i64 10\n  store i64 %json.direct.allocate{id}, ptr %json.direct.req.string{id}\n  %json.direct.release{id} = ptrtoint ptr @beans_release to i64\n  %json.direct.req.release{id} = getelementptr [12 x i64], ptr {req}, i64 0, i64 11\n  store i64 %json.direct.release{id}, ptr %json.direct.req.release{id}\n  %json.direct.status{id} = call i64 @beans_enc_json_typed_decode_direct(ptr {source}, ptr {req})\n{consume_source}  %json.direct.good{id} = icmp eq i64 %json.direct.status{id}, 0\n  br i1 %json.direct.good{id}, label %json.direct.success{id}, label %json.direct.failure{id}\njson.direct.success{id}:\n"
         var decoded: string = ""
         if root_array {
             output =
@@ -773,6 +778,11 @@ partial class LlvmTextEmitter {
         }
         let source_value: string = self.value(
             function, values, instruction.operands[0], instruction)
+        var consume_source: string = ""
+        if decoder == 3 {
+            consume_source =
+                "  call void @beans_release(ptr {source_value})\n"
+        }
         let req: string = self.spill_slot("[8 x i64]", "json.decode.req")
         let result_slot: string = self.spill_slot(
             self.type_text(instruction.type), "json.decode.result")
@@ -838,7 +848,7 @@ partial class LlvmTextEmitter {
         }
         let okay: string = "%json.result.ok{id}"
         output =
-            "{output}  %json.freed.ok{id} = call i64 @beans_enc_json_typed_free(i64 %json.handle.ok{id})\n{self.emit_result_value(instruction.type, target_type, decoded, true, okay, "json.ok{id}")}  store {self.type_text(instruction.type)} {okay}, ptr {result_slot}\n  br label %json.merge{id}\njson.failure{id}:\n  %json.req.handle.bad{id} = getelementptr [8 x i64], ptr {req}, i64 0, i64 3\n  %json.handle.bad{id} = load i64, ptr %json.req.handle.bad{id}\n  %json.freed.bad{id} = call i64 @beans_enc_json_typed_free(i64 %json.handle.bad{id})\n"
+            "{output}  %json.freed.ok{id} = call i64 @beans_enc_json_typed_free(i64 %json.handle.ok{id})\n{consume_source}{self.emit_result_value(instruction.type, target_type, decoded, true, okay, "json.ok{id}")}  store {self.type_text(instruction.type)} {okay}, ptr {result_slot}\n  br label %json.merge{id}\njson.failure{id}:\n  %json.req.handle.bad{id} = getelementptr [8 x i64], ptr {req}, i64 0, i64 3\n  %json.handle.bad{id} = load i64, ptr %json.req.handle.bad{id}\n  %json.freed.bad{id} = call i64 @beans_enc_json_typed_free(i64 %json.handle.bad{id})\n{consume_source}"
         let error: string = "%json.error{id}"
         output =
             "{output}{self.emit_make_error(instruction, self.string_pointer("cannot decode JSON into target struct"), false, self.string_pointer("invalid"), false, error)}"
@@ -1159,6 +1169,11 @@ partial class LlvmTextEmitter {
             "ptr @beans_list_new_typed_capacity(i64, i64, i64)")
         let source_value: string = self.value(
             function, values, instruction.operands[0], instruction)
+        var consume_source: string = ""
+        if decoder == 3 {
+            consume_source =
+                "  call void @beans_release(ptr {source_value})\n"
+        }
         let req: string = self.spill_slot(
             "[12 x i64]", "xml.decode.direct.req")
         let result_slot: string = self.spill_slot(
@@ -1210,7 +1225,7 @@ partial class LlvmTextEmitter {
         output =
             "{output}  %xml.new.list{id} = ptrtoint ptr @beans_list_new_typed_capacity to i64\n  %xml.req.new.list{id} = getelementptr [12 x i64], ptr {req}, i64 0, i64 8\n  store i64 %xml.new.list{id}, ptr %xml.req.new.list{id}\n"
         output =
-            "{output}  %xml.req.unused{id} = getelementptr [12 x i64], ptr {req}, i64 0, i64 9\n  store i64 0, ptr %xml.req.unused{id}\n  %xml.allocate{id} = ptrtoint ptr @beans_alloc to i64\n  %xml.req.allocate{id} = getelementptr [12 x i64], ptr {req}, i64 0, i64 10\n  store i64 %xml.allocate{id}, ptr %xml.req.allocate{id}\n  %xml.release{id} = ptrtoint ptr @beans_release to i64\n  %xml.req.release{id} = getelementptr [12 x i64], ptr {req}, i64 0, i64 11\n  store i64 %xml.release{id}, ptr %xml.req.release{id}\n  %xml.status{id} = call i64 @beans_enc_xml_typed_decode_direct(ptr {source}, ptr {req})\n  %xml.good{id} = icmp eq i64 %xml.status{id}, 0\n  br i1 %xml.good{id}, label %xml.success{id}, label %xml.failure{id}\nxml.success{id}:\n"
+            "{output}  %xml.req.unused{id} = getelementptr [12 x i64], ptr {req}, i64 0, i64 9\n  store i64 0, ptr %xml.req.unused{id}\n  %xml.allocate{id} = ptrtoint ptr @beans_alloc to i64\n  %xml.req.allocate{id} = getelementptr [12 x i64], ptr {req}, i64 0, i64 10\n  store i64 %xml.allocate{id}, ptr %xml.req.allocate{id}\n  %xml.release{id} = ptrtoint ptr @beans_release to i64\n  %xml.req.release{id} = getelementptr [12 x i64], ptr {req}, i64 0, i64 11\n  store i64 %xml.release{id}, ptr %xml.req.release{id}\n  %xml.status{id} = call i64 @beans_enc_xml_typed_decode_direct(ptr {source}, ptr {req})\n{consume_source}  %xml.good{id} = icmp eq i64 %xml.status{id}, 0\n  br i1 %xml.good{id}, label %xml.success{id}, label %xml.failure{id}\nxml.success{id}:\n"
         var decoded: string = ""
         if root_list {
             output =
