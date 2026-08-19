@@ -761,6 +761,25 @@ class NativeBuildDriver {
         return false
     }
 
+    // 32-bit x86 is where -O0 stops being free. LLVM picks its fast register
+    // allocator at -O0, and that allocator does not spill the way the greedy
+    // one does: on a target with six usable general-purpose registers, where
+    // every i64 costs a pair, it can genuinely run out. This compiler's
+    // output reaches that point — `beansc build --target i686-pc-windows-gnu
+    // examples/unsafe_raw.b` fails with "ran out of registers during register
+    // allocation" in three functions at -O0 and builds clean at any level
+    // that allocates with greedy. No 64-bit target and no ARM lane hits it;
+    // they have the registers to spare.
+    //
+    // Naming the allocator directly is not a way out: `-mllvm
+    // -regalloc=greedy` at -O0 stops the backend with "Must use fast
+    // (default) register allocator for unoptimized regalloc". The
+    // optimization level is the only lever.
+    fn fast_regalloc_runs_out() -> bool {
+        return self.target.arch == "x86" &&
+               self.target.pointer_bits == 32
+    }
+
     // A plain `beansc build` optimizes for the edit-build-run loop, not for
     // the binary it produces, so it runs no optimizer: on the compiler's own
     // 31MB of IR clang spends about nine seconds at -O2 and about two at -O0,
@@ -769,8 +788,19 @@ class NativeBuildDriver {
     // reason: an optimized build reorders and inlines away the very code a
     // person set out to look at.
     fn optimization_flag() -> string {
-        if self.debug { return "-O0" }
+        if self.debug {
+            // -Og is clang's -O1 pipeline chosen for debugging, which is as
+            // close to -O0 as a 32-bit x86 build can get. Some of what a
+            // person set out to look at will have moved; a build that cannot
+            // compile would have hidden all of it.
+            if self.fast_regalloc_runs_out() { return "-Og" }
+            return "-O0"
+        }
         if self.release { return "-O3" }
+        // -O1 is the first level that allocates with greedy. The dev-loop
+        // build time this costs is only ever paid by someone cross-building
+        // for 32-bit x86, which is not a loop anyone edits in.
+        if self.fast_regalloc_runs_out() { return "-O1" }
         return "-O0"
     }
 

@@ -127,7 +127,9 @@ This file records user-facing changes in each Beans release.
   went from 26.1s to 16.4s on the same machine. `--release` is unchanged and
   is how you ask for a fast binary (`-O3`, `NDEBUG`), `--debug` is unchanged
   (`-O0` plus debug information). `make` builds `beansc` itself with
-  `--release`, so the compiler you run stays optimized.
+  `--release`, so the compiler you run stays optimized. 32-bit x86 is the one
+  exception: LLVM's `-O0` register allocator can run out of registers there,
+  so those targets get `-O1` for a plain build and `-Og` for `--debug`.
 
 - The C++ stage-0 bootstrap is gone. A released `beansc` builds the next one.
   The differential gates that used stage 0 as their second implementation now
