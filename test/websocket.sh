@@ -156,10 +156,18 @@ fi
 "$beansc" build test/cases/websocket_echo_server.b -o "$tmp/echo" >/dev/null 2>&1
 mkdir -p "$tmp/autobahn/config" "$tmp/autobahn/reports"
 port=${BEANS_AUTOBAHN_PORT:-19001}
+server_host=host.docker.internal
+docker_network_args=()
+if [[ $(uname -s) == Linux ]]; then
+    # The test server listens on host loopback. Host networking makes that
+    # loopback visible inside the Linux CI container.
+    server_host=127.0.0.1
+    docker_network_args=(--network host)
+fi
 cat >"$tmp/autobahn/config/fuzzingclient.json" <<EOF
 {
    "outdir": "./reports/servers",
-   "servers": [{"agent": "beans-std-websocket", "url": "ws://host.docker.internal:${port}"}],
+   "servers": [{"agent": "beans-std-websocket", "url": "ws://${server_host}:${port}"}],
    "cases": ["1.*", "2.*", "3.*", "4.*", "5.*", "6.*", "7.*", "9.1.*", "9.7.*", "10.*"],
    "exclude-cases": [],
    "exclude-agent-cases": {}
@@ -185,6 +193,7 @@ while ! grep -q "^listening" "$tmp/echo.log" 2>/dev/null; do
 done
 
 (cd "$tmp/autobahn" && docker run --rm \
+    --user "$(id -u):$(id -g)" "${docker_network_args[@]}" \
     -v "$PWD/config:/config" -v "$PWD/reports:/reports" \
     crossbario/autobahn-testsuite \
     wstest -m fuzzingclient -s /config/fuzzingclient.json) >"$tmp/autobahn.log" 2>&1 || {
@@ -193,11 +202,17 @@ done
     exit 1
 }
 
-python3 - "$tmp/autobahn/reports/servers/index.json" <<'PYEOF'
+if ! python3 - "$tmp/autobahn/reports/servers/index.json" <<'PYEOF'
 import json, sys, collections
 report = json.load(open(sys.argv[1]))
+if not report:
+    print("Autobahn produced no server results", file=sys.stderr)
+    sys.exit(1)
 agent = next(iter(report))
 cases = report[agent]
+if not cases:
+    print(f"Autobahn produced no cases for {agent}", file=sys.stderr)
+    sys.exit(1)
 behavior = collections.Counter(v["behavior"] for v in cases.values())
 closing = collections.Counter(v["behaviorClose"] for v in cases.values())
 def key(name): return [int(part) for part in name.split(".")]
@@ -213,5 +228,9 @@ if bad or bad_close:
         print("  failed close:", ", ".join(bad_close))
     sys.exit(1)
 PYEOF
+then
+    tail -20 "$tmp/autobahn.log" >&2
+    exit 1
+fi
 
 echo "ok websocket: RFC vectors, loopback exchange, fuzz, Autobahn clean"

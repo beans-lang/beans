@@ -22,19 +22,19 @@ import std.poll
 import std.thread
 import std.tls
 
-// Forwards bytes between an accepted client and the real server, cutting
-// the connection once `budget` bytes have gone server->client AND the
-// client has spoken again (its request) — i.e. after the handshake, in the
-// middle of the response. A budget of 0 cuts as soon as the client's first
-// flight has been forwarded, which lands inside the handshake.
-fn proxy(listen_port: int, server_port: int, budget: int) -> int {
+// Forwards bytes between an accepted client and the real server. The caller
+// raises `request_ready` after the TLS handshake and before its request, so
+// the proxy can cut the response without mistaking TLS Finished for request
+// data. A budget of 0 cuts as soon as the client's first flight has been
+// forwarded, which lands inside the handshake.
+fn proxy(listen_port: int, server_port: int, budget: int, request_ready: Atomic<bool>) -> int {
     match net.TcpListener.bind("127.0.0.1", listen_port) {
         ok(listener) => {
             match listener.accept_timeout(8000) {
                 ok(downstream) => {
                     match net.TcpStream.connect_timeout("127.0.0.1", server_port, 8000) {
                         ok(upstream) => {
-                            match pump(downstream, upstream, budget) {
+                            match pump(downstream, upstream, budget, request_ready) {
                                 ok(code) => { return code }
                                 err(_) => { return 4 }
                             }
@@ -49,7 +49,12 @@ fn proxy(listen_port: int, server_port: int, budget: int) -> int {
     }
 }
 
-fn pump(downstream: net.TcpStream, upstream: net.TcpStream, budget: int) -> Result<int> {
+fn pump(
+    downstream: net.TcpStream,
+    upstream: net.TcpStream,
+    budget: int,
+    request_ready: Atomic<bool>
+) -> Result<int> {
     match poll.Poller.open() {
         ok(poller) => {
             let down_fd: int = downstream.poll_handle()
@@ -58,7 +63,6 @@ fn pump(downstream: net.TcpStream, upstream: net.TcpStream, budget: int) -> Resu
             let up_added: Result<bool> = poller.add(up_fd, 2, poll.Interest.read_only())
             let tuned_a: Result<bool> = downstream.set_timeouts(2000, 2000)
             let tuned_b: Result<bool> = upstream.set_timeouts(2000, 2000)
-            var to_client: int = 0
             var client_spoke_again: bool = false
             var rounds: int = 0
             for rounds < 4000 {
@@ -70,7 +74,7 @@ fn pump(downstream: net.TcpStream, upstream: net.TcpStream, budget: int) -> Resu
                         match downstream.read(16384) {
                             ok(piece) => {
                                 if piece.len() == 0 { return ok(0) }
-                                if to_client >= budget && budget > 0 {
+                                if budget > 0 && request_ready.load(MemoryOrder.acquire) {
                                     client_spoke_again = true
                                 }
                                 match upstream.write_all(piece) {
@@ -89,11 +93,21 @@ fn pump(downstream: net.TcpStream, upstream: net.TcpStream, budget: int) -> Resu
                         match upstream.read(16384) {
                             ok(piece) => {
                                 if piece.len() == 0 { return ok(0) }
-                                match downstream.write_all(piece) {
+                                var forwarded: Bytes = piece
+                                if client_spoke_again && budget > 0 {
+                                    // A small response and close_notify can
+                                    // arrive in one TCP read, especially under
+                                    // ASan. Never forward that whole read: cut
+                                    // inside its first TLS record so EOF cannot
+                                    // be mistaken for an honest close.
+                                    var amount: int = budget
+                                    if amount > piece.len() { amount = piece.len() }
+                                    forwarded = piece.slice(0, amount)
+                                }
+                                match downstream.write_all(forwarded) {
                                     ok(_) => {}
                                     err(_) => { return ok(0) }
                                 }
-                                to_client += piece.len()
                                 if client_spoke_again {
                                     // Mid-response cut: the client has its
                                     // partial answer and now the wire dies.
@@ -159,11 +173,13 @@ fn main() {
         ok(scout) => {
             let proxy_port: int = scout.port().expect("proxy port")
             let released: Result<bool> = scout.close()
+            let request_ready: Atomic<bool> = new Atomic<bool>(false)
             let runner: Thread<int> = thread.spawn(fn() -> int {
-                return proxy(proxy_port, server_port, 1)
+                return proxy(proxy_port, server_port, 1, request_ready)
             })
             match tls.TlsStream.connect_with_roots("localhost", proxy_port, "", roots, 8000) {
                 ok(stream) => {
+                    request_ready.store(true, MemoryOrder.release)
                     let sent: Result<int> =
                         stream.write_all(Bytes.from("GET / HTTP/1.0\r\n\r\n"))
                     var reading: bool = true
@@ -196,8 +212,9 @@ fn main() {
         ok(scout) => {
             let proxy_port: int = scout.port().expect("proxy port")
             let released: Result<bool> = scout.close()
+            let request_ready: Atomic<bool> = new Atomic<bool>(false)
             let runner: Thread<int> = thread.spawn(fn() -> int {
-                return proxy(proxy_port, server_port, 0)
+                return proxy(proxy_port, server_port, 0, request_ready)
             })
             match tls.TlsStream.connect_with_roots("localhost", proxy_port, "", roots, 8000) {
                 ok(stream) => { handshake_cut_kind = "accepted" }
