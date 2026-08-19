@@ -36,4 +36,18 @@ fn main() {
     var numbers: List<int> = [1]
     numbers = [2, 3]
     io.println(numbers.len())
+
+    // A local whose liveness at scope end is only known at runtime.
+    // `carried` hands its reference to the longer-lived `held` on one
+    // path and keeps it on the other, so the two paths disagree about
+    // the backend's `.live` flag. The condition reads a list built at
+    // runtime, which the ownership fixpoint cannot fold, so this shape
+    // must keep its flag slot and its guarded drop even though static
+    // drop elision resolves every other owner in this file.
+    var held: string = "held"
+    var carried: string = "carried {numbers.len()}"
+    if numbers.len() == 2 {
+        held = carried
+    }
+    io.println(held)
 }
