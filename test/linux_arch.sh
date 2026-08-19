@@ -291,6 +291,7 @@ fi
 # ---- 3. every eligible example: build -> verify ELF -> qemu -> diff run ---
 echo "== $arch: example sweep (build, run under qemu, diff vs beansc run) =="
 ran=0; refused=0
+target_crypto_available=1
 examples=(examples/*.b)
 [ "$has_decimal" = "1" ] && examples+=(examples/shop/main.b)
 for src in "${examples[@]}"; do
@@ -383,6 +384,43 @@ union aligned layout 16 $scalar_align 16
 EOF
         if [ "$q" != "0" ] || ! diff -q "$tmp/$base.ref" "$tmp/$base.qemu" >/dev/null; then
             echo "  FAIL 32-bit layout: $src (qemu exit $q)"
+            diff "$tmp/$base.ref" "$tmp/$base.qemu" | head -8
+            fail=1; continue
+        fi
+        ran=$((ran + 1)); continue
+    fi
+    # The cross sysroots intentionally contain libc and the compiler runtime,
+    # not an optional target libcrypto. Keep exercising the programs and hold
+    # their graceful unsupported result to an exact output instead of diffing
+    # it against the host, which does have libcrypto installed.
+    if [ "$base" = "crypto" ] &&
+       grep -qx 'a hash provider is available false' "$tmp/$base.qemu"; then
+        target_crypto_available=0
+        cat >"$tmp/$base.ref" <<'EOF'
+a hash provider is available false
+sha256 failed: unsupported
+hasher failed: unsupported
+hmac failed: unsupported
+sha1 failed: unsupported
+EOF
+        if [ "$q" != "0" ] ||
+           ! diff -q "$tmp/$base.ref" "$tmp/$base.qemu" >/dev/null; then
+            echo "  FAIL no-provider crypto contract: $src (qemu exit $q)"
+            diff "$tmp/$base.ref" "$tmp/$base.qemu" | head -8
+            fail=1; continue
+        fi
+        ran=$((ran + 1)); continue
+    fi
+    if [ "$base" = "websocket" ] &&
+       [ "$target_crypto_available" = "0" ]; then
+        cat >"$tmp/$base.ref" <<'EOF'
+upgrade failed: unsupported
+the server answered one message false
+the client got what it expected false
+EOF
+        if [ "$q" != "0" ] ||
+           ! diff -q "$tmp/$base.ref" "$tmp/$base.qemu" >/dev/null; then
+            echo "  FAIL no-provider WebSocket contract: $src (qemu exit $q)"
             diff "$tmp/$base.ref" "$tmp/$base.qemu" | head -8
             fail=1; continue
         fi
