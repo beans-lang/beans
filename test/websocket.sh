@@ -157,6 +157,23 @@ if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
     echo "ok websocket: vectors, loopback exchange, fuzz (Autobahn skipped)"
     exit 0
 fi
+# The suite is published for amd64 only. An ARM Mac still runs it, because
+# Docker Desktop emulates amd64; an ARM Linux runner without qemu-user
+# registered cannot, and only finds that out inside the container — the
+# release gate saw "exec /opt/pypy/bin/wstest: exec format error" there. Ask
+# the image to run one trivial binary instead of reading uname, so the answer
+# comes from this host rather than from its architecture.
+if ! docker run --rm --entrypoint /bin/true \
+        crossbario/autobahn-testsuite >"$tmp/autobahn.probe" 2>&1; then
+    if [[ ${BEANS_AUTOBAHN_REQUIRE:-0} == 1 ]]; then
+        echo "Autobahn is required but its image cannot run on $(uname -m)" >&2
+        tail -5 "$tmp/autobahn.probe" >&2
+        exit 1
+    fi
+    echo "skipping Autobahn: its amd64 image cannot run on $(uname -m)"
+    echo "ok websocket: vectors, loopback exchange, fuzz (Autobahn skipped)"
+    exit 0
+fi
 
 "$beansc" build test/cases/websocket_echo_server.b -o "$tmp/echo" >/dev/null 2>&1
 mkdir -p "$tmp/autobahn/config" "$tmp/autobahn/reports"
