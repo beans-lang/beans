@@ -22,19 +22,20 @@ import std.poll
 import std.thread
 import std.tls
 
-// Forwards bytes between an accepted client and the real server. The caller
-// raises `request_ready` after the TLS handshake and before its request, so
-// the proxy can cut the response without mistaking TLS Finished for request
-// data. A budget of 0 cuts as soon as the client's first flight has been
+// Forwards bytes between an accepted client and the real server. The proxy
+// raises `handshake_drained` after it forwards the client's final handshake
+// flight. The caller waits for that signal before sending its request, so the
+// two packets cannot be mistaken for each other even when the proxy thread is
+// delayed. A budget of 0 cuts as soon as the client's first flight has been
 // forwarded, which lands inside the handshake.
-fn proxy(listen_port: int, server_port: int, budget: int, request_ready: Atomic<bool>) -> int {
+fn proxy(listen_port: int, server_port: int, budget: int, handshake_drained: Atomic<bool>) -> int {
     match net.TcpListener.bind("127.0.0.1", listen_port) {
         ok(listener) => {
             match listener.accept_timeout(8000) {
                 ok(downstream) => {
                     match net.TcpStream.connect_timeout("127.0.0.1", server_port, 8000) {
                         ok(upstream) => {
-                            match pump(downstream, upstream, budget, request_ready) {
+                            match pump(downstream, upstream, budget, handshake_drained) {
                                 ok(code) => { return code }
                                 err(_) => { return 4 }
                             }
@@ -53,7 +54,7 @@ fn pump(
     downstream: net.TcpStream,
     upstream: net.TcpStream,
     budget: int,
-    request_ready: Atomic<bool>
+    handshake_drained: Atomic<bool>
 ) -> Result<int> {
     match poll.Poller.open() {
         ok(poller) => {
@@ -63,6 +64,7 @@ fn pump(
             let up_added: Result<bool> = poller.add(up_fd, 2, poll.Interest.read_only())
             let tuned_a: Result<bool> = downstream.set_timeouts(2000, 2000)
             let tuned_b: Result<bool> = upstream.set_timeouts(2000, 2000)
+            var server_spoke: bool = false
             var client_spoke_again: bool = false
             var rounds: int = 0
             for rounds < 4000 {
@@ -74,12 +76,21 @@ fn pump(
                         match downstream.read(16384) {
                             ok(piece) => {
                                 if piece.len() == 0 { return ok(0) }
-                                if budget > 0 && request_ready.load(MemoryOrder.acquire) {
+                                var finished_handshake: bool = false
+                                if budget > 0 && server_spoke &&
+                                   !handshake_drained.load(MemoryOrder.acquire) {
+                                    finished_handshake = true
+                                } else if budget > 0 &&
+                                          handshake_drained.load(MemoryOrder.acquire) {
                                     client_spoke_again = true
                                 }
                                 match upstream.write_all(piece) {
                                     ok(_) => {}
                                     err(_) => { return ok(0) }
+                                }
+                                if finished_handshake {
+                                    handshake_drained.store(true, MemoryOrder.release)
+                                    handshake_drained.notify_all()
                                 }
                                 if budget == 0 {
                                     // Handshake cut: the client's first
@@ -108,6 +119,7 @@ fn pump(
                                     ok(_) => {}
                                     err(_) => { return ok(0) }
                                 }
+                                server_spoke = true
                                 if client_spoke_again {
                                     // Mid-response cut: the client has its
                                     // partial answer and now the wire dies.
@@ -173,29 +185,38 @@ fn main() {
         ok(scout) => {
             let proxy_port: int = scout.port().expect("proxy port")
             let released: Result<bool> = scout.close()
-            let request_ready: Atomic<bool> = new Atomic<bool>(false)
+            let handshake_drained: Atomic<bool> = new Atomic<bool>(false)
             let runner: Thread<int> = thread.spawn(fn() -> int {
-                return proxy(proxy_port, server_port, 1, request_ready)
+                return proxy(proxy_port, server_port, 1, handshake_drained)
             })
             match tls.TlsStream.connect_with_roots("localhost", proxy_port, "", roots, 8000) {
                 ok(stream) => {
-                    request_ready.store(true, MemoryOrder.release)
-                    let sent: Result<int> =
-                        stream.write_all(Bytes.from("GET / HTTP/1.0\r\n\r\n"))
-                    var reading: bool = true
-                    for reading {
-                        match stream.read(16384) {
-                            ok(piece) => {
-                                if piece.len() == 0 {
-                                    data_cut_kind = "clean"
+                    var waits: int = 0
+                    for !handshake_drained.load(MemoryOrder.acquire) && waits < 80 {
+                        handshake_drained.wait_timeout(
+                            false, 100000000, MemoryOrder.acquire)
+                        waits += 1
+                    }
+                    if handshake_drained.load(MemoryOrder.acquire) {
+                        let sent: Result<int> =
+                            stream.write_all(Bytes.from("GET / HTTP/1.0\r\n\r\n"))
+                        var reading: bool = true
+                        for reading {
+                            match stream.read(16384) {
+                                ok(piece) => {
+                                    if piece.len() == 0 {
+                                        data_cut_kind = "clean"
+                                        reading = false
+                                    }
+                                }
+                                err(e) => {
+                                    data_cut_kind = e.kind
                                     reading = false
                                 }
                             }
-                            err(e) => {
-                                data_cut_kind = e.kind
-                                reading = false
-                            }
                         }
+                    } else {
+                        data_cut_kind = "sync"
                     }
                 }
                 err(e) => { data_cut_kind = "connect:{e.kind}" }
@@ -212,9 +233,9 @@ fn main() {
         ok(scout) => {
             let proxy_port: int = scout.port().expect("proxy port")
             let released: Result<bool> = scout.close()
-            let request_ready: Atomic<bool> = new Atomic<bool>(false)
+            let handshake_drained: Atomic<bool> = new Atomic<bool>(false)
             let runner: Thread<int> = thread.spawn(fn() -> int {
-                return proxy(proxy_port, server_port, 0, request_ready)
+                return proxy(proxy_port, server_port, 0, handshake_drained)
             })
             match tls.TlsStream.connect_with_roots("localhost", proxy_port, "", roots, 8000) {
                 ok(stream) => { handshake_cut_kind = "accepted" }
