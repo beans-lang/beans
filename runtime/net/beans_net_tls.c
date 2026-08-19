@@ -2629,13 +2629,26 @@ static int beans_tls_win_import_key(beans_tls_schannel_identity* identity,
     status = NCryptImportKey(
         identity->key_provider, 0, NCRYPT_PKCS8_PRIVATE_KEY_BLOB,
         &description, &identity->key,
-        der, (DWORD)der_len, 0);
+        der, (DWORD)der_len, NCRYPT_DO_NOT_FINALIZE_FLAG);
     free(wide_password);
     free(der);
-    if (status != ERROR_SUCCESS)
+    if (status != ERROR_SUCCESS) {
         beans_tls_win_debug("import private key", status);
-    else
-        identity->key_persisted = 1;
+        return 0;
+    }
+    DWORD usage = NCRYPT_ALLOW_ALL_USAGES;
+    status = NCryptSetProperty(identity->key, NCRYPT_KEY_USAGE_PROPERTY,
+        (PBYTE)&usage, sizeof usage, 0);
+    if (status != ERROR_SUCCESS) {
+        beans_tls_win_debug("set private key usage", status);
+        return 0;
+    }
+    status = NCryptFinalizeKey(identity->key, 0);
+    if (status != ERROR_SUCCESS) {
+        beans_tls_win_debug("finalize private key", status);
+        return 0;
+    }
+    identity->key_persisted = 1;
     return status == ERROR_SUCCESS;
 }
 
@@ -2670,12 +2683,16 @@ static int beans_tls_win_pem_identity(
         free(der);
         if (!parsed) return 0;
         if (count == 0) {
+            NCRYPT_KEY_HANDLE key_handle = identity->key;
             CRYPT_KEY_PROV_INFO key_info;
             memset(&key_info, 0, sizeof key_info);
             key_info.pwszContainerName = identity->key_name;
             key_info.pwszProvName = (wchar_t*)MS_KEY_STORAGE_PROVIDER;
-            key_info.dwKeySpec = CERT_NCRYPT_KEY_SPEC;
+            key_info.dwFlags = CERT_SET_KEY_CONTEXT_PROP_ID;
             if (!CertSetCertificateContextProperty(
+                    parsed, CERT_NCRYPT_KEY_HANDLE_PROP_ID, 0,
+                    &key_handle) ||
+                !CertSetCertificateContextProperty(
                     parsed, CERT_KEY_PROV_INFO_PROP_ID, 0, &key_info) ||
                 !CertAddCertificateContextToStore(
                     identity->store, parsed, CERT_STORE_ADD_ALWAYS,
