@@ -14,6 +14,13 @@ case $(uname -s) in
     MINGW* | MSYS*) config_out=$(cygpath -m "$out") ;;
 esac
 
+# Git Bash rewrites arguments that begin with `/` before starting a native
+# Windows program. That corrupts OpenSSL subjects such as `/CN=localhost`.
+# Disable that rewrite and pass Windows-readable file paths ourselves.
+run_openssl() {
+    MSYS2_ARG_CONV_EXCL='*' openssl "$@"
+}
+
 # Absolute UTC timestamp N days from now, in the ASN.1 form openssl wants.
 # BSD date (macOS) uses -v and needs an explicit sign; GNU date uses -d.
 stamp() {
@@ -31,8 +38,8 @@ stamp() {
 }
 
 # A private CA that signs the leaf certs, so a real chain exists to verify.
-openssl req -x509 -newkey rsa:2048 -nodes -keyout "$out/ca.key" \
-    -out "$out/ca.crt" -days 3650 -subj "/CN=Beans Test CA" \
+run_openssl req -x509 -newkey rsa:2048 -nodes -keyout "$config_out/ca.key" \
+    -out "$config_out/ca.crt" -days 3650 -subj "/CN=Beans Test CA" \
     -addext "basicConstraints=critical,CA:TRUE" >/dev/null 2>&1
 
 # `openssl x509 -not_before/-not_after` is newer than the OpenSSL 3.0 shipped
@@ -40,15 +47,15 @@ openssl req -x509 -newkey rsa:2048 -nodes -keyout "$out/ca.key" \
 # years, so use its tiny throw-away database for the whole corpus.
 mkdir -p "$out/newcerts"
 touch "$out/index.txt"
-openssl rand -hex -out "$out/serial" 8
+run_openssl rand -hex -out "$config_out/serial" 8
 
 # Signs a leaf CN=localhost / SAN=$4, with an explicit validity window in
 # days-from-now ($2 not-before, $3 not-after).
 leaf() {
     local name=$1 not_before=$2 not_after=$3 san=$4
     local config="$out/$name.cnf"
-    openssl req -newkey rsa:2048 -nodes -keyout "$out/$name.key" \
-        -out "$out/$name.csr" -subj "/CN=$san" >/dev/null 2>&1
+    run_openssl req -newkey rsa:2048 -nodes -keyout "$config_out/$name.key" \
+        -out "$config_out/$name.csr" -subj "/CN=$san" >/dev/null 2>&1
     # Git Bash exposes process substitution as /dev/fd/N, but native Windows
     # OpenSSL cannot open that POSIX-only path. A short-lived real file keeps
     # certificate generation identical on Linux, macOS, and Windows.
@@ -71,9 +78,9 @@ leaf() {
         '[server_cert]' \
         "subjectAltName = DNS:$san" \
         'extendedKeyUsage = serverAuth' > "$config"
-    openssl ca -batch -notext \
-        -config "$config" \
-        -in "$out/$name.csr" -out "$out/$name.crt" \
+    run_openssl ca -batch -notext \
+        -config "$config_out/$name.cnf" \
+        -in "$config_out/$name.csr" -out "$config_out/$name.crt" \
         -startdate "$(stamp "$not_before")" \
         -enddate "$(stamp "$not_after")" \
         >/dev/null 2>&1
@@ -87,8 +94,8 @@ leaf future 30 400 localhost          # entirely in the future
 leaf wronghost -1 365 other.test      # valid window, wrong name
 
 # self-signed: its own CA, no chain to ours.
-openssl req -x509 -newkey rsa:2048 -nodes -keyout "$out/selfsigned.key" \
-    -out "$out/selfsigned.crt" -days 365 -subj "/CN=localhost" \
+run_openssl req -x509 -newkey rsa:2048 -nodes -keyout "$config_out/selfsigned.key" \
+    -out "$config_out/selfsigned.crt" -days 365 -subj "/CN=localhost" \
     -addext "subjectAltName=DNS:localhost" \
     -addext "extendedKeyUsage=serverAuth" >/dev/null 2>&1
 
