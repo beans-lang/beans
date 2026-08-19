@@ -260,70 +260,131 @@ class MirBlockEdges {
     }
 }
 
+// A dense set of small non-negative ids, packed 64 to an `int` word.
+// The whole-set operations (copy, merge, intersect, equals, fill) are the
+// inner loop of the MIR dataflow fixpoints, and a word does 64 ids at a
+// time. Bits at or above `size` are always zero, so `equals` can compare
+// raw words and `descending` never reports a padding bit.
 class MirValueSet {
-    bits: List<bool>
+    words: List<int>
+    size: int
 
     fn init(size: int) {
-        self.bits = []
-        for unused: int in 0..size {
-            self.bits.push(false)
+        self.size = size
+        self.words = []
+        let count: int = (size + 63) >> 6
+        for unused: int in 0..count {
+            self.words.push(0)
         }
+    }
+
+    fn word_span(other: MirValueSet) -> int {
+        if self.words.len() < other.words.len() {
+            return self.words.len()
+        }
+        return other.words.len()
     }
 
     fn copy() -> MirValueSet {
         let result: MirValueSet =
-            new MirValueSet(self.bits.len())
-        for index: int in 0..self.bits.len() {
-            result.bits[index] = self.bits[index]
+            new MirValueSet(self.size)
+        for index: int in 0..self.words.len() {
+            result.words[index] = self.words[index]
         }
         return result
     }
 
+    fn copy_from(other: MirValueSet) {
+        let span: int = self.word_span(other)
+        for index: int in 0..span {
+            self.words[index] = other.words[index]
+        }
+        for index: int in span..self.words.len() {
+            self.words[index] = 0
+        }
+    }
+
+    fn clear() {
+        for index: int in 0..self.words.len() {
+            self.words[index] = 0
+        }
+    }
+
     fn contains(value: int) -> bool {
         return value >= 0 &&
-               value < self.bits.len() &&
-               self.bits[value]
+               value < self.size &&
+               (self.words[value >> 6] &
+                (1 << (value & 63))) != 0
     }
 
     fn add(value: int) {
-        if value >= 0 && value < self.bits.len() {
-            self.bits[value] = true
+        if value >= 0 && value < self.size {
+            let index: int = value >> 6
+            self.words[index] =
+                self.words[index] |
+                (1 << (value & 63))
         }
     }
 
     fn remove(value: int) {
-        if value >= 0 && value < self.bits.len() {
-            self.bits[value] = false
+        if value >= 0 && value < self.size {
+            let index: int = value >> 6
+            self.words[index] =
+                self.words[index] &
+                ~(1 << (value & 63))
         }
     }
 
     fn merge(other: MirValueSet) {
-        for index: int in 0..self.bits.len() {
-            if other.bits[index] {
-                self.bits[index] = true
-            }
+        let span: int = self.word_span(other)
+        for index: int in 0..span {
+            self.words[index] =
+                self.words[index] | other.words[index]
+        }
+    }
+
+    // self = self | (other & ~excluded), the "add what the other set has
+    // and this block does not define" step of a liveness transfer.
+    fn merge_without(other: MirValueSet,
+                     excluded: MirValueSet) {
+        var span: int = self.word_span(other)
+        if excluded.words.len() < span {
+            span = excluded.words.len()
+        }
+        for index: int in 0..span {
+            self.words[index] =
+                self.words[index] |
+                (other.words[index] &
+                 ~excluded.words[index])
         }
     }
 
     fn intersect(other: MirValueSet) {
-        for index: int in 0..self.bits.len() {
-            self.bits[index] =
-                self.bits[index] && other.bits[index]
+        let span: int = self.word_span(other)
+        for index: int in 0..span {
+            self.words[index] =
+                self.words[index] & other.words[index]
         }
     }
 
     fn fill() {
-        for index: int in 0..self.bits.len() {
-            self.bits[index] = true
+        for index: int in 0..self.words.len() {
+            self.words[index] = -1
+        }
+        let tail: int = self.size & 63
+        if tail != 0 && self.words.len() > 0 {
+            self.words[self.words.len() - 1] =
+                (1 << tail) - 1
         }
     }
 
     fn equals(other: MirValueSet) -> bool {
-        if self.bits.len() != other.bits.len() {
+        if self.size != other.size {
             return false
         }
-        for index: int in 0..self.bits.len() {
-            if self.bits[index] != other.bits[index] {
+        for index: int in 0..self.words.len() {
+            if self.words[index] !=
+               other.words[index] {
                 return false
             }
         }
@@ -352,6 +413,20 @@ class MirLocalState {
                 self.values[index]
         }
         return result
+    }
+
+    fn copy_from(other: MirLocalState) {
+        self.reached = other.reached
+        for index: int in 0..self.values.len() {
+            self.values[index] = other.values[index]
+        }
+    }
+
+    fn reset() {
+        self.reached = false
+        for index: int in 0..self.values.len() {
+            self.values[index] = 0
+        }
     }
 
     fn equals(other: MirLocalState) -> bool {
