@@ -1,0 +1,7 @@
+zlib is smaller true
+zlib round-trips true
+gzip magic present true
+gzip round-trips true
+bomb input is tiny true
+the limit held true
+streams equal one-shots true

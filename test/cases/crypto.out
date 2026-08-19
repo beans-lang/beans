@@ -1,0 +1,5 @@
+a hash provider is available true
+sha256("abc") matches FIPS 180 true
+streamed in pieces, same digest true
+hmac-sha256 matches RFC 4231 true
+websocket accept matches RFC 6455 true
