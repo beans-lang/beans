@@ -9,6 +9,10 @@ set -euo pipefail
 out=${1:?usage: tls_cert_corpus.sh <out-dir>}
 mkdir -p "$out"
 out=$(cd "$out" && pwd -P)
+config_out=$out
+case $(uname -s) in
+    MINGW* | MSYS*) config_out=$(cygpath -m "$out") ;;
+esac
 
 # Absolute UTC timestamp N days from now, in the ASN.1 form openssl wants.
 # BSD date (macOS) uses -v and needs an explicit sign; GNU date uses -d.
@@ -52,11 +56,11 @@ leaf() {
         '[ca]' \
         'default_ca = beans_ca' \
         '[beans_ca]' \
-        "database = $out/index.txt" \
-        "serial = $out/serial" \
-        "new_certs_dir = $out/newcerts" \
-        "certificate = $out/ca.crt" \
-        "private_key = $out/ca.key" \
+        "database = $config_out/index.txt" \
+        "serial = $config_out/serial" \
+        "new_certs_dir = $config_out/newcerts" \
+        "certificate = $config_out/ca.crt" \
+        "private_key = $config_out/ca.key" \
         'default_md = sha256' \
         'default_days = 365' \
         'unique_subject = no' \

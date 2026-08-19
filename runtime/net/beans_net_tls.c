@@ -2272,6 +2272,8 @@ typedef struct beans_tls_schannel_identity {
     HCERTSTORE store;
     NCRYPT_PROV_HANDLE key_provider;
     NCRYPT_KEY_HANDLE key;
+    wchar_t key_name[128];
+    int key_persisted;
     CredHandle credential;
     int credential_valid;
     struct beans_tls_schannel_identity* next;
@@ -2594,32 +2596,46 @@ static int beans_tls_win_import_key(beans_tls_schannel_identity* identity,
         free(der);
         return 0;
     }
-    NCryptBuffer buffer;
+    static volatile LONG next_key_id = 0;
+    LONG key_id = InterlockedIncrement(&next_key_id);
+    if (swprintf(identity->key_name,
+            sizeof identity->key_name / sizeof identity->key_name[0],
+            L"beans-tls-%lu-%ld-%p", (unsigned long)GetCurrentProcessId(),
+            (long)key_id, (void*)identity) < 0) {
+        free(der);
+        return 0;
+    }
+    NCryptBuffer buffers[2];
     NCryptBufferDesc description;
-    void* parameters = NULL;
     wchar_t* wide_password = NULL;
-    memset(&buffer, 0, sizeof buffer);
+    memset(buffers, 0, sizeof buffers);
     memset(&description, 0, sizeof description);
+    buffers[0].BufferType = NCRYPTBUFFER_PKCS_KEY_NAME;
+    buffers[0].pvBuffer = identity->key_name;
+    buffers[0].cbBuffer = (ULONG)((wcslen(identity->key_name) + 1) *
+                                  sizeof(wchar_t));
+    description.ulVersion = NCRYPTBUFFER_VERSION;
+    description.cBuffers = 1;
+    description.pBuffers = buffers;
     if (password_len > 0) {
         wide_password = beans_tls_win_wide(password, password_len);
         if (!wide_password) { free(der); return 0; }
-        buffer.BufferType = NCRYPTBUFFER_PKCS_SECRET;
-        buffer.pvBuffer = wide_password;
-        buffer.cbBuffer = (ULONG)((wcslen(wide_password) + 1) *
-                                  sizeof(wchar_t));
-        description.ulVersion = NCRYPTBUFFER_VERSION;
-        description.cBuffers = 1;
-        description.pBuffers = &buffer;
-        parameters = &description;
+        buffers[1].BufferType = NCRYPTBUFFER_PKCS_SECRET;
+        buffers[1].pvBuffer = wide_password;
+        buffers[1].cbBuffer = (ULONG)((wcslen(wide_password) + 1) *
+                                      sizeof(wchar_t));
+        description.cBuffers = 2;
     }
     status = NCryptImportKey(
         identity->key_provider, 0, NCRYPT_PKCS8_PRIVATE_KEY_BLOB,
-        (NCryptBufferDesc*)parameters, &identity->key,
+        &description, &identity->key,
         der, (DWORD)der_len, 0);
     free(wide_password);
     free(der);
     if (status != ERROR_SUCCESS)
         beans_tls_win_debug("import private key", status);
+    else
+        identity->key_persisted = 1;
     return status == ERROR_SUCCESS;
 }
 
@@ -2654,10 +2670,13 @@ static int beans_tls_win_pem_identity(
         free(der);
         if (!parsed) return 0;
         if (count == 0) {
-            NCRYPT_KEY_HANDLE key_handle = identity->key;
+            CRYPT_KEY_PROV_INFO key_info;
+            memset(&key_info, 0, sizeof key_info);
+            key_info.pwszContainerName = identity->key_name;
+            key_info.pwszProvName = (wchar_t*)MS_KEY_STORAGE_PROVIDER;
+            key_info.dwKeySpec = CERT_NCRYPT_KEY_SPEC;
             if (!CertSetCertificateContextProperty(
-                    parsed, CERT_NCRYPT_KEY_HANDLE_PROP_ID,
-                    CERT_SET_PROPERTY_INHIBIT_PERSIST_FLAG, &key_handle) ||
+                    parsed, CERT_KEY_PROV_INFO_PROP_ID, 0, &key_info) ||
                 !CertAddCertificateContextToStore(
                     identity->store, parsed, CERT_STORE_ADD_ALWAYS,
                     &identity->certificate)) {
@@ -2688,10 +2707,10 @@ static int beans_tls_win_pfx_identity(
     CRYPT_DATA_BLOB blob;
     blob.cbData = (DWORD)pfx_len;
     blob.pbData = (BYTE*)pfx;
+    // Schannel may perform the handshake in LSASS. Microsoft documents that
+    // PKCS12_NO_PERSIST_KEY cannot cross that process boundary, so import a
+    // named key and delete it when the TLS identity is freed.
     DWORD flags = PKCS12_ALWAYS_CNG_KSP;
-#ifdef PKCS12_NO_PERSIST_KEY
-    flags |= PKCS12_NO_PERSIST_KEY;
-#endif
     identity->store = PFXImportCertStore(&blob,
         wide_password ? wide_password : L"", flags);
     free(wide_password);
@@ -2701,19 +2720,25 @@ static int beans_tls_win_pfx_identity(
     }
     PCCERT_CONTEXT at = NULL;
     while ((at = CertEnumCertificatesInStore(identity->store, at)) != NULL) {
-        HCRYPTPROV_OR_NCRYPT_KEY_HANDLE key_handle = 0;
-        DWORD key_spec = 0;
-        BOOL caller_frees = FALSE;
-        if (CryptAcquireCertificatePrivateKey(
-                at, CRYPT_ACQUIRE_SILENT_FLAG |
-                    CRYPT_ACQUIRE_ALLOW_NCRYPT_KEY_FLAG,
-                NULL, &key_handle, &key_spec, &caller_frees)) {
-            if (caller_frees) {
-                if (key_spec == CERT_NCRYPT_KEY_SPEC)
-                    NCryptFreeObject((NCRYPT_HANDLE)key_handle);
-                else
-                    CryptReleaseContext((HCRYPTPROV)key_handle, 0);
-            }
+        DWORD info_len = 0;
+        if (CertGetCertificateContextProperty(
+                at, CERT_KEY_PROV_INFO_PROP_ID, NULL, &info_len) &&
+            info_len >= sizeof(CRYPT_KEY_PROV_INFO)) {
+            CRYPT_KEY_PROV_INFO* info =
+                (CRYPT_KEY_PROV_INFO*)malloc(info_len);
+            if (!info) return 0;
+            int opened = CertGetCertificateContextProperty(
+                    at, CERT_KEY_PROV_INFO_PROP_ID, info, &info_len) &&
+                info->dwProvType == 0 && info->pwszContainerName &&
+                info->pwszProvName &&
+                NCryptOpenStorageProvider(&identity->key_provider,
+                    info->pwszProvName, 0) == ERROR_SUCCESS &&
+                NCryptOpenKey(identity->key_provider, &identity->key,
+                    info->pwszContainerName, 0,
+                    NCRYPT_SILENT_FLAG) == ERROR_SUCCESS;
+            free(info);
+            if (!opened) continue;
+            identity->key_persisted = 1;
             identity->certificate = CertDuplicateCertificateContext(at);
             break;
         }
@@ -2731,7 +2756,12 @@ static void beans_tls_win_free_identity(
     if (identity->certificate)
         CertFreeCertificateContext(identity->certificate);
     if (identity->store) CertCloseStore(identity->store, 0);
-    if (identity->key) NCryptFreeObject(identity->key);
+    if (identity->key) {
+        if (identity->key_persisted)
+            NCryptDeleteKey(identity->key, NCRYPT_SILENT_FLAG);
+        else
+            NCryptFreeObject(identity->key);
+    }
     if (identity->key_provider) NCryptFreeObject(identity->key_provider);
     free(identity);
 }
