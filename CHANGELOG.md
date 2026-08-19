@@ -4,6 +4,8 @@ This file records user-facing changes in each Beans release.
 
 ## Unreleased
 
+## [0.1.25] - 2026-08-20
+
 ### Added
 
 - `std.http` speaks HTTP/1.1 and HTTP/2. The parser is push-based and

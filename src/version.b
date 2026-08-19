@@ -7,9 +7,9 @@
 package main
 
 fn compiler_version() -> string {
-    return "0.1.19"
+    return "0.1.25"
 }
 
 fn compiler_banner() -> string {
-    return "beansc 0.1.19 (language 1.0, runtime ABI 6)"
+    return "beansc 0.1.25 (language 1.0, runtime ABI 6)"
 }

@@ -13,7 +13,7 @@
 #
 # The project is still in the public 1.0 bake, so do not call it 1.0.0 until
 # every release gate in ROADMAP.md has passed.
-compiler=0.1.19
+compiler=0.1.25
 language=1.0
 
 # 6: compiled runtime hooks use per-thread enter/leave guard entry points.
