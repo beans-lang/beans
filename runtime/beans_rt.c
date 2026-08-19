@@ -8709,7 +8709,11 @@ typedef struct {
     // the same-thread flavor: captures are unrestricted because every
     // invocation is checked against the registering thread
     int same_thread;
+#if defined(_WIN32)
+    DWORD owner;
+#else
     pthread_t owner;
+#endif
 } BStoredCallback;
 
 void* beans_stored_callback_new(void* closure, void* function) {
@@ -8737,7 +8741,11 @@ void* beans_stored_callback_new_same_thread(void* closure, void* function) {
     BStoredCallback* callback =
         (BStoredCallback*)beans_stored_callback_new(closure, function);
     callback->same_thread = 1;
+#if defined(_WIN32)
+    callback->owner = GetCurrentThreadId();
+#else
     callback->owner = pthread_self();
+#endif
     return callback;
 }
 
@@ -8748,7 +8756,11 @@ void* beans_stored_callback_enter(void* value) {
     // the whole same-thread contract, checked where every call begins;
     // panics never unwind, so a wrong-thread call stops the program
     if (callback->same_thread &&
+#if defined(_WIN32)
+        callback->owner != GetCurrentThreadId())
+#else
         !pthread_equal(callback->owner, pthread_self()))
+#endif
         beans_panic(
             "same-thread stored callback invoked from another thread", 0, 0);
     pthread_mutex_lock(&callback->mutex);
