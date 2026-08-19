@@ -26,7 +26,9 @@ jobs:
 
       - name: Install clang (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y clang
+        run: |
+          bash .github/scripts/apt-update.sh
+          sudo apt-get install -y clang
 
       - name: Build
         run: |
