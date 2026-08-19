@@ -22,15 +22,24 @@ import std.poll
 import std.thread
 import std.tls
 
-// Forwards bytes between an accepted client and the real server. The proxy
-// raises `handshake_drained` after it forwards the client's final handshake
-// flight. The caller waits for that signal before sending its request, so the
-// two packets cannot be mistaken for each other even when the proxy thread is
-// delayed. A budget of 0 cuts as soon as the client's first flight has been
-// forwarded, which lands inside the handshake.
-fn proxy(listen_port: int, server_port: int, budget: int, handshake_drained: Atomic<bool>) -> int {
-    match net.TcpListener.bind("127.0.0.1", listen_port) {
+// Forwards bytes between an accepted client and the real server. It publishes
+// its bound port before the caller connects, then raises `handshake_drained`
+// after it forwards the client's final handshake flight. The caller waits for
+// both signals, so thread scheduling cannot turn either step into a race. A
+// budget of 0 cuts as soon as the client's first flight has been forwarded,
+// which lands inside the handshake.
+fn proxy(
+    bound_port: Atomic<int>,
+    server_port: int,
+    budget: int,
+    handshake_drained: Atomic<bool>
+) -> int {
+    match net.TcpListener.bind("127.0.0.1", 0) {
         ok(listener) => {
+            let listen_port: int = listener.port().or(-1)
+            bound_port.store(listen_port, MemoryOrder.release)
+            bound_port.notify_all()
+            if listen_port <= 0 { return 3 }
             match listener.accept_timeout(8000) {
                 ok(downstream) => {
                     match net.TcpStream.connect_timeout("127.0.0.1", server_port, 8000) {
@@ -46,8 +55,21 @@ fn proxy(listen_port: int, server_port: int, budget: int, handshake_drained: Ato
                 err(_) => { return 1 }
             }
         }
-        err(_) => { return 3 }
+        err(_) => {
+            bound_port.store(-1, MemoryOrder.release)
+            bound_port.notify_all()
+            return 3
+        }
     }
+}
+
+fn wait_for_port(bound_port: Atomic<int>) -> int {
+    var waits: int = 0
+    for bound_port.load(MemoryOrder.acquire) == 0 && waits < 80 {
+        bound_port.wait_timeout(0, 100000000, MemoryOrder.acquire)
+        waits += 1
+    }
+    return bound_port.load(MemoryOrder.acquire)
 }
 
 fn pump(
@@ -181,69 +203,68 @@ fn main() {
 
     // 2. Cut mid-response: partial data, then a dead wire.
     var data_cut_kind: string = ""
-    match net.TcpListener.bind("127.0.0.1", 0) {
-        ok(scout) => {
-            let proxy_port: int = scout.port().expect("proxy port")
-            let released: Result<bool> = scout.close()
-            let handshake_drained: Atomic<bool> = new Atomic<bool>(false)
-            let runner: Thread<int> = thread.spawn(fn() -> int {
-                return proxy(proxy_port, server_port, 1, handshake_drained)
-            })
-            match tls.TlsStream.connect_with_roots("localhost", proxy_port, "", roots, 8000) {
-                ok(stream) => {
-                    var waits: int = 0
-                    for !handshake_drained.load(MemoryOrder.acquire) && waits < 80 {
-                        handshake_drained.wait_timeout(
-                            false, 100000000, MemoryOrder.acquire)
-                        waits += 1
-                    }
-                    if handshake_drained.load(MemoryOrder.acquire) {
-                        let sent: Result<int> =
-                            stream.write_all(Bytes.from("GET / HTTP/1.0\r\n\r\n"))
-                        var reading: bool = true
-                        for reading {
-                            match stream.read(16384) {
-                                ok(piece) => {
-                                    if piece.len() == 0 {
-                                        data_cut_kind = "clean"
-                                        reading = false
-                                    }
-                                }
-                                err(e) => {
-                                    data_cut_kind = e.kind
+    let data_port: Atomic<int> = new Atomic<int>(0)
+    let handshake_drained: Atomic<bool> = new Atomic<bool>(false)
+    let data_runner: Thread<int> = thread.spawn(fn() -> int {
+        return proxy(data_port, server_port, 1, handshake_drained)
+    })
+    let proxy_port: int = wait_for_port(data_port)
+    if proxy_port > 0 {
+        match tls.TlsStream.connect_with_roots("localhost", proxy_port, "", roots, 8000) {
+            ok(stream) => {
+                var waits: int = 0
+                for !handshake_drained.load(MemoryOrder.acquire) && waits < 80 {
+                    handshake_drained.wait_timeout(
+                        false, 100000000, MemoryOrder.acquire)
+                    waits += 1
+                }
+                if handshake_drained.load(MemoryOrder.acquire) {
+                    let sent: Result<int> =
+                        stream.write_all(Bytes.from("GET / HTTP/1.0\r\n\r\n"))
+                    var reading: bool = true
+                    for reading {
+                        match stream.read(16384) {
+                            ok(piece) => {
+                                if piece.len() == 0 {
+                                    data_cut_kind = "clean"
                                     reading = false
                                 }
                             }
+                            err(e) => {
+                                data_cut_kind = e.kind
+                                reading = false
+                            }
                         }
-                    } else {
-                        data_cut_kind = "sync"
                     }
+                } else {
+                    data_cut_kind = "sync"
                 }
-                err(e) => { data_cut_kind = "connect:{e.kind}" }
             }
-            let outcome: int = runner.join()
+            err(e) => { data_cut_kind = "connect:{e.kind}" }
         }
-        err(e) => { io.println("scout bind failed: {e.kind}") }
+    } else {
+        data_cut_kind = "proxy"
     }
+    let data_outcome: int = data_runner.join()
     io.println("mid-response cut is an error {data_cut_kind == "eof"}")
 
     // 3. Cut during the handshake: never a half-open success.
     var handshake_cut_kind: string = ""
-    match net.TcpListener.bind("127.0.0.1", 0) {
-        ok(scout) => {
-            let proxy_port: int = scout.port().expect("proxy port")
-            let released: Result<bool> = scout.close()
-            let handshake_drained: Atomic<bool> = new Atomic<bool>(false)
-            let runner: Thread<int> = thread.spawn(fn() -> int {
-                return proxy(proxy_port, server_port, 0, handshake_drained)
-            })
-            match tls.TlsStream.connect_with_roots("localhost", proxy_port, "", roots, 8000) {
-                ok(stream) => { handshake_cut_kind = "accepted" }
-                err(e) => { handshake_cut_kind = e.kind }
-            }
-            let outcome: int = runner.join()
+    let cut_port: Atomic<int> = new Atomic<int>(0)
+    let unused_handshake: Atomic<bool> = new Atomic<bool>(false)
+    let handshake_runner: Thread<int> = thread.spawn(fn() -> int {
+        return proxy(cut_port, server_port, 0, unused_handshake)
+    })
+    let handshake_proxy_port: int = wait_for_port(cut_port)
+    if handshake_proxy_port > 0 {
+        match tls.TlsStream.connect_with_roots(
+            "localhost", handshake_proxy_port, "", roots, 8000) {
+            ok(stream) => { handshake_cut_kind = "accepted" }
+            err(e) => { handshake_cut_kind = e.kind }
         }
-        err(e) => { io.println("scout bind failed: {e.kind}") }
+    } else {
+        handshake_cut_kind = "proxy"
     }
+    let handshake_outcome: int = handshake_runner.join()
     io.println("handshake cut refuses the connection {handshake_cut_kind != "accepted"}")
 }
