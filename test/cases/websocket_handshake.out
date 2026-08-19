@@ -1,0 +1,16 @@
+server method: refused=true kind=protocol
+server HTTP version: refused=true kind=protocol
+server Host: refused=true kind=protocol
+server Upgrade: refused=true kind=protocol
+server Connection: refused=true kind=protocol
+server WS version: refused=true kind=unsupported
+server key base64: refused=true kind=protocol
+server key length: refused=true kind=protocol
+server duplicate key: refused=true kind=protocol
+server request body: refused=true kind=protocol
+client target: invalid
+client status: handshake
+client Upgrade: handshake
+client Connection: handshake
+client duplicate accept: handshake
+client unoffered option: handshake

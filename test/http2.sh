@@ -1,13 +1,8 @@
 #!/usr/bin/env bash
 # std.http's HTTP/2 side: a client and server exchanging real streams over
-# loopback, the glue fuzzer, curl and nghttpd interop, and h2spec.
-#
-# The h2spec bar is set by measurement, not by hope: nghttp2's own reference
-# server (nghttpd) is run through the identical suite first, and this
-# implementation must fail no case that nghttpd passes. That is the honest
-# bar for a binding — the library's behavior is the library's, and what is
-# under test here is the glue around it. When nghttpd is unavailable the
-# suite falls back to a pinned floor.
+# loopback, the glue fuzzer, curl and nghttpd interop, and h2spec. h2spec is a
+# zero-failure gate when installed; CI sets BEANS_H2SPEC_REQUIRE so absence is
+# a failure there too.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/beans-http2.XXXXXX")
@@ -55,6 +50,13 @@ echo "checking bodies that outgrow one flush, and two streams at once"
 "$tmp/large" >"$tmp/large.native"
 diff -u test/cases/http2_large.out "$tmp/large.interp"
 diff -u test/cases/http2_large.out "$tmp/large.native"
+
+echo "checking header rules and over-limit stream resets"
+"$beansc" run test/cases/http2_limits.b >"$tmp/limits.interp"
+"$beansc" build test/cases/http2_limits.b -o "$tmp/limits" >/dev/null 2>&1
+"$tmp/limits" >"$tmp/limits.native"
+diff -u test/cases/http2_limits.out "$tmp/limits.interp"
+diff -u test/cases/http2_limits.out "$tmp/limits.native"
 
 echo "checking the glue fuzzer at fixed seeds"
 "$beansc" build test/cases/http2_fuzz.b -o "$tmp/h2_fuzz" >/dev/null 2>&1
@@ -156,6 +158,22 @@ BEANS
         exit 1
     }
     echo "  nghttpd: our client read a real HTTP/2 response"
+
+    echo "checking HTTP/2 over TLS and ALPN"
+    bash test/fixtures/tls_cert_corpus.sh "$tmp/certs" >/dev/null
+    printf 'secure h2\n' >"$tmp/index.html"
+    tlsport=$(( 19500 + RANDOM % 900 ))
+    nghttpd -d "$tmp" "$tlsport" \
+        "$tmp/certs/valid.key" "$tmp/certs/valid.crt" >/dev/null 2>&1 &
+    pids+=($!)
+    sleep 1
+    "$beansc" build test/cases/http2_tls_client.b \
+        -o "$tmp/tls_client" >/dev/null 2>&1
+    "$tmp/tls_client" "$tlsport" "$tmp/certs/ca.crt" \
+        >"$tmp/tls_client.out"
+    grep -Fqx "h2 tls negotiated true" "$tmp/tls_client.out"
+    grep -Fqx "h2 tls answered true" "$tmp/tls_client.out"
+    echo "  nghttpd TLS: ALPN selected h2 and the shared model read a response"
 else
     if [[ ${BEANS_NGHTTPD_REQUIRE:-0} == 1 ]]; then
         echo "nghttpd is required but unavailable" >&2
@@ -171,8 +189,8 @@ if [ -z "$h2spec_bin" ] || [ ! -x "$h2spec_bin" ]; then
         echo "h2spec is required but unavailable" >&2
         exit 1
     fi
-    echo "  skipping: h2spec is unavailable (set BEANS_H2SPEC)"
-    echo "ok http2: loopback streams, glue fuzz, interop (h2spec skipped)"
+    echo "  INCOMPLETE: h2spec is unavailable (set BEANS_H2SPEC)"
+    echo "ok http2: loopback streams, glue fuzz and interop; conformance incomplete"
     exit 0
 fi
 
@@ -182,103 +200,18 @@ fi
 # Both sides are measured with the same widened timeout.
 h2spec_timeout=${BEANS_H2SPEC_TIMEOUT:-8}
 
-# The reference bar: what nghttp2's own server scores through this exact
-# suite, on this exact host. Anything it passes, we must pass.
-reference_failures=""
-if command -v nghttpd >/dev/null 2>&1; then
-    refport=$(( 18700 + RANDOM % 900 ))
-    nghttpd --no-tls -d "$tmp" "$refport" >/dev/null 2>&1 &
-    pids+=($!)
-    sleep 1
-    "$h2spec_bin" -o "$h2spec_timeout" -h 127.0.0.1 -p "$refport" \
-        >"$tmp/h2spec.reference" 2>&1 || true
-    reference_failures="$tmp/h2spec.reference"
-fi
-
 start_echo
+set +e
 "$h2spec_bin" -o "$h2spec_timeout" -h 127.0.0.1 -p "$PORT" \
-    >"$tmp/h2spec.ours" 2>&1 || true
+    >"$tmp/h2spec.ours" 2>&1
+h2spec_status=$?
+set -e
 tail -1 "$tmp/h2spec.ours" | sed 's/^/  ours: /'
-if [ -n "$reference_failures" ]; then
-    tail -1 "$reference_failures" | sed 's/^/  nghttpd: /'
+if [ "$h2spec_status" -ne 0 ] ||
+   ! tail -1 "$tmp/h2spec.ours" | grep -Eq '0 skipped, 0 failed$'; then
+    echo "h2spec must pass every case" >&2
+    grep -B2 -A3 -E '^[[:space:]]+×' "$tmp/h2spec.ours" >&2 || true
+    exit 1
 fi
 
-python3 - "$tmp/h2spec.ours" "$reference_failures" "$tmp/h2spec.extra" <<'PYEOF'
-import re, sys
-
-def failures(path):
-    found, section = [], ""
-    for line in open(path):
-        header = re.match(r"^\s+(\d+(?:\.\d+)*)\.\s", line.rstrip())
-        if header:
-            section = header.group(1)
-        failed = re.match(r"^\s+×\s+(\d+):\s*(.*)$", line.rstrip())
-        if failed:
-            found.append((f"{section}/{failed.group(1)}", failed.group(2)))
-    return list(dict.fromkeys(found))
-
-ours = failures(sys.argv[1])
-reference = set(k for k, _ in failures(sys.argv[2])) if len(sys.argv) > 2 and sys.argv[2] else None
-
-if reference is None:
-    # No reference to measure against: hold a pinned floor instead, so a
-    # regression still cannot pass unnoticed.
-    if len(ours) > 9:
-        print(f"  {len(ours)} failures exceeds the pinned floor of 9")
-        for k, v in ours:
-            print("   ", k, v[:60])
-        sys.exit(1)
-    print(f"  {len(ours)} failures, within the pinned floor (no nghttpd to compare)")
-    sys.exit(0)
-
-extra = [(k, v) for k, v in ours if k not in reference]
-print(f"  {len(ours)} failures, {len(extra)} of them not shared with nghttp2's own server")
-for k, v in extra:
-    print("   ", k, v[:60])
-# Anything not shared is written out for the confirmation pass below, which
-# decides whether it is a real regression or a timeout under load.
-with open(sys.argv[3], "w") as handle:
-    for k, _ in extra:
-        handle.write(k + "\n")
-PYEOF
-
-# A case that fails only under load is noise, not a regression: the reference
-# server misses different cases run to run for the same reason. Each unshared
-# section is re-run on its own against a fresh server, and only a case that
-# fails again counts.
-if [ -s "$tmp/h2spec.extra" ]; then
-    echo "  re-running the unshared sections on their own to confirm"
-    confirmed=0
-    while read -r case_id; do
-        [ -n "$case_id" ] || continue
-        # The exact case, not its section: a section carries cases nghttpd
-        # fails too, and re-running those would confirm the wrong thing.
-        # Three attempts, because a case that fails once in four is a race in
-        # the harness rather than a broken implementation — a real regression
-        # fails every time.
-        attempt=0
-        passed_once=0
-        while [ "$attempt" -lt 3 ]; do
-            attempt=$((attempt + 1))
-            start_echo
-            if "$h2spec_bin" -o "$h2spec_timeout" -h 127.0.0.1 -p "$PORT" \
-                "http2/$case_id" >"$tmp/retry.out" 2>&1; then
-                passed_once=1
-                break
-            fi
-        done
-        if [ "$passed_once" -eq 1 ]; then
-            echo "    $case_id passes on its own (attempt $attempt) — load, not a regression"
-        else
-            echo "    $case_id fails on its own, three times running:"
-            grep -E '^[[:space:]]+×' "$tmp/retry.out" | sed 's/^/      /' || true
-            confirmed=$((confirmed + 1))
-        fi
-    done <"$tmp/h2spec.extra"
-    if [ "$confirmed" -gt 0 ]; then
-        echo "  a case nghttp2's own server passes must not fail here" >&2
-        exit 1
-    fi
-fi
-
-echo "ok http2: loopback streams, glue fuzz, curl and nghttpd interop, h2spec at the reference bar"
+echo "ok http2: loopback streams, glue fuzz, curl and nghttpd interop, h2spec fully green"

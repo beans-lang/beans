@@ -129,7 +129,8 @@ class TreeInterpreter {
         if csrc_sources.len() != 0 {
             match csrc_run_library(
                 csrc_sources,
-                self.program.target.os) {
+                self.program.target.os,
+                self.program.target.triple) {
                 ok(library) => {
                     match host_dl.open(library) {
                         ok(handle) => {
@@ -11505,7 +11506,20 @@ class TreeInterpreter {
                 return ""
             }
         }
-        let stamp: int = host_time.monotonic_nanos()
+        // Two interpreted threads can reach the same content cache before
+        // either has published the bridge.  Some hosts expose a coarse
+        // monotonic clock, so time alone can give both builds the same object
+        // names and let one build remove the other's inputs.  Keep the time
+        // prefix for diagnostics and add an OS-random nonce for staging.
+        var stamp: string = "{host_time.monotonic_nanos()}"
+        match host_random.bytes(8) {
+            ok(seed) => {
+                stamp = "{stamp}.{seed.get_u64(0)}"
+            }
+            err(_) => {
+                stamp = "{stamp}.{host_time.wall_nanos()}"
+            }
+        }
         let c_driver: string = self.ffi_c_driver()
         var objects: List<string> = []
         var object_index: int = 0

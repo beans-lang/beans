@@ -142,7 +142,7 @@ fn net_source_root() -> string {
 // Bump when a request-buffer layout, a status code, or the entry-point set
 // changes, so an object built against the old contract is never reused.
 fn net_bridge_abi() -> string {
-    return "net-abi-1"
+    return "net-abi-3"
 }
 
 // C++ is per translation unit, by extension: a feature can mix its C++
@@ -380,6 +380,9 @@ fn net_bridge_platform_flags(
        target_env == "msvc" {
         flags.push("-Dssize_t=ptrdiff_t")
     }
+    if feature == "tls" && target_os == "macos" {
+        flags.push("-fblocks")
+    }
     return move flags
 }
 
@@ -389,16 +392,26 @@ fn net_bridge_platform_flags(
 fn net_bridge_link_arguments(
     features: List<string>, target_os: string) -> List<string> {
     var arguments: List<string> = []
+    if target_os == "windows" &&
+       (features.contains("sockx") || features.contains("ws")) {
+        // These bridge DLLs call Winsock directly. A final program already
+        // links ws2_32 for the full runtime, but the interpreter builds each
+        // bridge as a standalone DLL and must give that DLL its own import.
+        arguments.push("-lws2_32")
+    }
     if features.contains("tls") {
         if target_os == "macos" {
             arguments.push("-framework")
             arguments.push("Security")
             arguments.push("-framework")
             arguments.push("CoreFoundation")
+            arguments.push("-framework")
+            arguments.push("Network")
         }
         if target_os == "windows" {
             arguments.push("-lsecur32")
             arguments.push("-lcrypt32")
+            arguments.push("-lncrypt")
         }
         if target_os == "linux" {
             // The OpenSSL backend loads libssl.so.3 at runtime; dlopen
@@ -515,6 +528,28 @@ fn native_chunk_publish(staging: string, object: string) {
         }
         err(_) => {}
     }
+}
+
+// Test-only native instrumentation. Keeping the accepted values closed
+// avoids turning an environment variable into arbitrary compiler flags.
+// These flags are part of every object cache key below, so a sanitized build
+// can never reuse a normal bridge or runtime object.
+fn sanitizer_flags() -> List<string> {
+    var flags: List<string> = []
+    var requested: string = ""
+    match os.env("BEANS_SANITIZE") {
+        some(value) => { requested = value }
+        none => {}
+    }
+    if requested == "address,undefined" {
+        flags.push("-fsanitize=address,undefined")
+        flags.push("-fno-sanitize-recover=undefined")
+        flags.push("-fno-omit-frame-pointer")
+    } else if requested == "thread" {
+        flags.push("-fsanitize=thread")
+        flags.push("-fno-omit-frame-pointer")
+    }
+    return move flags
 }
 
 class NativeBuildDriver {
@@ -763,6 +798,9 @@ class NativeBuildDriver {
         for flag: string in self.debug_flags() {
             command.arg(flag)
         }
+        for flag: string in sanitizer_flags() {
+            command.arg(flag)
+        }
         if self.lto { command.arg("-flto") }
         let wasi: bool = self.target.os == "wasi"
         if self.runtime_profile == "freestanding" ||
@@ -829,6 +867,9 @@ class NativeBuildDriver {
         flags.push(self.optimization_flag())
         if self.release { flags.push("-DNDEBUG") }
         for flag: string in self.debug_flags() {
+            flags.push(flag)
+        }
+        for flag: string in sanitizer_flags() {
             flags.push(flag)
         }
         if self.lto { flags.push("-flto") }
@@ -1003,6 +1044,9 @@ class NativeBuildDriver {
         for flag: string in self.debug_flags() {
             flags.push(flag)
         }
+        for flag: string in sanitizer_flags() {
+            flags.push(flag)
+        }
         if self.lto { flags.push("-flto") }
         let wasi: bool = self.target.os == "wasi"
         if wasi {
@@ -1172,21 +1216,18 @@ class NativeBuildDriver {
         return move labels
     }
 
-    fn csrc_cache_path(source: string,
-                       pic: bool) -> string {
-        var text: string = ""
-        match fs.read(source) {
-            ok(content) => { text = content }
-            err(_) => {}
-        }
+    fn csrc_cache_path(compiler: string,
+                       source: string,
+                       pic: bool,
+                       inputs: string) -> string {
         let key: string =
-            "csrc|{self.target.triple}|{self.cpu}|{self.target.features.join(",")}|{self.runtime_profile}|{self.release}|{self.debug}|{self.lto}|{pic}|{source}|{text}"
+            "csrc|{csrc_compiler_identity(compiler)}|{self.target.triple}|{self.cpu}|{self.target.features.join(",")}|{self.runtime_profile}|{self.release}|{self.debug}|{self.lto}|{pic}|{sanitizer_flags().join(" ")}|{inputs}"
         let extension: string =
             if self.lto { "bc" } else { "o" }
         let stem: string = path.stem(source)
         return path.join(
             "build",
-            "beans_csrc.{stem}.{self.target.triple}.{csrc_key_hash(key)}.{extension}")
+            "beans_csrc.{stem}.{self.target.triple}.{csrc_key_tag(key)}.{extension}")
     }
 
     fn cached_csrc_object(compiler: string,
@@ -1198,8 +1239,16 @@ class NativeBuildDriver {
                 "csrc file does not exist")
             return ""
         }
+        var inputs: string = ""
+        match csrc_dependency_key(source, []) {
+            ok(key) => { inputs = key }
+            err(error) => {
+                self.fail(source, error.msg)
+                return ""
+            }
+        }
         let object: string =
-            self.csrc_cache_path(source, pic)
+            self.csrc_cache_path(compiler, source, pic, inputs)
         if File.exists(object) { return object }
         let staging: string = csrc_staging_name(object)
         if !self.compile_object(
@@ -1236,7 +1285,7 @@ class NativeBuildDriver {
             err(_) => {}
         }
         let key: string =
-            "{self.target.triple}|{self.cpu}|{self.target.features.join(",")}|{self.runtime_profile}|{self.release}|{self.debug}|{self.lto}|{pic}|{source}"
+            "{self.target.triple}|{self.cpu}|{self.target.features.join(",")}|{self.runtime_profile}|{self.release}|{self.debug}|{self.lto}|{pic}|{sanitizer_flags().join(" ")}|{source}"
         var hash: int = 0
         for index: int in 0..key.len() {
             hash =
@@ -1983,6 +2032,9 @@ class NativeBuildDriver {
         command.arg(self.optimization_flag())
         if self.release { command.arg("-DNDEBUG") }
         for flag: string in self.debug_flags() {
+            command.arg(flag)
+        }
+        for flag: string in sanitizer_flags() {
             command.arg(flag)
         }
         if self.lto { command.arg("-flto") }

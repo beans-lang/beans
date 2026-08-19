@@ -182,5 +182,11 @@ if [ "$((bridge_rate * 2))" -lt "$copy_rate" ]; then
     echo "the bridge fell below half the copying-C baseline (${bridge_rate} vs ${copy_rate} MB/s)" >&2
     exit 1
 fi
+typed_rate=${typed_rate%%.*}
+if ! [[ "$typed_rate" =~ ^[0-9]+$ ]] ||
+   [ "$((typed_rate * 7))" -lt "$bridge_rate" ]; then
+    echo "the public typed parser fell below one seventh of its bridge (${typed_line}, bridge ${bridge_rate} MB/s)" >&2
+    exit 1
+fi
 
 echo "ok http: smuggling refused, loopback exchanges, split invariance, throughput budget"

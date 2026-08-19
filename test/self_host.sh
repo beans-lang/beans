@@ -2055,6 +2055,7 @@ for example_path in examples/*.b; do
         example_link_args+=(
             -framework Security
             -framework CoreFoundation
+            -framework Network
         )
     elif [[ "$(uname -s)" == "Linux" ]] &&
          { [[ "$example_has_hash_bridge" == true ]] ||

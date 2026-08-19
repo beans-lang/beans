@@ -94,15 +94,22 @@ struct WsBuf {
 
     bool reserve(size_t more) {
         if (head > 0 && head == len) { head = 0; len = 0; }
-        if (len + more <= cap) return true;
+        if (more > SIZE_MAX - len) return false;
+        size_t needed = len + more;
+        if (needed <= cap) return true;
         if (head > 0) {
             memmove(data, data + head, len - head);
             len -= head;
             head = 0;
-            if (len + more <= cap) return true;
+            if (more > SIZE_MAX - len) return false;
+            needed = len + more;
+            if (needed <= cap) return true;
         }
-        size_t want = cap ? cap * 2 : 4096;
-        while (want < len + more) want *= 2;
+        size_t want = cap ? cap : 4096;
+        while (want < needed) {
+            if (want > SIZE_MAX / 2) { want = needed; break; }
+            want *= 2;
+        }
         uint8_t* grown = (uint8_t*)realloc(data, want);
         if (!grown) return false;
         data = grown;
@@ -111,8 +118,9 @@ struct WsBuf {
     }
 
     bool push(const uint8_t* src, size_t n) {
+        if (n > 0 && !src) return false;
         if (!reserve(n)) return false;
-        memcpy(data + len, src, n);
+        if (n) memcpy(data + len, src, n);
         len += n;
         return true;
     }
@@ -298,6 +306,7 @@ BEANS_NET_API long long beans_ws_feed(long long handle, const uint8_t* data,
     WsSession* s = ws_of(handle);
     if (!s || !req) return BEANS_NET_ERR_INVALID;
     uint64_t len = beans_net_word(req, 0);
+    if (len > SIZE_MAX) return BEANS_NET_ERR_RANGE;
     if (len > 0) {
         if (!data) return BEANS_NET_ERR_INVALID;
         if (!s->incoming.push(data, (size_t)len)) return BEANS_NET_ERR_MEMORY;
@@ -320,6 +329,7 @@ BEANS_NET_API long long beans_ws_queue(long long handle, const uint8_t* data,
     if (!s || !req) return BEANS_NET_ERR_INVALID;
     uint64_t opcode = beans_net_word(req, 0);
     uint64_t len = beans_net_word(req, 1);
+    if (len > SIZE_MAX) return BEANS_NET_ERR_RANGE;
     if (len > 0 && !data) return BEANS_NET_ERR_INVALID;
     struct wslay_event_msg msg;
     msg.opcode = (uint8_t)opcode;
@@ -338,6 +348,7 @@ BEANS_NET_API long long beans_ws_close(long long handle, const uint8_t* reason,
     if (!s || !req) return BEANS_NET_ERR_INVALID;
     uint64_t code = beans_net_word(req, 0);
     uint64_t len = beans_net_word(req, 1);
+    if (code > UINT16_MAX || len > SIZE_MAX) return BEANS_NET_ERR_RANGE;
     // Same guard beans_ws_queue carries: a length with no bytes behind it
     // would have wslay copy from a null pointer.
     if (len > 0 && !reason) return BEANS_NET_ERR_INVALID;
@@ -357,7 +368,9 @@ BEANS_NET_API long long beans_ws_pull_outgoing(long long handle, uint8_t* out,
                                                const uint64_t* req) {
     WsSession* s = ws_of(handle);
     if (!s || !out || !req) return -1;
-    return (long long)s->outgoing.take(out, (size_t)beans_net_word(req, 0));
+    uint64_t cap = beans_net_word(req, 0);
+    if (cap > SIZE_MAX) cap = SIZE_MAX;
+    return (long long)s->outgoing.take(out, (size_t)cap);
 }
 
 BEANS_NET_API long long beans_ws_events_size(long long handle) {
@@ -372,6 +385,7 @@ BEANS_NET_API long long beans_ws_take_events(long long handle, uint8_t* out,
     if (!s || !out || !req) return -1;
     uint64_t cap = beans_net_word(req, 0);
     if (cap < s->events.available()) return -1;
+    if (cap > SIZE_MAX) cap = SIZE_MAX;
     return (long long)s->events.take(out, (size_t)cap);
 }
 

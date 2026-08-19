@@ -71,17 +71,93 @@ pub fn field_is_safe(text: string) -> bool {
     let raw: Bytes = Bytes.from(text)
     for index: int in 0..raw.len() {
         let byte: int = raw.get(index)
-        if byte == 13 || byte == 10 || byte == 0 { return false }
+        // RFC field-value permits HTAB, visible ASCII, and obs-text. Every
+        // other control byte makes different recipients disagree about the
+        // line's shape, which is the root of splitting and smuggling bugs.
+        if (byte < 32 && byte != 9) || byte == 127 { return false }
     }
     return true
 }
 
-// Names carry the same rule plus the separator itself: a name holding ':'
-// would forge a second field on the same line.
+fn http_token_is_safe(text: string) -> bool {
+    if text.len() == 0 { return false }
+    let raw: Bytes = Bytes.from(text)
+    for index: int in 0..raw.len() {
+        let byte: int = raw.get(index)
+        let alpha: bool =
+            (byte >= 65 && byte <= 90) ||
+            (byte >= 97 && byte <= 122)
+        let digit: bool = byte >= 48 && byte <= 57
+        let mark: bool =
+            byte == 33 || byte == 35 || byte == 36 || byte == 37 ||
+            byte == 38 || byte == 39 || byte == 42 || byte == 43 ||
+            byte == 45 || byte == 46 || byte == 94 || byte == 95 ||
+            byte == 96 || byte == 124 || byte == 126
+        if !alpha && !digit && !mark { return false }
+    }
+    return true
+}
+
+// Header names are RFC tokens. Merely excluding ':' still admits spaces,
+// tabs and control bytes, including an obs-fold-looking line.
 fn header_name_is_safe(name: string) -> bool {
-    if name.len() == 0 { return false }
-    if !field_is_safe(name) { return false }
-    return !name.contains(":")
+    return http_token_is_safe(name)
+}
+
+fn request_target_is_safe(target: string) -> bool {
+    if target.len() == 0 { return false }
+    let raw: Bytes = Bytes.from(target)
+    for index: int in 0..raw.len() {
+        let byte: int = raw.get(index)
+        if byte <= 32 || byte == 127 { return false }
+    }
+    return true
+}
+
+fn decimal_header_value(text: string) -> Option<int> {
+    if text.len() == 0 { return none }
+    for index: int in 0..text.len() {
+        let byte: int = text.byte_at(index)
+        if byte < 48 || byte > 57 { return none }
+    }
+    match text.to_int() {
+        ok(value) => { return some(value) }
+        err(_) => { return none }
+    }
+}
+
+fn content_length_for(headers: Headers) -> Result<Option<int>> {
+    let values: List<string> = headers.all("Content-Length")
+    if values.len() == 0 { return ok(none) }
+    if values.len() != 1 {
+        return err("a written message may carry only one Content-Length", "invalid")
+    }
+    match decimal_header_value(values[0]) {
+        some(value) => { return ok(some(value)) }
+        none => {
+            return err("Content-Length must be one non-negative decimal number", "invalid")
+        }
+    }
+}
+
+fn check_request_line(method: string, target: string) -> Result<bool> {
+    if !http_token_is_safe(method) {
+        return err("the HTTP method is not a valid token", "invalid")
+    }
+    if !request_target_is_safe(target) {
+        return err("the HTTP request target carries whitespace or a control byte", "invalid")
+    }
+    return ok(true)
+}
+
+fn check_response_line(status: int, reason: string) -> Result<bool> {
+    if status < 100 || status > 599 {
+        return err("the HTTP status must be between 100 and 599", "invalid")
+    }
+    if !field_is_safe(reason) {
+        return err("the HTTP reason phrase carries a control byte", "invalid")
+    }
+    return ok(true)
 }
 
 // The shared check both writers run before serializing a head.
@@ -113,42 +189,40 @@ fn ascii_lower_equals(a: string, b: string) -> bool {
 /// repeated fields combine in order, and a proxy that reorders them changes
 /// the message — so this is a list with case-insensitive lookup, not a map.
 pub class Headers {
-    entries: List<Field>
+    names: List<string>
+    values: List<string>
 
     pub fn init() {
-        self.entries = []
+        self.names = []
+        self.values = []
     }
 
     /// Appends a field, keeping arrival order.
     pub fn add(name: string, value: string) {
-        self.entries.push(new Field(name, value))
-    }
-
-    // Package-internal: adopts an existing Field without re-allocating it.
-    fn adopt(field: Field) {
-        self.entries.push(field)
+        self.names.push(name)
+        self.values.push(value)
     }
 
     pub fn count() -> int {
-        return self.entries.len()
+        return self.names.len()
     }
 
     /// The field name at `index`, in arrival order.
     pub fn name_at(index: int) -> string {
-        return self.entries[index].name
+        return self.names[index]
     }
 
     /// The field value at `index`, in arrival order.
     pub fn value_at(index: int) -> string {
-        return self.entries[index].value
+        return self.values[index]
     }
 
     /// The first value whose name matches, ASCII-case-insensitively — the
     /// match a compliant reader must use when a field repeats.
     pub fn get(name: string) -> Option<string> {
-        for field: Field in self.entries {
-            if ascii_lower_equals(field.name, name) {
-                return some(field.value)
+        for index: int in 0..self.names.len() {
+            if ascii_lower_equals(self.names[index], name) {
+                return some(self.values[index])
             }
         }
         return none
@@ -157,9 +231,9 @@ pub class Headers {
     /// Every value whose name matches, in arrival order.
     pub fn all(name: string) -> List<string> {
         var found: List<string> = []
-        for field: Field in self.entries {
-            if ascii_lower_equals(field.name, name) {
-                found.push(field.value)
+        for index: int in 0..self.names.len() {
+            if ascii_lower_equals(self.names[index], name) {
+                found.push(self.values[index])
             }
         }
         return move found
@@ -186,6 +260,7 @@ pub class Request {
     pub chunked: bool = false
     pub keep_alive: bool = true
     pub upgrade: bool = false
+
 }
 
 /// A parsed response head.
@@ -199,6 +274,7 @@ pub class Response {
     pub chunked: bool = false
     pub keep_alive: bool = true
     pub upgrade: bool = false
+
 }
 
 /// The bounds this layer owns. llhttp bounds token shapes; these bound the
@@ -254,6 +330,9 @@ fn ev_is_span(kind: int) -> bool {
 
 class ParserCore {
     handle: int = 0
+    // One ABI word reused for execute/take calls. Allocating two RawPtr
+    // blocks per feed dominated the typed parser on small HTTP messages.
+    request_word: RawPtr<u64> = RawPtr.null()
     limits: Limits = new Limits()
     request_side: bool = true
     // Span accumulation across feeds: the bridge merges spans inside one
@@ -271,8 +350,8 @@ class ParserCore {
     in_trailers: bool = false
     header_bytes: int = 0
     header_count: int = 0
-    fields: List<Field>
-    trailer_fields: List<Field>
+    fields: Headers = new Headers()
+    trailer_fields: Headers = new Headers()
     // Message facts from headers-complete.
     saw_head: bool = false
     status_code: int = 0
@@ -297,12 +376,11 @@ class ParserCore {
     last_response: Response = new Response()
 
     fn init(request_side: bool, limits: Limits) {
-        self.fields = []
-        self.trailer_fields = []
         self.request_side = request_side
         self.limits = limits
         var handle: int = 0
         unsafe {
+            self.request_word = RawPtr.alloc(1)
             handle = beans_h1_new(if request_side { 0 } else { 1 })
         }
         self.handle = handle
@@ -315,6 +393,10 @@ class ParserCore {
                 ignored = beans_h1_free(self.handle)
             }
             self.handle = 0
+        }
+        unsafe {
+            if !self.request_word.is_null() { self.request_word.free() }
+            self.request_word = RawPtr.null()
         }
     }
 
@@ -331,10 +413,9 @@ class ParserCore {
         self.scratch.resize(size)
         var taken: int = 0
         unsafe {
-            let req: RawPtr<u64> = RawPtr.alloc(1)
-            req.write(size as u64)
-            taken = beans_h1_take_events(self.handle, self.scratch.as_ptr(), req)
-            req.free()
+            self.request_word.write(size as u64)
+            taken = beans_h1_take_events(
+                self.handle, self.scratch.as_ptr(), self.request_word)
         }
         if taken < 0 { self.scratch.resize(0) }
         return self.scratch
@@ -352,21 +433,14 @@ class ParserCore {
         return self.pending_text.to_string()
     }
 
-    fn build_headers(source: List<Field>) -> Headers {
-        var built: Headers = new Headers()
-        for field: Field in source {
-            built.adopt(field)
-        }
-        return built
-    }
-
     fn build_request() -> Request {
         var head: Request = new Request()
         head.method = self.method_text
         head.target = self.target_text
         head.major = self.major
         head.minor = self.minor
-        head.headers = self.build_headers(self.fields)
+        head.headers = self.fields
+        self.fields = new Headers()
         head.content_length = self.content_length
         head.chunked = (self.flags / 8) % 2 == 1
         head.keep_alive = self.keep_alive
@@ -380,7 +454,8 @@ class ParserCore {
         head.reason = self.status_text
         head.major = self.major
         head.minor = self.minor
-        head.headers = self.build_headers(self.fields)
+        head.headers = self.fields
+        self.fields = new Headers()
         head.content_length = self.content_length
         head.chunked = (self.flags / 8) % 2 == 1
         head.keep_alive = self.keep_alive
@@ -400,8 +475,6 @@ class ParserCore {
         self.in_trailers = false
         self.header_bytes = 0
         self.header_count = 0
-        self.fields.clear()
-        self.trailer_fields.clear()
         self.saw_head = false
         self.seal_pending()
     }
@@ -413,6 +486,17 @@ class ParserCore {
         self.failed = true
         self.fail_msg = msg
         self.fail_kind = kind
+    }
+
+    // Keep completed pipelined messages visible even when a later message
+    // in the same read is bad. If this call produced nothing useful, report
+    // the parse failure now instead of making the caller feed once more to
+    // discover it. EOF has no next feed, so deferring there hid truncation.
+    fn run_result(request_count: int, response_count: int) -> Result<bool> {
+        if self.failed && request_count == 0 && response_count == 0 {
+            return err(self.fail_msg, self.fail_kind)
+        }
+        return ok(true)
     }
 
     fn run(data: Bytes,
@@ -433,10 +517,9 @@ class ParserCore {
             }
         } else {
             unsafe {
-                let req: RawPtr<u64> = RawPtr.alloc(1)
-                req.write(data.len() as u64)
-                status = beans_h1_execute(self.handle, data.as_ptr(), req)
-                req.free()
+                self.request_word.write(data.len() as u64)
+                status = beans_h1_execute(
+                    self.handle, data.as_ptr(), self.request_word)
             }
             self.total_fed += data.len()
         }
@@ -461,7 +544,7 @@ class ParserCore {
                 // slice below rather than surface as a parse error.
                 if span_len < 0 || span_from + span_len > events.len() {
                     self.latch("the HTTP parser produced a malformed event", "protocol")
-                    return ok(true)
+                    return self.run_result(request_out.len(), response_out.len())
                 }
                 if kind == 11 {
                     // A body chunk streams straight out, as its own Bytes —
@@ -485,14 +568,14 @@ class ParserCore {
                         self.target_bytes = self.pending_text.len()
                         if self.target_bytes > self.limits.max_target_bytes {
                             self.latch("the request target exceeds {self.limits.max_target_bytes} bytes", "too_large")
-                            return ok(true)
+                            return self.run_result(request_out.len(), response_out.len())
                         }
                     }
                     if kind == 7 || kind == 8 {
                         self.header_bytes += span_len
                         if self.header_bytes > self.limits.max_header_bytes {
                             self.latch("the headers exceed {self.limits.max_header_bytes} bytes", "too_large")
-                            return ok(true)
+                            return self.run_result(request_out.len(), response_out.len())
                         }
                     }
                     // Every other head span — the status reason phrase and
@@ -505,7 +588,7 @@ class ParserCore {
                     if kind != 3 && kind != 7 && kind != 8 {
                         if self.pending_text.len() > self.limits.max_head_span_bytes {
                             self.latch("an HTTP head field exceeds {self.limits.max_head_span_bytes} bytes", "too_large")
-                            return ok(true)
+                            return self.run_result(request_out.len(), response_out.len())
                         }
                     }
                 }
@@ -534,15 +617,15 @@ class ParserCore {
                 self.header_count += 1
                 if self.header_count > self.limits.max_header_count {
                     self.latch("the message carries more than {self.limits.max_header_count} header fields", "too_large")
-                    return ok(true)
+                    return self.run_result(request_out.len(), response_out.len())
                 }
-                let pair: Field = new Field(self.field_name, value)
+                let name: string = self.field_name
                 self.field_name = ""
                 self.field_done = false
                 if self.in_trailers {
-                    self.trailer_fields.push(pair)
+                    self.trailer_fields.add(name, value)
                 } else {
-                    self.fields.push(pair)
+                    self.fields.add(name, value)
                 }
             } else if kind == 21 {
                 let method_code: int = events.get_u64(pos)
@@ -575,8 +658,9 @@ class ParserCore {
                 // chunk header: length rides the event; bodies stream anyway
                 pos += 8
             } else if kind == 24 {
-                if self.trailer_fields.len() > 0 {
-                    let gathered: Headers = self.build_headers(self.trailer_fields)
+                if self.trailer_fields.count() > 0 {
+                    let gathered: Headers = self.trailer_fields
+                    self.trailer_fields = new Headers()
                     if self.request_side {
                         request_out.push(RequestEvent.trailers(gathered))
                     } else {
@@ -617,7 +701,7 @@ class ParserCore {
                     return ok(true)
                 }
                 self.latch("{reason} (at byte {off})", "protocol")
-                return ok(true)
+                return self.run_result(request_out.len(), response_out.len())
             }
             // kinds 1, 14, 15, 19, 20, 23, 25, 26, 28 carry no state this
             // layer keeps: begins, protocol/version completes, extension
@@ -626,7 +710,7 @@ class ParserCore {
                 self.seal_pending()
             }
         }
-        return ok(true)
+        return self.run_result(request_out.len(), response_out.len())
     }
 }
 

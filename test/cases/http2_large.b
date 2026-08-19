@@ -55,6 +55,41 @@ fn adopt_next(listener: net.TcpListener) -> Result<http.Http2Connection> {
     return http.Http2Connection.adopt(move stream, true)
 }
 
+// Sends a large request through the public streaming path. A chunk can sit
+// behind the peer's flow-control window; drive the connection, then retry
+// the same bytes rather than dropping or duplicating them.
+fn send_streaming(connection: http.Http2Connection, stream_id: int,
+                  body: Bytes) -> int {
+    var offset: int = 0
+    var failures: int = 0
+    var rounds: int = 0
+    for offset < body.len() && rounds < 1000 {
+        rounds += 1
+        let end: int = if offset + 16384 < body.len() {
+            offset + 16384
+        } else {
+            body.len()
+        }
+        match connection.send_data(
+            stream_id, body.slice(offset, end), end == body.len()) {
+            ok(_) => { offset = end }
+            err(e) => {
+                if e.kind == "would_block" {
+                    match connection.run() {
+                        ok(_) => {}
+                        err(_) => { failures += 1; rounds = 1000 }
+                    }
+                } else {
+                    failures += 1
+                    rounds = 1000
+                }
+            }
+        }
+    }
+    if offset != body.len() { failures += 1 }
+    return failures
+}
+
 // Opens two streams, then reads until both have answered.
 fn client(port: int, big: int) -> int {
     var failures: int = 0
@@ -62,9 +97,11 @@ fn client(port: int, big: int) -> int {
         ok(connection) => {
             // A request body that also outgrows one flush, so the client's
             // own send path is exercised, not just the server's.
-            match connection.request("POST", "http", "localhost", "/big",
-                                     new http.Headers(), pattern(big)) {
+            match connection.request_headers(
+                    "POST", "http", "localhost", "/big",
+                    new http.Headers()) {
                 ok(first) => {
+                    failures += send_streaming(connection, first, pattern(big))
                     match connection.request("GET", "http", "localhost", "/small",
                                              new http.Headers(), new Bytes(0)) {
                         ok(second) => { failures += client_read(connection, big) }

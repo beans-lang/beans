@@ -31,6 +31,12 @@
 #define SIMDUTF_FEATURE_UTF16 0
 #define SIMDUTF_FEATURE_UTF32 0
 #define SIMDUTF_FEATURE_BASE64 1
+// simdutf's PPC64 kernel uses VSX instructions. The big-endian ppc64 target
+// keeps the older portable CPU baseline, so select the scalar kernel there.
+#if defined(__powerpc64__) && !defined(__VSX__)
+#define SIMDUTF_IMPLEMENTATION_PPC64 0
+#define SIMDUTF_IMPLEMENTATION_FALLBACK 1
+#endif
 #include "vendor/simdutf/simdutf.cpp"
 
 // Encoding ids shared with base64.b.
