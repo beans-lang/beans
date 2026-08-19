@@ -1398,6 +1398,17 @@ fn main() {
                                         csrc_selected(
                                             loader.csrc_rows,
                                             selected))
+                                // The same module split into standalone
+                                // chunks for the parallel backend, or an
+                                // empty list when this build wants the one
+                                // module it already has.
+                                let chunks: List<string> =
+                                    emitter.chunk_modules(
+                                        native_chunk_count(
+                                            emit_kind,
+                                            selected.object_format,
+                                            lto, debug_build,
+                                            emitted.len()))
                                 let built: bool =
                                     driver.build(
                                         file_path, emitted,
@@ -1411,7 +1422,8 @@ fn main() {
                                             } else {
                                                 ""
                                             },
-                                            file_path))
+                                            file_path),
+                                        chunks)
                                 for diagnostic: Diagnostic in
                                     driver.errors {
                                     io.eprintln(

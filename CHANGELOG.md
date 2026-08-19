@@ -108,6 +108,19 @@ This file records user-facing changes in each Beans release.
 
 ### Changed
 
+- A native build of a large program compiles in parallel and caches what it
+  compiled. `beansc build` splits a module over about four megabytes into a
+  fixed set of standalone chunks, hands each to its own Clang, and links the
+  objects; each object is keyed by its chunk's content, so a rebuild only
+  re-compiles the chunks whose code moved. Building the compiler itself went
+  from 5.5s to 4.5s cold, and a rebuild after a one-line edit re-compiles one
+  chunk of eight. How many chunks there are is fixed rather than taken from
+  the machine, so the binary does not depend on how many cores built it;
+  `BEANS_BUILD_JOBS` caps how many Clangs run at once, and
+  `BEANS_BUILD_JOBS=1` asks for the single-Clang build. `--emit ir` still
+  writes one `.ll` file, and `--emit obj`, `static`, `shared`, `--debug`,
+  `-flto` and wasm builds are unchanged.
+
 - A plain `beansc build` no longer optimizes. It passes `-O0` where it used
   to pass `-O2`, because the loop that command belongs to is edit, build,
   run, and the optimizer was most of the wait: building the compiler itself

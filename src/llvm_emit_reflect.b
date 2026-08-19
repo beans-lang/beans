@@ -351,10 +351,10 @@ partial class LlvmTextEmitter {
         return output
     }
 
-    fn emit_globals() -> string {
-        // chunks, joined once at the end: one literal per program string
-        // means thousands of appends, and re-interpolating "{output}{next}"
-        // recopied the whole globals blob on every one
+    // Record layouts are type definitions, not symbols. A split module has to
+    // repeat them in every chunk, so they are printed apart from the
+    // definitions exactly one chunk owns.
+    fn emit_record_types() -> string {
         var output: List<string> = []
         for layout: LlvmRecordLayout in
             self.ordered_record_layouts {
@@ -370,6 +370,14 @@ partial class LlvmTextEmitter {
                     "{record_name} = type \{{layout.llvm_fields.join(", ")}\}\n")
             }
         }
+        return output.join("")
+    }
+
+    fn emit_global_definitions() -> string {
+        // chunks, joined once at the end: one literal per program string
+        // means thousands of appends, and re-interpolating "{output}{next}"
+        // recopied the whole globals blob on every one
+        var output: List<string> = []
         for id: int in 0..self.strings.len() {
             let value: string = self.strings[id]
             let size: int = value.len() + 1

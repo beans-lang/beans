@@ -386,6 +386,105 @@ fn net_bridge_link_arguments(
     return move arguments
 }
 
+// ---- the chunked parallel backend ----
+//
+// One clang on the compiler's own 25MB of IR is the longest single step of a
+// self-build, and it uses one core while the other seven wait. `--emit bin`
+// splits the module into standalone chunks, compiles them with concurrent
+// clang processes, and links the objects.
+//
+// The chunk count is a constant, not the machine's core count. The partition
+// decides which symbols land in which object and therefore the bytes of the
+// final binary, and a binary must not depend on how many cores built it —
+// the fixed-point gate compares binaries built on different runs, and people
+// compare them across machines. BEANS_BUILD_JOBS only decides how many of
+// those compiles run at once, so it changes the wall time and nothing else.
+// Asking for one job asks for the single-module path instead.
+fn native_chunk_count(emit: string,
+                      object_format: string,
+                      lto: bool,
+                      debug: bool,
+                      ir_bytes: int) -> int {
+    if emit != "bin" { return 1 }
+    // -flto hands the whole module to the linker anyway, and a wasm build
+    // links through a different command entirely
+    if lto { return 1 }
+    if object_format == "wasm" { return 1 }
+    // `--debug` asks for a build to look at, not a fast one, and on Darwin
+    // the debug bundle is a step Clang only takes when it compiles and links
+    // in one command. A build that wants a debugger keeps the whole module.
+    if debug { return 1 }
+    // Under a few megabytes one clang is already quick, and every chunk
+    // repeats the declarations and costs its own process.
+    if ir_bytes < 4194304 { return 1 }
+    if native_build_jobs(native_chunk_limit()) == 1 {
+        return 1
+    }
+    return native_chunk_limit()
+}
+
+fn native_chunk_limit() -> int {
+    return 8
+}
+
+fn native_build_jobs(chunks: int) -> int {
+    match os.env("BEANS_BUILD_JOBS") {
+        some(value) => {
+            let asked: int = value.trim().to_int().or(0)
+            if asked >= 1 {
+                if asked < chunks { return asked }
+                return chunks
+            }
+        }
+        none => {}
+    }
+    return chunks
+}
+
+// A cached object is trusted when the length it was published with is still
+// its length. The cache is only ever written by renaming a finished file
+// into place, so a half-written object cannot appear through normal use;
+// this catches the one something else truncated, and re-compiles rather than
+// handing the linker a file it cannot read. What it does not catch is a byte
+// changed in place without changing the length — neither does any other
+// cache here, and a malformed object still stops the link with the file
+// named rather than reaching the binary.
+fn native_chunk_receipt(object: string) -> string {
+    return "{object}.len"
+}
+
+fn native_chunk_object_ready(object: string) -> bool {
+    if !File.exists(object) { return false }
+    var published: int = -1
+    match fs.read(native_chunk_receipt(object)) {
+        ok(text) => {
+            published = text.trim().to_int().or(-1)
+        }
+        err(_) => {}
+    }
+    if published < 0 { return false }
+    match File.size(object) {
+        ok(size) => { return size == published }
+        err(_) => { return false }
+    }
+}
+
+// The object first, then its length: a reader that finds the receipt always
+// finds the object it describes.
+fn native_chunk_publish(staging: string, object: string) {
+    csrc_publish(staging, object)
+    match File.size(object) {
+        ok(size) => {
+            match fs.write(
+                native_chunk_receipt(object), "{size}\n") {
+                ok(_) => {}
+                err(_) => {}
+            }
+        }
+        err(_) => {}
+    }
+}
+
 class NativeBuildDriver {
     target: TargetDescription
     cpu: string
@@ -1182,12 +1281,231 @@ class NativeBuildDriver {
         return File.exists(target)
     }
 
+    // Everything a chunk compile passes Clang, in command-line order. One
+    // list feeds both the cache key and the invocation, so a flag can never
+    // change an object without changing its cache path. These are exactly the
+    // compile-side flags the single-module link line carries: the link-only
+    // ones — -fuse-ld, -static, -Wl, -l — have no place on a -c.
+    fn chunk_compile_flags() -> List<string> {
+        var flags: List<string> = []
+        flags.push(self.optimization_flag())
+        if self.release { flags.push("-DNDEBUG") }
+        for flag: string in self.debug_flags() {
+            flags.push(flag)
+        }
+        if self.runtime_profile == "freestanding" {
+            flags.push("-ffreestanding")
+            flags.push("-fno-stack-protector")
+            flags.push("-D_FORTIFY_SOURCE=0")
+            flags.push("-DBEANS_RT_PROFILE=1")
+        } else if self.target.os != "windows" {
+            flags.push("-pthread")
+        }
+        flags.push("-Wno-override-module")
+        for flag: string in self.target_flag_list() {
+            flags.push(flag)
+        }
+        return move flags
+    }
+
+    // The cache key covers everything that can change the emitted object: the
+    // chunk's own IR, the target and its CPU/feature selection, the runtime
+    // profile, optimization and debug mode, the exact compiler and its
+    // version, every effective compile flag, and the compiler's own release
+    // with the runtime ABI it speaks.
+    //
+    // The IR is folded into the same two hashes as the key rather than
+    // pasted onto it: a chunk is megabytes, and joining them first would copy
+    // every one of those bytes to hash them once.
+    fn chunk_cache_key(identity: string,
+                       flags: string,
+                       text: string) -> string {
+        let blob: string =
+            "chunk-1|{self.target.triple}|{self.target.llvm_triple()}|{self.cpu}|{self.target.features.join(",")}|{self.runtime_profile}|{self.release}|{self.debug}|{self.lto}|{self.sysroot}|{identity}|{flags}|{compiler_banner()}"
+        var hash: int = 0
+        var mixed: int = 0
+        for index: int in 0..blob.len() {
+            let byte: int = blob.byte_at(index)
+            hash = (hash * 131 + byte) % 2147483647
+            mixed =
+                (mixed * 16777619 + byte + index % 7) %
+                2147483629
+        }
+        for index: int in 0..text.len() {
+            let byte: int = text.byte_at(index)
+            hash = (hash * 131 + byte) % 2147483647
+            mixed =
+                (mixed * 16777619 + byte + index % 7) %
+                2147483629
+        }
+        return "{hash}x{mixed}"
+    }
+
+    // One object per chunk: reused when its key is already on disk, compiled
+    // by one of the concurrent Clangs when it is not. The returned order is
+    // the chunk order, never the order the compiles finished, so the link
+    // line — and the binary — does not depend on the scheduler.
+    fn cached_chunk_objects(compiler: string,
+                            artifact_name: string,
+                            chunks: List<string>) -> List<string> {
+        var objects: List<string> = []
+        let identity: string =
+            encoding_compiler_identity(compiler)
+        let flags: List<string> = self.chunk_compile_flags()
+        let printed: string = flags.join(" ")
+        var sources: List<string> = []
+        var staged: List<string> = []
+        var pending: int = 0
+        var failed: bool = false
+        for index: int in 0..chunks.len() {
+            if failed { continue }
+            let key: string =
+                self.chunk_cache_key(
+                    identity, printed, chunks[index])
+            let stem: string =
+                "beans_chunk.{artifact_name}.{self.target.triple}.{index}.{key}"
+            let object: string =
+                path.join("build", "{stem}.o")
+            objects.push(object)
+            if native_chunk_object_ready(object) {
+                sources.push("")
+                staged.push("")
+                continue
+            }
+            let source: string =
+                path.join("build", "{stem}.ll")
+            // The name is addressed by the chunk's own content, so two
+            // concurrent builds of the same program write the same bytes to
+            // the same path and a third reading it sees whole content —
+            // and object files that embed their input's filename still
+            // rebuild byte for byte.
+            if !self.publish_scratch(
+                   source, chunks[index]) {
+                failed = true
+                continue
+            }
+            sources.push(source)
+            staged.push(csrc_staging_name(object))
+            pending += 1
+        }
+        if !failed && pending != 0 {
+            failed =
+                !self.compile_chunks(
+                    compiler, flags, sources, staged,
+                    native_build_jobs(chunks.len()))
+        }
+        if failed {
+            objects.clear()
+            return move objects
+        }
+        if pending == 0 { return move objects }
+        for index: int in 0..chunks.len() {
+            if staged[index] == "" { continue }
+            native_chunk_publish(
+                staged[index], objects[index])
+            // the chunk module has done its job; a failed compile keeps
+            // its own, which is the one worth looking at
+            match File.remove(sources[index]) {
+                ok(_) => {}
+                err(_) => {}
+            }
+        }
+        return move objects
+    }
+
+    // A `Child` owns a pid and three pipes, so it is move-only and can only
+    // reach the list it is waited on from through a move. `?` is the spelling
+    // that moves one out of the Result it arrives in.
+    fn start_chunk(command: process.Command,
+                   running: List<process.Child>) -> Result<int> {
+        running.push(command.start()?)
+        return ok(running.len())
+    }
+
+    // `jobs` Clangs at a time. They are started together and then waited for
+    // in order, which is safe even though each one owns a pipe: a child that
+    // fills its stderr only stops until its turn comes, and the child being
+    // drained is never waiting on anyone.
+    fn compile_chunks(compiler: string,
+                      flags: List<string>,
+                      sources: List<string>,
+                      objects: List<string>,
+                      jobs: int) -> bool {
+        var succeeded: bool = true
+        var next: int = 0
+        for next < sources.len() {
+            var running: List<process.Child> = []
+            var names: List<string> = []
+            var started: int = 0
+            for started < jobs &&
+                next < sources.len() {
+                let source: string = sources[next]
+                if source == "" {
+                    next += 1
+                    continue
+                }
+                let command: process.Command =
+                    new process.Command(compiler)
+                for flag: string in flags {
+                    command.arg(flag)
+                }
+                command.arg("-c")
+                command.arg(source)
+                command.arg("-o")
+                command.arg(objects[next])
+                match self.start_chunk(
+                          command, running) {
+                    ok(_) => { names.push(source) }
+                    err(error) => {
+                        self.fail(
+                            source,
+                            "cannot start Clang: {error.msg}")
+                        succeeded = false
+                    }
+                }
+                next += 1
+                started += 1
+            }
+            for index: int in 0..running.len() {
+                var message: string = ""
+                match running[index].stderr.read_to_end(
+                          1048576) {
+                    ok(text) => {
+                        message = text.to_string().trim()
+                    }
+                    err(_) => {}
+                }
+                match running[index].wait() {
+                    ok(status) => {
+                        if status != 0 {
+                            if message == "" {
+                                message =
+                                    "Clang failed (exit {status})"
+                            }
+                            self.fail(
+                                names[index], message)
+                            succeeded = false
+                        }
+                    }
+                    err(error) => {
+                        self.fail(
+                            names[index],
+                            "cannot wait for Clang: {error.msg}")
+                        succeeded = false
+                    }
+                }
+            }
+        }
+        return succeeded
+    }
+
     fn build(source: string, llvm: string,
              ffi: string,
              written_output: string,
              emit: string,
              written_archiver: string,
-             artifact_name: string) -> bool {
+             artifact_name: string,
+             chunks: List<string>) -> bool {
         var output: string = written_output
         if output == "" {
             if emit == "static" {
@@ -1245,6 +1563,16 @@ class NativeBuildDriver {
                 return false
             }
         }
+        // The caller only prepares chunks for a build that can use them; the
+        // rest of this decision is the driver's own, and repeating it here
+        // keeps a caller that hands over chunks for an -flto or wasm build
+        // from taking a path those cannot travel.
+        let chunked: bool =
+            emit == "bin" &&
+            chunks.len() > 1 &&
+            !self.lto &&
+            !self.debug &&
+            self.target.object_format != "wasm"
         // Concurrent builds of entries sharing a stem — every project's
         // main.b, say — must not share scratch files, or interleaved
         // writes hand Clang a torn module. The transient name is
@@ -1267,18 +1595,29 @@ class NativeBuildDriver {
             path.join(
                 "build",
                 "{artifact_name}{scratch_tag}.ll")
-        if !self.publish_scratch(ir_path, llvm) {
-            return false
-        }
-        // the stable spelling persists as an inspectable copy — tests
-        // and humans read build/<name>.ll after a build — while Clang
-        // always compiles the content-addressed file above, so
-        // concurrent builds can tear this copy without tearing a compile
-        if scratch_tag != "" {
+        if chunked {
+            // Clang reads the chunks, each addressed by its own content, so
+            // the whole module is only ever read by a person: one stable
+            // copy, and none of the megabytes the transient one would cost.
             match fs.write(
                 path.join("build", "{artifact_name}.ll"), llvm) {
                 ok(_) => {}
                 err(_) => {}
+            }
+        } else {
+            if !self.publish_scratch(ir_path, llvm) {
+                return false
+            }
+            // the stable spelling persists as an inspectable copy — tests
+            // and humans read build/<name>.ll after a build — while Clang
+            // always compiles the content-addressed file above, so
+            // concurrent builds can tear this copy without tearing a compile
+            if scratch_tag != "" {
+                match fs.write(
+                    path.join("build", "{artifact_name}.ll"), llvm) {
+                    ok(_) => {}
+                    err(_) => {}
+                }
             }
         }
         // extern "C" wrappers ride as generated C so Clang owns the
@@ -1588,6 +1927,16 @@ class NativeBuildDriver {
             return true
         }
 
+        // The module's own chunks, compiled in parallel and cached by
+        // content, before the link that reads them.
+        var chunk_objects: List<string> = []
+        if chunked {
+            chunk_objects =
+                self.cached_chunk_objects(
+                    compiler, artifact_name, chunks)
+            if chunk_objects.len() == 0 { return false }
+        }
+
         var command: process.Command =
             new process.Command(compiler)
         let runtime_object: string =
@@ -1641,7 +1990,15 @@ class NativeBuildDriver {
                     "-Wl,--no-insert-timestamp"
                 })
         }
-        command.arg(ir_path)
+        if chunked {
+            // chunk order, not completion order: the link line is what
+            // decides the layout of the binary
+            for chunk_object: string in chunk_objects {
+                command.arg(chunk_object)
+            }
+        } else {
+            command.arg(ir_path)
+        }
         if ffi_path != "" {
             command.arg(ffi_path)
         }
