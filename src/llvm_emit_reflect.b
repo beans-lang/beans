@@ -352,7 +352,10 @@ partial class LlvmTextEmitter {
     }
 
     fn emit_globals() -> string {
-        var output: string = ""
+        // chunks, joined once at the end: one literal per program string
+        // means thousands of appends, and re-interpolating "{output}{next}"
+        // recopied the whole globals blob on every one
+        var output: List<string> = []
         for layout: LlvmRecordLayout in
             self.ordered_record_layouts {
             let type: HirType = layout.instance
@@ -360,29 +363,29 @@ partial class LlvmTextEmitter {
                 llvm_record_instance_name(type)
             if self.type_needs_explicit_record_layout(
                    type) {
-                output =
-                    "{output}{record_name} = type <\{{layout.llvm_fields.join(", ")}\}>\n"
+                output.push(
+                    "{record_name} = type <\{{layout.llvm_fields.join(", ")}\}>\n")
             } else {
-                output =
-                    "{output}{record_name} = type \{{layout.llvm_fields.join(", ")}\}\n"
+                output.push(
+                    "{record_name} = type \{{layout.llvm_fields.join(", ")}\}\n")
             }
         }
         for id: int in 0..self.strings.len() {
             let value: string = self.strings[id]
             let size: int = value.len() + 1
             let bits: int = value.len() * 8
-            output =
-                "{output}@.next.str{id} = private unnamed_addr constant \{i64, i64, [{size} x i8]\} \{i64 4611686018427387904, i64 {bits}, [{size} x i8] c\"{llvm_escape_bytes(value)}\\00\"\}\n"
+            output.push(
+                "@.next.str{id} = private unnamed_addr constant \{i64, i64, [{size} x i8]\} \{i64 4611686018427387904, i64 {bits}, [{size} x i8] c\"{llvm_escape_bytes(value)}\\00\"\}\n")
         }
         for schema: string in self.json_schema_globals {
-            output = "{output}{schema}"
+            output.push(schema)
         }
         for schema: string in self.xml_schema_globals {
-            output = "{output}{schema}"
+            output.push(schema)
         }
         for tag: int in 0..self.maximum_enum_tag + 1 {
-            output =
-                "{output}@.next.enumtag{tag} = private unnamed_addr constant \{i64, i64, i64\} \{i64 4611686018427387904, i64 1, i64 {tag}\}\n"
+            output.push(
+                "@.next.enumtag{tag} = private unnamed_addr constant \{i64, i64, i64\} \{i64 4611686018427387904, i64 1, i64 {tag}\}\n")
         }
         for layout: LlvmClassLayout in
             self.ordered_class_layouts {
@@ -423,14 +426,14 @@ partial class LlvmTextEmitter {
                     layout.pointer_offsets {
                     offsets.push("i64 {offset}")
                 }
-                output =
-                    "{output}@.next.classshape{layout.id} = internal constant \{i64, [{offsets.len()} x i64]\} \{i64 {offsets.len()}, [{offsets.len()} x i64] [{offsets.join(", ")}]\}\n"
+                output.push(
+                    "@.next.classshape{layout.id} = internal constant \{i64, [{offsets.len()} x i64]\} \{i64 {offsets.len()}, [{offsets.len()} x i64] [{offsets.join(", ")}]\}\n")
                 shape = "@.next.classshape{layout.id}"
             }
-            output =
-                "{output}@.next.class{layout.id} = internal constant \{i64, ptr, [{count} x ptr]\} \{i64 {layout.id}, ptr {shape}, [{count} x ptr] [{slots.join(", ")}]\}\n"
+            output.push(
+                "@.next.class{layout.id} = internal constant \{i64, ptr, [{count} x ptr]\} \{i64 {layout.id}, ptr {shape}, [{count} x ptr] [{slots.join(", ")}]\}\n")
         }
-        return output
+        return output.join("")
     }
 
     // MIR keeps the queried type as a zero-code operand. Fold the

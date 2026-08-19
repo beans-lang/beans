@@ -1527,16 +1527,18 @@ partial class LlvmTextEmitter {
         // blocks are emitted first so spill slots they request can land as
         // entry allocas — a mid-loop alloca would grow the stack every pass
         var values: Map<int, string> = {}
-        var body: string = ""
+        // chunks, joined once below: re-interpolating "{body}{next}" per
+        // instruction recopied the whole function text every time
+        var chunks: List<string> = []
         for block: MirBlock in function.blocks {
             if !block.reachable { continue }
-            body = "{body}bb{block.id}:\n"
+            chunks.push("bb{block.id}:\n")
             for instruction: MirInstruction in
                 block.instructions {
                 if instruction.removed { continue }
                 let errors_before: int = self.errors.len()
-                body =
-                    "{body}{self.emit_instruction(function, instruction, values)}"
+                chunks.push(
+                    self.emit_instruction(function, instruction, values))
                 // An instruction that failed still defines its
                 // destination: the first error is the diagnosis, and a
                 // "cannot find vN" per downstream use would only bury it.
@@ -1546,9 +1548,10 @@ partial class LlvmTextEmitter {
                     values[instruction.result] = "poison"
                 }
             }
-            body =
-                "{body}{self.emit_terminator(function, block, values, is_main)}"
+            chunks.push(
+                self.emit_terminator(function, block, values, is_main))
         }
+        let body: string = chunks.join("")
         let feature_attribute: string =
             if function.required_feature == "" {
                 ""
