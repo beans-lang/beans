@@ -351,6 +351,38 @@ fn net_bridge_include_flags(root: string, feature: string) -> List<string> {
     return move flags
 }
 
+// The vendored libraries normally get these defines from configure-generated
+// headers. Beans builds their sources directly, so keep the small platform
+// part of that configuration next to the shared include flags. Both native
+// builds and the interpreter use this list.
+fn net_bridge_platform_flags(
+    feature: string, target_os: string,
+    target_env: string) -> List<string> {
+    var flags: List<string> = []
+    if (feature == "h2" || feature == "ws") &&
+       target_os != "windows" {
+        flags.push("-DHAVE_ARPA_INET_H")
+        flags.push("-DHAVE_NETINET_IN_H")
+    }
+    if feature == "ws" && target_os == "windows" {
+        flags.push("-DHAVE_WINSOCK2_H")
+    }
+    if feature == "h2" && target_os == "windows" {
+        // nghttp2's public header otherwise marks every call as dllimport.
+        // We compile its vendored sources into the same executable or bridge
+        // DLL, so these are static definitions, not a separate nghttp2 DLL.
+        flags.push("-DNGHTTP2_STATICLIB")
+    }
+    // MSVC has ptrdiff_t but no POSIX ssize_t. nghttp2's implementation
+    // still exposes its old ssize_t wrappers beside the newer ptrdiff_t API.
+    if (feature == "h2" || feature == "ws") &&
+       target_os == "windows" &&
+       target_env == "msvc" {
+        flags.push("-Dssize_t=ptrdiff_t")
+    }
+    return move flags
+}
+
 // Platform libraries a feature's bridge stands on, appended to the link and
 // to the interpreter's bridge-library build. The hash and TLS bridges use
 // the OS's own crypto rather than vendored implementations.
@@ -983,6 +1015,11 @@ class NativeBuildDriver {
         if pic { flags.push("-fPIC") }
         for flag: string in
             net_bridge_include_flags(net_source_root(), feature) {
+            flags.push(flag)
+        }
+        for flag: string in
+            net_bridge_platform_flags(
+                feature, self.target.os, self.target.env) {
             flags.push(flag)
         }
         for flag: string in self.target_flag_list() {
