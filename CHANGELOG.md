@@ -108,6 +108,14 @@ This file records user-facing changes in each Beans release.
 
 ### Changed
 
+- A plain `beansc build` no longer optimizes. It passes `-O0` where it used
+  to pass `-O2`, because the loop that command belongs to is edit, build,
+  run, and the optimizer was most of the wait: building the compiler itself
+  went from 26.1s to 16.4s on the same machine. `--release` is unchanged and
+  is how you ask for a fast binary (`-O3`, `NDEBUG`), `--debug` is unchanged
+  (`-O0` plus debug information). `make` builds `beansc` itself with
+  `--release`, so the compiler you run stays optimized.
+
 - The C++ stage-0 bootstrap is gone. A released `beansc` builds the next one.
   The differential gates that used stage 0 as their second implementation now
   compare the tree interpreter against the native backend, and the generated

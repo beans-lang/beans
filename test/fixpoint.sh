@@ -17,7 +17,10 @@ set -euo pipefail
 # Both stages are written to the SAME path and moved aside afterwards. The
 # compiler records its output path inside the binary it produces, so two
 # stages built to different paths differ for that reason alone and would
-# prove nothing.
+# prove nothing. Both stages also use the SAME flags, for the same reason:
+# `--release`, which is what `make` builds the compiler with, so the stages
+# are the kind of binary this project actually hands people, and stage 2 is
+# optimized enough to build stage 3 without the gate dragging.
 
 cd "$(dirname "$0")/.."
 compiler="${BEANSC:-$PWD/build/beansc}"
@@ -26,10 +29,10 @@ trap 'rm -rf "$tmp"' EXIT
 
 echo "checking the self-hosting fixed point"
 
-"$compiler" build src/main.b -o "$tmp/beansc" >"$tmp/stage2.log"
+"$compiler" build --release src/main.b -o "$tmp/beansc" >"$tmp/stage2.log"
 mv "$tmp/beansc" "$tmp/stage2"
 
-"$tmp/stage2" build src/main.b -o "$tmp/beansc" >"$tmp/stage3.log"
+"$tmp/stage2" build --release src/main.b -o "$tmp/beansc" >"$tmp/stage3.log"
 mv "$tmp/beansc" "$tmp/stage3"
 
 # macOS ships shasum but not sha256sum; Git Bash on Windows is the reverse.

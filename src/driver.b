@@ -595,12 +595,17 @@ class NativeBuildDriver {
         return false
     }
 
-    // -O0 in a debug build: an optimized build reorders and inlines away the
-    // very code a person set out to look at.
+    // A plain `beansc build` optimizes for the edit-build-run loop, not for
+    // the binary it produces, so it runs no optimizer: on the compiler's own
+    // 31MB of IR clang spends about nine seconds at -O2 and about two at -O0,
+    // and that difference is most of what a developer waits for. `--release`
+    // is the request for a fast binary. -O0 in a debug build is a separate
+    // reason: an optimized build reorders and inlines away the very code a
+    // person set out to look at.
     fn optimization_flag() -> string {
         if self.debug { return "-O0" }
         if self.release { return "-O3" }
-        return "-O2"
+        return "-O0"
     }
 
     // What the platform's debugger needs. `-g` is the portable spelling; on

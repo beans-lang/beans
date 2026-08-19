@@ -28,6 +28,7 @@ fn print_usage() {
     io.eprintln("       beansc --version")
     io.eprintln("")
     io.eprintln("build options:")
+    io.eprintln("  (no flag)              -O0, for a fast edit-build-run loop")
     io.eprintln("  --release              -O3, NDEBUG")
     io.eprintln("  --debug                -O0, debug information, frame pointers")
     io.eprintln("  --lto                  link-time optimization")
