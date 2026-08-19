@@ -47,7 +47,7 @@ jobs:
       - name: Install toolchain
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
+          bash .github/scripts/apt-update.sh
           sudo apt-get install -y --no-install-recommends clang lld llvm
 
       - name: Build the compilers

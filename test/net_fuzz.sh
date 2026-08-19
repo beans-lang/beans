@@ -18,8 +18,8 @@
 #
 # Env (run/soak): NET_FUZZ_START (first seed, default 1), NET_FUZZ_SEEDS
 # (seed count, default 5), NET_FUZZ_OPS (ops per case, default 800),
-# NET_FUZZ_SECONDS (soak budget, default 300), POLL_SCALE_IDLE (soak-lane
-# poller population, default 4000 there, 400 elsewhere).
+# NET_FUZZ_SECONDS (soak budget, default 24 hours), POLL_SCALE_IDLE
+# (soak-lane poller population, default 10,000 there, 400 elsewhere).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/beans-net-fuzz.XXXXXX")
@@ -30,9 +30,9 @@ mode=${1:-smoke}
 start=${NET_FUZZ_START:-1}
 seeds=${NET_FUZZ_SEEDS:-5}
 ops=${NET_FUZZ_OPS:-800}
-soak_seconds=${NET_FUZZ_SECONDS:-300}
+soak_seconds=${NET_FUZZ_SECONDS:-86400}
 
-ulimit -n 4096 2>/dev/null || true
+ulimit -n 32768 2>/dev/null || true
 
 echo "building the fuzz drivers"
 # Report a build failure rather than dying silently under `set -e`: a soak
@@ -48,6 +48,9 @@ build_driver() {
 for driver in sock_fuzz poll_fuzz http_fuzz compress_fuzz websocket_fuzz http2_fuzz; do
     build_driver "$driver"
 done
+if [[ "$mode" == "soak" ]]; then
+    build_driver poll_semantics
+fi
 
 fail() {
     echo "net fuzz FAILED: $*" >&2
@@ -128,7 +131,10 @@ elif [[ "$mode" == soak ]]; then
     # Wall-clock bounded; every iteration is still fully seeded, so any
     # failure names the seed that reproduces it. The poller lane runs its
     # scale section at soak size.
-    export POLL_SCALE_IDLE=${POLL_SCALE_IDLE:-4000}
+    export POLL_SCALE_IDLE=${POLL_SCALE_IDLE:-10000}
+    "$tmp/poll_semantics" >"$tmp/poll_scale.out"
+    diff -u test/cases/poll_semantics.out "$tmp/poll_scale.out" ||
+        fail "10,000-idle/100-active poll scale gate"
     deadline=$(( $(date +%s) + soak_seconds ))
     seed=$start
     cases=0

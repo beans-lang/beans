@@ -113,6 +113,11 @@ run_cross() {
 }
 
 export BEANS_RUNTIME="$root/runtime/beans_rt.c"
+if [[ $(uname -s) == Darwin ]]; then
+    export DYLD_LIBRARY_PATH="$tmp${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+else
+    export LD_LIBRARY_PATH="$tmp${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
 cd "$tmp/ok"
 run_ok interp "$beansc" run main.b
 "$beansc" build main.b -o same_ok.bin >/dev/null

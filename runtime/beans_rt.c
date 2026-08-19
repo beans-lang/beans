@@ -1529,7 +1529,7 @@ static void cc_possible_root(void* p) {
 // unless a death actually cascades.
 // zeroing weak support, defined with the shared-handle machinery below
 static void rt_weak_invalidate(void* obj);
-static long long weak_live;
+static int weak_live;
 
 void beans_release(void* p) {
     if (!p) return;
@@ -1743,7 +1743,7 @@ typedef struct {
 static BWeakEntry* weak_entries;
 static long long weak_cap; // power of two, open addressing
 static long long weak_len;
-static long long weak_live; // lock-free guard for the hot free path
+static int weak_live; // lock-free guard for the hot free path
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
 static pthread_mutex_t weak_mu = PTHREAD_MUTEX_INITIALIZER;
 #define WEAK_LOCK() pthread_mutex_lock(&weak_mu)
@@ -1791,7 +1791,7 @@ static BSharedCtrl* weak_ctrl_for(void* obj) {
     weak_entries[at].obj = obj;
     weak_entries[at].ctrl = ctrl;
     weak_len += 1;
-    __atomic_store_n(&weak_live, weak_len, __ATOMIC_RELAXED);
+    __atomic_store_n(&weak_live, 1, __ATOMIC_RELAXED);
     return ctrl;
 }
 
@@ -1810,7 +1810,7 @@ static void weak_table_remove(long long at) {
         next = (next + 1) & (weak_cap - 1);
     }
     weak_len -= 1;
-    __atomic_store_n(&weak_live, weak_len, __ATOMIC_RELAXED);
+    __atomic_store_n(&weak_live, weak_len != 0, __ATOMIC_RELAXED);
 }
 
 // The referent is dying: nil every handle and drop the table's hold.
@@ -8709,7 +8709,11 @@ typedef struct {
     // the same-thread flavor: captures are unrestricted because every
     // invocation is checked against the registering thread
     int same_thread;
+#if defined(_WIN32)
+    DWORD owner;
+#else
     pthread_t owner;
+#endif
 } BStoredCallback;
 
 void* beans_stored_callback_new(void* closure, void* function) {
@@ -8737,7 +8741,11 @@ void* beans_stored_callback_new_same_thread(void* closure, void* function) {
     BStoredCallback* callback =
         (BStoredCallback*)beans_stored_callback_new(closure, function);
     callback->same_thread = 1;
+#if defined(_WIN32)
+    callback->owner = GetCurrentThreadId();
+#else
     callback->owner = pthread_self();
+#endif
     return callback;
 }
 
@@ -8748,7 +8756,11 @@ void* beans_stored_callback_enter(void* value) {
     // the whole same-thread contract, checked where every call begins;
     // panics never unwind, so a wrong-thread call stops the program
     if (callback->same_thread &&
+#if defined(_WIN32)
+        callback->owner != GetCurrentThreadId())
+#else
         !pthread_equal(callback->owner, pthread_self()))
+#endif
         beans_panic(
             "same-thread stored callback invoked from another thread", 0, 0);
     pthread_mutex_lock(&callback->mutex);

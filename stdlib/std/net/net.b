@@ -133,12 +133,23 @@ fn unpack_datagram(parts: List<Bytes>) -> Datagram {
 
 // ---- TCP streams ------------------------------------------------------------
 
+/// The byte-stream shape used by protocol codecs. A raw TCP stream and a TLS
+/// stream both implement it, so HTTP/2 and WebSocket framing do not need a
+/// second copy for secure transport.
+pub interface ByteStream {
+    fn write_all(data: Bytes) -> Result<int>
+    fn read(max: int) -> Result<Bytes>
+    fn shutdown_write() -> Result<bool>
+    fn close() -> Result<bool>
+    fn poll_handle() -> int
+}
+
 /// A connected TCP socket.
 ///
 /// Move-only: pass it with `move`, take it out of a `Result` with `?`. It closes when
 /// its owner goes away, and `close()` exists only so a caller who wants to see the
 /// error can.
-pub unique class TcpStream {
+pub unique class TcpStream implements ByteStream {
     fd: int
     live: bool = true
 
@@ -176,7 +187,7 @@ pub unique class TcpStream {
     }
 
     /// Writes all of `data`, looping over short writes. Reports the total.
-    pub fn write_all(data: Bytes) -> Result<int> {
+    pub override fn write_all(data: Bytes) -> Result<int> {
         if !self.live { return err("send: socket is closed", "closed") }
         var done: int = 0
         for done < data.len() {
@@ -205,7 +216,7 @@ pub unique class TcpStream {
 
     /// Reads up to `max` bytes. **An empty result means the peer closed**, which is
     /// the one fact a byte count cannot carry.
-    pub fn read(max: int) -> Result<Bytes> {
+    pub override fn read(max: int) -> Result<Bytes> {
         if !self.live { return err("recv: socket is closed", "closed") }
         return sock.recv(self.fd, max)
     }
@@ -250,9 +261,18 @@ pub unique class TcpStream {
         return sock.set_nonblocking(self.fd, on)
     }
 
+    /// Transfers ownership of the descriptor to a lower-level transport.
+    /// The returned handle must be closed by its new owner. The stream is
+    /// closed from Beans' point of view and will not close the handle again.
+    pub fn into_raw() -> Result<int> {
+        if !self.live { return err("into_raw: socket is closed", "closed") }
+        self.live = false
+        return ok(self.fd)
+    }
+
     /// Stops writing. The peer's next read sees EOF — this is how you say "I am done
     /// sending" without closing the socket you still want to read from.
-    pub fn shutdown_write() -> Result<bool> {
+    pub override fn shutdown_write() -> Result<bool> {
         if !self.live { return err("shutdown: socket is closed", "closed") }
         return sock.shutdown(self.fd, 1)
     }
@@ -265,7 +285,7 @@ pub unique class TcpStream {
 
     /// Closes it now and reports any error. Closing twice is an `err`, not a silent
     /// no-op, because the second call is always a bug in the caller.
-    pub fn close() -> Result<bool> {
+    pub override fn close() -> Result<bool> {
         if !self.live { return err("close: socket is closed", "closed") }
         self.live = false
         return sock.close(self.fd)
@@ -274,7 +294,7 @@ pub unique class TcpStream {
     /// The raw descriptor, **borrowed** — for registering with a poller. Never
     /// ownership: closing this number behind the handle's back is exactly the bug
     /// `unique` exists to prevent.
-    pub fn poll_handle() -> int {
+    pub override fn poll_handle() -> int {
         return self.fd
     }
 }

@@ -3,10 +3,25 @@ value with CR: safe=false expected=false
 value with LF: safe=false expected=false
 value with CRLF: safe=false expected=false
 value with NUL: safe=false expected=false
+value with control byte: safe=false expected=false
+value with DEL: safe=false expected=false
 empty value: safe=true expected=true
 response splitting via CRLF: refused=true kind=invalid
 bare LF in a value: refused=true kind=invalid
 colon in a header name: refused=true kind=invalid
+space in a header name: refused=true kind=invalid
 well-formed header: refused=false kind=
-status reason phrase: refused=true kind=too_large rounds=4
-chunk extension name: refused=true kind=too_large rounds=3
+request-line method injection: refused=true kind=invalid
+request-target injection: refused=true kind=invalid
+caller Transfer-Encoding: refused=true kind=invalid
+false Content-Length: refused=true kind=invalid
+duplicate Host: refused=true kind=invalid
+status below range: refused=true kind=invalid
+status above range: refused=true kind=invalid
+reason injection: refused=true kind=invalid
+body on 204: refused=true kind=invalid
+caller response framing: refused=true kind=invalid
+informational then final: 200:ok
+partial request EOF: refused=true kind=protocol
+status reason phrase: refused=true kind=too_large rounds=3
+chunk extension name: refused=true kind=too_large rounds=2

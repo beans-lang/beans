@@ -170,6 +170,24 @@ if os.path.isdir(".github/workflows"):
     if len(seeds) != len(set(seeds)):
         fail.append("differential-fuzz.yml shards share a seed: " + ",".join(seeds))
 
+    soak_path = ".github/workflows/net-soak.yml"
+    if not os.path.exists(soak_path):
+        fail.append("the scheduled networking soak workflow is missing")
+    else:
+        soak = open(soak_path).read()
+        starts = re.findall(r"start:\s*(\d+)", soak)
+        seconds = re.search(r'NET_FUZZ_SECONDS:\s*"(\d+)"', soak)
+        if "schedule:" not in soak:
+            fail.append("net-soak.yml has no schedule")
+        if len(starts) != 5 or len(starts) != len(set(starts)):
+            fail.append("net-soak.yml needs five disjoint seed shards")
+        if not seconds or int(seconds.group(1)) * len(starts) < 86400:
+            fail.append("net-soak.yml provides less than 24 aggregate fuzz hours")
+        if 'POLL_SCALE_IDLE: "10000"' not in soak:
+            fail.append("net-soak.yml lost the 10,000-idle poll scale")
+        if "make fuzz-net-soak" not in soak:
+            fail.append("net-soak.yml does not run the networking soak target")
+
 if fail:
     print("ci coverage check failed:", file=sys.stderr)
     for f in fail:

@@ -42,6 +42,15 @@ fn client(port: int) -> int {
                                         message(exchange) => {
                                             if exchange.status() != 200 { failures += 1 }
                                             if exchange.body.to_string() != "h2 works" { failures += 1 }
+                                            match exchange.response {
+                                                some(head) => {
+                                                    if head.status != 200 || head.major != 2 {
+                                                        failures += 1
+                                                    }
+                                                }
+                                                none => { failures += 1 }
+                                            }
+                                            if exchange.request.is_some() { failures += 1 }
                                             done = true
                                         }
                                         stream_closed(id, code) => {}
@@ -84,6 +93,17 @@ fn main() {
                                     match event {
                                         message(exchange) => {
                                             served += 1
+                                            match exchange.request {
+                                                some(head) => {
+                                                    if head.method != "GET" ||
+                                                       head.target != "/hello" ||
+                                                       head.major != 2 {
+                                                        served += 100
+                                                    }
+                                                }
+                                                none => { served += 100 }
+                                            }
+                                            if exchange.response.is_some() { served += 100 }
                                             io.println("server saw {exchange.method()} {exchange.path()}")
                                             let sent: Result<bool> = connection.respond(
                                                 exchange.id, 200, new http.Headers(),

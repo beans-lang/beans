@@ -49,16 +49,14 @@ pub unique class Server {
     /// Waits for the next connection.
     pub fn accept() -> Result<ServerConn> {
         let stream: net.TcpStream = self.listener.accept()?
-        let tuned: Result<bool> =
-            stream.set_timeouts(self.read_timeout_ms, self.read_timeout_ms)
+        stream.set_timeouts(self.read_timeout_ms, self.read_timeout_ms)?
         return ok(new ServerConn(move stream))
     }
 
     /// Waits at most `ms` milliseconds for a connection.
     pub fn accept_timeout(ms: int) -> Result<ServerConn> {
         let stream: net.TcpStream = self.listener.accept_timeout(ms)?
-        let tuned: Result<bool> =
-            stream.set_timeouts(self.read_timeout_ms, self.read_timeout_ms)
+        stream.set_timeouts(self.read_timeout_ms, self.read_timeout_ms)?
         return ok(new ServerConn(move stream))
     }
 }
@@ -69,6 +67,7 @@ pub unique class ServerConn {
     parser: RequestParser
     // Requests already parsed but not yet handed out (pipelining).
     ready: List<ServedRequest>
+    ready_head: int = 0
     building: ServedRequest = new ServedRequest()
     have_head: bool = false
     max_body: int = 8388608
@@ -89,8 +88,7 @@ pub unique class ServerConn {
 
     // Feeds one chunk through the parser and folds its events into the
     // request under construction. The `?` road owns the event list.
-    fn absorb(data: Bytes) -> Result<bool> {
-        let events: List<RequestEvent> = self.parser.feed(data)?
+    fn absorb_events(events: List<RequestEvent>) -> Result<bool> {
         for event: RequestEvent in events {
             match event {
                 head(request) => {
@@ -122,13 +120,17 @@ pub unique class ServerConn {
         return ok(true)
     }
 
+    fn absorb(data: Bytes) -> Result<bool> {
+        return self.absorb_events(self.parser.feed(data)?)
+    }
+
     /// Reads until one whole request is available. `ok(none)` means the
     /// client finished cleanly: connection closed between messages.
     pub fn read_request() -> Result<Option<ServedRequest>> {
         if !self.alive {
             return err("the connection is closed", "closed")
         }
-        for self.ready.len() == 0 {
+        for self.ready_head >= self.ready.len() {
             var data: Bytes = new Bytes(0)
             match self.stream.read(65536) {
                 ok(chunk) => { data = chunk }
@@ -139,10 +141,17 @@ pub unique class ServerConn {
             }
             if data.len() == 0 {
                 self.alive = false
-                if self.have_head {
-                    return err("the client closed mid-request", "eof")
+                let final_events: List<RequestEvent> = self.parser.finish()?
+                self.absorb_events(move final_events)?
+                if self.have_head || self.ready_head >= self.ready.len() {
+                    if self.have_head {
+                        return err("the client closed mid-request", "eof")
+                    }
+                    return ok(none)
                 }
-                return ok(none)
+                // A parser-completed request may still be returned below;
+                // the connection itself is no longer reusable.
+                break
             }
             match self.absorb(data) {
                 ok(_) => {}
@@ -152,7 +161,12 @@ pub unique class ServerConn {
                 }
             }
         }
-        let served: ServedRequest = self.ready.remove(0)
+        let served: ServedRequest = self.ready[self.ready_head]
+        self.ready_head += 1
+        if self.ready_head >= self.ready.len() {
+            self.ready.clear()
+            self.ready_head = 0
+        }
         return ok(some(served))
     }
 
@@ -167,10 +181,24 @@ pub unique class ServerConn {
         if !self.alive {
             return err("the connection is closed", "closed")
         }
+        check_response_line(status, reason)?
         check_headers(headers)?
+        if headers.has("Content-Length") || headers.has("Transfer-Encoding") {
+            return err("respond owns HTTP framing; do not supply Content-Length or Transfer-Encoding", "invalid")
+        }
+        if headers.has("Connection") {
+            return err("respond owns the Connection header through keep_alive", "invalid")
+        }
+        let body_forbidden: bool =
+            (status >= 100 && status < 200) || status == 204 || status == 304
+        if body_forbidden && body.len() != 0 {
+            return err("status {status} cannot carry a response body", "invalid")
+        }
         var head: Bytes = new Bytes(0)
         head.append_string("HTTP/1.1 {status} {reason}\r\n")
-        head.append_string("Content-Length: {body.len()}\r\n")
+        if !body_forbidden {
+            head.append_string("Content-Length: {body.len()}\r\n")
+        }
         if !keep_alive {
             head.append_string("Connection: close\r\n")
         }
@@ -189,7 +217,7 @@ pub unique class ServerConn {
         }
         if !keep_alive {
             self.alive = false
-            let closed: Result<bool> = self.stream.close()
+            return self.stream.close()
         }
         return ok(true)
     }

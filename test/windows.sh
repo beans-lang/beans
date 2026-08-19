@@ -431,14 +431,14 @@ if "$BEANSC" build --target $TRIPLE --linker lld src/main.b \
     # Windows target and the Linux beansc for this host, and the examples whose
     # content is POSIX (a /bin path, a signal, an RDHUP) rather than Beans.
     #
-    # ffi.b and the encoding examples are skipped for a different and narrower
-    # reason: their interpreter paths compile native C/C++ helpers. Wine has no
-    # Windows clang to run, so those paths are unreachable here — not broken,
-    # unreachable. The real-Windows hosted gate has a toolchain and keeps these
-    # cases with no exemption.
+    # ffi.b, the encoding examples, and the five networking bridge examples are
+    # skipped for a different and narrower reason: their interpreter paths
+    # compile native C/C++ helpers. Wine has no Windows clang.exe to run, so
+    # those paths are unreachable here. The real-Windows hosted gate has a
+    # native toolchain and keeps every one of these cases with no exemption.
     interp_skip="target_info.b cpu_dispatch.b intrinsics.b poller.b processes.b \
 child_process.b signals.b net.b threads.b ffi.b zero_copy_json.b \
-zero_copy_xml.b"
+zero_copy_xml.b compress.b crypto.b http.b http2.b websocket.b"
     hosted_ran=0
     for src in examples/*.b; do
         name=$(basename "$src")

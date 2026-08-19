@@ -129,7 +129,8 @@ class TreeInterpreter {
         if csrc_sources.len() != 0 {
             match csrc_run_library(
                 csrc_sources,
-                self.program.target.os) {
+                self.program.target.os,
+                self.program.target.triple) {
                 ok(library) => {
                     match host_dl.open(library) {
                         ok(handle) => {
@@ -11411,7 +11412,7 @@ class TreeInterpreter {
     }
 
     // Runs the C driver once with the packed argv; reports (status == 0)
-    // and captures stderr into self.net_error on failure.
+    // and captures linker stdout plus compiler stderr on failure.
     fn net_bridge_tool(argv: Bytes, c_driver: string) -> bool {
         let environment: Bytes = new Bytes(0)
         self.ffi_forward_env(environment, "PATH")
@@ -11428,11 +11429,17 @@ class TreeInterpreter {
                 new Bytes(0), 8388608) {
             ok(output) => {
                 let status: int = output.get(0).expect("compiler status").get_i64(0)
+                let normal_bytes: Bytes = output.get(1).expect("compiler stdout")
                 let error_bytes: Bytes = output.get(2).expect("compiler stderr")
                 compiled = status == 0
+                if normal_bytes.len() != 0 {
+                    compiler_error = normal_bytes.to_string()
+                }
                 if error_bytes.len() != 0 {
-                    compiler_error =
-                        error_bytes.to_string()
+                    if compiler_error != "" {
+                        compiler_error = "{compiler_error}\n"
+                    }
+                    compiler_error = "{compiler_error}{error_bytes.to_string()}"
                 }
             }
             err(error) => {
@@ -11499,7 +11506,20 @@ class TreeInterpreter {
                 return ""
             }
         }
-        let stamp: int = host_time.monotonic_nanos()
+        // Two interpreted threads can reach the same content cache before
+        // either has published the bridge.  Some hosts expose a coarse
+        // monotonic clock, so time alone can give both builds the same object
+        // names and let one build remove the other's inputs.  Keep the time
+        // prefix for diagnostics and add an OS-random nonce for staging.
+        var stamp: string = "{host_time.monotonic_nanos()}"
+        match host_random.bytes(8) {
+            ok(seed) => {
+                stamp = "{stamp}.{seed.get_u64(0)}"
+            }
+            err(_) => {
+                stamp = "{stamp}.{host_time.wall_nanos()}"
+            }
+        }
         let c_driver: string = self.ffi_c_driver()
         var objects: List<string> = []
         var object_index: int = 0
@@ -11522,6 +11542,12 @@ class TreeInterpreter {
                 self.ffi_pack_argument(argv, "-fvisibility=hidden")
                 for flag: string in
                     net_bridge_include_flags(root, feature) {
+                    self.ffi_pack_argument(argv, flag)
+                }
+                for flag: string in
+                    net_bridge_platform_flags(
+                        feature, self.program.target.os,
+                        self.program.target.env) {
                     self.ffi_pack_argument(argv, flag)
                 }
                 if self.program.target.os != "windows" {
@@ -11561,6 +11587,12 @@ class TreeInterpreter {
                 self.ffi_pack_argument(
                     argv,
                     "--target={self.program.target.llvm_triple()}")
+                if self.program.target.env == "msvc" {
+                    // The compiler's MSVC lane is already linked with lld.
+                    // Use it for the interpreter's multi-object bridge DLLs
+                    // too; link.exe rejects these staged cache paths.
+                    self.ffi_pack_argument(argv, "-fuse-ld=lld")
+                }
             }
             for object: string in objects {
                 self.ffi_pack_argument(argv, object)

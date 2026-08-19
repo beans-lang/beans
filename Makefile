@@ -166,6 +166,7 @@ test-runtime: $(BIN)
 	./test/atomics.sh
 	./test/cpu_features.sh
 	./test/clocks_random.sh
+	./test/net_bridge_api.sh
 	./test/net.sh
 	./test/poll.sh
 	./test/net_torture.sh
@@ -319,6 +320,7 @@ test-core: $(BIN)
 	./test/atomics.sh
 	./test/cpu_features.sh
 	./test/clocks_random.sh
+	./test/net_bridge_api.sh
 	./test/net.sh
 	./test/poll.sh
 	./test/net_torture.sh

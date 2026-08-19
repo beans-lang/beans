@@ -47,7 +47,7 @@ pub unique class Client {
     /// Connects with one deadline used for connecting, reading and writing.
     pub static fn connect_timeout(host: string, port: int, ms: int) -> Result<Client> {
         let stream: net.TcpStream = net.TcpStream.connect_timeout(host, port, ms)?
-        let tuned: Result<bool> = stream.set_timeouts(ms, ms)
+        stream.set_timeouts(ms, ms)?
         return ok(new Client(move stream, host, port))
     }
 
@@ -67,7 +67,23 @@ pub unique class Client {
         if !self.alive {
             return err("the connection is closed; connect again", "closed")
         }
+        check_request_line(method, target)?
         check_headers(headers)?
+        if headers.has("Transfer-Encoding") {
+            return err("the buffered client does not write Transfer-Encoding; pass a body and let it write Content-Length", "invalid")
+        }
+        if headers.all("Host").len() > 1 {
+            return err("an HTTP/1.1 request may carry only one Host header", "invalid")
+        }
+        let declared: Option<int> = content_length_for(headers)?
+        match declared {
+            some(length) => {
+                if length != body.len() {
+                    return err("Content-Length {length} does not match the {body.len()}-byte body", "invalid")
+                }
+            }
+            none => {}
+        }
         var head: Bytes = new Bytes(0)
         head.append_string("{method} {target} HTTP/1.1\r\n")
         if !headers.has("Host") {
@@ -78,7 +94,7 @@ pub unique class Client {
             }
             head.append_string("Host: {default_host}\r\n")
         }
-        if body.len() > 0 && !headers.has("Content-Length") {
+        if body.len() > 0 && declared.is_none() {
             head.append_string("Content-Length: {body.len()}\r\n")
         }
         for index: int in 0..headers.count() {
@@ -120,12 +136,18 @@ pub unique class Client {
         for event: ResponseEvent in events {
             match event {
                 head(response) => {
+                    if outcome == 1 {
+                        return err("the server sent more than one final response", "protocol")
+                    }
                     answer.status = response.status
                     answer.reason = response.reason
                     answer.headers = response.headers
                     answer.keep_alive = response.keep_alive
                 }
                 body(piece) => {
+                    if outcome == 1 {
+                        return err("the server sent bytes after its final response", "protocol")
+                    }
                     if gathered.len() + piece.len() > self.max_body {
                         return err("the response body exceeds {self.max_body} bytes; use the parser API to stream", "too_large")
                     }
@@ -133,8 +155,23 @@ pub unique class Client {
                 }
                 trailers(fields) => {}
                 done(keep_alive) => {
-                    outcome = 1
-                    if !keep_alive { self.alive = false }
+                    // Informational responses precede the one final response
+                    // for this request. A client that returns 100 Continue as
+                    // the answer loses the real response already in flight.
+                    if answer.status >= 100 && answer.status < 200 &&
+                       answer.status != 101 {
+                        answer.status = 0
+                        answer.reason = ""
+                        answer.headers = new Headers()
+                        answer.keep_alive = true
+                        gathered.resize(0)
+                    } else {
+                        if outcome == 1 {
+                            return err("the server completed more than one final response", "protocol")
+                        }
+                        outcome = 1
+                        if !keep_alive { self.alive = false }
+                    }
                 }
                 upgraded(response, remainder) => {
                     return err("the server upgraded the connection; speak the new protocol on the raw stream", "protocol")

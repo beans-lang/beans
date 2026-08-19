@@ -2494,6 +2494,17 @@ for event: http.Http2Event in session.run()? {
         goaway(last, code) => {}
     }
 }
+
+// TLS is a transport choice, not a second HTTP/2 message model. This call
+// requires ALPN to select h2 before it returns the same stream API.
+import std.http_tls
+let secure_h2 = http_tls.connect("example.test", 443)?
+
+// Large bodies can obey flow control instead of being staged whole.
+let id: int = secure_h2.request_headers(
+    "POST", "https", "example.test", "/upload", new http.Headers())?
+secure_h2.send_data(id, first_chunk, false)?
+secure_h2.send_data(id, last_chunk, true)?
 ```
 
 - **Parsing is push-based and cannot block.** `feed` takes whatever arrived
@@ -2528,6 +2539,9 @@ for event: http.Http2Event in session.run()? {
   carry the same `Headers`, pseudo-headers included in arrival order. There is
   no h2c upgrade dance; a connection speaks HTTP/2 because ALPN said so or
   because both sides knew in advance.
+- `request_headers` and `respond_headers` leave a stream open for
+  flow-controlled `send_data` chunks. Kind `would_block` means run the
+  connection to process WINDOW_UPDATE, then retry the same chunk.
 - `Content-Encoding: gzip` and `deflate` responses decompress through
   `std.compress` under the same body limit, so a compressed bomb is an error
   rather than an allocation.
@@ -2560,6 +2574,10 @@ socket.close(1000, "done")?
 // Server: std.http parses the upgrade, this takes the socket from there.
 let live: websocket.Connection =
     websocket.Connection.accept(move stream, request)?
+
+// WSS keeps the same framing and upgrade rules over a TLS byte stream.
+import std.websocket_tls
+let secure = websocket_tls.connect("example.test", 443, "/chat")?
 ```
 
 - **A message, not a frame.** `receive` yields whole messages; fragmentation,
@@ -2637,6 +2655,15 @@ io.println(secure.protocol())            // the ALPN protocol that was agreed
 secure.write_all(request)?
 let reply: Bytes = secure.read(16384)?   // empty = the peer sent close_notify
 secure.close()?
+
+// A server needs one empty-name default identity. Named entries are selected
+// by SNI; PEM chains and PKCS#12 bundles are both accepted.
+var identities: List<tls.TlsIdentity> = []
+identities.push(tls.TlsIdentity.pem("", cert, key))
+identities.push(tls.TlsIdentity.pkcs12("api.example.test", p12, password))
+let listener = tls.TlsListener.bind(
+    "0.0.0.0", 443, move identities, "h2,http/1.1")?
+let accepted = listener.accept()?
 ```
 
 - **The platform owns the cryptography.** macOS uses SecureTransport, Windows
@@ -2647,10 +2674,13 @@ secure.close()?
 - **A stream cut without `close_notify` is kind `eof`**, whether the transport
   ended in FIN or RST. That is the truncation attack surfaced rather than
   hidden; an empty `read` means a real, announced end.
-- **macOS negotiates TLS 1.2 at most.** SecureTransport never gained 1.3, so a
-  1.3-only peer is refused with kind `handshake` there and accepted elsewhere —
-  a clean refusal, never a silent downgrade. The API is designed so a later
-  Network.framework backend changes nothing a caller can see.
+- A macOS `TlsStream` wrapped around an existing `TcpStream` uses
+  SecureTransport. That path negotiates TLS 1.2 at most and cannot report a
+  selected server ALPN value. `TlsListener` uses Network.framework on macOS,
+  so its accepted streams support TLS 1.3, SNI identities, and server ALPN.
+- `TlsListener.bind` accepts port 0 and reports the chosen port with `port()`.
+  `accept_timeout(0)` is a non-blocking check. A Network.framework listener
+  has no file descriptor, so `poll_handle()` returns -1 on macOS.
 - A `TlsStream` wraps a `TcpStream` as a filter and owns it: bytes in, bytes
   out, handshake driven by readiness like any other nonblocking IO.
 - Error kinds: `handshake` (certificate, hostname or protocol), `eof`

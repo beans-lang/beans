@@ -195,6 +195,7 @@ echo "== $arch: hosted differential loop (build + interpret each example) =="
 # byte-for-byte, exit codes included — the same loop make test runs natively,
 # here entirely on the emulated machine.
 ran=0; refused=0
+target_crypto_available=1
 examples=(examples/*.b examples/shop/main.b)
 for src in "${examples[@]}"; do
     base=$(basename "$src" .b)
@@ -214,23 +215,53 @@ for src in "${examples[@]}"; do
         echo "  FAIL build: $src"; tail -4 "$tmp/build.log"; fail=1; continue
     fi
     run_qemu "$tmp/$base.bin" >"$tmp/$base.native" 2>&1; n=$?
-    # The encoding examples link their target bridge into the native binary,
-    # which is the path this host ships. The interpreter instead dlopens a
-    # target shared object. qemu-user cannot load that object into its emulated
-    # process on every architecture, so hold these two native results to fixed
-    # goldens instead of treating an emulator loader limit as a compiler bug.
+    # The encoding and networking examples link their target bridges into the
+    # native binary, which is the path this host ships. The interpreter instead
+    # dlopens target shared objects. qemu-user cannot load those objects on
+    # every architecture, so hold the native results to their exact contracts
+    # instead of treating an emulator loader limit as a compiler bug.
+    expected=""
     case "$base" in
-        zero_copy_json|zero_copy_xml)
-            ran=$((ran + 1))
-            if [ "$n" != "0" ] ||
-               ! cmp -s "test/cases/$base.out" "$tmp/$base.native"; then
-                echo "  FAIL golden: $src (native exit $n)"
-                diff "test/cases/$base.out" "$tmp/$base.native" | head -6
-                fail=1
+        zero_copy_json|zero_copy_xml|compress|http|http2)
+            expected="test/cases/$base.out"
+            ;;
+        crypto)
+            if grep -qx 'a hash provider is available false' "$tmp/$base.native"; then
+                target_crypto_available=0
+                expected="$tmp/crypto.no-provider"
+                cat >"$expected" <<'EOF'
+a hash provider is available false
+sha256 failed: unsupported
+hasher failed: unsupported
+hmac failed: unsupported
+sha1 failed: unsupported
+EOF
+            else
+                expected="test/cases/crypto.out"
             fi
-            continue
+            ;;
+        websocket)
+            if [ "$target_crypto_available" = "0" ]; then
+                expected="$tmp/websocket.no-provider"
+                cat >"$expected" <<'EOF'
+upgrade failed: unsupported
+the server answered one message false
+the client got what it expected false
+EOF
+            else
+                expected="test/cases/websocket.out"
+            fi
             ;;
     esac
+    if [ -n "$expected" ]; then
+        ran=$((ran + 1))
+        if [ "$n" != "0" ] || ! cmp -s "$expected" "$tmp/$base.native"; then
+            echo "  FAIL golden: $src (native exit $n)"
+            diff "$expected" "$tmp/$base.native" | head -6
+            fail=1
+        fi
+        continue
+    fi
     run run "$src" >"$tmp/$base.interp" 2>&1; i=$?
     ran=$((ran + 1))
     if [ "$n" != "$i" ] || ! cmp -s "$tmp/$base.interp" "$tmp/$base.native"; then
