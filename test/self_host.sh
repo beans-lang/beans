@@ -82,13 +82,6 @@ else
     self_host_json_library="$tmp/self_host_json.so"
     self_host_xml_library="$tmp/self_host_xml.so"
 fi
-clang -O2 -fvisibility=hidden -c \
-    runtime/encoding/beans_enc_json.c \
-    -o "$tmp/self_host_json.o"
-clang -x c++ -std=c++17 -fno-exceptions -fno-rtti -O2 \
-    -fvisibility=hidden -c runtime/encoding/beans_enc_xml.cpp \
-    -o "$tmp/self_host_xml.o"
-
 for interpreted in examples/*.b examples/shop/main.b; do
     case "$interpreted" in
         examples/zero_copy_json.b)
@@ -2011,24 +2004,27 @@ for example_path in examples/*.b; do
         "$tmp/$example.next.ll"
         build/beans_rt.c
     )
+    example_has_hash_bridge=false
+    example_has_tls_bridge=false
     example_preload=""
     case "$example" in
         zero_copy_json)
-            example_sources+=("$tmp/self_host_json.o")
             example_preload="$self_host_json_library"
             ;;
         zero_copy_xml)
-            example_sources+=("$tmp/self_host_xml.o")
             example_preload="$self_host_xml_library"
             ;;
     esac
-    # extern "C" examples need the same generated ABI wrapper the
-    # self-host build driver links. Keep the sanitizer sweep by
-    # adding that C source to this clang invocation.
+    # extern "C" examples need the same generated ABI wrapper and native
+    # bridge objects that the self-host build driver links. Ask the driver
+    # for an object output so every imported bridge is placed beside it
+    # under a stable name. Keep the generated wrapper as source in this
+    # clang invocation so the sanitizer sweep still covers it.
     if grep -q '@beans_ffi_wrap_' \
         "$tmp/$example.next.ll"; then
-        ./build/beansc-next build "$example_path" \
-            -o "$tmp/$example-driver-native" \
+        driver_object="$tmp/$example-driver.o"
+        ./build/beansc-next build --emit obj "$example_path" \
+            -o "$driver_object" \
             >"$tmp/$example.next.build"
         if ! grep -q '^built ' \
             "$tmp/$example.next.build"; then
@@ -2039,11 +2035,36 @@ for example_path in examples/*.b; do
         example_sources+=(
             "build/${example}_ffi.c"
         )
+        for sidecar in \
+            "${driver_object}"_enc_*.o \
+            "${driver_object}"_net_*.o \
+            "${driver_object}"_csrc_*.o
+        do
+            if [[ -f "$sidecar" ]]; then
+                example_sources+=("$sidecar")
+                case "$sidecar" in
+                    *_net_hash_*) example_has_hash_bridge=true ;;
+                    *_net_tls_*) example_has_tls_bridge=true ;;
+                esac
+            fi
+        done
+    fi
+    example_link_args=(-lm)
+    if [[ "$(uname -s)" == "Darwin" ]] &&
+       [[ "$example_has_tls_bridge" == true ]]; then
+        example_link_args+=(
+            -framework Security
+            -framework CoreFoundation
+        )
+    elif [[ "$(uname -s)" == "Linux" ]] &&
+         { [[ "$example_has_hash_bridge" == true ]] ||
+           [[ "$example_has_tls_bridge" == true ]]; }; then
+        example_link_args+=(-ldl)
     fi
     clang -O1 -g -fsanitize=address,undefined \
         -fno-sanitize-recover=undefined -pthread \
         -Wno-override-module \
-        "${example_sources[@]}" -lm \
+        "${example_sources[@]}" "${example_link_args[@]}" \
         -o "$tmp/$example-next-native"
     set +e
     if [[ -n "$example_preload" ]]; then
