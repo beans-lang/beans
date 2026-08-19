@@ -40,7 +40,10 @@ perl -ne '
 ' src/runtime_abi.b | sort -u >"$tmp/runtime.named"
 
 while IFS= read -r symbol; do
-    if ! rg -q "^[A-Za-z_][A-Za-z0-9_ *]*[ *]${symbol}\\(" \
+    # grep -E, not ripgrep: release runners are not guaranteed to have rg, and
+    # this was the only place in test/ that needed it. The pattern is the same
+    # POSIX extended regular expression either engine reads.
+    if ! grep -Eq "^[A-Za-z_][A-Za-z0-9_ *]*[ *]${symbol}\\(" \
             runtime/beans_rt.c; then
         echo "runtime ABI names missing C entry point: $symbol" >&2
         exit 1
