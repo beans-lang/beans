@@ -101,10 +101,12 @@ stage() { # <source> <stem>
     if [[ "$TRIPLE" == *-windows-msvc ]]; then
         # The staging compiler uses the GNU ABI, but this job has already
         # switched clang and the SDK to MSVC, and in that mixed setup its
-        # interpreter cannot build the host DLL two kinds of program need:
+        # interpreter cannot build every host DLL these programs need:
         # ffi.b wants a GNU fallback DLL for CRT-only float symbols, and the
         # std.encoding cases want their vendored bridge, which has no GNU
-        # headers to compile against here.
+        # headers to compile against here. On the i686 and ARM64 MSVC lanes,
+        # the networking bridges have the same problem: the job exposes the
+        # target MSVC headers, not the x86-64 GNU headers of bootstrap beansc.
         #
         # Both have a tracked output fixture that every other backend is
         # already held to, so the native binary is diffed against that fixed
@@ -117,6 +119,15 @@ stage() { # <source> <stem>
             examples/zero_copy_xml.b) fixture=test/cases/zero_copy_xml.out ;;
             test/cases/encoding_*.b) fixture=${src%.b}.out ;;
         esac
+        if [[ "$TRIPLE" != x86_64-pc-windows-msvc ]]; then
+            case "$src" in
+                examples/compress.b) fixture=test/cases/compress.out ;;
+                examples/crypto.b) fixture=test/cases/crypto.out ;;
+                examples/http.b) fixture=test/cases/http.out ;;
+                examples/http2.b) fixture=test/cases/http2.out ;;
+                examples/websocket.b) fixture=test/cases/websocket.out ;;
+            esac
+        fi
     fi
     if [[ -n "$fixture" ]]; then
         test -s "$fixture" || {
