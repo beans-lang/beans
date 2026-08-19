@@ -386,6 +386,13 @@ fn net_bridge_platform_flags(
 fn net_bridge_link_arguments(
     features: List<string>, target_os: string) -> List<string> {
     var arguments: List<string> = []
+    if target_os == "windows" &&
+       (features.contains("sockx") || features.contains("ws")) {
+        // These bridge DLLs call Winsock directly. A final program already
+        // links ws2_32 for the full runtime, but the interpreter builds each
+        // bridge as a standalone DLL and must give that DLL its own import.
+        arguments.push("-lws2_32")
+    }
     if features.contains("tls") {
         if target_os == "macos" {
             arguments.push("-framework")
