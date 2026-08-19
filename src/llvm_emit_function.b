@@ -696,9 +696,18 @@ partial class LlvmTextEmitter {
             }
             return "{output}  store {type} {stored}, ptr %cell.slot{id}\n"
         }
+        // A store always leaves the flag set; whether the flag is still
+        // in the module is MIR's call.
+        var live: string = ""
+        if self.type_has_owned_refs(local.type) &&
+           self.live_flag_slot(local) {
+            live =
+                "  store i1 true, ptr %l{local.id}.live\n"
+        }
         if replace &&
            self.type_has_owned_refs(local.type) &&
-           local.needs_live_flag {
+           local.needs_live_flag &&
+           instruction.live_state == 2 {
             let id: int = self.fresh()
             let release_block: int = self.fresh()
             let store_block: int = self.fresh()
@@ -707,7 +716,15 @@ partial class LlvmTextEmitter {
             let release: string =
                 self.emit_arc_value(
                     local.type, old, false)
-            return "  %assign.live{id} = load i1, ptr %l{local.id}.live\n  br i1 %assign.live{id}, label %assign.release{release_block}, label %assign.store{store_block}\nassign.release{release_block}:\n  {old} = load {type}, ptr %l{local.id}\n{release}  br label %assign.store{store_block}\nassign.store{store_block}:\n  store {type} {stored}, ptr %l{local.id}\n  store i1 true, ptr %l{local.id}.live\n"
+            return "  %assign.live{id} = load i1, ptr %l{local.id}.live\n  br i1 %assign.live{id}, label %assign.release{release_block}, label %assign.store{store_block}\nassign.release{release_block}:\n  {old} = load {type}, ptr %l{local.id}\n{release}  br label %assign.store{store_block}\nassign.store{store_block}:\n  store {type} {stored}, ptr %l{local.id}\n{live}"
+        }
+        // The slot holds nothing on any path reaching here, so the
+        // overwrite owes no release — just the store.
+        if replace &&
+           self.type_has_owned_refs(local.type) &&
+           local.needs_live_flag &&
+           instruction.live_state == 0 {
+            return "  store {type} {stored}, ptr %l{local.id}\n{live}"
         }
         if replace &&
            self.type_has_owned_refs(local.type) {
@@ -717,13 +734,9 @@ partial class LlvmTextEmitter {
             let release: string =
                 self.emit_arc_value(
                     local.type, old, false)
-            return "  {old} = load {type}, ptr %l{local.id}\n  store {type} {stored}, ptr %l{local.id}\n{release}"
+            return "  {old} = load {type}, ptr %l{local.id}\n  store {type} {stored}, ptr %l{local.id}\n{release}{live}"
         }
-        if self.type_has_owned_refs(local.type) &&
-           local.needs_live_flag {
-            return "  store {type} {stored}, ptr %l{local.id}\n  store i1 true, ptr %l{local.id}.live\n"
-        }
-        return "  store {type} {stored}, ptr %l{local.id}\n"
+        return "  store {type} {stored}, ptr %l{local.id}\n{live}"
     }
 
     // Structural equality for inline records and fixed arrays. Padding is
@@ -1648,7 +1661,7 @@ partial class LlvmTextEmitter {
                     "{output}  %cap{capture_slot} = getelementptr i8, ptr %env, i64 {8 * (capture_slot + 1)}\n  %cap{capture_slot}.v = load {type}, ptr %cap{capture_slot}\n  store {type} %cap{capture_slot}.v, ptr %l{local.id}\n"
             }
             if self.type_has_owned_refs(local.type) &&
-               local.needs_live_flag {
+               self.live_flag_slot(local) {
                 output =
                     "{output}  %l{local.id}.live = alloca i1\n  store i1 false, ptr %l{local.id}.live\n"
             }
@@ -1656,7 +1669,7 @@ partial class LlvmTextEmitter {
                 output =
                     "{output}  store {type} {incoming}, ptr %l{local.id}\n"
                 if self.type_has_owned_refs(local.type) &&
-                   local.needs_live_flag {
+                   self.live_flag_slot(local) {
                     output =
                         "{output}  store i1 true, ptr %l{local.id}.live\n"
                 }

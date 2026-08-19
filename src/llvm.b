@@ -3,6 +3,10 @@ package main
 partial class LlvmTextEmitter {
     program: MirProgram
     errors: List<Diagnostic>
+    // One `; MIR <op> vN` line per instruction is a twelfth of the module a
+    // self-build hands to clang, and nothing downstream reads it. It is a
+    // debugging aid, so it costs nothing until BEANS_IR_COMMENTS asks for it.
+    mir_comments: bool
     // qualified name -> encoding intrinsic id, filled once by
     // resolve_encoding_intrinsics after full validation
     encoding_intrinsics: Map<string, int>
@@ -82,8 +86,9 @@ partial class LlvmTextEmitter {
     iterator_array_slot: Map<int, string>
     iterator_array_length: Map<int, int>
 
-    fn init(program: MirProgram) {
+    fn init(program: MirProgram, mir_comments: bool) {
         self.program = program
+        self.mir_comments = mir_comments
         self.errors = []
         self.encoding_intrinsics = {}
         self.json_decoders = {}
@@ -1403,6 +1408,7 @@ partial class LlvmTextEmitter {
         output =
             "{output}{self.emit_releases(function, values, instruction.releases, instruction)}"
         if output == "" { return "" }
+        if !self.mir_comments { return output }
         return "  ; MIR {instruction.op} v{instruction.result}\n{output}"
     }
 

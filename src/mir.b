@@ -3940,10 +3940,36 @@ class MirLowerer {
         if instruction.op == "local_init" ||
            instruction.op == "pattern_bind" ||
            instruction.op == "assign" {
-            state.values[local] = 1
+            state.set_value(local, 1)
         } else if instruction.op == "move" ||
                   instruction.op == "drop_local" {
-            state.values[local] = 0
+            state.set_value(local, 0)
+        }
+        // The backend's `.live` flag moves on its own rules: it is
+        // exactly the set of stores the emitter writes to %lN.live.
+        // Anything not listed here leaves the flag alone, so the
+        // default is to carry the incoming value through.
+        if instruction.op == "local_init" ||
+           (instruction.op == "assign" &&
+            instruction.text == "=") {
+            // emit_local_store always finishes with `store i1 true`
+            state.set_flag(local, 1)
+        } else if instruction.op == "pattern_bind" {
+            // Option arms bind without touching the flag while enum
+            // and Result arms set it; the emitter picks by payload
+            // type, so from here the flag is simply unknown
+            state.set_flag(local, 2)
+        } else if instruction.op == "move" ||
+                  instruction.op == "drop_local" {
+            // a move clears the flag as it reads; a drop leaves it
+            // clear whichever way its release went
+            state.set_flag(local, 0)
+        } else if instruction.op == "retain" &&
+                  !function.locals[local].parameter {
+            // ownership transfer: emit_retain clears the flag so the
+            // scope drop skips the release the new owner now carries.
+            // A parameter source is the one shape it leaves alone.
+            state.set_flag(local, 0)
         }
     }
 
@@ -3955,7 +3981,9 @@ class MirLowerer {
         for local: MirLocal in function.locals {
             if local.ownership == "owned" &&
                local.parameter {
-                result.values[local.id] = 1
+                result.set_value(local.id, 1)
+                // the prologue stores i1 true beside a parameter's slot
+                result.set_flag(local.id, 1)
             }
         }
         return result
@@ -4097,7 +4125,7 @@ class MirLowerer {
                    function.locals[
                        local].ownership == "owned" {
                     let before: int =
-                        state.values[local]
+                        state.value_of(local)
                     if (instruction.op == "borrow" ||
                         instruction.op == "move") &&
                        before != 1 {
@@ -4135,6 +4163,15 @@ class MirLowerer {
                             instruction.col,
                             "MIR conditionally live local l{local} needs a live flag")
                     }
+                    // The backend reads the `.live` flag at exactly two
+                    // kinds of site. Hand each one what the fixpoint
+                    // knows, so a flag that is provably set or provably
+                    // clear costs no load, no branch and no blocks.
+                    if instruction.op == "drop_local" ||
+                       instruction.op == "assign" {
+                        instruction.live_state =
+                            state.flag_of(local)
+                    }
                 }
                 self.transfer_local_state(
                     function, instruction, state)
@@ -4142,7 +4179,7 @@ class MirLowerer {
             if block.terminator.kind == "return" {
                 for local: MirLocal in function.locals {
                     if local.ownership == "owned" &&
-                       state.values[local.id] != 0 {
+                       state.value_of(local.id) != 0 {
                         self.fail(
                             block.terminator.file,
                             block.terminator.line,
@@ -4150,6 +4187,36 @@ class MirLowerer {
                             "MIR return leaves owned local l{local.id} live")
                     }
                 }
+            }
+        }
+
+        // Nothing but those two sites loads the flag, so a local whose
+        // sites all came out of the fixpoint with a definite answer has
+        // no reader left: the backend drops the alloca and every store
+        // to it. A site the walk never reached keeps its 2 and holds
+        // the flag, which is the shape the emitter produces today.
+        for local: MirLocal in function.locals {
+            if local.needs_live_flag {
+                local.live_flag_used = false
+            }
+        }
+        for block: MirBlock in function.blocks {
+            for instruction: MirInstruction in
+                block.instructions {
+                if instruction.removed { continue }
+                if instruction.live_state != 2 { continue }
+                if instruction.op != "drop_local" &&
+                   !(instruction.op == "assign" &&
+                     instruction.text == "=") {
+                    continue
+                }
+                let local: int = instruction.local
+                if local < 0 ||
+                   local >= function.locals.len() {
+                    continue
+                }
+                function.locals[
+                    local].live_flag_used = true
             }
         }
     }

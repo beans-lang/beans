@@ -1,6 +1,16 @@
 package main
 
 partial class LlvmTextEmitter {
+    // Does this local carry a runtime `.live` flag beside its slot? MIR
+    // clears live_flag_used once its fixpoint knows the flag's value at
+    // every drop and every assignment, and then nobody loads it — so the
+    // alloca and all of its stores stay out of the module. Every site
+    // that writes the flag asks here first.
+    fn live_flag_slot(local: MirLocal) -> bool {
+        return local.needs_live_flag &&
+               local.live_flag_used
+    }
+
     // Which refs the cycle collector should consider: containers and user
     // objects can point back at themselves, leaf immutables cannot. Option
     // and Result stay capable like production's enum_ arm — an over-wide
@@ -431,7 +441,7 @@ partial class LlvmTextEmitter {
             "  {result} = load {type}, ptr %l{local.id}\n"
         if moving &&
            self.type_has_owned_refs(local.type) &&
-           local.needs_live_flag {
+           self.live_flag_slot(local) {
             output =
                 "{output}  store i1 false, ptr %l{local.id}.live\n"
         }
@@ -729,6 +739,13 @@ partial class LlvmTextEmitter {
                source.needs_live_flag &&
                !source.scalar_replaced &&
                !self.cell_local(source) {
+                if !self.live_flag_slot(source) {
+                    // the flag is gone: every drop of this local already
+                    // knows statically that the transfer reached it, so
+                    // the reference moves with no count changing hands
+                    // and there is nothing left to record
+                    return ""
+                }
                 return "  store i1 false, ptr %l{source.id}.live\n"
             }
         }
@@ -770,6 +787,21 @@ partial class LlvmTextEmitter {
             self.emit_arc_value(
                 local.type, dropped, false)
         if local.needs_live_flag {
+            // What MIR's fixpoint knows about the flag on the way in.
+            // 0: the slot's reference already left — a move or an
+            // ownership transfer took it — so no release is owed and
+            // the drop is nothing at all. 1: it is held on every path,
+            // so release straight out. 2 is the only case worth a load,
+            // a branch and two extra blocks.
+            if instruction.live_state == 0 {
+                return ""
+            }
+            if instruction.live_state == 1 {
+                if !self.live_flag_slot(local) {
+                    return "  {dropped} = load {type}, ptr %l{local.id}\n{release}"
+                }
+                return "  {dropped} = load {type}, ptr %l{local.id}\n{release}  store i1 false, ptr %l{local.id}.live\n"
+            }
             let release_block: int = self.fresh()
             let merge_block: int = self.fresh()
             return "  %drop.live{temporary} = load i1, ptr %l{local.id}.live\n  br i1 %drop.live{temporary}, label %drop.release{release_block}, label %drop.merge{merge_block}\ndrop.release{release_block}:\n  {dropped} = load {type}, ptr %l{local.id}\n{release}  store i1 false, ptr %l{local.id}.live\n  br label %drop.merge{merge_block}\ndrop.merge{merge_block}:\n"

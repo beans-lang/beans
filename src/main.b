@@ -226,6 +226,20 @@ fn pkg_config_words(text: string) -> Result<List<string>, string> {
     return ok(move words)
 }
 
+// `; MIR <op> vN` above every emitted instruction is a reading aid for
+// whoever is debugging the backend, and nothing downstream parses it. On a
+// self-build it is a twelfth of the text clang has to lex, so it is off
+// unless asked for. Set BEANS_IR_COMMENTS to anything but "" or "0".
+fn ir_comments_requested() -> bool {
+    match os.env("BEANS_IR_COMMENTS") {
+        some(value) => {
+            return value != "" && value != "0"
+        }
+        none => {}
+    }
+    return false
+}
+
 fn pkg_config_program() -> string {
     match os.env("PKG_CONFIG") {
         some(value) => {
@@ -1340,7 +1354,9 @@ fn main() {
                             io.println(render_mir(mir))
                         } else {
                             let emitter: LlvmTextEmitter =
-                                new LlvmTextEmitter(mir)
+                                new LlvmTextEmitter(
+                                    mir,
+                                    ir_comments_requested())
                             let emitted: string =
                                 emitter.emit(
                                     command == "build" &&

@@ -16,6 +16,12 @@ class MirLocal {
     borrows_from: int
     ownership_sink: bool
     scalar_replaced: bool
+    // The `.live` flag is a runtime i1 the backend allocates beside the
+    // slot. verify_local_ownership clears this when every drop and every
+    // assignment for the local knows the flag's value statically, and the
+    // backend then leaves the flag — its alloca and all of its stores —
+    // out of the module entirely.
+    live_flag_used: bool
 
     fn init(id: int, binding_id: int,
             name: string, type: HirType,
@@ -36,6 +42,7 @@ class MirLocal {
         self.borrows_from = -1
         self.ownership_sink = false
         self.scalar_replaced = false
+        self.live_flag_used = true
     }
 }
 
@@ -65,6 +72,12 @@ class MirInstruction {
     scalar_materialize: bool
     borrow_elided: bool
     removed: bool
+    // Value of the local's `.live` flag on entry to this instruction, as
+    // verify_local_ownership's fixpoint sees it: 0 clear on every path,
+    // 1 set on every path, 2 unknown. Only drops and assignments read it.
+    // 2 is the safe default, and is what an unreached or synthesized
+    // instruction keeps — it reproduces the flag-checking code exactly.
+    live_state: int
 
     fn init(op: string, result: int, type: HirType,
             text: string, resolved: string,
@@ -94,6 +107,7 @@ class MirInstruction {
         self.scalar_materialize = false
         self.borrow_elided = false
         self.removed = false
+        self.live_state = 2
     }
 }
 
@@ -393,6 +407,17 @@ class MirValueSet {
 }
 
 class MirLocalState {
+    // Two lattices over the same locals, carried by one fixpoint and
+    // packed two bits apart in one word each, so a round costs the same
+    // array traffic as the single lattice did.
+    //
+    // Bits 0-1 are MIR's own notion of an owned local being initialized —
+    // what the ownership verifier reports against. Bits 2-3 track the
+    // backend's runtime `.live` flag, which differs in one place: an
+    // ownership-transferring retain hands the reference away and clears
+    // the flag without MIR considering the local uninitialized.
+    // Each half is 0 = no on every path, 1 = yes on every path,
+    // 2 = the paths disagree.
     values: List<int>
     reached: bool
 
@@ -402,6 +427,24 @@ class MirLocalState {
             self.values.push(0)
         }
         self.reached = false
+    }
+
+    fn value_of(index: int) -> int {
+        return self.values[index] & 3
+    }
+
+    fn flag_of(index: int) -> int {
+        return self.values[index] >> 2
+    }
+
+    fn set_value(index: int, value: int) {
+        self.values[index] =
+            value | (self.values[index] & 12)
+    }
+
+    fn set_flag(index: int, flag: int) {
+        self.values[index] =
+            (self.values[index] & 3) | (flag << 2)
     }
 
     fn copy() -> MirLocalState {
@@ -454,10 +497,19 @@ class MirLocalState {
             return
         }
         for index: int in 0..self.values.len() {
-            if self.values[index] !=
-               other.values[index] {
-                self.values[index] = 2
+            let mine: int = self.values[index]
+            let theirs: int = other.values[index]
+            if mine == theirs { continue }
+            // the halves disagree independently: a path that agrees
+            // about the slot can still disagree about the flag
+            var merged: int = mine
+            if (mine & 3) != (theirs & 3) {
+                merged = (merged & 12) | 2
             }
+            if (mine & 12) != (theirs & 12) {
+                merged = (merged & 3) | 8
+            }
+            self.values[index] = merged
         }
     }
 }
