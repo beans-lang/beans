@@ -112,9 +112,15 @@ EOF
 clang -O2 -Iruntime/net/vendor/llhttp "$tmp/bench_raw.c" \
     runtime/net/vendor/llhttp/llhttp.c runtime/net/vendor/llhttp/api.c \
     runtime/net/vendor/llhttp/http.c -o "$tmp/bench_raw"
-"$tmp/bench_raw" >"$tmp/raw.txt"
-raw_rate=$(sed -n 1p "$tmp/raw.txt")
-copy_rate=$(sed -n 2p "$tmp/raw.txt")
+# Shared CI runners can briefly steal a core between these sub-second lanes.
+# Keep the same budgets, but compare each lane's best of three samples so one
+# scheduling hiccup cannot make an otherwise healthy build fail.
+: >"$tmp/raw.txt"
+for sample in 1 2 3; do
+    "$tmp/bench_raw" >>"$tmp/raw.txt"
+done
+raw_rate=$(awk 'NR % 2 == 1 && $1 > best { best = $1 } END { print best }' "$tmp/raw.txt")
+copy_rate=$(awk 'NR % 2 == 0 && $1 > best { best = $1 } END { print best }' "$tmp/raw.txt")
 
 cat >"$tmp/bench_bridge.b" <<'EOF'
 package main
@@ -159,15 +165,23 @@ fn main() {
 }
 EOF
 "$beansc" build "$tmp/bench_bridge.b" --release -o "$tmp/bench_bridge" >/dev/null 2>&1
-bridge_rate=$("$tmp/bench_bridge")
+: >"$tmp/bridge.txt"
+for sample in 1 2 3; do
+    "$tmp/bench_bridge" >>"$tmp/bridge.txt"
+done
+bridge_rate=$(sort -nr "$tmp/bridge.txt" | head -1)
 "$beansc" build bench/http_parse.b --release -o "$tmp/bench_typed" >/dev/null 2>&1
-typed_line=$("$tmp/bench_typed" | tail -1)
+: >"$tmp/typed.txt"
+for sample in 1 2 3; do
+    "$tmp/bench_typed" | tail -1 >>"$tmp/typed.txt"
+done
+typed_rate=$(sed -n 's/^std\.http: \([0-9][0-9.]*\) MB\/s$/\1/p' "$tmp/typed.txt" | sort -nr | head -1)
+typed_line="std.http: ${typed_rate} MB/s"
 echo "raw scan ${raw_rate} MB/s | copying C ${copy_rate} MB/s | bridge ${bridge_rate} MB/s | ${typed_line}"
 if [ "$((bridge_rate * 2))" -lt "$copy_rate" ]; then
     echo "the bridge fell below half the copying-C baseline (${bridge_rate} vs ${copy_rate} MB/s)" >&2
     exit 1
 fi
-typed_rate=${typed_line#std.http: }
 typed_rate=${typed_rate%%.*}
 if ! [[ "$typed_rate" =~ ^[0-9]+$ ]] ||
    [ "$((typed_rate * 6))" -lt "$bridge_rate" ]; then
