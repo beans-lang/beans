@@ -143,6 +143,11 @@ if grep -nE '^\s*pub .*(RawPtr|CFunctionPtr)' stdlib/std/websocket/*.b; then
 fi
 
 echo "checking the Autobahn TestSuite"
+if [[ ${BEANS_AUTOBAHN_SKIP:-0} == 1 ]]; then
+    echo "skipping Autobahn: disabled for this runner"
+    echo "ok websocket: vectors, loopback exchange, TLS, and fuzz (Autobahn covered elsewhere)"
+    exit 0
+fi
 if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
     if [[ ${BEANS_AUTOBAHN_REQUIRE:-0} == 1 ]]; then
         echo "Autobahn is required but Docker is unavailable" >&2

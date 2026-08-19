@@ -704,6 +704,11 @@ jobs:
 
       - name: Differential test suite
         run: make test-ci
+        # The Autobahn image is amd64-only. Linux x64 runs all 259 cases;
+        # ARM64 keeps the native vectors, loopback, TLS, and fuzz coverage
+        # without spending hours emulating an unrelated Python container.
+        env:
+          BEANS_AUTOBAHN_SKIP: 1
 
       - name: Sanitizers (ASan, TSan)
         run: make test-sanitize
