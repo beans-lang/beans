@@ -367,6 +367,12 @@ fn net_bridge_platform_flags(
     if feature == "ws" && target_os == "windows" {
         flags.push("-DHAVE_WINSOCK2_H")
     }
+    if feature == "h2" && target_os == "windows" {
+        // nghttp2's public header otherwise marks every call as dllimport.
+        // We compile its vendored sources into the same executable or bridge
+        // DLL, so these are static definitions, not a separate nghttp2 DLL.
+        flags.push("-DNGHTTP2_STATICLIB")
+    }
     // MSVC has ptrdiff_t but no POSIX ssize_t. nghttp2's implementation
     // still exposes its old ssize_t wrappers beside the newer ptrdiff_t API.
     if (feature == "h2" || feature == "ws") &&
