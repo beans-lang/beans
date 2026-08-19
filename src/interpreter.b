@@ -10876,6 +10876,20 @@ class TreeInterpreter {
         packed.push(0)
     }
 
+    // The instruction set and float ABI every bridge this interpreter builds
+    // must be compiled for. Clang's own default is not it: on a Raspbian
+    // ARMv6 host clang defaults to ARMv7-A with unaligned access, and the
+    // bridge is dlopened into this ARMv6 process, so the first vendored
+    // `movw` stops the program with SIGILL. `beansc build` never had the
+    // problem because the native driver appends exactly these flags to
+    // every compile and link. Empty on targets that need no such pinning.
+    fn ffi_pack_target_flags(argv: Bytes) {
+        for flag: string in
+            self.program.target.c_driver_flags() {
+            self.ffi_pack_argument(argv, flag)
+        }
+    }
+
     // The bridge has to be built by the same C driver `beansc build` would
     // select, so an installation that names its compiler through BEANS_CC
     // cannot build programs and still fail the moment one is interpreted.
@@ -10962,6 +10976,7 @@ class TreeInterpreter {
             self.ffi_pack_argument(
                 argv, "--target={self.program.target.llvm_triple()}")
         }
+        self.ffi_pack_target_flags(argv)
         self.ffi_pack_argument(argv, c_path)
         self.ffi_pack_argument(argv, "-o")
         self.ffi_pack_argument(argv, library_path)
@@ -11268,7 +11283,7 @@ class TreeInterpreter {
             return ""
         }
         var blob: string =
-            "{self.program.target.triple}|interp"
+            "{self.program.target.triple}|interp|{self.program.target.c_driver_flags().join(" ")}"
         for input: string in
             encoding_bridge_inputs(root, feature) {
             match host_fs.read(input) {
@@ -11336,6 +11351,7 @@ class TreeInterpreter {
                 argv,
                 "--target={self.program.target.llvm_triple()}")
         }
+        self.ffi_pack_target_flags(argv)
         self.ffi_pack_argument(argv, source)
         self.ffi_pack_argument(argv, "-o")
         self.ffi_pack_argument(argv, staging)
@@ -11469,7 +11485,7 @@ class TreeInterpreter {
             }
         }
         var blob: string =
-            "{self.program.target.triple}|interp|{net_bridge_abi()}"
+            "{self.program.target.triple}|interp|{net_bridge_abi()}|{self.program.target.c_driver_flags().join(" ")}"
         for input: string in
             net_bridge_inputs(root, feature) {
             match host_fs.read(input) {
@@ -11562,6 +11578,7 @@ class TreeInterpreter {
                         argv,
                         "--target={self.program.target.llvm_triple()}")
                 }
+                self.ffi_pack_target_flags(argv)
                 self.ffi_pack_argument(argv, "-c")
                 self.ffi_pack_argument(argv, source)
                 self.ffi_pack_argument(argv, "-o")
@@ -11594,6 +11611,7 @@ class TreeInterpreter {
                     self.ffi_pack_argument(argv, "-fuse-ld=lld")
                 }
             }
+            self.ffi_pack_target_flags(argv)
             for object: string in objects {
                 self.ffi_pack_argument(argv, object)
             }

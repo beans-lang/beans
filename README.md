@@ -197,7 +197,9 @@ beansc build hello.b -o hello
 ./hello
 ```
 
-For an optimized native build:
+A plain `beansc build` runs no optimizer (`-O0`), because the loop it belongs to
+is edit, build, run, and most of a build is the optimizer. For an optimized
+native build, ask for one:
 
 ```bash
 beansc build --release --lto --cpu native hello.b -o hello
@@ -215,7 +217,7 @@ The subcommands:
 | `beansc mir file.b` | print the checked, ownership-planned MIR |
 | `beansc llvm file.b` | print the LLVM IR used by native builds |
 | `beansc run file.b` | check, then run on the reference interpreter |
-| `beansc build file.b [-o out]` | compile to a native binary via LLVM |
+| `beansc build file.b [-o out]` | compile to a native binary via LLVM, unoptimized (`-O0`) for a fast loop |
 | `beansc build --emit static --header api.h file.b` | build a C-facing Beans library |
 | `beansc build --release --lto --cpu native file.b` | optimized native build |
 | `beansc build --debug file.b -o out` | unoptimized native build with platform debug information |

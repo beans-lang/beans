@@ -1907,7 +1907,7 @@ Build options:
 | `--emit <bin\|obj\|static\|shared\|ir>` | choose a binary, object, archive, shared library, or `.ll` |
 | `--ar <path>` | static archive tool, default `ar` |
 | `--header <path>` | write a C header for `pub extern "C"` library exports |
-| `--release`, `--lto` | optimization level and link-time optimization |
+| `--release`, `--lto` | optimize the build (`-O3`, `NDEBUG`) and link across the runtime boundary; a build without `--release` or `--debug` is `-O0` |
 
 Every setting is validated **before** any native compilation: an unknown triple,
 an unknown CPU for that architecture, a feature that architecture does not have,

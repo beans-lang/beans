@@ -386,7 +386,8 @@ jobs:
       - name: Cross-build beansc.exe (the compiler hosted on Windows)
         if: matrix.hosted
         run: |
-          ./build/beansc build --target ${{ matrix.triple }} --linker lld \
+          ./build/beansc build --release --target ${{ matrix.triple }} \
+            --linker lld \
             src/main.b -o build/windows_native/beansc.exe
 
       - name: Confirm every artifact is really ${{ matrix.arch }}
@@ -587,7 +588,7 @@ jobs:
           # Git Bash sees GITHUB_PATH through MSYS. The native compiler does
           # not, so hand CreateProcess the resolved Windows path explicitly.
           target_cc=$(cygpath -w "$(command -v "$target_cc")")
-          ./build/windows_native/beansc.exe build \
+          ./build/windows_native/beansc.exe build --release \
             --cc "$target_cc" --linker lld \
             src/main.b -o build/rebuilt.exe
           ./build/windows_native/beansc.exe llvm src/main.b \
@@ -657,7 +658,7 @@ jobs:
       - name: Build an MSVC-hosted compiler and run its differential loop
         shell: bash
         run: |
-          build/bootstrap/beansc.exe build \
+          build/bootstrap/beansc.exe build --release \
             --target ${{ matrix.triple }} --linker lld \
             src/main.b -o build/windows_msvc/beansc.exe
           BEANSC=build/windows_msvc/beansc.exe \
@@ -671,7 +672,7 @@ jobs:
       - name: MSVC compiler reaches the IR fixed point
         shell: bash
         run: |
-          build/windows_msvc/beansc.exe build \
+          build/windows_msvc/beansc.exe build --release \
             --target ${{ matrix.triple }} --linker lld \
             src/main.b -o build/msvc-rebuilt.exe
           build/windows_msvc/beansc.exe llvm src/main.b \

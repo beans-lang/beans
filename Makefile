@@ -25,6 +25,10 @@ src/version.b: VERSION tools/gen_version_b.sh
 # The compiler is built the way a self-hosted language is normally built once it
 # has shipped: with a released copy of itself. Install one with the one-line
 # installer, or point BEANSC_BOOT at any working beansc.
+#
+# --release, always. A plain `beansc build` runs no optimizer, which is right
+# for the program you are iterating on and wrong for the compiler that builds
+# it: an unoptimized beansc makes every build anyone runs with it slower.
 BEANSC_BOOT ?= $(shell command -v beansc 2>/dev/null || \
 	ls "$${BEANS_HOME:-$$HOME/.beans}/bin/beansc" 2>/dev/null)
 
@@ -56,7 +60,7 @@ $(BIN): $(SELF_HOST_SRC) $(RUNTIME_COPY)
 	  echo ""; \
 	  exit 1; \
 	}
-	$(BEANSC_BOOT) build src/main.b -o $(BIN).new
+	$(BEANSC_BOOT) build --release src/main.b -o $(BIN).new
 	rm -f $(BIN) && mv $(BIN).new $(BIN)
 
 .PHONY: run clean install test test-ci test-core test-quick test-frontend test-semantics test-runtime test-ffi test-platform platform-status test-platform-manifest test-compiler-arch-objects test-musl-hosted test-armv6hf-hosted test-release-package test-install-release test-release-completeness test-c-abi-tier1 test-barq-core test-sanitize fuzz-oop fuzz-oop-smoke fuzz-oop-long fuzz-reflection fuzz-reflection-smoke fuzz-net fuzz-net-soak fuzz-differential fuzz-differential-smoke test-fixpoint test-clean-self-host test-linux test-linux-arch test-linux-hosted test-windows test-windows-native test-windows-native-i686 test-windows-native-arm64 test-windows-arch test-windows-hosted test-encoding-targets test-encoding-windows access-score self-host-next test-self-host test-self-host-full bench-compiler bench-quick bench-full bench-verify bench-profile

@@ -28,6 +28,7 @@ fn print_usage() {
     io.eprintln("       beansc --version")
     io.eprintln("")
     io.eprintln("build options:")
+    io.eprintln("  (no flag)              -O0, for a fast edit-build-run loop")
     io.eprintln("  --release              -O3, NDEBUG")
     io.eprintln("  --debug                -O0, debug information, frame pointers")
     io.eprintln("  --lto                  link-time optimization")
@@ -223,6 +224,20 @@ fn pkg_config_words(text: string) -> Result<List<string>, string> {
     }
     if started { words.push(word) }
     return ok(move words)
+}
+
+// `; MIR <op> vN` above every emitted instruction is a reading aid for
+// whoever is debugging the backend, and nothing downstream parses it. On a
+// self-build it is a twelfth of the text clang has to lex, so it is off
+// unless asked for. Set BEANS_IR_COMMENTS to anything but "" or "0".
+fn ir_comments_requested() -> bool {
+    match os.env("BEANS_IR_COMMENTS") {
+        some(value) => {
+            return value != "" && value != "0"
+        }
+        none => {}
+    }
+    return false
 }
 
 fn pkg_config_program() -> string {
@@ -1339,7 +1354,9 @@ fn main() {
                             io.println(render_mir(mir))
                         } else {
                             let emitter: LlvmTextEmitter =
-                                new LlvmTextEmitter(mir)
+                                new LlvmTextEmitter(
+                                    mir,
+                                    ir_comments_requested())
                             let emitted: string =
                                 emitter.emit(
                                     command == "build" &&
@@ -1381,6 +1398,17 @@ fn main() {
                                         csrc_selected(
                                             loader.csrc_rows,
                                             selected))
+                                // The same module split into standalone
+                                // chunks for the parallel backend, or an
+                                // empty list when this build wants the one
+                                // module it already has.
+                                let chunks: List<string> =
+                                    emitter.chunk_modules(
+                                        native_chunk_count(
+                                            emit_kind,
+                                            selected.object_format,
+                                            lto, debug_build,
+                                            emitted.len()))
                                 let built: bool =
                                     driver.build(
                                         file_path, emitted,
@@ -1394,7 +1422,8 @@ fn main() {
                                             } else {
                                                 ""
                                             },
-                                            file_path))
+                                            file_path),
+                                        chunks)
                                 for diagnostic: Diagnostic in
                                     driver.errors {
                                     io.eprintln(

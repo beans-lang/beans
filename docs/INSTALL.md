@@ -169,6 +169,15 @@ Override the tools Beans uses with `BEANS_CC`, `BEANS_AR`, `BEANS_RUNTIME`,
 `BEANS_WASM_HOST` and `BEANS_STDLIB`, or per build with `--cc`, `--ar`,
 `--linker` and `--sysroot`.
 
+A large `beansc build` splits its module into a fixed set of chunks, compiles
+them with concurrent Clang processes, and caches each object by content, so a
+rebuild only re-compiles the chunks whose code changed. `BEANS_BUILD_JOBS`
+caps how many of those Clangs run at once. How many chunks there are does not
+depend on it or on the machine, so a build produces the same binary however
+many cores it ran on. `BEANS_BUILD_JOBS=1` asks for the single-Clang build
+instead: reproducible in its own right, but not byte-identical to the chunked
+one, because one module over one object packs its symbols differently.
+
 ## macOS
 
 Apple's SDK is not redistributable, so no Beans package bundles it. `beansc

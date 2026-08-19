@@ -108,6 +108,29 @@ This file records user-facing changes in each Beans release.
 
 ### Changed
 
+- A native build of a large program compiles in parallel and caches what it
+  compiled. `beansc build` splits a module over about four megabytes into a
+  fixed set of standalone chunks, hands each to its own Clang, and links the
+  objects; each object is keyed by its chunk's content, so a rebuild only
+  re-compiles the chunks whose code moved. Building the compiler itself went
+  from 5.5s to 4.5s cold, and a rebuild after a one-line edit re-compiles one
+  chunk of eight. How many chunks there are is fixed rather than taken from
+  the machine, so the binary does not depend on how many cores built it;
+  `BEANS_BUILD_JOBS` caps how many Clangs run at once, and
+  `BEANS_BUILD_JOBS=1` asks for the single-Clang build. `--emit ir` still
+  writes one `.ll` file, and `--emit obj`, `static`, `shared`, `--debug`,
+  `-flto` and wasm builds are unchanged.
+
+- A plain `beansc build` no longer optimizes. It passes `-O0` where it used
+  to pass `-O2`, because the loop that command belongs to is edit, build,
+  run, and the optimizer was most of the wait: building the compiler itself
+  went from 26.1s to 16.4s on the same machine. `--release` is unchanged and
+  is how you ask for a fast binary (`-O3`, `NDEBUG`), `--debug` is unchanged
+  (`-O0` plus debug information). `make` builds `beansc` itself with
+  `--release`, so the compiler you run stays optimized. 32-bit x86 is the one
+  exception: LLVM's `-O0` register allocator can run out of registers there,
+  so those targets get `-O1` for a plain build and `-Og` for `--debug`.
+
 - The C++ stage-0 bootstrap is gone. A released `beansc` builds the next one.
   The differential gates that used stage 0 as their second implementation now
   compare the tree interpreter against the native backend, and the generated

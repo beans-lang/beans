@@ -16,6 +16,12 @@ class MirLocal {
     borrows_from: int
     ownership_sink: bool
     scalar_replaced: bool
+    // The `.live` flag is a runtime i1 the backend allocates beside the
+    // slot. verify_local_ownership clears this when every drop and every
+    // assignment for the local knows the flag's value statically, and the
+    // backend then leaves the flag — its alloca and all of its stores —
+    // out of the module entirely.
+    live_flag_used: bool
 
     fn init(id: int, binding_id: int,
             name: string, type: HirType,
@@ -36,6 +42,7 @@ class MirLocal {
         self.borrows_from = -1
         self.ownership_sink = false
         self.scalar_replaced = false
+        self.live_flag_used = true
     }
 }
 
@@ -65,6 +72,12 @@ class MirInstruction {
     scalar_materialize: bool
     borrow_elided: bool
     removed: bool
+    // Value of the local's `.live` flag on entry to this instruction, as
+    // verify_local_ownership's fixpoint sees it: 0 clear on every path,
+    // 1 set on every path, 2 unknown. Only drops and assignments read it.
+    // 2 is the safe default, and is what an unreached or synthesized
+    // instruction keeps — it reproduces the flag-checking code exactly.
+    live_state: int
 
     fn init(op: string, result: int, type: HirType,
             text: string, resolved: string,
@@ -94,6 +107,7 @@ class MirInstruction {
         self.scalar_materialize = false
         self.borrow_elided = false
         self.removed = false
+        self.live_state = 2
     }
 }
 
@@ -260,70 +274,131 @@ class MirBlockEdges {
     }
 }
 
+// A dense set of small non-negative ids, packed 64 to an `int` word.
+// The whole-set operations (copy, merge, intersect, equals, fill) are the
+// inner loop of the MIR dataflow fixpoints, and a word does 64 ids at a
+// time. Bits at or above `size` are always zero, so `equals` can compare
+// raw words and `descending` never reports a padding bit.
 class MirValueSet {
-    bits: List<bool>
+    words: List<int>
+    size: int
 
     fn init(size: int) {
-        self.bits = []
-        for unused: int in 0..size {
-            self.bits.push(false)
+        self.size = size
+        self.words = []
+        let count: int = (size + 63) >> 6
+        for unused: int in 0..count {
+            self.words.push(0)
         }
+    }
+
+    fn word_span(other: MirValueSet) -> int {
+        if self.words.len() < other.words.len() {
+            return self.words.len()
+        }
+        return other.words.len()
     }
 
     fn copy() -> MirValueSet {
         let result: MirValueSet =
-            new MirValueSet(self.bits.len())
-        for index: int in 0..self.bits.len() {
-            result.bits[index] = self.bits[index]
+            new MirValueSet(self.size)
+        for index: int in 0..self.words.len() {
+            result.words[index] = self.words[index]
         }
         return result
     }
 
+    fn copy_from(other: MirValueSet) {
+        let span: int = self.word_span(other)
+        for index: int in 0..span {
+            self.words[index] = other.words[index]
+        }
+        for index: int in span..self.words.len() {
+            self.words[index] = 0
+        }
+    }
+
+    fn clear() {
+        for index: int in 0..self.words.len() {
+            self.words[index] = 0
+        }
+    }
+
     fn contains(value: int) -> bool {
         return value >= 0 &&
-               value < self.bits.len() &&
-               self.bits[value]
+               value < self.size &&
+               (self.words[value >> 6] &
+                (1 << (value & 63))) != 0
     }
 
     fn add(value: int) {
-        if value >= 0 && value < self.bits.len() {
-            self.bits[value] = true
+        if value >= 0 && value < self.size {
+            let index: int = value >> 6
+            self.words[index] =
+                self.words[index] |
+                (1 << (value & 63))
         }
     }
 
     fn remove(value: int) {
-        if value >= 0 && value < self.bits.len() {
-            self.bits[value] = false
+        if value >= 0 && value < self.size {
+            let index: int = value >> 6
+            self.words[index] =
+                self.words[index] &
+                ~(1 << (value & 63))
         }
     }
 
     fn merge(other: MirValueSet) {
-        for index: int in 0..self.bits.len() {
-            if other.bits[index] {
-                self.bits[index] = true
-            }
+        let span: int = self.word_span(other)
+        for index: int in 0..span {
+            self.words[index] =
+                self.words[index] | other.words[index]
+        }
+    }
+
+    // self = self | (other & ~excluded), the "add what the other set has
+    // and this block does not define" step of a liveness transfer.
+    fn merge_without(other: MirValueSet,
+                     excluded: MirValueSet) {
+        var span: int = self.word_span(other)
+        if excluded.words.len() < span {
+            span = excluded.words.len()
+        }
+        for index: int in 0..span {
+            self.words[index] =
+                self.words[index] |
+                (other.words[index] &
+                 ~excluded.words[index])
         }
     }
 
     fn intersect(other: MirValueSet) {
-        for index: int in 0..self.bits.len() {
-            self.bits[index] =
-                self.bits[index] && other.bits[index]
+        let span: int = self.word_span(other)
+        for index: int in 0..span {
+            self.words[index] =
+                self.words[index] & other.words[index]
         }
     }
 
     fn fill() {
-        for index: int in 0..self.bits.len() {
-            self.bits[index] = true
+        for index: int in 0..self.words.len() {
+            self.words[index] = -1
+        }
+        let tail: int = self.size & 63
+        if tail != 0 && self.words.len() > 0 {
+            self.words[self.words.len() - 1] =
+                (1 << tail) - 1
         }
     }
 
     fn equals(other: MirValueSet) -> bool {
-        if self.bits.len() != other.bits.len() {
+        if self.size != other.size {
             return false
         }
-        for index: int in 0..self.bits.len() {
-            if self.bits[index] != other.bits[index] {
+        for index: int in 0..self.words.len() {
+            if self.words[index] !=
+               other.words[index] {
                 return false
             }
         }
@@ -332,6 +407,17 @@ class MirValueSet {
 }
 
 class MirLocalState {
+    // Two lattices over the same locals, carried by one fixpoint and
+    // packed two bits apart in one word each, so a round costs the same
+    // array traffic as the single lattice did.
+    //
+    // Bits 0-1 are MIR's own notion of an owned local being initialized —
+    // what the ownership verifier reports against. Bits 2-3 track the
+    // backend's runtime `.live` flag, which differs in one place: an
+    // ownership-transferring retain hands the reference away and clears
+    // the flag without MIR considering the local uninitialized.
+    // Each half is 0 = no on every path, 1 = yes on every path,
+    // 2 = the paths disagree.
     values: List<int>
     reached: bool
 
@@ -343,6 +429,24 @@ class MirLocalState {
         self.reached = false
     }
 
+    fn value_of(index: int) -> int {
+        return self.values[index] & 3
+    }
+
+    fn flag_of(index: int) -> int {
+        return self.values[index] >> 2
+    }
+
+    fn set_value(index: int, value: int) {
+        self.values[index] =
+            value | (self.values[index] & 12)
+    }
+
+    fn set_flag(index: int, flag: int) {
+        self.values[index] =
+            (self.values[index] & 3) | (flag << 2)
+    }
+
     fn copy() -> MirLocalState {
         let result: MirLocalState =
             new MirLocalState(self.values.len())
@@ -352,6 +456,20 @@ class MirLocalState {
                 self.values[index]
         }
         return result
+    }
+
+    fn copy_from(other: MirLocalState) {
+        self.reached = other.reached
+        for index: int in 0..self.values.len() {
+            self.values[index] = other.values[index]
+        }
+    }
+
+    fn reset() {
+        self.reached = false
+        for index: int in 0..self.values.len() {
+            self.values[index] = 0
+        }
     }
 
     fn equals(other: MirLocalState) -> bool {
@@ -379,10 +497,19 @@ class MirLocalState {
             return
         }
         for index: int in 0..self.values.len() {
-            if self.values[index] !=
-               other.values[index] {
-                self.values[index] = 2
+            let mine: int = self.values[index]
+            let theirs: int = other.values[index]
+            if mine == theirs { continue }
+            // the halves disagree independently: a path that agrees
+            // about the slot can still disagree about the flag
+            var merged: int = mine
+            if (mine & 3) != (theirs & 3) {
+                merged = (merged & 12) | 2
             }
+            if (mine & 12) != (theirs & 12) {
+                merged = (merged & 3) | 8
+            }
+            self.values[index] = merged
         }
     }
 }

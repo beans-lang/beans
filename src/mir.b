@@ -2210,6 +2210,19 @@ class MirLowerer {
                 }
             }
         }
+        // One pass over the edges instead of rescanning every block's
+        // target list for every block on every round.
+        var sources: List<MirBlockEdges> = []
+        for unused: MirBlock in function.blocks {
+            sources.push(new MirBlockEdges())
+        }
+        for block: MirBlock in function.blocks {
+            for target: int in block.terminator.targets {
+                if target >= 0 && target < count {
+                    sources[target].sources.push(block.id)
+                }
+            }
+        }
         var result: List<MirValueSet> = []
         for block: MirBlock in function.blocks {
             let set: MirValueSet =
@@ -2223,6 +2236,7 @@ class MirLowerer {
             }
             result.push(set)
         }
+        let next: MirValueSet = new MirValueSet(count)
         var changed: bool = true
         for changed {
             changed = false
@@ -2231,27 +2245,25 @@ class MirLowerer {
                    block.id == function.entry {
                     continue
                 }
-                let next: MirValueSet =
-                    new MirValueSet(count)
+                next.clear()
                 var first: bool = true
-                for predecessor: MirBlock in function.blocks {
-                    if !reachable[predecessor.id] ||
-                       !predecessor.terminator.targets.contains(
-                           block.id) {
+                for predecessor: int in
+                    sources[block.id].sources {
+                    if !reachable[predecessor] {
                         continue
                     }
                     if first {
                         next.merge(
-                            result[predecessor.id])
+                            result[predecessor])
                         first = false
                     } else {
                         next.intersect(
-                            result[predecessor.id])
+                            result[predecessor])
                     }
                 }
                 next.add(block.id)
                 if !next.equals(result[block.id]) {
-                    result[block.id] = next
+                    result[block.id].copy_from(next)
                     changed = true
                 }
             }
@@ -2296,6 +2308,11 @@ class MirLowerer {
             return
         }
         let local_count: int = function.locals.len()
+        // Nothing here moves a block or a terminator, so the dominator
+        // sets are the same for every candidate. Compute them on the
+        // first candidate that needs them and keep them.
+        var dominance: List<MirValueSet> = []
+        var dominance_ready: bool = false
         for block: MirBlock in function.blocks {
             for instruction_index: int in
                 0..block.instructions.len() {
@@ -2482,8 +2499,11 @@ class MirLowerer {
 
                 match materialization {
                     some(escape) => {
-                        let dominance: List<MirValueSet> =
-                            self.dominators(function)
+                        if !dominance_ready {
+                            dominance =
+                                self.dominators(function)
+                            dominance_ready = true
+                        }
                         let initialized: MirPosition =
                             new MirPosition(
                                 block.id,
@@ -2632,6 +2652,12 @@ class MirLowerer {
             live_in.push(new MirValueSet(local_count))
             live_out.push(new MirValueSet(local_count))
         }
+        // Two scratch sets carry every round of the fixpoint, so a
+        // function's rounds cost no allocation beyond these.
+        let next_out: MirValueSet =
+            new MirValueSet(local_count)
+        let next_in: MirValueSet =
+            new MirValueSet(local_count)
         var changed: bool = true
         for changed {
             changed = false
@@ -2640,8 +2666,7 @@ class MirLowerer {
                 block_index -= 1
                 let block: MirBlock =
                     function.blocks[block_index]
-                var next_out: MirValueSet =
-                    new MirValueSet(local_count)
+                next_out.clear()
                 for target: int in
                     block.terminator.targets {
                     if target >= 0 &&
@@ -2649,7 +2674,7 @@ class MirLowerer {
                         next_out.merge(live_in[target])
                     }
                 }
-                var next_in: MirValueSet = next_out.copy()
+                next_in.copy_from(next_out)
                 var instruction_index: int =
                     block.instructions.len()
                 for instruction_index > 0 {
@@ -2663,8 +2688,9 @@ class MirLowerer {
                 }
                 if !next_in.equals(live_in[block_index]) ||
                    !next_out.equals(live_out[block_index]) {
-                    live_in[block_index] = next_in
-                    live_out[block_index] = next_out
+                    live_in[block_index].copy_from(next_in)
+                    live_out[block_index].copy_from(
+                        next_out)
                     changed = true
                 }
             }
@@ -3503,45 +3529,6 @@ class MirLowerer {
             function, value) >= 0
     }
 
-    fn instruction_uses(
-        function: MirFunction,
-        instruction: MirInstruction,
-        include_phi: bool) -> MirValueSet {
-        let result: MirValueSet =
-            new MirValueSet(function.value_types.len())
-        if instruction.removed ||
-           (!include_phi && instruction.op == "phi") {
-            return result
-        }
-        for operand: int in instruction.operands {
-            let tracked: int =
-                self.tracked_id(function, operand)
-            if tracked >= 0 {
-                result.add(tracked)
-            }
-        }
-        return result
-    }
-
-    fn instruction_consumed(
-        function: MirFunction,
-        instruction: MirInstruction) -> MirValueSet {
-        let result: MirValueSet =
-            new MirValueSet(function.value_types.len())
-        for index: int in 0..instruction.operands.len() {
-            if index < instruction.consumes.len() &&
-               instruction.consumes[index] &&
-               self.tracked_value(
-                   function,
-                   instruction.operands[index]) {
-                result.add(self.tracked_id(
-                    function,
-                    instruction.operands[index]))
-            }
-        }
-        return result
-    }
-
     fn phi_edge_values(
         function: MirFunction,
         predecessor: int, successor: int,
@@ -3619,14 +3606,21 @@ class MirLowerer {
                 function.blocks[block_index]
             for instruction: MirInstruction in
                 block.instructions {
-                let current: MirValueSet =
-                    self.instruction_uses(
-                        function, instruction, false)
-                for value: int in 0..value_count {
-                    if current.contains(value) &&
-                       !definitions[
-                           block_index].contains(value) {
-                        uses[block_index].add(value)
+                // Same reading as instruction_uses, minus the
+                // function-wide set it would allocate per instruction.
+                if !instruction.removed &&
+                   instruction.op != "phi" {
+                    for operand: int in
+                        instruction.operands {
+                        let tracked: int =
+                            self.tracked_id(
+                                function, operand)
+                        if tracked >= 0 &&
+                           !definitions[
+                               block_index].contains(
+                                   tracked) {
+                            uses[block_index].add(tracked)
+                        }
                     }
                 }
                 let defined: int =
@@ -3692,6 +3686,12 @@ class MirLowerer {
             }
         }
 
+        // Two scratch sets carry every round of the fixpoint, so a
+        // function's rounds cost no allocation beyond these.
+        let next_out: MirValueSet =
+            new MirValueSet(value_count)
+        let next_in: MirValueSet =
+            new MirValueSet(value_count)
         var changed: bool = true
         for changed {
             changed = false
@@ -3701,8 +3701,7 @@ class MirLowerer {
                 block_index -= 1
                 let block: MirBlock =
                     function.blocks[block_index]
-                let next_out: MirValueSet =
-                    new MirValueSet(value_count)
+                next_out.clear()
                 for target: int in
                     block.terminator.targets {
                     if target < 0 ||
@@ -3715,30 +3714,32 @@ class MirLowerer {
                             function, block_index,
                             target, false))
                 }
-                let next_in: MirValueSet =
-                    uses[block_index].copy()
-                for value: int in 0..value_count {
-                    if next_out.contains(value) &&
-                       !definitions[
-                           block_index].contains(value) {
-                        next_in.add(value)
-                    }
-                }
+                next_in.copy_from(uses[block_index])
+                next_in.merge_without(
+                    next_out, definitions[block_index])
                 if !next_in.equals(live_in[block_index]) ||
                    !next_out.equals(live_out[block_index]) {
-                    live_in[block_index] = next_in
-                    live_out[block_index] = next_out
+                    live_in[block_index].copy_from(next_in)
+                    live_out[block_index].copy_from(
+                        next_out)
                     changed = true
                 }
             }
         }
 
+        // The backward walk carries one live set and rebuilds only the
+        // handful of values each instruction names, so an instruction
+        // costs its operand count instead of the function's value count.
+        let live: MirValueSet =
+            new MirValueSet(value_count)
+        var uses_here: List<int> = []
+        var consumed_here: List<int> = []
+        var touched: List<int> = []
         for block_index: int in
             0..function.blocks.len() {
             let block: MirBlock =
                 function.blocks[block_index]
-            var live: MirValueSet =
-                live_out[block_index].copy()
+            live.copy_from(live_out[block_index])
             let tail: int = self.tracked_id(
                 function, block.terminator.value)
             if tail >= 0 {
@@ -3756,36 +3757,71 @@ class MirLowerer {
                 let instruction: MirInstruction =
                     block.instructions[instruction_index]
                 if instruction.removed { continue }
-                let current_uses: MirValueSet =
-                    self.instruction_uses(
-                        function, instruction, false)
-                let consumed: MirValueSet =
-                    self.instruction_consumed(
-                        function, instruction)
-                let before: MirValueSet = live.copy()
                 let defined: int =
                     self.tracked_id(
                         function, instruction.result)
-                if defined >= 0 &&
-                   defined == instruction.result {
-                    before.remove(defined)
+                let defines: bool =
+                    defined >= 0 &&
+                    defined == instruction.result
+                for uses_here.len() > 0 { uses_here.pop() }
+                for consumed_here.len() > 0 {
+                    consumed_here.pop()
                 }
-                before.merge(current_uses)
-                var value: int = value_count
-                for value > 0 {
-                    value -= 1
-                    let touched: bool =
-                        current_uses.contains(value) ||
-                        (defined == value &&
-                         defined ==
-                             instruction.result)
-                    if touched &&
-                       !live.contains(value) &&
-                       !consumed.contains(value) {
+                for touched.len() > 0 { touched.pop() }
+                if instruction.op != "phi" {
+                    for operand: int in
+                        instruction.operands {
+                        let tracked: int =
+                            self.tracked_id(
+                                function, operand)
+                        if tracked >= 0 &&
+                           tracked < value_count &&
+                           !uses_here.contains(tracked) {
+                            uses_here.push(tracked)
+                        }
+                    }
+                }
+                for index: int in
+                    0..instruction.operands.len() {
+                    if index >=
+                           instruction.consumes.len() ||
+                       !instruction.consumes[index] {
+                        continue
+                    }
+                    let tracked: int =
+                        self.tracked_id(
+                            function,
+                            instruction.operands[index])
+                    if tracked >= 0 {
+                        consumed_here.push(tracked)
+                    }
+                }
+                for value: int in uses_here {
+                    touched.push(value)
+                }
+                if defines && defined < value_count &&
+                   !touched.contains(defined) {
+                    touched.push(defined)
+                }
+                // Everything this instruction touches that is neither
+                // still live below it nor consumed by it gets released,
+                // highest value first. The live set still reads as it
+                // does above the instruction here.
+                touched.sort()
+                var slot: int = touched.len()
+                for slot > 0 {
+                    slot -= 1
+                    let value: int = touched[slot]
+                    if !live.contains(value) &&
+                       !consumed_here.contains(value) {
                         instruction.releases.push(value)
                     }
                 }
-                live = before
+                // and only then does the walk carry it past.
+                if defines { live.remove(defined) }
+                for value: int in uses_here {
+                    live.add(value)
+                }
             }
 
             // a release scheduled on the instruction that hands out
@@ -3904,10 +3940,36 @@ class MirLowerer {
         if instruction.op == "local_init" ||
            instruction.op == "pattern_bind" ||
            instruction.op == "assign" {
-            state.values[local] = 1
+            state.set_value(local, 1)
         } else if instruction.op == "move" ||
                   instruction.op == "drop_local" {
-            state.values[local] = 0
+            state.set_value(local, 0)
+        }
+        // The backend's `.live` flag moves on its own rules: it is
+        // exactly the set of stores the emitter writes to %lN.live.
+        // Anything not listed here leaves the flag alone, so the
+        // default is to carry the incoming value through.
+        if instruction.op == "local_init" ||
+           (instruction.op == "assign" &&
+            instruction.text == "=") {
+            // emit_local_store always finishes with `store i1 true`
+            state.set_flag(local, 1)
+        } else if instruction.op == "pattern_bind" {
+            // Option arms bind without touching the flag while enum
+            // and Result arms set it; the emitter picks by payload
+            // type, so from here the flag is simply unknown
+            state.set_flag(local, 2)
+        } else if instruction.op == "move" ||
+                  instruction.op == "drop_local" {
+            // a move clears the flag as it reads; a drop leaves it
+            // clear whichever way its release went
+            state.set_flag(local, 0)
+        } else if instruction.op == "retain" &&
+                  !function.locals[local].parameter {
+            // ownership transfer: emit_retain clears the flag so the
+            // scope drop skips the release the new owner now carries.
+            // A parameter source is the one shape it leaves alone.
+            state.set_flag(local, 0)
         }
     }
 
@@ -3919,7 +3981,9 @@ class MirLowerer {
         for local: MirLocal in function.locals {
             if local.ownership == "owned" &&
                local.parameter {
-                result.values[local.id] = 1
+                result.set_value(local.id, 1)
+                // the prologue stores i1 true beside a parameter's slot
+                result.set_flag(local.id, 1)
             }
         }
         return result
@@ -3989,36 +4053,49 @@ class MirLowerer {
             output.push(
                 new MirLocalState(function.locals.len()))
         }
-        input[function.entry] =
+        // One pass over the edges instead of rescanning every block's
+        // target list for every block on every round.
+        var sources: List<MirBlockEdges> = []
+        for unused: MirBlock in function.blocks {
+            sources.push(new MirBlockEdges())
+        }
+        for block: MirBlock in function.blocks {
+            for target: int in block.terminator.targets {
+                if target >= 0 &&
+                   target < sources.len() {
+                    sources[target].sources.push(block.id)
+                }
+            }
+        }
+        let entry_state: MirLocalState =
             self.local_entry_state(function)
+        input[function.entry].copy_from(entry_state)
+        // Two scratch states carry every round of the fixpoint, so a
+        // function's rounds cost no allocation beyond these.
+        let incoming: MirLocalState =
+            new MirLocalState(function.locals.len())
+        let next: MirLocalState =
+            new MirLocalState(function.locals.len())
         var changed: bool = true
         for changed {
             changed = false
             for block_index: int in
                 0..function.blocks.len() {
-                var incoming: MirLocalState =
-                    new MirLocalState(
-                        function.locals.len())
                 if block_index == function.entry {
-                    incoming =
-                        self.local_entry_state(function)
+                    incoming.copy_from(entry_state)
+                } else {
+                    incoming.reset()
                 }
-                for predecessor: MirBlock in
-                    function.blocks {
-                    for target: int in
-                        predecessor.terminator.targets {
-                        if target == block_index {
-                            incoming.merge(
-                                output[predecessor.id])
-                        }
-                    }
+                for predecessor: int in
+                    sources[block_index].sources {
+                    incoming.merge(output[predecessor])
                 }
                 if !incoming.equals(input[block_index]) {
-                    input[block_index] = incoming
+                    input[block_index].copy_from(incoming)
                     changed = true
                 }
                 if !incoming.reached { continue }
-                let next: MirLocalState = incoming.copy()
+                next.copy_from(incoming)
                 for instruction: MirInstruction in
                     function.blocks[
                         block_index].instructions {
@@ -4026,7 +4103,7 @@ class MirLowerer {
                         function, instruction, next)
                 }
                 if !next.equals(output[block_index]) {
-                    output[block_index] = next
+                    output[block_index].copy_from(next)
                     changed = true
                 }
             }
@@ -4048,7 +4125,7 @@ class MirLowerer {
                    function.locals[
                        local].ownership == "owned" {
                     let before: int =
-                        state.values[local]
+                        state.value_of(local)
                     if (instruction.op == "borrow" ||
                         instruction.op == "move") &&
                        before != 1 {
@@ -4086,6 +4163,15 @@ class MirLowerer {
                             instruction.col,
                             "MIR conditionally live local l{local} needs a live flag")
                     }
+                    // The backend reads the `.live` flag at exactly two
+                    // kinds of site. Hand each one what the fixpoint
+                    // knows, so a flag that is provably set or provably
+                    // clear costs no load, no branch and no blocks.
+                    if instruction.op == "drop_local" ||
+                       instruction.op == "assign" {
+                        instruction.live_state =
+                            state.flag_of(local)
+                    }
                 }
                 self.transfer_local_state(
                     function, instruction, state)
@@ -4093,7 +4179,7 @@ class MirLowerer {
             if block.terminator.kind == "return" {
                 for local: MirLocal in function.locals {
                     if local.ownership == "owned" &&
-                       state.values[local.id] != 0 {
+                       state.value_of(local.id) != 0 {
                         self.fail(
                             block.terminator.file,
                             block.terminator.line,
@@ -4101,6 +4187,36 @@ class MirLowerer {
                             "MIR return leaves owned local l{local.id} live")
                     }
                 }
+            }
+        }
+
+        // Nothing but those two sites loads the flag, so a local whose
+        // sites all came out of the fixpoint with a definite answer has
+        // no reader left: the backend drops the alloca and every store
+        // to it. A site the walk never reached keeps its 2 and holds
+        // the flag, which is the shape the emitter produces today.
+        for local: MirLocal in function.locals {
+            if local.needs_live_flag {
+                local.live_flag_used = false
+            }
+        }
+        for block: MirBlock in function.blocks {
+            for instruction: MirInstruction in
+                block.instructions {
+                if instruction.removed { continue }
+                if instruction.live_state != 2 { continue }
+                if instruction.op != "drop_local" &&
+                   !(instruction.op == "assign" &&
+                     instruction.text == "=") {
+                    continue
+                }
+                let local: int = instruction.local
+                if local < 0 ||
+                   local >= function.locals.len() {
+                    continue
+                }
+                function.locals[
+                    local].live_flag_used = true
             }
         }
     }

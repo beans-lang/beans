@@ -363,7 +363,7 @@ partial class LlvmTextEmitter {
             function.locals[instruction.local]
         var live: string = ""
         if self.type_has_owned_refs(local.type) &&
-           local.needs_live_flag {
+           self.live_flag_slot(local) {
             live =
                 "  store i1 true, ptr %l{local.id}.live\n"
         }
