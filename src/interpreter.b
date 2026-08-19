@@ -11412,7 +11412,7 @@ class TreeInterpreter {
     }
 
     // Runs the C driver once with the packed argv; reports (status == 0)
-    // and captures stderr into self.net_error on failure.
+    // and captures linker stdout plus compiler stderr on failure.
     fn net_bridge_tool(argv: Bytes, c_driver: string) -> bool {
         let environment: Bytes = new Bytes(0)
         self.ffi_forward_env(environment, "PATH")
@@ -11429,11 +11429,17 @@ class TreeInterpreter {
                 new Bytes(0), 8388608) {
             ok(output) => {
                 let status: int = output.get(0).expect("compiler status").get_i64(0)
+                let normal_bytes: Bytes = output.get(1).expect("compiler stdout")
                 let error_bytes: Bytes = output.get(2).expect("compiler stderr")
                 compiled = status == 0
+                if normal_bytes.len() != 0 {
+                    compiler_error = normal_bytes.to_string()
+                }
                 if error_bytes.len() != 0 {
-                    compiler_error =
-                        error_bytes.to_string()
+                    if compiler_error != "" {
+                        compiler_error = "{compiler_error}\n"
+                    }
+                    compiler_error = "{compiler_error}{error_bytes.to_string()}"
                 }
             }
             err(error) => {
@@ -11568,6 +11574,12 @@ class TreeInterpreter {
                 self.ffi_pack_argument(
                     argv,
                     "--target={self.program.target.llvm_triple()}")
+                if self.program.target.env == "msvc" {
+                    // The compiler's MSVC lane is already linked with lld.
+                    // Use it for the interpreter's multi-object bridge DLLs
+                    // too; link.exe rejects these staged cache paths.
+                    self.ffi_pack_argument(argv, "-fuse-ld=lld")
+                }
             }
             for object: string in objects {
                 self.ffi_pack_argument(argv, object)
