@@ -11663,6 +11663,14 @@ class TreeInterpreter {
         }
         if self.program.target.os == "windows" {
             flags.push("--target={self.program.target.llvm_triple()}")
+            // A bridge loaded into a 32-bit hosted compiler must not resolve
+            // libc++.dll or libunwind.dll from a 64-bit toolchain on PATH.
+            // Keep GNU/LLVM-MinGW cache libraries self-contained. MSVC uses
+            // the Windows C++ runtime instead and does not accept these flags.
+            if self.program.target.env != "msvc" {
+                flags.push("-static-libstdc++")
+                flags.push("-static-libgcc")
+            }
         }
         for flag: string in self.program.target.c_driver_flags() {
             flags.push(flag)
