@@ -73,7 +73,8 @@ fn semantic_builtin_type_names() -> List<string> {
             "Arena", "Shared", "Weak", "Mutex", "Atomic", "Channel",
             "Thread", "Bytes", "File", "Dir", "MMap", "Error",
             "RawSlice", "AtomicInt", "MemoryOrder", "RoundingMode",
-            "CpuFeature", "StoredCallback", "CFunctionPtr", "Self"]
+            "CpuFeature", "StoredCallback", "LocalStoredCallback",
+            "CFunctionPtr", "Self"]
 }
 
 fn semantic_builtin_type_completions() -> List<SemanticCompletion> {
@@ -237,7 +238,7 @@ fn semantic_builtin_module_completions(
         let spawn: SemanticCompletion =
             new SemanticCompletion(
                 "spawn", "function", "builtin_module:std.thread.spawn")
-        spawn.detail = "fn std.thread.spawn(fn() -> T) -> Thread<T>"
+        spawn.detail = "fn std.thread.spawn(send fn() -> T) -> Thread<T>"
         items.push(spawn)
     }
     return move items

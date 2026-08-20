@@ -174,22 +174,22 @@ pub fn runtime_builtin_method(key: string) -> Option<RuntimeBuiltin> {
     if key == "Bytes.reserve" {
         return some(new RuntimeBuiltin(
             ["i64"],
-            "self_recv", "beans_bytes_reserve", true))
+            "unit", "beans_bytes_reserve", true))
     }
     if key == "Bytes.resize" {
         return some(new RuntimeBuiltin(
             ["i64"],
-            "self_recv", "beans_bytes_resize", true))
+            "unit", "beans_bytes_resize", true))
     }
     if key == "Bytes.fill" {
         return some(new RuntimeBuiltin(
             ["i64"],
-            "self_recv", "beans_bytes_fill", false))
+            "unit", "beans_bytes_fill", false))
     }
     if key == "Bytes.append_int_text" {
         return some(new RuntimeBuiltin(
             ["i64"],
-            "self_recv", "beans_bytes_append_int_text", false))
+            "unit", "beans_bytes_append_int_text", false))
     }
     if key == "Bytes.get" {
         return some(new RuntimeBuiltin(
@@ -199,12 +199,12 @@ pub fn runtime_builtin_method(key: string) -> Option<RuntimeBuiltin> {
     if key == "Bytes.set" {
         return some(new RuntimeBuiltin(
             ["i64", "i64"],
-            "self_recv", "beans_bytes_set", true))
+            "unit", "beans_bytes_set", true))
     }
     if key == "Bytes.push" {
         return some(new RuntimeBuiltin(
             ["i64"],
-            "self_recv", "beans_bytes_push", false))
+            "unit", "beans_bytes_push", false))
     }
     if key == "Bytes.get_u8" {
         return some(new RuntimeBuiltin(
@@ -234,27 +234,27 @@ pub fn runtime_builtin_method(key: string) -> Option<RuntimeBuiltin> {
     if key == "Bytes.put_u8" {
         return some(new RuntimeBuiltin(
             ["i64", "i64"],
-            "self_recv", "beans_bytes_put_u8", true))
+            "unit", "beans_bytes_put_u8", true))
     }
     if key == "Bytes.put_u16" {
         return some(new RuntimeBuiltin(
             ["i64", "i64"],
-            "self_recv", "beans_bytes_put_u16", true))
+            "unit", "beans_bytes_put_u16", true))
     }
     if key == "Bytes.put_u32" {
         return some(new RuntimeBuiltin(
             ["i64", "i64"],
-            "self_recv", "beans_bytes_put_u32", true))
+            "unit", "beans_bytes_put_u32", true))
     }
     if key == "Bytes.put_u64" {
         return some(new RuntimeBuiltin(
             ["i64", "i64"],
-            "self_recv", "beans_bytes_put_u64", true))
+            "unit", "beans_bytes_put_u64", true))
     }
     if key == "Bytes.put_i64" {
         return some(new RuntimeBuiltin(
             ["i64", "i64"],
-            "self_recv", "beans_bytes_put_i64", true))
+            "unit", "beans_bytes_put_i64", true))
     }
     if key == "Bytes.slice" {
         return some(new RuntimeBuiltin(
@@ -264,27 +264,27 @@ pub fn runtime_builtin_method(key: string) -> Option<RuntimeBuiltin> {
     if key == "Bytes.copy_from" {
         return some(new RuntimeBuiltin(
             ["bytes", "i64"],
-            "self_recv", "beans_bytes_copy_from", true))
+            "unit", "beans_bytes_copy_from", true))
     }
     if key == "Bytes.append" {
         return some(new RuntimeBuiltin(
             ["bytes"],
-            "self_recv", "beans_bytes_append", false))
+            "unit", "beans_bytes_append", false))
     }
     if key == "Bytes.append_string" {
         return some(new RuntimeBuiltin(
             ["str"],
-            "self_recv", "beans_bytes_append_str", false))
+            "unit", "beans_bytes_append_str", false))
     }
     if key == "Bytes.append_i64" {
         return some(new RuntimeBuiltin(
             ["i64"],
-            "self_recv", "beans_bytes_append_i64", false))
+            "unit", "beans_bytes_append_i64", false))
     }
     if key == "Bytes.append_range" {
         return some(new RuntimeBuiltin(
             ["bytes", "i64", "i64"],
-            "self_recv", "beans_bytes_append_range", true))
+            "unit", "beans_bytes_append_range", true))
     }
     if key == "Bytes.to_string_until_nul" {
         return some(new RuntimeBuiltin(
@@ -299,7 +299,7 @@ pub fn runtime_builtin_method(key: string) -> Option<RuntimeBuiltin> {
     if key == "Bytes.append_uvarint" {
         return some(new RuntimeBuiltin(
             ["i64"],
-            "self_recv", "beans_bytes_append_varint", false))
+            "unit", "beans_bytes_append_varint", false))
     }
     if key == "Bytes.get_uvarint" {
         return some(new RuntimeBuiltin(
@@ -434,27 +434,27 @@ pub fn runtime_builtin_method(key: string) -> Option<RuntimeBuiltin> {
     if key == "MMap.put_u8" {
         return some(new RuntimeBuiltin(
             ["i64", "i64"],
-            "self_recv", "beans_mmap_put_u8", true))
+            "unit", "beans_mmap_put_u8", true))
     }
     if key == "MMap.put_u16" {
         return some(new RuntimeBuiltin(
             ["i64", "i64"],
-            "self_recv", "beans_mmap_put_u16", true))
+            "unit", "beans_mmap_put_u16", true))
     }
     if key == "MMap.put_u32" {
         return some(new RuntimeBuiltin(
             ["i64", "i64"],
-            "self_recv", "beans_mmap_put_u32", true))
+            "unit", "beans_mmap_put_u32", true))
     }
     if key == "MMap.put_u64" {
         return some(new RuntimeBuiltin(
             ["i64", "i64"],
-            "self_recv", "beans_mmap_put_u64", true))
+            "unit", "beans_mmap_put_u64", true))
     }
     if key == "MMap.put_i64" {
         return some(new RuntimeBuiltin(
             ["i64", "i64"],
-            "self_recv", "beans_mmap_put_i64", true))
+            "unit", "beans_mmap_put_i64", true))
     }
     if key == "MMap.read" {
         return some(new RuntimeBuiltin(
@@ -464,7 +464,7 @@ pub fn runtime_builtin_method(key: string) -> Option<RuntimeBuiltin> {
     if key == "MMap.write" {
         return some(new RuntimeBuiltin(
             ["i64", "bytes"],
-            "self_recv", "beans_mmap_write", true))
+            "unit", "beans_mmap_write", true))
     }
     if key == "MMap.flush" {
         return some(new RuntimeBuiltin(

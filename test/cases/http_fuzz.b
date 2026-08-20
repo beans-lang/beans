@@ -267,7 +267,7 @@ fn main() {
         if wire.len() > 4 {
             var mutated: Bytes = wire.slice(0, wire.len())
             let at: int = rng.below(mutated.len())
-            let bent: Bytes = mutated.set(at, mutated.get(at) ^ (1 + rng.below(200)))
+            mutated.set(at, mutated.get(at) ^ (1 + rng.below(200)))
             var whole_bent: List<string> = []
             let bent_whole_failure: string = summarize(mutated, no_cuts, whole_bent)
             var split_bent: List<string> = []

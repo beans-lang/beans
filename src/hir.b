@@ -22,12 +22,17 @@ class HirType {
     args: List<HirType>
     array_length: int
     fn_parameter_count: int
+    // Ordinary fn values are local shared closure boxes. A sendable fn is
+    // still the same runtime shape, but it owns its captures and may move to
+    // one other thread.
+    fn_sendable: bool
 
     fn init(name: string) {
         self.name = name
         self.args = []
         self.array_length = -1
         self.fn_parameter_count = -1
+        self.fn_sendable = false
     }
 }
 
@@ -649,7 +654,9 @@ class SignatureChecker {
            name == "Channel" || name == "Box" || name == "Arena" ||
            name == "Shared" || name == "Weak" || name == "RawPtr" ||
            name == "Slice" || name == "Atomic" || name == "Option" ||
-           name == "StoredCallback" || name == "CFunctionPtr" {
+           name == "StoredCallback" ||
+           name == "LocalStoredCallback" ||
+           name == "CFunctionPtr" {
             return 1
         }
         return -1
@@ -704,6 +711,7 @@ class SignatureChecker {
         }
         if node.kind == "fn_type" {
             let result: HirType = new HirType("fn")
+            result.fn_sendable = node.value == "send"
             for child: AstNode in node.children {
                 result.args.push(self.lower_type(child, file))
             }
@@ -1965,7 +1973,24 @@ class SignatureChecker {
                             message)
                     }
                 }
-                none => {}
+                none => {
+                    // Compiler-owned storage types look class-like at use
+                    // sites, but they have no HIR declaration to inherit.
+                    // Refuse the relation here instead of letting a later
+                    // super lookup report the misleading "no parent
+                    // constructor" error.
+                    if relation_kind == "extends" &&
+                       builtin_type(relation.name) {
+                        self.fail(
+                            declaration.file,
+                            new AstNode(
+                                declaration.kind,
+                                declaration.name,
+                                declaration.line,
+                                declaration.col),
+                            "builtin type '{relation.name}' cannot be extended")
+                    }
+                }
             }
         }
         if class_parents > 1 {
@@ -2283,7 +2308,9 @@ fn render_hir_type(type: HirType) -> string {
             result =
                 render_hir_type(type.args[type.fn_parameter_count])
         }
-        return "fn({parts.join(", ")}) -> {result}"
+        let prefix: string =
+            if type.fn_sendable { "send " } else { "" }
+        return "{prefix}fn({parts.join(", ")}) -> {result}"
     }
     let shown: string = display_symbol(type.name)
     if type.args.len() == 0 { return shown }

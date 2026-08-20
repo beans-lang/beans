@@ -60,7 +60,7 @@ pub class Event {
 }
 
 /// A set of descriptors to wait on.
-pub unique class Poller {
+pub unique class Poller implements Send {
     fd: int
     wake_read: int
     signal: int

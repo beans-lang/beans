@@ -15,7 +15,7 @@ fn main() {
     fs.write(path, "alpha\n\n{long}\nlast").expect("seed")
 
     let source_file: File = File.open(path, "r").expect("open")
-    let source: reader.Reader = new reader.Reader(source_file)
+    let source: reader.Reader = new reader.Reader(move source_file)
     let first: string = line(source.read_line())
     let empty: string = line(source.read_line())
     let long_line: string = line(source.read_line())
@@ -24,17 +24,22 @@ fn main() {
     let equal: bool = first == "alpha" && empty == "" && long_line == long &&
         last == "last" && eof == "<eof>"
     let total: int = first.len() + empty.len() + long_line.len() + last.len() + eof.len()
-    source_file.close().expect("close")
+    source.close().expect("close")
 
-    let nul_data: Bytes = new Bytes(5).set(0, 65).set(1, 0).set(2, 66).set(3, 10).set(4, 67)
+    let nul_data: Bytes = new Bytes(5)
+    nul_data.set(0, 65)
+    nul_data.set(1, 0)
+    nul_data.set(2, 66)
+    nul_data.set(3, 10)
+    nul_data.set(4, 67)
     fs.write_bytes(nul_path, nul_data).expect("nul seed")
     let source_nul_file: File = File.open(nul_path, "r").expect("nul open")
-    let source_nul: reader.Reader = new reader.Reader(source_nul_file)
+    let source_nul: reader.Reader = new reader.Reader(move source_nul_file)
     let source_first: string = line(source_nul.read_line())
     let source_last: string = line(source_nul.read_line())
     let nul_equal: bool = source_first.len() == 3 && source_first.byte_at(1) == 0 &&
         source_last == "C"
-    source_nul_file.close().expect("nul close")
+    source_nul.close().expect("nul close")
 
     io.println("reader source {equal} {nul_equal} {total}")
     File.remove(path).expect("remove")

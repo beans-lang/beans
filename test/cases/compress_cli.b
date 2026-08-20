@@ -9,43 +9,30 @@ import std.fs
 import std.io
 import std.os
 
-fn main() {
+fn run() -> Result<bool> {
     let arguments: List<string> = os.args()
     if arguments.len() < 3 {
         io.println("usage: compress_cli <pack|unpack> <in> <out>")
         os.exit(2)
+        return ok(false)
     }
     let mode: string = arguments[0]
-    var data: Bytes = new Bytes(0)
-    match fs.read_bytes(arguments[1]) {
-        ok(loaded) => { data = loaded }
-        err(e) => {
-            io.println("read failed: {e.msg}")
-            os.exit(1)
-        }
-    }
-    var out: Bytes = new Bytes(0)
-    if mode == "pack" {
-        match compress.gzip_compress(data) {
-            ok(packed) => { out = packed }
-            err(e) => {
-                io.println("pack failed: {e.msg}")
-                os.exit(1)
-            }
-        }
+    let data: Bytes = fs.read_bytes(arguments[1])?
+    let out: Bytes = if mode == "pack" {
+        compress.gzip_compress(data)?
     } else {
-        match compress.gzip_decompress(data, 16777216) {
-            ok(opened) => { out = opened }
-            err(e) => {
-                io.println("unpack failed ({e.kind}): {e.msg}")
-                os.exit(1)
-            }
-        }
+        compress.gzip_decompress(data, 16777216)?
     }
-    match fs.write_bytes(arguments[2], out) {
-        ok(_) => { io.println("ok {mode} {data.len()} -> {out.len()}") }
+    fs.write_bytes(arguments[2], out)?
+    io.println("ok {mode} {data.len()} -> {out.len()}")
+    return ok(true)
+}
+
+fn main() {
+    match run() {
+        ok(_) => {}
         err(e) => {
-            io.println("write failed: {e.msg}")
+            io.println("failed ({e.kind}): {e.msg}")
             os.exit(1)
         }
     }

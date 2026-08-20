@@ -19,8 +19,10 @@ class KV {
 
     pub fn set(key: string, value: string) -> Result<int> {
         var rec: Bytes = new Bytes(8)
-        rec.put_u32(0, key.len()).put_u32(4, value.len())
-        rec.append_string(key).append_string(value)
+        rec.put_u32(0, key.len())
+        rec.put_u32(4, value.len())
+        rec.append_string(key)
+        rec.append_string(value)
         return fs.append_bytes(self.path, rec)
     }
 
@@ -82,8 +84,10 @@ class KV {
             let k: string = names[i]
             let v: string = latest[k]
             var rec: Bytes = new Bytes(8)
-            rec.put_u32(0, k.len()).put_u32(4, v.len())
-            rec.append_string(k).append_string(v)
+            rec.put_u32(0, k.len())
+            rec.put_u32(4, v.len())
+            rec.append_string(k)
+            rec.append_string(v)
             out.append(rec)
             i += 1
         }
@@ -127,7 +131,8 @@ fn main() {
     // byte key/value that never got written. get/compact must treat this torn
     // tail as EOF, not slice past the end and panic.
     var torn: Bytes = new Bytes(8)
-    torn.put_u32(0, 100).put_u32(4, 100)
+    torn.put_u32(0, 100)
+    torn.put_u32(4, 100)
     fs.append_bytes(kv.path, torn).expect("torn append")
     io.println(kv.get("name").expect("survives torn tail"))
     let recovered: int = kv.compact().expect("compact past torn tail")

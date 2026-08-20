@@ -31,7 +31,7 @@ fn make_pattern(count: int) -> Bytes {
     for index: int in 0..count {
         data.push(pattern_at(index))
     }
-    return data
+    return move data
 }
 
 fn pattern_intact(data: Bytes, offset: int) -> bool {

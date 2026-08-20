@@ -34,7 +34,8 @@ fn llvm_type(type: HirType) -> string {
     }
     // unmanaged: an address the ARC discipline never touches
     if (name == "RawPtr" || name == "CFunctionPtr" ||
-        name == "StoredCallback") &&
+        name == "StoredCallback" ||
+        name == "LocalStoredCallback") &&
        type.args.len() == 1 {
         return "ptr"
     }

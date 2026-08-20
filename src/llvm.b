@@ -438,7 +438,7 @@ partial class LlvmTextEmitter {
             } else if instruction.resolved.starts_with(
                           "StoredCallback.create:") ||
                       instruction.resolved.starts_with(
-                          "StoredCallback.create_same_thread:") {
+                          "LocalStoredCallback.create:") {
                 output =
                     self.emit_stored_callback_create(
                         function, instruction,
@@ -1267,11 +1267,16 @@ partial class LlvmTextEmitter {
         } else if instruction.op ==
                       "builtin_method" &&
                   instruction.operands.len() != 0 &&
-                  canonical_hir_name(
-                      self.value_type(
-                          function,
-                          instruction.operands[0]).name) ==
-                      "StoredCallback" {
+                  (canonical_hir_name(
+                       self.value_type(
+                           function,
+                           instruction.operands[0]).name) ==
+                       "StoredCallback" ||
+                   canonical_hir_name(
+                       self.value_type(
+                           function,
+                           instruction.operands[0]).name) ==
+                       "LocalStoredCallback") {
             output =
                 self.emit_stored_callback_method(
                     function, instruction, values)

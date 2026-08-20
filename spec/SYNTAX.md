@@ -324,8 +324,11 @@ and `parse_int_range_or(from, to, fallback)` for allocation-free byte-range work
 
 ## Bytes (v0.5, implemented)
 
-The binary buffer — strings stay text; anything binary is `Bytes`. Mutating methods return
-self, so page-building chains work: `new Bytes(4096).put_u32(0, root).put_u64(8, lsn)`.
+The binary buffer — strings stay text; anything binary is `Bytes`. `Bytes` is a
+move-only `Send` owner, not `Sync`: one thread may mutate it, and ownership may
+move to another thread, but aliases cannot race. Mutating methods return
+`unit`; write page-building steps as separate statements. `slice` makes an
+explicit deep copy.
 
 - `new Bytes(n)` (zeroed, panics on negative), `Bytes.filled(n, byte)`,
   `Bytes.from(s)` (copies the text bytes)
@@ -366,8 +369,9 @@ Class-first, like everything builtin. Errors are `Result<T>`; `Error.kind` carri
 - **File methods**: positional I/O first — `read_at(pos, n)` → `Result<Bytes>` (short read at
   EOF returns what's there), `write_at(pos, b)`; cursor `read(n)`/`write(b)`; `seek`/`seek_from_end`
   (return the new position, panic on a closed file), `tell`, `size`, `truncate`, `sync` (fsync —
-  the durability call), `close` (double close is an error result). Dropping the last reference
-  closes the fd as a safety net; `close()` is still the API.
+  the durability call), `close` (double close is an error result). `File` is a
+  move-only `Send` owner, not `Sync`. Dropping the owner closes the fd as a
+  safety net; `close()` is still the API.
 - **File locks**: `lock()` (blocking, exclusive), `try_lock()` (`ok(false)` means someone else
   holds it), `unlock()` — advisory flock, owned by the open file description, so two handles on
   one file contend. Single-writer databases.
@@ -380,12 +384,12 @@ Class-first, like everything builtin. Errors are `Result<T>`; `Error.kind` carri
 - **std.path** (pure Beans string math, no fs access): `join(a, b)` (absolute `b` wins),
   `parent`, `base`, `ext` (with the dot; a leading dot is a dotfile, not an extension),
   and `stem`. Import it with `import std.path`; the old native `Path.*` copy is gone.
-- **std.reader**: `new reader.Reader(f)` then `read_line()` → `Result<Option<string>>` —
+- **std.reader**: `new reader.Reader(move f)` then `read_line()` → `Result<Option<string>>` —
   `ok(some(line))` without its newline, a partial last line, then `ok(none)` at EOF.
-  It reads at its own offset (pread), so the file's cursor never moves; buffered
-  data keeps serving after `f.close()`, and the closed error surfaces on the next refill.
-  Buffering and line policy are Beans source; only `File.read_at` stays native. The old
-  native `BufReader` type is gone.
+  The reader owns the file and reads at its own offset (pread), so the file's
+  cursor never moves. `file_position()` reports that offset and `close()` closes
+  the owned file. Buffering and line policy are Beans source; only
+  `File.read_at` stays native. The old native `BufReader` type is gone.
 - **std.os**: `args()` (`beansc run f.b -- a b` passes them; the native binary uses argv),
   `env(name)` → `Option<string>`, `exit(code)`. The millisecond clocks live in
   `std.time` as `wall_millis`, `monotonic_millis` and `sleep_millis`.
@@ -423,20 +427,22 @@ durable compaction (write temp, sync, rename over, sync the parent dir).
 
 ## MMap (v0.5, implemented)
 
-A shared mapping of a whole file — the page-cache path a database wants. One writer, no
-collector interaction: the mapped region is not beans heap, only the handle is.
+A shared mapping of a whole file — the page-cache path a database wants. `MMap`
+is a move-only `Send` owner, not `Sync`. The mapped region is not Beans heap;
+one owner may move between threads, but concurrent aliases are forbidden.
 
 - `MMap.open(path, writable)` → `Result<MMap>` — maps the entire file (`MAP_SHARED`); the
   handle keeps its fd for `resize`, and the mapping outlives the path — unlink while mapped
   is fine. An empty file maps with `len() == 0`.
-- `len()`; `get_u8/u16/u32/u64/i64(pos)` and `put_...(pos, v)` — little-endian, bounds-checked
-  panics; `put` panics on a read-only map; `put`/`write` return self for chains.
+- `len()`; `get_u8/u16/u32/u64/i64(pos)` and `put_...(pos, v)` — little-endian,
+  bounds-checked panics; `put` panics on a read-only map; `put`/`write` return
+  `unit`.
 - `read(pos, n)` → `Bytes` (copy out), `write(pos, b)` — panics out of range.
 - `flush()` / `flush_range(pos, n)` → `Result<bool>` (msync — the durability call),
   `close()` → `Result<bool>` (double close is an error; access after close panics).
 - `resize(n)` → `Result<bool>` — ftruncate + remap in place, grow or shrink; read-only
   maps refuse with a `permission` error. On a remap failure the handle stays open but empty.
-- Dropping the last reference unmaps (and closes the fd) as a safety net.
+- Dropping the owner unmaps (and closes the fd) as a safety net.
 - The backing descriptor is close-on-exec while the mapping owns it.
 
 ## std.fmt (v0.5, implemented)
@@ -693,10 +699,9 @@ let value: u32 = binary.read_u32(wire, 0, binary.ByteOrder.big)?
   zigzag form matching Go's `PutVarint`. Reads report the value and its
   consumed byte count; running past ten bytes or 64 bits is kind
   `overflow`.
-- `Reader` and `Writer` are cursors holding a position and an order;
-  `Bytes` is move-only, so every method borrows the buffer per call
-  instead of owning it. `remaining(data)` and `skip(data, n)` complete the
-  cursor surface.
+- `Reader` and `Writer` are cursors holding a position and an order. They do
+  not own a buffer; every method borrows the caller's `Bytes` per call.
+  `remaining(data)` and `skip(data, n)` complete the cursor surface.
 
 ## Variables
 
@@ -1020,18 +1025,27 @@ let double: fn(int) -> int = fn(x: int) -> int { return x * 2 }
 xs.map(fn(x: int) -> int { return x * 2 })
 ```
 
+A plain `fn(...) -> T` value is local, aliasable, and `Clone`. A
+`send fn(...) -> T` value is move-only and implements `Send`, not `Sync` or
+`Clone`. A closure gets the sendable form from its declared or parameter type;
+a named function may also take that form because it has no captures.
+
+Every capture of a `send fn` must implement `Send`. A move-only, mutable, or
+non-`Sync` capture must also appear in `move(...)`, so the old thread keeps no
+mutable alias. Immutable `Sync` captures may be shared. A plain `fn` never
+silently converts to `send fn`.
+
 **Capture by move.** `fn(...) move(a, b) -> T { ... }` captures the listed
 enclosing locals by move: the closure owns them, the enclosing bindings are
 spent (using one afterward is a use-after-move error), and each owned capture
 is released exactly once when the closure value dies. This is how a move-only
 value — a socket, a `Box`, a `List` — lives inside a callback and is torn
 down with it. Each listed name must be an enclosing local the body actually
-uses; `inout` parameters cannot be move-captured. Closure values stay
-ordinary shared `fn` values: copying one shares the same closure (and its
-captures) rather than duplicating them, so single-ownership of the capture is
-never violated. Inside the body a move capture still reads as a borrowed
-binding — it cannot be moved out again, because the closure may be called
-more than once.
+uses; `inout` parameters cannot be move-captured. Plain closure values stay
+shared `fn` values: copying one shares the same closure and captures rather
+than duplicating them. A `send fn` is move-only instead. Inside the body a
+move capture still reads as a borrowed binding — it cannot be moved out again,
+because the closure may be called more than once.
 
 ## Classes
 
@@ -1080,6 +1094,9 @@ let u: User = new("jul")
   declared result, assignment target, return type, or function parameter. It is
   an error when that context does not name a concrete class. Class field
   literals and plain `Class(...)` calls are errors.
+- Compiler-owned types such as `Bytes`, `File`, `List`, and `Map` are not class
+  declarations and cannot be extended. Put one in a field when a class needs
+  to wrap it.
 - Named statics remain for fallible or non-construction operations, including
   `File.open`, `MMap.open`, `MMap.open_shared_memory`, `KV.open_in`, `Bytes.from`,
   `RawPtr.alloc`, `Slice.from_raw`, `TcpListener.bind`, `TcpStream.connect`,
@@ -1567,13 +1584,14 @@ hits.add(1)
 ```
 
 - `Mutex<T>` holds the value inside it — `with_lock` locks, runs your closure, unlocks on any exit path. No forgotten unlocks.
-- A `thread.spawn` closure may capture only `Send` values and must return a
-  `Send` value. A move-only `Send` value must be named in the closure's explicit
-  move list (`fn() move(socket) { ... }`), so the old thread cannot keep an
-  owner. Plain class references, List, Map, Box, Arena, Bytes, File, and MMap
-  are non-`Send`. Scalars, immutable strings, `Error`, AtomicInt, Mutex, a
-  Channel of `Send` values, and `Shared<T>`/`Weak<T>` where
-  `T implements Send & Sync` can cross.
+- `thread.spawn` consumes a zero-argument `send fn` and its result must be
+  `Send`. A direct closure literal is inferred as `send fn`. An existing
+  sendable function local needs `move` at the call. Plain class references
+  remain local. `List<T>`, `Box<T>`, and `Arena<T>` are `Send` when `T` is;
+  `Map<K, V>` and `OrderedMap<K, V>` are `Send` when both arguments are.
+  `Bytes`, `File`, and `MMap` are move-only `Send` owners. `Mutex<T>` and
+  `Channel<T>` require `T: Send`; `Shared<T>` and `Weak<T>` require
+  `T: Send + Sync`.
   This makes `class` a local ARC reference by default; wrap shared mutable data
   in Mutex instead of silently racing it.
 - A `unique class` may explicitly implement `Send` to promise that transferring
@@ -3044,8 +3062,8 @@ beansc build --target riscv32imac-unknown-none-elf --runtime freestanding f.b --
   the separate userdata pointer. Captures must be `Send + Sync`. Unregister
   first, then call `close()`; close waits for active calls. The value is
   move-only, and a panic never unwinds through C.
-- `StoredCallback<F>.create_same_thread(userdata_index, closure)` is the
-  same owned callback for the most common C event-loop shape: the library
+- `LocalStoredCallback<F>.create(userdata_index, closure)` is the owned callback
+  for the most common C event-loop shape: the library
   stores the callback once and always invokes it on the thread that
   registered it. Captures are unrestricted — no `Send`, no `Sync` — because
   the registering thread is recorded and an invocation from any other thread
@@ -3056,8 +3074,11 @@ beansc build --target riscv32imac-unknown-none-elf --runtime freestanding f.b --
 A **borrowed callback** is an `fn(...)` parameter on an `extern "C" fn`. It is
 lent to C for the length of that one call, so a Beans closure can be passed
 directly and no lifetime question arises. A callback C *stores* is a different
-thing and needs `StoredCallback`, whose value stays alive until you `close()`
-it — close after unregistering, because it waits for calls already running.
+thing and needs `StoredCallback` or `LocalStoredCallback`, whose value stays
+alive until you `close()` it — close after unregistering, because it waits for
+calls already running. Both registration-owner types are local and move-only;
+"any-thread" describes where C may invoke the callback, not where its owner may
+be moved.
 A callback type is not storage: an `extern "C" struct` field cannot hold a
 plain `fn(...)`. C function-pointer storage uses `CFunctionPtr<F>`, which is
 one pointer wide but stays distinct from `RawPtr` and ordinary Beans function
@@ -3253,7 +3274,7 @@ declares one, so `package` stays usable as an ordinary identifier.
   nil'd before the referent's deinit; closure capture-by-move
   (`fn() move(x) { ... }`), which lets a callback own a move-only resource
   and release it exactly once with the closure; the same-thread stored
-  callback (`StoredCallback.create_same_thread`), unrestricted captures
+  callback (`LocalStoredCallback.create`), unrestricted captures
   guarded by a checked thread abort; the `csrc` manifest row, compiling a
   package's own C sources for native links and `beansc run` alike, cached by
   content hash; and backend error poisoning, so one unsupported construct is
@@ -3398,7 +3419,7 @@ declares one, so `package` stays usable as an ordinary identifier.
   subclass then parent, and is skipped for cycle garbage
 - Stdlib v0.5 phase 4 (implemented): Beans-written `std.reader` line reading over positional I/O (the old native `BufReader` is gone), format specs in interpolation (`{x:8.2}` — first top-level `:` in the braces; the same rendering as `std.fmt`), `chars()` for UTF-8, varint + crc32 on `Bytes`, `MMap.resize` (the handle keeps its fd), `Dir.walk` (recursive, sorted, relative), and Beans-written `std.path`
 - Stdlib v0.5 phase 3 (implemented): the List/Map method set with **stable** sorts (`sort_by` takes a less-than closure; both backends run the identical merge), `Bytes` value `==`, advisory file locks, `MMap` (whole-file, shared, drop unmaps, grow = close + reopen), `std.fmt`, and printing widened to enums and lists — `variant(payload)` / `[a, b]` — everywhere strings interpolate; maps, class instances, and `Result` stay unprintable
-- Stdlib v0.5: the string method set, `Bytes`, `File`/`Dir`, `std.os`, and the `std.io` console set (implemented); byte semantics, panics carry positions, mutators return self for chaining, fs errors carry kind slugs
+- Stdlib v0.5: the string method set, `Bytes`, `File`/`Dir`, `std.os`, and the `std.io` console set (implemented); byte semantics, panics carry positions, byte-owner mutators return `unit`, fs errors carry kind slugs
 - Modules: `beans.pot`, one folder = one package, git imports with a global cache (v0.4, implemented)
 - Block-bodied match arms in statement position (v0.4, implemented)
 - `pub interface` exposes its method set implicitly (v0.4)

@@ -365,7 +365,9 @@ class ExpressionChecker {
                 result = self.diagnostic_type(
                     type.args[type.fn_parameter_count])
             }
-            return "fn({parts.join(", ")}) -> {result}"
+            let prefix: string =
+                if type.fn_sendable { "send " } else { "" }
+            return "{prefix}fn({parts.join(", ")}) -> {result}"
         }
         let package_id: string = symbol_package(type.name)
         let shown: string =
@@ -565,6 +567,7 @@ class ExpressionChecker {
             new HirType(canonical_hir_name(type.name))
         result.array_length = type.array_length
         result.fn_parameter_count = type.fn_parameter_count
+        result.fn_sendable = type.fn_sendable
         for argument: HirType in type.args {
             result.args.push(self.substitute_owner_type(
                 argument, declaration, receiver))
@@ -619,6 +622,7 @@ class ExpressionChecker {
             new HirType(canonical_hir_name(type.name))
         result.array_length = type.array_length
         result.fn_parameter_count = type.fn_parameter_count
+        result.fn_sendable = type.fn_sendable
         for argument: HirType in type.args {
             result.args.push(self.substitute_generic_type(
                 argument, generics, inference))
@@ -716,52 +720,50 @@ class ExpressionChecker {
            self.trait_satisfied(type, "Order") {
             return true
         }
+        if trait == "Send" || trait == "Sync" {
+            match self.builtin_thread_trait(type, trait) {
+                some(satisfied) => { return satisfied }
+                none => {}
+            }
+        }
         if hir_is_numeric(type) ||
            type.name == "bool" ||
            type.name == "string" ||
            type.name == "unit" {
             return trait == "Clone" || trait == "Eq" ||
-                   trait == "Hash" || trait == "Order" ||
-                   trait == "Send" || trait == "Sync"
+                   trait == "Hash" || trait == "Order"
         }
         if type.name == "array" && type.args.len() == 1 {
             return (trait == "Clone" || trait == "Eq" ||
-                    trait == "Hash" || trait == "Send" ||
-                    trait == "Sync") &&
+                    trait == "Hash") &&
                    self.trait_satisfied(type.args[0], trait)
         }
         if type.name == "fn" {
-            return trait == "Clone"
+            return !type.fn_sendable && trait == "Clone"
         }
         if simd_description(type.name).is_some() {
-            return trait == "Clone" || trait == "Eq" ||
-                   trait == "Send" || trait == "Sync"
+            return trait == "Clone" || trait == "Eq"
         }
         if type.name == "RawPtr" ||
            type.name == "CFunctionPtr" {
             return trait == "Clone" || trait == "Eq" ||
-                   trait == "Hash" || trait == "Send" ||
-                   trait == "Sync"
+                   trait == "Hash"
         }
         if type.name == "Slice" {
-            return trait == "Clone" || trait == "Send" ||
-                   trait == "Sync"
+            return trait == "Clone"
         }
         if type.name == "Bytes" {
-            return trait == "Clone" || trait == "Eq" ||
-                   trait == "Hash"
+            return trait == "Eq" || trait == "Hash"
         }
         if type.name == "Error" {
             return trait == "Clone" || trait == "Eq" ||
-                   trait == "Hash" || trait == "Send" ||
-                   trait == "Sync"
+                   trait == "Hash"
         }
         if (type.name == "Option" ||
             type.name == "Result") &&
            type.args.len() >= 1 {
             if trait != "Clone" && trait != "Eq" &&
-               trait != "Hash" && trait != "Send" &&
-               trait != "Sync" {
+               trait != "Hash" {
                 return false
             }
             for argument: HirType in type.args {
@@ -778,31 +780,18 @@ class ExpressionChecker {
             return true
         }
         if type.name == "Shared" || type.name == "Weak" {
-            if trait == "Clone" { return true }
-            return (trait == "Send" || trait == "Sync") &&
-                   type.args.len() == 1 &&
-                   self.trait_satisfied(
-                       type.args[0], "Send") &&
-                   self.trait_satisfied(
-                       type.args[0], "Sync")
+            return trait == "Clone"
         }
         if type.name == "Mutex" ||
            type.name == "Atomic" ||
            type.name == "AtomicInt" {
-            return trait == "Clone" || trait == "Send" ||
-                   trait == "Sync"
+            return trait == "Clone"
         }
         if type.name == "Channel" && type.args.len() == 1 {
-            if trait == "Clone" { return true }
-            return (trait == "Send" || trait == "Sync") &&
-                   self.trait_satisfied(
-                       type.args[0], "Send")
+            return trait == "Clone"
         }
         if type.name == "Thread" && type.args.len() == 1 {
-            if trait == "Clone" { return true }
-            return trait == "Send" &&
-                   self.trait_satisfied(
-                       type.args[0], "Send")
+            return trait == "Clone"
         }
         if type.name == "List" && type.args.len() == 1 {
             if trait == "Eq" || trait == "Hash" {
@@ -836,6 +825,15 @@ class ExpressionChecker {
                 // marker this way.
                 if trait == "Send" && declaration.is_unique &&
                    self.is_subtype(type, new HirType(trait)) {
+                    // A generic unique promise is conditional. The outer
+                    // handle has one owner, but it cannot carry a local-only
+                    // type across a thread merely because the class header
+                    // says Send.
+                    for argument: HirType in type.args {
+                        if !self.trait_satisfied(argument, "Send") {
+                            return false
+                        }
+                    }
                     return true
                 }
                 match self.declarations.get(trait) {
@@ -869,7 +867,19 @@ class ExpressionChecker {
                     return true
                 }
                 if declaration.kind == "union" {
-                    return trait == "Clone"
+                    if trait == "Clone" { return true }
+                    if trait != "Send" && trait != "Sync" {
+                        return false
+                    }
+                    for field: HirField in declaration.fields {
+                        let field_type: HirType =
+                            self.substitute_owner_type(
+                                field.type, declaration, type)
+                        if !self.trait_satisfied(field_type, trait) {
+                            return false
+                        }
+                    }
+                    return true
                 }
                 if declaration.kind == "enum" {
                     if trait != "Clone" &&
@@ -905,6 +915,67 @@ class ExpressionChecker {
             none => {}
         }
         return false
+    }
+
+    fn builtin_thread_trait(
+        type: HirType, trait: string) -> Option<bool> {
+        let policy: string = builtin_thread_policy(type)
+        if policy == "" { return none }
+        if policy == "always" { return some(true) }
+        if policy == "local" { return some(false) }
+        if policy == "send_only" { return some(trait == "Send") }
+        if policy == "same_arguments" {
+            if type.name == "array" && type.args.len() != 1 {
+                return some(false)
+            }
+            if (type.name == "Option" || type.name == "Result") &&
+               type.args.len() < 1 {
+                return some(false)
+            }
+            for argument: HirType in type.args {
+                if !self.trait_satisfied(argument, trait) {
+                    return some(false)
+                }
+            }
+            if type.name == "Result" && type.args.len() == 1 {
+                return some(self.trait_satisfied(
+                    new HirType("Error"), trait))
+            }
+            return some(true)
+        }
+        if policy == "shared_arguments" {
+            return some(
+                type.args.len() == 1 &&
+                self.trait_satisfied(type.args[0], "Send") &&
+                self.trait_satisfied(type.args[0], "Sync"))
+        }
+        if policy == "send_arguments" {
+            if trait != "Send" || type.args.len() == 0 {
+                return some(false)
+            }
+            for argument: HirType in type.args {
+                if !self.trait_satisfied(argument, "Send") {
+                    return some(false)
+                }
+            }
+            return some(true)
+        }
+        if policy == "channel_argument" {
+            return some(
+                type.args.len() == 1 &&
+                self.trait_satisfied(type.args[0], "Send"))
+        }
+        if policy == "mutex_argument" {
+            return some(
+                type.args.len() == 1 &&
+                self.trait_satisfied(type.args[0], "Send"))
+        }
+        if policy == "thread_result" {
+            return some(
+                trait == "Send" && type.args.len() == 1 &&
+                self.trait_satisfied(type.args[0], "Send"))
+        }
+        return some(false)
     }
 
     // A re-parsed interpolation segment never went through the resolver, so
@@ -1594,6 +1665,23 @@ class ExpressionChecker {
         return none
     }
 
+    fn has_invalid_builtin_parent() -> bool {
+        match self.declarations.get(self.current.owner) {
+            some(declaration) => {
+                for index: int in 0..declaration.relations.len() {
+                    if declaration.relation_kinds[index] == "extends" &&
+                       builtin_type(declaration.relations[index].name) &&
+                       self.declaration_for(
+                           declaration.relations[index]).is_none() {
+                        return true
+                    }
+                }
+            }
+            none => {}
+        }
+        return false
+    }
+
     fn super_method(name: string) -> Option<ResolvedSuperMethod> {
         match self.declarations.get(self.current.owner) {
             some(declaration) => {
@@ -1654,12 +1742,7 @@ class ExpressionChecker {
             return self.is_move_only_seen(
                 type.args[0], inout seen)
         }
-        if type.name == "Box" ||
-           type.name == "Arena" ||
-           type.name == "List" ||
-           type.name == "Map" ||
-           type.name == "OrderedMap" ||
-           type.name == "StoredCallback" {
+        if builtin_move_policy(type) == "unique" {
             return true
         }
         if (type.name == "Option" ||
@@ -2905,36 +2988,36 @@ class ExpressionChecker {
             }
             if name == "append_string" {
                 return some(new BuiltinSignature(
-                    [string], receiver))
+                    [string], unit))
             }
             if name == "push" || name == "reserve" ||
                name == "resize" || name == "fill" ||
                name == "append_int_text" ||
-               name == "append_i64" ||
+                name == "append_i64" ||
                name == "append_uvarint" {
                 return some(new BuiltinSignature(
-                    [integer], receiver))
+                    [integer], unit))
             }
             if name == "append" {
                 return some(new BuiltinSignature(
-                    [receiver], receiver))
+                    [receiver], unit))
             }
             if name == "set" ||
                name == "put_u8" ||
                name == "put_u16" ||
                name == "put_u32" ||
                name == "put_u64" ||
-               name == "put_i64" {
+                name == "put_i64" {
                 return some(new BuiltinSignature(
-                    [integer, integer], receiver))
+                    [integer, integer], unit))
             }
             if name == "copy_from" {
                 return some(new BuiltinSignature(
-                    [receiver, integer], receiver))
+                    [receiver, integer], unit))
             }
             if name == "append_range" {
                 return some(new BuiltinSignature(
-                    [receiver, integer, integer], receiver))
+                    [receiver, integer, integer], unit))
             }
             if name == "crc32" {
                 return some(new BuiltinSignature(
@@ -3015,7 +3098,7 @@ class ExpressionChecker {
                name == "put_u64" ||
                name == "put_i64" {
                 return some(new BuiltinSignature(
-                    [integer, integer], receiver))
+                    [integer, integer], unit))
             }
             if name == "read" {
                 return some(new BuiltinSignature(
@@ -3025,7 +3108,7 @@ class ExpressionChecker {
             if name == "write" {
                 return some(new BuiltinSignature(
                     [integer, new HirType("Bytes")],
-                    receiver))
+                    unit))
             }
             if name == "flush" || name == "close" {
                 return some(new BuiltinSignature(
@@ -3080,7 +3163,8 @@ class ExpressionChecker {
                     [element], element))
             }
         }
-        if receiver.name == "StoredCallback" &&
+        if (receiver.name == "StoredCallback" ||
+            receiver.name == "LocalStoredCallback") &&
            receiver.args.len() == 1 &&
            receiver.args[0].name == "fn" {
             if name == "function" {
@@ -3960,12 +4044,13 @@ class ExpressionChecker {
     }
 
     fn validate_target_type(node: AstNode, type: HirType) {
-        if type.name == "StoredCallback" &&
+        if (type.name == "StoredCallback" ||
+            type.name == "LocalStoredCallback") &&
            type.args.len() == 1 &&
            type.args[0].name != "fn" {
             self.fail(
                 node,
-                "StoredCallback needs a C callback function type")
+                "{type.name} needs a C callback function type")
         }
         if type.name == "CFunctionPtr" &&
            type.args.len() == 1 &&
@@ -4298,6 +4383,54 @@ class ExpressionChecker {
         return result
     }
 
+    fn check_capture_use(node: AstNode,
+                         binding: LocalBinding) {
+        let captured: bool =
+            self.capture_floor_depth >= 0 &&
+            self.local_scope_index(binding.name) <
+                self.capture_floor_depth
+        if !captured { return }
+        binding.borrowed = true
+        let capture_key: string = "{binding.id}"
+        if binding.inout_parameter &&
+           !self.bad_inout_captures.contains_key(capture_key) {
+            self.bad_inout_captures[capture_key] = true
+            self.fail(
+                node,
+                "closure cannot capture inout parameter '{binding.name}'")
+        }
+        if self.require_send_captures &&
+           !self.bad_send_captures.contains_key(capture_key) {
+            if !self.trait_satisfied(binding.type, "Send") {
+                self.bad_send_captures[capture_key] = true
+                self.fail(
+                    node,
+                    "thread closure cannot capture '{binding.name}' of non-Send type {render_hir_type(binding.type)}")
+            } else if self.is_move_only(binding.type) &&
+                      !self.send_move_captures.contains_key(binding.id) {
+                self.bad_send_captures[capture_key] = true
+                self.fail(
+                    node,
+                    "thread closure must capture move-only Send value '{binding.name}' with move({binding.name})")
+            } else if (binding.mutable ||
+                       !self.trait_satisfied(binding.type, "Sync")) &&
+                      !self.send_move_captures.contains_key(binding.id) {
+                self.bad_send_captures[capture_key] = true
+                self.fail(
+                    node,
+                    "sendable closure must own mutable or non-Sync capture '{binding.name}' with move({binding.name})")
+            }
+        }
+        if self.require_sync_captures &&
+           !self.trait_satisfied(binding.type, "Sync") &&
+           !self.bad_sync_captures.contains_key(capture_key) {
+            self.bad_sync_captures[capture_key] = true
+            self.fail(
+                node,
+                "stored callback cannot capture '{binding.name}' of non-Sync type {render_hir_type(binding.type)}")
+        }
+    }
+
     fn check_name(node: AstNode,
                   expected: HirType) -> HirNode {
         if node.value == "none" &&
@@ -4307,46 +4440,7 @@ class ExpressionChecker {
         }
         match self.find_local(node.value) {
             some(binding) => {
-                let captured: bool =
-                    self.capture_floor_depth >= 0 &&
-                    self.local_scope_index(node.value) <
-                        self.capture_floor_depth
-                if captured {
-                    binding.borrowed = true
-                    if binding.inout_parameter &&
-                       !self.bad_inout_captures.contains_key(
-                           node.value) {
-                        self.bad_inout_captures[node.value] = true
-                        self.fail(
-                            node,
-                            "closure cannot capture inout parameter '{node.value}'")
-                    }
-                    if self.require_send_captures &&
-                       !self.bad_send_captures.contains_key(node.value) {
-                        if !self.trait_satisfied(binding.type, "Send") {
-                            self.bad_send_captures[node.value] = true
-                            self.fail(
-                                node,
-                                "thread closure cannot capture '{node.value}' of non-Send type {render_hir_type(binding.type)}")
-                        } else if self.is_move_only(binding.type) &&
-                                  !self.send_move_captures.contains_key(binding.id) {
-                            self.bad_send_captures[node.value] = true
-                            self.fail(
-                                node,
-                                "thread closure must capture move-only Send value '{node.value}' with move({node.value})")
-                        }
-                    }
-                    if self.require_sync_captures &&
-                       !self.trait_satisfied(
-                           binding.type, "Sync") &&
-                       !self.bad_sync_captures.contains_key(
-                           node.value) {
-                        self.bad_sync_captures[node.value] = true
-                        self.fail(
-                            node,
-                            "stored callback cannot capture '{node.value}' of non-Sync type {render_hir_type(binding.type)}")
-                    }
-                }
+                self.check_capture_use(node, binding)
                 if binding.move_state == "async_pending" {
                     // the hidden handle never escapes: awaiting the
                     // binding is its only read
@@ -4417,6 +4511,11 @@ class ExpressionChecker {
                     }
                 }
                 let type: HirType = self.function_type(function)
+                // Named Beans functions have no capture environment, so a
+                // send fn annotation may safely give them the stronger type.
+                if expected.name == "fn" && expected.fn_sendable {
+                    type.fn_sendable = true
+                }
                 self.expect_type(node, type, expected)
                 let result: HirNode =
                     self.make_node(node, "function", node.value, type)
@@ -4492,6 +4591,16 @@ class ExpressionChecker {
         }
         if node.kind == "name" && node.value == "none" {
             return
+        }
+        if node.kind == "name" {
+            match node.checked {
+                some(lowered) => {
+                    // A named function produces a fresh capture-free closure
+                    // value. It does not move a local binding.
+                    if lowered.kind == "function" { return }
+                }
+                none => {}
+            }
         }
         if node.kind == "field" {
             match node.checked {
@@ -5928,13 +6037,18 @@ class ExpressionChecker {
                 self.check_expression(
                     node.children[1], no_hir_type())
             self.require_send_captures = saved_send
+            if node.children[1].kind == "closure" &&
+               closure.type.name == "fn" {
+                closure.type.fn_sendable = true
+            }
             if closure.type.name != "fn" ||
+               !closure.type.fn_sendable ||
                closure.type.fn_parameter_count != 0 ||
                closure.type.fn_parameter_count >=
                    closure.type.args.len() {
                 self.fail(
                     node,
-                    "thread.spawn needs a closure with no parameters")
+                    "thread.spawn needs a send fn closure with no parameters")
                 return some(self.make_node(
                     node, "error", "spawn",
                     poison_hir_type()))
@@ -5952,6 +6066,9 @@ class ExpressionChecker {
                     node.children[1],
                     "thread.spawn closure returns non-Send type {render_hir_type(closure_result)}")
             }
+            self.require_move_source(
+                node.children[1], closure.type,
+                "thread.spawn argument")
             self.expect_type(
                 node, result_type, expected)
             let result: HirNode =
@@ -6622,9 +6739,11 @@ class ExpressionChecker {
                                 "super.init", result)
                         }
                         none => {
-                            self.fail(
-                                node,
-                                "no parent constructor to call")
+                            if !self.has_invalid_builtin_parent() {
+                                self.fail(
+                                    node,
+                                    "no parent constructor to call")
+                            }
                         }
                     }
                     return result
@@ -6658,9 +6777,11 @@ class ExpressionChecker {
                     none => {}
                 }
                 if !has_parent {
-                    self.fail(
-                        node,
-                        "super.{callee.value} needs a parent class")
+                    if !self.has_invalid_builtin_parent() {
+                        self.fail(
+                            node,
+                            "super.{callee.value} needs a parent class")
+                    }
                     return self.make_node(
                         node, "error", callee.value,
                         poison_hir_type())
@@ -6926,32 +7047,33 @@ class ExpressionChecker {
                             result)
                         return result
                     }
-                    if receiver_syntax.value ==
-                           "StoredCallback" {
+                    if receiver_syntax.value == "StoredCallback" ||
+                       receiver_syntax.value ==
+                           "LocalStoredCallback" {
+                        let callback_owner: string =
+                            receiver_syntax.value
                         let result: HirNode =
                             self.make_node(
                                 node, "static_call",
                                 callee.value, expected)
-                        if callee.value != "create" &&
-                           callee.value !=
-                               "create_same_thread" {
+                        if callee.value != "create" {
                             self.fail(
                                 node,
-                                "StoredCallback has no static '{callee.value}'")
+                                "{callback_owner} has no static '{callee.value}'")
                             return result
                         }
                         if self.program.target.os == "none" {
                             self.fail(
                                 node,
-                                "StoredCallback needs a hosted target")
+                                "{callback_owner} needs a hosted target")
                         }
                         if expected.name !=
-                               "StoredCallback" ||
+                               callback_owner ||
                            expected.args.len() != 1 ||
                            expected.args[0].name != "fn" {
                             self.fail(
                                 node,
-                                "declare the stored callback type, for example let callback: StoredCallback<fn(RawPtr<u8>, i32)> = StoredCallback.create(0, fn(value: i32) \{ \})")
+                                "declare the stored callback type, for example let callback: {callback_owner}<fn(RawPtr<u8>, i32)> = {callback_owner}.create(0, fn(value: i32) \{ \})")
                             for index: int in
                                 1..node.children.len() {
                                 result.children.push(
@@ -6968,7 +7090,7 @@ class ExpressionChecker {
                         if count != 2 {
                             self.fail(
                                 node,
-                                "StoredCallback.create takes a userdata index and a function")
+                                "{callback_owner}.create takes a userdata index and a function")
                             for index: int in
                                 1..node.children.len() {
                                 result.children.push(
@@ -6997,7 +7119,7 @@ class ExpressionChecker {
                                full.fn_parameter_count {
                             self.fail(
                                 index_syntax,
-                                "StoredCallback userdata index must be a literal parameter index")
+                                "{callback_owner} userdata index must be a literal parameter index")
                             context_index = 0
                         }
                         if context_index <
@@ -7009,7 +7131,7 @@ class ExpressionChecker {
                                 1) {
                             self.fail(
                                 index_syntax,
-                                "StoredCallback userdata parameter must be RawPtr")
+                                "{callback_owner} userdata parameter must be RawPtr")
                         }
                         var callback_parameters:
                             List<HirType> = []
@@ -7024,7 +7146,7 @@ class ExpressionChecker {
                                        parameter, false) {
                                     self.fail(
                                         node,
-                                        "StoredCallback currently supports scalar and RawPtr callback values, got {render_hir_type(parameter)}")
+                                        "{callback_owner} currently supports scalar and RawPtr callback values, got {render_hir_type(parameter)}")
                                 }
                             }
                         }
@@ -7040,7 +7162,7 @@ class ExpressionChecker {
                                callback_result, true) {
                             self.fail(
                                 node,
-                                "StoredCallback currently supports scalar and RawPtr callback results, got {render_hir_type(callback_result)}")
+                                "{callback_owner} currently supports scalar and RawPtr callback results, got {render_hir_type(callback_result)}")
                         }
                         let callback_type: HirType =
                             hir_function(
@@ -7054,9 +7176,11 @@ class ExpressionChecker {
                             self.require_send_captures
                         let saved_sync: bool =
                             self.require_sync_captures
-                        // the same-thread flavor checks its thread at
-                        // every call instead of restricting captures
-                        if callee.value == "create" {
+                        // The any-thread handle may be invoked repeatedly and
+                        // concurrently. Its captures must therefore be both
+                        // movable and safe to share. The local handle checks
+                        // its registering thread at every call instead.
+                        if callback_owner == "StoredCallback" {
                             self.require_send_captures = true
                             self.require_sync_captures = true
                         }
@@ -7073,7 +7197,7 @@ class ExpressionChecker {
                             callback.type,
                             callback_type)
                         result.resolved =
-                            "StoredCallback.{callee.value}:{context_index}"
+                            "{callback_owner}.create:{context_index}"
                         result.children.push(
                             checked_index)
                         result.children.push(callback)
@@ -7431,13 +7555,14 @@ class ExpressionChecker {
                             node,
                             "'{receiver.type.name}' needs the filesystem, which the {self.signature.runtime_profile} runtime does not have — it needs at least the full runtime")
                     }
-                    if receiver.type.name ==
-                           "StoredCallback" &&
+                    if (receiver.type.name == "StoredCallback" ||
+                        receiver.type.name ==
+                            "LocalStoredCallback") &&
                        callee.value == "close" {
                         if callee.children[0].kind != "name" {
                             self.fail(
                                 callee.children[0],
-                                "StoredCallback.close needs a named local")
+                                "{receiver.type.name}.close needs a named local")
                         } else {
                             match self.find_local(
                                       callee.children[0].value) {
@@ -7445,7 +7570,7 @@ class ExpressionChecker {
                                     if binding.borrowed {
                                         self.fail(
                                             callee.children[0],
-                                            "cannot close borrowed StoredCallback '{callee.children[0].value}'")
+                                            "cannot close borrowed {receiver.type.name} '{callee.children[0].value}'")
                                     } else {
                                         binding.move_state =
                                             "moved"
@@ -8666,6 +8791,9 @@ class ExpressionChecker {
 
         let type: HirType =
             hir_function(parameters, result_type)
+        if expected.name == "fn" && expected.fn_sendable {
+            type.fn_sendable = true
+        }
         self.expect_type(node, type, expected)
         let result: HirNode =
             self.make_node(node, "closure", "", type)
@@ -8718,6 +8846,11 @@ class ExpressionChecker {
             self.take_floor_depth
         let saved_send_moves: Map<int, bool> =
             self.send_move_captures.clone()
+        let saved_required_send: bool =
+            self.require_send_captures
+        if type.fn_sendable {
+            self.require_send_captures = true
+        }
         self.send_move_captures = {}
         for binding: LocalBinding in moved_captures {
             self.send_move_captures[binding.id] = true
@@ -8775,6 +8908,7 @@ class ExpressionChecker {
         self.capture_floor_depth = saved_capture_floor
         self.take_floor_depth = saved_take_floor
         self.send_move_captures = move saved_send_moves
+        self.require_send_captures = saved_required_send
         // an unreferenced move capture would never enter the closure's
         // cell set, so nothing would own it; require the body to name it
         for binding: LocalBinding in moved_captures {
@@ -9775,6 +9909,7 @@ class ExpressionChecker {
         }
         match self.find_local(target.value) {
             some(binding) => {
+                self.check_capture_use(target, binding)
                 if !binding.mutable {
                     self.fail(
                         target, "cannot assign to immutable '{target.value}'")

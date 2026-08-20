@@ -2889,7 +2889,7 @@ grep -q 'builtin_method insert resolved=List<string>[.]insert .*consumes=(0,0,1)
     "$tmp/container-ownership.mir"
 grep -q 'assign index::= .*consumes=(0,1,0)' \
     "$tmp/container-ownership.mir"
-grep -q 'builtin_method put_u16 resolved=Bytes[.]put_u16 .* : Bytes borrowed .*alias=v' \
+grep -q 'builtin_method put_u16 resolved=Bytes[.]put_u16 .* : unit trivial' \
     "$tmp/container-ownership.mir"
 ./build/beansc-next mir examples/shared_weak.b \
     >"$tmp/spawn-ownership.mir"

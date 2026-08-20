@@ -29,7 +29,9 @@ fn hir_type_key(type: HirType) -> string {
             result =
                 hir_type_key(type.args[type.fn_parameter_count])
         }
-        return "fn({parameters.join(",")})->{result}"
+        let prefix: string =
+            if type.fn_sendable { "send " } else { "" }
+        return "{prefix}fn({parameters.join(",")})->{result}"
     }
     let name: string = canonical_hir_name(type.name)
     if name == "Result" && type.args.len() == 1 {
@@ -99,6 +101,13 @@ fn hir_function(parameters: List<HirType>,
     return result
 }
 
+fn hir_send_function(parameters: List<HirType>,
+                     result_type: HirType) -> HirType {
+    let result: HirType = hir_function(parameters, result_type)
+    result.fn_sendable = true
+    return result
+}
+
 fn hir_type_from_ast(node: AstNode) -> HirType {
     if node.kind == "array_type" {
         let result: HirType = new HirType("array")
@@ -114,6 +123,7 @@ fn hir_type_from_ast(node: AstNode) -> HirType {
     }
     if node.kind == "fn_type" {
         let result: HirType = new HirType("fn")
+        result.fn_sendable = node.value == "send"
         for child: AstNode in node.children {
             result.args.push(hir_type_from_ast(child))
         }
@@ -143,7 +153,9 @@ fn builtin_generic_arity(name: string) -> int {
        name == "Channel" || name == "Box" || name == "Arena" ||
        name == "Shared" || name == "Weak" || name == "RawPtr" ||
        name == "Slice" || name == "Atomic" ||
-       name == "StoredCallback" || name == "CFunctionPtr" {
+       name == "StoredCallback" ||
+       name == "LocalStoredCallback" ||
+       name == "CFunctionPtr" {
         return 1
     }
     return -1
@@ -159,6 +171,70 @@ fn builtin_class_name(name: string) -> bool {
            name == "Weak" || name == "Mutex" ||
            name == "Atomic" || name == "Channel" ||
            name == "Thread" || name == "AtomicInt" ||
-           name == "StoredCallback" || name == "CFunctionPtr" ||
+           name == "StoredCallback" ||
+           name == "LocalStoredCallback" ||
+           name == "CFunctionPtr" ||
            simd_description(name).is_some()
+}
+
+// One policy table for compiler-owned types. An empty result means the type
+// is declared in Beans and must be checked from its declaration. Unknown or
+// newly reserved builtin names fall back to local-only below, so adding a
+// builtin can never silently make it safe to cross a thread.
+fn builtin_thread_policy(type: HirType) -> string {
+    let name: string = canonical_hir_name(type.name)
+    if hir_is_numeric(type) || name == "bool" || name == "string" ||
+       name == "unit" || name == "RawPtr" ||
+       name == "CFunctionPtr" || name == "Slice" ||
+       name == "Error" || name == "Atomic" ||
+       name == "AtomicInt" ||
+       simd_description(name).is_some() {
+        return "always"
+    }
+    if name == "array" || name == "Option" || name == "Result" {
+        return "same_arguments"
+    }
+    if name == "List" || name == "Map" ||
+       name == "OrderedMap" || name == "Box" || name == "Arena" {
+        return "send_arguments"
+    }
+    if name == "Bytes" || name == "File" || name == "MMap" {
+        return "send_only"
+    }
+    if name == "Shared" || name == "Weak" {
+        return "shared_arguments"
+    }
+    if name == "Channel" { return "channel_argument" }
+    if name == "Mutex" { return "mutex_argument" }
+    if name == "Thread" { return "thread_result" }
+    if name == "fn" {
+        return if type.fn_sendable { "send_only" } else { "local" }
+    }
+    // C may invoke an any-thread callback from any thread, but its registration
+    // owner stays local until it is unregistered and explicitly closed.
+    if name == "StoredCallback" { return "local" }
+    if name == "LocalStoredCallback" { return "local" }
+    if builtin_type(name) { return "local"
+    }
+    return ""
+}
+
+// Move-only and thread-safe are separate facts. A unique value can still be
+// thread-affine, and an immutable shared value can be Send without being
+// unique. Keep the ownership list here rather than beside capture checking.
+fn builtin_move_policy(type: HirType) -> string {
+    let name: string = canonical_hir_name(type.name)
+    if name == "Box" || name == "Arena" || name == "List" ||
+       name == "Map" || name == "OrderedMap" ||
+       name == "StoredCallback" || name == "LocalStoredCallback" ||
+       name == "Bytes" ||
+       name == "File" || name == "MMap" {
+        return "unique"
+    }
+    if name == "fn" {
+        return if type.fn_sendable { "unique" } else { "copy_or_alias" }
+    }
+    if builtin_type(name) { return "copy_or_alias"
+    }
+    return "declared"
 }

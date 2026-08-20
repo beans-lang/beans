@@ -3,6 +3,11 @@ class Base {}
 class WrongBase extends Shape {}
 class WrongInterface implements Base {}
 interface WrongExtends extends Base {}
+class BuiltinBase extends Bytes {
+    fn init() {
+        super.init(8)
+    }
+}
 
 class CycleA extends CycleB {
     a: int

@@ -403,13 +403,13 @@ class ParserCore {
     // Drains the bridge's event buffer into the reusable scratch Bytes.
     // The walk finishes with the returned buffer before the next drain, so
     // one allocation serves the parser's whole life.
-    fn take_events() -> Bytes {
+    fn take_events() {
         var size: int = 0
         unsafe {
             size = beans_h1_events_size(self.handle)
         }
         self.scratch.resize(0)
-        if size <= 0 { return self.scratch }
+        if size <= 0 { return }
         self.scratch.resize(size)
         var taken: int = 0
         unsafe {
@@ -418,7 +418,6 @@ class ParserCore {
                 self.handle, self.scratch.as_ptr(), self.request_word)
         }
         if taken < 0 { self.scratch.resize(0) }
-        return self.scratch
     }
 
     fn seal_pending() {
@@ -533,14 +532,14 @@ class ParserCore {
             self.failed = true
             return err("the HTTP parser rejected the call (status {status})", "invalid")
         }
-        let events: Bytes = self.take_events()
+        self.take_events()
         var pos: int = 0
-        for pos < events.len() {
-            let kind: int = events.get_u8(pos)
-            let off: int = events.get_u64(pos + 1)
+        for pos < self.scratch.len() {
+            let kind: int = self.scratch.get_u8(pos)
+            let off: int = self.scratch.get_u64(pos + 1)
             pos += 9
             if ev_is_span(kind) {
-                let span_len: int = events.get_u64(pos)
+                let span_len: int = self.scratch.get_u64(pos)
                 pos += 8
                 let span_from: int = from + off - fed_before
                 if span_len < 0 || span_from < from ||
@@ -554,9 +553,9 @@ class ParserCore {
                     self.seal_pending()
                     let text: Bytes = data.slice(span_from, span_from + span_len)
                     if self.request_side {
-                        request_out.push(RequestEvent.body(text))
+                        request_out.push(RequestEvent.body(move text))
                     } else {
-                        response_out.push(ResponseEvent.body(text))
+                        response_out.push(ResponseEvent.body(move text))
                     }
                 } else {
                     if self.pending_kind != kind {
@@ -630,14 +629,14 @@ class ParserCore {
                     self.fields.add(name, value)
                 }
             } else if kind == 21 {
-                let method_code: int = events.get_u64(pos)
-                self.status_code = events.get_u64(pos + 8)
-                self.major = events.get_u64(pos + 16)
-                self.minor = events.get_u64(pos + 24)
-                self.flags = events.get_u64(pos + 32)
-                let declared: int = events.get_u64(pos + 40)
-                self.upgrade = events.get_u8(pos + 48) == 1
-                self.keep_alive = events.get_u8(pos + 49) == 1
+                let method_code: int = self.scratch.get_u64(pos)
+                self.status_code = self.scratch.get_u64(pos + 8)
+                self.major = self.scratch.get_u64(pos + 16)
+                self.minor = self.scratch.get_u64(pos + 24)
+                self.flags = self.scratch.get_u64(pos + 32)
+                let declared: int = self.scratch.get_u64(pos + 40)
+                self.upgrade = self.scratch.get_u8(pos + 48) == 1
+                self.keep_alive = self.scratch.get_u8(pos + 49) == 1
                 pos += 50
                 self.content_length = if (self.flags / 32) % 2 == 1 {
                     declared
@@ -677,10 +676,11 @@ class ParserCore {
                     response_out.push(ResponseEvent.done(alive))
                 }
             } else if kind == 27 {
-                let code: int = events.get_u64(pos)
-                let reason_len: int = events.get_u64(pos + 8)
+                let code: int = self.scratch.get_u64(pos)
+                let reason_len: int = self.scratch.get_u64(pos + 8)
                 let reason: string =
-                    events.slice(pos + 16, pos + 16 + reason_len).to_string()
+                    self.scratch.slice(
+                        pos + 16, pos + 16 + reason_len).to_string()
                 pos += 16 + reason_len
                 if code == 22 || code == 23 {
                     // llhttp pauses at an upgrade boundary; whatever follows
@@ -695,10 +695,10 @@ class ParserCore {
                     }
                     if self.request_side {
                         request_out.push(RequestEvent.upgraded(
-                            self.last_request, remainder))
+                            self.last_request, move remainder))
                     } else {
                         response_out.push(ResponseEvent.upgraded(
-                            self.last_response, remainder))
+                            self.last_response, move remainder))
                     }
                     return ok(true)
                 }

@@ -8,8 +8,13 @@ fn main() {
     let copied: string = "{root}/copied.bin"
     let text: string = "{root}/text.txt"
 
-    let first: Bytes = new Bytes(6).put_u32(0, 0x12345678).put_u16(4, 0xabcd)
-    let tail: Bytes = new Bytes(3).put_u8(0, 9).put_u8(1, 8).put_u8(2, 7)
+    let first: Bytes = new Bytes(6)
+    first.put_u32(0, 0x12345678)
+    first.put_u16(4, 0xabcd)
+    let tail: Bytes = new Bytes(3)
+    tail.put_u8(0, 9)
+    tail.put_u8(1, 8)
+    tail.put_u8(2, 7)
     let source_written: int = fs.write_bytes(source, first).expect("source write")
     let source_appended: int = fs.append_bytes(source, tail).expect("source append")
     let source_data: Bytes = fs.read_bytes(source).expect("source read")
@@ -21,7 +26,11 @@ fn main() {
     let source_text: string = fs.read(text).expect("source text read")
     let same_count: int = fs.copy(text, text).expect("same-file copy")
     let same_text: string = fs.read(text).expect("same-file read")
-    let binary_text: string = new Bytes(3).put_u8(0, 97).put_u8(1, 0).put_u8(2, 98).to_string()
+    let binary_data: Bytes = new Bytes(3)
+    binary_data.put_u8(0, 97)
+    binary_data.put_u8(1, 0)
+    binary_data.put_u8(2, 98)
+    let binary_text: string = binary_data.to_string()
     fs.write(text, binary_text).expect("binary text write")
     let binary_back: string = fs.read(text).expect("binary text read")
     io.println("fs bytes {source_written} {source_appended} {source_data == copied_data} {copied_count}")

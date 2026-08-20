@@ -28,7 +28,9 @@ fn cli_ast_type(node: AstNode) -> string {
         for index: int in 0..count {
             parts.push(cli_ast_type(node.children[index]))
         }
-        var result: string = "fn({parts.join(", ")})"
+        let prefix: string =
+            if node.value == "send" { "send " } else { "" }
+        var result: string = "{prefix}fn({parts.join(", ")})"
         if node.note == "has_result" &&
            node.children.len() != 0 {
             result =

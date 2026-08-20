@@ -44,7 +44,7 @@ fn make_data(rng: Rng, count: int) -> Bytes {
             out.push((index * 31 + 7) % 253)
         }
     }
-    return out
+    return move out
 }
 
 fn acceptable(kind: string) -> bool {
@@ -92,20 +92,18 @@ fn main() {
     for round: int in 0..cases {
         let original: Bytes = make_data(rng, 200 + rng.below(4000))
         let pick: int = rng.below(3)
-        var wire: Bytes = new Bytes(0)
-        match pack(pick, original) {
-            ok(packed) => { wire = packed }
-            err(_) => {
-                wrong_kind = true
-                continue
-            }
+        let packed: Result<Bytes> = pack(pick, original)
+        if !packed.is_ok() {
+            wrong_kind = true
+            continue
         }
+        let wire: Bytes = (move packed).expect("fuzz compression")
         let limit: int = original.len()
         let mutation: int = rng.below(3)
         if mutation == 0 && wire.len() > 8 {
             // one corrupted byte
             let at: int = rng.below(wire.len())
-            let touched: Bytes = wire.set(at, wire.get(at) ^ (1 + rng.below(255)))
+            wire.set(at, wire.get(at) ^ (1 + rng.below(255)))
         } else if mutation == 1 && wire.len() > 8 {
             // truncation
             wire.resize(1 + rng.below(wire.len() - 1))

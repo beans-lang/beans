@@ -78,9 +78,9 @@ pub unique class Signals {
     watched: Bytes
     live: bool = true
 
-    fn init(fd: int, watched: Bytes) {
+    fn init(fd: int, move watched: Bytes) {
         self.fd = fd
-        self.watched = watched
+        self.watched = move watched
     }
 
     fn deinit() {
@@ -102,7 +102,7 @@ pub unique class Signals {
         for n: int in numbers {
             packed.append_i64(n)
         }
-        return ok(new Signals(sig.watch(packed)?, packed))
+        return ok(new Signals(sig.watch(packed)?, move packed))
     }
 
     /// Blocks one signal. The short form of `watch`.

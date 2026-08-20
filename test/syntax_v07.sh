@@ -53,7 +53,12 @@ check_bad syntax_unique_inherited_bad.b "needs 'move first'"
 check_bad syntax_inheritance_bad.b "extends needs a class"
 check_bad syntax_inheritance_bad.b "implements needs an interface"
 check_bad syntax_inheritance_bad.b "interfaces may extend only interfaces"
+check_bad syntax_inheritance_bad.b "builtin type 'Bytes' cannot be extended"
 check_bad syntax_inheritance_bad.b "inheritance cycle involving"
+if grep -q "no parent constructor to call" "$tmp/bad"; then
+    echo "invalid builtin inheritance emitted a constructor cascade" >&2
+    exit 1
+fi
 check_bad syntax_interface_static_bad.b "static interface methods are not supported"
 check_bad syntax_bound_bad.b "generic bound 'Value' is not an interface"
 check_bad syntax_old_take_bad.b "'take' was removed"

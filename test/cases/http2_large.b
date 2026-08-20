@@ -30,7 +30,7 @@ fn pattern(size: int) -> Bytes {
         out.set(i, (i * 31 + 7) % 251)
         i += 1
     }
-    return out
+    return move out
 }
 
 fn matches(body: Bytes, size: int) -> bool {

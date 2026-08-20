@@ -264,6 +264,7 @@ class AsyncExpander {
         }
         if type.name == "fn" {
             let result: AstNode = self.node("fn_type", "", anchor)
+            if type.fn_sendable { result.value = "send" }
             for argument: HirType in type.args {
                 result.add(self.type_ast(argument, anchor))
             }

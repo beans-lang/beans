@@ -84,7 +84,9 @@ class TreeSingletonState {
     }
 }
 
-class TreeThreadWork {
+// These two boxes cross host threads only behind Mutex. Their callers also
+// keep the owning interpreter stopped while the foreign call runs.
+unique class TreeThreadWork implements Send {
     program: HirProgram
     closure: TreeValue
     node: HirNode
@@ -117,7 +119,7 @@ class TreeThreadWork {
     }
 }
 
-class TreeStoredState {
+unique class TreeStoredState implements Send {
     owner: TreeInterpreter
     function: HirFunction
     callable: TreeValue

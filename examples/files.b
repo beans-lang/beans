@@ -24,7 +24,9 @@ fn main() {
 
     // binary round-trip
     let page: Bytes = new Bytes(32)
-    page.put_u32(0, 7).put_u64(4, 123456789).append_string("tail")
+    page.put_u32(0, 7)
+    page.put_u64(4, 123456789)
+    page.append_string("tail")
     fs.write_bytes("{base}/page.bin", page).expect("write_bytes")
     let back: Bytes = fs.read_bytes("{base}/page.bin").expect("read_bytes")
     io.println("{back.len()} {back.get_u32(0)} {back.get_u64(4)}")
@@ -53,8 +55,12 @@ fn main() {
     // an open handle: positional writes, seek family, truncate, sync, close
     let db: string = "{base}/store.dat"
     let f: File = File.open(db, "create").expect("open")
-    f.write_at(0, new Bytes(16).fill(170)).expect("prefill")
-    f.write_at(4, new Bytes(4).put_u32(0, 999)).expect("patch")
+    let prefill: Bytes = new Bytes(16)
+    prefill.fill(170)
+    f.write_at(0, prefill).expect("prefill")
+    let patch: Bytes = new Bytes(4)
+    patch.put_u32(0, 999)
+    f.write_at(4, patch).expect("patch")
     let got: Bytes = f.read_at(4, 4).expect("read_at")
     io.println("{got.get_u32(0)}")
     io.println("{f.size().expect("fsize")} {f.tell()}")

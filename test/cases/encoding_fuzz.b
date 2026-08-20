@@ -110,11 +110,11 @@ class Mutator {
                     continue
                 }
                 // choice 3: truncate here
-                return out
+                break
             }
             out.push(source.get(index))
         }
-        return out
+        return move out
     }
 }
 

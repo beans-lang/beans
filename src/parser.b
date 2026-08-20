@@ -896,8 +896,17 @@ class Parser {
             self.expect("]", "expected ']'")
             return array
         }
+        var sendable: bool = false
+        if self.check("ident") &&
+           self.current().text == "send" &&
+           self.pos + 1 < self.tokens.len() &&
+           self.tokens[self.pos + 1].kind == "fn" {
+            self.advance()
+            sendable = true
+        }
         if self.match_token("fn") {
             let function: AstNode = self.node("fn_type", "", start)
+            if sendable { function.value = "send" }
             self.expect("(", "expected '('")
             self.skip_newlines()
             for !self.check(")") && !self.at_end() {

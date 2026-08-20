@@ -11,13 +11,24 @@ pub class Reader {
     offset: int
     eof: bool
 
-    pub fn init(file: File) {
-        self.file = file
+    pub fn init(move file: File) {
+        self.file = move file
         self.buffer = new Bytes(0)
         self.position = 0
         self.limit = 0
         self.offset = 0
         self.eof = false
+    }
+
+    /// The underlying cursor. Positional reads leave it unchanged.
+    pub fn file_position() -> int {
+        return self.file.tell()
+    }
+
+    /// Closes the owned file. Buffered bytes can still be read; the next
+    /// refill reports the closed handle.
+    pub fn close() -> Result<bool> {
+        return self.file.close()
     }
 
     pub fn read_line() -> Result<Option<string>> {

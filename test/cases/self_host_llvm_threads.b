@@ -68,14 +68,14 @@ fn main() {
     shared.get().add(9)
     io.println("shared holds {shared.get().total}")
 
-    let counter: Mutex<Tally> = new Mutex(new Tally())
+    let counter: Mutex<Box<int>> = new Mutex(new Box(0))
     let done: Channel<int> = new Channel(8)
     var lanes: List<Thread<int>> = []
     for lane: int in 0..4 {
         lanes.push(thread.spawn(fn() -> int {
             for step: int in 0..500 {
-                counter.with_lock(fn(tally: Tally) {
-                    tally.add(1)
+                counter.with_lock(fn(value: Box<int>) {
+                    value.set(value.get() + 1)
                 })
             }
             done.send(lane)
@@ -93,8 +93,8 @@ fn main() {
             none => {}
         }
     }
-    counter.with_lock(fn(tally: Tally) {
-        io.println("contended total {tally.total} joined {joined} signals {signals}")
+    counter.with_lock(fn(value: Box<int>) {
+        io.println("contended total {value.get()} joined {joined} signals {signals}")
     })
 
     io.print("print stays ")

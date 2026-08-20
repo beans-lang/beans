@@ -89,8 +89,8 @@ pub class Command {
 
     /// Bytes to write to the program's stdin. Its stdin closes once they are written,
     /// so a program that reads to EOF finishes.
-    pub fn stdin_bytes(data: Bytes) -> Command {
-        self.stdin_data = data
+    pub fn stdin_bytes(move data: Bytes) -> Command {
+        self.stdin_data = move data
         return self
     }
 
@@ -190,9 +190,12 @@ fn has_nul(value: string) -> bool {
 // buffers. Taking their references out of this short list does not copy payload data.
 fn decode(parts: List<Bytes>) -> Output {
     var done: Output = new Output()
-    done.status = parts.get(0).expect("process status").get_i64(0)
-    done.out = parts.get(1).expect("process stdout")
-    done.err = parts.get(2).expect("process stderr")
+    let status: Bytes = parts.remove(0)
+    let out: Bytes = parts.remove(0)
+    let err: Bytes = parts.remove(0)
+    done.status = status.get_i64(0)
+    done.out = move out
+    done.err = move err
     return done
 }
 

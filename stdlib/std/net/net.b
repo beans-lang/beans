@@ -139,17 +139,18 @@ pub class Datagram {
 // [i64 port][i64 host_len][host][payload] — one layout for every runtime call that
 // has to return an address, because the fallible-builtin ABI carries a single value.
 fn unpack_address(parts: List<Bytes>) -> Address {
-    let metadata: Bytes = parts.get(0).expect("address metadata")
-    let host: Bytes = parts.get(1).expect("address host")
+    let metadata: Bytes = parts.remove(0)
+    let host: Bytes = parts.remove(0)
     return new Address(host.to_string(), metadata.get_i64(0))
 }
 
 fn unpack_datagram(parts: List<Bytes>) -> Datagram {
-    let metadata: Bytes = parts.get(0).expect("datagram metadata")
-    let host: Bytes = parts.get(1).expect("datagram host")
+    let metadata: Bytes = parts.remove(0)
+    let host: Bytes = parts.remove(0)
+    let payload: Bytes = parts.remove(0)
     var note: Datagram = new Datagram()
     note.from = new Address(host.to_string(), metadata.get_i64(0))
-    note.data = parts.get(2).expect("datagram payload")
+    note.data = move payload
     return note
 }
 
