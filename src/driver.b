@@ -177,6 +177,12 @@ fn log_bridge_link_arguments(
     if target_os != "windows" || target_env != "msvc" {
         arguments.push("-pthread")
     }
+    // Distro MinGW libstdc++ is built by GCC with emulated TLS. Clang's
+    // native-TLS default gives std::call_once different symbol names, so the
+    // C++ bridge and final support-runtime selection must use GCC's TLS ABI.
+    if target_os == "windows" && target_env != "msvc" {
+        arguments.push("-femulated-tls")
+    }
     arguments.push("--driver-mode=g++")
     return move arguments
 }
@@ -1142,6 +1148,10 @@ class NativeBuildDriver {
         if self.target.os != "windows" ||
            self.target.env != "msvc" {
             flags.push("-pthread")
+        }
+        if self.target.os == "windows" &&
+           self.target.env != "msvc" {
+            flags.push("-femulated-tls")
         }
         flags.push("-fvisibility=hidden")
         if pic { flags.push("-fPIC") }
