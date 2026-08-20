@@ -1,0 +1,12 @@
+title: Beans documentation
+description: Language, compiler, concurrency, and networking guides for Beans.
+theme: jekyll-theme-primer
+permalink: pretty
+
+readme_index:
+  enabled: true
+  remove_originals: false
+
+relative_links:
+  enabled: true
+  collections: true

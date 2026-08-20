@@ -70,6 +70,8 @@ every path inside is resolved relative to the launcher:
 <BEANS_HOME>/
   bin/          beansc launcher, the compiler, beans_rt.c, wasm_host.c
   lib/std/      the standard library
+  lib/encoding/ pinned encoding bridge sources
+  lib/net/      pinned networking bridge and vendor sources
   libexec/      the checked installer used by `beansc upgrade`
   toolchain/    bundled Clang, LLD and llvm-ar (full packages only)
   VERSION
@@ -132,11 +134,11 @@ correct native toolchain cannot be bundled for these — the MSVC toolchain and
 the Windows SDK are Microsoft's to distribute, Apple's SDK is Apple's, and a
 cross-built package cannot carry a Clang of the wrong architecture.
 
-Slim packages fully support:
+Slim packages fully support without an external compiler:
 
 - `beansc --version`, `beansc doctor`
 - `beansc check`, `beansc lex`, `beansc parse`, `beansc mir`, `beansc llvm`
-- `beansc run`
+- `beansc run` for pure Beans programs
 - `beansc build --emit ir`
 
 For a native `beansc build` they use the Clang already on your PATH. If it is
@@ -151,23 +153,23 @@ letting you reach a Clang or linker error.
 |---|---|
 | `beansc --version`, `beansc doctor` | none |
 | `beansc lex`, `parse`, `check`, `mir`, `llvm` | none |
-| `beansc run` (no C FFI) | none |
+| `beansc run` (pure Beans) | none |
 | `beansc build --emit ir` | none |
 | `beansc build` (native) | bundled toolchain in a full package; Clang otherwise |
 | `beansc build --emit obj` | same as native `build` |
 | `beansc build --emit static` | Clang **and** an archiver (`llvm-ar` or `ar`) |
 | `beansc build --emit shared` | same as native `build` |
 | `beansc bindgen` | Clang |
-| `beansc run` with C FFI | Clang — the interpreter's C bridge compiles a shim |
+| `beansc run` with C FFI, `csrc`, encoding or networking bridges | Clang — the interpreter compiles a host bridge or library |
 | `beansc pot add`, `remove`, `tidy`, `update` | Git, and only for Git-based dependencies |
 | `beansc upgrade` | network access; uses the release installer and checksum manifest |
 
 Beans emits LLVM IR, so the C compiler must be Clang. GCC cannot compile that
 IR, and is not a supported substitute.
 
-Override the tools Beans uses with `BEANS_CC`, `BEANS_AR`, `BEANS_RUNTIME`,
-`BEANS_WASM_HOST` and `BEANS_STDLIB`, or per build with `--cc`, `--ar`,
-`--linker` and `--sysroot`.
+Override the tools and shipped sources Beans uses with `BEANS_CC`, `BEANS_AR`,
+`BEANS_RUNTIME`, `BEANS_WASM_HOST`, `BEANS_STDLIB`, `BEANS_ENCODING`, and
+`BEANS_NET`, or per build with `--cc`, `--ar`, `--linker` and `--sysroot`.
 
 A large `beansc build` splits its module into a fixed set of chunks, compiles
 them with concurrent Clang processes, and caches each object by content, so a
@@ -181,8 +183,9 @@ one, because one module over one object packs its symbols differently.
 ## macOS
 
 Apple's SDK is not redistributable, so no Beans package bundles it. `beansc
-check` and `beansc run` work without any Apple tooling. A native build needs
-Command Line Tools:
+check` and a pure-Beans `beansc run` work without Apple tooling. Native builds
+and runs that compile C FFI, `csrc`, encoding, networking, or framework bridges
+need Command Line Tools:
 
 ```bash
 xcode-select --install
@@ -207,7 +210,9 @@ sha256sum -c beans-release-checksums.txt --ignore-missing
 
 ## Installing from source
 
-See [the README](../README.md#from-source). Beans is self-hosted, so building it
+See
+[the README](https://github.com/beans-lang/beans/blob/main/README.md#from-source).
+Beans is self-hosted, so building it
 needs a Beans compiler: install a release first, then `make` uses it.
 `make install` installs the self-hosted `beansc` only.
 

@@ -1,5 +1,9 @@
 # Send and Sync standardization
 
+Status: complete. The user-facing rules, examples and exact handle matrix are
+in [CONCURRENCY.md](CONCURRENCY.md). This file remains the implementation and
+verification checklist.
+
 `Send` means one owner may move to another OS thread. `Sync` means aliases may
 be used from more than one thread. Mutable aliasable values are neither unless
 their API synchronizes access.
