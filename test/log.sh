@@ -23,6 +23,14 @@ diff -u test/expected/log_basic.txt "$tmp/native-lto.out"
 "$tmp/levels.native" >"$tmp/levels.native.out"
 diff -u test/expected/log_levels.txt "$tmp/levels.interp"
 diff -u test/expected/log_levels.txt "$tmp/levels.native.out"
+
+# Mixed MSVC jobs cannot build the GNU bootstrap interpreter's C++ bridge
+# from an MSVC-only environment. They still run logging.exe and compare it to
+# this tracked output, so keep the fixture tied to the normal interpreter.
+./build/beansc run examples/logging.b >"$tmp/example.interp"
+diff -u test/cases/logging.out "$tmp/example.interp"
+grep -q 'examples/logging\.b) fixture=test/cases/logging\.out' \
+    test/windows_native_stage.sh
 echo "ok interpreter/native parity and source metadata"
 
 # The shipped private helper is a native intrinsic. It must borrow string
