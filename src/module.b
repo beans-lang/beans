@@ -431,6 +431,28 @@ fn stdlib_source_package(file_path: string) -> string {
     return "std.{directory.replace("/", ".")}"
 }
 
+fn manifest_link_arguments(links: List<ModuleLink>,
+                           target: TargetDescription) -> List<string> {
+    var arguments: List<string> = []
+    for link: ModuleLink in links {
+        if link.selector != "all" &&
+           link.selector != target.os &&
+           link.selector != target.triple {
+            continue
+        }
+        if link.kind == "search" {
+            arguments.push(
+                "-L{path.join(link.root, link.value)}")
+        } else if link.kind == "library" {
+            arguments.push("-l{link.value}")
+        } else {
+            arguments.push("-framework")
+            arguments.push(link.value)
+        }
+    }
+    return move arguments
+}
+
 class ModuleLoader {
     sources: SourceManager
     module_name: string
@@ -718,24 +740,7 @@ class ModuleLoader {
     }
 
     fn link_arguments(target: TargetDescription) -> List<string> {
-        var arguments: List<string> = []
-        for link: ModuleLink in self.links {
-            if link.selector != "all" &&
-               link.selector != target.os &&
-               link.selector != target.triple {
-                continue
-            }
-            if link.kind == "search" {
-                arguments.push(
-                    "-L{path.join(link.root, link.value)}")
-            } else if link.kind == "library" {
-                arguments.push("-l{link.value}")
-            } else {
-                arguments.push("-framework")
-                arguments.push(link.value)
-            }
-        }
-        return move arguments
+        return manifest_link_arguments(self.links, target)
     }
 
     fn read_lock(root: string) {
