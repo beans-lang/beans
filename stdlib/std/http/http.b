@@ -31,7 +31,7 @@ import std.net
 // buffer. Events carry absolute byte offsets; spans arrive merged when
 // byte-adjacent within one feed. The encoding is little-endian:
 //   [u8 type][u64 off]                          plain events
-//   [u8 span][u64 off][u64 len][bytes]          spans
+//   [u8 span][u64 off][u64 len]                 public parser spans
 //   [u8 21][u64 off][method status major minor flags content_length: u64 x6]
 //          [u8 upgrade][u8 keep_alive]          headers complete
 //   [u8 22][u64 off][u64 chunk_length]          chunk header
@@ -381,7 +381,7 @@ class ParserCore {
         var handle: int = 0
         unsafe {
             self.request_word = RawPtr.alloc(1)
-            handle = beans_h1_new(if request_side { 0 } else { 1 })
+            handle = beans_h1_new(if request_side { 10 } else { 11 })
         }
         self.handle = handle
     }
@@ -500,6 +500,8 @@ class ParserCore {
     }
 
     fn run(data: Bytes,
+           from: int,
+           to: int,
            finish: bool,
            request_out: List<RequestEvent>,
            response_out: List<ResponseEvent>) -> Result<bool> {
@@ -509,7 +511,11 @@ class ParserCore {
         if self.upgraded {
             return err("the connection was upgraded; hand it to the next protocol", "closed")
         }
+        if from < 0 || to < from || to > data.len() {
+            return err("the HTTP feed range is outside the buffer", "invalid")
+        }
         let fed_before: int = self.total_fed
+        let fed: int = to - from
         var status: int = 0
         if finish {
             unsafe {
@@ -517,11 +523,11 @@ class ParserCore {
             }
         } else {
             unsafe {
-                self.request_word.write(data.len() as u64)
+                self.request_word.write(fed as u64)
                 status = beans_h1_execute(
-                    self.handle, data.as_ptr(), self.request_word)
+                    self.handle, data.as_ptr().offset(from), self.request_word)
             }
-            self.total_fed += data.len()
+            self.total_fed += fed
         }
         if status != 0 {
             self.failed = true
@@ -536,13 +542,9 @@ class ParserCore {
             if ev_is_span(kind) {
                 let span_len: int = events.get_u64(pos)
                 pos += 8
-                let span_from: int = pos
-                pos += span_len
-                // The bridge writes every event reserve-then-commit, so a
-                // span should always be inside the buffer. Check anyway: a
-                // length that outran the bytes behind it would panic in the
-                // slice below rather than surface as a parse error.
-                if span_len < 0 || span_from + span_len > events.len() {
+                let span_from: int = from + off - fed_before
+                if span_len < 0 || span_from < from ||
+                   span_from + span_len > to {
                     self.latch("the HTTP parser produced a malformed event", "protocol")
                     return self.run_result(request_out.len(), response_out.len())
                 }
@@ -550,7 +552,7 @@ class ParserCore {
                     // A body chunk streams straight out, as its own Bytes —
                     // the caller keeps it after this buffer is reused.
                     self.seal_pending()
-                    let text: Bytes = events.slice(span_from, span_from + span_len)
+                    let text: Bytes = data.slice(span_from, span_from + span_len)
                     if self.request_side {
                         request_out.push(RequestEvent.body(text))
                     } else {
@@ -561,7 +563,7 @@ class ParserCore {
                         self.seal_pending()
                         self.pending_kind = kind
                     }
-                    self.pending_text.append_range(events, span_from, span_from + span_len)
+                    self.pending_text.append_range(data, span_from, span_from + span_len)
                     if kind == 3 {
                         // The request target grows here and nowhere else, so
                         // the bound is enforced before the next byte lands.
@@ -685,11 +687,11 @@ class ParserCore {
                     // the head belongs to the next protocol, and this
                     // parser's work is over.
                     self.upgraded = true
-                    let already: int = off - fed_before
+                    let already: int = from + off - fed_before
                     let remainder: Bytes = if already < 0 || finish {
                         new Bytes(0)
                     } else {
-                        data.slice(already, data.len())
+                        data.slice(already, to)
                     }
                     if self.request_side {
                         request_out.push(RequestEvent.upgraded(
@@ -736,9 +738,16 @@ pub class RequestParser {
     /// kind `protocol` for a malformed message, `too_large` for a crossed
     /// bound, `closed` once the parser is done (failed or upgraded).
     pub fn feed(data: Bytes) -> Result<List<RequestEvent>> {
+        return self.feed_range(data, 0, data.len())
+    }
+
+    /// Feeds one checked range without allocating a slice. This pairs with
+    /// `TcpStream.read_into`: pass `0, count` from the reused read buffer.
+    pub fn feed_range(data: Bytes, from: int,
+                      to: int) -> Result<List<RequestEvent>> {
         var events: List<RequestEvent> = []
         var unused: List<ResponseEvent> = []
-        self.core.run(data, false, events, unused)?
+        self.core.run(data, from, to, false, events, unused)?
         return ok(move events)
     }
 
@@ -747,7 +756,7 @@ pub class RequestParser {
     pub fn finish() -> Result<List<RequestEvent>> {
         var events: List<RequestEvent> = []
         var unused: List<ResponseEvent> = []
-        self.core.run(new Bytes(0), true, events, unused)?
+        self.core.run(new Bytes(0), 0, 0, true, events, unused)?
         return ok(move events)
     }
 }
@@ -767,16 +776,21 @@ pub class ResponseParser {
     }
 
     pub fn feed(data: Bytes) -> Result<List<ResponseEvent>> {
+        return self.feed_range(data, 0, data.len())
+    }
+
+    pub fn feed_range(data: Bytes, from: int,
+                      to: int) -> Result<List<ResponseEvent>> {
         var unused: List<RequestEvent> = []
         var events: List<ResponseEvent> = []
-        self.core.run(data, false, unused, events)?
+        self.core.run(data, from, to, false, unused, events)?
         return ok(move events)
     }
 
     pub fn finish() -> Result<List<ResponseEvent>> {
         var unused: List<RequestEvent> = []
         var events: List<ResponseEvent> = []
-        self.core.run(new Bytes(0), true, unused, events)?
+        self.core.run(new Bytes(0), 0, 0, true, unused, events)?
         return ok(move events)
     }
 }

@@ -3068,7 +3068,7 @@ grep -q "value 'item' may have been moved" \
     "$tmp/move_bad.out"
 grep -q "can't move borrowed binding 's'" \
     "$tmp/resource_move_out_of_match.out"
-grep -q "thread closure cannot capture 'server' of non-Send type std.net.TcpListener" \
+grep -q "thread closure must capture move-only Send value 'server' with move(server)" \
     "$tmp/socket_across_thread.out"
 for match_bad in match_exhaustive_bad match_move_bad \
     match_pattern_bad; do

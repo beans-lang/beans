@@ -16,7 +16,6 @@
 compiler=0.1.25
 language=1.0
 
-# 6: compiled runtime hooks use per-thread enter/leave guard entry points.
-# Version 5 added the reflection registry, dynamic values, annotations, field
-# access, calls, and construction.
-runtime_abi=6
+# 7: Bytes.filled, Bytes.append_int_text, and Thread.detach runtime entries.
+# Version 6 added per-thread runtime-hook guard entry points.
+runtime_abi=7

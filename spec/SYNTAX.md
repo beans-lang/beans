@@ -327,7 +327,8 @@ and `parse_int_range_or(from, to, fallback)` for allocation-free byte-range work
 The binary buffer — strings stay text; anything binary is `Bytes`. Mutating methods return
 self, so page-building chains work: `new Bytes(4096).put_u32(0, root).put_u64(8, lsn)`.
 
-- `new Bytes(n)` (zeroed, panics on negative), `Bytes.from(s)` (copies the text bytes)
+- `new Bytes(n)` (zeroed, panics on negative), `Bytes.filled(n, byte)`,
+  `Bytes.from(s)` (copies the text bytes)
 - Unsafe FFI bridge: `Bytes.from_raw(pointer, len)` copies `len` bytes from a
   `RawPtr<u8>` in one bulk operation. It does not take ownership. A null pointer
   is accepted only when `len == 0`.
@@ -340,7 +341,8 @@ self, so page-building chains work: `new Bytes(4096).put_u32(0, root).put_u64(8,
   byte. These are low-level storage operations used by Beans-written formats.
 - `get_u8/u16/u32/u64/i64(pos)` / `put_...(pos, v)` — fixed width, little-endian, panics out of range
 - `slice(from, to)`, `copy_from(src, at)`, `append(other)`, `append_string(s)`,
-  `append_i64(v)` (little-endian), `append_range(src, from, to)` (no slice allocation)
+  `append_int_text(v)`, `append_i64(v)` (little-endian),
+  `append_range(src, from, to)` (no slice allocation)
 - `to_string()` — every byte, NUL included (used by binary-safe source packages
   such as `std.reader`); `to_string_until_nul()` stops at an embedded NUL
 - `==` / `!=` compare by value: length, then contents
@@ -1544,6 +1546,10 @@ let t: Thread<int> = thread.spawn(fn() -> int {
 })
 let n: int = t.join()               // wait + get the value
 
+// discard the result and release the OS thread resource when it finishes
+let background: Thread<int> = thread.spawn(fn() -> int { return work() })
+background.detach()
+
 // mutex wraps the data itself — no way to touch it without holding the lock
 let ledger: Mutex<Ledger> = new Mutex(new Ledger())
 ledger.with_lock(fn(l: Ledger) {
@@ -1562,12 +1568,21 @@ hits.add(1)
 
 - `Mutex<T>` holds the value inside it — `with_lock` locks, runs your closure, unlocks on any exit path. No forgotten unlocks.
 - A `thread.spawn` closure may capture only `Send` values and must return a
-  `Send` value. Plain class references, List, Map, Box, Arena, Bytes, File, and
-  MMap are non-`Send`. Scalars, immutable strings, AtomicInt, Mutex, a Channel
-  of `Send` values, and `Shared<T>`/`Weak<T>` where
+  `Send` value. A move-only `Send` value must be named in the closure's explicit
+  move list (`fn() move(socket) { ... }`), so the old thread cannot keep an
+  owner. Plain class references, List, Map, Box, Arena, Bytes, File, and MMap
+  are non-`Send`. Scalars, immutable strings, `Error`, AtomicInt, Mutex, a
+  Channel of `Send` values, and `Shared<T>`/`Weak<T>` where
   `T implements Send & Sync` can cross.
   This makes `class` a local ARC reference by default; wrap shared mutable data
   in Mutex instead of silently racing it.
+- A `unique class` may explicitly implement `Send` to promise that transferring
+  its sole owner is safe. This does not make it `Sync`, copyable, or shared.
+  `TcpListener`, `TcpStream`, `UdpSocket`, `http.Server`, and
+  `http.ServerConn` make this promise. `Result<T>` is `Send` when `T` and its
+  error type are, so a worker can use `?` and return a typed error.
+- `Thread<T>.detach()` discards the result without waiting. The running thread
+  keeps its work alive and the OS thread resource is released when it finishes.
 
 ### async and await (v0.9, first version implemented)
 
@@ -2344,6 +2359,8 @@ let session: net.TcpStream = server.accept_timeout(2000)?
 client.write_text("ping")?
 client.shutdown_write()?                    // the reader sees EOF
 let asked: Bytes = session.read(64)?        // empty means EOF
+let scratch: Bytes = new Bytes(65536)
+let count: int = session.read_into(scratch)? // reuses scratch; 0 means EOF
 
 let radio: net.UdpSocket = net.UdpSocket.bind("127.0.0.1", 0)?
 radio.send_to(Bytes.from("hi"), new net.Address("127.0.0.1", port))?
@@ -2360,10 +2377,10 @@ match net.Address.resolve("localhost", 80) {
   each produces, the same shape as `File.open` and `MMap.open`, because construction
   that can fail cannot be a constructor. `std.net` has **no module-level functions**.
 - **`TcpListener`, `TcpStream` and `UdpSocket` are `unique class`** — move-only, closed by
-  `deinit`. One owner, one close, and a double close is impossible to write. The three
-  `unique` rules apply: a socket cannot be copied, cannot cross `thread.spawn`
-  (`unique` ⇒ not `Clone` ⇒ not `Send`), and a socket trapped in a reference cycle never
-  runs `deinit`.
+  `deinit`. One owner, one close, and a double close is impossible to write. They
+  explicitly implement `Send`, so an explicit closure move can transfer that one
+  owner to a worker thread. A plain capture is refused. A socket still cannot be
+  copied or shared, and one trapped in a reference cycle never runs `deinit`.
 - **`Address` is an ordinary value**: `host` and `port`, with `to_string()`, `is_ipv6()` and
   `is_loopback()`. `to_string()` brackets an IPv6 host (`[::1]:80`) because that is the form
   that round-trips.
@@ -2375,6 +2392,8 @@ match net.Address.resolve("localhost", 80) {
   and an **empty `Bytes` means EOF**, the one thing a byte count cannot express;
   `write(data)` returns how much went out. `write_all` and `read_exact` are the looping
   forms, and `read_exact` fails with kind `eof` if the peer closes early.
+  `read_into(buffer)` writes into existing storage, returns a byte count (`0` is EOF),
+  and leaves the buffer length unchanged so a server can reuse one allocation.
 - **Every blocking call retries `EINTR`.** A signal never turns into a short read or a
   spurious failure.
 - Timeouts are set per socket (`set_timeouts(read_ms, write_ms)`) and `connect` and
@@ -2388,6 +2407,8 @@ match net.Address.resolve("localhost", 80) {
   cannot report one, which is why `close()` exists.
 - Every descriptor is created close-on-exec, so a socket never leaks into a child process.
   A listener sets `SO_REUSEADDR` so a restart is not blocked by `TIME_WAIT`.
+  `TcpListener.bind_reuse_port` opts into `SO_REUSEPORT`, letting independent
+  accept loops bind one port on macOS and Linux; Windows reports `unsupported`.
 - The low-level primitive is `std.sock`, the same split as `std.proc` versus
   `std.process`. It is the syscall layer over plain descriptors and is not the API —
   callers use the handles.
@@ -2435,8 +2456,8 @@ poll.wake(signal)?                                        // from a worker
 - **`wake()` makes a blocking `wait` return promptly**, and repeated wakes collapse into
   one: it writes one byte to an internal pipe the poller registered with itself, and the
   wake is never reported as an event.
-- **To wake from another thread, pass `wake_handle()`** — an `int`, because only scalars
-  cross a thread boundary (every class is a local ARC reference) — and call
+- **To wake from another thread, pass `wake_handle()`** — a plain `int`, so the poller
+  itself stays with its owner — and call
   `poll.wake(signal)` there. The handle is deliberately **not the descriptor**: after the
   poller closes that number belongs to something else, and a late wake would write a stray
   byte into an unrelated file. It names a slot and a generation, so a wake to a closed
@@ -2455,6 +2476,7 @@ poll.wake(signal)?                                        // from a worker
 
 ```beans
 import std.http
+import std.thread
 
 // Parsing: push bytes in, take typed events out. Any byte-split of the same
 // input produces the same events.
@@ -2468,6 +2490,9 @@ for event: http.RequestEvent in parser.feed(arrived)? {
         upgraded(request, remainder) => {}   // the connection is no longer HTTP
     }
 }
+// With a reused read buffer, feed only the bytes that arrived; no slice copy.
+let count: int = stream.read_into(scratch)?
+let ranged: List<http.RequestEvent> = parser.feed_range(scratch, 0, count)?
 
 // A client: one connection, sequential exchanges, keep-alive by default.
 let client: http.Client = http.Client.connect("127.0.0.1", port)?
@@ -2482,6 +2507,15 @@ match conn.read_request()? {
     }
     none => {}   // the client finished cleanly
 }
+
+// Or move each accepted connection to a worker. Plain capture is refused.
+let worker: Thread<Result<bool>> = thread.spawn(
+    fn() move(conn) -> Result<bool> {
+        let request: http.ServedRequest = conn.read_request()?.expect("request")
+        return conn.respond(200, "OK", new http.Headers(), Bytes.from("hello"),
+                            request.keep_alive)
+    })
+worker.detach()
 
 // HTTP/2 is the same message model with streams named explicitly.
 let session: http.Http2Connection = http.Http2Connection.adopt(move socket, true)?
@@ -2511,7 +2545,13 @@ secure_h2.send_data(id, last_chunk, true)?
   and returns the events it completed. Any byte-split of the same input yields
   the identical event stream, so the shape of a caller's read loop can never
   change what it parses. The property is tested directly, and against llhttp's
-  own corpus split at every byte.
+  own corpus split at every byte. `feed_range(data, from, to)` reads directly
+  from a reused buffer and creates strings only for typed fields that survive
+  the parser.
+- **Server concurrency is an ownership choice.** `ServerConn` is a move-only
+  `Send` handle, so an accept loop can move each connection to a worker and
+  detach it. `Server.bind_reuse_port` supports one accept loop per worker on
+  macOS and Linux. `ServerConn` reuses its read and response buffers.
 - **Strict mode is the only mode.** The lenient flags that exist for ancient
   peers and request-smuggling papers are not exposed. What llhttp rejects, this
   package rejects: a malformed message is kind `protocol`, and the connection it
@@ -3288,11 +3328,13 @@ declares one, so `package` stays usable as an ordinary identifier.
   cleared before exec, without which a child of a signal-watching parent starts
   unstoppable
 - Sockets v0.8 (implemented): `TcpListener`/`TcpStream`/`UdpSocket` as move-only
-  `unique class` handles, so one owner closes exactly once; the address family is
-  resolved rather than chosen, so IPv4 and IPv6 need no flag; reads and writes are
-  partial by contract with an empty `Bytes` meaning EOF; every blocking call retries
-  `EINTR`, every timeout is an `err` with kind `timeout` rather than a hang, and every
-  descriptor is close-on-exec
+  `unique class` handles, so one owner closes exactly once and can transfer to a
+  worker only through explicit move; the address family is resolved rather than
+  chosen, so IPv4 and IPv6 need no flag; reads and writes are partial by contract
+  with an empty `Bytes` meaning EOF, while `read_into` reuses storage; every blocking
+  call retries `EINTR`, every timeout is an `err` with kind `timeout` rather than a
+  hang, every descriptor is close-on-exec, and reuse-port listeners support separate
+  accept loops on one port
 - Processes v0.8 (implemented): `Command`/`Output` with no shell anywhere, both output
   streams drained at once so heavy output cannot deadlock, a start failure reported
   separately from a non-zero exit through a close-on-exec pipe, signals as a negative
@@ -3365,7 +3407,8 @@ declares one, so `package` stays usable as an ordinary identifier.
 - No `+` on strings — interpolation / `std.fmt` / `join` only (v0.3)
 - Package-private by default, `pub` to expose, and `priv` for declaring-type
   private fields and methods
-- OS threads + checked `Send` captures/returns + `Mutex<T>.with_lock` + `Channel<T>`
+- OS threads + checked `Send` captures/returns + explicit move transfer for unique
+  `Send` handles + detach + `Mutex<T>.with_lock` + `Channel<T>`
 - `decimal` built-in for money (v0.2)
 - Go-style remote imports from git hosts + beans.pot (v0.2)
 - `Result<T>`, error type defaults to built-in `Error`

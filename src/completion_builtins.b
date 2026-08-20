@@ -7,12 +7,13 @@ package main
 // here.
 fn semantic_builtin_member_names() -> List<string> {
     return ["abs", "add", "add_and_get", "address", "all_true",
-            "any_true", "append", "append_i64", "append_range",
+            "any_true", "append", "append_i64", "append_int_text",
+            "append_range",
             "append_string", "append_uvarint", "as_ptr", "at",
             "atomic_compare_exchange", "atomic_fetch_add",
             "atomic_load", "atomic_store", "bit_and", "bit_not",
             "bit_or", "bit_xor", "byte_at", "call", "chars",
-            "clear",
+            "clear", "detach",
             "clone", "close", "compare_exchange", "contains",
             "contains_key", "context", "copy_from", "count_chars",
             "crc32", "div", "downgrade", "element_align",
@@ -118,7 +119,8 @@ fn semantic_builtin_members(
 }
 
 fn semantic_builtin_static_names() -> List<string> {
-    return ["from", "exists", "size", "open", "remove", "rename", "copy",
+    return ["from", "filled", "exists", "size", "open", "remove",
+            "rename", "copy",
             "list", "walk", "create", "create_all", "remove_all",
             "sync", "temp_path", "uvarint_size", "open_shared_memory",
             "unlink_shared_memory", "fence"]

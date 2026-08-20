@@ -907,6 +907,7 @@ class MirLowerer {
                    node.value == "copy_from" ||
                    node.value == "append" ||
                    node.value == "append_string" ||
+                   node.value == "append_int_text" ||
                    node.value == "append_i64" ||
                    node.value == "append_range" ||
                    node.value == "append_uvarint"

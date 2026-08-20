@@ -4,6 +4,26 @@ This file records user-facing changes in each Beans release.
 
 ## Unreleased
 
+### Added
+
+- Move-only socket and HTTP server handles can be transferred to a worker with
+  an explicit closure move. `Error` and matching `Result<T>` values are `Send`,
+  so worker closures can use `?` and return typed failures. A plain capture is
+  still refused.
+- `TcpStream.read_into` reuses caller-owned storage. `TcpListener` and
+  `http.Server` expose `bind_reuse_port` on macOS and Linux for independent
+  accept loops on one port; Windows reports `unsupported`.
+- `Thread.detach`, `Bytes.filled`, `Bytes.append_int_text`, and HTTP/1 parser
+  `feed_range`.
+
+### Changed
+
+- `ServerConn` reuses one read buffer and one response buffer. HTTP/1 span
+  events refer to the current input range instead of copying every parser span
+  through the C bridge; the typed parser benchmark improves from the recorded
+  170–180 MB/s baseline to 230 MB/s on the same arm64 macOS class of machine.
+- The runtime ABI is version 7 and the networking bridge cache ABI is version 4.
+
 ## [0.1.25] - 2026-08-20
 
 ### Added

@@ -21,6 +21,7 @@ class ExpressionChecker {
     capture_floor_depth: int
     require_send_captures: bool
     require_sync_captures: bool
+    send_move_captures: Map<int, bool>
     allow_inout_expression: bool
     bad_inout_captures: Map<string, bool>
     bad_send_captures: Map<string, bool>
@@ -54,6 +55,7 @@ class ExpressionChecker {
         self.capture_floor_depth = -1
         self.require_send_captures = false
         self.require_sync_captures = false
+        self.send_move_captures = {}
         self.allow_inout_expression = false
         self.bad_inout_captures = {}
         self.bad_send_captures = {}
@@ -751,7 +753,8 @@ class ExpressionChecker {
         }
         if type.name == "Error" {
             return trait == "Clone" || trait == "Eq" ||
-                   trait == "Hash"
+                   trait == "Hash" || trait == "Send" ||
+                   trait == "Sync"
         }
         if (type.name == "Option" ||
             type.name == "Result") &&
@@ -826,6 +829,14 @@ class ExpressionChecker {
                 if declaration.kind == "interface" {
                     return self.is_subtype(
                         type, new HirType(trait))
+                }
+                // A unique handle may make the explicit promise that moving
+                // its sole owner to another thread is safe. It can never be
+                // Sync, and an ordinary aliased class cannot opt into either
+                // marker this way.
+                if trait == "Send" && declaration.is_unique &&
+                   self.is_subtype(type, new HirType(trait)) {
+                    return true
                 }
                 match self.declarations.get(trait) {
                     some(bound) => {
@@ -2704,6 +2715,9 @@ class ExpressionChecker {
                 return some(new BuiltinSignature(
                     [], receiver.args[0]))
             }
+            if name == "detach" {
+                return some(new BuiltinSignature([], unit))
+            }
         }
         if receiver.name == "Mutex" &&
            receiver.args.len() == 1 {
@@ -2895,6 +2909,7 @@ class ExpressionChecker {
             }
             if name == "push" || name == "reserve" ||
                name == "resize" || name == "fill" ||
+               name == "append_int_text" ||
                name == "append_i64" ||
                name == "append_uvarint" {
                 return some(new BuiltinSignature(
@@ -3140,6 +3155,10 @@ class ExpressionChecker {
         let integer: HirType = new HirType("int")
         let boolean: HirType = new HirType("bool")
         let string: HirType = new HirType("string")
+        if type_name == "Bytes" && name == "filled" {
+            return some(new BuiltinSignature(
+                [integer, integer], new HirType("Bytes")))
+        }
         if type_name == "Bytes" && name == "from" {
             return some(new BuiltinSignature(
                 [string], new HirType("Bytes")))
@@ -4303,14 +4322,19 @@ class ExpressionChecker {
                             "closure cannot capture inout parameter '{node.value}'")
                     }
                     if self.require_send_captures &&
-                       !self.trait_satisfied(
-                           binding.type, "Send") &&
-                       !self.bad_send_captures.contains_key(
-                           node.value) {
-                        self.bad_send_captures[node.value] = true
-                        self.fail(
-                            node,
-                            "thread closure cannot capture '{node.value}' of non-Send type {render_hir_type(binding.type)}")
+                       !self.bad_send_captures.contains_key(node.value) {
+                        if !self.trait_satisfied(binding.type, "Send") {
+                            self.bad_send_captures[node.value] = true
+                            self.fail(
+                                node,
+                                "thread closure cannot capture '{node.value}' of non-Send type {render_hir_type(binding.type)}")
+                        } else if self.is_move_only(binding.type) &&
+                                  !self.send_move_captures.contains_key(binding.id) {
+                            self.bad_send_captures[node.value] = true
+                            self.fail(
+                                node,
+                                "thread closure must capture move-only Send value '{node.value}' with move({node.value})")
+                        }
                     }
                     if self.require_sync_captures &&
                        !self.trait_satisfied(
@@ -8692,6 +8716,12 @@ class ExpressionChecker {
             self.capture_floor_depth
         let saved_take_floor: int =
             self.take_floor_depth
+        let saved_send_moves: Map<int, bool> =
+            self.send_move_captures.clone()
+        self.send_move_captures = {}
+        for binding: LocalBinding in moved_captures {
+            self.send_move_captures[binding.id] = true
+        }
         let capture_floor: int = self.scopes.len()
         self.capture_floor_depth = capture_floor
         if self.take_floor_depth < capture_floor {
@@ -8744,6 +8774,7 @@ class ExpressionChecker {
         self.current.body_result = saved_body_result
         self.capture_floor_depth = saved_capture_floor
         self.take_floor_depth = saved_take_floor
+        self.send_move_captures = move saved_send_moves
         // an unreferenced move capture would never enter the closure's
         // cell set, so nothing would own it; require the body to name it
         for binding: LocalBinding in moved_captures {
@@ -10471,6 +10502,7 @@ class ExpressionChecker {
         self.capture_floor_depth = -1
         self.require_send_captures = false
         self.require_sync_captures = false
+        self.send_move_captures = {}
         self.allow_inout_expression = false
         self.bad_inout_captures = {}
         self.bad_send_captures = {}

@@ -1331,10 +1331,17 @@ partial class LlvmTextEmitter {
                           function,
                           instruction.operands[0]).name) ==
                       "Thread" &&
-                  instruction.text == "join" {
-            output =
-                self.emit_thread_join(
-                    function, instruction, values)
+                  (instruction.text == "join" ||
+                   instruction.text == "detach") {
+            if instruction.text == "join" {
+                output =
+                    self.emit_thread_join(
+                        function, instruction, values)
+            } else {
+                output =
+                    self.emit_thread_detach(
+                        function, instruction, values)
+            }
         } else if instruction.op ==
                       "builtin_method" &&
                   instruction.operands.len() != 0 &&

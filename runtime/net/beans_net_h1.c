@@ -142,6 +142,10 @@ typedef struct {
     uint64_t span_off;
     size_t span_event;
     size_t span_len;
+    // Public typed parsers consume spans while the feed buffer is alive, so
+    // their event records carry offsets only. Corpus mode keeps copying bytes
+    // because its trace ABI is a self-contained byte stream.
+    int span_refs;
     // Corpus-runner knobs.
     int pause_on;
     int skip_body;
@@ -220,7 +224,9 @@ static int beans_h1_span(beans_h1_session* s, int type,
           s->span_len <= UINT64_MAX - s->span_off &&
           s->span_off + s->span_len == off)) {
         beans_h1_flush_span(s);
-        if (len > SIZE_MAX - 17 || !beans_h1_reserve(s, 17 + len))
+        size_t payload = s->span_refs ? 0 : len;
+        if (payload > SIZE_MAX - 17 ||
+            !beans_h1_reserve(s, 17 + payload))
             return HPE_INTERNAL;
         s->span_type = type;
         s->span_off = off;
@@ -229,14 +235,16 @@ static int beans_h1_span(beans_h1_session* s, int type,
         at[0] = (uint8_t)type;
         beans_h1_put_u64(at + 1, off);
         beans_h1_put_u64(at + 9, (uint64_t)len);
-        if (len) memcpy(at + 17, p, len);
-        s->events_len += 17 + len;
+        if (!s->span_refs && len) memcpy(at + 17, p, len);
+        s->events_len += 17 + payload;
         s->span_len = len;
     } else {
-        if (len > SIZE_MAX - s->span_len ||
-            !beans_h1_reserve(s, len)) return HPE_INTERNAL;
-        if (len) memcpy(s->events + s->events_len, p, len);
-        s->events_len += len;
+        if (len > SIZE_MAX - s->span_len) return HPE_INTERNAL;
+        if (!s->span_refs) {
+            if (!beans_h1_reserve(s, len)) return HPE_INTERNAL;
+            if (len) memcpy(s->events + s->events_len, p, len);
+            s->events_len += len;
+        }
         s->span_len += len;
         beans_h1_put_u64(s->events + s->span_event + 9,
                          (uint64_t)s->span_len);
@@ -344,11 +352,14 @@ static void beans_h1_error_event(beans_h1_session* s, int code,
 
 // ---- entry points ----------------------------------------------------------
 
-// kind: 0 = request parser, 1 = response parser, 2 = either.
+// kind: 0 = request parser, 1 = response parser, 2 = either. Adding 10 asks
+// for offset-only span records used by the public typed parser.
 BEANS_NET_API long long beans_h1_new(long long kind) {
     beans_h1_session* s = (beans_h1_session*)calloc(1, sizeof(beans_h1_session));
     if (!s) return 0;
     s->magic = BEANS_H1_MAGIC;
+    s->span_refs = kind >= 10;
+    if (s->span_refs) kind -= 10;
     llhttp_type_t type =
         kind == 0 ? HTTP_REQUEST : kind == 1 ? HTTP_RESPONSE : HTTP_BOTH;
     // settings NULL: this bridge's trampolines replaced api.c's, so the

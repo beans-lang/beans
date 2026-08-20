@@ -186,6 +186,11 @@ pub fn runtime_builtin_method(key: string) -> Option<RuntimeBuiltin> {
             ["i64"],
             "self_recv", "beans_bytes_fill", false))
     }
+    if key == "Bytes.append_int_text" {
+        return some(new RuntimeBuiltin(
+            ["i64"],
+            "self_recv", "beans_bytes_append_int_text", false))
+    }
     if key == "Bytes.get" {
         return some(new RuntimeBuiltin(
             ["i64"],
@@ -485,6 +490,11 @@ pub fn runtime_builtin_method(key: string) -> Option<RuntimeBuiltin> {
 }
 
 pub fn runtime_builtin_static(key: string) -> Option<RuntimeBuiltin> {
+    if key == "Bytes.filled" {
+        return some(new RuntimeBuiltin(
+            ["i64", "i64"],
+            "bytes", "beans_bytes_filled", true))
+    }
     if key == "Bytes.from" {
         return some(new RuntimeBuiltin(
             ["str"],

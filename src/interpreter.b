@@ -4793,6 +4793,11 @@ class TreeInterpreter {
             data.fill(arguments[1].int_data)
             return some(receiver)
         }
+        if node.value == "append_int_text" &&
+           arguments.len() == 2 {
+            data.append_string("{arguments[1].int_data}")
+            return some(receiver)
+        }
         if node.value == "push" &&
            arguments.len() == 2 {
             data.push(arguments[1].int_data)
@@ -8138,6 +8143,21 @@ class TreeInterpreter {
                 tree_value_copy(result)]
             return result
         }
+        if receiver.kind == "thread" &&
+           node.value == "detach" {
+            match receiver.thread_handle {
+                some(_) => {
+                    receiver.thread_handle = none
+                    receiver.thread_work = none
+                    return TreeValue.unit()
+                }
+                none => {
+                    return self.fail(
+                        node,
+                        "thread already joined or detached")
+                }
+            }
+        }
         if receiver.kind == "mutex" &&
            node.value == "with_lock" &&
            arguments.len() == 2 &&
@@ -8603,6 +8623,19 @@ class TreeInterpreter {
                 some(value) => { return value }
                 none => {}
             }
+        }
+        if node.kind == "static_call" &&
+           node.resolved == "Bytes.filled" &&
+           arguments.len() == 2 {
+            let size: int = arguments[0].int_data
+            if size < 0 {
+                return self.fail_at(
+                    node, node.col,
+                    "negative size {size}")
+            }
+            let data: Bytes = new Bytes(size)
+            data.fill(arguments[1].int_data)
+            return TreeValue.bytes(data)
         }
         if node.kind == "static_call" &&
            node.resolved == "Bytes.from_raw" &&

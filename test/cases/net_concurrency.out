@@ -1,0 +1,4 @@
+moved HTTP worker true
+reusable read true
+reuse port true
+detached worker true

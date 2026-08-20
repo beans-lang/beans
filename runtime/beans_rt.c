@@ -374,6 +374,9 @@ static int pthread_join(pthread_t thread, void** result) {
     CloseHandle(thread);
     return waited == WAIT_OBJECT_0 ? 0 : EINVAL;
 }
+static int pthread_detach(pthread_t thread) {
+    return CloseHandle(thread) ? 0 : EINVAL;
+}
 
 static BOOL CALLBACK win_once_start(PINIT_ONCE raw, PVOID parameter,
                                     PVOID* context) {
@@ -5631,6 +5634,17 @@ BList* beans_bytes_new(long long n, long long line, long long col) {
     }
     return bytes_mk(n);
 }
+BList* beans_bytes_filled(long long n, long long value,
+                          long long line, long long col) {
+    if (n < 0) {
+        char m[48];
+        rt_format(m, sizeof m, "negative size %lld", n);
+        beans_panic(m, line, col);
+    }
+    BList* b = bytes_mk(n);
+    memset(b->data, (int)(value & 255), (size_t)n);
+    return b;
+}
 BList* beans_bytes_from(char* s) {
     long long n = beans_slen(s);
     BList* b = bytes_mk(n);
@@ -5768,6 +5782,23 @@ void beans_bytes_reserve(BList* b, long long n, long long line, long long col) {
 }
 void beans_bytes_fill(BList* b, long long v) {
     memset(b->data, (int)(v & 255), (size_t)b->len);
+}
+void beans_bytes_append_int_text(BList* b, long long value) {
+    char text[32];
+    char reversed[24];
+    int count = 0, digits = 0;
+    unsigned long long magnitude =
+        value < 0 ? 0ULL - (unsigned long long)value
+                  : (unsigned long long)value;
+    do {
+        reversed[digits++] = (char)('0' + magnitude % 10);
+        magnitude /= 10;
+    } while (magnitude != 0);
+    if (value < 0) text[count++] = '-';
+    while (digits > 0) text[count++] = reversed[--digits];
+    bytes_grow(b, b->len + count);
+    memcpy((char*)b->data + b->len, text, (size_t)count);
+    b->len += count;
 }
 static void bytes_oob(long long i, long long len, long long line, long long col) {
     char m[80];
@@ -11864,6 +11895,12 @@ void beans_thread_join_typed(BThread* t, void* out, long long size) {
     memset(payload, 0, (size_t)size); // move nested refs out of the payload box
     t->payload = NULL;
     beans_release(payload);
+}
+void beans_thread_detach(BThread* t) {
+    if (t->joined) beans_panic("thread already joined or detached", 0, 0);
+    if (pthread_detach(t->th) != 0)
+        beans_panic("thread detach failed", 0, 0);
+    t->joined = 1;
 }
 
 BMutex* beans_mutex_new(long long inner, long long inner_ptr) {

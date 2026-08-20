@@ -445,11 +445,22 @@ expect_error() {
 # Move-only: no second owner, so no double close.
 expect_error "is move-only" test/cases/socket_no_copy.b
 expect_error "use of moved value 'server'" test/cases/socket_use_after_move.b
-# unique is not Clone, so it is not Send: a socket cannot cross a thread boundary.
-# Documented, and this is what holds the line.
-expect_error "non-Send type std.net.TcpListener" test/cases/socket_across_thread.b
+# A move-only Send handle crosses only through explicit move capture. A plain
+# capture would leave the outer owner alive beside the worker.
+expect_error "must capture move-only Send value 'server' with move(server)" test/cases/socket_across_thread.b
+# A normal aliased class cannot opt into Send. Only a unique sole-owner handle
+# may make the transfer promise.
+expect_error "of non-Send type main.FakeHandle" test/cases/class_fake_send.b
 # Fabricating a socket from an arbitrary integer is not something callers can do.
 expect_error "init of 'net.TcpStream' isn't pub" test/cases/socket_private_init.b
+
+echo "checking concurrent ownership, reusable reads, reuse-port, and detach"
+./build/beansc run test/cases/net_concurrency.b >"$tmp/concurrency.interp"
+./build/beansc build test/cases/net_concurrency.b -o "$tmp/concurrency" \
+    >"$tmp/concurrency.build" 2>&1
+"$tmp/concurrency" >"$tmp/concurrency.native"
+diff -u test/cases/net_concurrency.out "$tmp/concurrency.interp"
+diff -u test/cases/net_concurrency.out "$tmp/concurrency.native"
 
 echo "checking the syscall layer is not the API"
 # std.sock exists so the handles can be written in Beans. Two things must stay true:

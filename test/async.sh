@@ -2653,6 +2653,53 @@ rounds 5
 BEANS
 DEADLINE=45 run_matrix "$tmp/sem_reuse_cancel.b" "$tmp/sem_reuse_cancel.expected"
 
+echo "checking async readiness feeds the HTTP parser from reused storage"
+cat > "$tmp/sem_http_ready.b" <<'BEANS'
+import std.http
+import std.io
+import std.net
+import std.thread
+import std.time
+
+async fn main() {
+    let listener: net.TcpListener =
+        net.TcpListener.bind("127.0.0.1", 0).expect("bind")
+    let client: net.TcpStream =
+        net.TcpStream.connect("127.0.0.1", listener.port().expect("port"))
+            .expect("connect")
+    let session: net.TcpStream = listener.accept().expect("accept")
+    let sender: Thread<Result<int>> = thread.spawn(
+        fn() move(client) -> Result<int> {
+            time.sleep_millis(20)
+            return client.write_text(
+                "GET /ready HTTP/1.1\r\nHost: local\r\nConnection: close\r\n\r\n")
+        })
+    let ready: bool = await net.readable(session.poll_handle())
+    let scratch: Bytes = Bytes.filled(4096, 0)
+    let count: int = session.read_into(scratch).expect("read")
+    let parser: http.RequestParser = new http.RequestParser()
+    let events: List<http.RequestEvent> =
+        parser.feed_range(scratch, 0, count).expect("parse")
+    var target: string = ""
+    for event: http.RequestEvent in events {
+        match event {
+            head(request) => { target = request.target }
+            body(piece) => {}
+            trailers(fields) => {}
+            done(alive) => {}
+            upgraded(request, remainder) => {}
+        }
+    }
+    let worked: bool =
+        ready && sender.join().is_ok() && target == "/ready"
+    io.println("http ready {worked}")
+}
+BEANS
+cat > "$tmp/sem_http_ready.expected" <<'BEANS'
+http ready true
+BEANS
+DEADLINE=30 run_matrix "$tmp/sem_http_ready.b" "$tmp/sem_http_ready.expected"
+
 echo "checking cross-thread close, reuse, cancellation, and repeated cleanup"
 cat > "$tmp/cross_thread.expected" <<'BEANS'
 plain 1
