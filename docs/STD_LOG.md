@@ -55,7 +55,8 @@ startup work to a program.
 ## Native engine
 
 - [x] Pin Quill v12.1.0 and record archive checksum and MIT license.
-- [x] Keep unmodified upstream files under `runtime/log/vendor/quill`.
+- [x] Keep upstream files under `runtime/log/vendor/quill` and record the one
+      post-release upstream i386 portability patch in `vendor/VENDOR.md`.
 - [x] Add `runtime/log/beans_log.cpp` as the only Beans-specific C++ layer.
 - [x] Compile without RTTI. Keep C++ exceptions inside the bridge and translate
       setup or I/O failures to stable Beans errors; no exception crosses C ABI.

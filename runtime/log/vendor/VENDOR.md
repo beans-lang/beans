@@ -1,6 +1,7 @@
 # Vendored logging library
 
-The files below are exact upstream release files. Beans-specific code lives in
+The files below come from the upstream release, with the one recorded upstream
+portability patch listed below. Beans-specific code lives in
 `runtime/log/beans_log.cpp`, outside the vendor tree. The build cache key hashes
 the bridge and all vendored headers, so an upgrade cannot reuse an older object.
 
@@ -18,3 +19,9 @@ Vendored files:
 
 The release's examples, tests, benchmarks, documentation and optional C++20
 module are not part of the runtime build.
+
+Upstream patches:
+
+- `odygrd/quill@6f1aa1894ffc`: add the missing fallback `uint128::operator~`
+  from Quill PR #957. This fixes Quill's bundled fmt build on i386 targets and
+  is the exact upstream change made after v12.1.0.
