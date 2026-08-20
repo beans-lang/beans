@@ -11192,14 +11192,31 @@ class TreeInterpreter {
                 self.ffi_pack_argument(argv, "-fPIC")
             }
         }
-        if self.program.target.os == "windows" {
-            // The bridge is loaded into this process, so it has to match this
-            // process's ABI — and clang on Windows defaults to the MSVC
-            // environment, which is a different one. Naming the triple is not
-            // cross-compiling here; it is refusing to let the default pick a
-            // stranger's ABI.
+        let native_musl: bool =
+            self.program.target.env == "musl" &&
+            self.program.target.triple == host_target_name()
+        if !native_musl {
+            // The bridge is loaded into this process, so it must match this
+            // process's ABI. This is also required when qemu-user runs the
+            // target compiler but starts host-native Clang as a child.
             self.ffi_pack_argument(
                 argv, "--target={self.program.target.llvm_triple()}")
+        }
+        let compiler_arch: string = compiler_default_arch(c_driver)
+        if self.program.target.os == "linux" &&
+           compiler_arch != "" &&
+           compiler_arch != self.program.target.arch {
+            if self.program.target.triple ==
+                   "powerpc64-unknown-linux-gnu" {
+                let ppc64_ld: string =
+                    doctor_resolve("powerpc64-linux-gnu-ld")
+                if ppc64_ld != "" {
+                    self.ffi_pack_argument(
+                        argv, "-fuse-ld={ppc64_ld}")
+                }
+            } else {
+                self.ffi_pack_argument(argv, "-fuse-ld=lld")
+            }
         }
         self.ffi_pack_target_flags(argv)
         self.ffi_pack_argument(argv, c_path)
