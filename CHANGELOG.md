@@ -4,6 +4,8 @@ This file records user-facing changes in each Beans release.
 
 ## Unreleased
 
+## [0.1.26] - 2026-08-20
+
 ### Added
 
 - Move-only socket and HTTP server handles can be transferred to a worker with

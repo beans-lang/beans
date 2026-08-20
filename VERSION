@@ -13,7 +13,7 @@
 #
 # The project is still in the public 1.0 bake, so do not call it 1.0.0 until
 # every release gate in ROADMAP.md has passed.
-compiler=0.1.25
+compiler=0.1.26
 language=1.0
 
 # 7: Bytes.filled, Bytes.append_int_text, and Thread.detach runtime entries.
