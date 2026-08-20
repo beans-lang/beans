@@ -58,6 +58,39 @@ fn encoding_compiler_identity(compiler: string) -> string {
     return "{compiler}|unknown-version"
 }
 
+// The compiler binary and the C driver it starts can run on different
+// machines under qemu-user. Read the C driver's real default architecture so
+// an interpreted native bridge can choose a linker that understands its
+// explicit target instead of accidentally using the launch machine's `ld`.
+fn compiler_default_arch(compiler: string) -> string {
+    let probe: process.Command = new process.Command(compiler)
+    probe.arg("-dumpmachine")
+    var triple: string = ""
+    match probe.run() {
+        ok(done) => {
+            if done.succeeded() {
+                triple = done.stdout_text().trim()
+            }
+        }
+        err(_) => {}
+    }
+    if triple == "" { return "" }
+    var arch: string = triple
+    match triple.find("-") {
+        some(cut) => { arch = triple.slice(0, cut) }
+        none => {}
+    }
+    if arch == "aarch64" || arch == "arm64" { return "arm64" }
+    if arch == "arm" || arch.starts_with("armv") { return "arm32" }
+    if arch == "i386" || arch == "i486" || arch == "i586" ||
+       arch == "i686" || arch == "x86" { return "x86" }
+    if arch == "amd64" { return "x86_64" }
+    if arch == "ppc" { return "powerpc" }
+    if arch == "ppc64" { return "powerpc64" }
+    if arch == "ppc64le" { return "powerpc64le" }
+    return arch
+}
+
 fn encoding_bridge_translation_unit(root: string, feature: string) -> string {
     if feature == "json" {
         return path.join(root, "beans_enc_json.c")

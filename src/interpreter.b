@@ -11650,7 +11650,9 @@ class TreeInterpreter {
     // One list feeds both the host-library cache key and Clang. Root include
     // paths are normalized in the key below, so an identical installed copy
     // reuses the same content key.
-    fn log_bridge_compile_arguments(root: string) -> List<string> {
+    fn log_bridge_compile_arguments(
+        root: string, c_driver: string
+    ) -> List<string> {
         var flags: List<string> = [
             "-x", "c++", "-std=c++17", "-fexceptions", "-fno-rtti",
             "-O2", "-fvisibility=hidden", "-DBEANS_RT_PROFILE=3",
@@ -11671,6 +11673,25 @@ class TreeInterpreter {
             self.program.target.triple == host_target_name()
         if !native_musl {
             flags.push("--target={self.program.target.llvm_triple()}")
+        }
+        // qemu-user runs this target compiler but lets the child C driver run
+        // natively on the launch machine. Its normal GNU ld only understands
+        // that launch architecture. LLD handles the cross link, except for
+        // big-endian ppc64 ELFv1, which needs the matching GNU cross linker.
+        let compiler_arch: string = compiler_default_arch(c_driver)
+        if self.program.target.os == "linux" &&
+           compiler_arch != "" &&
+           compiler_arch != self.program.target.arch {
+            if self.program.target.triple ==
+                   "powerpc64-unknown-linux-gnu" {
+                let ppc64_ld: string =
+                    doctor_resolve("powerpc64-linux-gnu-ld")
+                if ppc64_ld != "" {
+                    flags.push("-fuse-ld={ppc64_ld}")
+                }
+            } else {
+                flags.push("-fuse-ld=lld")
+            }
         }
         if self.program.target.os == "windows" {
             // A bridge loaded into a 32-bit hosted compiler must not resolve
@@ -11703,7 +11724,7 @@ class TreeInterpreter {
         }
         let c_driver: string = self.ffi_c_driver()
         let compile_arguments: List<string> =
-            self.log_bridge_compile_arguments(root)
+            self.log_bridge_compile_arguments(root, c_driver)
         var blob: string =
             "{self.program.target.triple}|interp|{log_bridge_abi()}"
         blob = "{blob}|{encoding_compiler_identity(c_driver)}"
