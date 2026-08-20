@@ -3,7 +3,6 @@
 #include <atomic>
 #include <cassert>
 #include <chrono>
-#include <cstring>
 #include <cstdint>
 #include <fstream>
 #include <iterator>
@@ -37,9 +36,10 @@ static std::string read_all(std::string const& path) {
 }
 
 static void append_i64(std::vector<uint8_t>& output, int64_t value) {
-  size_t const start = output.size();
-  output.resize(start + sizeof(value));
-  std::memcpy(output.data() + start, &value, sizeof(value));
+  uint64_t bits = static_cast<uint64_t>(value);
+  for (unsigned shift = 0; shift < 64; shift += 8) {
+    output.push_back(static_cast<uint8_t>(bits >> shift));
+  }
 }
 
 static void append_field(std::vector<uint8_t>& output, std::string const& key,

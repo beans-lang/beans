@@ -18,7 +18,6 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <cstdlib>
 #include <deque>
 #include <exception>
@@ -126,6 +125,14 @@ int hex_value(char value) noexcept {
   return -1;
 }
 
+uint64_t load_u64_le(uint8_t const* data) noexcept {
+  uint64_t value = 0;
+  for (unsigned shift = 0; shift < 64; shift += 8) {
+    value |= static_cast<uint64_t>(*data++) << shift;
+  }
+  return value;
+}
+
 bool hex_decode(std::string_view value, std::string& output) {
   if ((value.size() & 1u) != 0) { return false; }
   output.clear();
@@ -159,17 +166,15 @@ std::vector<std::pair<std::string, std::string>> parse_fields_blob(
     if (fields.size() >= 1024 || size - cursor < sizeof(int64_t) * 2) {
       throw std::invalid_argument("the structured field blob is invalid");
     }
-    int64_t key_length = 0;
-    int64_t value_length = 0;
-    std::memcpy(&key_length, data + cursor, sizeof(key_length));
-    cursor += sizeof(key_length);
-    std::memcpy(&value_length, data + cursor, sizeof(value_length));
-    cursor += sizeof(value_length);
-    if (key_length <= 0 || value_length < 0) {
+    uint64_t const key_size = load_u64_le(data + cursor);
+    cursor += sizeof(uint64_t);
+    uint64_t const value_size = load_u64_le(data + cursor);
+    cursor += sizeof(uint64_t);
+    if (key_size == 0 ||
+        key_size > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) ||
+        value_size > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
       throw std::invalid_argument("a structured log field length is invalid");
     }
-    uint64_t const key_size = static_cast<uint64_t>(key_length);
-    uint64_t const value_size = static_cast<uint64_t>(value_length);
     if (key_size > size - cursor) {
       throw std::invalid_argument("a structured log field key is truncated");
     }

@@ -71,8 +71,8 @@ BEANS_LOG_API int64_t beans_log_write(
     const uint8_t *file, int64_t file_len,
     const uint8_t *function, int64_t function_len,
     int64_t line, int64_t column);
-/* fields_blob repeats: native int64 key length, native int64 value length,
-   key bytes, value bytes. It is copied before this call returns. */
+/* fields_blob repeats: little-endian u64 key length, little-endian u64 value
+   length, key bytes, value bytes. It is copied before this call returns. */
 BEANS_LOG_API int64_t beans_log_write_fields(
     int64_t logger, int64_t level,
     const uint8_t *message, int64_t message_len,
