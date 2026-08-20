@@ -11661,8 +11661,18 @@ class TreeInterpreter {
             flags.push("-shared")
             if self.program.target.os != "windows" { flags.push("-fPIC") }
         }
-        if self.program.target.os == "windows" {
+        // The hosted compiler can run under qemu while child processes still
+        // run on the machine that launched qemu. Always tell that host Clang
+        // which bridge ABI to build. Keep the native musl exception aligned
+        // with the main driver because an explicit target can hide Alpine's
+        // native startup files.
+        let native_musl: bool =
+            self.program.target.env == "musl" &&
+            self.program.target.triple == host_target_name()
+        if !native_musl {
             flags.push("--target={self.program.target.llvm_triple()}")
+        }
+        if self.program.target.os == "windows" {
             // A bridge loaded into a 32-bit hosted compiler must not resolve
             // libc++.dll or libunwind.dll from a 64-bit toolchain on PATH.
             // Keep GNU/LLVM-MinGW cache libraries self-contained. MSVC uses
