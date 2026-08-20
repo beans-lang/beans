@@ -127,8 +127,13 @@ class TreeInterpreter {
                 self.program.csrc_rows,
                 self.program.target)
         if csrc_sources.len() != 0 {
+            let link_arguments: List<string> =
+                manifest_link_arguments(
+                    self.program.links,
+                    self.program.target)
             match csrc_run_library(
                 csrc_sources,
+                link_arguments,
                 self.program.target.os,
                 self.program.target.triple) {
                 ok(library) => {

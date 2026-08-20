@@ -131,6 +131,14 @@ fn csrc_inputs_key(sources: List<string>) -> Result<string> {
     return ok(key)
 }
 
+fn csrc_arguments_key(arguments: List<string>) -> string {
+    var key: string = ""
+    for argument: string in arguments {
+        key = "{key}|{argument.len()}:{argument}"
+    }
+    return key
+}
+
 fn csrc_compiler_identity(compiler: string) -> string {
     let command: process.Command = new process.Command(compiler)
     command.arg("--version")
@@ -187,12 +195,14 @@ fn csrc_publish(staging: string, target: string) {
 // interpreter. Cached by content hash beside the package cache, so a
 // dependency edit rebuilds and an unchanged tree loads instantly.
 fn csrc_run_library(sources: List<string>,
+                    link_arguments: List<string>,
                     os_name: string,
                     target_name: string) -> Result<string> {
     let compiler: string = csrc_host_compiler()
     let inputs: string = csrc_inputs_key(sources)?
+    let arguments: string = csrc_arguments_key(link_arguments)
     let key: string =
-        "run|{target_name}|{csrc_compiler_identity(compiler)}|{inputs}"
+        "run|{target_name}|{csrc_compiler_identity(compiler)}|{inputs}|{arguments}"
     let extension: string =
         if os_name == "windows" {
             "dll"
@@ -229,6 +239,9 @@ fn csrc_run_library(sources: List<string>,
     }
     for source: string in sources {
         command.arg(source)
+    }
+    for argument: string in link_arguments {
+        command.arg(argument)
     }
     command.arg("-o")
     command.arg(staging)

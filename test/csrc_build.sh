@@ -16,14 +16,22 @@ cat > "$tmp/mathlib/beans.pot" <<'POT'
 module mathlib
 kind library
 csrc all "native/fast_add.c"
+link macos framework "CoreFoundation"
 POT
 cat > "$tmp/mathlib/native/fast_add.c" <<'CSRC'
 #include "fast_add.h"
+#ifdef __APPLE__
+#include <CoreFoundation/CoreFoundation.h>
+#endif
 #ifndef COMPILER_BIAS
 #define COMPILER_BIAS 0
 #endif
 long long beans_test_fast_add(long long a, long long b) {
-    return a + b + FAST_BIAS + COMPILER_BIAS;
+    long long platform_bias = 0;
+#ifdef __APPLE__
+    platform_bias = CFAbsoluteTimeGetCurrent() > 0.0 ? 0 : 1000;
+#endif
+    return a + b + FAST_BIAS + COMPILER_BIAS + platform_bias;
 }
 CSRC
 cat > "$tmp/mathlib/native/fast_add.h" <<'HDR'
