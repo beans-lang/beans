@@ -65,6 +65,10 @@ class TreeInterpreter {
     reflect_annotation_values: Map<int, TreeReflectAnnotationValue>
     next_reflect_annotation: int
     runtime_hook_active: bool
+    // Active concrete arguments for the generic function or class method
+    // being interpreted. Native code specializes these bodies; the tree
+    // interpreter keeps the equivalent bindings on a call stack.
+    generic_type_bindings: List<Map<string, HirType>>
     // Set only by `beansc debug-adapter`. When present, every statement asks
     // it whether to stop, every call tells it about the frame, and the
     // program's own output is forwarded to the client instead of being
@@ -109,8 +113,116 @@ class TreeInterpreter {
         self.reflect_annotation_values = {}
         self.next_reflect_annotation = 1
         self.runtime_hook_active = false
+        self.generic_type_bindings = []
         self.debugger = none
         self.load_manifest_links()
+    }
+
+    fn current_type_bindings() -> Map<string, HirType> {
+        if self.generic_type_bindings.len() == 0 {
+            return {}
+        }
+        return copy_type_map(self.generic_type_bindings[
+            self.generic_type_bindings.len() - 1])
+    }
+
+    fn runtime_type(type: HirType,
+                    bindings: Map<string, HirType>) -> HirType {
+        match bindings.get(type.name) {
+            some(actual) => { return actual }
+            none => {}
+        }
+        let result: HirType =
+            new HirType(canonical_hir_name(type.name))
+        result.array_length = type.array_length
+        result.fn_parameter_count = type.fn_parameter_count
+        result.fn_sendable = type.fn_sendable
+        for argument: HirType in type.args {
+            result.args.push(self.runtime_type(argument, bindings))
+        }
+        return result
+    }
+
+    fn runtime_generic_named(name: string,
+                             generics: List<string>) -> bool {
+        for generic: string in generics {
+            if generic == name { return true }
+        }
+        return false
+    }
+
+    fn bind_runtime_type(formal: HirType,
+                         actual: HirType,
+                         generics: List<string>,
+                         bindings: Map<string, HirType>) {
+        if self.runtime_generic_named(formal.name, generics) {
+            bindings[formal.name] = actual
+            return
+        }
+        if canonical_hir_name(formal.name) !=
+               canonical_hir_name(actual.name) ||
+           formal.args.len() != actual.args.len() {
+            return
+        }
+        for index: int in 0..formal.args.len() {
+            self.bind_runtime_type(
+                formal.args[index], actual.args[index],
+                generics, bindings)
+        }
+    }
+
+    fn bind_owner_type(function: HirFunction,
+                       receiver: HirType,
+                       bindings: Map<string, HirType>) {
+        if function.owner == "" { return }
+        match self.declaration(function.owner) {
+            some(owner) => {
+                if owner.generics.len() != receiver.args.len() ||
+                   (receiver.name != owner.name &&
+                    receiver.name != owner.qualified) {
+                    return
+                }
+                for index: int in 0..owner.generics.len() {
+                    bindings[owner.generics[index]] =
+                        receiver.args[index]
+                }
+            }
+            none => {}
+        }
+    }
+
+    fn call_type_bindings(node: HirNode,
+                          function: HirFunction) -> Map<string, HirType> {
+        let inherited: Map<string, HirType> =
+            self.current_type_bindings()
+        let bindings: Map<string, HirType> =
+            copy_type_map(inherited)
+        var argument_offset: int = 0
+        if node.kind == "method_call" && node.children.len() != 0 {
+            self.bind_owner_type(
+                function,
+                self.runtime_type(node.children[0].type, inherited),
+                bindings)
+            argument_offset = 1
+        } else if node.kind == "new" {
+            self.bind_owner_type(
+                function, self.runtime_type(node.type, inherited),
+                bindings)
+        }
+        for index: int in 0..function.parameters.len() {
+            let child_index: int = index + argument_offset
+            if child_index >= node.children.len() { break }
+            self.bind_runtime_type(
+                function.parameters[index].type,
+                self.runtime_type(
+                    node.children[child_index].type, inherited),
+                function.generics, bindings)
+        }
+        self.bind_runtime_type(
+            function.result,
+            self.runtime_type(node.type, inherited),
+            function.generics, bindings)
+        return move bindings
     }
 
     fn manifest_link_applies(link: ModuleLink) -> bool {
@@ -3418,7 +3530,9 @@ class TreeInterpreter {
                 node, "layout query has no type")
         }
         let queried: HirType =
-            node.children[0].type
+            self.runtime_type(
+                node.children[0].type,
+                self.current_type_bindings())
         if node.value == "type_of" {
             let result: TreeValue =
                 self.object_value(
@@ -8483,6 +8597,7 @@ class TreeInterpreter {
         self.collect_closure_captures(
             node, frame, captured)
         result.closure_frame = some(captured)
+        result.generic_types = self.current_type_bindings()
         return result
     }
 
@@ -8563,6 +8678,8 @@ class TreeInterpreter {
             some(function) => {
                 match captured {
                     some(outer) => {
+                        self.generic_type_bindings.push(
+                            copy_type_map(closure.generic_types))
                         let frame: TreeFrame =
                             TreeFrame.captured(outer)
                         var argument: int = 0
@@ -8594,12 +8711,16 @@ class TreeInterpreter {
                                 }
                             }
                             none => {
+                                self.generic_type_bindings.remove(
+                                    self.generic_type_bindings.len() - 1)
                                 return self.fail(
                                     node,
                                     "closure has no body")
                             }
                         }
                         self.run_defers(frame)
+                        self.generic_type_bindings.remove(
+                            self.generic_type_bindings.len() - 1)
                         return result
                     }
                     none => {}
@@ -8668,7 +8789,9 @@ class TreeInterpreter {
             self.next_reflect_value += 1
             self.reflect_values[handle] = arguments[0]
             self.reflect_value_types[handle] =
-                render_hir_type(node.children[0].type)
+                render_hir_type(self.runtime_type(
+                    node.children[0].type,
+                    self.current_type_bindings()))
             let result: TreeValue =
                 self.object_value(node.type.name)
             result.text = node.type.name
@@ -8897,13 +9020,15 @@ class TreeInterpreter {
             some(function) => {
                 if node.kind == "runtime_hook_call" {
                     self.runtime_hook_active = true
-                    let result: TreeValue = self.invoke(
-                        function, move arguments, receiver)
+                    let result: TreeValue = self.invoke_bound(
+                        function, move arguments, receiver,
+                        self.call_type_bindings(node, function))
                     self.runtime_hook_active = false
                     return result
                 }
-                return self.invoke(
-                    function, move arguments, receiver)
+                return self.invoke_bound(
+                    function, move arguments, receiver,
+                    self.call_type_bindings(node, function))
             }
             none => {
                 return self.fail(
@@ -9082,14 +9207,21 @@ class TreeInterpreter {
         result.text = node.type.name
         result.object_id = self.next_object_id
         self.next_object_id += 1
+        let bindings: Map<string, HirType> =
+            match self.find_function(node.resolved) {
+                some(initializer) =>
+                    self.call_type_bindings(node, initializer),
+                none => self.current_type_bindings(),
+            }
+        result.generic_types = copy_type_map(bindings)
         self.apply_field_defaults(
             node.type.name, result, frame)
         match self.find_function(node.resolved) {
             some(initializer) => {
-                self.invoke(
+                self.invoke_bound(
                     initializer,
                     move arguments,
-                    some(result))
+                    some(result), move bindings)
             }
             none => {
                 if node.children.len() != 0 {
@@ -9656,7 +9788,9 @@ class TreeInterpreter {
                                 some(actual) => {
                                     let wanted: string =
                                         render_hir_type(
-                                            node.type.args[0])
+                                            self.runtime_type(
+                                                node.type.args[0],
+                                                self.current_type_bindings()))
                                     if actual == wanted ||
                                        self.reflect_assignable(
                                            wanted, actual) {
@@ -9679,7 +9813,10 @@ class TreeInterpreter {
                 }
                 if value.kind == "object" &&
                    self.is_instance(
-                       value.text, node.type.args[0].name) {
+                       value.text,
+                       self.runtime_type(
+                           node.type.args[0],
+                           self.current_type_bindings()).name) {
                     return TreeValue.option_some(value)
                 }
                 return TreeValue.option_none()
@@ -12093,6 +12230,16 @@ class TreeInterpreter {
     fn invoke(function: HirFunction,
               arguments: List<TreeValue>,
               receiver: Option<TreeValue>) -> TreeValue {
+        return self.invoke_bound(
+            function, arguments, receiver,
+            self.current_type_bindings())
+    }
+
+    fn invoke_bound(function: HirFunction,
+                    arguments: List<TreeValue>,
+                    receiver: Option<TreeValue>,
+                    move bindings: Map<string, HirType>) -> TreeValue {
+        self.generic_type_bindings.push(move bindings)
         if function.is_async && !function.expanded {
             // The async expander rewrites every async body into a task
             // maker before execution; reaching one here is a compiler bug,
@@ -12100,11 +12247,16 @@ class TreeInterpreter {
             self.fail_extern(
                 function,
                 "internal: async function '{function.name}' was not expanded before execution")
+            self.generic_type_bindings.remove(
+                self.generic_type_bindings.len() - 1)
             return TreeValue.unit()
         }
         if function.is_extern_c && !function.is_c_export {
-            return self.call_extern(
+            let result: TreeValue = self.call_extern(
                 function, arguments)
+            self.generic_type_bindings.remove(
+                self.generic_type_bindings.len() - 1)
+            return result
         }
         let frame: TreeFrame = new TreeFrame()
         match receiver {
@@ -12155,6 +12307,8 @@ class TreeInterpreter {
             some(session) => { session.pop_frame() }
             none => {}
         }
+        self.generic_type_bindings.remove(
+            self.generic_type_bindings.len() - 1)
         return result
     }
 

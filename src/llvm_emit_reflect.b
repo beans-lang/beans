@@ -1022,6 +1022,7 @@ partial class LlvmTextEmitter {
             new HirType(declaration.qualified)
         var parameters: List<HirParameter> = []
         var target: string = ""
+        var target_name: string = ""
         match initializer {
             some(function) => {
                 if !function.has_body || function.is_async ||
@@ -1041,6 +1042,7 @@ partial class LlvmTextEmitter {
                     parameters.push(parameter)
                 }
                 target = self.function_symbols[function.qualified]
+                target_name = function.qualified
             }
             none => {}
         }
@@ -1106,6 +1108,24 @@ partial class LlvmTextEmitter {
                         "%reflect.initializer.arg{argument_id}"
                     body =
                         "{body}  {slot} = getelementptr ptr, ptr %arguments, i64 {index}\n  {data} = load ptr, ptr {slot}\n  {loaded} = load {llvm}, ptr {data}\n"
+                    // Constructor contraction lets a borrowed parameter hand
+                    // one owned reference straight to a field. Normal `new`
+                    // call sites insert that retain in MIR. Reflection calls
+                    // bypass the `new` instruction, so mirror the retain here
+                    // for the same ownership-sink parameter.
+                    if target_name != "" &&
+                       self.reflection_initializer_sink(
+                           target_name, index) {
+                        let retain: string =
+                            self.reflection_value_action(
+                                parameter.type, true)
+                        if retain != "null" {
+                            let retained_slot: string =
+                                "%reflect.initializer.retain.slot{argument_id}"
+                            body =
+                                "{body}  {retained_slot} = alloca {llvm}\n  store {llvm} {loaded}, ptr {retained_slot}\n  call void {retain}(ptr {retained_slot})\n"
+                        }
+                    }
                     body =
                         "{body}{self.append_internal_argument(parameter.type, loaded, arguments)}"
                 }
@@ -1126,6 +1146,26 @@ partial class LlvmTextEmitter {
             }
             none => { return "null" }
         }
+    }
+
+    fn reflection_initializer_sink(
+        function_name: string,
+        parameter_index: int) -> bool {
+        for function: MirFunction in self.program.functions {
+            if function.name != function_name { continue }
+            var index: int = 0
+            for local: MirLocal in function.locals {
+                if !local.parameter || local.name == "self" {
+                    continue
+                }
+                if index == parameter_index {
+                    return local.ownership_sink
+                }
+                index += 1
+            }
+            return false
+        }
+        return false
     }
 
     fn reflection_struct_initializer_action(

@@ -154,6 +154,22 @@ fn response_rule(name: string, status: int, reason: string,
     }
 }
 
+fn reusable_response_encoder() {
+    let target: Bytes = new Bytes(0)
+    var headers: http.Headers = new http.Headers()
+    headers.add("Content-Type", "text/plain")
+    var encoded: bool = false
+    match http.encode_response_into(target, 201, "Created", headers,
+                                    Bytes.from("ok"), false) {
+        ok(_) => {
+            encoded = target.to_string() ==
+                "HTTP/1.1 201 Created\r\nContent-Length: 2\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\nok"
+        }
+        err(_) => {}
+    }
+    io.println("reusable response encoder: encoded={encoded}")
+}
+
 // An informational response is not the final answer to Client.request.
 fn informational_response() {
     match net.TcpListener.bind("127.0.0.1", 0) {
@@ -303,6 +319,7 @@ fn main() {
     var framed: http.Headers = new http.Headers()
     framed.add("Content-Length", "4")
     response_rule("caller response framing", 200, "OK", framed)
+    reusable_response_encoder()
 
     informational_response()
     partial_request_eof()

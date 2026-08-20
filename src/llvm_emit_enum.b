@@ -541,6 +541,10 @@ partial class LlvmTextEmitter {
             return self.emit_integer_match(
                 function, block, values, source)
         }
+        if canonical_hir_name(type.name) == "string" {
+            return self.emit_string_match(
+                function, block, values, source)
+        }
         self.fail_terminator(
             block.terminator,
             "LLVM emitter does not support match on '{render_hir_type(type)}' yet")

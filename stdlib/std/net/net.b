@@ -34,6 +34,7 @@ import std.sock
 extern "C" fn beans_sockx_multicast(fd: int, group: RawPtr<u8>, req: RawPtr<u64>) -> int
 extern "C" fn beans_sockx_recv_into(fd: int, destination: RawPtr<u8>, req: RawPtr<u64>) -> int
 extern "C" fn beans_sockx_listen_reuse_port(host: RawPtr<u8>, req: RawPtr<u64>) -> int
+extern "C" fn beans_sockx_try_accept(fd: int, req: RawPtr<u64>) -> int
 
 fn sockx_error(operation: string, status: int, os_error: int) -> Result<int> {
     if status == 1 || status == 2 {
@@ -175,6 +176,7 @@ pub interface ByteStream {
 pub unique class TcpStream implements ByteStream, Send {
     fd: int
     live: bool = true
+    nonblocking: bool = false
 
     // Private: wrapping an arbitrary integer as a socket is not something callers get
     // to do. Streams come from `connect` or from a listener's `accept`.
@@ -207,6 +209,31 @@ pub unique class TcpStream implements ByteStream, Send {
     pub fn write(data: Bytes) -> Result<int> {
         if !self.live { return err("send: socket is closed", "closed") }
         return sock.send(self.fd, data, 0)
+    }
+
+    /// Writes from `offset` without slicing or copying `data`. A short write is
+    /// normal. This is the offset-aware form needed by output queues.
+    pub fn write_from(data: Bytes, offset: int) -> Result<int> {
+        if !self.live { return err("send: socket is closed", "closed") }
+        return sock.send(self.fd, data, offset)
+    }
+
+    /// Tries one write on a nonblocking stream. `ok(none)` means the socket
+    /// would block; `ok(some(n))` reports the bytes written from `offset`.
+    pub fn try_write_from(data: Bytes, offset: int) -> Result<Option<int>> {
+        if !self.live { return err("send: socket is closed", "closed") }
+        if !self.nonblocking {
+            return err("try_write_from: the socket is blocking", "invalid")
+        }
+        match sock.send(self.fd, data, offset) {
+            ok(count) => { return ok(some(count)) }
+            err(e) => {
+                // A nonblocking descriptor has no socket deadline in force:
+                // the runtime's timeout kind here is EAGAIN/EWOULDBLOCK.
+                if e.kind == "timeout" { return ok(none) }
+                return err(e.msg, e.kind)
+            }
+        }
     }
 
     /// Writes all of `data`, looping over short writes. Reports the total.
@@ -268,6 +295,23 @@ pub unique class TcpStream implements ByteStream, Send {
         return sockx_error("recv_into", status, os_error)
     }
 
+    /// Tries one read into caller-owned storage on a nonblocking stream.
+    /// `ok(none)` means the socket would block. `ok(some(0))` is EOF, so a
+    /// quiet socket and a closed peer remain different facts.
+    pub fn try_read_into(buffer: Bytes) -> Result<Option<int>> {
+        if !self.live { return err("recv: socket is closed", "closed") }
+        if !self.nonblocking {
+            return err("try_read_into: the socket is blocking", "invalid")
+        }
+        match self.read_into(buffer) {
+            ok(count) => { return ok(some(count)) }
+            err(e) => {
+                if e.kind == "timeout" { return ok(none) }
+                return err(e.msg, e.kind)
+            }
+        }
+    }
+
     /// Reads exactly `count` bytes, looping. Fails with kind `eof` if the peer closes
     /// first — a caller asking for a fixed-size header wants that as an error.
     pub fn read_exact(count: int) -> Result<Bytes> {
@@ -305,7 +349,9 @@ pub unique class TcpStream implements ByteStream, Send {
     /// Switches blocking mode, for handing the descriptor to a readiness poller.
     pub fn set_nonblocking(on: bool) -> Result<bool> {
         if !self.live { return err("set_nonblocking: socket is closed", "closed") }
-        return sock.set_nonblocking(self.fd, on)
+        sock.set_nonblocking(self.fd, on)?
+        self.nonblocking = on
+        return ok(true)
     }
 
     /// Transfers ownership of the descriptor to a lower-level transport.
@@ -352,6 +398,7 @@ pub unique class TcpStream implements ByteStream, Send {
 pub unique class TcpListener implements Send {
     fd: int
     live: bool = true
+    nonblocking: bool = false
 
     fn init(fd: int) {
         self.fd = fd
@@ -432,6 +479,33 @@ pub unique class TcpListener implements Send {
         return ok(new TcpStream(sock.accept(self.fd, ms)?))
     }
 
+    /// Tries to accept one connection without waiting. `ok(none)` means the
+    /// accept queue is empty; a connected stream remains an owned value.
+    pub fn try_accept() -> Result<Option<TcpStream>> {
+        if !self.live { return err("accept: socket is closed", "closed") }
+        if !self.nonblocking {
+            return err("try_accept: the socket is blocking", "invalid")
+        }
+        var status: int = 0
+        var accepted: int = 0
+        var os_error: int = 0
+        unsafe {
+            let req: RawPtr<u64> = RawPtr.alloc(2)
+            req.write(0)
+            req.offset(1).write(0)
+            status = beans_sockx_try_accept(self.fd, req)
+            accepted = req.read() as int
+            os_error = req.offset(1).read() as int
+            req.free()
+        }
+        if status == 0 { return ok(some(new TcpStream(accepted))) }
+        if status == 117 { return ok(none) }
+        match sockx_error("try_accept", status, os_error) {
+            err(e) => { return err(e.msg, e.kind) }
+            ok(_) => { return err("try_accept failed", "io") }
+        }
+    }
+
     /// The address it is listening on. Read this after binding port 0 to learn which
     /// port the system picked.
     pub fn local_address() -> Result<Address> {
@@ -446,7 +520,9 @@ pub unique class TcpListener implements Send {
 
     pub fn set_nonblocking(on: bool) -> Result<bool> {
         if !self.live { return err("set_nonblocking: socket is closed", "closed") }
-        return sock.set_nonblocking(self.fd, on)
+        sock.set_nonblocking(self.fd, on)?
+        self.nonblocking = on
+        return ok(true)
     }
 
     pub fn close() -> Result<bool> {

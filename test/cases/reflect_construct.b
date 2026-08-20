@@ -30,6 +30,20 @@ pub class Closed {
     fn init() {}
 }
 
+pub class Held {
+    pub label: string = "still alive"
+
+    pub fn init() {}
+}
+
+pub class Holder {
+    pub item: Held
+
+    pub fn init(item: Held) {
+        self.item = item
+    }
+}
+
 pub struct Packet {
     pub label: string
     pub count: int
@@ -38,6 +52,15 @@ pub struct Packet {
 pub enum Signal {
     idle
     pair(label: string, count: int)
+}
+
+fn hold_once(held_value: reflect.Value) {
+    let holder_value: reflect.Value =
+        type_of(Holder).initializer().expect("Holder init").call([
+            held_value]).expect("construct Holder")
+    let holder: Holder =
+        (holder_value as? Holder).expect("Holder")
+    io.println(holder.item.label)
 }
 
 fn main() {
@@ -60,6 +83,13 @@ fn main() {
     let defaulted: DefaultOnly =
         (default_value as? DefaultOnly).expect("DefaultOnly")
     io.println(defaulted.answer)
+
+    let held_value: reflect.Value =
+        type_of(Held).initializer().expect("Held init").call([]).expect(
+            "construct Held")
+    hold_once(held_value)
+    let held: Held = (held_value as? Held).expect("Held")
+    io.println(held.label)
 
     let pair_value: reflect.Value =
         type_of(Signal).variant("pair").expect("pair").make([

@@ -21,6 +21,7 @@ status above range: refused=true kind=invalid
 reason injection: refused=true kind=invalid
 body on 204: refused=true kind=invalid
 caller response framing: refused=true kind=invalid
+reusable response encoder: encoded=true
 informational then final: 200:ok
 partial request EOF: refused=true kind=protocol
 status reason phrase: refused=true kind=too_large rounds=3
