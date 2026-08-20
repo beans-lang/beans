@@ -1,5 +1,5 @@
-// unique is not Clone, so it is not Send: a socket cannot cross thread.spawn. This is
-// a documented limit of the resource shape, not an oversight.
+// A Send resource still needs explicit ownership transfer. A plain capture
+// would leave the outer binding alive beside the worker.
 import std.net
 import std.thread
 fn go() -> Result<int> {

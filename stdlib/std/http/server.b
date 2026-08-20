@@ -5,7 +5,8 @@
 // `accept()` yields a `ServerConn`, `read_request()` yields one buffered
 // request at a time (keep-alive and pipelining included), `respond` frames
 // one response. Concurrency is the caller's decision — accept on one
-// thread and spawn per connection, or run single-threaded in a test — and
+// thread and spawn per connection, run independent SO_REUSEPORT accept loops,
+// or run single-threaded in a test — and
 // a caller who needs streaming bodies uses `RequestParser` on a raw stream
 // instead of this convenience layer.
 package http
@@ -21,7 +22,7 @@ pub class ServedRequest {
 }
 
 /// A listening HTTP server socket.
-pub unique class Server {
+pub unique class Server implements Send {
     listener: net.TcpListener
     read_timeout_ms: int = 30000
 
@@ -33,6 +34,15 @@ pub unique class Server {
     /// `port()` — that is how tests bind without racing for a number.
     pub static fn bind(host: string, port: int) -> Result<Server> {
         let listener: net.TcpListener = net.TcpListener.bind(host, port)?
+        return ok(new Server(move listener))
+    }
+
+    /// Binds one independent accept loop to a port shared with other servers
+    /// created by this method. Use one server per worker thread. macOS and
+    /// Linux spread new connections between them; Windows reports unsupported.
+    pub static fn bind_reuse_port(host: string, port: int) -> Result<Server> {
+        let listener: net.TcpListener =
+            net.TcpListener.bind_reuse_port(host, port)?
         return ok(new Server(move listener))
     }
 
@@ -62,7 +72,7 @@ pub unique class Server {
 }
 
 /// One accepted HTTP connection.
-pub unique class ServerConn {
+pub unique class ServerConn implements Send {
     stream: net.TcpStream
     parser: RequestParser
     // Requests already parsed but not yet handed out (pipelining).
@@ -72,11 +82,14 @@ pub unique class ServerConn {
     have_head: bool = false
     max_body: int = 8388608
     alive: bool = true
+    read_buffer: Bytes = new Bytes(65536)
+    response_buffer: Bytes = new Bytes(0)
 
     fn init(move stream: net.TcpStream) {
         self.stream = move stream
         self.parser = new RequestParser()
         self.ready = []
+        self.response_buffer.reserve(512)
     }
 
     /// Caps the buffered request body size; a client exceeding it gets the
@@ -120,8 +133,8 @@ pub unique class ServerConn {
         return ok(true)
     }
 
-    fn absorb(data: Bytes) -> Result<bool> {
-        return self.absorb_events(self.parser.feed(data)?)
+    fn absorb_range(data: Bytes, from: int, to: int) -> Result<bool> {
+        return self.absorb_events(self.parser.feed_range(data, from, to)?)
     }
 
     /// Reads until one whole request is available. `ok(none)` means the
@@ -131,15 +144,15 @@ pub unique class ServerConn {
             return err("the connection is closed", "closed")
         }
         for self.ready_head >= self.ready.len() {
-            var data: Bytes = new Bytes(0)
-            match self.stream.read(65536) {
-                ok(chunk) => { data = chunk }
+            var count: int = 0
+            match self.stream.read_into(self.read_buffer) {
+                ok(got) => { count = got }
                 err(e) => {
                     self.alive = false
                     return err("recv: {e.msg}", e.kind)
                 }
             }
-            if data.len() == 0 {
+            if count == 0 {
                 self.alive = false
                 let final_events: List<RequestEvent> = self.parser.finish()?
                 self.absorb_events(move final_events)?
@@ -153,7 +166,7 @@ pub unique class ServerConn {
                 // the connection itself is no longer reusable.
                 break
             }
-            match self.absorb(data) {
+            match self.absorb_range(self.read_buffer, 0, count) {
                 ok(_) => {}
                 err(e) => {
                     self.alive = false
@@ -194,21 +207,29 @@ pub unique class ServerConn {
         if body_forbidden && body.len() != 0 {
             return err("status {status} cannot carry a response body", "invalid")
         }
-        var head: Bytes = new Bytes(0)
-        head.append_string("HTTP/1.1 {status} {reason}\r\n")
+        self.response_buffer.resize(0)
+        self.response_buffer.append_string("HTTP/1.1 ")
+        self.response_buffer.append_int_text(status)
+        self.response_buffer.push(32)
+        self.response_buffer.append_string(reason)
+        self.response_buffer.append_string("\r\n")
         if !body_forbidden {
-            head.append_string("Content-Length: {body.len()}\r\n")
+            self.response_buffer.append_string("Content-Length: ")
+            self.response_buffer.append_int_text(body.len())
+            self.response_buffer.append_string("\r\n")
         }
         if !keep_alive {
-            head.append_string("Connection: close\r\n")
+            self.response_buffer.append_string("Connection: close\r\n")
         }
         for index: int in 0..headers.count() {
-            head.append_string(
-                "{headers.name_at(index)}: {headers.value_at(index)}\r\n")
+            self.response_buffer.append_string(headers.name_at(index))
+            self.response_buffer.append_string(": ")
+            self.response_buffer.append_string(headers.value_at(index))
+            self.response_buffer.append_string("\r\n")
         }
-        head.append_string("\r\n")
-        head.append(body)
-        match self.stream.write_all(head) {
+        self.response_buffer.append_string("\r\n")
+        self.response_buffer.append(body)
+        match self.stream.write_all(self.response_buffer) {
             ok(_) => {}
             err(e) => {
                 self.alive = false

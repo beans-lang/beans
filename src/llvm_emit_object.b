@@ -678,10 +678,19 @@ partial class LlvmTextEmitter {
                         declaration.qualified]
                 } else {
                     // an instantiation mints its own class id; no
-                    // bases or interfaces on generic classes yet
-                    if declaration.relations.len() !=
-                           0 {
-                        return none
+                    // bases or dispatching interfaces on generic classes
+                    // yet. Marker-only Send/Sync relations need no layout
+                    // or vtable entry, so they are safe here.
+                    for index: int in
+                        0..declaration.relations.len() {
+                        if index >=
+                               declaration.relation_kinds.len() ||
+                           declaration.relation_kinds[index] !=
+                               "implements" ||
+                           (declaration.relations[index].name != "Send" &&
+                            declaration.relations[index].name != "Sync") {
+                            return none
+                        }
                     }
                     if self.class_ids.contains_key(key) {
                         id = self.class_ids[key]

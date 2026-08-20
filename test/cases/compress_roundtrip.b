@@ -41,7 +41,7 @@ fn make_data(rng: Rng, count: int) -> Bytes {
             out.push((index * 7 + 13) % 251)
         }
     }
-    return out
+    return move out
 }
 
 fn one_shot_pair(pick: int, data: Bytes, level: int) -> Result<bool> {

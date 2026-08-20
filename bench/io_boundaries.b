@@ -16,7 +16,9 @@ fn main() {
     let destination: string = "{root}/beans_io_boundary_destination"
     var payload: string = ""
     if !prepared || mode == "write" {
-        payload = new Bytes(size).fill(97).to_string()
+        let bytes: Bytes = new Bytes(size)
+        bytes.fill(97)
+        payload = bytes.to_string()
     }
     if !prepared {
         fs.write(source, payload).expect("seed source")

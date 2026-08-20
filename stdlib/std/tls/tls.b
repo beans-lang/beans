@@ -400,14 +400,15 @@ pub unique class TlsStream implements net.ByteStream {
         if self.native_io {
             return err("native TLS does not use the ciphertext pump", "invalid")
         }
-        var data: Bytes = new Bytes(0)
-        match sock.recv(self.fd, 16384) {
-            ok(piece) => { data = piece }
+        let received: Result<Bytes> = sock.recv(self.fd, 16384)
+        match received {
+            ok(piece) => {}
             err(e) => {
                 if e.kind == "timeout" { return err(e.msg, "timeout") }
                 return err("the TLS stream was cut without close_notify ({e.msg})", "eof")
             }
         }
+        let data: Bytes = (move received)?
         if data.len() == 0 { return ok(false) }
         var status: int = 0
         unsafe {
@@ -579,7 +580,7 @@ pub unique class TlsStream implements net.ByteStream {
             }
             if status >= 0 {
                 out.resize(status)
-                return ok(out)
+                return ok(move out)
             }
             if status == -2 {
                 self.live = false
@@ -612,7 +613,7 @@ pub unique class TlsStream implements net.ByteStream {
             // never confused with "wants IO".
             if status >= 0 {
                 out.resize(status)
-                return ok(out)
+                return ok(move out)
             }
             if status == -2 {
                 // Clean close_notify.
@@ -665,7 +666,7 @@ pub unique class TlsStream implements net.ByteStream {
             }
             gathered.append(piece)
         }
-        return ok(gathered)
+        return ok(move gathered)
     }
 
     /// Sends close_notify and half-closes the socket's write side. Reads may
@@ -930,7 +931,7 @@ pub unique class TlsListener {
             return ok(value)
         }
         let parts: List<Bytes> = sock.address(self.fd, false)?
-        let metadata: Bytes = parts.get(0).expect("address metadata")
+        let metadata: Bytes = parts.remove(0)
         return ok(metadata.get_i64(0))
     }
 

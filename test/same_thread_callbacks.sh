@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# G7: StoredCallback.create_same_thread — captures unrestricted (no
+# G7: LocalStoredCallback.create — captures unrestricted (no
 # Send+Sync), every invocation checked against the registering thread,
 # cross-thread invocation is a runtime abort. Same close() discipline.
 set -euo pipefail
@@ -70,8 +70,8 @@ fn main() {
     // a plain class object is neither Send nor Sync: the same-thread
     // flavor may capture it anyway
     let tally: Tally = new Tally()
-    var callback: StoredCallback<fn(RawPtr<u8>, i32) -> i32> =
-        StoredCallback.create_same_thread(0, fn(value: i32) -> i32 {
+    var callback: LocalStoredCallback<fn(RawPtr<u8>, i32) -> i32> =
+        LocalStoredCallback.create(0, fn(value: i32) -> i32 {
             tally.hits = tally.hits + 1
             return value + (tally.hits as i32)
         })
@@ -151,5 +151,40 @@ if "$beansc" check still_sync.b >"$tmp/sync.out" 2>&1; then
     exit 1
 fi
 grep -q "non-Sync" "$tmp/sync.out"
+
+# The two modes have different types. The old method name is gone, and a
+# same-thread registration cannot be passed where an any-thread owner is
+# required.
+cat >"$tmp/split_types.b" <<'BEANS'
+package main
+
+fn take_any(
+    move callback: StoredCallback<fn(RawPtr<u8>, i32) -> i32>
+) {
+    callback.close()
+}
+
+fn wrong_owner() {
+    let callback: LocalStoredCallback<fn(RawPtr<u8>, i32) -> i32> =
+        LocalStoredCallback.create(
+            0, fn(value: i32) -> i32 { return value })
+    take_any(move callback)
+}
+
+fn old_name() {
+    let callback: StoredCallback<fn(RawPtr<u8>, i32) -> i32> =
+        StoredCallback.create_same_thread(
+            0, fn(value: i32) -> i32 { return value })
+    callback.close()
+}
+BEANS
+if "$beansc" check "$tmp/split_types.b" >"$tmp/split.out" 2>&1; then
+    echo "stored callback modes were not kept distinct" >&2
+    exit 1
+fi
+grep -q "expected StoredCallback<.*got LocalStoredCallback" \
+    "$tmp/split.out"
+grep -q "StoredCallback has no static 'create_same_thread'" \
+    "$tmp/split.out"
 
 echo "ok same-thread stored callbacks"

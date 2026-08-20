@@ -20,7 +20,9 @@ fn sem_type_text(type: HirType, from_package: string) -> string {
                     type.args[type.fn_parameter_count],
                     from_package)
         }
-        return "fn({parts.join(", ")}) -> {result}"
+        let prefix: string =
+            if type.fn_sendable { "send " } else { "" }
+        return "{prefix}fn({parts.join(", ")}) -> {result}"
     }
     var shown: string = display_symbol(type.name)
     if symbol_package(type.name) == from_package {

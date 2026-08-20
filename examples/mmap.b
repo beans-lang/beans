@@ -10,7 +10,9 @@ fn main() {
 
     let m: MMap = MMap.open(p, true).expect("open rw")
     io.println("{m.len()}")
-    m.put_u32(0, 4096).put_u64(8, 123456789).put_u8(16, 255)
+    m.put_u32(0, 4096)
+    m.put_u64(8, 123456789)
+    m.put_u8(16, 255)
     io.println("{m.get_u32(0)} {m.get_u64(8)} {m.get_u8(16)}")
     m.write(20, Bytes.from("hello"))
     io.println(m.read(20, 5).to_string_until_nul())
@@ -59,7 +61,9 @@ fn main() {
 
     // POSIX: the mapping outlives the file — remove the path, keep reading,
     // and the temp dir is already clean when the final panic fires
-    fs.write_bytes(p, new Bytes(8).put_u32(0, 77)).expect("reseed")
+    let reseed: Bytes = new Bytes(8)
+    reseed.put_u32(0, 77)
+    fs.write_bytes(p, reseed).expect("reseed")
     let last: MMap = MMap.open(p, false).expect("open last")
     File.remove(p).expect("rm")
     io.println("{last.get_u32(0)} {File.exists(p)}")

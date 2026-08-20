@@ -1242,10 +1242,10 @@ partial class LlvmTextEmitter {
         var context_index: int = -1
         let same_thread: bool =
             instruction.resolved.starts_with(
-                "StoredCallback.create_same_thread:")
+                "LocalStoredCallback.create:")
         let prefix: string =
             if same_thread {
-                "StoredCallback.create_same_thread:"
+                "LocalStoredCallback.create:"
             } else {
                 "StoredCallback.create:"
             }
@@ -1301,7 +1301,7 @@ partial class LlvmTextEmitter {
         if instruction.operands.len() != 1 {
             self.fail(
                 instruction,
-                "LLVM emitter needs one StoredCallback receiver")
+                "LLVM emitter needs one stored callback receiver")
             return ""
         }
         let receiver: string =
@@ -1334,7 +1334,7 @@ partial class LlvmTextEmitter {
         }
         self.fail(
             instruction,
-            "LLVM emitter does not support StoredCallback.{instruction.text} yet")
+            "LLVM emitter does not support stored callback method {instruction.text} yet")
         return ""
     }
 

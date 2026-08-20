@@ -317,7 +317,8 @@ fn main() {
     // pair used to be to_string_full / to_string, so a swap here is the bug
     // the rename exists to make impossible to write by accident.
     var nulled: Bytes = new Bytes(4)
-    nulled.set(0, 104).set(1, 105)
+    nulled.set(0, 104)
+    nulled.set(1, 105)
     io.println("exact {nulled.to_string().len()} truncating {nulled.to_string_until_nul()}")
     var built: Bytes = new Bytes(0)
     built.append_string("ab")

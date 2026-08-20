@@ -24,7 +24,8 @@ fn datagram_payload(size: int, rounds: int) {
     receiver.set_timeouts(5000, 5000).expect("receiver timeout")
     sender.set_timeouts(5000, 5000).expect("sender timeout")
     let destination: net.Address = receiver.local_address().expect("address")
-    let payload: Bytes = new Bytes(size).fill(113)
+    let payload: Bytes = new Bytes(size)
+    payload.fill(113)
     var checksum: int = 0
     let started: int = time.monotonic_nanos()
     for round: int in 0..rounds {

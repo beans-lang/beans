@@ -142,7 +142,7 @@ fn net_source_root() -> string {
 // Bump when a request-buffer layout, a status code, or the entry-point set
 // changes, so an object built against the old contract is never reused.
 fn net_bridge_abi() -> string {
-    return "net-abi-3"
+    return "net-abi-4"
 }
 
 // C++ is per translation unit, by extension: a feature can mix its C++

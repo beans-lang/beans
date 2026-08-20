@@ -4,6 +4,43 @@ This file records user-facing changes in each Beans release.
 
 ## Unreleased
 
+### Added
+
+- Move-only socket and HTTP server handles can be transferred to a worker with
+  an explicit closure move. `Error` and matching `Result<T>` values are `Send`,
+  so worker closures can use `?` and return typed failures. A plain capture is
+  still refused.
+- `TcpStream.read_into` reuses caller-owned storage. `TcpListener` and
+  `http.Server` expose `bind_reuse_port` on macOS and Linux for independent
+  accept loops on one port; Windows reports `unsupported`.
+- `Thread.detach`, `Bytes.filled`, `Bytes.append_int_text`, and HTTP/1 parser
+  `feed_range`.
+- `send fn(...) -> T`, a move-only function value whose captures are checked
+  for transfer to another thread. Plain `fn` values remain local and cloneable.
+- `LocalStoredCallback<F>` for callbacks that C may invoke only on the
+  registering thread. Any-thread callbacks keep the distinct
+  `StoredCallback<F>` type.
+
+### Changed
+
+- Extending a compiler-owned type such as `Bytes` is rejected at the class
+  declaration instead of failing later with a misleading parent-constructor
+  error.
+- Worker threads batch cycle-collector root publication, removing the global
+  collector mutex from each possible-root release while preserving the
+  single-threaded collection rule.
+- `List`, `Map`, `OrderedMap`, `Box`, and `Arena` now derive `Send` from their
+  element types. `Bytes`, `File`, and `MMap` are move-only `Send` owners rather
+  than mutable aliases; their mutators return `unit`.
+- Same-thread stored callbacks now use
+  `LocalStoredCallback.create(index, closure)`. The old
+  `StoredCallback.create_same_thread` spelling is removed.
+- `ServerConn` reuses one read buffer and one response buffer. HTTP/1 span
+  events refer to the current input range instead of copying every parser span
+  through the C bridge; the typed parser benchmark improves from the recorded
+  170–180 MB/s baseline to 230 MB/s on the same arm64 macOS class of machine.
+- The runtime ABI is version 7 and the networking bridge cache ABI is version 4.
+
 ## [0.1.25] - 2026-08-20
 
 ### Added

@@ -189,7 +189,7 @@ fn unescape_input(block: string) -> Bytes {
         out.push(byte)
         index += 1
     }
-    return out
+    return move out
 }
 
 // Expected lines unescape only \t and \f (md-test.ts does the same).
@@ -436,7 +436,7 @@ fn render(events: Bytes, request_side: bool, out: List<string>) {
             }
             span_kind = kind
             span_off = off
-            span_text = piece
+            span_text = move piece
             continue
         }
         if span_kind != 0 {
@@ -522,7 +522,7 @@ fn run_case(active: Case, cut: int, out: List<string>) {
         pieces.push(active.input.slice(0, cut))
         pieces.push(active.input.slice(cut, active.input.len()))
     } else {
-        pieces.push(active.input)
+        pieces.push(active.input.slice(0, active.input.len()))
     }
     var errored: bool = false
     for piece: Bytes in pieces {

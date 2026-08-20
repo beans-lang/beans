@@ -50,7 +50,7 @@ pub fn available() -> bool {
 
 /// A streaming digest. Feed with `update`, read once with `finish`; the
 /// handle is spent afterward. Move-only, closed by `deinit`.
-pub unique class Hasher {
+pub unique class Hasher implements Send {
     handle: int = 0
     algorithm: Algorithm = Algorithm.sha256
     done: bool = false
@@ -115,7 +115,7 @@ pub unique class Hasher {
         if written != size {
             return err("the digest returned {written} of {size} bytes", "io")
         }
-        return ok(out)
+        return ok(move out)
     }
 }
 
@@ -153,8 +153,8 @@ pub fn hmac(algorithm: Algorithm, key: Bytes, data: Bytes) -> Result<Bytes> {
     var outer_pad: Bytes = new Bytes(block)
     for index: int in 0..block {
         let byte: int = normalized.get(index)
-        let ignored_i: Bytes = inner_pad.set(index, byte ^ 0x36)
-        let ignored_o: Bytes = outer_pad.set(index, byte ^ 0x5c)
+        inner_pad.set(index, byte ^ 0x36)
+        outer_pad.set(index, byte ^ 0x5c)
     }
 
     let inner: Hasher = Hasher.open(algorithm)?

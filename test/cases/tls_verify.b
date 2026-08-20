@@ -19,14 +19,15 @@ fn main() {
         io.println("usage: tls_verify <ca-pem> <host> <port> <alpn> [connect-address]")
         os.exit(2)
     }
-    var roots: Bytes = new Bytes(0)
-    match fs.read_bytes(arguments[0]) {
-        ok(pem) => { roots = pem }
+    let loaded_roots: Result<Bytes> = fs.read_bytes(arguments[0])
+    match loaded_roots {
+        ok(pem) => {}
         err(e) => {
             io.println("cannot read the root bundle: {e.msg}")
             os.exit(2)
         }
     }
+    let roots: Bytes = (move loaded_roots).expect("root bundle")
     let host: string = arguments[1]
     var port: int = 0
     match arguments[2].to_int() {

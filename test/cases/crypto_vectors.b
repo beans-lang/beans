@@ -17,13 +17,13 @@ fn hex(data: Bytes) -> string {
         let byte: int = data.get(index)
         out = "{out}{digits.slice(byte / 16, byte / 16 + 1)}{digits.slice(byte % 16, byte % 16 + 1)}"
     }
-    return out
+    return move out
 }
 
 fn repeat_byte(value: int, count: int) -> Bytes {
     var out: Bytes = new Bytes(count)
     out.fill(value)
-    return out
+    return move out
 }
 
 fn check(name: string, got: string, want: string) {

@@ -135,7 +135,7 @@ pub fn adopt_http2<T implements net.ByteStream>(
 /// whatever completed; `respond` and `request` submit messages. Both sides
 /// of the protocol use the same class — `server` decides which role the
 /// session plays.
-pub unique class Http2Transport<T implements net.ByteStream> {
+pub unique class Http2Transport<T implements net.ByteStream> implements Send {
     handle: int = 0
     stream: T
     live: bool = true
@@ -947,7 +947,7 @@ pub unique class Http2Transport<T implements net.ByteStream> {
 
 /// HTTP/2 over a raw TCP stream. Use `Http2Transport<tls.TlsStream>` from
 /// `std.http_tls` when ALPN selected `h2` on a secure connection.
-pub unique class Http2Connection {
+pub unique class Http2Connection implements Send {
     core: Http2Transport<net.TcpStream>
     pub max_body: int = 16777216
     pub max_header_count: int = 128

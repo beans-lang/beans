@@ -126,7 +126,8 @@ fn pump(
                         match upstream.read(16384) {
                             ok(piece) => {
                                 if piece.len() == 0 { return ok(0) }
-                                var forwarded: Bytes = piece
+                                var forwarded: Bytes =
+                                    piece.slice(0, piece.len())
                                 if client_spoke_again && budget > 0 {
                                     // A small response and close_notify can
                                     // arrive in one TCP read, especially under
@@ -165,14 +166,15 @@ fn main() {
         io.println("usage: tls_truncation <ca-pem> <server-port>")
         os.exit(2)
     }
-    var roots: Bytes = new Bytes(0)
-    match fs.read_bytes(arguments[0]) {
-        ok(pem) => { roots = pem }
+    let loaded_roots: Result<Bytes> = fs.read_bytes(arguments[0])
+    match loaded_roots {
+        ok(pem) => {}
         err(e) => {
             io.println("cannot read the root bundle: {e.msg}")
             os.exit(2)
         }
     }
+    let roots: Bytes = (move loaded_roots).expect("root bundle")
     let server_port: int = arguments[1].to_int().or(0)
 
     // 1. The honest control: straight to the server, read to its close.

@@ -60,7 +60,7 @@ pub class Event {
 }
 
 /// A set of descriptors to wait on.
-pub unique class Poller {
+pub unique class Poller implements Send {
     fd: int
     wake_read: int
     signal: int
@@ -145,8 +145,8 @@ pub unique class Poller {
         return ready.wake(self.signal)
     }
 
-    /// A wake target that **can cross a thread boundary**, because it is an `int` — and
-    /// only scalars can, since every class is a local ARC reference.
+    /// A wake target that **can cross a thread boundary** without moving ownership of
+    /// this poller. It is a plain `int`.
     ///
     /// It is not the descriptor. It names a slot and a generation, so a `wake` issued
     /// after this poller closes reports kind `closed` instead of writing a stray byte

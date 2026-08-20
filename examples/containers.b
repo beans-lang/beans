@@ -93,8 +93,10 @@ fn main() {
     io.println("{byid.remove(7)} {byid.keys()} {byid.values()}")
 
     // Bytes compares by value: length + contents
-    let a: Bytes = new Bytes(4).put_u16(0, 500)
-    let b: Bytes = new Bytes(4).put_u16(0, 500)
+    let a: Bytes = new Bytes(4)
+    a.put_u16(0, 500)
+    let b: Bytes = new Bytes(4)
+    b.put_u16(0, 500)
     let c: Bytes = new Bytes(3)
     io.println("{a == b} {a != b} {a == c}")
 

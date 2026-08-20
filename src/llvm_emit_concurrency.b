@@ -355,6 +355,20 @@ partial class LlvmTextEmitter {
         return "  %join.raw{id} = call i64 @beans_thread_join(ptr {receiver})\n{conversion.setup}"
     }
 
+    fn emit_thread_detach(
+        function: MirFunction,
+        instruction: MirInstruction,
+        values: Map<int, string>) -> string {
+        let receiver: string =
+            self.value(
+                function, values,
+                instruction.operands[0], instruction)
+        self.require_declare(
+            "beans_thread_detach",
+            "void @beans_thread_detach(ptr)")
+        return "  call void @beans_thread_detach(ptr {receiver})\n"
+    }
+
     // maps a folded MemoryOrder tag (MemoryOrder declaration
     // order) onto the LLVM spelling; anything non-literal is a
     // checker bug surfacing here

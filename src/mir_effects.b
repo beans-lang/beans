@@ -10,7 +10,8 @@ fn mir_type_is_trivial(type: HirType) -> bool {
            name == "float" || name == "f32" ||
            name == "decimal" || name == "RawPtr" ||
            name == "CFunctionPtr" ||
-           name == "StoredCallback" ||
+           (name == "StoredCallback" ||
+            name == "LocalStoredCallback") ||
            name == "Slice" || name == "CpuFeature" ||
            name == "MemoryOrder" || name == "RoundingMode"
 }

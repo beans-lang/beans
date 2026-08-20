@@ -152,9 +152,9 @@ class TreeValue {
         return result
     }
 
-    static fn bytes(value: Bytes) -> TreeValue {
+    static fn bytes(move value: Bytes) -> TreeValue {
         let result: TreeValue = new TreeValue("bytes")
-        result.bytes_data = some(value)
+        result.bytes_data = some(move value)
         return result
     }
 
@@ -244,17 +244,17 @@ class TreeValue {
         return result
     }
 
-    static fn file(value: File) -> TreeValue {
+    static fn file(move value: File) -> TreeValue {
         let result: TreeValue =
             new TreeValue("file")
-        result.file_value = some(value)
+        result.file_value = some(move value)
         return result
     }
 
-    static fn mmap(value: MMap) -> TreeValue {
+    static fn mmap(move value: MMap) -> TreeValue {
         let result: TreeValue =
             new TreeValue("mmap")
-        result.mmap_value = some(value)
+        result.mmap_value = some(move value)
         return result
     }
 }

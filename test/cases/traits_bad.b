@@ -18,5 +18,7 @@ fn main() {
     let shared: Shared<Local> = new Shared(local)
     let worker2: Thread<int> = thread.spawn(fn() -> int { return shared.get().value })
     let worker3: Thread<Local> = thread.spawn(fn() -> Local { return new Local() })
+    let bytes: Bytes = new Bytes(8)
+    let worker4: Thread<int> = thread.spawn(fn() -> int { return bytes.len() })
     let bad_map: Map<Shared<int>, int> = {}
 }

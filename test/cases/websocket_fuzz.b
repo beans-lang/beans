@@ -75,7 +75,7 @@ fn frame(rng: Rng, opcode: int, fin: bool, rsv: int, payload: Bytes) -> Bytes {
     for index: int in 0..payload.len() {
         out.push(payload.get(index) ^ key.get(index % 4))
     }
-    return out
+    return move out
 }
 
 fn garbage(rng: Rng, count: int) -> Bytes {
@@ -83,13 +83,13 @@ fn garbage(rng: Rng, count: int) -> Bytes {
     for index: int in 0..count {
         out.push(rng.below(256))
     }
-    return out
+    return move out
 }
 
 // One session: a server Connection reading whatever the generator sends.
 //
-// Single-threaded on purpose. `Bytes` is not Send, so a generated wire
-// cannot cross a spawn; and it does not need to — the payloads here are
+// Single-threaded on purpose. The payloads here
+// do not need to cross a spawn — they are
 // small enough to sit in the kernel's socket buffer, so the client can
 // write and step aside before the server reads a byte.
 fn one_round(rng: Rng, report: Bytes) -> Result<bool> {
@@ -115,7 +115,7 @@ fn one_round(rng: Rng, report: Bytes) -> Result<bool> {
         // UTF-8 arrives in practice.
         var body: Bytes = Bytes.from("hello, fuzzing world")
         let at: int = rng.below(body.len())
-        let bent: Bytes = body.set(at, rng.below(256))
+        body.set(at, rng.below(256))
         wire = frame(rng, 1, true, 0, body)
     }
 
@@ -168,7 +168,7 @@ fn one_round(rng: Rng, report: Bytes) -> Result<bool> {
                                 // invalid UTF-8 that slipped through.
                                 let bytes_back: Bytes = Bytes.from(body)
                                 if bytes_back.len() != body.len() {
-                                    let flagged: Bytes = report.set(0, 1)
+                                    report.set(0, 1)
                                 }
                             }
                             binary(body) => {}
@@ -183,14 +183,14 @@ fn one_round(rng: Rng, report: Bytes) -> Result<bool> {
             err(e) => {
                 if e.kind != "protocol" && e.kind != "too_large" &&
                    e.kind != "eof" && e.kind != "closed" {
-                    let flagged: Bytes = report.set(1, 1)
+                    report.set(1, 1)
                 }
                 open = false
             }
         }
     }
     if guard >= 200 {
-        let flagged: Bytes = report.set(2, 1)
+        report.set(2, 1)
     }
     return ok(true)
 }

@@ -83,7 +83,8 @@ fn main() {
         decoded_sum = decoded_sum + byte_algo.decode_uvarint(item).or(0)
         encoded_size += item.len()
     }
-    let malformed: Bytes = new Bytes(10).fill(255)
+    let malformed: Bytes = new Bytes(10)
+    malformed.fill(255)
     io.println("boundaries {decoded_sum} {encoded_size} {byte_algo.decode_uvarint(malformed).or(77)}")
     io.println("path {path.join("a/", "b")} {path.join("a", "/root")} {path.parent("/a/b/")} {path.name("/a/b/")} {path.extension("archive.tar.gz")} {path.stem("archive.tar.gz")} [{path.extension(".bashrc")}] {path.join("a", "C:/sdk")}")
     io.println("fmt {fmt.hex(-1)} {fmt.binary(10)} {fmt.group_digits(-9223372036854775807 - 1, "_")}")

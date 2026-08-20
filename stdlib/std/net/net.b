@@ -10,10 +10,10 @@
 //
 //   **A socket is a `unique class`.** Move-only, closed by `deinit`. Exactly one place
 //   owns a descriptor, so a double close is not something you can write, and a socket
-//   that goes out of scope is closed whether you remembered to or not. The three
-//   `unique` rules apply: no copies, no crossing `thread.spawn` (`unique` is not
-//   `Clone`, so it is not `Send`), and a socket trapped in a reference cycle never
-//   runs `deinit`.
+//   that goes out of scope is closed whether you remembered to or not. A socket may
+//   cross `thread.spawn` only through explicit `move(socket)`: ownership moves to the
+//   worker, so two threads can never use or close the same descriptor. A socket trapped
+//   in a reference cycle never runs `deinit`.
 //
 //   **The address family is resolved, never chosen.** Every entry point runs the host
 //   through `getaddrinfo` and tries the candidates in order, so `"localhost"`,
@@ -28,11 +28,33 @@ package net
 
 import std.sock
 
-// Multicast membership lives in the sockx bridge (runtime/net), not the core
-// syscall layer: it is one setsockopt pair, per-address-family, and the
-// bridge road keeps the syscall layer's surface fixed. Statuses follow
-// beans_net_common.h; 100+errno carries an OS refusal out whole.
+// Socket extras live in the sockx bridge (runtime/net), not the core syscall
+// layer. Statuses follow beans_net_common.h; operation-specific statuses start
+// above 100.
 extern "C" fn beans_sockx_multicast(fd: int, group: RawPtr<u8>, req: RawPtr<u64>) -> int
+extern "C" fn beans_sockx_recv_into(fd: int, destination: RawPtr<u8>, req: RawPtr<u64>) -> int
+extern "C" fn beans_sockx_listen_reuse_port(host: RawPtr<u8>, req: RawPtr<u64>) -> int
+
+fn sockx_error(operation: string, status: int, os_error: int) -> Result<int> {
+    if status == 1 || status == 2 {
+        return err("{operation}: invalid argument", "invalid")
+    }
+    if status == 3 {
+        return err("{operation}: out of memory", "io")
+    }
+    if status == 4 {
+        return err("{operation}: not supported on this platform", "unsupported")
+    }
+    let kind: string =
+        if status == 110 { "timeout" }
+        else if status == 111 { "reset" }
+        else if status == 112 { "closed" }
+        else if status == 113 { "in_use" }
+        else if status == 114 { "permission" }
+        else if status == 115 { "not_found" }
+        else { "io" }
+    return err("{operation}: os error {os_error}", kind)
+}
 
 fn multicast_change(fd: int, group: string, join: bool) -> Result<bool> {
     let op: string = if join { "join_multicast" } else { "leave_multicast" }
@@ -117,17 +139,18 @@ pub class Datagram {
 // [i64 port][i64 host_len][host][payload] — one layout for every runtime call that
 // has to return an address, because the fallible-builtin ABI carries a single value.
 fn unpack_address(parts: List<Bytes>) -> Address {
-    let metadata: Bytes = parts.get(0).expect("address metadata")
-    let host: Bytes = parts.get(1).expect("address host")
+    let metadata: Bytes = parts.remove(0)
+    let host: Bytes = parts.remove(0)
     return new Address(host.to_string(), metadata.get_i64(0))
 }
 
 fn unpack_datagram(parts: List<Bytes>) -> Datagram {
-    let metadata: Bytes = parts.get(0).expect("datagram metadata")
-    let host: Bytes = parts.get(1).expect("datagram host")
+    let metadata: Bytes = parts.remove(0)
+    let host: Bytes = parts.remove(0)
+    let payload: Bytes = parts.remove(0)
     var note: Datagram = new Datagram()
     note.from = new Address(host.to_string(), metadata.get_i64(0))
-    note.data = parts.get(2).expect("datagram payload")
+    note.data = move payload
     return note
 }
 
@@ -149,7 +172,7 @@ pub interface ByteStream {
 /// Move-only: pass it with `move`, take it out of a `Result` with `?`. It closes when
 /// its owner goes away, and `close()` exists only so a caller who wants to see the
 /// error can.
-pub unique class TcpStream implements ByteStream {
+pub unique class TcpStream implements ByteStream, Send {
     fd: int
     live: bool = true
 
@@ -219,6 +242,30 @@ pub unique class TcpStream implements ByteStream {
     pub override fn read(max: int) -> Result<Bytes> {
         if !self.live { return err("recv: socket is closed", "closed") }
         return sock.recv(self.fd, max)
+    }
+
+    /// Reads into caller-owned storage and reports the number of bytes written.
+    /// Zero means EOF. The buffer keeps its length, so one allocation can serve
+    /// a whole connection; only `0..count` contains this read's data.
+    pub fn read_into(buffer: Bytes) -> Result<int> {
+        if !self.live { return err("recv: socket is closed", "closed") }
+        if buffer.len() <= 0 {
+            return err("recv_into: the buffer must not be empty", "invalid")
+        }
+        var status: int = 0
+        var count: int = 0
+        var os_error: int = 0
+        unsafe {
+            let req: RawPtr<u64> = RawPtr.alloc(2)
+            req.write(buffer.len() as u64)
+            req.offset(1).write(0)
+            status = beans_sockx_recv_into(self.fd, buffer.as_ptr(), req)
+            count = req.read() as int
+            os_error = req.offset(1).read() as int
+            req.free()
+        }
+        if status == 0 { return ok(count) }
+        return sockx_error("recv_into", status, os_error)
     }
 
     /// Reads exactly `count` bytes, looping. Fails with kind `eof` if the peer closes
@@ -302,7 +349,7 @@ pub unique class TcpStream implements ByteStream {
 // ---- TCP listeners ----------------------------------------------------------
 
 /// A socket accepting incoming TCP connections.
-pub unique class TcpListener {
+pub unique class TcpListener implements Send {
     fd: int
     live: bool = true
 
@@ -327,6 +374,48 @@ pub unique class TcpListener {
     /// Listens with a specific accept-queue depth.
     pub static fn bind_with_backlog(host: string, port: int, depth: int) -> Result<TcpListener> {
         return ok(new TcpListener(sock.listen(host, port, depth)?))
+    }
+
+    /// Binds an independent accept loop to a port shared with other listeners
+    /// created by this method. The OS spreads new connections between them.
+    /// This is available on macOS and Linux; Windows reports `unsupported`.
+    pub static fn bind_reuse_port(host: string, port: int) -> Result<TcpListener> {
+        return TcpListener.bind_reuse_port_with_backlog(host, port, 128)
+    }
+
+    /// `bind_reuse_port` with a specific accept-queue depth.
+    pub static fn bind_reuse_port_with_backlog(host: string, port: int,
+                                                depth: int) -> Result<TcpListener> {
+        if host == "" { return err("bind_reuse_port: a host is required", "invalid") }
+        if port < 0 || port > 65535 {
+            return err("bind_reuse_port: port must be 0..65535", "invalid")
+        }
+        if depth <= 0 {
+            return err("bind_reuse_port: backlog must be positive", "invalid")
+        }
+        let text: Bytes = Bytes.from(host)
+        var status: int = 0
+        var fd: int = 0
+        var os_error: int = 0
+        unsafe {
+            let req: RawPtr<u64> = RawPtr.alloc(5)
+            req.write(text.len() as u64)
+            req.offset(1).write(port as u64)
+            req.offset(2).write(depth as u64)
+            req.offset(3).write(0)
+            req.offset(4).write(0)
+            status = beans_sockx_listen_reuse_port(text.as_ptr(), req)
+            fd = req.offset(3).read() as int
+            os_error = req.offset(4).read() as int
+            req.free()
+        }
+        if status == 0 { return ok(new TcpListener(fd)) }
+        let failure: Result<int> = sockx_error(
+            "bind_reuse_port {host}:{port}", status, os_error)
+        match failure {
+            err(e) => { return err(e.msg, e.kind) }
+            ok(_) => { return err("bind_reuse_port failed", "io") }
+        }
     }
 
     /// Waits for a connection and takes it. Blocks until one arrives.
@@ -376,7 +465,7 @@ pub unique class TcpListener {
 
 /// A bound UDP socket. Datagrams, so every send is one message and every receive
 /// gives one message with the sender's address attached.
-pub unique class UdpSocket {
+pub unique class UdpSocket implements Send {
     fd: int
     live: bool = true
 

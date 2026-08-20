@@ -63,7 +63,7 @@ fn compress_one_shot(data: Bytes, level: int, format: Format) -> Result<Bytes> {
     if status == 3 { return err("deflate: out of memory", "memory") }
     if status != 0 { return err("deflate failed (status {status})", "io") }
     out.resize(written)
-    return ok(out)
+    return ok(move out)
 }
 
 fn decompress_one_shot(data: Bytes, limit: int, format: Format) -> Result<Bytes> {
@@ -84,7 +84,7 @@ fn decompress_one_shot(data: Bytes, limit: int, format: Format) -> Result<Bytes>
     }
     if status == 0 {
         out.resize(written)
-        return ok(out)
+        return ok(move out)
     }
     if status == 101 {
         return err("inflate: the output exceeds the declared limit of {limit} bytes", "limit")
@@ -144,6 +144,7 @@ fn drive_stream(handle: int,
     var out: Bytes = new Bytes(0)
     var consumed_total: int = 0
     var rounds: int = 0
+    var complete: bool = false
     for rounds < 100000 {
         rounds += 1
         var chunk: int = 65536
@@ -191,11 +192,12 @@ fn drive_stream(handle: int,
             return err("inflate: the output exceeds the declared limit of {total_limit} bytes", "limit")
         }
         if done == 1 {
-            let ignored: Bytes = state.set(0, 1)
+            state.set(0, 1)
             if consumed_total < data.len() {
-                let also: Bytes = state.set(1, 1)
+                state.set(1, 1)
             }
-            return ok(out)
+            complete = true
+            break
         }
         // With no caller-approved room left, one zero-capacity step lets
         // zlib consume a trailer and announce an exact-boundary end. If it
@@ -206,19 +208,26 @@ fn drive_stream(handle: int,
         if consumed_total >= data.len() && produced < chunk {
             // Input drained and the last round had output room to spare:
             // the stream has said all it can for now.
-            if !finishing { return ok(out) }
+            if !finishing {
+                complete = true
+                break
+            }
             // Finishing: keep draining until `done` — unless nothing came
             // out at all, which for deflate means "call again", and for a
             // truncated inflate would spin forever, so stop there.
-            if produced == 0 && consumed == 0 { return ok(out) }
+            if produced == 0 && consumed == 0 {
+                complete = true
+                break
+            }
         }
     }
+    if complete { return ok(move out) }
     return err("compression stream made no progress", "io")
 }
 
 /// A streaming compressor. Move-only; `finish` ends the stream and the
 /// handle refuses work afterwards.
-pub unique class Deflater {
+pub unique class Deflater implements Send {
     handle: int = 0
     live: bool = true
 
@@ -270,7 +279,7 @@ pub unique class Deflater {
 
 /// A streaming decompressor with one limit across its whole life — the
 /// bound holds however many pieces the data arrives in.
-pub unique class Inflater {
+pub unique class Inflater implements Send {
     handle: int = 0
     live: bool = true
     limit: int = 0
@@ -326,7 +335,7 @@ pub unique class Inflater {
         if state.get(1) == 1 {
             return err("push: data after the end of the stream", "invalid")
         }
-        return ok(out)
+        return ok(move out)
     }
 
     /// True once the underlying stream announced its end — after this,
@@ -347,6 +356,6 @@ pub unique class Inflater {
         if !self.ended {
             return err("finish: the stream ends before its data does", "eof")
         }
-        return ok(out)
+        return ok(move out)
     }
 }

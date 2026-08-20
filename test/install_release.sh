@@ -10,7 +10,13 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 repo=$PWD
 version=$(sed -n 's/^compiler=//p' "VERSION")
+language=$(sed -n 's/^language=//p' "VERSION")
+runtime_abi=$(sed -n 's/^runtime_abi=//p' "VERSION")
+version_text="beansc $version (language $language, runtime ABI $runtime_abi)"
 target=${BEANS_INSTALL_TEST_TARGET:-$(./build/beansc doctor | sed -n 's/^host target: *//p')}
+test -n "$version"
+test -n "$language"
+test -n "$runtime_abi"
 test -n "$target"
 
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/beans-install-release.XXXXXX")
@@ -110,8 +116,7 @@ grep -q "installed beans $version into " "$tmp/upgrade.out" || {
     cat "$tmp/upgrade.out" >&2
     exit 1
 }
-test "$("$prefix/bin/beansc" --version)" = \
-    "beansc $version (language 1.0, runtime ABI 6)"
+test "$("$prefix/bin/beansc" --version)" = "$version_text"
 echo "  beansc upgrade uses the checked release installer"
 
 # A bad checksum must leave the working installation alone.
@@ -126,7 +131,7 @@ if BEANS_INSTALL_BASE_URL="$dist" \
 fi
 grep -q 'checksum mismatch' "$tmp/bad.out"
 grep -q 'Nothing was installed' "$tmp/bad.out"
-test "$("$prefix/bin/beansc" --version)" = "beansc $version (language 1.0, runtime ABI 6)"
+test "$("$prefix/bin/beansc" --version)" = "$version_text"
 echo "  a failed download keeps the working installation"
 
 # An unsupported platform names what it saw instead of failing obscurely.
@@ -168,7 +173,7 @@ fn main() {
 BEANS
 cd "$work"
 
-test "$(beansc --version)" = "beansc $version (language 1.0, runtime ABI 6)"
+test "$(beansc --version)" = "$version_text"
 beansc doctor >"$tmp/doctor.out"
 grep -q "^package: *$class\$" "$tmp/doctor.out"
 grep -q '^check: *ready$' "$tmp/doctor.out"

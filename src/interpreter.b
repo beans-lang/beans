@@ -3020,7 +3020,8 @@ class TreeInterpreter {
                 break
             }
         }
-        value.bytes_data = some(memory.data)
+        value.bytes_data = some(
+            memory.data.slice(0, memory.data.len()))
         for field: HirField in
             declaration.fields {
             value.fields.entries[field.name] =
@@ -4067,18 +4068,9 @@ class TreeInterpreter {
         }
         if node.resolved == "std.random.bytes" &&
            arguments.len() == 1 {
-            match host_random.bytes(
-                    arguments[0].int_data) {
-                ok(value) => {
-                    return TreeValue.result_ok(
-                        TreeValue.bytes(value))
-                }
-                err(error) => {
-                    return TreeValue.result_err(
-                        TreeValue.error(
-                            error.msg, error.kind))
-                }
-            }
+            return self.host_bytes_result(
+                host_random.bytes(
+                    arguments[0].int_data))
         }
         if node.resolved == "std.random.u64" {
             match host_random.u64() {
@@ -4110,26 +4102,44 @@ class TreeInterpreter {
         }
         if node.resolved == "std.proc.run" &&
            arguments.len() == 5 {
-            return self.host_bytes_list_result(
-                host_proc.run(
-                    arguments[0].bytes_data.expect(
-                        "proc.run argv"),
-                    arguments[1].bytes_data.expect(
-                        "proc.run env"),
-                    arguments[2].text,
-                    arguments[3].bytes_data.expect(
-                        "proc.run stdin"),
-                    arguments[4].int_data))
+            match arguments[0].bytes_data {
+                some(argv) => {
+                    match arguments[1].bytes_data {
+                        some(environment) => {
+                            match arguments[3].bytes_data {
+                                some(stdin_data) => {
+                                    return self.host_bytes_list_result(
+                                        host_proc.run(
+                                            argv, environment,
+                                            arguments[2].text,
+                                            stdin_data,
+                                            arguments[4].int_data))
+                                }
+                                none => {}
+                            }
+                        }
+                        none => {}
+                    }
+                }
+                none => {}
+            }
         }
         if node.resolved == "std.proc.start" &&
            arguments.len() == 3 {
-            return self.host_bytes_result(
-                host_proc.start(
-                    arguments[0].bytes_data.expect(
-                        "proc.start argv"),
-                    arguments[1].bytes_data.expect(
-                        "proc.start env"),
-                    arguments[2].text))
+            match arguments[0].bytes_data {
+                some(argv) => {
+                    match arguments[1].bytes_data {
+                        some(environment) => {
+                            return self.host_bytes_result(
+                                host_proc.start(
+                                    argv, environment,
+                                    arguments[2].text))
+                        }
+                        none => {}
+                    }
+                }
+                none => {}
+            }
         }
         if node.resolved == "std.proc.status" &&
            arguments.len() == 2 {
@@ -4147,12 +4157,15 @@ class TreeInterpreter {
         }
         if node.resolved == "std.proc.write" &&
            arguments.len() == 3 {
-            return self.host_int_result(
-                host_proc.write(
-                    arguments[0].int_data,
-                    arguments[1].bytes_data.expect(
-                        "proc.write data"),
-                    arguments[2].int_data))
+            match arguments[1].bytes_data {
+                some(data) => {
+                    return self.host_int_result(
+                        host_proc.write(
+                            arguments[0].int_data,
+                            data, arguments[2].int_data))
+                }
+                none => {}
+            }
         }
         if node.resolved == "std.proc.write_text" &&
            arguments.len() == 3 {
@@ -4214,12 +4227,15 @@ class TreeInterpreter {
         }
         if node.resolved == "std.sock.send" &&
            arguments.len() == 3 {
-            return self.host_int_result(
-                host_sock.send(
-                    arguments[0].int_data,
-                    arguments[1].bytes_data.expect(
-                        "sock.send data"),
-                    arguments[2].int_data))
+            match arguments[1].bytes_data {
+                some(data) => {
+                    return self.host_int_result(
+                        host_sock.send(
+                            arguments[0].int_data,
+                            data, arguments[2].int_data))
+                }
+                none => {}
+            }
         }
         if node.resolved == "std.sock.send_text" &&
            arguments.len() == 3 {
@@ -4252,13 +4268,16 @@ class TreeInterpreter {
         }
         if node.resolved == "std.sock.send_to" &&
            arguments.len() == 4 {
-            return self.host_int_result(
-                host_sock.send_to(
-                    arguments[0].int_data,
-                    arguments[1].bytes_data.expect(
-                        "sock.send_to data"),
-                    arguments[2].text,
-                    arguments[3].int_data))
+            match arguments[1].bytes_data {
+                some(data) => {
+                    return self.host_int_result(
+                        host_sock.send_to(
+                            arguments[0].int_data, data,
+                            arguments[2].text,
+                            arguments[3].int_data))
+                }
+                none => {}
+            }
         }
         if node.resolved == "std.sock.recv_from" &&
            arguments.len() == 2 {
@@ -4396,10 +4415,13 @@ class TreeInterpreter {
         }
         if node.resolved == "std.sig.watch" &&
            arguments.len() == 1 {
-            return self.host_int_result(
-                host_sig.watch(
-                    arguments[0].bytes_data.expect(
-                        "sig.watch signals")))
+            match arguments[0].bytes_data {
+                some(signals) => {
+                    return self.host_int_result(
+                        host_sig.watch(signals))
+                }
+                none => {}
+            }
         }
         if node.resolved == "std.sig.pending" &&
            arguments.len() == 2 {
@@ -4410,11 +4432,15 @@ class TreeInterpreter {
         }
         if node.resolved == "std.sig.close" &&
            arguments.len() == 2 {
-            return self.host_bool_result(
-                host_sig.close(
-                    arguments[0].int_data,
-                    arguments[1].bytes_data.expect(
-                        "sig.close signals")))
+            match arguments[1].bytes_data {
+                some(signals) => {
+                    return self.host_bool_result(
+                        host_sig.close(
+                            arguments[0].int_data,
+                            signals))
+                }
+                none => {}
+            }
         }
         if node.resolved == "std.sig.raise" &&
            arguments.len() == 1 {
@@ -4763,9 +4789,19 @@ class TreeInterpreter {
         if receiver.kind != "bytes" {
             return none
         }
-        let data: Bytes =
-            receiver.bytes_data.expect(
-                "Bytes TreeValue payload")
+        match receiver.bytes_data {
+            some(data) => {
+                return self.bytes_method_data(
+                    node, receiver, arguments, data)
+            }
+            none => { return none }
+        }
+    }
+
+    fn bytes_method_data(node: HirNode,
+                         receiver: TreeValue,
+                         arguments: List<TreeValue>,
+                         data: Bytes) -> Option<TreeValue> {
         if node.value == "as_ptr" {
             var address: u64 = 0
             unsafe {
@@ -4781,22 +4817,27 @@ class TreeInterpreter {
         if node.value == "reserve" &&
            arguments.len() == 2 {
             data.reserve(arguments[1].int_data)
-            return some(receiver)
+            return some(TreeValue.unit())
         }
         if node.value == "resize" &&
            arguments.len() == 2 {
             data.resize(arguments[1].int_data)
-            return some(receiver)
+            return some(TreeValue.unit())
         }
         if node.value == "fill" &&
            arguments.len() == 2 {
             data.fill(arguments[1].int_data)
-            return some(receiver)
+            return some(TreeValue.unit())
+        }
+        if node.value == "append_int_text" &&
+           arguments.len() == 2 {
+            data.append_string("{arguments[1].int_data}")
+            return some(TreeValue.unit())
         }
         if node.value == "push" &&
            arguments.len() == 2 {
             data.push(arguments[1].int_data)
-            return some(receiver)
+            return some(TreeValue.unit())
         }
         if (node.value == "get" ||
             node.value == "get_u8") &&
@@ -4827,7 +4868,7 @@ class TreeInterpreter {
                 return some(TreeValue.unit())
             }
             data.set(offset, arguments[2].int_data)
-            return some(receiver)
+            return some(TreeValue.unit())
         }
         var width: int = 0
         if node.value == "get_u16" ||
@@ -4896,7 +4937,7 @@ class TreeInterpreter {
             } else {
                 data.put_i64(offset, value)
             }
-            return some(receiver)
+            return some(TreeValue.unit())
         }
         if node.value == "slice" &&
            arguments.len() == 3 {
@@ -4915,38 +4956,47 @@ class TreeInterpreter {
         }
         if node.value == "copy_from" &&
            arguments.len() == 3 {
-            let source: Bytes =
-                arguments[1].bytes_data.expect(
-                    "Bytes copy source")
-            data.copy_from(
-                source, arguments[2].int_data)
-            return some(receiver)
+            match arguments[1].bytes_data {
+                some(source) => {
+                    data.copy_from(
+                        source, arguments[2].int_data)
+                    return some(TreeValue.unit())
+                }
+                none => {}
+            }
         }
         if node.value == "append" &&
            arguments.len() == 2 {
-            data.append(
-                arguments[1].bytes_data.expect(
-                    "Bytes append source"))
-            return some(receiver)
+            match arguments[1].bytes_data {
+                some(source) => {
+                    data.append(source)
+                    return some(TreeValue.unit())
+                }
+                none => {}
+            }
         }
         if node.value == "append_string" &&
            arguments.len() == 2 {
             data.append_string(arguments[1].text)
-            return some(receiver)
+            return some(TreeValue.unit())
         }
         if node.value == "append_i64" &&
            arguments.len() == 2 {
             data.append_i64(arguments[1].int_data)
-            return some(receiver)
+            return some(TreeValue.unit())
         }
         if node.value == "append_range" &&
            arguments.len() == 4 {
-            data.append_range(
-                arguments[1].bytes_data.expect(
-                    "Bytes range source"),
-                arguments[2].int_data,
-                arguments[3].int_data)
-            return some(receiver)
+            match arguments[1].bytes_data {
+                some(source) => {
+                    data.append_range(
+                        source,
+                        arguments[2].int_data,
+                        arguments[3].int_data)
+                    return some(TreeValue.unit())
+                }
+                none => {}
+            }
         }
         if node.value == "to_string_until_nul" {
             return some(TreeValue.string(
@@ -4959,7 +5009,7 @@ class TreeInterpreter {
         if node.value == "append_uvarint" &&
            arguments.len() == 2 {
             data.append_uvarint(arguments[1].int_data)
-            return some(receiver)
+            return some(TreeValue.unit())
         }
         if node.value == "get_uvarint" &&
            arguments.len() == 2 {
@@ -5368,11 +5418,11 @@ class TreeInterpreter {
     }
 
     fn host_bytes_result(
-        result: Result<Bytes>) -> TreeValue {
-        match result {
+        move result: Result<Bytes>) -> TreeValue {
+        match self.take_host_bytes_result(
+                move result) {
             ok(value) => {
-                return TreeValue.result_ok(
-                    TreeValue.bytes(value))
+                return value
             }
             err(error) => {
                 return self.host_error(error)
@@ -5381,22 +5431,37 @@ class TreeInterpreter {
         return TreeValue.unit()
     }
 
+    fn take_host_bytes_result(
+        move result: Result<Bytes>) -> Result<TreeValue> {
+        let value: Bytes = (move result)?
+        return ok(TreeValue.result_ok(
+            TreeValue.bytes(move value)))
+    }
+
     fn host_bytes_list_result(
-        result: Result<List<Bytes>>) -> TreeValue {
-        match result {
-            ok(source) => {
-                var values: List<TreeValue> = []
-                for value: Bytes in source {
-                    values.push(TreeValue.bytes(value))
-                }
-                return TreeValue.result_ok(
-                    TreeValue.sequence("list", move values))
+        move result: Result<List<Bytes>>) -> TreeValue {
+        match self.take_host_bytes_list_result(
+                move result) {
+            ok(value) => {
+                return value
             }
             err(error) => {
                 return self.host_error(error)
             }
         }
         return TreeValue.unit()
+    }
+
+    fn take_host_bytes_list_result(
+        move result: Result<List<Bytes>>) -> Result<TreeValue> {
+        let source: List<Bytes> = (move result)?
+        var values: List<TreeValue> = []
+        for source.len() > 0 {
+            let value: Bytes = source.remove(0)
+            values.push(TreeValue.bytes(move value))
+        }
+        return ok(TreeValue.result_ok(
+            TreeValue.sequence("list", move values)))
     }
 
     fn host_strings_result(
@@ -5434,11 +5499,11 @@ class TreeInterpreter {
     }
 
     fn host_file_result(
-        result: Result<File>) -> TreeValue {
-        match result {
+        move result: Result<File>) -> TreeValue {
+        match self.take_host_file_result(
+                move result) {
             ok(value) => {
-                return TreeValue.result_ok(
-                    TreeValue.file(value))
+                return value
             }
             err(error) => {
                 return self.host_error(error)
@@ -5447,18 +5512,32 @@ class TreeInterpreter {
         return TreeValue.unit()
     }
 
+    fn take_host_file_result(
+        move result: Result<File>) -> Result<TreeValue> {
+        let value: File = (move result)?
+        return ok(TreeValue.result_ok(
+            TreeValue.file(move value)))
+    }
+
     fn host_mmap_result(
-        result: Result<MMap>) -> TreeValue {
-        match result {
+        move result: Result<MMap>) -> TreeValue {
+        match self.take_host_mmap_result(
+                move result) {
             ok(value) => {
-                return TreeValue.result_ok(
-                    TreeValue.mmap(value))
+                return value
             }
             err(error) => {
                 return self.host_error(error)
             }
         }
         return TreeValue.unit()
+    }
+
+    fn take_host_mmap_result(
+        move result: Result<MMap>) -> Result<TreeValue> {
+        let value: MMap = (move result)?
+        return ok(TreeValue.result_ok(
+            TreeValue.mmap(move value)))
     }
 
     fn file_static(node: HirNode,
@@ -5580,9 +5659,19 @@ class TreeInterpreter {
         if receiver.kind != "file" {
             return none
         }
-        let file: File =
-            receiver.file_value.expect(
-                "File TreeValue payload")
+        match receiver.file_value {
+            some(file) => {
+                return self.file_method_value(
+                    node, receiver, arguments, file)
+            }
+            none => { return none }
+        }
+    }
+
+    fn file_method_value(node: HirNode,
+                         receiver: TreeValue,
+                         arguments: List<TreeValue>,
+                         file: File) -> Option<TreeValue> {
         if node.value == "read_at" &&
            arguments.len() == 3 {
             return some(self.host_bytes_result(
@@ -5606,11 +5695,15 @@ class TreeInterpreter {
         }
         if node.value == "write_at" &&
            arguments.len() == 3 {
-            return some(self.host_int_result(
-                file.write_at(
-                    arguments[1].int_data,
-                    arguments[2].bytes_data.expect(
-                        "File.write_at Bytes"))))
+            match arguments[2].bytes_data {
+                some(data) => {
+                    return some(self.host_int_result(
+                        file.write_at(
+                            arguments[1].int_data,
+                            data)))
+                }
+                none => {}
+            }
         }
         if node.value == "write_text_at" &&
            arguments.len() == 3 {
@@ -5639,10 +5732,13 @@ class TreeInterpreter {
         }
         if node.value == "write" &&
            arguments.len() == 2 {
-            return some(self.host_int_result(
-                file.write(
-                    arguments[1].bytes_data.expect(
-                        "File.write Bytes"))))
+            match arguments[1].bytes_data {
+                some(data) => {
+                    return some(self.host_int_result(
+                        file.write(data)))
+                }
+                none => {}
+            }
         }
         if node.value == "write_text" &&
            arguments.len() == 2 {
@@ -5704,9 +5800,19 @@ class TreeInterpreter {
         if receiver.kind != "mmap" {
             return none
         }
-        let mapping: MMap =
-            receiver.mmap_value.expect(
-                "MMap TreeValue payload")
+        match receiver.mmap_value {
+            some(mapping) => {
+                return self.mmap_method_value(
+                    node, receiver, arguments, mapping)
+            }
+            none => { return none }
+        }
+    }
+
+    fn mmap_method_value(node: HirNode,
+                         receiver: TreeValue,
+                         arguments: List<TreeValue>,
+                         mapping: MMap) -> Option<TreeValue> {
         if node.value == "len" {
             return some(TreeValue.integer(
                 mapping.len()))
@@ -5785,7 +5891,7 @@ class TreeInterpreter {
             } else {
                 mapping.put_i64(offset, value)
             }
-            return some(receiver)
+            return some(TreeValue.unit())
         }
         if node.value == "read" &&
            arguments.len() == 3 {
@@ -5796,11 +5902,15 @@ class TreeInterpreter {
         }
         if node.value == "write" &&
            arguments.len() == 3 {
-            mapping.write(
-                arguments[1].int_data,
-                arguments[2].bytes_data.expect(
-                    "MMap.write Bytes"))
-            return some(receiver)
+            match arguments[2].bytes_data {
+                some(data) => {
+                    mapping.write(
+                        arguments[1].int_data,
+                        data)
+                    return some(TreeValue.unit())
+                }
+                none => {}
+            }
         }
         if node.value == "flush" {
             return some(self.host_bool_result(
@@ -5959,10 +6069,10 @@ class TreeInterpreter {
         }
         let same_thread: bool =
             node.resolved.starts_with(
-                "StoredCallback.create_same_thread:")
+                "LocalStoredCallback.create:")
         let prefix: string =
             if same_thread {
-                "StoredCallback.create_same_thread:"
+                "LocalStoredCallback.create:"
             } else {
                 "StoredCallback.create:"
             }
@@ -6743,9 +6853,8 @@ class TreeInterpreter {
                             let at: int =
                                 (receiver.memory_address -
                                  destination.base) as int
-                            let copied_memory: Bytes =
-                                destination.data.copy_from(
-                                    temporary, at)
+                            destination.data.copy_from(
+                                temporary, at)
                         }
                         none => {}
                     }
@@ -8138,6 +8247,21 @@ class TreeInterpreter {
                 tree_value_copy(result)]
             return result
         }
+        if receiver.kind == "thread" &&
+           node.value == "detach" {
+            match receiver.thread_handle {
+                some(_) => {
+                    receiver.thread_handle = none
+                    receiver.thread_work = none
+                    return TreeValue.unit()
+                }
+                none => {
+                    return self.fail(
+                        node,
+                        "thread already joined or detached")
+                }
+            }
+        }
         if receiver.kind == "mutex" &&
            node.value == "with_lock" &&
            arguments.len() == 2 &&
@@ -8577,7 +8701,7 @@ class TreeInterpreter {
            (node.resolved.starts_with(
                 "StoredCallback.create:") ||
             node.resolved.starts_with(
-                "StoredCallback.create_same_thread:")) {
+                "LocalStoredCallback.create:")) {
             return self.create_stored_callback(
                 node, arguments)
         }
@@ -8603,6 +8727,19 @@ class TreeInterpreter {
                 some(value) => { return value }
                 none => {}
             }
+        }
+        if node.kind == "static_call" &&
+           node.resolved == "Bytes.filled" &&
+           arguments.len() == 2 {
+            let size: int = arguments[0].int_data
+            if size < 0 {
+                return self.fail_at(
+                    node, node.col,
+                    "negative size {size}")
+            }
+            let data: Bytes = new Bytes(size)
+            data.fill(arguments[1].int_data)
+            return TreeValue.bytes(move data)
         }
         if node.kind == "static_call" &&
            node.resolved == "Bytes.from_raw" &&
@@ -11006,10 +11143,9 @@ class TreeInterpreter {
                 argv, environment, "",
                 new Bytes(0), 1048576) {
             ok(output) => {
-                let status: int =
-                    output.get(0).expect("compiler status").get_i64(0)
-                let error_bytes: Bytes =
-                    output.get(2).expect("compiler stderr")
+                let status_bytes: Bytes = output.remove(0)
+                let status: int = status_bytes.get_i64(0)
+                let error_bytes: Bytes = output.remove(1)
                 compiled = status == 0
                 if error_bytes.len() != 0 {
                     compiler_error =
@@ -11369,8 +11505,9 @@ class TreeInterpreter {
                 argv, environment, "",
                 new Bytes(0), 8388608) {
             ok(output) => {
-                let status: int = output.get(0).expect("compiler status").get_i64(0)
-                let error_bytes: Bytes = output.get(2).expect("compiler stderr")
+                let status_bytes: Bytes = output.remove(0)
+                let status: int = status_bytes.get_i64(0)
+                let error_bytes: Bytes = output.remove(1)
                 compiled = status == 0
                 if error_bytes.len() != 0 {
                     compiler_error =
@@ -11444,9 +11581,10 @@ class TreeInterpreter {
                 argv, environment, "",
                 new Bytes(0), 8388608) {
             ok(output) => {
-                let status: int = output.get(0).expect("compiler status").get_i64(0)
-                let normal_bytes: Bytes = output.get(1).expect("compiler stdout")
-                let error_bytes: Bytes = output.get(2).expect("compiler stderr")
+                let status_bytes: Bytes = output.remove(0)
+                let normal_bytes: Bytes = output.remove(0)
+                let error_bytes: Bytes = output.remove(0)
+                let status: int = status_bytes.get_i64(0)
                 compiled = status == 0
                 if normal_bytes.len() != 0 {
                     compiler_error = normal_bytes.to_string()

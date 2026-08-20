@@ -66,7 +66,7 @@ fn body_of(rng: Rng, count: int) -> Bytes {
     for index: int in 0..count {
         out.push((index * 13 + rng.below(7)) % 251)
     }
-    return out
+    return move out
 }
 
 // Drives one client and one server in lock-step over a real socket pair,
@@ -131,7 +131,7 @@ fn one_round(rng: Rng, report: Bytes) -> Result<bool> {
                         message(exchange) => {
                             answered += 1
                             if exchange.status() != 200 {
-                                let flagged: Bytes = report.set(1, 1)
+                                report.set(1, 1)
                             }
                         }
                         stream_closed(id, code) => {}
@@ -144,10 +144,10 @@ fn one_round(rng: Rng, report: Bytes) -> Result<bool> {
     }
 
     if served != requests || answered != requests {
-        let flagged: Bytes = report.set(1, 1)
+        report.set(1, 1)
     }
     if after_close {
-        let flagged: Bytes = report.set(2, 1)
+        report.set(2, 1)
     }
     // The connection-level windows at rest: a pump that miscounts bytes
     // leaves them lopsided. Both sides are checked, because a leak in one
@@ -156,7 +156,7 @@ fn one_round(rng: Rng, report: Bytes) -> Result<bool> {
     let server_windows: List<int> = server.windows()
     if client_windows[0] < 0 || client_windows[1] < 0 ||
        server_windows[0] < 0 || server_windows[1] < 0 {
-        let flagged: Bytes = report.set(0, 1)
+        report.set(0, 1)
     }
     let closed_client: Result<bool> = client.close()
     let closed_server: Result<bool> = server.close()

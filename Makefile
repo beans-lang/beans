@@ -146,6 +146,7 @@ test-semantics: $(BIN)
 	./test/traits.sh
 	./test/fixed_arrays.sh
 	bash ./test/closure_captures.sh
+	bash ./test/send_functions.sh
 	bash ./test/async.sh
 	bash ./test/mir.sh
 	bash ./test/devirtualize.sh
@@ -173,6 +174,8 @@ test-runtime: $(BIN)
 	./test/net_bridge_api.sh
 	./test/net.sh
 	./test/poll.sh
+	bash ./test/send_builtin_owners.sh
+	bash ./test/send_handles.sh
 	./test/net_torture.sh
 	./test/poll_semantics.sh
 	bash ./test/net_fuzz.sh smoke
@@ -262,6 +265,7 @@ test-core: $(BIN)
 	bash ./test/reflection_fuzz.sh
 	bash ./test/differential_fuzz.sh smoke
 	./test/fixed_arrays.sh
+	bash ./test/send_functions.sh
 	./test/packed_layout.sh
 	bash ./test/thread_cleanup.sh
 	./test/simd.sh
@@ -327,6 +331,8 @@ test-core: $(BIN)
 	./test/net_bridge_api.sh
 	./test/net.sh
 	./test/poll.sh
+	bash ./test/send_builtin_owners.sh
+	bash ./test/send_handles.sh
 	./test/net_torture.sh
 	./test/poll_semantics.sh
 	bash ./test/net_fuzz.sh smoke

@@ -125,7 +125,7 @@ fn target_is_safe(target: string) -> bool {
 /// Move-only: it owns the socket and closes it. Created by `connect` for a
 /// client, or by `accept` on a server that has already read the upgrade
 /// request through `std.http`.
-pub unique class WebSocketTransport<T implements net.ByteStream> {
+pub unique class WebSocketTransport<T implements net.ByteStream> implements Send {
     handle: int = 0
     stream: T
     live: bool = true
@@ -196,7 +196,7 @@ pub unique class WebSocketTransport<T implements net.ByteStream> {
                     done(keep_alive) => { settled = true }
                     upgraded(response, remainder) => {
                         head = some(response)
-                        leftover = remainder
+                        leftover = remainder.slice(0, remainder.len())
                         settled = true
                     }
                 }
@@ -305,13 +305,11 @@ pub unique class WebSocketTransport<T implements net.ByteStream> {
             return err("the upgrade must carry one Sec-WebSocket-Key", "protocol")
         }
         let key: string = keys[0]
-        var decoded_key: Bytes = new Bytes(0)
-        match base64.decode(key) {
-            ok(value) => { decoded_key = value }
-            err(_) => {
-                return err("Sec-WebSocket-Key is not strict base64", "protocol")
-            }
+        let decoded: Result<Bytes> = base64.decode(key)
+        if !decoded.is_ok() {
+            return err("Sec-WebSocket-Key is not strict base64", "protocol")
         }
+        let decoded_key: Bytes = (move decoded)?
         if decoded_key.len() != 16 {
             return err("Sec-WebSocket-Key must decode to 16 bytes", "protocol")
         }
@@ -457,27 +455,30 @@ pub unique class WebSocketTransport<T implements net.ByteStream> {
                 let closed: Result<bool> = self.shut()
                 return err("the WebSocket framer produced a malformed event", "protocol")
             }
-            let payload: Bytes = buffer.slice(pos, pos + length)
-            pos += length
             if opcode == opcode_text() {
-                self.pending.push(Message.text(payload.to_string()))
+                self.pending.push(Message.text(
+                    buffer.slice(pos, pos + length).to_string()))
             } else if opcode == opcode_binary() {
-                self.pending.push(Message.binary(payload))
+                self.pending.push(Message.binary(
+                    buffer.slice(pos, pos + length)))
             } else if opcode == opcode_ping() {
-                self.pending.push(Message.ping(payload))
+                self.pending.push(Message.ping(
+                    buffer.slice(pos, pos + length)))
             } else if opcode == opcode_pong() {
-                self.pending.push(Message.pong(payload))
+                self.pending.push(Message.pong(
+                    buffer.slice(pos, pos + length)))
             } else if opcode == opcode_close() {
                 self.peer_closed = true
                 var code: int = 1005
                 var reason: string = ""
-                if payload.len() >= 2 {
+                if length >= 2 {
                     // RFC 6455 puts the close code in network byte order.
-                    code = payload.get(0) * 256 + payload.get(1)
-                    reason = payload.slice(2, payload.len()).to_string()
+                    code = buffer.get(pos) * 256 + buffer.get(pos + 1)
+                    reason = buffer.slice(pos + 2, pos + length).to_string()
                 }
                 self.pending.push(Message.closed(code, reason))
             }
+            pos += length
         }
         if pos != taken {
             self.live = false
@@ -660,7 +661,7 @@ pub fn accept_websocket<T implements net.ByteStream>(
 
 /// A WebSocket over raw TCP. Secure WebSockets use
 /// `WebSocketTransport<tls.TlsStream>` through `std.websocket_tls`.
-pub unique class Connection {
+pub unique class Connection implements Send {
     core: WebSocketTransport<net.TcpStream>
 
     fn init(move core: WebSocketTransport<net.TcpStream>) {

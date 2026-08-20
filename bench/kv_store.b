@@ -17,7 +17,9 @@ fn main() {
         let key: int = (i * 48271 + seed) % key_count
         let value: int = i * 17 + seed
         latest[key] = log.len()
-        log.append_i64(key).append_i64(value).append_i64(i)
+        log.append_i64(key)
+        log.append_i64(value)
+        log.append_i64(i)
         i += 1
     }
 

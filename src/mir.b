@@ -893,32 +893,6 @@ class MirLowerer {
         }
         let receiver: string =
             node.children[0].type.name
-        if receiver == "Bytes" {
-            return node.value == "reserve" ||
-                   node.value == "resize" ||
-                   node.value == "fill" ||
-                   node.value == "set" ||
-                   node.value == "push" ||
-                   node.value == "put_u8" ||
-                   node.value == "put_u16" ||
-                   node.value == "put_u32" ||
-                   node.value == "put_u64" ||
-                   node.value == "put_i64" ||
-                   node.value == "copy_from" ||
-                   node.value == "append" ||
-                   node.value == "append_string" ||
-                   node.value == "append_i64" ||
-                   node.value == "append_range" ||
-                   node.value == "append_uvarint"
-        }
-        if receiver == "MMap" {
-            return node.value == "put_u8" ||
-                   node.value == "put_u16" ||
-                   node.value == "put_u32" ||
-                   node.value == "put_u64" ||
-                   node.value == "put_i64" ||
-                   node.value == "write"
-        }
         return false
     }
 
@@ -1119,8 +1093,9 @@ class MirLowerer {
         if result >= 0 &&
            node.kind == "builtin_method" &&
            node.children.len() != 0 &&
-           node.children[0].type.name ==
-               "StoredCallback" {
+           (node.children[0].type.name == "StoredCallback" ||
+            node.children[0].type.name ==
+                "LocalStoredCallback") {
             let instruction: MirInstruction =
                 self.last_instruction()
             instruction.ownership = "trivial"

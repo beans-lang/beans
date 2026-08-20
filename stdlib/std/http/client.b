@@ -22,7 +22,7 @@ pub class ClientResponse {
 }
 
 /// One HTTP/1.1 connection.
-pub unique class Client {
+pub unique class Client implements Send {
     stream: net.TcpStream
     parser: ResponseParser
     host: string = ""
@@ -186,14 +186,9 @@ pub unique class Client {
         var finished: bool = false
         var gathered: Bytes = new Bytes(0)
         for !finished {
-            var data: Bytes = new Bytes(0)
-            match self.stream.read(65536) {
-                ok(chunk) => { data = chunk }
-                err(e) => {
-                    self.alive = false
-                    return err("recv: {e.msg}", e.kind)
-                }
-            }
+            let received: Result<Bytes> = self.stream.read(65536)
+            if !received.is_ok() { self.alive = false }
+            let data: Bytes = (move received)?
             let at_eof: bool = data.len() == 0
             if at_eof {
                 // EOF: legitimate end for an until-close body, an error
@@ -220,15 +215,15 @@ pub unique class Client {
         let coding: string = answer.headers.get("Content-Encoding").or("").trim().to_lower()
         if coding == "gzip" && gathered.len() > 0 {
             let opened: Bytes = compress.gzip_decompress(gathered, self.max_body)?
-            answer.body = opened
+            answer.body = move opened
             return ok(answer)
         }
         if coding == "deflate" && gathered.len() > 0 {
             let opened: Bytes = compress.inflate(gathered, self.max_body)?
-            answer.body = opened
+            answer.body = move opened
             return ok(answer)
         }
-        answer.body = gathered
+        answer.body = move gathered
         return ok(answer)
     }
 

@@ -273,14 +273,15 @@ fn main() {
         io.println("usage: tls_fuzz <ca-pem> <host> <port> <seed> <rounds>")
         os.exit(2)
     }
-    var roots: Bytes = new Bytes(0)
-    match fs.read_bytes(arguments[0]) {
-        ok(pem) => { roots = pem }
+    let loaded_roots: Result<Bytes> = fs.read_bytes(arguments[0])
+    match loaded_roots {
+        ok(pem) => {}
         err(e) => {
             io.println("cannot read the root bundle: {e.msg}")
             os.exit(2)
         }
     }
+    let roots: Bytes = (move loaded_roots).expect("root bundle")
     let host: string = arguments[1]
     let port: int = arguments[2].to_int().or(0)
     let seed: int = arguments[3].to_int().or(1)

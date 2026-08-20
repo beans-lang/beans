@@ -246,7 +246,7 @@ fn unbounded(name: string, prefix: string, filler: string) {
             let first: Bytes = new Bytes(0)
             first.append(chunk)
             first.append_string(pad)
-            first
+            move first
         } else {
             Bytes.from(pad)
         }
