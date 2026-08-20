@@ -12,13 +12,15 @@
 // `Address.resolve` — the same shape as `File.open` and `MMap.open`. There are no
 // module-level functions in `std.net`.
 //
-// Sockets are `unique class`: move-only, closed by `deinit`. One owner, one close.
+// Sockets are `unique class` and `Send`: move-only, closed by `deinit`, and safe to
+// move to a worker. One owner, one close.
 //
 // Every line prints a *derived fact*, because ports are picked by the system and
 // differ every run. The facts do not.
 
 import std.io
 import std.net
+import std.thread
 
 // Port 0 means "any free port". Reading it back is how a program binds without
 // picking a number and hoping nothing else has it.
@@ -30,7 +32,8 @@ fn ephemeral() -> Result<int> {
     return ok(port)
 }
 
-// One request and one reply, both ends in this thread.
+// One request and one reply. The client moves to a worker; the accepted stream stays
+// here. Ownership is explicit, so neither thread can use the other's socket.
 fn round_trip() -> Result<int> {
     let server: net.TcpListener = net.TcpListener.bind("127.0.0.1", 0)?
     let port: int = server.port()?
@@ -43,20 +46,35 @@ fn round_trip() -> Result<int> {
     io.println("client's peer port is the server's {client.peer_address()?.port == port}")
     io.println("server sees the client's own port {session.peer_address()?.port == client.local_address()?.port}")
 
-    client.write_text("hello")?
-    // Saying "nothing more from me" without closing the half we still read from. The
-    // peer's next read returns empty, which is how EOF arrives.
-    client.shutdown_write()?
+    let client_worker: Thread<Result<string>> = thread.spawn(
+        fn() move(client) -> Result<string> {
+            client.write_text("hello")?
+            // Saying "nothing more from me" without closing the half we still read
+            // from. The peer's next read returns empty, which is how EOF arrives.
+            client.shutdown_write()?
+            return ok(client.read_to_end(64)?.to_string())
+        })
 
-    let asked: Bytes = session.read_to_end(64)?
+    // Reuse one read buffer. `read_into` changes its contents but does not allocate a
+    // new buffer for every system call.
+    let scratch: Bytes = Bytes.filled(64, 0)
+    let asked: Bytes = new Bytes(0)
+    var eof: bool = false
+    for !eof {
+        let count: int = session.read_into(scratch)?
+        if count == 0 {
+            eof = true
+        } else {
+            asked.append(scratch.slice(0, count))
+        }
+    }
     io.println("server read [{asked.to_string()}]")
-    let after: Bytes = session.read(8)?
-    io.println("and then EOF {after.len() == 0}")
+    io.println("and then EOF {eof}")
 
     session.write_text("hi back")?
     session.shutdown_write()?
-    let answered: Bytes = client.read_to_end(64)?
-    io.println("client read [{answered.to_string()}]")
+    let answered: string = client_worker.join()?
+    io.println("client read [{answered}]")
     return ok(answered.len())
 }
 

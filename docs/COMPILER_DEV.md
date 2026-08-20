@@ -31,7 +31,9 @@ need no second compiler:
 make
 ```
 
-About 27 seconds. There is no submodule to initialize and no C++ step.
+About five seconds on the reference laptop after the parallel-build work. The
+exact time depends on the bootstrap compiler and machine. There is no submodule
+to initialize and no C++ step.
 
 ## The bootstrap floor
 
@@ -61,7 +63,7 @@ A feature the compiler does not use itself needs none of this.
 ## Iterating
 
 Fastest loop — run the compiler under its own interpreter, no rebuild at all
-(~1s vs ~27s):
+(about one second instead of rebuilding):
 
 ```bash
 ./build/beansc run src/main.b -- check examples/hello.b
@@ -76,8 +78,19 @@ make
 Build by hand, the same thing `make` does:
 
 ```bash
-beansc build src/main.b -o build/beansc.new && mv build/beansc.new build/beansc
+beansc build --release src/main.b -o build/beansc.new && mv build/beansc.new build/beansc
 ```
+
+`make` always builds the compiler with `--release`. A plain application build
+uses `-O0` for a fast edit loop; `--release` uses `-O3` and `NDEBUG`. The i686
+targets use `-O1` for a plain build and `-Og` for `--debug`, because LLVM's
+32-bit x86 fast register allocator can run out of registers at `-O0`.
+
+Large binary builds split into a fixed set of LLVM modules and compile them in
+parallel. Each object is cached by content. `BEANS_BUILD_JOBS` caps concurrent
+Clang processes; `BEANS_BUILD_JOBS=1` selects the single-module path. Set
+`BEANS_IR_COMMENTS=1` only when debugging the emitter and you need MIR comments
+in generated LLVM.
 
 ## Tests, cheapest first
 
@@ -146,7 +159,7 @@ make fuzz-oop            # generated OOP semantics
 
 ## Layout
 
-- `src/` — the self-hosted compiler, 82 `.b` files
+- `src/` — the self-hosted compiler, 83 `.b` files
 - `VERSION` — compiler, language and runtime-ABI versions
 - `runtime/` — portable C runtime
 - `stdlib/std/` — shipped standard library

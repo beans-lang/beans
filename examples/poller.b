@@ -213,8 +213,8 @@ fn waking_a_blocked_wait() -> Result<int> {
 
 // The real use of a wake: a worker on another thread telling the waiter to stop.
 //
-// A `Poller` cannot cross `thread.spawn` — it does not implement `Send`.
-// `wake_handle()` gives the worker a scalar instead. It is deliberately *not*
+// A `Poller` is `Send`, but this example keeps it on the waiting thread.
+// `wake_handle()` gives the worker only the signal it needs. It is deliberately *not*
 // the descriptor: after the poller closes, the number belongs to something else, and a
 // late wake would write a stray byte into an unrelated file. The handle names a slot and
 // a generation instead, so a wake to a closed poller is reported.

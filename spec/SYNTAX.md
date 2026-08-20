@@ -283,7 +283,9 @@ import gitlab.com/tools/csv as csvlib
   into binaries and shared objects, archived into `--emit static`, placed
   beside `--emit obj` output). `beansc run` compiles the selected set once
   into a host shared library cached under `$BEANS_HOME/cache/csrc` and
-  resolves extern symbols through it. Quoted `#include "..."` headers resolve
+  resolves extern symbols through it. That host-library link receives the same
+  selected manifest search, library, and framework rows as a native link, and
+  those arguments enter its cache key. Quoted `#include "..."` headers resolve
   beside each source; a missing file is a manifest error.
 
 ## Lexical
@@ -1940,7 +1942,7 @@ Build options:
 | `--emit <bin\|obj\|static\|shared\|ir>` | choose a binary, object, archive, shared library, or `.ll` |
 | `--ar <path>` | static archive tool, default `ar` |
 | `--header <path>` | write a C header for `pub extern "C"` library exports |
-| `--release`, `--lto` | optimize the build (`-O3`, `NDEBUG`) and link across the runtime boundary; a build without `--release` or `--debug` is `-O0` |
+| `--release`, `--lto` | optimize the build (`-O3`, `NDEBUG`) and link across the runtime boundary; a build without `--release` or `--debug` is `-O0`, except i686 uses `-O1` because LLVM's fast register allocator can run out of registers |
 
 Every setting is validated **before** any native compilation: an unknown triple,
 an unknown CPU for that architecture, a feature that architecture does not have,

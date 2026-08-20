@@ -1,7 +1,8 @@
 # Python interoperability — design
 
 Status: **proposal, nothing implemented**. Written against language contract
-1.0 and the pot model in [`spec/SYNTAX.md`](../spec/SYNTAX.md).
+1.0 and the pot model in
+[`spec/SYNTAX.md`](https://github.com/beans-lang/beans/blob/main/spec/SYNTAX.md).
 
 This document describes the complete design. The first release may ship a
 smaller package and target set, but it must follow this contract so later work

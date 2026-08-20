@@ -4,6 +4,13 @@ This file records user-facing changes in each Beans release.
 
 ## Unreleased
 
+### Fixed
+
+- `beansc run` now passes selected manifest search, library, and framework rows
+  when linking a package's `csrc` host library. Link arguments also enter the
+  cache key, so changing the manifest cannot reuse a library linked under old
+  settings.
+
 ## [0.1.26] - 2026-08-20
 
 ### Added
