@@ -150,8 +150,11 @@ cp test/cases/profile_log.b "$tmp/profile_log.b"
     test "$(PATH="$moved/bin:$PATH" beansc run hello.b)" = "hello from beans"
     PATH="$moved/bin:$PATH" beansc check hello.b | grep -q ': ok$'
     PATH="$moved/bin:$PATH" beansc build hello.b -o "$tmp/hello" >/dev/null
-    PATH="$moved/bin:$PATH" beansc run profile_log.b \
-        2>"$tmp/profile.interp"
+    if ! PATH="$moved/bin:$PATH" beansc run profile_log.b \
+            2>"$tmp/profile.interp"; then
+        cat "$tmp/profile.interp" >&2
+        exit 1
+    fi
     PATH="$moved/bin:$PATH" beansc build profile_log.b \
         -o "$tmp/profile-log" >/dev/null
 )
