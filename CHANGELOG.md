@@ -18,6 +18,9 @@ This file records user-facing changes in each Beans release.
 
 ### Changed
 
+- Worker threads batch cycle-collector root publication, removing the global
+  collector mutex from each possible-root release while preserving the
+  single-threaded collection rule.
 - `ServerConn` reuses one read buffer and one response buffer. HTTP/1 span
   events refer to the current input range instead of copying every parser span
   through the C bridge; the typed parser benchmark improves from the recorded

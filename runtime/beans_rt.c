@@ -1002,6 +1002,10 @@ static const long long cc_threads = 0;
 static _Atomic int cc_pending;
 static int cc_collecting;
 static void cc_collect(int force);
+#if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
+static void cc_worker_roots_begin(void);
+static void cc_worker_roots_end(void);
+#endif
 
 // vtable slot of deinit, emitted by codegen (-1 when no class has one).
 // Deinit runs inside a release cascade, where allocation used to be
@@ -1510,21 +1514,74 @@ static pthread_mutex_t cc_mu = PTHREAD_MUTEX_INITIALIZER;
 #define CC_UNLOCK() ((void)0)
 #endif
 
+// A worker cannot trigger collection: beans_alloc waits for cc_threads to reach
+// zero. Keep its possible roots in TLS and publish them under the global lock in
+// batches instead of taking that lock for every release. CC_BUF, claimed before
+// staging, keeps each shell alive and guarantees that only one thread queues it.
+// The final partial batch is published before the worker lowers cc_threads, so a
+// collector that observes zero workers also observes every staged root.
+#if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
+#define CC_WORKER_ROOT_BATCH 256
+static POOL_LOCAL void* cc_worker_roots[CC_WORKER_ROOT_BATCH];
+static POOL_LOCAL long long cc_worker_root_len;
+static POOL_LOCAL int cc_worker_root_batching;
+#endif
+
+static void cc_append_roots(void** roots, long long count) {
+    if (count <= 0) return;
+    CC_LOCK();
+    long long needed = cc_len + count;
+    if (needed < cc_len) beans_panic("cycle root buffer too large", 0, 0);
+    if (needed > cc_cap) {
+        long long next = cc_cap ? cc_cap * 2 : 1024;
+        while (next < needed) {
+            if (next > (1LL << 60))
+                beans_panic("cycle root buffer too large", 0, 0);
+            next *= 2;
+        }
+        void** grown = rt_realloc(cc_roots, (size_t)next * sizeof(void*));
+        if (!grown) beans_panic("out of memory", 0, 0);
+        cc_roots = grown;
+        cc_cap = next;
+    }
+    memcpy(cc_roots + cc_len, roots, (size_t)count * sizeof(void*));
+    cc_len = needed;
+    if (cc_len >= cc_threshold) cc_pending = 1;
+    CC_UNLOCK();
+}
+
+#if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
+static void cc_flush_worker_roots(void) {
+    long long count = cc_worker_root_len;
+    if (!count) return;
+    cc_worker_root_len = 0;
+    cc_append_roots(cc_worker_roots, count);
+}
+static void cc_worker_roots_begin(void) {
+    cc_worker_root_len = 0;
+    cc_worker_root_batching = 1;
+}
+static void cc_worker_roots_end(void) {
+    cc_flush_worker_roots();
+    cc_worker_root_batching = 0;
+}
+#endif
+
 static void cc_possible_root(void* p) {
     BHead* h = head_of(p);
     long long old = rt_w_fetch_or(&h->meta, CC_PURPLE | CC_BUF);
     if (old & CC_BUF) return; // already parked
     ARC_ADD(arc_possible_roots, 1);
-    // like the counts, the buffer goes unlocked until the first spawn: one
-    // thread exists, and after cc_mt flips every park takes the mutex
-    CC_LOCK();
-    if (cc_len == cc_cap) {
-        cc_cap = cc_cap ? cc_cap * 2 : 1024;
-        cc_roots = rt_realloc(cc_roots, (size_t)cc_cap * sizeof(void*));
+#if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
+    if (cc_worker_root_batching) {
+        cc_worker_roots[cc_worker_root_len++] = p;
+        if (cc_worker_root_len == CC_WORKER_ROOT_BATCH)
+            cc_flush_worker_roots();
+        return;
     }
-    cc_roots[cc_len++] = p;
-    if (cc_len >= cc_threshold) cc_pending = 1;
-    CC_UNLOCK();
+#endif
+    void* root = p;
+    cc_append_roots(&root, 1);
 }
 
 // iterative: a dropped million-node chain pushes children on an explicit
@@ -11842,10 +11899,12 @@ typedef struct {
 void beans_thread_release_env(void* env);
 static void* thread_main(void* arg) {
     BThread* t = arg;
+    cc_worker_roots_begin();
     if (t->typed_thunk) t->typed_thunk(t->env, t->payload);
     else t->result = t->thunk(t->env);
     beans_release(t->env);
     beans_release(t); // the running thread's own ref on the handle
+    cc_worker_roots_end();
     // last heap touch is done — the cycle collector may run again
     cc_threads -= 1;
     return NULL;
