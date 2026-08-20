@@ -2005,6 +2005,7 @@ for example_path in examples/*.b; do
         build/beans_rt.c
     )
     example_has_hash_bridge=false
+    example_has_log_bridge=false
     example_has_tls_bridge=false
     example_preload=""
     case "$example" in
@@ -2037,12 +2038,14 @@ for example_path in examples/*.b; do
         )
         for sidecar in \
             "${driver_object}"_enc_*.o \
+            "${driver_object}"_log.o \
             "${driver_object}"_net_*.o \
             "${driver_object}"_csrc_*.o
         do
             if [[ -f "$sidecar" ]]; then
                 example_sources+=("$sidecar")
                 case "$sidecar" in
+                    *_log.o) example_has_log_bridge=true ;;
                     *_net_hash_*) example_has_hash_bridge=true ;;
                     *_net_tls_*) example_has_tls_bridge=true ;;
                 esac
@@ -2050,6 +2053,13 @@ for example_path in examples/*.b; do
         done
     fi
     example_link_args=(-lm)
+    if [[ "$example_has_log_bridge" == true ]]; then
+        if [[ "$(uname -s)" == "Darwin" ]]; then
+            example_link_args+=(-lc++)
+        else
+            example_link_args+=(-lstdc++)
+        fi
+    fi
     if [[ "$(uname -s)" == "Darwin" ]] &&
        [[ "$example_has_tls_bridge" == true ]]; then
         example_link_args+=(

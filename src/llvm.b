@@ -10,6 +10,8 @@ partial class LlvmTextEmitter {
     // qualified name -> encoding intrinsic id, filled once by
     // resolve_encoding_intrinsics after full validation
     encoding_intrinsics: Map<string, int>
+    // The private std.log bridge helper after source/signature validation.
+    log_intrinsics: Map<string, int>
     // Compiler-shipped generic JSON decoders. These are kept separate from
     // the raw-copy intrinsics because their result schema comes from each
     // concrete call site.
@@ -99,6 +101,7 @@ partial class LlvmTextEmitter {
         self.mir_comments = mir_comments
         self.errors = []
         self.encoding_intrinsics = {}
+        self.log_intrinsics = {}
         self.json_decoders = {}
         self.json_encoders = {}
         self.json_schema_symbols = {}
@@ -1439,6 +1442,7 @@ partial class LlvmTextEmitter {
     fn emit(require_main: bool) -> string {
         self.index_functions()
         self.resolve_encoding_intrinsics()
+        self.resolve_log_intrinsics()
         self.resolve_json_decoders()
         self.resolve_json_encoders()
         self.resolve_xml_decoders()

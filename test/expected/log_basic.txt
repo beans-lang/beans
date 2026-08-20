@@ -1,0 +1,10 @@
+beans-test|hello beans
+sample/main.b|run|12|7
+true
+request_id=42|region=west
+sample/fields.b|21|4
+method source
+true|true|true
+through default
+true|true|true
+dropped=0 export=0

@@ -72,6 +72,12 @@ test -f "$root/lib/net/vendor/wslay/COPYING"
 test -f "$root/lib/net/vendor/zlib-ng/deflate.c"
 test -f "$root/lib/net/vendor/zlib-ng/LICENSE.md"
 test -f "$root/lib/net/zlib-config/zconf.h"
+# std.log ships its bridge and the exact Quill release it compiles against.
+test -f "$root/lib/log/beans_log.cpp"
+test -f "$root/lib/log/beans_log.h"
+test -f "$root/lib/log/vendor/VENDOR.md"
+test -f "$root/lib/log/vendor/quill/LICENSE"
+test -f "$root/lib/log/vendor/quill/include/quill/Backend.h"
 test -f "$root/lib/encoding/vendor/yyjson/LICENSE"
 test -f "$root/lib/encoding/vendor/pugixml/pugixml.cpp"
 test -f "$root/lib/encoding/vendor/pugixml/LICENSE.md"
@@ -86,6 +92,9 @@ cmp build/beansc "$root/bin/beansc.real"
 cmp runtime/beans_rt.c "$root/bin/beans_rt.c"
 cmp runtime/encoding/vendor/yyjson/yyjson.c "$root/lib/encoding/vendor/yyjson/yyjson.c"
 cmp runtime/encoding/vendor/simdutf/simdutf.cpp "$root/lib/encoding/vendor/simdutf/simdutf.cpp"
+cmp runtime/log/beans_log.cpp "$root/lib/log/beans_log.cpp"
+cmp runtime/log/vendor/quill/include/quill/Backend.h \
+    "$root/lib/log/vendor/quill/include/quill/Backend.h"
 for entry in "$root"/*; do
     case "$(basename "$entry")" in
         bin|lib|libexec|toolchain|VERSION|LICENSE|INSTALL.md) ;;
@@ -135,12 +144,20 @@ grep -q '^check: *ready$' "$tmp/doctor.out"
 echo "  doctor resolves the moved installation"
 
 cp examples/hello.b "$tmp/hello.b"
+cp test/cases/profile_log.b "$tmp/profile_log.b"
 (
     cd "$tmp"
     test "$(PATH="$moved/bin:$PATH" beansc run hello.b)" = "hello from beans"
     PATH="$moved/bin:$PATH" beansc check hello.b | grep -q ': ok$'
     PATH="$moved/bin:$PATH" beansc build hello.b -o "$tmp/hello" >/dev/null
+    PATH="$moved/bin:$PATH" beansc run profile_log.b \
+        2>"$tmp/profile.interp"
+    PATH="$moved/bin:$PATH" beansc build profile_log.b \
+        -o "$tmp/profile-log" >/dev/null
 )
 test "$("$tmp/hello")" = "hello from beans"
+"$tmp/profile-log" 2>"$tmp/profile.native"
+grep -q 'profile' "$tmp/profile.interp"
+grep -q 'profile' "$tmp/profile.native"
 
 echo "ok reproducible, complete, beansc0-free release package ($class, $target)"

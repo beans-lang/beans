@@ -530,7 +530,9 @@ class SignatureChecker {
         }
         if import_path == "std.time" { return "clocks" }
         if import_path == "std.random" { return "secure random" }
-        if import_path == "std.thread" { return "threads" }
+        if import_path == "std.thread" || import_path == "std.log" {
+            return "threads"
+        }
         if import_path == "std.fs" { return "the filesystem" }
         if import_path == "std.path" { return "paths" }
         if import_path == "std.reader" { return "buffered reading" }

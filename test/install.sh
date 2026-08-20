@@ -43,6 +43,13 @@ chmod +x "$tmp/beansc"
     test "$("$tmp/beansc" run "$root/examples/hello.b")" = "hello from beans"
     "$tmp/beansc" build "$root/examples/hello.b" -o hello >/dev/null
     test "$(./hello)" = "hello from beans"
+    "$tmp/beansc" run "$root/test/cases/profile_log.b" \
+        2>log.interp
+    "$tmp/beansc" build "$root/test/cases/profile_log.b" \
+        -o profile-log >/dev/null
+    ./profile-log 2>log.native
+    grep -q profile log.interp
+    grep -q profile log.native
     "$tmp/beansc" doctor >doctor.out
     grep -q '^check: *ready$' doctor.out
     grep -q "^standard library: *$share/lib/std\$" doctor.out
@@ -52,4 +59,6 @@ cmp build/beansc "$lib/beansc"
 test -f "$share/LICENSE"
 cmp LICENSE "$share/LICENSE"
 test -f "$lib/wasm_host.c"
+test -f "$lib/log/beans_log.cpp"
+test -f "$lib/log/vendor/quill/include/quill/Backend.h"
 echo "ok installed beansc is self-hosted, complete, and carries no beansc0"

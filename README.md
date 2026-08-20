@@ -521,7 +521,7 @@ High-level standard-library policy is written in Beans. The loader ships
 packages from `stdlib/std/`; `std.collections`, `std.math`, `std.bytes`,
 `std.path`, `std.fmt`, `std.fs`, `std.reader`, and the four
 `std.encoding` packages cover collections, formatting, files and common wire
-formats. Generic collection
+formats. `std.log` adds asynchronous logging and export sinks. Generic collection
 `filter`/`transform`, inout Map increment/insert/merge/remove/map policies,
 Option and Result combinators, `frequencies`, `unique`, `gcd`, `clamp`,
 CRC32, unsigned varint append/encoding/decoding, path handling,
@@ -575,6 +575,35 @@ Windows toolchain and all four packages cross-build for the GNU, GNullVM,
 32-bit and ARM64 ABIs — and CI's `windows-native` job builds and runs the
 same cases on real `windows-latest` and `windows-11-arm` machines.
 `wasm32-wasi` compiles with a complete WASI SDK but has not been executed.
+
+### Logging
+
+`std.log` is an asynchronous logger backed by the pinned Quill 12.1.0 C++17
+engine. It supports named loggers, runtime level filters, console, file,
+size-rotating file, NDJSON, string fields, and bounded pull-based export sinks. Short calls
+keep the Beans source file, function, line, and column in native and
+interpreted programs.
+
+```beans
+import std.log
+
+let exported: log.ExportSink = log.ExportSink.open(1024)?
+let logger: log.Logger = log.Logger.create(
+    "service", [log.Sink.console()?, exported.sink()])?
+
+logger.info("ready")
+logger.flush()?
+match exported.next(1000)? {
+    some(record) => { /* send record to another system */ }
+    none => {}
+}
+```
+
+Export callbacks never run on Quill's backend thread. The consumer pulls safe
+Beans `Record` values and chooses `drop_newest`, `drop_oldest`, or `block` for
+its bounded queue. Programs that do not import `std.log` link no Quill code.
+The API, current limits, vendor record, and benchmark command are in
+[docs/STD_LOG.md](docs/STD_LOG.md).
 
 ## Memory
 
