@@ -27,8 +27,19 @@ function Fail([string] $Message) { Write-Error $Message; exit 1 }
 $versionLine = Get-Content (Join-Path $repo 'VERSION') |
     Where-Object { $_ -like 'compiler=*' } |
     Select-Object -First 1
+$languageLine = Get-Content (Join-Path $repo 'VERSION') |
+    Where-Object { $_ -like 'language=*' } |
+    Select-Object -First 1
+$runtimeAbiLine = Get-Content (Join-Path $repo 'VERSION') |
+    Where-Object { $_ -like 'runtime_abi=*' } |
+    Select-Object -First 1
 if (-not $versionLine) { Fail 'VERSION does not declare compiler=<version>' }
+if (-not $languageLine) { Fail 'VERSION does not declare language=<version>' }
+if (-not $runtimeAbiLine) { Fail 'VERSION does not declare runtime_abi=<version>' }
 $version = $versionLine -replace '^compiler=', ''
+$language = $languageLine -replace '^language=', ''
+$runtimeAbi = $runtimeAbiLine -replace '^runtime_abi=', ''
+$expectedVersion = "beansc $version (language $language, runtime ABI $runtimeAbi)"
 
 $archive = Get-ChildItem -Path $Dist -Filter '*.zip' | Select-Object -First 1
 if (-not $archive) { Fail "no .zip package in $Dist" }
@@ -140,7 +151,7 @@ fn main() {
 '@ | Set-Content -LiteralPath (Join-Path $work 'ffi.b') -Encoding ascii
 Push-Location $work
 
-if ((& $launcher --version) -ne "beansc $version (language 1.0, runtime ABI 6)") {
+if ((& $launcher --version) -ne $expectedVersion) {
     Fail 'unexpected --version output'
 }
 $doctor = & $launcher doctor
