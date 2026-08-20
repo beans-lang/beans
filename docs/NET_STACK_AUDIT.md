@@ -1,9 +1,5 @@
 # Networking stack completion audit
 
-Status: complete except for the explicitly unchecked real-Windows SChannel
-lane. For public APIs and runnable examples, see
-[NETWORKING.md](NETWORKING.md).
-
 Scope: the 14 commits from `b2e4350` through `bddcefa`, checked against the
 Beans Net Stack Plan. A checked item needs code and a test that proves the
 stated gate. A passing narrow test does not close a broader item.
@@ -21,8 +17,8 @@ stated gate. A passing narrow test does not close a broader item.
 
 ## Language and build support added in the same commits
 
-- [x] Make `csrc` cache keys include included header contents, so a header-only
-  change rebuilds the object or shared library.
+- [x] Make `csrc` cache keys include included header contents. A header-only
+  change currently reuses a stale object or shared library.
 - [x] Replace the single 31-bit `csrc` cache hash with a collision-resistant
   cache identity and include host target/toolchain facts in run-library keys.
 - [x] Do not pass POSIX-only `-fPIC` when building a Windows `csrc` run
@@ -31,9 +27,6 @@ stated gate. A passing narrow test does not close a broader item.
 - [x] Add explicit compiler cache-isolation tests for interpreter and native
   output.
 - [x] Add a package-owned C source to the real Windows native matrix.
-- [x] Link the interpreter's `csrc` host library with the same selected
-  manifest search, library and framework rows as native output, and include
-  those arguments in its cache key.
 
 ## HTTP/1.1
 
@@ -60,8 +53,9 @@ stated gate. A passing narrow test does not close a broader item.
   as required by the plan, rather than a separate untyped `Stream` model.
 - [x] Add header count/byte limits and validate pseudo-header order,
   uniqueness, required fields, lowercase names, and response status.
-- [x] Keep an over-limit stream rejected until it closes, rather than allowing
-  later DATA to recreate its builder and emit a partial message.
+- [x] Keep an over-limit stream rejected until it closes. The current code
+  removes its builder, then can recreate it from later DATA and emit a
+  partial message.
 - [x] Add a TLS transport path selected from ALPN without making plain
   `std.http` link a TLS backend.
 - [x] Remove whole-body duplicate copies and the hot linear pending-body
@@ -90,7 +84,8 @@ stated gate. A passing narrow test does not close a broader item.
 ## Compression
 
 - [x] Bound each streaming inflate output allocation by the caller's
-  remaining limit instead of allocating 64 KiB before checking the total.
+  remaining limit. It currently allocates a fresh 64 KiB before checking the
+  total limit.
 - [x] Reject invalid compression levels instead of silently changing them to
   level 6.
 - [x] Add sanitizer coverage for one-shot and streaming bridge paths.
@@ -125,18 +120,11 @@ stated gate. A passing narrow test does not close a broader item.
   driver instruments generated IR, runtime, shim, and vendored sources.
 - [x] Run the poll scale gate at 10,000 idle plus 100 active sockets. The
   ordinary gate uses 400 idle and the soak default uses 4,000.
-- [x] Add an actual scheduled soak through `.github/workflows/net-soak.yml`.
+- [x] Add an actual scheduled soak. `fuzz-net-soak` exists but no workflow
+  invokes it, and its default budget is five minutes rather than 24 hours.
 - [x] Make missing conformance tools a visible incomplete gate, not a green
   completion claim.
 - [x] Run the full compiler, runtime, FFI, platform, sanitizer, release, and
   self-host/fixpoint suites. After the later Windows-only wslay flag fix, run
   the quick compiler gate, fixed point, release package, and full x64, x86,
   and ARM64 Windows staging again.
-
-## Follow-up concurrency and allocation work
-
-- [x] Make socket, poller, HTTP client/server, HTTP/2, WebSocket, hasher and
-  compression handles transferable to a worker when their sole owner moves.
-- [x] Add `TcpStream.read_into`, HTTP parser `feed_range`, reusable server
-  buffers, `Thread.detach`, and `SO_REUSEPORT` listener/server constructors.
-- [x] Keep Windows reuse-port behavior explicit as `unsupported`.

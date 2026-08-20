@@ -1,8 +1,7 @@
 # Windows targets
 
 Seven Windows host targets across GNU/MinGW, GNullVM/UCRT, and MSVC.
-[spec/SYNTAX.md](https://github.com/beans-lang/beans/blob/main/spec/SYNTAX.md)
-is the contract — what each target refuses and why
+[spec/SYNTAX.md](../spec/SYNTAX.md) is the contract — what each target refuses and why
 lives there. This file is the operational half: which toolchain, which machine
 can run what, and the exact commands.
 
@@ -22,11 +21,11 @@ The `i686` rows are compatibility targets and run through WOW64 on an x64
 machine. Their smaller inline-assembly and intrinsic sets are recorded in
 spec/SYNTAX.md's refusal table. ARM64 runs on a real `windows-11-arm` runner.
 
-The CI matrix has staging and native jobs for the Windows architectures, but a
-job definition is not a completed support claim. The current program, compiler,
-bootstrap and archive result is kept in `targets/support.tsv`; a row stays
-missing until its matching real-Windows run succeeds. Decimal uses portable
-two-limb arithmetic, so i686 does not need C++ `__int128`.
+Every row has a CI job that runs programs, runs `beansc.exe`, and rebuilds the
+compiler to a fixed point. Decimal uses portable two-limb arithmetic, so i686
+does not need C++ `__int128`.
+The current pass/missing result is kept in `targets/support.tsv`; adding a job
+does not mark its row passed before a real Windows run succeeds.
 
 **Minimum Windows version: Windows 10.** Windows on ARM has no earlier release
 worth targeting, and the runtime's Win32 calls are the Windows 10 set.
@@ -130,9 +129,8 @@ the bug that once made `deinit` never run on a 32-bit board.
 BEANSC=build/windows_native/beansc.exe bash test/windows_hosted.sh
 ```
 
-The promotion gate requires the hosted compiler to rebuild itself
-byte-identically for its own architecture. See `targets/support.tsv` for which
-architectures have passed that fixed point.
+CI additionally requires the hosted compiler to rebuild itself byte-identically
+for its own architecture — the per-architecture fixed point.
 
 ## CI
 

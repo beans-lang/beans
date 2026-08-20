@@ -63,17 +63,14 @@ fn talk(port: int) -> int {
 // own function so the socket can be moved into the WebSocket layer once.
 fn read_upgrade(stream: net.TcpStream) -> Result<http.Request> {
     let parser: http.RequestParser = new http.RequestParser()
-    let scratch: Bytes = Bytes.filled(16384, 0)
     var rounds: int = 0
     for rounds < 100 {
         rounds += 1
-        // Reuse the same storage for every socket read and give the parser only the
-        // initialized range.
-        let count: int = stream.read_into(scratch)?
-        if count == 0 {
+        let arrived: Bytes = stream.read(16384)?
+        if arrived.len() == 0 {
             return err("the client left during the upgrade", "eof")
         }
-        let events: List<http.RequestEvent> = parser.feed_range(scratch, 0, count)?
+        let events: List<http.RequestEvent> = parser.feed(arrived)?
         var found: Option<http.Request> = none
         for event: http.RequestEvent in events {
             match event {

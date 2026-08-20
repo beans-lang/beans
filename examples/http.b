@@ -4,8 +4,8 @@
 // The shapes to notice:
 //
 //   The server never picks a port. `bind("127.0.0.1", 0)` asks the system,
-//   `port()` reads the answer. The accepted connection then moves to a
-//   worker. It stays move-only, so exactly one thread owns it.
+//   `port()` reads the answer, and only the number crosses the thread
+//   boundary — sockets stay where they were made.
 //
 //   Requests arrive whole. `read_request()` buffers head, body and
 //   trailers behind the parser's strict-mode checks; the streaming layer
@@ -51,42 +51,6 @@ fn visit(port: int) -> int {
     return failures
 }
 
-fn serve(conn: http.ServerConn) -> int {
-    var served: int = 0
-    var open: bool = true
-    for open {
-        match conn.read_request() {
-            ok(maybe) => {
-                match maybe {
-                    some(request) => {
-                        served += 1
-                        var reply: http.Headers = new http.Headers()
-                        if request.head.target == "/greeting" {
-                            let sent: Result<bool> = conn.respond(
-                                200, "OK", reply,
-                                Bytes.from("hello from beans"),
-                                request.keep_alive)
-                        } else if request.head.target == "/echo" {
-                            reply.add("X-Length", "{request.body.len()}")
-                            let sent: Result<bool> = conn.respond(
-                                200, "OK", reply, request.body,
-                                request.keep_alive)
-                        } else {
-                            let sent: Result<bool> = conn.respond(
-                                404, "Not Found", reply,
-                                Bytes.from("no such page"),
-                                request.keep_alive)
-                        }
-                    }
-                    none => { open = false }
-                }
-            }
-            err(_) => { open = false }
-        }
-    }
-    return served
-}
-
 fn main() {
     match http.Server.bind("127.0.0.1", 0) {
         ok(server) => {
@@ -97,9 +61,37 @@ fn main() {
             var served: int = 0
             match server.accept() {
                 ok(conn) => {
-                    let worker: Thread<int> = thread.spawn(
-                        fn() move(conn) -> int { return serve(conn) })
-                    served = worker.join()
+                    var open: bool = true
+                    for open {
+                        match conn.read_request() {
+                            ok(maybe) => {
+                                match maybe {
+                                    some(request) => {
+                                        served += 1
+                                        var reply: http.Headers = new http.Headers()
+                                        if request.head.target == "/greeting" {
+                                            let sent: Result<bool> = conn.respond(
+                                                200, "OK", reply,
+                                                Bytes.from("hello from beans"),
+                                                request.keep_alive)
+                                        } else if request.head.target == "/echo" {
+                                            reply.add("X-Length", "{request.body.len()}")
+                                            let sent: Result<bool> = conn.respond(
+                                                200, "OK", reply, request.body,
+                                                request.keep_alive)
+                                        } else {
+                                            let sent: Result<bool> = conn.respond(
+                                                404, "Not Found", reply,
+                                                Bytes.from("no such page"),
+                                                request.keep_alive)
+                                        }
+                                    }
+                                    none => { open = false }
+                                }
+                            }
+                            err(_) => { open = false }
+                        }
+                    }
                 }
                 err(e) => { io.println("accept failed: {e.kind}") }
             }

@@ -8,8 +8,6 @@ end in `.b`.
 - [examples/](examples/) — real `.b` programs
 - [src/](src/) — the self-hosted compiler
 - [stdlib/std/](stdlib/std/) — compiler-shipped standard library packages
-- [Documentation](https://beans-lang.github.io/beans/) — published installation,
-  networking, concurrency and compiler guides ([source](docs/))
 - [docs/REFLECTION.md](docs/REFLECTION.md) — typed runtime reflection and safety rules
 - [docs/RUNTIME_HOOKS.md](docs/RUNTIME_HOOKS.md) — active annotations and app lifecycle
 - [docs/JSON_STRUCT_DECODING.md](docs/JSON_STRUCT_DECODING.md) — typed JSON structs
@@ -18,8 +16,8 @@ end in `.b`.
 
 ## Status
 
-The latest release is **v0.1.26**. It carries language contract `1.0` and runtime
-ABI `7` while the project finishes the evidence needed for a production 1.0
+The latest release is **v0.1.19**. It carries language contract `1.0` and runtime
+ABI `6` while the project finishes the evidence needed for a production 1.0
 claim.
 
 | piece | current state |
@@ -85,7 +83,7 @@ The layout inside is stable: `bin/`, `lib/`, `toolchain/` and `VERSION`.
 Pick a version, a location, or a target:
 
 ```bash
-curl -fsSL .../beans-install.sh | sh -s -- --version 0.1.26 --prefix /opt/beans
+curl -fsSL .../beans-install.sh | sh -s -- --version 0.1.19 --prefix /opt/beans
 BEANS_TARGET=x86_64-unknown-linux-musl curl -fsSL .../beans-install.sh | sh
 ```
 
@@ -107,12 +105,11 @@ native executables with nothing else installed. Full packages ship for Linux
 x86-64 and ARM64 (GNU), and for Windows x64, ARM64 and x86 (LLVM-MinGW).
 
 A **slim** package ships everywhere else — macOS, musl, and the less common
-Linux and Windows ABIs. `beansc --version`, `doctor`, `check`, `llvm` and
-`build --emit ir` need nothing but the package. A pure-Beans `run` does too;
-`run` needs Clang when the program uses C FFI, `csrc`, encoding bridges or
-networking bridges. A native `build` also needs Clang on your PATH, because
-Beans emits LLVM IR and GCC cannot compile it. When a tool is missing, Beans
-says which one and how to install it instead of leaking a Clang or linker error.
+Linux and Windows ABIs. `beansc --version`, `doctor`, `check`, `run`, `llvm` and
+`build --emit ir` need nothing but the package. A native `build` needs Clang on
+your PATH, because Beans emits LLVM IR and GCC cannot compile it. When a tool is
+missing, Beans says which one and how to install it instead of leaking a Clang or
+linker error.
 
 An archive proves that the compiler was built and smoke-tested for that target;
 it does not by itself make the target production tier. Native program,
@@ -120,8 +117,7 @@ self-host and archive status are tracked separately in
 [`targets/support.tsv`](targets/support.tsv).
 
 On macOS, native builds need Apple's Command Line Tools — Apple's SDK is not ours
-to redistribute. `beansc check` and a pure-Beans `beansc run` work without them;
-a run that compiles a native bridge, `csrc`, or framework needs them:
+to redistribute. `beansc check` and `beansc run` work without them:
 
 ```bash
 xcode-select --install
@@ -170,9 +166,8 @@ sudo make install PREFIX=/usr/local
 versions, and stays in this repository so every checkout can read it.
 
 To use the checkout's compiler directly, add its absolute `build` directory to
-your PATH and keep the checkout in place — `build/beans_rt.c`,
-`runtime/encoding`, `runtime/net`, and `stdlib/std/` are part of that
-development installation.
+your PATH and keep the checkout in place — `build/beans_rt.c` and `stdlib/std/`
+are part of that development installation.
 
 The exact Windows/Linux host status is in
 [`targets/support.tsv`](targets/support.tsv), checked by `make platform-status`.
@@ -309,9 +304,6 @@ For local development, `require path "../module"` imports the target's declared
 module name without adding a lock row. Manifest `#` and `//` comments work
 outside quoted values. Native `link` rows propagate from local and git
 dependencies; both `build` and `run` honor them.
-`csrc all "native/shim.c"` declares package-owned C sources. Native builds
-compile them into cached objects; `run` builds one cached host library and links
-it with the same selected manifest search, library and framework rows.
 `beansc pot add --system sqlite3` asks `pkg-config` for an installed C
 library's search paths and library names, then writes a marked `link` block.
 `pot remove --system sqlite3` removes that block. System libraries are owned by
@@ -446,8 +438,7 @@ make bench-quick       # quick benchmark pass (not claim-eligible)
 make bench-verify      # checksum + output-parity over every benchmark
 make bench-full        # the full, claim-eligible benchmark run
 make bench-profile NAME=trees
-make test-self-host     # interpreter/native parity for the self-hosted compiler
-make test-fixpoint      # the compiler rebuilt by itself, stage 2 == stage 3
+make test-self-host     # the fixed point: the compiler rebuilt by itself
 make bench-compiler     # frontend, MIR, LLVM, stdlib, large source and packages
 ```
 
@@ -522,9 +513,7 @@ functions export stable C names. Opaque C structs stay behind `RawPtr`; C
 globals, TLS, and hosted errno use generated C accessors. `RawPtr.with_local`
 lends a scoped stack pointer. `StoredCallback` covers callbacks registered for
 later or cross-thread use, with `Send + Sync` captures and an explicit
-unregister then `close()` lifetime. `LocalStoredCallback` covers callbacks a C
-library stores but invokes only on the registering thread, so its captures may
-stay local.
+unregister then `close()` lifetime.
 
 The native backend emits textual LLVM IR and hands it to clang — no LLVM library dependency. The C runtime lives in `runtime/beans_rt.c`, not inside the compiler binary. Development builds link a cached runtime object; `--release --lto` links cached runtime bitcode so LLVM can optimize across the boundary. `BEANS_RUNTIME` can point at another runtime source. The backend covers the whole language: classes (descriptor/vtable dispatch, inheritance, interface defaults, abstract classes, singleton instances, static fields, `override`, `as?`), monomorphized generics on classes, structs, and functions, enums + `match` (block-bodied arms included), Option/Result + `?`, exact-width integers and `f32`, exact `decimal`, lists and maps, closures (lambda-lifted, captured variables live in shared heap cells — mutation works, escaping works), real pthreads for `thread.spawn`/`Mutex`/`Channel`/`AtomicInt`, `defer`, string interpolation, and multi-package programs (every symbol carries its package's whole import path, so two packages with the same name never collide; cross-package calls, inheritance, generics, and interface dispatch all compile into one flat module). Every test file produces byte-identical output under `beansc build` and `beansc run` — panics included, same message, same exit code.
 
@@ -532,9 +521,7 @@ High-level standard-library policy is written in Beans. The loader ships
 packages from `stdlib/std/`; `std.collections`, `std.math`, `std.bytes`,
 `std.path`, `std.fmt`, `std.fs`, `std.reader`, and the four
 `std.encoding` packages cover collections, formatting, files and common wire
-formats. `std.net`, `std.poll`, `std.http`, `std.websocket`, `std.compress`,
-`std.crypto`, and `std.tls` provide the networking stack described in
-[docs/NETWORKING.md](docs/NETWORKING.md). Generic collection
+formats. Generic collection
 `filter`/`transform`, inout Map increment/insert/merge/remove/map policies,
 Option and Result combinators, `frequencies`, `unique`, `gcd`, `clamp`,
 CRC32, unsigned varint append/encoding/decoding, path handling,
@@ -597,7 +584,7 @@ Reference cycles (`a.next = some(b); b.next = some(a)`) are caught by trial dele
 
 Verified with Apple's `leaks` tool: **0 leaked bytes** on every test program — including [examples/cycles.b](examples/cycles.b), which drops 400k cycle pairs, a self-cycle, a 300k ring, and a closure that captures its own cell. **2M dropped cycle pairs run in 1.4MB flat**, same as the acyclic stress test, and live rings survive collections untouched.
 
-The design keeps RC off hot paths: function arguments, loop variables, and reads borrow instead of retaining. `move local` moves an owned value with compile-time use-after-move checks, and `return move local` transfers its last reference instead of retaining it. List, Map, OrderedMap, `Box<T>`, and the typed append-only `Arena<T>` are move-only outer handles; they are `Send` when their stored types are `Send`, copy only through explicit `clone()`, and Arena values drop in bulk on `clear` or scope exit. `Bytes`, `File`, and `MMap` are also move-only `Send` owners, not `Sync`. `Shared<T>`/`Weak<T>` add an explicit atomic control block for cross-thread ownership without making local classes pay that cost. `Send`/`Sync` interface bounds are enforced, and `thread.spawn` rejects non-`Send` captures and returns; the complete rules are in [docs/CONCURRENCY.md](docs/CONCURRENCY.md). Pointer-valued `Option` uses a null niche in native code, while structs, fixed arrays, SIMD vectors, slices, and nested wide Options use an inline `{has_value, payload}` aggregate. A Result with a wide branch is also inline. Ordinary structs can own ARC fields. Typed-width List, Map-value, Box, Arena, Shared, Mutex, Channel, Thread-result, and user-enum payload storage keeps wide values and checked 32-byte decimals inline with ARC pointer masks. Map keeps its existing narrow fast path and uses a parallel buffer only for wide values. Wide value keys are boxed once when stored; lookup uses a stack copy and generated field-wise equality and hashing, so queries do not allocate. The compiler tracks nested references through copies, calls, captures, assignments, class nesting, collection operations, matches, and `?`. Inline Option/Result forms do not allocate their own aggregate box; user enums remain ARC values but keep wide payloads inline inside that allocation. The benchmark numbers below are measured *with* ARC and the collector enabled. Known limits: collection is deferred while worker threads run (a program that churns cycles forever while never letting its threads drain will grow until they do), nested move-only collection clones, consuming Map reads, and a `?` early-return that can hold mid-statement temporaries a little longer.
+The design keeps RC off hot paths: function arguments, loop variables, and reads borrow instead of retaining. `move local` moves an owned value with compile-time use-after-move checks, and `return move local` transfers its last reference instead of retaining it. List, Map, OrderedMap, `Box<T>`, and the typed append-only `Arena<T>` are move-only outer handles; collections copy only through explicit `clone()`, and Arena values drop in bulk on `clear` or scope exit. `Shared<T>`/`Weak<T>` add an explicit atomic control block for cross-thread ownership without making local classes pay that cost. `Send`/`Sync` interface bounds are enforced, and `thread.spawn` rejects non-`Send` captures and returns. Pointer-valued `Option` uses a null niche in native code, while structs, fixed arrays, SIMD vectors, slices, and nested wide Options use an inline `{has_value, payload}` aggregate. A Result with a wide branch is also inline. Ordinary structs can own ARC fields. Typed-width List, Map-value, Box, Arena, Shared, Mutex, Channel, Thread-result, and user-enum payload storage keeps wide values and checked 32-byte decimals inline with ARC pointer masks. Map keeps its existing narrow fast path and uses a parallel buffer only for wide values. Wide value keys are boxed once when stored; lookup uses a stack copy and generated field-wise equality and hashing, so queries do not allocate. The compiler tracks nested references through copies, calls, captures, assignments, class nesting, collection operations, matches, and `?`. Inline Option/Result forms do not allocate their own aggregate box; user enums remain ARC values but keep wide payloads inline inside that allocation. The benchmark numbers below are measured *with* ARC and the collector enabled. Known limits: collection is deferred while worker threads run (a program that churns cycles forever while never letting its threads drain will grow until they do), nested move-only collection clones, consuming Map reads, and a `?` early-return that can hold mid-statement temporaries a little longer.
 
 ## Benchmarks
 
