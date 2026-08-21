@@ -8677,6 +8677,90 @@ class TreeInterpreter {
            self.runtime_hook_active {
             return TreeValue.unit()
         }
+        let early_log_level: int =
+            if node.kind == "call" ||
+               node.kind == "method_call" {
+                self.tree_log_level(node.resolved)
+            } else {
+                -1
+            }
+        if early_log_level >= 0 &&
+           node.kind == "call" &&
+           node.children.len() == 1 {
+            match self.find_function(package_symbol(
+                    "std.log", "default_enabled_code")) {
+                some(enabled_function) => {
+                    let enabled: TreeValue = self.invoke(
+                        enabled_function,
+                        [TreeValue.integer(early_log_level)],
+                        none)
+                    if !self.truth(node, enabled) {
+                        return TreeValue.boolean(false)
+                    }
+                }
+                none => {}
+            }
+            let message: TreeValue =
+                self.expression(node.children[0], frame)
+            if self.failed { return TreeValue.unit() }
+            if message.kind == "propagate" { return message }
+            match self.find_function(package_symbol(
+                    "std.log", "default_write_enabled_at_code")) {
+                some(function) => {
+                    return self.invoke(
+                        function,
+                        [TreeValue.integer(early_log_level),
+                         message,
+                         TreeValue.string(node.file),
+                         TreeValue.string(self.active_function_name()),
+                         TreeValue.integer(node.line),
+                         TreeValue.integer(node.col)],
+                        none)
+                }
+                none => {}
+            }
+        }
+        if early_log_level >= 0 &&
+           node.kind == "method_call" &&
+           node.children.len() == 2 {
+            let receiver: TreeValue =
+                self.expression(node.children[0], frame)
+            if self.failed { return TreeValue.unit() }
+            if receiver.kind == "propagate" { return receiver }
+            match self.find_function(package_symbol(
+                    "std.log", "logger_enabled_code")) {
+                some(enabled_function) => {
+                    let enabled: TreeValue = self.invoke(
+                        enabled_function,
+                        [tree_value_copy(receiver),
+                         TreeValue.integer(early_log_level)],
+                        none)
+                    if !self.truth(node, enabled) {
+                        return TreeValue.boolean(false)
+                    }
+                }
+                none => {}
+            }
+            let message: TreeValue =
+                self.expression(node.children[1], frame)
+            if self.failed { return TreeValue.unit() }
+            if message.kind == "propagate" { return message }
+            match self.find_function(package_symbol(
+                    "std.log", "Logger.log_at_code")) {
+                some(function) => {
+                    return self.invoke(
+                        function,
+                        [TreeValue.integer(early_log_level),
+                         message,
+                         TreeValue.string(node.file),
+                         TreeValue.string(self.active_function_name()),
+                         TreeValue.integer(node.line),
+                         TreeValue.integer(node.col)],
+                        some(receiver))
+                }
+                none => {}
+            }
+        }
         var arguments: List<TreeValue> = []
         for child: HirNode in node.children {
             let argument: TreeValue =

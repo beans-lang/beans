@@ -1,3 +1,5 @@
 levels=6
 logger-filter=true|true|true
+lazy-method=true|true|true
+lazy-default=true|true|true|true
 sink-filter=true|true

@@ -20,6 +20,7 @@ extern "C" fn beans_log_flush_all() -> int
 extern "C" fn beans_log_shutdown() -> int
 extern "C" fn beans_log_dropped() -> int
 extern "C" fn beans_log_export_take(sink: int, timeout_millis: int) -> int
+extern "C" fn beans_log_export_take_batch(sink: int, timeout_millis: int, output: RawPtr<u64>, capacity: int) -> int
 extern "C" fn beans_log_export_dropped(sink: int) -> int
 extern "C" fn beans_log_record_timestamp_nanos(record: int) -> int
 extern "C" fn beans_log_record_level(record: int) -> int
@@ -336,6 +337,89 @@ pub class Record {
     pub fields: List<Field> = []
 }
 
+fn record_from_native(native: int) -> Record {
+    let record: Record = new Record()
+    var field_count: int = 0
+    unsafe {
+        record.timestamp_nanos = beans_log_record_timestamp_nanos(native)
+        record.level = level_from_id(beans_log_record_level(native))
+        record.line = beans_log_record_line(native)
+        record.column = beans_log_record_column(native)
+        field_count = beans_log_record_field_count(native)
+    }
+    record.logger = bridge_string(native, 0)
+    record.message = bridge_string(native, 1)
+    record.file = bridge_string(native, 2)
+    record.function = bridge_string(native, 3)
+    record.thread_id = bridge_string(native, 4)
+    record.thread_name = bridge_string(native, 5)
+    record.process_id = bridge_string(native, 6)
+    for index: int in 0..field_count {
+        record.fields.push(new Field(
+            bridge_field(native, index, true),
+            bridge_field(native, index, false)))
+    }
+    unsafe { beans_log_record_destroy(native) }
+    return record
+}
+
+fn export_next(handle: int,
+               timeout_millis: int) -> Result<Option<Record>> {
+    if timeout_millis < 0 {
+        return err("log export timeout cannot be negative", "invalid")
+    }
+    var native: int = 0
+    unsafe { native = beans_log_export_take(handle, timeout_millis) }
+    if native == 0 {
+        unsafe {
+            if beans_log_last_error_len() != 0 {
+                return err(
+                    native_error("cannot read exported log record"), "log")
+            }
+        }
+        return ok(none)
+    }
+    return ok(some(record_from_native(native)))
+}
+
+fn export_next_batch(handle: int, max_records: int,
+                     timeout_millis: int) -> Result<List<Record>> {
+    if max_records <= 0 || max_records > 4096 {
+        return err(
+            "log export batch size must be between 1 and 4096", "invalid")
+    }
+    if timeout_millis < 0 {
+        return err("log export timeout cannot be negative", "invalid")
+    }
+    var native_records: RawPtr<u64> = RawPtr.null()
+    var count: int = 0
+    unsafe {
+        native_records = RawPtr.alloc(max_records)
+        count = beans_log_export_take_batch(
+            handle, timeout_millis, native_records, max_records)
+    }
+    if count == 0 {
+        unsafe {
+            native_records.free()
+            if beans_log_last_error_len() != 0 {
+                return err(
+                    native_error("cannot read exported log records"), "log")
+            }
+        }
+        return ok([])
+    }
+    var records: List<Record> = []
+    records.reserve(count)
+    unsafe {
+        for index: int in 0..count {
+            let native: int = native_records.offset(index).read() as int
+            records.push(record_from_native(native))
+        }
+        native_records.free()
+    }
+    return ok(move records)
+}
+
 /// A sink whose records can be pulled by another Beans thread or event loop.
 pub class ExportSink {
     handle: int
@@ -348,6 +432,9 @@ pub class ExportSink {
 
     /// The ordinary sink value passed to `Logger.create`.
     pub fn sink() -> Sink { return self.output_sink }
+
+    /// A move-only reader which can be sent to a dedicated export thread.
+    pub fn reader() -> ExportReader { return new ExportReader(self.handle) }
 
     /// Creates a bounded export queue. Dropping oldest is the safe default:
     /// it preserves recent events and never stalls every logger in the process.
@@ -374,42 +461,35 @@ pub class ExportSink {
 
     /// Waits up to `timeout_millis`. Zero polls without waiting.
     pub fn next(timeout_millis: int = 0) -> Result<Option<Record>> {
-        if timeout_millis < 0 {
-            return err("log export timeout cannot be negative", "invalid")
-        }
-        var native: int = 0
-        unsafe { native = beans_log_export_take(self.handle, timeout_millis) }
-        if native == 0 {
-            unsafe {
-                if beans_log_last_error_len() != 0 {
-                    return err(native_error("cannot read exported log record"), "log")
-                }
-            }
-            return ok(none)
-        }
-        let record: Record = new Record()
-        var field_count: int = 0
-        unsafe {
-            record.timestamp_nanos = beans_log_record_timestamp_nanos(native)
-            record.level = level_from_id(beans_log_record_level(native))
-            record.line = beans_log_record_line(native)
-            record.column = beans_log_record_column(native)
-            field_count = beans_log_record_field_count(native)
-        }
-        record.logger = bridge_string(native, 0)
-        record.message = bridge_string(native, 1)
-        record.file = bridge_string(native, 2)
-        record.function = bridge_string(native, 3)
-        record.thread_id = bridge_string(native, 4)
-        record.thread_name = bridge_string(native, 5)
-        record.process_id = bridge_string(native, 6)
-        for index: int in 0..field_count {
-            record.fields.push(new Field(
-                bridge_field(native, index, true),
-                bridge_field(native, index, false)))
-        }
-        unsafe { beans_log_record_destroy(native) }
-        return ok(some(record))
+        return export_next(self.handle, timeout_millis)
+    }
+
+    /// Pulls several records with one queue lock and bridge call.
+    pub fn next_batch(max_records: int = 64,
+                      timeout_millis: int = 0) -> Result<List<Record>> {
+        return export_next_batch(
+            self.handle, max_records, timeout_millis)
+    }
+
+    pub fn dropped() -> int {
+        unsafe { return beans_log_export_dropped(self.handle) }
+    }
+}
+
+/// A move-only consumer handle for an export sink. Move it into a worker thread.
+pub unique class ExportReader implements Send {
+    handle: int
+
+    fn init(handle: int) { self.handle = handle }
+
+    pub fn next(timeout_millis: int = 0) -> Result<Option<Record>> {
+        return export_next(self.handle, timeout_millis)
+    }
+
+    pub fn next_batch(max_records: int = 64,
+                      timeout_millis: int = 0) -> Result<List<Record>> {
+        return export_next_batch(
+            self.handle, max_records, timeout_millis)
     }
 
     pub fn dropped() -> int {
@@ -483,9 +563,6 @@ pub class Logger {
 
     fn log_at_code(level: int, message: string, file: string,
                    function: string, line: int, column: int) -> bool {
-        unsafe {
-            if beans_log_logger_enabled(self.handle, level) == 0 { return false }
-        }
         return log_write_strings(
             self.handle, level, message, file, function, line, column)
     }
@@ -526,6 +603,15 @@ pub class Logger {
     }
 }
 
+// Compiler-only guards for the short level methods. MIR places these before
+// the message expression so disabled interpolation is never built.
+fn logger_enabled_code(logger: Logger, level: int) -> bool {
+    unsafe {
+        return beans_log_logger_enabled(
+            logger.native_handle(), level) != 0
+    }
+}
+
 singleton class DefaultState {
     logger: int = 0
 
@@ -560,6 +646,14 @@ pub fn enabled(level: Level) -> bool {
     unsafe { return beans_log_logger_enabled(logger, level_id(level)) != 0 }
 }
 
+fn default_enabled_code(level: int) -> bool {
+    let logger: int = DefaultState.instance.get()
+    if logger == 0 { return false }
+    unsafe {
+        return beans_log_logger_enabled(logger, level) != 0
+    }
+}
+
 fn default_write(level: Level, message: string) -> bool {
     return default_write_at_code(
         level_id(level), message, "", "", 0, 0)
@@ -573,6 +667,18 @@ fn default_write_at_code(level: int, message: string,
     unsafe {
         if beans_log_logger_enabled(logger, level) == 0 { return false }
     }
+    return log_write_strings(
+        logger, level, message, file, function, line, column)
+}
+
+// The compiler calls this only after default_enabled_code succeeds. The
+// bridge checks the level again, so a concurrent set_level still returns the
+// right queued/not-queued result.
+fn default_write_enabled_at_code(level: int, message: string,
+                                 file: string, function: string,
+                                 line: int, column: int) -> bool {
+    let logger: int = DefaultState.instance.get()
+    if logger == 0 { return false }
     return log_write_strings(
         logger, level, message, file, function, line, column)
 }

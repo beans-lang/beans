@@ -10,8 +10,9 @@ startup work to a program.
 ## Design rules
 
 - Logging calls never expose C++ or Quill types.
-- A disabled level does not enter Quill or a sink. Message expressions are
-  still evaluated today; compiler-side deferred interpolation is later work.
+- A disabled level does not enter Quill or a sink. The compiler guards the six
+  short level methods before evaluating their message. Calls whose `Level` is
+  only known at runtime still evaluate their message first.
 - Source file, line, column and function describe the Beans call site.
 - The event timestamp is captured on the calling thread.
 - Native sinks run on the logging backend. Beans exporters consume a separate
@@ -46,7 +47,7 @@ startup work to a program.
 - [ ] Time-based rotation.
 - [x] NDJSON structured file sink.
 - [x] In-memory/export sink with bounded `next` wait/poll operation.
-- [ ] Batch export drain.
+- [x] Batch export drain and a move-only reader for worker threads.
 - [ ] Per-sink text pattern or JSON field selection.
 - [ ] Scoped typed context fields.
 - [ ] Backtrace ring buffer and explicit dump.
@@ -62,6 +63,10 @@ startup work to a program.
       setup or I/O failures to stable Beans errors; no exception crosses C ABI.
 - [x] Use the system clock.
 - [x] Add content-addressed cached compilation to the build driver.
+- [x] Use a fixed 256 KiB dropping frontend queue per producer and report every
+      failed enqueue through `dropped()`.
+- [x] Keep hot logger lookups in a small thread-local cache and use per-thread
+      lifecycle slots instead of a shared registry lock on every write.
 - [x] Link the bridge only when `std.log` is imported.
 - [x] Load the same cached host bridge for `beansc run`.
 - [x] Copy logging sources into installed and release packages.
@@ -78,7 +83,9 @@ startup work to a program.
 - [ ] Lower interpolated messages to a static template plus typed arguments.
 - [x] Queue string arguments by value so their Beans owner may be released.
 - [ ] Add a compile-time active-level setting.
-- [ ] Remove disabled calls before evaluating interpolation or fields.
+- [ ] Extend lazy disabled-call handling to runtime `Level` calls and fields.
+- [x] Guard compiler-known `trace` through `fatal` message expressions before
+      evaluation in native and interpreted builds.
 - [x] Give the interpreter the same enabled-call and source-location rules.
 - [x] Keep direct `string` messages as a supported fast path.
 
@@ -102,7 +109,8 @@ startup work to a program.
 - [x] `--runtime freestanding` rejection naming `std.log`.
 - [x] Release-package completeness and no-log binary symbol check.
 - [x] Beans-level focused benchmark for disabled, file, JSON and export paths.
-- [ ] Several-producer Beans benchmark and synchronous path.
+- [x] Several-producer Beans benchmark.
+- [ ] Synchronous path benchmark.
 - [ ] Compare the bridge against the same workload in Quill and spdlog before
       declaring a performance result.
 
@@ -117,11 +125,27 @@ startup work to a program.
 ## Benchmark
 
 Run `bench/log.sh`. It builds a release/LTO binary, warms each case once, then
-prints the median of five runs. The default cases are disabled calls, bounded
-export, plain file and NDJSON. These numbers measure the public Beans API and
-include `flush` in the timed region. They are useful for regressions, not a
-claim that Beans is faster than another logger. A fair Quill/spdlog comparison
-is still an unchecked delivery item above.
+prints the median of five runs. The default cases are disabled calls, a full
+bounded export queue, a live batched exporter, plain file and NDJSON. The
+output separates producer-queue drops from export-sink drops. These numbers
+measure the public Beans API and include `flush` in the timed region. Run
+`bench/log_multi.sh` for 1, 2, 4 and 8 producers. They are useful for
+regressions, not a claim that Beans is faster than another logger. A fair
+Quill/spdlog comparison is still an unchecked delivery item above.
+
+## Performance hardening order
+
+- [x] Remove the shared logger-registry lookup from the common call path.
+- [x] Remove the shared lifecycle lock from writes without making shutdown
+      race the backend.
+- [x] Bound producer memory and expose every overflow.
+- [x] Skip disabled short-method message construction.
+- [x] Drain exported records in batches on a dedicated Beans thread.
+- [x] Measure multiple producers and show accepted versus dropped records.
+- [ ] Expose the producer queue size and block/drop policy through `Config`.
+- [ ] Add CI trend storage once stable runners are available; do not use a
+      noisy single-machine hard pass/fail threshold.
+- [ ] Compare the same workload against raw Quill and spdlog.
 
 ## Why Quill
 

@@ -926,6 +926,89 @@ class MirLowerer {
         return result
     }
 
+    fn mir_log_call_level(node: HirNode) -> int {
+        let shown: string = display_symbol(node.resolved)
+        if shown == "std.log.trace" ||
+           shown == "std.log.Logger.trace" { return 0 }
+        if shown == "std.log.debug" ||
+           shown == "std.log.Logger.debug" { return 1 }
+        if shown == "std.log.info" ||
+           shown == "std.log.Logger.info" { return 2 }
+        if shown == "std.log.warn" ||
+           shown == "std.log.Logger.warn" { return 3 }
+        if shown == "std.log.error" ||
+           shown == "std.log.Logger.error" { return 4 }
+        if shown == "std.log.fatal" ||
+           shown == "std.log.Logger.fatal" { return 5 }
+        return -1
+    }
+
+    fn lower_lazy_log_call(node: HirNode, level: int) -> int {
+        let method: bool = node.kind == "method_call"
+        if (!method && node.children.len() != 1) ||
+           (method && node.children.len() != 2) {
+            return -1
+        }
+
+        var receiver: int = -1
+        if method {
+            receiver = self.lower_expression(node.children[0])
+        }
+        let level_node: HirNode = new HirNode(
+            "literal", "{level}", new HirType("int"),
+            node.file, node.line, node.col)
+        let level_value: int = self.lower_expression(level_node)
+        let guard_node: HirNode = new HirNode(
+            "call", "", new HirType("bool"),
+            node.file, node.line, node.col)
+        guard_node.resolved = package_symbol(
+            "std.log",
+            if method {
+                "logger_enabled_code"
+            } else {
+                "default_enabled_code"
+            })
+        let enabled: int = self.emit(
+            guard_node, "call", guard_node.type, "",
+            if method {
+                [receiver, level_value]
+            } else {
+                [level_value]
+            })
+
+        let write_block: int = self.new_block()
+        let disabled_block: int = self.new_block()
+        let merge_block: int = self.new_block()
+        self.terminate(
+            node, "branch", enabled,
+            [write_block, disabled_block])
+
+        self.current_block = write_block
+        let message_index: int = if method { 1 } else { 0 }
+        let message: int =
+            self.lower_expression(node.children[message_index])
+        let written: int = self.emit(
+            node, node.kind, node.type, node.value,
+            if method { [receiver, message] } else { [message] })
+        let write_end: int = self.current_block
+        self.jump(node, merge_block)
+
+        self.current_block = disabled_block
+        let false_node: HirNode = new HirNode(
+            "literal", "false", new HirType("bool"),
+            node.file, node.line, node.col)
+        let skipped: int = self.lower_expression(false_node)
+        let disabled_end: int = self.current_block
+        self.jump(node, merge_block)
+
+        self.current_block = merge_block
+        let result: int = self.emit(
+            node, "phi", node.type, "", [written, skipped])
+        self.attach_phi_sources(
+            result, [write_end, disabled_end])
+        return result
+    }
+
     fn lower_expression(node: HirNode) -> int {
         if node.kind == "closure" {
             return self.lower_closure(node)
@@ -945,6 +1028,14 @@ class MirLowerer {
         if node.kind == "binary" &&
            (node.value == "&&" || node.value == "||") {
             return self.lower_short_circuit(node)
+        }
+        if node.kind == "call" || node.kind == "method_call" {
+            let log_level: int = self.mir_log_call_level(node)
+            if log_level >= 0 {
+                let lowered: int =
+                    self.lower_lazy_log_call(node, log_level)
+                if lowered >= 0 { return lowered }
+            }
         }
         if node.kind == "local" {
             let local: int = self.find_local(node)

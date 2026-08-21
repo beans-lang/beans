@@ -8,3 +8,4 @@ true|true|true
 through default
 true|true|true
 dropped=0 export=0
+reader-thread=worker export

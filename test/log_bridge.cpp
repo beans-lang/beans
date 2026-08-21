@@ -105,6 +105,13 @@ int main(int argc, char** argv) {
   assert(record_string(record, BEANS_LOG_RECORD_FUNCTION) == function);
   beans_log_record_destroy(record);
 
+  assert(beans_log_logger_set_level(logger, BEANS_LOG_ERROR) == 1);
+  assert(beans_log_write(
+      logger, BEANS_LOG_INFO,
+      reinterpret_cast<uint8_t const*>(message.data()), message.size(),
+      nullptr, 0, nullptr, 0, 0, 0) == 0);
+  assert(beans_log_logger_set_level(logger, BEANS_LOG_TRACE) == 1);
+
   std::vector<uint8_t> fields;
   append_field(fields, "request_id", "42");
   append_field(fields, "note", "a\"b\n");
@@ -223,11 +230,18 @@ int main(int argc, char** argv) {
     worker.join();
   }
   assert(beans_log_flush(concurrent_logger) == 1);
-  for (int index = 0; index < 2000; ++index) {
-    int64_t const concurrent_record = beans_log_export_take(concurrent, 1000);
-    assert(concurrent_record != 0);
-    beans_log_record_destroy(concurrent_record);
+  int concurrent_count = 0;
+  int64_t concurrent_batch[127]{};
+  while (concurrent_count < 2000) {
+    int64_t const read = beans_log_export_take_batch(
+        concurrent, 1000, concurrent_batch, 127);
+    assert(read > 0);
+    for (int64_t index = 0; index < read; ++index) {
+      beans_log_record_destroy(concurrent_batch[index]);
+    }
+    concurrent_count += static_cast<int>(read);
   }
+  assert(concurrent_count == 2000);
   assert(beans_log_export_dropped(concurrent) == 0);
 
   // A blocked exporter must not make normal process shutdown hang.
@@ -240,9 +254,24 @@ int main(int argc, char** argv) {
   beans_log_write(blocking_logger, BEANS_LOG_INFO,
                   reinterpret_cast<uint8_t const*>(first.data()), first.size(),
                   nullptr, 0, nullptr, 0, 0, 0);
+  assert(beans_log_flush(blocking_logger) == 1);
   beans_log_write(blocking_logger, BEANS_LOG_INFO,
                   reinterpret_cast<uint8_t const*>(second.data()), second.size(),
                   nullptr, 0, nullptr, 0, 0, 0);
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  int64_t const producer_drops_before = beans_log_dropped();
+  bool producer_queue_filled = false;
+  for (int index = 0; index < 100000; ++index) {
+    if (beans_log_write(
+            blocking_logger, BEANS_LOG_INFO,
+            reinterpret_cast<uint8_t const*>(second.data()), second.size(),
+            nullptr, 0, nullptr, 0, 0, 0) == 0) {
+      producer_queue_filled = true;
+      break;
+    }
+  }
+  assert(producer_queue_filled);
+  assert(beans_log_dropped() > producer_drops_before);
   std::atomic<int64_t> blocked_flush{0};
   std::thread flusher([&] {
     blocked_flush.store(beans_log_flush(blocking_logger));

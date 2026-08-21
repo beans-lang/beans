@@ -1,6 +1,7 @@
 import std.io
 import std.log
 import std.os
+import std.thread
 
 fn run() -> Result<bool> {
     let exported: log.ExportSink = log.ExportSink.open(8)?
@@ -60,6 +61,22 @@ fn run() -> Result<bool> {
         none => { return err("the default record did not arrive", "log") }
     }
     io.println("dropped={log.dropped()} export={exported.dropped()}")
+
+    let threaded: log.ExportSink = log.ExportSink.open_with(
+        8, log.Overflow.block, log.Level.trace)?
+    let thread_logger: log.Logger = log.Logger.create(
+        "thread-export", [threaded.sink()])?
+    let reader: log.ExportReader = threaded.reader()
+    let worker: Thread<string> = thread.spawn(
+        fn() move(reader) -> string {
+            return match reader.next(1000).or(none) {
+                some(record) => record.message,
+                none => "missing",
+            }
+        })
+    thread_logger.info("worker export")
+    thread_logger.flush()?
+    io.println("reader-thread={worker.join()}")
     log.shutdown()?
     return ok(true)
 }

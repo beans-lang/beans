@@ -853,7 +853,8 @@ partial class LlvmTextEmitter {
                              level: int) -> string {
         if instruction.operands.len() != 1 { return "" }
         let target: string =
-            package_symbol("std.log", "default_write_at_code")
+            package_symbol(
+                "std.log", "default_write_enabled_at_code")
         if !self.function_symbols.contains_key(target) { return "" }
         let message: string =
             self.value(

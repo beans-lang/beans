@@ -88,6 +88,10 @@ BEANS_LOG_API int64_t beans_log_dropped(void);
 /* Pull one export record. A zero result means timeout/no record. */
 BEANS_LOG_API int64_t beans_log_export_take(
     int64_t sink, int64_t timeout_millis);
+/* Pulls up to capacity records and writes their handles to output. */
+BEANS_LOG_API int64_t beans_log_export_take_batch(
+    int64_t sink, int64_t timeout_millis,
+    int64_t *output, int64_t capacity);
 BEANS_LOG_API int64_t beans_log_export_dropped(int64_t sink);
 BEANS_LOG_API int64_t beans_log_record_timestamp_nanos(int64_t record);
 BEANS_LOG_API int64_t beans_log_record_level(int64_t record);

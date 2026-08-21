@@ -13,6 +13,7 @@
 #include "quill/sinks/Sink.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -28,6 +29,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -39,6 +41,17 @@
 namespace {
 
 thread_local std::string last_error;
+
+// Keep burst memory predictable. Each producer gets one fixed queue and a
+// failed enqueue is reported through beans_log_dropped().
+struct BeansFrontendOptions : quill::FrontendOptions {
+  static constexpr quill::QueueType queue_type =
+      quill::QueueType::BoundedDropping;
+  static constexpr size_t initial_queue_capacity = 256u * 1024u;
+};
+
+using BeansFrontend = quill::FrontendImpl<BeansFrontendOptions>;
+using BeansLogger = quill::LoggerImpl<BeansFrontendOptions>;
 
 std::string copy_string(const uint8_t* data, int64_t written_size) {
   if (written_size < 0) {
@@ -293,6 +306,28 @@ public:
     return record;
   }
 
+  std::vector<std::unique_ptr<Record>> take_batch(
+      size_t capacity, uint64_t timeout_millis) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    if (records_.empty() && !closed_) {
+      if (timeout_millis == 0) {
+        return {};
+      }
+      condition_.wait_for(lock, std::chrono::milliseconds(timeout_millis),
+                          [this] { return closed_ || !records_.empty(); });
+    }
+    size_t const count = std::min(capacity, records_.size());
+    std::vector<std::unique_ptr<Record>> result;
+    result.reserve(count);
+    for (size_t index = 0; index < count; ++index) {
+      result.push_back(std::move(records_.front()));
+      records_.pop_front();
+    }
+    lock.unlock();
+    if (count != 0) { condition_.notify_all(); }
+    return result;
+  }
+
   void close() noexcept {
     {
       std::lock_guard<std::mutex> lock(mutex_);
@@ -444,12 +479,34 @@ struct SinkEntry {
 };
 
 struct LoggerEntry {
-  quill::Logger* logger{nullptr};
+  BeansLogger* logger{nullptr};
   std::string public_name;
 };
 
 class Manager {
 public:
+  struct OperationSlot {
+    std::atomic<bool> active{false};
+  };
+
+  class Operation {
+  public:
+    explicit Operation(OperationSlot* slot) noexcept : slot_(slot) {}
+    Operation(Operation const&) = delete;
+    Operation& operator=(Operation const&) = delete;
+    Operation(Operation&& other) noexcept : slot_(other.slot_) {
+      other.slot_ = nullptr;
+    }
+    ~Operation() {
+      if (slot_ != nullptr) {
+        slot_->active.store(false, std::memory_order_release);
+      }
+    }
+
+  private:
+    OperationSlot* slot_;
+  };
+
   static Manager& instance() {
     static Manager manager;
     return manager;
@@ -490,6 +547,29 @@ public:
     return lock;
   }
 
+  Operation running_operation() {
+    if (stopping_.load(std::memory_order_acquire)) {
+      throw std::runtime_error("logging has been shut down");
+    }
+    static thread_local OperationSlot* local_slot = nullptr;
+    if (local_slot == nullptr) {
+      auto slot = std::make_unique<OperationSlot>();
+      local_slot = slot.get();
+      std::lock_guard<std::mutex> lock(operation_mutex_);
+      operation_slots_.push_back(std::move(slot));
+    }
+    local_slot->active.store(true, std::memory_order_release);
+    if (stopping_.load(std::memory_order_acquire)) {
+      local_slot->active.store(false, std::memory_order_release);
+      throw std::runtime_error("logging has been shut down");
+    }
+    return Operation{local_slot};
+  }
+
+  bool accepting() const noexcept {
+    return !stopping_.load(std::memory_order_acquire);
+  }
+
   uint64_t add_sink(std::shared_ptr<quill::Sink> sink,
                     std::shared_ptr<ExportSink> export_sink = {}) {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -520,7 +600,7 @@ public:
     if (pattern.empty()) {
       pattern = "%(time) [%(thread_id)] %(log_level:<8) %(logger) %(message) (%(short_source_location))";
     }
-    auto* logger = quill::Frontend::create_logger(
+    auto* logger = BeansFrontend::create_logger(
         name, std::move(sinks), quill::PatternFormatterOptions{std::move(pattern)},
         quill::ClockSourceType::System);
     logger->set_log_level(level);
@@ -531,12 +611,25 @@ public:
   }
 
   LoggerEntry& logger(uint64_t handle) {
+    // Logger entries live until process shutdown. Cache the common lookup per
+    // producer thread so a log call does not take the registry mutex. Four
+    // slots keep wrappers which alternate between a few named loggers fast.
+    struct CachedLogger {
+      uint64_t handle{0};
+      LoggerEntry* entry{nullptr};
+    };
+    static thread_local std::array<CachedLogger, 4> cache{};
+    CachedLogger& cached = cache[handle & (cache.size() - 1u)];
+    if (cached.handle == handle && cached.entry != nullptr) {
+      return *cached.entry;
+    }
     std::lock_guard<std::mutex> lock(mutex_);
     auto found = loggers_.find(handle);
     if (found == loggers_.end()) {
       throw std::invalid_argument("unknown logger handle");
     }
-    return found->second;
+    cached = CachedLogger{handle, &found->second};
+    return *cached.entry;
   }
 
   std::shared_ptr<ExportSink> export_sink(uint64_t handle) {
@@ -555,6 +648,16 @@ public:
     return handle;
   }
 
+  void add_records(std::vector<std::unique_ptr<Record>> records,
+                   int64_t* output) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (size_t index = 0; index < records.size(); ++index) {
+      uint64_t const handle = next_handle_++;
+      records_.emplace(handle, std::move(records[index]));
+      output[index] = static_cast<int64_t>(handle);
+    }
+  }
+
   Record& record(uint64_t handle) {
     std::lock_guard<std::mutex> lock(mutex_);
     auto found = records_.find(handle);
@@ -569,9 +672,9 @@ public:
     records_.erase(handle);
   }
 
-  std::vector<quill::Logger*> all_loggers() {
+  std::vector<BeansLogger*> all_loggers() {
     std::lock_guard<std::mutex> lock(mutex_);
-    std::vector<quill::Logger*> result;
+    std::vector<BeansLogger*> result;
     result.reserve(loggers_.size());
     for (auto const& entry : loggers_) {
       result.push_back(entry.second.logger);
@@ -606,6 +709,7 @@ public:
     // A sink could have finished creation between the first close snapshot
     // and the lifecycle writer lock. No new operation can start now.
     close_exports();
+    wait_for_operations();
     if (quill::Backend::is_running()) {
       quill::Backend::stop();
     }
@@ -629,13 +733,31 @@ public:
   }
 
 private:
+  void wait_for_operations() {
+    std::vector<OperationSlot*> slots;
+    {
+      std::lock_guard<std::mutex> lock(operation_mutex_);
+      slots.reserve(operation_slots_.size());
+      for (auto const& slot : operation_slots_) {
+        slots.push_back(slot.get());
+      }
+    }
+    for (OperationSlot* slot : slots) {
+      while (slot->active.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+      }
+    }
+  }
+
   std::mutex mutex_;
+  std::mutex operation_mutex_;
   std::shared_mutex lifecycle_mutex_;
   mutable std::mutex error_mutex_;
   std::unordered_map<uint64_t, SinkEntry> sinks_;
   std::unordered_map<uint64_t, LoggerEntry> loggers_;
   std::unordered_map<std::string, uint64_t> logger_names_;
   std::unordered_map<uint64_t, std::unique_ptr<Record>> records_;
+  std::vector<std::unique_ptr<OperationSlot>> operation_slots_;
   std::string backend_error_;
   std::atomic<uint64_t> backend_error_count_{0};
   std::atomic<uint64_t> dropped_{0};
@@ -693,10 +815,10 @@ int64_t write_record(
     uint8_t const* function, int64_t function_len,
     int64_t line, int64_t column,
     std::vector<std::pair<std::string, std::string>> const& fields) {
-  auto running = Manager::instance().running_lock();
+  auto running = Manager::instance().running_operation();
   auto* native_logger = Manager::instance().logger(logger).logger;
   quill::LogLevel const native_level = to_quill_level(level);
-  if (!native_logger->should_log_statement(native_level)) { return 1; }
+  if (!native_logger->should_log_statement(native_level)) { return 0; }
   std::string text = copy_string(message, message_len);
   std::string source = copy_string(file, file_len);
   std::string caller = copy_string(function, function_len);
@@ -735,7 +857,7 @@ int64_t beans_log_console_sink(int64_t use_stderr, int64_t colour_mode,
     default: throw std::invalid_argument("invalid console colour mode");
     }
     static std::atomic<uint64_t> sequence{1};
-    auto sink = quill::Frontend::create_sink<quill::ConsoleSink>(
+    auto sink = BeansFrontend::create_sink<quill::ConsoleSink>(
         "beans-console-" + std::to_string(sequence.fetch_add(1)), config);
     sink->set_log_level_filter(to_quill_level(min_level));
     return Manager::instance().add_sink(std::move(sink));
@@ -754,7 +876,7 @@ int64_t beans_log_file_sink(const uint8_t* path, int64_t path_len,
     auto running = Manager::instance().running_lock();
     std::string filename = copy_string(path, path_len);
     auto config = file_config(append, fsync);
-    auto sink = quill::Frontend::create_sink<quill::FileSink>(
+    auto sink = BeansFrontend::create_sink<quill::FileSink>(
         filename, config);
     sink->set_log_level_filter(to_quill_level(min_level));
     return Manager::instance().add_sink(std::move(sink));
@@ -782,7 +904,7 @@ int64_t beans_log_rotating_file_sink(const uint8_t* path, int64_t path_len,
     }
     config.set_rotation_max_file_size(static_cast<size_t>(max_bytes));
     config.set_max_backup_files(static_cast<uint32_t>(max_backups));
-    auto sink = quill::Frontend::create_sink<quill::RotatingFileSink>(
+    auto sink = BeansFrontend::create_sink<quill::RotatingFileSink>(
         filename, config);
     sink->set_log_level_filter(to_quill_level(min_level));
     return Manager::instance().add_sink(std::move(sink));
@@ -803,7 +925,7 @@ int64_t beans_log_json_file_sink(const uint8_t* path, int64_t path_len,
     auto running = Manager::instance().running_lock();
     std::string filename = copy_string(path, path_len);
     auto config = file_config(append, fsync);
-    auto sink = quill::Frontend::create_sink<BeansJsonFileSink>(
+    auto sink = BeansFrontend::create_sink<BeansJsonFileSink>(
         filename, config);
     sink->set_log_level_filter(to_quill_level(min_level));
     return Manager::instance().add_sink(std::move(sink));
@@ -817,7 +939,7 @@ int64_t beans_log_export_sink(int64_t capacity, int64_t overflow,
     Manager::instance().start();
     auto running = Manager::instance().running_lock();
     static std::atomic<uint64_t> sequence{1};
-    auto base = quill::Frontend::create_sink<ExportSink>(
+    auto base = BeansFrontend::create_sink<ExportSink>(
         "beans-export-" + std::to_string(sequence.fetch_add(1)), capacity, overflow);
     auto export_sink = std::static_pointer_cast<ExportSink>(base);
     export_sink->set_log_level_filter(to_quill_level(min_level));
@@ -854,9 +976,11 @@ int64_t beans_log_logger_create(const uint8_t* name, int64_t name_len,
 
 int64_t beans_log_logger_enabled(int64_t logger, int64_t level) {
   return guarded<int64_t>(0, [&] {
-    auto running = Manager::instance().running_lock();
-    return Manager::instance().logger(logger).logger->should_log_statement(
-               to_quill_level(level)) ? 1 : 0;
+    if (!Manager::instance().accepting()) { return int64_t{0}; }
+    bool const enabled =
+        Manager::instance().logger(logger).logger->should_log_statement(
+            to_quill_level(level));
+    return int64_t{enabled && Manager::instance().accepting() ? 1 : 0};
   });
 }
 
@@ -897,14 +1021,14 @@ int64_t beans_log_write_fields(
 
 int64_t beans_log_flush(int64_t logger) {
   return guarded_status([&] {
-    auto running = Manager::instance().running_lock();
+    auto running = Manager::instance().running_operation();
     Manager::instance().logger(logger).logger->flush_log();
   });
 }
 
 int64_t beans_log_flush_all(void) {
   return guarded_status([&] {
-    auto running = Manager::instance().running_lock();
+    auto running = Manager::instance().running_operation();
     for (auto* logger : Manager::instance().all_loggers()) {
       logger->flush_log();
     }
@@ -926,6 +1050,28 @@ int64_t beans_log_export_take(int64_t sink, int64_t timeout_millis) {
     }
     auto record = Manager::instance().export_sink(sink)->take(timeout_millis);
     return record ? Manager::instance().add_record(std::move(record)) : 0;
+  });
+}
+
+int64_t beans_log_export_take_batch(int64_t sink, int64_t timeout_millis,
+                                    int64_t* output, int64_t capacity) {
+  return guarded<int64_t>(0, [&] {
+    if (timeout_millis < 0) {
+      throw std::invalid_argument("export timeout cannot be negative");
+    }
+    if (capacity <= 0 || capacity > 4096) {
+      throw std::invalid_argument(
+          "export batch capacity must be between 1 and 4096");
+    }
+    if (output == nullptr) {
+      throw std::invalid_argument("export batch output pointer is null");
+    }
+    auto records = Manager::instance().export_sink(sink)->take_batch(
+        static_cast<size_t>(capacity),
+        static_cast<uint64_t>(timeout_millis));
+    int64_t const count = static_cast<int64_t>(records.size());
+    Manager::instance().add_records(std::move(records), output);
+    return count;
   });
 }
 

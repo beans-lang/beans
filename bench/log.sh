@@ -19,6 +19,7 @@ scratch=$(mktemp -d "${TMPDIR:-/tmp}/beans-log-bench.XXXXXX")
 trap 'rm -rf "$scratch"' EXIT
 
 for row in "disabled:$disabled" "export:$exported" \
+           "export_live:${BEANS_LOG_EXPORT_LIVE:-100000}" \
            "file:$io_count" "json:$io_count"; do
     mode=${row%%:*}
     count=${row#*:}
@@ -30,27 +31,47 @@ for row in "disabled:$disabled" "export:$exported" \
     awk -v mode="$mode" -v runs="$runs" -v dir="$scratch" '
         {
             file = dir "/" mode "." NR
-            getline ignored < file
+            getline queued_row < file
             getline row < file
             close(file)
+            split(queued_row, queued_fields, "=")
+            queued[NR] = queued_fields[2] + 0
             split(row, fields, " ")
             values[NR] = fields[4] + 0
             count = fields[3]
-            dropped = fields[5]
+            producer_dropped[NR] = fields[5]
+            sink_dropped[NR] = fields[6]
         }
         END {
             for (i = 2; i <= runs; i++) {
                 value = values[i]
+                q = queued[i]
+                pd = producer_dropped[i]
+                sd = sink_dropped[i]
                 j = i - 1
                 while (j > 0 && values[j] > value) {
                     values[j + 1] = values[j]
+                    queued[j + 1] = queued[j]
+                    producer_dropped[j + 1] = producer_dropped[j]
+                    sink_dropped[j + 1] = sink_dropped[j]
                     j--
                 }
                 values[j + 1] = value
+                queued[j + 1] = q
+                producer_dropped[j + 1] = pd
+                sink_dropped[j + 1] = sd
             }
-            median = values[int((runs + 1) / 2)]
-            printf("log %-8s median %.1f ns/call (%s calls, dropped %s)\n",
-                   mode, median / count, count, dropped)
+            middle = int((runs + 1) / 2)
+            if (queued[middle] > 0) {
+                printf("log %-11s median %.1f ns/attempt, %.1f ns/queued (%s queued, producer dropped %s, sink dropped %s)\n",
+                       mode, values[middle] / count,
+                       values[middle] / queued[middle], queued[middle],
+                       producer_dropped[middle], sink_dropped[middle])
+            } else {
+                printf("log %-11s median %.1f ns/attempt (%s queued, producer dropped %s, sink dropped %s)\n",
+                       mode, values[middle] / count, queued[middle],
+                       producer_dropped[middle], sink_dropped[middle])
+            }
         }
     ' < <(seq 1 "$runs")
 done
