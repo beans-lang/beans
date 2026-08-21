@@ -1001,6 +1001,11 @@ static const long long cc_threads = 0;
 #endif
 static _Atomic int cc_pending;
 static int cc_collecting;
+// One husk sweep at a time; a second thread crossing the threshold while a
+// sweep runs just skips — the running sweep is already doing its work.
+// Plain int on purpose: the __atomic_* builtins below want an unqualified
+// object, the way beans_in_deinit is accessed.
+static int cc_sweeping;
 static void cc_collect(int force);
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
 static void cc_worker_roots_begin(void);
@@ -1544,6 +1549,48 @@ static pthread_mutex_t cc_mu = PTHREAD_MUTEX_INITIALIZER;
 // The batch buffer itself lives in `beans_hot_tls` beside the allocator
 // pool — one thread-local variable, one TLV descriptor.
 
+// The collector's cheap half, runnable while workers are alive. A parked
+// shell whose death cascade already finished — count zero, blackened as the
+// cascade's last touch — is unreachable: the root buffer holds its only
+// pointer, so freeing it here cannot race anything. Live candidates (any
+// count above zero, or a cascade still purple between its decrement and its
+// blacken) stay parked for the real collector. Without this, a process that
+// keeps worker threads alive — every threaded server — could never reclaim
+// husks, because cc_collect waits for cc_threads to reach zero.
+static void cc_sweep_husks(void) {
+    if (__atomic_exchange_n(&cc_sweeping, 1, __ATOMIC_ACQ_REL)) return;
+    void* local[64];
+    CCStack deferred = {local, 0, 64, local};
+    CC_LOCK();
+    long long kept = 0;
+    for (long long i = 0; i < cc_len; i++) {
+        void* p = cc_roots[i];
+        BHead* h = head_of(p);
+        long long meta = cc_meta(h);
+        if ((meta & CC_BUF) && (meta & CC_COLOR) == CC_BLACK &&
+            RC_COUNT(rt_rc_load(h)) == 0) {
+            // pairs with the release fence before the husk blacken in
+            // beans_release: after this, the dying thread's last access
+            // happens-before the free
+            __atomic_thread_fence(__ATOMIC_ACQUIRE);
+            rt_w_and(&h->meta, ~CC_BUF);
+            void* child = cc_free_shell(p, cc_meta(h));
+            if (child) cc_push(&deferred, child);
+        } else {
+            cc_roots[kept++] = p;
+        }
+    }
+    cc_len = kept;
+    // geometric re-arm, exactly like cc_collect: amortized O(1) per park
+    cc_threshold = cc_len * 2 + 256;
+    CC_UNLOCK();
+    __atomic_store_n(&cc_sweeping, 0, __ATOMIC_RELEASE);
+    // released outside the lock: a release can park new possible roots,
+    // and cc_mu is not recursive
+    for (long long i = 0; i < deferred.len; i++) beans_release(deferred.v[i]);
+    if (deferred.v != local) rt_free(deferred.v);
+}
+
 static void cc_append_roots(void** roots, long long count) {
     if (count <= 0) return;
     CC_LOCK();
@@ -1563,8 +1610,15 @@ static void cc_append_roots(void** roots, long long count) {
     }
     memcpy(cc_roots + cc_len, roots, (size_t)count * sizeof(void*));
     cc_len = needed;
-    if (cc_len >= cc_threshold) cc_pending = 1;
+    int husks_due = 0;
+    if (cc_len >= cc_threshold) {
+        cc_pending = 1;
+        // with live workers the collector cannot run, so dead husks would
+        // pile up in this buffer forever; sweep them instead
+        husks_due = cc_threads != 0;
+    }
     CC_UNLOCK();
+    if (husks_due) cc_sweep_husks();
 }
 
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
@@ -1658,8 +1712,15 @@ void beans_release(void* p) {
                 }
                 cc_release_children(cur, meta, &st);
                 if (meta & CC_BUF) {
-                    // parked — the buffer still points here, so the collector
-                    // frees the shell later; mark black: this is a dead husk
+                    // parked — the buffer still points here, so a collector
+                    // or husk sweep frees the shell later; mark black: this
+                    // is a dead husk. The blacken is this thread's last
+                    // access, and the fence orders everything before it so a
+                    // sweeping thread that acquires on the black color may
+                    // free the shell.
+#if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
+                    __atomic_thread_fence(__ATOMIC_RELEASE);
+#endif
                     rt_w_and(&h->meta, ~CC_COLOR);
                 } else {
                     void* child = cc_free_shell(cur, meta);
@@ -2211,6 +2272,11 @@ static void cc_collect(int force) {
     if (__atomic_load_n(&beans_in_deinit, __ATOMIC_RELAXED)) return;
     ARC_ADD(arc_collections, 1);
     cc_collecting = 1;
+    // Children handed back by cc_free_shell (a Shared payload) are released
+    // only after CC_UNLOCK: releasing can park a new possible root, which
+    // takes cc_mu again, and cc_mu is not recursive.
+    void* dlocal[64];
+    CCStack deferred = {dlocal, 0, 64, dlocal};
     CC_LOCK();
 
     // keep only live purple candidates; zombies (released while parked)
@@ -2225,7 +2291,7 @@ static void cc_collect(int force) {
             rt_w_and(&h->meta, ~CC_BUF);
             if (RC_COUNT(h->rc) == 0) {
                 void* child = cc_free_shell(p, h->meta);
-                if (child) beans_release(child);
+                if (child) cc_push(&deferred, child);
             }
         }
     }
@@ -2258,7 +2324,7 @@ static void cc_collect(int force) {
         // read; now the whole white set goes at once
         for (long long i = 0; i < dead.len; i++) {
             void* child = cc_free_shell(dead.v[i], head_of(dead.v[i])->meta);
-            if (child) beans_release(child);
+            if (child) cc_push(&deferred, child);
         }
         cc_walk_min = dead.len ? 256
                                : (cc_walk_min * 4 > (1LL << 18) ? (1LL << 18)
@@ -2275,6 +2341,8 @@ static void cc_collect(int force) {
     cc_threshold = cc_len * 2 + 256;
     cc_pending = 0;
     CC_UNLOCK();
+    for (long long i = 0; i < deferred.len; i++) beans_release(deferred.v[i]);
+    if (deferred.v != dlocal) rt_free(deferred.v);
     cc_collecting = 0;
 }
 

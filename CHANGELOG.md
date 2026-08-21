@@ -27,6 +27,15 @@ This file records user-facing changes in each Beans release.
 
 ### Fixed
 
+- A program with live worker threads now reclaims dead parked shells from
+  the cycle-collector buffer instead of holding every one until the threads
+  exit. A threaded server used to leak roughly 150 bytes per request —
+  600 MB within seconds under load; the same server now stays flat. Genuine
+  cycle candidates still wait for the collector, which still runs only at
+  thread quiescence.
+- The cycle collector no longer releases a `Shared` payload while holding
+  its own root-buffer lock. The lock is not recursive, so a payload that
+  parked a new candidate during that release would have deadlocked.
 - `beansc run` now passes selected manifest search, library, and framework rows
   when linking a package's `csrc` host library. Link arguments also enter the
   cache key, so changing the manifest cannot reuse a library linked under old
