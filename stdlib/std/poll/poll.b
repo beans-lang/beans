@@ -138,6 +138,34 @@ pub unique class Poller implements Send {
         return ok(move out)
     }
 
+    /// Like `wait`, into a caller-kept list this call fills in place. The first
+    /// `count` entries are overwritten, growing the list only while it is still
+    /// shorter than that; entries past the count keep stale data from earlier
+    /// calls, so read only `0..count`. A steady event loop that passes the same
+    /// list every time therefore allocates nothing per wake.
+    pub fn wait_into(max_events: int, timeout_ms: int,
+                     events: List<Event>) -> Result<int> {
+        if !self.live { return err("poller: closed", "closed") }
+        let packed: Bytes = ready.wait(self.fd, self.wake_read, max_events,
+                                       timeout_ms)?
+        let count: int = packed.get_i64(0)
+        for events.len() < count {
+            events.push(new Event())
+        }
+        var i: int = 0
+        for i < count {
+            let slot: Event = events[i]
+            let flags: int = packed.get_i64(8 + i * 16 + 8)
+            slot.token = packed.get_i64(8 + i * 16)
+            slot.readable = flags % 2 == 1
+            slot.writable = (flags / 2) % 2 == 1
+            slot.hangup = (flags / 4) % 2 == 1
+            slot.error = (flags / 8) % 2 == 1
+            i += 1
+        }
+        return ok(count)
+    }
+
     /// Makes a blocked `wait` return promptly. Repeated wakes collapse into one, and a
     /// wake is never reported as an event.
     pub fn wake() -> Result<bool> {

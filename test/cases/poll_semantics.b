@@ -513,6 +513,102 @@ async fn check_cancellation() {
     io.println("descriptor parks again after cancel {woke}")
 }
 
+// wait_into fills a caller-kept list in place: the count is authoritative,
+// the list only grows, and entries past the count keep stale data from an
+// earlier batch — the contract that makes a steady loop allocation-free.
+fn check_wait_into() {
+    match poll.Poller.open() {
+        ok(poller) => {
+            var keep: List<net.UdpSocket> = []
+            var fds: List<int> = []
+            var ports: List<int> = []
+            var built: bool = true
+            for index: int in 0..2 {
+                match bind_udp(keep, fds, ports) {
+                    ok(_) => {}
+                    err(_) => { built = false }
+                }
+            }
+            if !built {
+                io.println("wait_into bind failed")
+                return
+            }
+            let ignored_a: Result<bool> =
+                poller.add(fds[0], 7, poll.Interest.read_only())
+            let ignored_b: Result<bool> =
+                poller.add(fds[1], 8, poll.Interest.read_only())
+            var events: List<poll.Event> = []
+            match net.UdpSocket.bind("127.0.0.1", 0) {
+                ok(sender) => {
+                    let ping: Bytes = Bytes.from("p")
+                    let to_first: net.Address =
+                        new net.Address("127.0.0.1", ports[0])
+                    let to_second: net.Address =
+                        new net.Address("127.0.0.1", ports[1])
+                    let fed_first: Result<int> = sender.send_to(ping, to_first)
+                    let fed_second: Result<int> =
+                        sender.send_to(ping, to_second)
+                }
+                err(_) => {
+                    io.println("wait_into sender failed")
+                    return
+                }
+            }
+            // Loopback datagram delivery is asynchronous, and an undrained
+            // ready socket makes every wait return at once — so pace the
+            // attempts with a sleep instead of spinning, until one batch
+            // carries both sockets.
+            var both: bool = false
+            var rounds: int = 0
+            for !both && rounds < 100 {
+                rounds += 1
+                time.sleep_millis(10)
+                match poller.wait_into(16, 0, events) {
+                    ok(count) => {
+                        if count == 2 { both = true }
+                    }
+                    err(_) => {}
+                }
+            }
+            io.println("wait_into reports the whole batch {both}")
+            let grown: bool = events.len() == 2
+            let drained_first: Result<net.Datagram> = keep[0].recv_from(4)
+            let drained_second: Result<net.Datagram> = keep[1].recv_from(4)
+            match net.UdpSocket.bind("127.0.0.1", 0) {
+                ok(sender) => {
+                    let ping: Bytes = Bytes.from("q")
+                    let to_second: net.Address =
+                        new net.Address("127.0.0.1", ports[1])
+                    let fed_again: Result<int> = sender.send_to(ping, to_second)
+                }
+                err(_) => {}
+            }
+            var overwrite_ok: bool = false
+            var seen: bool = false
+            rounds = 0
+            for !seen && rounds < 100 {
+                rounds += 1
+                match poller.wait_into(16, 200, events) {
+                    ok(count) => {
+                        if count > 0 {
+                            seen = true
+                            overwrite_ok = count == 1 &&
+                                events[0].token == 8 && events[0].readable
+                        }
+                    }
+                    err(_) => {}
+                }
+            }
+            io.println("wait_into overwrites in place {overwrite_ok}")
+            // The list never shrinks: entries past the count keep stale
+            // data, and the storage stays grown for the next batch.
+            let kept: bool = grown && events.len() == 2
+            io.println("wait_into keeps the grown list {kept}")
+        }
+        err(_) => { io.println("wait_into poller failed") }
+    }
+}
+
 async fn main() {
     check_modify_visibility()
     check_remove_between_batches()
@@ -521,5 +617,6 @@ async fn main() {
     check_timeout_bounds()
     check_fd_reuse_aba()
     check_scale_fairness()
+    check_wait_into()
     await check_cancellation()
 }
