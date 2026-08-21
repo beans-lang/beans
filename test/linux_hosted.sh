@@ -218,14 +218,14 @@ for src in "${examples[@]}"; do
         echo "  FAIL build: $src"; tail -4 "$tmp/build.log"; fail=1; continue
     fi
     run_qemu "$tmp/$base.bin" >"$tmp/$base.native" 2>&1; n=$?
-    # The encoding and networking examples link their target bridges into the
-    # native binary, which is the path this host ships. The interpreter instead
-    # dlopens target shared objects. qemu-user cannot load those objects on
-    # every architecture, so hold the native results to their exact contracts
+    # The logging, encoding and networking examples link their target bridges
+    # into the native binary, which is the path this host ships. The interpreter
+    # instead dlopens target shared objects. qemu-user cannot load those objects
+    # on every architecture, so hold the native results to their exact contracts
     # instead of treating an emulator loader limit as a compiler bug.
     expected=""
     case "$base" in
-        zero_copy_json|zero_copy_xml|compress|http|http2)
+        logging|zero_copy_json|zero_copy_xml|compress|http|http2)
             expected="test/cases/$base.out"
             ;;
         crypto)
