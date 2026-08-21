@@ -13,6 +13,18 @@ This file records user-facing changes in each Beans release.
   one instance can serve a whole keep-alive connection.
 - `http.RequestParser.feed_range_into` and `finish_into` append events to a
   caller-owned list — the allocation-free form for a server's read loop.
+- `poll.Poller.wait_into` fills a caller-kept event list in place — the
+  allocation-free form of `wait` for a steady event loop that passes the
+  same list every wake.
+- `http.encode_response_append` frames a response after whatever the target
+  already holds — the form for a server that writes each response straight
+  into its connection's output queue instead of staging it in a side
+  buffer. Validation failures leave the target untouched.
+- `http.RequestParser.recycle` hands a delivered request head back for
+  reuse. The next message fills the shell instead of allocating one, and
+  reuses its target and header-value strings when the peer repeats them
+  byte-for-byte — the shape of every keep-alive connection. Only recycle a
+  request nothing will read again.
 
 ### Changed
 
@@ -24,6 +36,15 @@ This file records user-facing changes in each Beans release.
 - The runtime's allocator pool and cycle-collector root batch share one
   thread-local struct: the hot paths pay one Darwin TLV lookup instead of
   one per variable.
+- The poller's wait reuses per-thread scratch for its token, flag, and
+  kernel event buffers instead of paying four heap allocations per call —
+  a busy server waits tens of thousands of times a second.
+- Compact typed JSON encoding writes bytes straight from the record instead
+  of building a yyjson document per call, byte-identically: integers have
+  one decimal spelling and strings follow yyjson's exact default escaping.
+  Schemas with float fields keep the document path so real-number
+  formatting stays yyjson's own, and `BEANS_JSON_NO_DIRECT` routes
+  everything through it again if the direct writer is ever suspect.
 
 ### Fixed
 
