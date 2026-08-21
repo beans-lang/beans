@@ -189,6 +189,7 @@ test-runtime: $(BIN)
 	./test/dylib.sh
 	./test/child.sh
 	bash ./test/encoding.sh
+	bash ./test/json_direct.sh
 
 test-ffi: $(BIN)
 	./test/raw_slices.sh
@@ -295,6 +296,7 @@ test-core: $(BIN)
 	./test/stdlib_source.sh
 	bash ./test/api_names.sh
 	bash ./test/encoding.sh
+	bash ./test/json_direct.sh
 	bash ./test/encoding_symbols.sh
 	bash ./test/encoding_outputs.sh
 	bash ./test/encoding_cache.sh

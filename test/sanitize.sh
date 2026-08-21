@@ -28,6 +28,9 @@ net_bridge_sources() {
     if grep -q 'beans_sockx_' "build/$name.ll" "build/${name}_ffi.c" 2>/dev/null; then
         echo runtime/net/beans_net_sockx.c
     fi
+    if grep -q 'beans_enc_json_' "build/$name.ll" "build/${name}_ffi.c" 2>/dev/null; then
+        echo runtime/encoding/beans_enc_json.c
+    fi
 }
 
 run_asan() {
@@ -148,6 +151,7 @@ run_bridge_asan test/cases/http2_fuzz.b h2 'ok http2_fuzz' 1 8
 run_bridge_asan test/cases/websocket_fuzz.b ws 'ok websocket_fuzz' 1 20
 run_bridge_asan test/cases/compress_fuzz.b zlib 'ok compress_fuzz' 1 80
 run_bridge_asan test/cases/crypto_vectors.b hash 'sha256 abc true'
+run_bridge_asan test/cases/json_direct_fuzz.b json_direct 'ok json_direct_fuzz'
 
 echo "ASan/UBSan checking the TLS bridge and partial-IO driver"
 ASAN_OPTIONS="detect_leaks=$asan_detect_leaks:halt_on_error=1" \
@@ -167,7 +171,8 @@ for file in examples/threads.b examples/shared_weak.b examples/wide_sync.b \
             examples/wide_concurrency.b test/cases/thread_deinit.b \
             test/cases/thread_cycles.b test/cases/async_cross_thread_close.b \
             examples/unsafe_raw.b examples/atomics.b \
-            test/cases/runtime_hooks_threads.b; do
+            test/cases/runtime_hooks_threads.b \
+            test/cases/json_threads.b; do
     echo "TSan checking $file"
     name=$(basename "$file" .b)
     rm -f "build/${name}_ffi.c"
