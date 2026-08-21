@@ -190,16 +190,25 @@ jobs:
       - name: Install pinned PowerPC64 musl C++ sysroot
         env:
           TOOLCHAIN_SHA512: 882e17b3a664f735dc37882a240aa352b3a01014fb8b40d1ffecb09573cdd9472bdaa7a10830be6d2e82e4b7ac4438c55ce5ac882e04a24f7d45a9f03ac922de
+          FALLBACK_TOOLCHAIN_SHA512: 3975cc64530dab6738eb3aacc37f34f8a0d782bf0a1ef1e21da4710c90bb9478afc929b8092bf2df61e92f0994df3eaf15ffaab1c53d3ac296e39dcf6e9c31a8
         run: |
           set -euo pipefail
-          curl -fL --retry 5 --retry-all-errors --connect-timeout 20 \
-            https://skarnet.org/toolchains/cross/powerpc64-linux-musl_talos-14.2.0.tar.xz \
-            -o "$RUNNER_TEMP/powerpc64-linux-musl.tar.xz"
-          echo "$TOOLCHAIN_SHA512  $RUNNER_TEMP/powerpc64-linux-musl.tar.xz" \
-            | sha512sum -c -
+          archive="$RUNNER_TEMP/powerpc64-linux-musl.tar"
           mkdir "$RUNNER_TEMP/powerpc64-linux-musl"
-          tar xJf "$RUNNER_TEMP/powerpc64-linux-musl.tar.xz" \
-            -C "$RUNNER_TEMP/powerpc64-linux-musl" --strip-components=1
+          if curl -fL --retry 5 --retry-all-errors --connect-timeout 20 \
+              https://skarnet.org/toolchains/cross/powerpc64-linux-musl_talos-14.2.0.tar.xz \
+              -o "$archive"; then
+            echo "$TOOLCHAIN_SHA512  $archive" | sha512sum -c -
+            tar xJf "$archive" -C "$RUNNER_TEMP/powerpc64-linux-musl" \
+              --strip-components=1
+          else
+            echo "preferred PowerPC64 musl toolchain is unavailable; using pinned fallback"
+            curl -fL --retry 5 --retry-all-errors --connect-timeout 20 \
+              https://musl.cc/powerpc64-linux-musl-cross.tgz -o "$archive"
+            echo "$FALLBACK_TOOLCHAIN_SHA512  $archive" | sha512sum -c -
+            tar xzf "$archive" -C "$RUNNER_TEMP/powerpc64-linux-musl" \
+              --strip-components=1
+          fi
           ln -sfn libc.so \
             "$RUNNER_TEMP/powerpc64-linux-musl/powerpc64-linux-musl/lib/ld-musl-powerpc64.so.1"
 
