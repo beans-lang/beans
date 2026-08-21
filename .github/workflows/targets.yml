@@ -204,7 +204,8 @@ jobs:
           else
             echo "preferred PowerPC64 musl toolchain is unavailable; using pinned fallback"
             curl -fL --retry 5 --retry-all-errors --connect-timeout 20 \
-              https://musl.cc/powerpc64-linux-musl-cross.tgz -o "$archive"
+              https://github.com/beans-lang/beans/releases/download/ci-toolchains-2021-11-23/beans-powerpc64-linux-musl-cross.tgz \
+              -o "$archive"
             echo "$FALLBACK_TOOLCHAIN_SHA512  $archive" | sha512sum -c -
             tar xzf "$archive" -C "$RUNNER_TEMP/powerpc64-linux-musl" \
               --strip-components=1
