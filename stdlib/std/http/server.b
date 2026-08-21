@@ -21,15 +21,12 @@ pub class ServedRequest {
     pub keep_alive: bool = true
 }
 
-/// Encodes one complete HTTP/1.1 response into caller-owned storage. The
-/// target is reused, framing stays owned by std.http, and callers can flush
-/// the returned bytes through a nonblocking output queue.
-pub fn encode_response_into(target: Bytes,
-                            status: int,
-                            reason: string,
-                            headers: Headers,
-                            body: Bytes,
-                            keep_alive: bool) -> Result<bool> {
+// Validation shared by both encode forms; reports whether this status
+// forbids a body, which the writer needs again.
+fn check_response_frame(status: int,
+                        reason: string,
+                        headers: Headers,
+                        body: Bytes) -> Result<bool> {
     check_response_line(status, reason)?
     check_headers(headers)?
     if headers.has("Content-Length") || headers.has("Transfer-Encoding") {
@@ -43,7 +40,16 @@ pub fn encode_response_into(target: Bytes,
     if body_forbidden && body.len() != 0 {
         return err("status {status} cannot carry a response body", "invalid")
     }
-    target.resize(0)
+    return ok(body_forbidden)
+}
+
+fn write_response_frame(target: Bytes,
+                        status: int,
+                        reason: string,
+                        headers: Headers,
+                        body: Bytes,
+                        keep_alive: bool,
+                        body_forbidden: bool) {
     target.append_string("HTTP/1.1 ")
     target.append_int_text(status)
     target.push(32)
@@ -65,6 +71,39 @@ pub fn encode_response_into(target: Bytes,
     }
     target.append_string("\r\n")
     target.append(body)
+}
+
+/// Encodes one complete HTTP/1.1 response into caller-owned storage. The
+/// target is reused, framing stays owned by std.http, and callers can flush
+/// the returned bytes through a nonblocking output queue.
+pub fn encode_response_into(target: Bytes,
+                            status: int,
+                            reason: string,
+                            headers: Headers,
+                            body: Bytes,
+                            keep_alive: bool) -> Result<bool> {
+    let body_forbidden: bool =
+        check_response_frame(status, reason, headers, body)?
+    target.resize(0)
+    write_response_frame(target, status, reason, headers, body, keep_alive,
+                         body_forbidden)
+    return ok(true)
+}
+
+/// Like `encode_response_into`, appending after whatever `target` already
+/// holds — the form for a server that frames each response straight into
+/// its connection's output queue instead of staging it in a side buffer.
+/// Validation failures leave `target` untouched.
+pub fn encode_response_append(target: Bytes,
+                              status: int,
+                              reason: string,
+                              headers: Headers,
+                              body: Bytes,
+                              keep_alive: bool) -> Result<bool> {
+    let body_forbidden: bool =
+        check_response_frame(status, reason, headers, body)?
+    write_response_frame(target, status, reason, headers, body, keep_alive,
+                         body_forbidden)
     return ok(true)
 }
 
