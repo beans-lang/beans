@@ -10,14 +10,15 @@ end in `.b`.
 - [stdlib/std/](stdlib/std/) — compiler-shipped standard library packages
 - [docs/REFLECTION.md](docs/REFLECTION.md) — typed runtime reflection and safety rules
 - [docs/RUNTIME_HOOKS.md](docs/RUNTIME_HOOKS.md) — active annotations and app lifecycle
+- [docs/STD_LOG.md](docs/STD_LOG.md) — asynchronous structured logging
 - [docs/JSON_STRUCT_DECODING.md](docs/JSON_STRUCT_DECODING.md) — typed JSON structs
 - [docs/XML_STRUCT_DECODING.md](docs/XML_STRUCT_DECODING.md) — direct typed XML decoding
 - [docs/ZERO_COPY_WORK.md](docs/ZERO_COPY_WORK.md) — copy removal rules and measured results
 
 ## Status
 
-The latest release is **v0.1.19**. It carries language contract `1.0` and runtime
-ABI `6` while the project finishes the evidence needed for a production 1.0
+The latest release is **v0.1.27**. It carries language contract `1.0` and runtime
+ABI `7` while the project finishes the evidence needed for a production 1.0
 claim.
 
 | piece | current state |
@@ -33,6 +34,7 @@ claim.
 | tooling | semantic LSP, interpreter DAP debugger, native debug artifacts and parser recovery for live edits |
 | reflection | checked type/member discovery, runtime annotations, dynamic values, field access, calls and construction through `std.reflect` |
 | encoding | strict DOM APIs, generated JSON encode/decode, and generated XML decode for nested structs, lists, options, field annotations and XML namespaces |
+| logging | asynchronous default and named loggers, level filters, structured fields, file rotation, NDJSON and bounded export sinks through `std.log` |
 | systems access | files, mappings, processes, sockets, DNS, polling, signals, shared memory, dynamic libraries, SIMD and intrinsics, HTTP/1.1 and HTTP/2, WebSocket, TLS, compression and platform hashes |
 
 The release workflow builds and install-tests all 26 required host packages and
@@ -83,7 +85,7 @@ The layout inside is stable: `bin/`, `lib/`, `toolchain/` and `VERSION`.
 Pick a version, a location, or a target:
 
 ```bash
-curl -fsSL .../beans-install.sh | sh -s -- --version 0.1.19 --prefix /opt/beans
+curl -fsSL .../beans-install.sh | sh -s -- --version 0.1.27 --prefix /opt/beans
 BEANS_TARGET=x86_64-unknown-linux-musl curl -fsSL .../beans-install.sh | sh
 ```
 
@@ -521,7 +523,7 @@ High-level standard-library policy is written in Beans. The loader ships
 packages from `stdlib/std/`; `std.collections`, `std.math`, `std.bytes`,
 `std.path`, `std.fmt`, `std.fs`, `std.reader`, and the four
 `std.encoding` packages cover collections, formatting, files and common wire
-formats. `std.log` adds asynchronous logging and export sinks. Generic collection
+formats. `std.log` adds asynchronous structured logging and export sinks. Generic collection
 `filter`/`transform`, inout Map increment/insert/merge/remove/map policies,
 Option and Result combinators, `frequencies`, `unique`, `gcd`, `clamp`,
 CRC32, unsigned varint append/encoding/decoding, path handling,
@@ -578,31 +580,37 @@ same cases on real `windows-latest` and `windows-11-arm` machines.
 
 ### Logging
 
-`std.log` is an asynchronous logger backed by the pinned Quill 12.1.0 C++17
-engine. It supports named loggers, runtime level filters, console, file,
-size-rotating file, NDJSON, string fields, and bounded pull-based export sinks. Short calls
-keep the Beans source file, function, line, and column in native and
-interpreted programs.
+`std.log` is an asynchronous structured logger backed by the pinned Quill
+12.1.0 C++17 engine. The default logger writes `info` and above to stderr.
+Named loggers can fan one record out to console, plain file, size-rotating
+file, NDJSON and bounded pull-based export sinks. Short level calls preserve
+the Beans source file, function, line and column in interpreted and native
+programs.
 
 ```beans
 import std.log
 
-let exported: log.ExportSink = log.ExportSink.open(1024)?
-let logger: log.Logger = log.Logger.create(
-    "service", [log.Sink.console()?, exported.sink()])?
+fn start() -> Result<bool> {
+    let output: log.Sink = log.Sink.json_file("service.ndjson")?
+    let logger: log.Logger = log.Logger.create_with_level(
+        "service", [log.Sink.console()?, output], log.Level.debug)?
 
-logger.info("ready")
-logger.flush()?
-match exported.next(1000)? {
-    some(record) => { /* send record to another system */ }
-    none => {}
+    logger.info("ready")
+    logger.log_fields(
+        log.Level.info, "request complete",
+        [new log.Field("request_id", "42")])?
+    logger.flush()?
+    return ok(true)
 }
 ```
 
-Export callbacks never run on Quill's backend thread. The consumer pulls safe
-Beans `Record` values and chooses `drop_newest`, `drop_oldest`, or `block` for
-its bounded queue. Programs that do not import `std.log` link no Quill code.
-The API, current limits, vendor record, and benchmark command are in
+Disabled `trace` through `fatal` short calls skip their message expression.
+Writes return `false` if their level is disabled or the fixed producer queue is
+full. Producer and export-sink drops have separate counters. Export consumers
+pull safe Beans `Record` batches and may move an `ExportReader` to a worker;
+Beans callbacks never run on Quill's backend thread. Programs that do not
+import `std.log` link no Quill code. The full API, overload rules, examples,
+current limits, vendor record and benchmark commands are in
 [docs/STD_LOG.md](docs/STD_LOG.md).
 
 ## Memory
