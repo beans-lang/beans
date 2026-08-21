@@ -1115,9 +1115,30 @@ void beans_runtime_hook_leave(void) {
     beans_runtime_hook_depth = 0;
 }
 
-static POOL_LOCAL void* pool_free[POOL_CLASSES];
-static POOL_LOCAL char* pool_cur;
-static POOL_LOCAL char* pool_end;
+// The allocator pool and the collector's root batch share one thread-local
+// struct. On Darwin every distinct _Thread_local variable is its own TLV
+// descriptor and costs its own _tlv_get_addr call; one variable means the
+// hot paths pay that call once, not once per field.
+#if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
+#define CC_WORKER_ROOT_BATCH 256
+#endif
+typedef struct {
+    void* pool_free[POOL_CLASSES];
+    char* pool_cur;
+    char* pool_end;
+#if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
+    void* cc_worker_roots[CC_WORKER_ROOT_BATCH];
+    long long cc_worker_root_len;
+    int cc_worker_root_batching;
+#endif
+} BeansHotTls;
+static POOL_LOCAL BeansHotTls beans_hot_tls;
+#define pool_free (beans_hot_tls.pool_free)
+#define pool_cur (beans_hot_tls.pool_cur)
+#define pool_end (beans_hot_tls.pool_end)
+#define cc_worker_roots (beans_hot_tls.cc_worker_roots)
+#define cc_worker_root_len (beans_hot_tls.cc_worker_root_len)
+#define cc_worker_root_batching (beans_hot_tls.cc_worker_root_batching)
 static void** pool_slabs;
 static long long pool_slab_len, pool_slab_cap;
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
@@ -1520,12 +1541,8 @@ static pthread_mutex_t cc_mu = PTHREAD_MUTEX_INITIALIZER;
 // staging, keeps each shell alive and guarantees that only one thread queues it.
 // The final partial batch is published before the worker lowers cc_threads, so a
 // collector that observes zero workers also observes every staged root.
-#if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
-#define CC_WORKER_ROOT_BATCH 256
-static POOL_LOCAL void* cc_worker_roots[CC_WORKER_ROOT_BATCH];
-static POOL_LOCAL long long cc_worker_root_len;
-static POOL_LOCAL int cc_worker_root_batching;
-#endif
+// The batch buffer itself lives in `beans_hot_tls` beside the allocator
+// pool — one thread-local variable, one TLV descriptor.
 
 static void cc_append_roots(void** roots, long long count) {
     if (count <= 0) return;

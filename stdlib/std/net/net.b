@@ -35,6 +35,7 @@ extern "C" fn beans_sockx_multicast(fd: int, group: RawPtr<u8>, req: RawPtr<u64>
 extern "C" fn beans_sockx_recv_into(fd: int, destination: RawPtr<u8>, req: RawPtr<u64>) -> int
 extern "C" fn beans_sockx_listen_reuse_port(host: RawPtr<u8>, req: RawPtr<u64>) -> int
 extern "C" fn beans_sockx_try_accept(fd: int, req: RawPtr<u64>) -> int
+extern "C" fn beans_sockx_set_nodelay(fd: int, on: int, req: RawPtr<u64>) -> int
 
 fn sockx_error(operation: string, status: int, os_error: int) -> Result<int> {
     if status == 1 || status == 2 {
@@ -177,11 +178,17 @@ pub unique class TcpStream implements ByteStream, Send {
     fd: int
     live: bool = true
     nonblocking: bool = false
+    // One reusable request/result word pair for the recv bridge, so a read
+    // costs no allocation. Owned for the stream's whole life.
+    scratch: RawPtr<u64> = RawPtr.null()
 
     // Private: wrapping an arbitrary integer as a socket is not something callers get
     // to do. Streams come from `connect` or from a listener's `accept`.
     fn init(fd: int) {
         self.fd = fd
+        unsafe {
+            self.scratch = RawPtr.alloc(2)
+        }
     }
 
     /// Connects to `host:port`, waiting as long as the OS does.
@@ -201,6 +208,10 @@ pub unique class TcpStream implements ByteStream, Send {
         if self.live {
             let ignored: Result<bool> = sock.close(self.fd)
             self.live = false
+        }
+        unsafe {
+            if !self.scratch.is_null() { self.scratch.free() }
+            self.scratch = RawPtr.null()
         }
     }
 
@@ -283,13 +294,12 @@ pub unique class TcpStream implements ByteStream, Send {
         var count: int = 0
         var os_error: int = 0
         unsafe {
-            let req: RawPtr<u64> = RawPtr.alloc(2)
-            req.write(buffer.len() as u64)
-            req.offset(1).write(0)
-            status = beans_sockx_recv_into(self.fd, buffer.as_ptr(), req)
-            count = req.read() as int
-            os_error = req.offset(1).read() as int
-            req.free()
+            self.scratch.write(buffer.len() as u64)
+            self.scratch.offset(1).write(0)
+            status = beans_sockx_recv_into(
+                self.fd, buffer.as_ptr(), self.scratch)
+            count = self.scratch.read() as int
+            os_error = self.scratch.offset(1).read() as int
         }
         if status == 0 { return ok(count) }
         return sockx_error("recv_into", status, os_error)
@@ -351,6 +361,25 @@ pub unique class TcpStream implements ByteStream, Send {
         if !self.live { return err("set_nonblocking: socket is closed", "closed") }
         sock.set_nonblocking(self.fd, on)?
         self.nonblocking = on
+        return ok(true)
+    }
+
+    /// Disables (with `true`) or restores Nagle's algorithm. A
+    /// request/response server wants it disabled, so a small response is
+    /// not held back for a coalescing timer.
+    pub fn set_nodelay(on: bool) -> Result<bool> {
+        if !self.live { return err("set_nodelay: socket is closed", "closed") }
+        var status: int = 0
+        var os_error: int = 0
+        unsafe {
+            self.scratch.write(0)
+            self.scratch.offset(1).write(0)
+            status = beans_sockx_set_nodelay(
+                self.fd, if on { 1 } else { 0 }, self.scratch)
+            os_error = self.scratch.offset(1).read() as int
+        }
+        if status == 0 { return ok(true) }
+        sockx_error("set_nodelay", status, os_error)?
         return ok(true)
     }
 

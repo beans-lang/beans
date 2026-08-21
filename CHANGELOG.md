@@ -4,6 +4,27 @@ This file records user-facing changes in each Beans release.
 
 ## Unreleased
 
+### Added
+
+- `TcpStream.set_nodelay` turns Nagle's algorithm off (or back on). A
+  request/response server wants it off, so a small response is not held
+  back for a coalescing timer.
+- `http.Headers.clear` empties a collection while keeping its storage, so
+  one instance can serve a whole keep-alive connection.
+- `http.RequestParser.feed_range_into` and `finish_into` append events to a
+  caller-owned list — the allocation-free form for a server's read loop.
+
+### Changed
+
+- The HTTP/1 parser returns the shared literal for the nine request methods
+  and the common header names instead of allocating a fresh string per
+  message; an uncommon spelling still allocates and keeps its exact case.
+- A socket read reuses one per-stream scratch word for the C bridge instead
+  of allocating one per call.
+- The runtime's allocator pool and cycle-collector root batch share one
+  thread-local struct: the hot paths pay one Darwin TLV lookup instead of
+  one per variable.
+
 ### Fixed
 
 - `beansc run` now passes selected manifest search, library, and framework rows
