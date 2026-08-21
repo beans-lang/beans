@@ -14,14 +14,35 @@ fi
 mkdir -p "$dest"
 
 packages=(libc6 libc6-dev linux-libc-dev)
-for file in "$(cc -print-file-name=crtbeginS.o)" \
-            "$(cc -print-file-name=libgcc_s.so.1)"; do
-    canonical=$(readlink -f "$file")
-    package=$(
-        dpkg-query -S "$canonical" 2>/dev/null |
-            sed -n '1s/:.*//p' || true
-    )
-    if [[ -n "$package" ]]; then packages+=("$package"); fi
+if ! command -v c++ >/dev/null 2>&1; then
+    echo "a full Linux package needs a C++ driver for the std.log runtime" >&2
+    exit 2
+fi
+support_files=(
+    "$(cc -print-file-name=crtbeginS.o)"
+    "$(cc -print-file-name=libgcc_s.so.1)"
+    # The unversioned development link and its resolved runtime belong to
+    # different Debian packages. Keep both owners: the development package
+    # carries the standard C++ headers Quill needs, while the runtime package
+    # carries libstdc++.so.6 for the bridge loaded by the interpreter.
+    "$(c++ -print-file-name=libstdc++.so)"
+    "$(c++ -print-file-name=libstdc++.so.6)"
+)
+for file in "${support_files[@]}"; do
+    if [[ ! -e "$file" ]]; then
+        echo "cannot find required Linux support file: $file" >&2
+        exit 2
+    fi
+    # `realpath -s` removes Clang's `/usr/bin/../lib` spelling without
+    # following the development symlink; `readlink -f` then reaches the
+    # separately owned runtime.
+    for owned in "$(realpath -s "$file")" "$(readlink -f "$file")"; do
+        package=$(
+            dpkg-query -S "$owned" 2>/dev/null |
+                sed -n '1s/:.*//p' || true
+        )
+        if [[ -n "$package" ]]; then packages+=("$package"); fi
+    done
 done
 
 manifest=$(mktemp "${TMPDIR:-/tmp}/beans-sysroot.XXXXXX")

@@ -172,6 +172,7 @@ test-runtime: $(BIN)
 	./test/cpu_features.sh
 	./test/clocks_random.sh
 	./test/net_bridge_api.sh
+	./test/log.sh
 	./test/net.sh
 	./test/poll.sh
 	bash ./test/send_builtin_owners.sh
@@ -329,6 +330,7 @@ test-core: $(BIN)
 	./test/cpu_features.sh
 	./test/clocks_random.sh
 	./test/net_bridge_api.sh
+	./test/log.sh
 	./test/net.sh
 	./test/poll.sh
 	bash ./test/send_builtin_owners.sh

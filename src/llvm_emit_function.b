@@ -958,6 +958,21 @@ partial class LlvmTextEmitter {
     fn emit_call(function: MirFunction,
                  instruction: MirInstruction,
                  values: Map<int, string>) -> string {
+        let log_level: int =
+            self.log_call_level(instruction.resolved)
+        if log_level >= 0 {
+            let lowered: string =
+                self.emit_default_log_call(
+                    function, instruction, values, log_level)
+            if lowered != "" { return lowered }
+        }
+        if self.log_intrinsics.contains_key(
+               instruction.resolved) {
+            let lowered: string =
+                self.emit_log_intrinsic(
+                    function, instruction, values)
+            if lowered != "" { return lowered }
+        }
         if display_symbol(instruction.resolved) ==
                "std.reflect.value" {
             return self.emit_reflect_box(

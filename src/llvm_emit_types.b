@@ -1316,6 +1316,38 @@ partial class LlvmTextEmitter {
         }
     }
 
+    fn resolve_log_intrinsics() {
+        let root: string = stdlib_root()
+        var expected: string = root
+        if !expected.ends_with("/") { expected = "{expected}/" }
+        expected = "{expected}log"
+        let signature: List<string> = [
+            "int", "int", "string", "string", "string", "int", "int"]
+        for function: MirFunction in self.program.functions {
+            if function.declaration || function.external { continue }
+            if symbol_package(function.name) != "std.log" ||
+               symbol_name(function.name) != "log_write_strings" ||
+               !self.path_is_under(function.file, expected) ||
+               canonical_hir_name(function.result.name) != "bool" {
+                continue
+            }
+            var parameters: List<HirType> = []
+            for local: MirLocal in function.locals {
+                if local.parameter { parameters.push(local.type) }
+            }
+            if parameters.len() != signature.len() { continue }
+            var matched: bool = true
+            for index: int in 0..parameters.len() {
+                if canonical_hir_name(parameters[index].name) !=
+                       signature[index] ||
+                   parameters[index].args.len() != 0 {
+                    matched = false
+                }
+            }
+            if matched { self.log_intrinsics[function.name] = 1 }
+        }
+    }
+
     fn resolve_json_encoders() {
         let root: string = stdlib_root()
         for function: MirFunction in self.program.functions {

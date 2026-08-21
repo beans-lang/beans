@@ -53,6 +53,8 @@ class TreeInterpreter {
     manifest_handles: List<int>
     encoding_handles: Map<string, int>
     encoding_error: string
+    log_handle: int
+    log_error: string
     net_handles: Map<string, int>
     net_error: string
     stored_callbacks: Map<int, TreeStoredCallback>
@@ -70,6 +72,7 @@ class TreeInterpreter {
     // program's own output is forwarded to the client instead of being
     // written to the protocol stream.
     debugger: Option<DebugSession>
+    active_functions: List<string>
 
     fn init(program: HirProgram,
             move arguments: List<string>) {
@@ -97,6 +100,8 @@ class TreeInterpreter {
         self.manifest_handles = []
         self.encoding_handles = {}
         self.encoding_error = ""
+        self.log_handle = -1
+        self.log_error = ""
         self.net_handles = {}
         self.net_error = ""
         self.stored_callbacks = {}
@@ -110,6 +115,7 @@ class TreeInterpreter {
         self.next_reflect_annotation = 1
         self.runtime_hook_active = false
         self.debugger = none
+        self.active_functions = []
         self.load_manifest_links()
     }
 
@@ -8641,11 +8647,119 @@ class TreeInterpreter {
             node, callee, move arguments)
     }
 
+    fn tree_log_level(name: string) -> int {
+        let shown: string = display_symbol(name)
+        if shown == "std.log.trace" ||
+           shown == "std.log.Logger.trace" { return 0 }
+        if shown == "std.log.debug" ||
+           shown == "std.log.Logger.debug" { return 1 }
+        if shown == "std.log.info" ||
+           shown == "std.log.Logger.info" { return 2 }
+        if shown == "std.log.warn" ||
+           shown == "std.log.Logger.warn" { return 3 }
+        if shown == "std.log.error" ||
+           shown == "std.log.Logger.error" { return 4 }
+        if shown == "std.log.fatal" ||
+           shown == "std.log.Logger.fatal" { return 5 }
+        return -1
+    }
+
+    fn active_function_name() -> string {
+        if self.active_functions.len() == 0 { return "" }
+        return display_symbol(
+            self.active_functions[
+                self.active_functions.len() - 1])
+    }
+
     fn call(node: HirNode,
             frame: TreeFrame) -> TreeValue {
         if node.kind == "runtime_hook_call" &&
            self.runtime_hook_active {
             return TreeValue.unit()
+        }
+        let early_log_level: int =
+            if node.kind == "call" ||
+               node.kind == "method_call" {
+                self.tree_log_level(node.resolved)
+            } else {
+                -1
+            }
+        if early_log_level >= 0 &&
+           node.kind == "call" &&
+           node.children.len() == 1 {
+            match self.find_function(package_symbol(
+                    "std.log", "default_enabled_code")) {
+                some(enabled_function) => {
+                    let enabled: TreeValue = self.invoke(
+                        enabled_function,
+                        [TreeValue.integer(early_log_level)],
+                        none)
+                    if !self.truth(node, enabled) {
+                        return TreeValue.boolean(false)
+                    }
+                }
+                none => {}
+            }
+            let message: TreeValue =
+                self.expression(node.children[0], frame)
+            if self.failed { return TreeValue.unit() }
+            if message.kind == "propagate" { return message }
+            match self.find_function(package_symbol(
+                    "std.log", "default_write_enabled_at_code")) {
+                some(function) => {
+                    return self.invoke(
+                        function,
+                        [TreeValue.integer(early_log_level),
+                         message,
+                         TreeValue.string(node.file),
+                         TreeValue.string(self.active_function_name()),
+                         TreeValue.integer(node.line),
+                         TreeValue.integer(node.col)],
+                        none)
+                }
+                none => {}
+            }
+        }
+        if early_log_level >= 0 &&
+           node.kind == "method_call" &&
+           node.children.len() == 2 {
+            let receiver: TreeValue =
+                self.expression(node.children[0], frame)
+            if self.failed { return TreeValue.unit() }
+            if receiver.kind == "propagate" { return receiver }
+            match self.find_function(package_symbol(
+                    "std.log", "logger_enabled_code")) {
+                some(enabled_function) => {
+                    let enabled: TreeValue = self.invoke(
+                        enabled_function,
+                        [tree_value_copy(receiver),
+                         TreeValue.integer(early_log_level)],
+                        none)
+                    if !self.truth(node, enabled) {
+                        return TreeValue.boolean(false)
+                    }
+                }
+                none => {}
+            }
+            let message: TreeValue =
+                self.expression(node.children[1], frame)
+            if self.failed { return TreeValue.unit() }
+            if message.kind == "propagate" { return message }
+            match self.find_function(package_symbol(
+                    "std.log", "Logger.log_at_code")) {
+                some(function) => {
+                    return self.invoke(
+                        function,
+                        [TreeValue.integer(early_log_level),
+                         message,
+                         TreeValue.string(node.file),
+                         TreeValue.string(self.active_function_name()),
+                         TreeValue.integer(node.line),
+                         TreeValue.integer(node.col)],
+                        some(receiver))
+                }
+                none => {}
+            }
         }
         var arguments: List<TreeValue> = []
         for child: HirNode in node.children {
@@ -8658,6 +8772,30 @@ class TreeInterpreter {
                 return argument
             }
             arguments.push(argument)
+        }
+        let module_log_level: int =
+            if node.kind == "call" {
+                self.tree_log_level(node.resolved)
+            } else {
+                -1
+            }
+        if module_log_level >= 0 && arguments.len() == 1 {
+            match self.find_function(
+                    package_symbol(
+                        "std.log", "default_write_at_code")) {
+                some(function) => {
+                    return self.invoke(
+                        function,
+                        [TreeValue.integer(module_log_level),
+                         arguments[0],
+                         TreeValue.string(node.file),
+                         TreeValue.string(self.active_function_name()),
+                         TreeValue.integer(node.line),
+                         TreeValue.integer(node.col)],
+                        none)
+                }
+                none => {}
+            }
         }
         if node.kind == "call" &&
            display_symbol(node.resolved) ==
@@ -8876,6 +9014,35 @@ class TreeInterpreter {
                 method_arguments.push(arguments[index])
             }
             arguments = move method_arguments
+        }
+        let method_log_level: int =
+            if node.kind == "method_call" {
+                self.tree_log_level(node.resolved)
+            } else {
+                -1
+            }
+        if method_log_level >= 0 && arguments.len() == 1 {
+            match receiver {
+                some(value) => {
+                    match self.find_function(
+                            package_symbol(
+                                "std.log", "Logger.log_at_code")) {
+                        some(function) => {
+                            return self.invoke(
+                                function,
+                                [TreeValue.integer(method_log_level),
+                                 arguments[0],
+                                 TreeValue.string(node.file),
+                                 TreeValue.string(self.active_function_name()),
+                                 TreeValue.integer(node.line),
+                                 TreeValue.integer(node.col)],
+                                some(value))
+                        }
+                        none => {}
+                    }
+                }
+                none => {}
+            }
         }
         var target: string = node.resolved
         match receiver {
@@ -11109,14 +11276,31 @@ class TreeInterpreter {
                 self.ffi_pack_argument(argv, "-fPIC")
             }
         }
-        if self.program.target.os == "windows" {
-            // The bridge is loaded into this process, so it has to match this
-            // process's ABI — and clang on Windows defaults to the MSVC
-            // environment, which is a different one. Naming the triple is not
-            // cross-compiling here; it is refusing to let the default pick a
-            // stranger's ABI.
+        let native_musl: bool =
+            self.program.target.env == "musl" &&
+            self.program.target.triple == host_target_name()
+        if !native_musl {
+            // The bridge is loaded into this process, so it must match this
+            // process's ABI. This is also required when qemu-user runs the
+            // target compiler but starts host-native Clang as a child.
             self.ffi_pack_argument(
                 argv, "--target={self.program.target.llvm_triple()}")
+        }
+        let compiler_arch: string = compiler_default_arch(c_driver)
+        if self.program.target.os == "linux" &&
+           compiler_arch != "" &&
+           compiler_arch != self.program.target.arch {
+            if self.program.target.triple ==
+                   "powerpc64-unknown-linux-gnu" {
+                let ppc64_ld: string =
+                    doctor_resolve("powerpc64-linux-gnu-ld")
+                if ppc64_ld != "" {
+                    self.ffi_pack_argument(
+                        argv, "-fuse-ld={ppc64_ld}")
+                }
+            } else {
+                self.ffi_pack_argument(argv, "-fuse-ld=lld")
+            }
         }
         self.ffi_pack_target_flags(argv)
         self.ffi_pack_argument(argv, c_path)
@@ -11542,6 +11726,216 @@ class TreeInterpreter {
         return ""
     }
 
+    // std.log is one C++ bridge backed by the pinned Quill headers. Like
+    // encoding and networking, interpreted programs build it once into the
+    // host cache, then resolve all beans_log_* symbols through that local
+    // library handle.
+    fn ensure_log_bridge() -> int {
+        if self.log_handle != -1 { return self.log_handle }
+        let library: string = self.log_bridge_library()
+        if library == "" {
+            self.log_handle = 0
+            return 0
+        }
+        match host_dl.open(library) {
+            ok(handle) => { self.log_handle = handle }
+            err(error) => {
+                self.log_handle = 0
+                self.log_error =
+                    "cannot load {library}: {error.msg}"
+            }
+        }
+        return self.log_handle
+    }
+
+    // One list feeds both the host-library cache key and Clang. Root include
+    // paths are normalized in the key below, so an identical installed copy
+    // reuses the same content key.
+    fn log_bridge_compile_arguments(
+        root: string, c_driver: string
+    ) -> List<string> {
+        var flags: List<string> = [
+            "-x", "c++", "-std=c++17", "-fexceptions", "-fno-rtti",
+            "-O2", "-fvisibility=hidden", "-DBEANS_RT_PROFILE=3",
+            "-I{root}", "-I{path.join(root, "vendor/quill/include")}"]
+        if self.program.target.os == "macos" {
+            flags.push("-dynamiclib")
+        } else {
+            flags.push("-shared")
+            if self.program.target.os != "windows" { flags.push("-fPIC") }
+        }
+        // The hosted compiler can run under qemu while child processes still
+        // run on the machine that launched qemu. Always tell that host Clang
+        // which bridge ABI to build. Keep the native musl exception aligned
+        // with the main driver because an explicit target can hide Alpine's
+        // native startup files.
+        let native_musl: bool =
+            self.program.target.env == "musl" &&
+            self.program.target.triple == host_target_name()
+        if !native_musl {
+            flags.push("--target={self.program.target.llvm_triple()}")
+        }
+        // qemu-user runs this target compiler but lets the child C driver run
+        // natively on the launch machine. Its normal GNU ld only understands
+        // that launch architecture. LLD handles the cross link, except for
+        // big-endian ppc64 ELFv1, which needs the matching GNU cross linker.
+        let compiler_arch: string = compiler_default_arch(c_driver)
+        if self.program.target.os == "linux" &&
+           compiler_arch != "" &&
+           compiler_arch != self.program.target.arch {
+            if self.program.target.triple ==
+                   "powerpc64-unknown-linux-gnu" {
+                let ppc64_ld: string =
+                    doctor_resolve("powerpc64-linux-gnu-ld")
+                if ppc64_ld != "" {
+                    flags.push("-fuse-ld={ppc64_ld}")
+                }
+            } else {
+                flags.push("-fuse-ld=lld")
+            }
+        }
+        if self.program.target.os == "windows" {
+            // A bridge loaded into a 32-bit hosted compiler must not resolve
+            // libc++.dll or libunwind.dll from a 64-bit toolchain on PATH.
+            // Keep GNU/LLVM-MinGW cache libraries self-contained. MSVC uses
+            // the Windows C++ runtime instead and does not accept these flags.
+            if self.program.target.env != "msvc" {
+                flags.push("-static-libstdc++")
+                flags.push("-static-libgcc")
+            }
+        }
+        for flag: string in self.program.target.c_driver_flags() {
+            flags.push(flag)
+        }
+        for flag: string in log_bridge_link_arguments(
+                true, self.program.target.os,
+                self.program.target.env) {
+            flags.push(flag)
+        }
+        return move flags
+    }
+
+    fn log_bridge_library() -> string {
+        let root: string = log_source_root()
+        let source: string = path.join(root, "beans_log.cpp")
+        if !File.exists(source) {
+            self.log_error =
+                "cannot find the std.log bridge under {root}; set BEANS_LOG to the directory holding runtime/log"
+            return ""
+        }
+        let c_driver: string = self.ffi_c_driver()
+        let compile_arguments: List<string> =
+            self.log_bridge_compile_arguments(root, c_driver)
+        var blob: string =
+            "{self.program.target.triple}|interp|{log_bridge_abi()}"
+        blob = "{blob}|{encoding_compiler_identity(c_driver)}"
+        let include_root: string =
+            path.join(root, "vendor/quill/include")
+        for argument: string in compile_arguments {
+            if argument == "-I{root}" {
+                blob = "{blob}|-I<log-root>"
+            } else if argument == "-I{include_root}" {
+                blob = "{blob}|-I<quill-include>"
+            } else {
+                blob = "{blob}|{argument}"
+            }
+        }
+        for input: string in log_bridge_inputs(root) {
+            match host_fs.read(input) {
+                ok(text) => { blob = "{blob}|{text}" }
+                err(_) => { blob = "{blob}|missing:{input}" }
+            }
+        }
+        var hash: int = 0
+        var mixed: int = 0
+        for index: int in 0..blob.len() {
+            let byte: int = blob.byte_at(index)
+            hash = (hash * 131 + byte) % 2147483647
+            mixed =
+                (mixed * 16777619 + byte + index % 7) %
+                2147483629
+        }
+        let extension: string =
+            if self.program.target.os == "macos" {
+                "dylib"
+            } else if self.program.target.os == "windows" {
+                "dll"
+            } else {
+                "so"
+            }
+        let cache_dir: string = "{beans_home()}/cache/log"
+        let library: string =
+            "{cache_dir}/beans_log.{self.program.target.triple}.{hash}x{mixed}.{extension}"
+        if File.exists(library) { return library }
+        match Dir.create_all(cache_dir) {
+            ok(_) => {}
+            err(error) => {
+                self.log_error =
+                    "cannot create {cache_dir}: {error.msg}"
+                return ""
+            }
+        }
+        var stamp: string = "{host_time.monotonic_nanos()}"
+        match host_random.bytes(8) {
+            ok(seed) => { stamp = "{stamp}.{seed.get_u64(0)}" }
+            err(_) => { stamp = "{stamp}.{host_time.wall_nanos()}" }
+        }
+        let staging: string = "{library}.{stamp}"
+        let argv: Bytes = new Bytes(0)
+        self.ffi_pack_argument(argv, c_driver)
+        for argument: string in compile_arguments {
+            self.ffi_pack_argument(argv, argument)
+        }
+        self.ffi_pack_argument(argv, source)
+        self.ffi_pack_argument(argv, "-o")
+        self.ffi_pack_argument(argv, staging)
+        let environment: Bytes = new Bytes(0)
+        self.ffi_forward_env(environment, "PATH")
+        self.ffi_forward_env(environment, "TMPDIR")
+        self.ffi_forward_env(environment, "TEMP")
+        self.ffi_forward_env(environment, "TMP")
+        self.ffi_forward_env(environment, "INCLUDE")
+        self.ffi_forward_env(environment, "LIB")
+        self.ffi_forward_env(environment, "LIBPATH")
+        var compiled: bool = false
+        var compiler_error: string = ""
+        match host_proc.run(
+                argv, environment, "",
+                new Bytes(0), 8388608) {
+            ok(output) => {
+                let status_bytes: Bytes = output.remove(0)
+                let normal_bytes: Bytes = output.remove(0)
+                let error_bytes: Bytes = output.remove(0)
+                compiled = status_bytes.get_i64(0) == 0
+                if normal_bytes.len() != 0 {
+                    compiler_error = normal_bytes.to_string()
+                }
+                if error_bytes.len() != 0 {
+                    if compiler_error != "" {
+                        compiler_error = "{compiler_error}\n"
+                    }
+                    compiler_error =
+                        "{compiler_error}{error_bytes.to_string()}"
+                }
+            }
+            err(error) => { compiler_error = error.msg }
+        }
+        if !compiled {
+            File.remove(staging)
+            self.log_error =
+                "building the std.log bridge with {c_driver} failed: {compiler_error.trim()}"
+            return ""
+        }
+        match File.rename(staging, library) {
+            ok(_) => {}
+            err(_) => { File.remove(staging) }
+        }
+        if File.exists(library) { return library }
+        self.log_error =
+            "cannot place the std.log bridge library at {library}"
+        return ""
+    }
+
     // Resolves and caches the shared bridge library for one networking
     // feature, exactly the std.encoding mechanism: compiled once per host
     // from the same sources `beansc build` links, cached content-addressed
@@ -11825,6 +12219,21 @@ class TreeInterpreter {
                         function,
                         "std.encoding.{feature} bridge library is unavailable: {self.encoding_error}").int_data
                 }
+            }
+        }
+        if log_symbol(function.extern_name) {
+            let handle: int = self.ensure_log_bridge()
+            if handle != 0 {
+                match host_dl.symbol(
+                          handle,
+                          function.extern_name) {
+                    ok(address) => { return address }
+                    err(_) => {}
+                }
+            } else {
+                return self.fail_extern(
+                    function,
+                    "std.log bridge library is unavailable: {self.log_error}").int_data
             }
         }
         // The networking bridges resolve the same way, through their own
@@ -12140,6 +12549,7 @@ class TreeInterpreter {
             }
             none => {}
         }
+        self.active_functions.push(function.qualified)
         var result: TreeValue = TreeValue.unit()
         for statement: HirNode in function.body {
             let flow: TreeExec =
@@ -12155,6 +12565,8 @@ class TreeInterpreter {
             some(session) => { session.pop_frame() }
             none => {}
         }
+        self.active_functions.remove(
+            self.active_functions.len() - 1)
         return result
     }
 

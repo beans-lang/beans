@@ -34,6 +34,9 @@ cp -R "$root/runtime/encoding" "$lib_dir/encoding"
 # compile a bridge per target, and an installation has to work offline.
 rm -rf "$lib_dir/net"
 cp -R "$root/runtime/net" "$lib_dir/net"
+# std.log uses the same offline, per-target bridge model.
+rm -rf "$lib_dir/log"
+cp -R "$root/runtime/log" "$lib_dir/log"
 rm -rf "$share_dir/lib/std"
 cp -R "$root/stdlib/std" "$share_dir/lib/std"
 install -m 0644 "$root/LICENSE" "$share_dir/LICENSE"
@@ -50,7 +53,8 @@ BEANS_WASM_HOST="\${BEANS_WASM_HOST:-$prefix/lib/beans/wasm_host.c}"
 BEANS_STDLIB="\${BEANS_STDLIB:-$prefix/share/beans/lib/std}"
 BEANS_ENCODING="\${BEANS_ENCODING:-$prefix/lib/beans/encoding}"
 BEANS_NET="\${BEANS_NET:-$prefix/lib/beans/net}"
-export BEANS_RUNTIME BEANS_WASM_HOST BEANS_STDLIB BEANS_ENCODING BEANS_NET
+BEANS_LOG="\${BEANS_LOG:-$prefix/lib/beans/log}"
+export BEANS_RUNTIME BEANS_WASM_HOST BEANS_STDLIB BEANS_ENCODING BEANS_NET BEANS_LOG
 exec "$prefix/lib/beans/beansc" "\$@"
 EOF
 chmod 0755 "$bin_dir/beansc"
