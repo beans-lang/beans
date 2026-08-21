@@ -9,7 +9,8 @@
 #include "quill/core/Attributes.h"
 #include <cstdint>
 
-#if defined(__ARM_ARCH) || defined(_M_ARM) || defined(_M_ARM64) || defined(__PPC64__)
+#if defined(__ARM_ARCH) || defined(_M_ARM) || defined(_M_ARM64) || defined(__PPC64__) || \
+  defined(__PPC__) || defined(__powerpc__) || defined(__POWERPC__)
   // ARM or PowerPC — use ChronoTimeUtils for timestamping
   #include "quill/core/ChronoTimeUtils.h"
 
@@ -76,7 +77,8 @@ QUILL_NODISCARD QUILL_ATTRIBUTE_HOT inline uint64_t rdtsc() noexcept
   __asm__ volatile("stck %0" : "=Q"(tsc) : : "cc");
   return tsc;
 }
-#elif (defined(_M_ARM) || defined(_M_ARM64) || defined(__PPC64__) || defined(__PPC__))
+#elif (defined(_M_ARM) || defined(_M_ARM64) || defined(__PPC64__) || defined(__PPC__) || \
+       defined(__powerpc__) || defined(__POWERPC__))
 QUILL_NODISCARD QUILL_ATTRIBUTE_HOT inline uint64_t rdtsc() noexcept
 {
   // soft failover
