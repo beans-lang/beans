@@ -1165,11 +1165,25 @@ class NativeBuildDriver {
 
     // ---- std.log bridge object ----
 
+    fn log_optimization_flag() -> string {
+        let flag: string = self.optimization_flag()
+        // Clang 18 miscompiles libstdc++'s std::call_once cleanup for
+        // 32-bit PowerPC at -O0: its PC-relative thunk overwrites the return
+        // address, so the first logger start jumps into the thunk data and
+        // raises SIGILL. -O1 inlines that cleanup and emits valid code. Keep
+        // the workaround inside the hidden bridge; user Beans code still
+        // gets the requested debug optimization level and debug symbols.
+        if self.target.arch == "powerpc" && flag == "-O0" {
+            return "-O1"
+        }
+        return flag
+    }
+
     fn log_compile_flags(root: string,
                          pic: bool) -> List<string> {
         var flags: List<string> = [
             "-x", "c++", "-std=c++17", "-fexceptions", "-fno-rtti",
-            self.optimization_flag()]
+            self.log_optimization_flag()]
         if self.release { flags.push("-DNDEBUG") }
         for flag: string in self.debug_flags() {
             flags.push(flag)
