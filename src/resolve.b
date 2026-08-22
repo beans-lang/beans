@@ -340,16 +340,85 @@ class Resolver {
         return false
     }
 
-    // The bindings of one file: the loader settled each name and reported
-    // duplicates, so this only collects them.
+    // The module bindings of one file: the loader settled each name and
+    // reported duplicates, so this only collects them. Selective imports
+    // bind no module name and are collected by selected_for instead.
     fn aliases_for(file: ParsedModuleFile) -> Map<string, string> {
         var aliases: Map<string, string> = {}
         for imported: ModuleImport in file.imports {
+            if imported.names.len() != 0 { continue }
             var target: string = imported.resolved
             if target == "" { target = imported.path }
             aliases[imported.binding] = target
         }
         return move aliases
+    }
+
+    // The selected names of one file: binding -> target package and the
+    // original symbol name, encoded "path\nname" — neither half can hold
+    // a newline.
+    fn selected_for(file: ParsedModuleFile) -> Map<string, string> {
+        var selected: Map<string, string> = {}
+        for imported: ModuleImport in file.imports {
+            var target: string = imported.resolved
+            if target == "" { target = imported.path }
+            for named: NamedImport in imported.names {
+                selected[named.binding] = "{target}\n{named.name}"
+            }
+        }
+        return move selected
+    }
+
+    // A selective import is checked where it is written: the target must
+    // declare every selected name, the name must be visible, and the
+    // binding must not collide with a declaration of the importing
+    // package. Native namespaces declare no symbols the resolver can see;
+    // their names are validated by the expression checker at use sites.
+    fn check_selected_imports(package: LoadedPackage,
+                              file: ParsedModuleFile) {
+        for imported: ModuleImport in file.imports {
+            var target: string = imported.resolved
+            if target == "" { target = imported.path }
+            for named: NamedImport in imported.names {
+                let owned: string =
+                    self.package_qualified(package, named.binding)
+                if self.symbols.contains_key(owned) ||
+                   self.annotation_symbols.contains_key(owned) {
+                    self.fail(
+                        file.path, named.node,
+                        "import name '{named.binding}' is already declared in package '{package.name}' — rename the import with 'as'")
+                    continue
+                }
+                if !self.is_loaded_package(target) { continue }
+                let qualified: string =
+                    package_symbol(target, named.name)
+                if self.annotation_symbols.contains_key(qualified) {
+                    let annotation: SemanticSymbol =
+                        self.annotation_symbols[qualified]
+                    if annotation.package_path !=
+                       package.import_path &&
+                       !annotation.is_public {
+                        self.fail(
+                            file.path, named.node,
+                            "annotation '@{named.name}' isn't pub in package '{annotation.package_path}'")
+                    }
+                    continue
+                }
+                if !self.symbols.contains_key(qualified) {
+                    self.fail(
+                        file.path, named.node,
+                        "package '{target}' does not declare '{named.name}'")
+                    continue
+                }
+                let symbol: SemanticSymbol = self.symbols[qualified]
+                if symbol.package_path != package.import_path &&
+                   !symbol.is_public {
+                    self.fail(
+                        file.path, named.node,
+                        "'{named.name}' isn't pub in package '{symbol.package_path}'")
+                }
+            }
+        }
     }
 
     fn first_part(value: string) -> string {
@@ -365,6 +434,7 @@ class Resolver {
     fn resolve_type_name(name: string, package: LoadedPackage,
                          file: ParsedModuleFile,
                          aliases: Map<string, string>,
+                         selected: Map<string, string>,
                          generics: Map<string, bool>,
                          self_type: string, node: AstNode,
                          unknown_is_bound: bool) -> string {
@@ -399,6 +469,19 @@ class Resolver {
             }
         } else {
             resolved = self.package_qualified(package, name)
+            if !self.symbols.contains_key(resolved) {
+                // Not declared here — a name selected with
+                // `import {…} from path` resolves onto its target.
+                // check_selected_imports refused any collision, so the
+                // two lookups can never both succeed.
+                let encoded: string = selected.get(name).or("")
+                if encoded != "" {
+                    let parts: List<string> = encoded.split("\n")
+                    if self.is_loaded_package(parts[0]) {
+                        resolved = package_symbol(parts[0], parts[1])
+                    }
+                }
+            }
         }
 
         if !self.symbols.contains_key(resolved) {
@@ -427,6 +510,7 @@ class Resolver {
     fn resolve_annotation_name(
         name: string, package: LoadedPackage,
         file: ParsedModuleFile, aliases: Map<string, string>,
+        selected: Map<string, string>,
         node: AstNode) -> string {
         var resolved: string = ""
         if name.contains(".") {
@@ -441,6 +525,15 @@ class Resolver {
                     aliases[qualifier], self.after_first_part(name))
         } else {
             resolved = self.package_qualified(package, name)
+            if !self.annotation_symbols.contains_key(resolved) {
+                let encoded: string = selected.get(name).or("")
+                if encoded != "" {
+                    let parts: List<string> = encoded.split("\n")
+                    if self.is_loaded_package(parts[0]) {
+                        resolved = package_symbol(parts[0], parts[1])
+                    }
+                }
+            }
         }
         if !self.annotation_symbols.contains_key(resolved) {
             self.fail(file.path, node,
@@ -462,6 +555,7 @@ class Resolver {
     fn resolve_node(node: AstNode, package: LoadedPackage,
                     file: ParsedModuleFile,
                     aliases: Map<string, string>,
+                    selected: Map<string, string>,
                     inherited_generics: Map<string, bool>,
                     inherited_self: string,
                     generic_bound: bool,
@@ -492,8 +586,9 @@ class Resolver {
             }
             node.resolved =
                 self.resolve_type_name(node.value, package, file,
-                                       aliases, generics, self_type,
-                                       position, generic_bound)
+                                       aliases, selected, generics,
+                                       self_type, position,
+                                       generic_bound)
         }
         for annotation: AstNode in node.annotations {
             if (node.kind == "annotation_decl" &&
@@ -508,10 +603,10 @@ class Resolver {
                 annotation.resolved =
                     self.resolve_annotation_name(
                         annotation.value, package, file,
-                        aliases, annotation)
+                        aliases, selected, annotation)
             }
             self.resolve_node(
-                annotation, package, file, aliases,
+                annotation, package, file, aliases, selected,
                 generics, self_type, false, none)
         }
         for child: AstNode in node.children {
@@ -519,7 +614,7 @@ class Resolver {
             if node.kind == "new" && child.kind == "type" {
                 child_anchor = some(node)
             }
-            self.resolve_node(child, package, file, aliases,
+            self.resolve_node(child, package, file, aliases, selected,
                               generics, self_type,
                               node.kind == "generic", child_anchor)
         }
@@ -529,11 +624,15 @@ class Resolver {
         self.register_declarations()
         for package: LoadedPackage in self.loader.packages {
             for file: ParsedModuleFile in package.files {
+                self.check_selected_imports(package, file)
                 let aliases: Map<string, string> = self.aliases_for(file)
+                let selected: Map<string, string> =
+                    self.selected_for(file)
                 var generics: Map<string, bool> = {}
                 for declaration: AstNode in file.ast.children {
                     self.resolve_node(declaration, package, file,
-                                      aliases, generics, "", false, none)
+                                      aliases, selected, generics,
+                                      "", false, none)
                 }
             }
         }

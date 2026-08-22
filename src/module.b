@@ -96,14 +96,38 @@ fn async_rt_symbol(name: string) -> string {
     return package_symbol(async_rt_package(), name)
 }
 
+// One name selected in `import {…} from path`: the symbol `name` of the
+// import's target, bound in its own file as `binding` — the `as` alias
+// when one was written, the name itself otherwise.
+class NamedImport {
+    name: string
+    alias: string
+    binding: string
+    node: AstNode
+    line: int
+    col: int
+
+    fn init(name: string, alias: string, node: AstNode) {
+        self.name = name
+        self.alias = alias
+        self.binding = ""
+        self.node = node
+        self.line = node.line
+        self.col = node.col
+    }
+}
+
 // One import written in one file. The source spelling is kept apart from the
 // canonical target: a local import inside a git checkout resolves onto the
 // path its dependents use, and diagnostics still show what was written.
+// A selective import carries its selection in `names` and binds no module
+// name at all: `binding` stays "".
 class ModuleImport {
     path: string      // verbatim source spelling
     alias: string     // `as` name, "" if none
     resolved: string  // canonical Package ID, "" for a native std namespace
     binding: string   // the name this import binds in its own file
+    names: List<NamedImport>
     node: AstNode
     line: int
     col: int
@@ -113,6 +137,7 @@ class ModuleImport {
         self.alias = alias
         self.resolved = ""
         self.binding = ""
+        self.names = []
         self.node = node
         self.line = node.line
         self.col = node.col
@@ -909,8 +934,20 @@ class ModuleLoader {
             for child: AstNode in declaration.children {
                 if child.kind == "alias" { alias = child.value }
             }
-            parsed.imports.push(
-                new ModuleImport(imported, alias, declaration))
+            let entry: ModuleImport =
+                new ModuleImport(imported, alias, declaration)
+            for child: AstNode in declaration.children {
+                if child.kind != "named" { continue }
+                var named_alias: string = ""
+                for grand: AstNode in child.children {
+                    if grand.kind == "alias" {
+                        named_alias = grand.value
+                    }
+                }
+                entry.names.push(
+                    new NamedImport(child.value, named_alias, child))
+            }
+            parsed.imports.push(entry)
         }
         return parsed
     }
@@ -1041,6 +1078,29 @@ class ModuleLoader {
             for file: ParsedModuleFile in package.files {
                 var bound: Map<string, string> = {}
                 for imported: ModuleImport in file.imports {
+                    if imported.names.len() != 0 {
+                        // A selective import binds only its selection,
+                        // never a module name.
+                        for named: NamedImport in imported.names {
+                            named.binding =
+                                if named.alias != "" {
+                                    named.alias
+                                } else {
+                                    named.name
+                                }
+                            let previous: string =
+                                bound.get(named.binding).or("")
+                            if previous != "" {
+                                self.fail(
+                                    file.path, named.line, named.col,
+                                    "import name '{named.binding}' is already taken in this file by '{previous}' — give one of them a different name with 'as'")
+                            } else {
+                                bound[named.binding] =
+                                    "{imported.path}.{named.name}"
+                            }
+                        }
+                        continue
+                    }
                     if imported.alias != "" {
                         imported.binding = imported.alias
                     } else {
@@ -1305,10 +1365,100 @@ class ModuleLoader {
         package.files.push(parsed)
     }
 
+    // A directory is a package when it holds sources; a bare folder of
+    // sub-packages (std/encoding) is only a namespace.
+    fn dir_has_sources(dir: string) -> bool {
+        if !Dir.exists(dir) { return false }
+        match Dir.list(dir) {
+            ok(names) => {
+                for name: string in names {
+                    if name.ends_with(".b") { return true }
+                }
+                return false
+            }
+            err(_) => { return false }
+        }
+    }
+
+    // True when `import {…} from P` selects symbols of P itself: P names a
+    // loadable package or a native namespace. When P is only a namespace
+    // folder (std.encoding), the braces select sub-packages instead and
+    // expand_named_imports rewrites the entry before targets are loaded.
+    fn import_parent_exists(imported: string, context_name: string,
+                            context_root: string) -> bool {
+        if imported.starts_with("std.") {
+            if native_std_namespace(imported) { return true }
+            let standard_root: string =
+                if context_name == "std" && context_root != "" {
+                    context_root
+                } else {
+                    stdlib_root()
+                }
+            let relative: string =
+                imported.slice(4, imported.len()).replace(".", "/")
+            return self.dir_has_sources(
+                path.join(standard_root, relative))
+        }
+        if context_name != "" && imported == context_name { return true }
+        if context_name != "" &&
+           imported.starts_with("{context_name}.") {
+            return self.dir_has_sources(
+                self.local_import_dir(imported, context_name,
+                                      context_root))
+        }
+        // Local and git dependencies are imported by module name, which
+        // always names a real package root; their braces select symbols.
+        return true
+    }
+
+    // `import {json, xml} from std.encoding` groups sub-packages of a
+    // folder that is not itself a package. Each selected name becomes its
+    // own import of `P.name`, bound by the written name, so that after
+    // this pass a named list always selects symbols of a real target.
+    fn expand_named_imports(file: ParsedModuleFile, context_name: string,
+                            context_root: string) {
+        var needs_rewrite: bool = false
+        for entry: ModuleImport in file.imports {
+            if entry.names.len() != 0 &&
+               !self.import_parent_exists(entry.path, context_name,
+                                          context_root) {
+                needs_rewrite = true
+            }
+        }
+        if !needs_rewrite { return }
+        var expanded: List<ModuleImport> = []
+        for entry: ModuleImport in file.imports {
+            if entry.names.len() == 0 ||
+               self.import_parent_exists(entry.path, context_name,
+                                         context_root) {
+                expanded.push(entry)
+                continue
+            }
+            for named: NamedImport in entry.names {
+                let bound_name: string =
+                    if named.alias != "" {
+                        named.alias
+                    } else {
+                        named.name
+                    }
+                let sub: ModuleImport =
+                    new ModuleImport("{entry.path}.{named.name}",
+                                     bound_name, entry.node)
+                sub.line = named.line
+                sub.col = named.col
+                expanded.push(sub)
+            }
+        }
+        file.imports = move expanded
+    }
+
     fn resolve_package_imports(package: LoadedPackage, dir: string,
                                context_name: string, context_root: string,
                                context_canon: string,
                                entry_app: bool) {
+        for file: ParsedModuleFile in package.files {
+            self.expand_named_imports(file, context_name, context_root)
+        }
         for file: ParsedModuleFile in package.files {
             for entry: ModuleImport in file.imports {
                 let imported: string = entry.path

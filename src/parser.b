@@ -541,6 +541,9 @@ class Parser {
 
     fn parse_import() -> AstNode {
         let start: Token = self.expect("import", "expected import")
+        if self.check("\{") {
+            return self.parse_named_import(start)
+        }
         let path_start: Token = self.current()
         var import_path: string = self.parse_import_segment()
         for self.check(".") || self.check("/") {
@@ -555,6 +558,61 @@ class Parser {
             let alias: Token =
                 self.expect("ident", "expected import alias")
             result.add(self.node("alias", alias.text, alias))
+        }
+        self.finish_statement()
+        return result
+    }
+
+    // import {name, other as alias} from path — the braces select symbols
+    // of the target (or sub-packages of a namespace folder) and bind only
+    // those names; no module name is bound. `from` stays a plain
+    // identifier everywhere else, so it is matched by text here.
+    fn parse_named_import(start: Token) -> AstNode {
+        self.expect("\{", "expected '\{'")
+        self.skip_newlines()
+        var names: List<AstNode> = []
+        for !self.check("\}") && !self.at_end() {
+            let name: Token =
+                self.expect("ident", "expected an imported name")
+            let named: AstNode = self.node("named", name.text, name)
+            if self.match_token("as") {
+                let alias: Token =
+                    self.expect("ident", "expected import alias")
+                named.add(self.node("alias", alias.text, alias))
+            }
+            names.push(named)
+            self.skip_newlines()
+            if !self.match_token(",") { break }
+            self.skip_newlines()
+        }
+        self.expect("\}", "expected '\}' to close the import list")
+        if names.len() == 0 {
+            self.fail(
+                start,
+                "an import list names at least one thing: import \{name\} from module")
+        }
+        let from: Token =
+            self.expect("ident", "expected 'from' after the import list")
+        if from.kind == "ident" && from.text != "from" {
+            self.fail(from, "expected 'from' after the import list")
+        }
+        let path_start: Token = self.current()
+        var import_path: string = self.parse_import_segment()
+        for self.check(".") || self.check("/") {
+            let separator: string = self.advance().text
+            let part: string = self.parse_import_segment()
+            import_path = "{import_path}{separator}{part}"
+        }
+        let result: AstNode =
+            self.named(
+                self.node("import", import_path, start), path_start)
+        for named: AstNode in names { result.add(named) }
+        if self.check("as") {
+            self.fail(
+                self.current(),
+                "an import list cannot take 'as' — alias a name inside the braces instead")
+            self.advance()
+            if self.check("ident") { self.advance() }
         }
         self.finish_statement()
         return result

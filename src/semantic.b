@@ -1384,6 +1384,10 @@ class SemanticBuilder {
                imported.col != node.col {
                 continue
             }
+            // A selective import binds no module name; its selected
+            // names resolve onto their target's own declarations, so
+            // there is no import declaration entry to record yet.
+            if imported.names.len() != 0 { continue }
             let id: string =
                 sem_import_id(self.file_path, imported.binding)
             let entry: SemanticDecl =
@@ -1499,6 +1503,12 @@ class SemanticBuilder {
         self.current_function = none
         let imports: SemIds = new SemIds()
         for imported: ModuleImport in file.imports {
+            if imported.names.len() != 0 {
+                for named: NamedImport in imported.names {
+                    imports.items.push(named.binding)
+                }
+                continue
+            }
             imports.items.push(imported.binding)
         }
         self.snapshot.file_imports[file.path] = imports
