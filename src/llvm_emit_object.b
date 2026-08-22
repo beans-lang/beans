@@ -317,6 +317,7 @@ partial class LlvmTextEmitter {
         clone.scalar_materialize =
             instruction.scalar_materialize
         clone.borrow_elided = instruction.borrow_elided
+        clone.stack_closure = instruction.stack_closure
         clone.removed = instruction.removed
         // the flag lattice is over the CFG, not over types, so an
         // instance inherits the template's answer unchanged
@@ -397,6 +398,15 @@ partial class LlvmTextEmitter {
                 local.ownership_sink
             cloned.scalar_replaced =
                 local.scalar_replaced
+            cloned.stack_closure_id =
+                local.stack_closure_id
+            match closure_ids.get(
+                local.stack_closure_id) {
+                some(id) => {
+                    cloned.stack_closure_id = id
+                }
+                none => {}
+            }
             cloned.live_flag_used =
                 local.live_flag_used
             clone.locals.push(cloned)

@@ -766,7 +766,8 @@ partial class LlvmTextEmitter {
         }
         let local: MirLocal =
             function.locals[instruction.local]
-        if local.scalar_replaced {
+        if local.scalar_replaced ||
+           local.stack_closure_id >= 0 {
             return ""
         }
         if self.cell_local(local) {

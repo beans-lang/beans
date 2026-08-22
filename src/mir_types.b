@@ -16,6 +16,9 @@ class MirLocal {
     borrows_from: int
     ownership_sink: bool
     scalar_replaced: bool
+    // A non-escaping closure whose environment lives in this function's
+    // stack frame. -1 keeps the ordinary heap-owned closure path.
+    stack_closure_id: int
     // The `.live` flag is a runtime i1 the backend allocates beside the
     // slot. verify_local_ownership clears this when every drop and every
     // assignment for the local knows the flag's value statically, and the
@@ -42,6 +45,7 @@ class MirLocal {
         self.borrows_from = -1
         self.ownership_sink = false
         self.scalar_replaced = false
+        self.stack_closure_id = -1
         self.live_flag_used = true
     }
 }
@@ -71,6 +75,7 @@ class MirInstruction {
     last_use: bool
     scalar_materialize: bool
     borrow_elided: bool
+    stack_closure: bool
     removed: bool
     // Value of the local's `.live` flag on entry to this instruction, as
     // verify_local_ownership's fixpoint sees it: 0 clear on every path,
@@ -106,6 +111,7 @@ class MirInstruction {
         self.last_use = false
         self.scalar_materialize = false
         self.borrow_elided = false
+        self.stack_closure = false
         self.removed = false
         self.live_state = 2
     }
