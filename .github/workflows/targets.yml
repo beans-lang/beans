@@ -657,22 +657,26 @@ jobs:
           test -n "${LIB:-}"
 
       # Temporary fault probe for the i686 hosted-compiler crash. Keep this
-      # ahead of the full differential bundle so AddressSanitizer reports the
-      # first bad runtime access instead of only the final exit code.
+      # ahead of the full differential bundle so GDB reports the first bad
+      # runtime access instead of only the final exit code.
       - name: Diagnose the i686 MSVC hosted atomics crash
         if: matrix.arch == 'i686'
         shell: bash
         run: |
-          BEANS_SANITIZE=address,undefined \
-            build/bootstrap/beansc.exe build --release \
-              --target ${{ matrix.triple }} --linker lld \
-              src/main.b -o build/beansc-msvc-i686-asan.exe
-          asan_dll=$(clang --target=${{ matrix.triple }} \
-            --print-file-name=clang_rt.asan_dynamic-i386.dll)
-          test -f "$asan_dll"
-          cp "$asan_dll" build/
-          ASAN_OPTIONS=abort_on_error=1:symbolize=1 \
-            build/beansc-msvc-i686-asan.exe run examples/atomics.b
+          build/bootstrap/beansc.exe build --debug \
+            --target ${{ matrix.triple }} --linker lld \
+            src/main.b -o build/beansc-msvc-i686-debug.exe
+          gdb --quiet --batch \
+            -ex 'set pagination off' \
+            -ex 'set print thread-events off' \
+            -ex run \
+            -ex 'thread apply all bt full' \
+            -ex 'info registers' \
+            -ex 'x/16i $pc-24' \
+            --args build/beansc-msvc-i686-debug.exe run examples/atomics.b
+          # This is a fault-finding run, not a permanent CI gate. Fail after
+          # GDB prints the report so the other workflows are cancelled early.
+          exit 1
 
       - name: Build and run the MSVC differential bundle
         shell: bash
