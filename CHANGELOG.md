@@ -19,6 +19,8 @@ This file records user-facing changes in each Beans release.
 
 ### Fixed
 
+- A graph handed to `thread.spawn` is marked shared before the worker starts,
+  so an old owner-local cycle candidate cannot race the new owner.
 - Each Beans thread trial-deletes its own genuine cycle candidates, so cycles
   created beside a long-lived worker stay bounded without stopping that
   worker. The global fallback collector remains thread-quiescence-only.
