@@ -57,6 +57,7 @@ class MirInstruction {
     text: string
     resolved: string
     dispatch_slot: string
+    devirtualized_receiver: string
     operands: List<int>
     consumes: List<bool>
     releases: List<int>
@@ -98,6 +99,7 @@ class MirInstruction {
         self.text = text
         self.resolved = resolved
         self.dispatch_slot = ""
+        self.devirtualized_receiver = ""
         self.operands = []
         self.consumes = []
         self.releases = []
