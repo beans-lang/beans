@@ -24,6 +24,36 @@ grep -Eq 'insertvalue \{ ?i1, %bs[.]main[$]Pair, ptr ?\} zeroinitializer, i1 fal
 grep -q 'call void @beans_retain(ptr' build/inline_results.ll
 grep -q 'call void @beans_release(ptr' build/inline_results.ll
 
+echo "checking explicit narrow custom errors stay inline"
+./build/beansc run test/cases/inline_narrow_result.b \
+    >"$tmp/narrow.interp"
+./build/beansc build test/cases/inline_narrow_result.b \
+    -o "$tmp/narrow" >"$tmp/narrow.build" 2>&1
+"$tmp/narrow" >"$tmp/narrow.native"
+diff -u test/cases/inline_narrow_result.out "$tmp/narrow.interp"
+diff -u test/cases/inline_narrow_result.out "$tmp/narrow.native"
+
+function_body() {
+    local name=$1
+    local destination=$2
+    awk -v marker="; main.$name" '
+        $0 == marker { named = 1 }
+        named && /^define / { inside = 1 }
+        inside { print }
+        inside && /^}/ { exit }
+    ' build/inline_narrow_result.ll >"$destination"
+}
+
+function_body narrow "$tmp/narrow.ll"
+function_body defaulted "$tmp/defaulted.ll"
+grep -Eq '^define \{ ?i1, i64, ptr ?\} ' "$tmp/narrow.ll"
+if grep -q 'call ptr @beans_alloc' "$tmp/narrow.ll"; then
+    echo "narrow custom Result still allocated" >&2
+    exit 1
+fi
+grep -q '^define ptr ' "$tmp/defaulted.ll"
+grep -q 'call ptr @beans_alloc' "$tmp/defaulted.ll"
+
 ./build/beansc build test/cases/decimal_precision.b \
     -o "$tmp/decimal" >/dev/null
 grep -q '%builtin.ok.box.release.* = inttoptr i64 ' \
