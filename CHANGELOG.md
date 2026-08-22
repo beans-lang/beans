@@ -4,6 +4,12 @@ This file records user-facing changes in each Beans release.
 
 ## Unreleased
 
+### Fixed
+
+- Each Beans thread trial-deletes its own genuine cycle candidates, so cycles
+  created beside a long-lived worker stay bounded without stopping that
+  worker. The global fallback collector remains thread-quiescence-only.
+
 ## [0.1.28] - 2026-08-22
 
 ### Added
