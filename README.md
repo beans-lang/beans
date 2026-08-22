@@ -439,6 +439,8 @@ make fuzz-oop-long     # 1,000 structural OOP cases; tune with OOP_FUZZ_CASES
 make bench-quick       # quick benchmark pass (not claim-eligible)
 make bench-verify      # checksum + output-parity over every benchmark
 make bench-full        # the full, claim-eligible benchmark run
+make bench-abstractions-quick # paired Beans abstraction checks
+make bench-abstractions       # full paired abstraction proof run
 make bench-profile NAME=trees
 make test-self-host     # the fixed point: the compiler rebuilt by itself
 make bench-compiler     # frontend, MIR, LLVM, stdlib, large source and packages
