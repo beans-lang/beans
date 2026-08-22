@@ -19,3 +19,41 @@ grep -q '%cap0.v = load i64' build/closure_captures.ll
 test "$(grep -c '%cap0.c = load ptr' build/closure_captures.ll)" -eq 4
 
 echo "ok immutable captures use values and mutable and pattern captures use shared cells"
+
+echo "checking non-escaping stack closure environments"
+./build/beansc mir test/cases/stack_closures.b >"$tmp/stack.mir"
+./build/beansc run test/cases/stack_closures.b >"$tmp/stack.interp"
+./build/beansc build test/cases/stack_closures.b -o "$tmp/stack.native" \
+    >"$tmp/stack.build" 2>&1
+"$tmp/stack.native" >"$tmp/stack.native.out"
+diff -u test/cases/stack_closures.out "$tmp/stack.interp"
+diff -u test/cases/stack_closures.out "$tmp/stack.native.out"
+
+grep -Eq 'local .*stack-closure=[0-9]+' "$tmp/stack.mir"
+test "$(grep -Ec 'closure .* effects=none stack-closure$' \
+    "$tmp/stack.mir")" -eq 2
+
+function_body() {
+    local name=$1
+    local destination=$2
+    awk -v marker="; main.$name" '
+        $0 == marker { inside = 1 }
+        inside { print }
+        inside && /^}/ { exit }
+    ' build/stack_closures.ll >"$destination"
+}
+
+function_body local_total "$tmp/local-total.ll"
+function_body escaping "$tmp/escaping.ll"
+function_body mutable_total "$tmp/mutable-total.ll"
+grep -q 'alloca \[2 x i64\]' "$tmp/local-total.ll"
+grep -Eq 'call i64 @[^ (]+\(ptr ' "$tmp/local-total.ll"
+if grep -q 'call ptr @beans_alloc\|%closure[.]fn' \
+    "$tmp/local-total.ll"; then
+    echo "non-escaping scalar closure still used its heap or indirect call" >&2
+    exit 1
+fi
+grep -q 'call ptr @beans_alloc' "$tmp/escaping.ll"
+grep -q 'call ptr @beans_alloc' "$tmp/mutable-total.ll"
+
+echo "ok non-escaping scalar closures use stack storage and direct calls"

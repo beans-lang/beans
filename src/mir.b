@@ -1884,6 +1884,110 @@ class MirLowerer {
         return -1
     }
 
+    // Keep a captured closure in its owner's frame only when every use proves
+    // that the environment cannot leave that frame. The first form is narrow
+    // on purpose: immutable scalar captures need no shared cells or ARC.
+    fn analyze_stack_closures(function: MirFunction) {
+        if function.declaration || function.external ||
+           function.locals.len() == 0 {
+            return
+        }
+        for block: MirBlock in function.blocks {
+            for closure: MirInstruction in block.instructions {
+                if closure.removed ||
+                   closure.op != "closure" ||
+                   closure.result < 0 ||
+                   closure.capture_locals.len() == 0 {
+                    continue
+                }
+                var safe: bool = true
+                for index: int in
+                    0..closure.capture_locals.len() {
+                    if (closure.capture_value_mask &
+                        (1 << index)) == 0 {
+                        safe = false
+                    }
+                }
+                if !safe { continue }
+
+                let closure_uses: List<MirPosition> =
+                    self.uses_for(function, closure.result)
+                if closure_uses.len() != 1 {
+                    continue
+                }
+                let initializer: MirInstruction =
+                    closure_uses[0].instruction
+                if initializer.op != "local_init" ||
+                   initializer.local < 0 ||
+                   initializer.local >= function.locals.len() ||
+                   initializer.operands.len() != 1 ||
+                   initializer.operands[0] != closure.result ||
+                   initializer.consumes.len() != 1 ||
+                   !initializer.consumes[0] {
+                    continue
+                }
+                let local: MirLocal =
+                    function.locals[initializer.local]
+                if local.type.name != "fn" ||
+                   local.mutable || local.parameter ||
+                   local.captured || local.escapes ||
+                   local.ownership != "owned" {
+                    continue
+                }
+
+                var calls: int = 0
+                for user_block: MirBlock in function.blocks {
+                    for user: MirInstruction in
+                        user_block.instructions {
+                        if user.removed { continue }
+                        for captured: int in
+                            user.capture_locals {
+                            if captured == local.id {
+                                safe = false
+                            }
+                        }
+                        if user.local != local.id { continue }
+                        if user.op == "local_init" {
+                            if user.operands.len() != 1 ||
+                               user.operands[0] != closure.result {
+                                safe = false
+                            }
+                            continue
+                        }
+                        if user.op == "drop_local" {
+                            continue
+                        }
+                        if user.op != "borrow" ||
+                           user.result < 0 {
+                            safe = false
+                            continue
+                        }
+                        let borrow_uses: List<MirPosition> =
+                            self.uses_for(function, user.result)
+                        if borrow_uses.len() == 0 {
+                            safe = false
+                        }
+                        for use: MirPosition in borrow_uses {
+                            let call: MirInstruction =
+                                use.instruction
+                            if call.op != "closure_call" ||
+                               call.operands.len() == 0 ||
+                               call.operands[0] != user.result {
+                                safe = false
+                            } else {
+                                calls += 1
+                            }
+                        }
+                    }
+                }
+                if !safe || calls == 0 { continue }
+                closure.stack_closure = true
+                closure.effects = "none"
+                local.stack_closure_id = closure.closure_id
+            }
+        }
+    }
+
     fn analyze_borrow_aliases(function: MirFunction) {
         if function.declaration || function.external ||
            function.locals.len() == 0 {
@@ -4335,6 +4439,29 @@ class MirLowerer {
     fn verify_instruction(function: MirFunction,
                           instruction: MirInstruction,
                           definitions: List<int>) {
+        if instruction.stack_closure &&
+           (instruction.op != "closure" ||
+            instruction.closure_id < 0 ||
+            instruction.capture_locals.len() == 0) {
+            self.fail(
+                instruction.file,
+                instruction.line,
+                instruction.col,
+                "MIR stack closure marker is not a captured closure")
+        }
+        if instruction.stack_closure {
+            for index: int in
+                0..instruction.capture_locals.len() {
+                if (instruction.capture_value_mask &
+                    (1 << index)) == 0 {
+                    self.fail(
+                        instruction.file,
+                        instruction.line,
+                        instruction.col,
+                        "MIR stack closure has a shared-cell capture")
+                }
+            }
+        }
         if instruction.operands.len() !=
            instruction.consumes.len() {
             self.fail(
@@ -4502,6 +4629,30 @@ class MirLowerer {
                 "MIR value alias table differs from its values")
         }
         for local: MirLocal in function.locals {
+            if local.stack_closure_id >= 0 {
+                var closure_found: bool = false
+                for block: MirBlock in function.blocks {
+                    for instruction: MirInstruction in
+                        block.instructions {
+                        if instruction.stack_closure &&
+                           instruction.closure_id ==
+                               local.stack_closure_id {
+                            closure_found = true
+                        }
+                    }
+                }
+                if local.type.name != "fn" ||
+                   local.mutable || local.parameter ||
+                   local.captured || local.escapes ||
+                   local.ownership != "owned" ||
+                   !closure_found {
+                    self.fail(
+                        function.file,
+                        function.line,
+                        function.col,
+                        "MIR stack closure l{local.id} is unsafe")
+                }
+            }
             if local.borrows_from >= 0 {
                 if local.borrows_from >=
                        function.locals.len() ||
@@ -4774,6 +4925,9 @@ class MirLowerer {
             self.analyze_borrow_aliases(function)
         }
         self.analyze_constructor_contraction()
+        for function: MirFunction in self.mir.functions {
+            self.analyze_stack_closures(function)
+        }
         for function: MirFunction in self.mir.functions {
             self.analyze_scalar_replacements(function)
         }

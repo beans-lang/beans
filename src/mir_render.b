@@ -50,6 +50,10 @@ fn render_mir(program: MirProgram) -> string {
             if local.scalar_replaced {
                 flags.push("scalar-replaced")
             }
+            if local.stack_closure_id >= 0 {
+                flags.push(
+                    "stack-closure={local.stack_closure_id}")
+            }
             lines.push(
                 "  local l{local.id} {local.name}: {render_hir_type(local.type)} {flags.join(",")} binding={local.binding_id}")
         }
@@ -157,6 +161,9 @@ fn render_mir(program: MirProgram) -> string {
                 }
                 if instruction.borrow_elided {
                     detail = "{detail} borrow-elided"
+                }
+                if instruction.stack_closure {
+                    detail = "{detail} stack-closure"
                 }
                 if instruction.scalar_materialize {
                     detail =
