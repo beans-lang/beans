@@ -28,7 +28,13 @@ clang -O1 -pthread -DBEANS_ARC_STATS -Wno-override-module \
 grep -q '^collected while live true maker 1$' \
     "$tmp/thread-live-cycles.out"
 grep -q '^blocker 2$' "$tmp/thread-live-cycles.out"
-grep -Eq 'cycle_objects=[4-9][0-9]{3,}|cycle_objects=[1-9][0-9]{4,}' \
-    "$tmp/thread-live-cycles.stats"
+cycle_objects=$(sed -n \
+    's/.*cycle_objects=\([0-9][0-9]*\).*/\1/p' \
+    "$tmp/thread-live-cycles.stats")
+if [[ -z "$cycle_objects" || "$cycle_objects" -lt 9216 ]]; then
+    echo "expected 9216 collected cycle objects, got ${cycle_objects:-none}" >&2
+    cat "$tmp/thread-live-cycles.stats" >&2
+    exit 1
+fi
 
 echo "ok worker-thread destructors and owner-local cycle collection"

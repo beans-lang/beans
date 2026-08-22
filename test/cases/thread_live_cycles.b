@@ -7,6 +7,16 @@ class LiveCycleNode {
     next: Option<LiveCycleNode> = none
 }
 
+struct MutexEdge {
+    target: Box<Option<MutexCycleOwner>>
+}
+
+class MutexCycleOwner {
+    guard: Mutex<MutexEdge>
+
+    fn init(guard: Mutex<MutexEdge>) { self.guard = guard }
+}
+
 fn make_cycles(count: int) {
     for unused: int in 0..count {
         var first: LiveCycleNode = new LiveCycleNode()
@@ -14,6 +24,16 @@ fn make_cycles(count: int) {
         first.next = some(second)
         second.next = some(first)
     }
+}
+
+fn make_mutex_cycle() {
+    let target: Box<Option<MutexCycleOwner>> = new Box(none)
+    let mutex: Mutex<MutexEdge> =
+        new Mutex(MutexEdge { target: move target })
+    let owner: MutexCycleOwner = new MutexCycleOwner(mutex)
+    owner.guard.with_lock(fn(edge: MutexEdge) {
+        edge.target.set(some(owner))
+    })
 }
 
 fn main() {
@@ -33,6 +53,11 @@ fn main() {
     // global quiescence-only collector cannot be what reclaims them.
     make_cycles(2048)
     let made: int = maker.join()
+
+    // These candidates cross a Mutex boundary. A full local batch must roll
+    // its trial back and transfer to the global fallback without racing the
+    // blocker; the fallback reclaims them after that worker drains.
+    for unused: int in 0..256 { make_mutex_cycle() }
     var during: i64 = 0
     unsafe {
         during = beans_arc_cycle_objects()

@@ -1604,6 +1604,12 @@ static int cc_owner_local_node(BHead* h) {
     return rc < BEANS_IMMORTAL && !(rc & RC_SHARED) &&
            kind != 4 && kind != 5;
 }
+static int cc_shared_boundary(BHead* h) {
+    long long rc = rt_rc_load(h);
+    long long kind = cc_meta(h) & 7;
+    return rc < BEANS_IMMORTAL &&
+           ((rc & RC_SHARED) || kind == 4 || kind == 5);
+}
 #else
 // One thread by construction, so cc_is_mt() can never become true and the lock
 // would be dead weight — and a referenced pthread symbol in a profile that has no
@@ -2325,18 +2331,28 @@ static void cc_mark_gray(void* root, CCStack* st) {
 }
 
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
+typedef struct {
+    CCStack* stack;
+    int* saw_shared;
+} CCWorkerMark;
+
 static void cc_worker_visit_push(void* c, void* ctx) {
     if (!cc_owner_local_node(head_of(c))) return;
     cc_push(ctx, c);
 }
 
 static void cc_worker_visit_dec_push(void* c, void* ctx) {
+    CCWorkerMark* mark = ctx;
     BHead* h = head_of(c);
-    if (!cc_owner_local_node(h)) return;
+    if (!cc_owner_local_node(h)) {
+        if (cc_shared_boundary(h)) *mark->saw_shared = 1;
+        return;
+    }
     h->rc -= 1;
-    cc_push(ctx, c);
+    cc_push(mark->stack, c);
 }
-static void cc_worker_mark_gray(void* root, CCStack* st) {
+static void cc_worker_mark_gray(void* root, CCStack* st, int* saw_shared) {
+    CCWorkerMark mark = {st, saw_shared};
     cc_push(st, root);
     while (st->len) {
         void* p = st->v[--st->len];
@@ -2344,7 +2360,7 @@ static void cc_worker_mark_gray(void* root, CCStack* st) {
         if (!cc_owner_local_node(h)) continue;
         if (cc_color(h) == CC_GRAY) continue;
         cc_set_color(h, CC_GRAY);
-        cc_walk(p, h->meta, cc_worker_visit_dec_push, st);
+        cc_walk(p, h->meta, cc_worker_visit_dec_push, &mark);
     }
 }
 #endif
@@ -2496,36 +2512,63 @@ static void cc_worker_collect(int force) {
         if (cc_worker_root_len &&
             (force || cc_worker_root_len >= cc_worker_walk_min)) {
             CCStack st = {0, 0, 0}, aux = {0, 0, 0}, dead = {0, 0, 0};
+            int saw_shared = 0;
             for (long long i = 0; i < cc_worker_root_len; i++)
-                cc_worker_mark_gray(cc_worker_roots[i], &st);
-            // Clear every root owned by this local buffer as one set. A BUF
-            // left after this point belongs elsewhere and cc_worker_scan
-            // treats it as externally reachable.
-            for (long long i = 0; i < cc_worker_root_len; i++)
-                rt_w_and(&head_of(cc_worker_roots[i])->meta, ~CC_BUF);
-            for (long long i = 0; i < cc_worker_root_len; i++)
-                cc_worker_scan(cc_worker_roots[i], &st, &aux);
-            for (long long i = 0; i < cc_worker_root_len; i++) {
-                cc_worker_collect_white(cc_worker_roots[i], &st, &dead);
+                cc_worker_mark_gray(
+                    cc_worker_roots[i], &st, &saw_shared);
+            if (saw_shared) {
+                // This candidate set reaches a graph another thread may
+                // mutate. Undo every temporary decrement, keep the roots
+                // parked, and let the quiescent global collector handle the
+                // set. A shared candidate can conservatively carry one local
+                // batch with it, but later local-only batches remain local.
+                for (long long i = 0; i < cc_worker_root_len; i++) {
+                    BHead* h = head_of(cc_worker_roots[i]);
+                    if (cc_color(h) == CC_GRAY)
+                        cc_worker_scan_black(cc_worker_roots[i], &aux);
+                }
+                for (long long i = 0; i < cc_worker_root_len; i++)
+                    rt_w_fetch_or(
+                        &head_of(cc_worker_roots[i])->meta, CC_PURPLE);
+                cc_append_roots(
+                    cc_worker_roots, cc_worker_root_len);
+                cc_worker_root_len = 0;
+                rt_free(st.v);
+                rt_free(aux.v);
+                rt_free(dead.v);
+            } else {
+                // Clear every root owned by this local buffer as one set. A
+                // BUF left after this point belongs elsewhere and
+                // cc_worker_scan treats it as externally reachable.
+                for (long long i = 0; i < cc_worker_root_len; i++)
+                    rt_w_and(
+                        &head_of(cc_worker_roots[i])->meta, ~CC_BUF);
+                for (long long i = 0; i < cc_worker_root_len; i++)
+                    cc_worker_scan(cc_worker_roots[i], &st, &aux);
+                for (long long i = 0; i < cc_worker_root_len; i++) {
+                    cc_worker_collect_white(
+                        cc_worker_roots[i], &st, &dead);
+                }
+                cc_worker_root_len = 0;
+                ARC_ADD(arc_cycle_objects, dead.len);
+                if (__atomic_load_n(&weak_live, __ATOMIC_RELAXED))
+                    for (long long i = 0; i < dead.len; i++)
+                        rt_weak_invalidate(dead.v[i]);
+                for (long long i = 0; i < dead.len; i++) {
+                    void* child = cc_free_shell(
+                        dead.v[i], cc_meta(head_of(dead.v[i])));
+                    if (child) cc_push(&deferred, child);
+                }
+                cc_worker_walk_min = dead.len
+                                         ? 256
+                                         : (cc_worker_walk_min * 4 >
+                                                    (1LL << 18)
+                                                ? (1LL << 18)
+                                                : cc_worker_walk_min * 4);
+                rt_free(st.v);
+                rt_free(aux.v);
+                rt_free(dead.v);
             }
-            cc_worker_root_len = 0;
-            ARC_ADD(arc_cycle_objects, dead.len);
-            if (__atomic_load_n(&weak_live, __ATOMIC_RELAXED))
-                for (long long i = 0; i < dead.len; i++)
-                    rt_weak_invalidate(dead.v[i]);
-            for (long long i = 0; i < dead.len; i++) {
-                void* child = cc_free_shell(
-                    dead.v[i], cc_meta(head_of(dead.v[i])));
-                if (child) cc_push(&deferred, child);
-            }
-            cc_worker_walk_min = dead.len
-                                     ? 256
-                                     : (cc_worker_walk_min * 4 > (1LL << 18)
-                                            ? (1LL << 18)
-                                            : cc_worker_walk_min * 4);
-            rt_free(st.v);
-            rt_free(aux.v);
-            rt_free(dead.v);
         }
 
         long long geometric = cc_worker_root_len * 2 + 256;
