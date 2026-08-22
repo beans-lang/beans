@@ -2677,10 +2677,16 @@ partial class LlvmTextEmitter {
         let bad: int = self.fresh()
         let result: string =
             "%v{instruction.result}"
+        var alignment: int =
+            self.type_alignment(element)
+        if alignment < 1 { alignment = 1 }
+        values[instruction.result] = result
+        if instruction.bounds_elided {
+            return "  %slice.index.ptr{id} = extractvalue \{ptr, i64\} {slice}, 0\n  %slice.index.item{id} = getelementptr {element_llvm}, ptr %slice.index.ptr{id}, i64 {index}\n  {result} = load {element_llvm}, ptr %slice.index.item{id}, align {alignment}\n"
+        }
         self.require_declare(
             "beans_panic_slice_index",
             "void @beans_panic_slice_index(i64, i64, i64, i64)")
-        values[instruction.result] = result
         var output: string =
             "  %slice.index.ptr{id} = extractvalue \{ptr, i64\} {slice}, 0\n  %slice.index.len{id} = extractvalue \{ptr, i64\} {slice}, 1\n  %slice.index.ok{id} = icmp ult i64 {index}, %slice.index.len{id}\n  br i1 %slice.index.ok{id}, label %slice.index.have{okay}, label %slice.index.bad{bad}\n"
         output =
@@ -2985,6 +2991,10 @@ partial class LlvmTextEmitter {
         self.iterator_kind[instruction.result] = "list"
         self.iterator_collection[instruction.result] =
             collection
+        if instruction.borrow_elided {
+            self.iterator_collection_borrowed[
+                instruction.result] = true
+        }
         return "  store i64 0, ptr {current}\n"
     }
 

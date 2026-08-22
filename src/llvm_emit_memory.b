@@ -281,6 +281,9 @@ partial class LlvmTextEmitter {
         // collection on either path.
         if self.iterator_kind.contains_key(id) {
             if self.iterator_collection.contains_key(id) {
+                if self.iterator_collection_borrowed.contains_key(id) {
+                    return ""
+                }
                 return "  call void @beans_release(ptr {self.iterator_collection[id]})\n"
             }
             return ""
@@ -766,7 +769,8 @@ partial class LlvmTextEmitter {
         }
         let local: MirLocal =
             function.locals[instruction.local]
-        if local.scalar_replaced {
+        if local.scalar_replaced ||
+           local.stack_closure_id >= 0 {
             return ""
         }
         if self.cell_local(local) {
@@ -937,6 +941,8 @@ partial class LlvmTextEmitter {
                     if self.iterator_kind.contains_key(
                            released) {
                         if self.iterator_collection.contains_key(
+                               released) &&
+                           !self.iterator_collection_borrowed.contains_key(
                                released) &&
                            self.iterator_kind[released] !=
                                "list_slice" {

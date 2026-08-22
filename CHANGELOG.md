@@ -4,6 +4,27 @@ This file records user-facing changes in each Beans release.
 
 ## Unreleased
 
+### Added
+
+- A paired abstraction proof suite compares generic/specialized functions,
+  iterator/index loops, closures/direct calls, interface/direct dispatch,
+  Option/Result/manual forms, and safe/unchecked indexing.
+
+### Changed
+
+- MIR now stack-places proven non-escaping scalar closures, removes stable
+  counted Slice bounds checks, devirtualizes exact receivers, keeps narrow
+  custom Results inline, removes proven iterator ARC, and scalar-replaces safe
+  exact objects.
+
+### Fixed
+
+- A graph handed to `thread.spawn` is marked shared before the worker starts,
+  so an old owner-local cycle candidate cannot race the new owner.
+- Each Beans thread trial-deletes its own genuine cycle candidates, so cycles
+  created beside a long-lived worker stay bounded without stopping that
+  worker. The global fallback collector remains thread-quiescence-only.
+
 ## [0.1.28] - 2026-08-22
 
 ### Added

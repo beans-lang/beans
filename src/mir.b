@@ -1875,6 +1875,228 @@ class MirLowerer {
         return -1
     }
 
+    // Keep a captured closure in its owner's frame only when every use proves
+    // that the environment cannot leave that frame. The first form is narrow
+    // on purpose: immutable scalar captures need no shared cells or ARC.
+    fn analyze_stack_closures(function: MirFunction) {
+        if function.declaration || function.external ||
+           function.locals.len() == 0 {
+            return
+        }
+        for block: MirBlock in function.blocks {
+            for closure: MirInstruction in block.instructions {
+                if closure.removed ||
+                   closure.op != "closure" ||
+                   closure.result < 0 ||
+                   closure.capture_locals.len() == 0 {
+                    continue
+                }
+                var safe: bool = true
+                for index: int in
+                    0..closure.capture_locals.len() {
+                    if (closure.capture_value_mask &
+                        (1 << index)) == 0 {
+                        safe = false
+                    }
+                }
+                if !safe { continue }
+
+                let closure_uses: List<MirPosition> =
+                    self.uses_for(function, closure.result)
+                if closure_uses.len() != 1 {
+                    continue
+                }
+                let initializer: MirInstruction =
+                    closure_uses[0].instruction
+                if initializer.op != "local_init" ||
+                   initializer.local < 0 ||
+                   initializer.local >= function.locals.len() ||
+                   initializer.operands.len() != 1 ||
+                   initializer.operands[0] != closure.result ||
+                   initializer.consumes.len() != 1 ||
+                   !initializer.consumes[0] {
+                    continue
+                }
+                let local: MirLocal =
+                    function.locals[initializer.local]
+                if local.type.name != "fn" ||
+                   local.mutable || local.parameter ||
+                   local.captured || local.escapes ||
+                   local.ownership != "owned" {
+                    continue
+                }
+
+                var calls: int = 0
+                for user_block: MirBlock in function.blocks {
+                    for user: MirInstruction in
+                        user_block.instructions {
+                        if user.removed { continue }
+                        for captured: int in
+                            user.capture_locals {
+                            if captured == local.id {
+                                safe = false
+                            }
+                        }
+                        if user.local != local.id { continue }
+                        if user.op == "local_init" {
+                            if user.operands.len() != 1 ||
+                               user.operands[0] != closure.result {
+                                safe = false
+                            }
+                            continue
+                        }
+                        if user.op == "drop_local" {
+                            continue
+                        }
+                        if user.op != "borrow" ||
+                           user.result < 0 {
+                            safe = false
+                            continue
+                        }
+                        let borrow_uses: List<MirPosition> =
+                            self.uses_for(function, user.result)
+                        if borrow_uses.len() == 0 {
+                            safe = false
+                        }
+                        for use: MirPosition in borrow_uses {
+                            let call: MirInstruction =
+                                use.instruction
+                            if call.op != "closure_call" ||
+                               call.operands.len() == 0 ||
+                               call.operands[0] != user.result {
+                                safe = false
+                            } else {
+                                calls += 1
+                            }
+                        }
+                    }
+                }
+                if !safe || calls == 0 { continue }
+                closure.stack_closure = true
+                closure.effects = "none"
+                local.stack_closure_id = closure.closure_id
+            }
+        }
+    }
+
+    fn exact_local_initializer(
+        function: MirFunction,
+        local_id: int) -> int {
+        if local_id < 0 ||
+           local_id >= function.locals.len() {
+            return -1
+        }
+        let local: MirLocal =
+            function.locals[local_id]
+        if local.mutable || local.parameter ||
+           local.captured {
+            return -1
+        }
+        var initialized: int = -1
+        var count: int = 0
+        for block: MirBlock in function.blocks {
+            for instruction: MirInstruction in
+                block.instructions {
+                if instruction.removed { continue }
+                for capture: int in
+                    instruction.capture_locals {
+                    if capture == local_id {
+                        return -1
+                    }
+                }
+                if instruction.local != local_id ||
+                   instruction.op == "borrow" ||
+                   instruction.op == "drop_local" {
+                    continue
+                }
+                if instruction.op != "local_init" ||
+                   instruction.operands.len() != 1 {
+                    return -1
+                }
+                count += 1
+                initialized = instruction.operands[0]
+            }
+        }
+        return if count == 1 { initialized } else { -1 }
+    }
+
+    fn concrete_class_name(type: HirType) -> string {
+        for declaration: HirDeclaration in
+            self.source.declarations {
+            if (declaration.qualified == type.name ||
+                declaration.name == type.name) &&
+               declaration.kind == "class" &&
+               declaration.generics.len() == 0 {
+                return declaration.qualified
+            }
+        }
+        return ""
+    }
+
+    // Follow immutable local initializers through interface upcasts. Reaching
+    // one exact allocation proves the descriptor for every later method call.
+    fn exact_allocated_receiver(
+        function: MirFunction,
+        start: int) -> string {
+        var value: int = start
+        var seen_locals: Map<int, bool> = {}
+        for unused: int in 0..64 {
+            var definition: MirInstruction =
+                new MirInstruction(
+                    "", -1, new HirType("unit"),
+                    "", "", "", 0, 0)
+            match self.definition_for(function, value) {
+                some(found) => { definition = found }
+                none => { return "" }
+            }
+            if definition.op == "new" {
+                return self.concrete_class_name(
+                    definition.type)
+            }
+            if (definition.op == "retain" ||
+                definition.op == "cast") &&
+               definition.operands.len() == 1 {
+                value = definition.operands[0]
+                continue
+            }
+            if definition.op != "borrow" ||
+               definition.local < 0 ||
+               seen_locals.contains_key(
+                   definition.local) {
+                return ""
+            }
+            seen_locals[definition.local] = true
+            value = self.exact_local_initializer(
+                function, definition.local)
+            if value < 0 { return "" }
+        }
+        return ""
+    }
+
+    fn analyze_exact_receivers(function: MirFunction) {
+        if function.declaration || function.external {
+            return
+        }
+        for block: MirBlock in function.blocks {
+            for instruction: MirInstruction in
+                block.instructions {
+                if instruction.removed ||
+                   instruction.op != "method_call" ||
+                   instruction.operands.len() == 0 {
+                    continue
+                }
+                let exact: string =
+                    self.exact_allocated_receiver(
+                        function,
+                        instruction.operands[0])
+                if exact != "" {
+                    instruction.devirtualized_receiver =
+                        exact
+                }
+            }
+        }
+    }
+
     fn analyze_borrow_aliases(function: MirFunction) {
         if function.declaration || function.external ||
            function.locals.len() == 0 {
@@ -2227,9 +2449,29 @@ class MirLowerer {
             }
             if declaration.kind != "class" ||
                declaration.is_unique ||
-               declaration.generics.len() != 0 ||
-               declaration.relations.len() != 0 {
+               declaration.generics.len() != 0 {
                 return false
+            }
+            // Interface conformance does not change object layout. A base
+            // class does, so keep inheritance on the heap-only path.
+            for index: int in
+                0..declaration.relations.len() {
+                if index >= declaration.relation_kinds.len() ||
+                   declaration.relation_kinds[index] != "implements" {
+                    return false
+                }
+                var interface_found: bool = false
+                for related: HirDeclaration in
+                    self.source.declarations {
+                    if (related.qualified ==
+                            declaration.relations[index].name ||
+                        related.name ==
+                            declaration.relations[index].name) &&
+                       related.kind == "interface" {
+                        interface_found = true
+                    }
+                }
+                if !interface_found { return false }
             }
             for field: HirField in declaration.fields {
                 if !self.scalar_field_type(field.type) {
@@ -2249,6 +2491,105 @@ class MirLowerer {
                 declaration.qualified)
         }
         return false
+    }
+
+    fn scalar_interface_alias(exact: HirType,
+                              alias: HirType) -> bool {
+        var target: string = ""
+        for declaration: HirDeclaration in
+            self.source.declarations {
+            if (declaration.qualified == alias.name ||
+                declaration.name == alias.name) &&
+               declaration.kind == "interface" {
+                target = declaration.qualified
+            }
+        }
+        if target == "" { return false }
+        var pending: List<HirType> = []
+        for declaration: HirDeclaration in
+            self.source.declarations {
+            if (declaration.qualified == exact.name ||
+                declaration.name == exact.name) &&
+               declaration.kind == "class" {
+                for relation: HirType in declaration.relations {
+                    pending.push(relation)
+                }
+            }
+        }
+        var seen: Map<string, bool> = {}
+        for pending.len() != 0 {
+            let relation: HirType =
+                pending.pop().expect("scalar relation")
+            if relation.name == target {
+                return true
+            }
+            if seen.contains_key(relation.name) {
+                continue
+            }
+            seen[relation.name] = true
+            for declaration: HirDeclaration in
+                self.source.declarations {
+                if declaration.qualified == relation.name ||
+                   declaration.name == relation.name {
+                    for parent: HirType in declaration.relations {
+                        pending.push(parent)
+                    }
+                }
+            }
+        }
+        return false
+    }
+
+    // A stack receiver may enter only a body that treats `self` as a source
+    // of scalar fields. Returning, storing, retaining, or forwarding `self`
+    // would let the stack address escape and must keep the object on the heap.
+    fn scalar_receiver_method(exact: string,
+                              method: string) -> bool {
+        var found: bool = false
+        for function: MirFunction in self.mir.functions {
+            if function.name != "{exact}.{method}" {
+                continue
+            }
+            if found || function.declaration || function.external ||
+               !mir_type_is_trivial(function.result) {
+                return false
+            }
+            found = true
+            var receiver: int = -1
+            for local: MirLocal in function.locals {
+                if local.parameter && local.name == "self" {
+                    receiver = local.id
+                }
+            }
+            if receiver < 0 { return false }
+            for block: MirBlock in function.blocks {
+                for instruction: MirInstruction in block.instructions {
+                    if instruction.removed { continue }
+                    for capture: int in instruction.capture_locals {
+                        if capture == receiver { return false }
+                    }
+                    if instruction.local == receiver &&
+                       instruction.op != "borrow" &&
+                       instruction.op != "drop_local" {
+                        return false
+                    }
+                    if instruction.op != "borrow" ||
+                       instruction.local != receiver {
+                        continue
+                    }
+                    for use: MirPosition in
+                        self.uses_for(function, instruction.result) {
+                        if use.instruction.op != "field" ||
+                           use.instruction.operands.len() == 0 ||
+                           use.instruction.operands[0] !=
+                               instruction.result {
+                            return false
+                        }
+                    }
+                }
+            }
+        }
+        return found
     }
 
     fn dominators(function: MirFunction) ->
@@ -2446,9 +2787,12 @@ class MirLowerer {
                                     candidate.local]
                             if alias.parameter ||
                                alias.captured ||
-                               !hir_types_equal(
-                                   alias.type,
-                                   primary.type) {
+                               (!hir_types_equal(
+                                    alias.type,
+                                    primary.type) &&
+                                !self.scalar_interface_alias(
+                                    primary.type,
+                                    alias.type)) {
                                 continue
                             }
                             aliases.add(alias.id)
@@ -2515,6 +2859,17 @@ class MirLowerer {
                                 function, read.result)
                         for use: MirPosition in users {
                             if use.instruction.op == "field" {
+                                preceding.push(use)
+                                continue
+                            }
+                            if use.instruction.op == "method_call" &&
+                               use.instruction.operands.len() != 0 &&
+                               use.instruction.operands[0] == read.result &&
+                               use.instruction.devirtualized_receiver ==
+                                   self.concrete_class_name(primary.type) &&
+                               self.scalar_receiver_method(
+                                   use.instruction.devirtualized_receiver,
+                                   use.instruction.text) {
                                 preceding.push(use)
                                 continue
                             }
@@ -2599,6 +2954,8 @@ class MirLowerer {
                 for local: MirLocal in function.locals {
                     if aliases.contains(local.id) {
                         local.scalar_replaced = true
+                        local.scalar_replaced_owner =
+                            primary.id
                     }
                 }
             }
@@ -2982,6 +3339,8 @@ class MirLowerer {
             self.dominators(function)
         self.analyze_temporary_slice_consumers(
             function, predecessors, dominance)
+        self.analyze_borrowed_list_iterators(
+            function, predecessors, dominance)
         self.analyze_borrowed_array_iteration(
             function, predecessors, dominance)
         for block: MirBlock in function.blocks {
@@ -3002,6 +3361,80 @@ class MirLowerer {
                 self.try_elide_iteration(
                     function, predecessors, dominance,
                     block, index)
+            }
+        }
+    }
+
+    // A list iterator normally owns one reference to its collection. When the
+    // source is an outer local that cannot change or escape during the loop,
+    // that retain/release pair is redundant: the local already keeps the list
+    // alive until the cursor is done.
+    fn analyze_borrowed_list_iterators(
+        function: MirFunction,
+        predecessors: List<MirBlockEdges>,
+        dominance: List<MirValueSet>) {
+        for block: MirBlock in function.blocks {
+            for setup: MirInstruction in block.instructions {
+                if setup.removed || setup.op != "iterate_init" ||
+                   setup.borrow_elided || setup.operands.len() != 1 ||
+                   setup.result < 0 {
+                    continue
+                }
+                let owned: int = setup.operands[0]
+                if owned < 0 || owned >= function.value_types.len() ||
+                   canonical_hir_name(
+                       function.value_types[owned].name) != "List" {
+                    continue
+                }
+                var retained: MirInstruction = setup
+                match self.definition_for(function, owned) {
+                    some(found) => { retained = found }
+                    none => { continue }
+                }
+                if retained.op != "retain" ||
+                   retained.operands.len() != 1 {
+                    continue
+                }
+                let retained_uses: List<MirPosition> =
+                    self.uses_for(function, retained.result)
+                if retained_uses.len() != 1 ||
+                   retained_uses[0].instruction.op != "iterate_init" ||
+                   retained_uses[0].instruction.result != setup.result {
+                    continue
+                }
+                let borrowed: int = retained.operands[0]
+                var read: MirInstruction = setup
+                match self.definition_for(function, borrowed) {
+                    some(found) => { read = found }
+                    none => { continue }
+                }
+                if read.op != "borrow" || read.local < 0 ||
+                   read.local >= function.locals.len() {
+                    continue
+                }
+                var head: int = -1
+                for use: MirPosition in
+                    self.uses_for(function, setup.result) {
+                    if use.instruction.op == "iterate_next" {
+                        head = use.block
+                    }
+                }
+                if head < 0 || head >= function.blocks.len() {
+                    continue
+                }
+                let members: MirValueSet =
+                    self.loop_blocks_of(
+                        function, predecessors, dominance, head)
+                if !self.iterable_stays_stable(
+                       function, members, setup, read.local) {
+                    continue
+                }
+                setup.operands[0] = borrowed
+                if setup.consumes.len() != 0 {
+                    setup.consumes[0] = false
+                }
+                setup.borrow_elided = true
+                retained.removed = true
             }
         }
     }
@@ -3307,6 +3740,410 @@ class MirLowerer {
         return members
     }
 
+    fn exact_borrow_local(function: MirFunction,
+                          value: int) -> int {
+        match self.definition_for(function, value) {
+            some(definition) => {
+                if definition.op == "borrow" {
+                    return definition.local
+                }
+            }
+            none => {}
+        }
+        return -1
+    }
+
+    fn exact_int_literal(function: MirFunction,
+                         value: int,
+                         expected: string) -> bool {
+        match self.definition_for(function, value) {
+            some(definition) => {
+                return definition.op == "literal" &&
+                       definition.text == expected &&
+                       definition.type.name == "int"
+            }
+            none => { return false }
+        }
+    }
+
+    fn slice_index_uses_locals(
+        function: MirFunction,
+        instruction: MirInstruction,
+        slice_local: int,
+        index_local: int) -> bool {
+        return instruction.op == "index" &&
+               instruction.operands.len() == 2 &&
+               self.exact_borrow_local(
+                   function,
+                   instruction.operands[0]) == slice_local &&
+               self.exact_borrow_local(
+                   function,
+                   instruction.operands[1]) == index_local
+    }
+
+    // RawPtr.alloc returns storage aligned for its element type. Keep this
+    // proof separate from bounds: ordinary slices may legally describe
+    // unaligned foreign memory and must keep align 1 loads.
+    fn slice_from_aligned_allocation(
+        function: MirFunction,
+        slice_local: int) -> bool {
+        var slice_value: int = -1
+        var slice_initializers: int = 0
+        for block: MirBlock in function.blocks {
+            for instruction: MirInstruction in
+                block.instructions {
+                if instruction.removed ||
+                   instruction.local != slice_local ||
+                   instruction.op == "borrow" {
+                    continue
+                }
+                if instruction.op != "local_init" ||
+                   instruction.operands.len() != 1 {
+                    return false
+                }
+                slice_initializers += 1
+                slice_value = instruction.operands[0]
+            }
+        }
+        if slice_initializers != 1 { return false }
+        var created: MirInstruction =
+            new MirInstruction(
+                "", -1, new HirType("unit"),
+                "", "", "", 0, 0)
+        match self.definition_for(function, slice_value) {
+            some(found) => { created = found }
+            none => { return false }
+        }
+        if created.op != "static_call" ||
+           created.resolved != "Slice.from_raw" ||
+           created.operands.len() != 2 {
+            return false
+        }
+        var pointer: MirInstruction = created
+        match self.definition_for(
+                  function, created.operands[0]) {
+            some(found) => { pointer = found }
+            none => { return false }
+        }
+        if pointer.op == "static_call" &&
+           pointer.resolved == "RawPtr.alloc" {
+            return true
+        }
+        if pointer.op != "borrow" ||
+           pointer.local < 0 ||
+           pointer.local >= function.locals.len() {
+            return false
+        }
+        let owner: MirLocal =
+            function.locals[pointer.local]
+        if owner.mutable || owner.captured ||
+           owner.parameter {
+            return false
+        }
+        var owner_initializers: int = 0
+        for block: MirBlock in function.blocks {
+            for instruction: MirInstruction in
+                block.instructions {
+                if instruction.removed ||
+                   instruction.local != owner.id ||
+                   instruction.op == "borrow" {
+                    continue
+                }
+                if instruction.op != "local_init" ||
+                   instruction.operands.len() != 1 {
+                    return false
+                }
+                owner_initializers += 1
+                match self.definition_for(
+                          function,
+                          instruction.operands[0]) {
+                    some(allocation) => {
+                        if allocation.op != "static_call" ||
+                           allocation.resolved !=
+                               "RawPtr.alloc" {
+                            return false
+                        }
+                    }
+                    none => { return false }
+                }
+            }
+        }
+        return owner_initializers == 1
+    }
+
+    // The narrow counted-loop proof behind bounds-free Slice indexing:
+    //
+    //     i = 0
+    //     for i < slice.len() {
+    //         slice[i]
+    //         i += 1
+    //     }
+    //
+    // One head and one body make the order explicit. Any extra edge, use,
+    // write, capture, or different induction step keeps the runtime check.
+    fn analyze_loop_bounds(function: MirFunction) {
+        if function.declaration || function.external ||
+           function.blocks.len() == 0 {
+            return
+        }
+        var predecessors: List<MirBlockEdges> = []
+        for unused: MirBlock in function.blocks {
+            predecessors.push(new MirBlockEdges())
+        }
+        for block: MirBlock in function.blocks {
+            for target: int in block.terminator.targets {
+                if target >= 0 &&
+                   target < predecessors.len() {
+                    predecessors[target].sources.push(block.id)
+                }
+            }
+        }
+        let dominance: List<MirValueSet> =
+            self.dominators(function)
+        for head: MirBlock in function.blocks {
+            if head.terminator.kind != "branch" ||
+               head.terminator.targets.len() != 2 {
+                continue
+            }
+            var condition: MirInstruction =
+                new MirInstruction(
+                    "", -1, new HirType("unit"),
+                    "", "", "", 0, 0)
+            match self.definition_for(
+                      function,
+                      head.terminator.value) {
+                some(found) => { condition = found }
+                none => { continue }
+            }
+            if condition.op != "binary" ||
+               condition.text != "<" ||
+               condition.operands.len() != 2 {
+                continue
+            }
+            var index_read: MirInstruction = condition
+            match self.definition_for(
+                      function,
+                      condition.operands[0]) {
+                some(found) => { index_read = found }
+                none => { continue }
+            }
+            var length: MirInstruction = condition
+            match self.definition_for(
+                      function,
+                      condition.operands[1]) {
+                some(found) => { length = found }
+                none => { continue }
+            }
+            if index_read.op != "borrow" ||
+               length.op != "builtin_method" ||
+               length.text != "len" ||
+               length.operands.len() != 1 {
+                continue
+            }
+            var slice_read: MirInstruction = length
+            match self.definition_for(
+                      function,
+                      length.operands[0]) {
+                some(found) => { slice_read = found }
+                none => { continue }
+            }
+            if slice_read.op != "borrow" ||
+               index_read.local < 0 ||
+               slice_read.local < 0 ||
+               index_read.local >= function.locals.len() ||
+               slice_read.local >= function.locals.len() {
+                continue
+            }
+            let index_local: MirLocal =
+                function.locals[index_read.local]
+            let slice_local: MirLocal =
+                function.locals[slice_read.local]
+            if index_local.type.name != "int" ||
+               index_local.parameter || index_local.captured ||
+               slice_local.type.name != "Slice" ||
+               slice_local.type.args.len() != 1 ||
+               slice_local.mutable || slice_local.parameter ||
+               slice_local.captured || slice_local.escapes ||
+               !self.slice_from_aligned_allocation(
+                    function, slice_local.id) {
+                continue
+            }
+
+            let body_id: int =
+                head.terminator.targets[0]
+            if body_id < 0 ||
+               body_id >= function.blocks.len() {
+                continue
+            }
+            let body: MirBlock =
+                function.blocks[body_id]
+            if body.terminator.kind != "jump" ||
+               body.terminator.targets.len() != 1 ||
+               body.terminator.targets[0] != head.id ||
+               predecessors[body_id].sources.len() != 1 ||
+               predecessors[body_id].sources[0] != head.id ||
+               predecessors[head.id].sources.len() != 2 {
+                continue
+            }
+            var preheader: int = -1
+            var has_back_edge: bool = false
+            for source: int in
+                predecessors[head.id].sources {
+                if source == body_id {
+                    has_back_edge = true
+                } else {
+                    preheader = source
+                }
+            }
+            if !has_back_edge || preheader < 0 ||
+               preheader >= function.blocks.len() ||
+               !dominance[head.id].contains(preheader) {
+                continue
+            }
+            let members: MirValueSet =
+                self.loop_blocks_of(
+                    function, predecessors,
+                    dominance, head.id)
+            var shape_safe: bool = true
+            for member: MirBlock in function.blocks {
+                if members.contains(member.id) &&
+                   member.id != head.id &&
+                   member.id != body_id {
+                    shape_safe = false
+                }
+            }
+            if !shape_safe { continue }
+
+            var starts_at_zero: bool = false
+            for instruction: MirInstruction in
+                function.blocks[preheader].instructions {
+                if instruction.removed ||
+                   instruction.local != index_local.id ||
+                   instruction.op == "borrow" {
+                    continue
+                }
+                starts_at_zero =
+                    (instruction.op == "local_init" ||
+                     (instruction.op == "assign" &&
+                      instruction.text == "=")) &&
+                    instruction.operands.len() == 1 &&
+                    self.exact_int_literal(
+                        function,
+                        instruction.operands[0], "0")
+            }
+            if !starts_at_zero { continue }
+
+            var indexes: List<MirInstruction> = []
+            var increment_index: int = -1
+            for position: int in
+                0..body.instructions.len() {
+                let instruction: MirInstruction =
+                    body.instructions[position]
+                if instruction.removed { continue }
+                if self.slice_index_uses_locals(
+                       function, instruction,
+                       slice_local.id, index_local.id) {
+                    if increment_index >= 0 {
+                        shape_safe = false
+                    }
+                    indexes.push(instruction)
+                }
+                if instruction.local == index_local.id &&
+                   instruction.op != "borrow" {
+                    if instruction.op != "assign" ||
+                       instruction.text != "+=" ||
+                       instruction.operands.len() != 1 ||
+                       !self.exact_int_literal(
+                            function,
+                            instruction.operands[0], "1") ||
+                       increment_index >= 0 {
+                        shape_safe = false
+                    } else {
+                        increment_index = position
+                    }
+                }
+            }
+            if !shape_safe || increment_index < 0 ||
+               indexes.len() == 0 {
+                continue
+            }
+
+            for member: MirBlock in [head, body] {
+                for instruction: MirInstruction in
+                    member.instructions {
+                    if instruction.removed { continue }
+                    for captured: int in
+                        instruction.capture_locals {
+                        if captured == index_local.id ||
+                           captured == slice_local.id {
+                            shape_safe = false
+                        }
+                    }
+                    if instruction.local == index_local.id &&
+                       instruction.op == "borrow" {
+                        for use: MirPosition in
+                            self.uses_for(
+                                function,
+                                instruction.result) {
+                            let user: MirInstruction =
+                                use.instruction
+                            if member.id == head.id {
+                                if user.result != condition.result ||
+                                   user.operands.len() == 0 ||
+                                   user.operands[0] !=
+                                       instruction.result {
+                                    shape_safe = false
+                                }
+                            } else if
+                                !self.slice_index_uses_locals(
+                                    function, user,
+                                    slice_local.id,
+                                    index_local.id) ||
+                                user.operands[1] !=
+                                    instruction.result {
+                                shape_safe = false
+                            }
+                        }
+                    }
+                    if instruction.local == slice_local.id {
+                        if instruction.op != "borrow" {
+                            shape_safe = false
+                            continue
+                        }
+                        for use: MirPosition in
+                            self.uses_for(
+                                function,
+                                instruction.result) {
+                            let user: MirInstruction =
+                                use.instruction
+                            if member.id == head.id {
+                                if user.result != length.result ||
+                                   user.operands.len() == 0 ||
+                                   user.operands[0] !=
+                                       instruction.result {
+                                    shape_safe = false
+                                }
+                            } else if
+                                !self.slice_index_uses_locals(
+                                    function, user,
+                                    slice_local.id,
+                                    index_local.id) ||
+                                user.operands[0] !=
+                                    instruction.result {
+                                shape_safe = false
+                            }
+                        }
+                    }
+                }
+            }
+            if !shape_safe { continue }
+            for instruction: MirInstruction in indexes {
+                instruction.bounds_elided = true
+                instruction.effects = "none"
+            }
+        }
+    }
+
     fn try_elide_iteration(function: MirFunction,
                            predecessors: List<MirBlockEdges>,
                            dominance: List<MirValueSet>,
@@ -3516,6 +4353,10 @@ class MirLowerer {
         // when it is inside the loop's natural blocks.
         if user.op == "assign" &&
            user.text.starts_with("index:") {
+            return user.operands.len() != 0 &&
+                   user.operands[0] == borrowed
+        }
+        if user.op == "index" {
             return user.operands.len() != 0 &&
                    user.operands[0] == borrowed
         }
@@ -4326,6 +5167,45 @@ class MirLowerer {
     fn verify_instruction(function: MirFunction,
                           instruction: MirInstruction,
                           definitions: List<int>) {
+        if instruction.stack_closure &&
+           (instruction.op != "closure" ||
+            instruction.closure_id < 0 ||
+            instruction.capture_locals.len() == 0) {
+            self.fail(
+                instruction.file,
+                instruction.line,
+                instruction.col,
+                "MIR stack closure marker is not a captured closure")
+        }
+        if instruction.stack_closure {
+            for index: int in
+                0..instruction.capture_locals.len() {
+                if (instruction.capture_value_mask &
+                    (1 << index)) == 0 {
+                    self.fail(
+                        instruction.file,
+                        instruction.line,
+                        instruction.col,
+                        "MIR stack closure has a shared-cell capture")
+                }
+            }
+        }
+        if instruction.bounds_elided &&
+           instruction.op != "index" {
+            self.fail(
+                instruction.file,
+                instruction.line,
+                instruction.col,
+                "MIR bounds marker is not an index operation")
+        }
+        if instruction.devirtualized_receiver != "" &&
+           instruction.op != "method_call" {
+            self.fail(
+                instruction.file,
+                instruction.line,
+                instruction.col,
+                "MIR devirtualized receiver is not a method call")
+        }
         if instruction.operands.len() !=
            instruction.consumes.len() {
             self.fail(
@@ -4493,6 +5373,30 @@ class MirLowerer {
                 "MIR value alias table differs from its values")
         }
         for local: MirLocal in function.locals {
+            if local.stack_closure_id >= 0 {
+                var closure_found: bool = false
+                for block: MirBlock in function.blocks {
+                    for instruction: MirInstruction in
+                        block.instructions {
+                        if instruction.stack_closure &&
+                           instruction.closure_id ==
+                               local.stack_closure_id {
+                            closure_found = true
+                        }
+                    }
+                }
+                if local.type.name != "fn" ||
+                   local.mutable || local.parameter ||
+                   local.captured || local.escapes ||
+                   local.ownership != "owned" ||
+                   !closure_found {
+                    self.fail(
+                        function.file,
+                        function.line,
+                        function.col,
+                        "MIR stack closure l{local.id} is unsafe")
+                }
+            }
             if local.borrows_from >= 0 {
                 if local.borrows_from >=
                        function.locals.len() ||
@@ -4538,8 +5442,18 @@ class MirLowerer {
             if local.scalar_replaced &&
                (local.parameter || local.captured ||
                 local.ownership != "owned" ||
-                !self.scalarizable_class(
-                    local.type.name)) {
+                (!self.scalarizable_class(
+                     local.type.name) &&
+                 (local.scalar_replaced_owner < 0 ||
+                  local.scalar_replaced_owner >=
+                      function.locals.len() ||
+                  local.scalar_replaced_owner == local.id ||
+                  !function.locals[
+                      local.scalar_replaced_owner].scalar_replaced ||
+                  !self.scalar_interface_alias(
+                      function.locals[
+                          local.scalar_replaced_owner].type,
+                      local.type)))) {
                 self.fail(
                     function.file,
                     function.line,
@@ -4766,11 +5680,16 @@ class MirLowerer {
         }
         self.analyze_constructor_contraction()
         for function: MirFunction in self.mir.functions {
+            self.analyze_stack_closures(function)
+            self.analyze_exact_receivers(function)
+        }
+        for function: MirFunction in self.mir.functions {
             self.analyze_scalar_replacements(function)
         }
         for function: MirFunction in self.mir.functions {
             self.mark_reachable(function)
             self.mark_last_uses(function)
+            self.analyze_loop_bounds(function)
             self.analyze_borrowed_iteration(function)
             self.analyze_ownership_transfers(function)
             self.plan_value_lifetimes(function)

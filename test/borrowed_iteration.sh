@@ -32,6 +32,11 @@ if mir_body safe_sum | grep -q 'drop_local item '; then
     exit 1
 fi
 
+# The scalar loop borrows its List cursor. Its trivial element read needs no
+# separate marker, so pin the iterate_init itself.
+mir_body scalar_repeat_sum |
+    grep -q 'iterate_init value .*borrow-elided'
+
 # Stable Map keys and values borrow without per-entry ARC traffic.
 test "$(mir_body safe_map_sum | grep -c 'borrow-elided')" -eq 2
 if mir_body safe_map_sum | grep -Eq 'drop_local (key|item) '; then
@@ -40,19 +45,22 @@ if mir_body safe_map_sum | grep -Eq 'drop_local (key|item) '; then
 fi
 
 # Replacing a Map value must keep the current binding owned.
-if mir_body mutation_during_map_iteration | grep -q 'borrow-elided'; then
+if mir_body mutation_during_map_iteration |
+   grep -Eq 'iterate_(value|key).*borrow-elided'; then
     echo "mutation_during_map_iteration wrongly borrowed its binding" >&2
     exit 1
 fi
 
 # the loop that clears the list must keep an owned element
-if mir_body mutation_during_iteration | grep -q 'borrow-elided'; then
+if mir_body mutation_during_iteration |
+   grep -q 'iterate_value.*borrow-elided'; then
     echo "mutation_during_iteration wrongly borrowed its binding" >&2
     exit 1
 fi
 
 # elements handed to closures must stay owned per iteration
-if mir_body captured_bindings | grep -q 'borrow-elided'; then
+if mir_body captured_bindings |
+   grep -q 'iterate_value.*borrow-elided'; then
     echo "captured_bindings wrongly borrowed its binding" >&2
     exit 1
 fi
