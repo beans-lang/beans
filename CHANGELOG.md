@@ -4,6 +4,8 @@ This file records user-facing changes in each Beans release.
 
 ## Unreleased
 
+## [0.1.28] - 2026-08-22
+
 ### Added
 
 - `TcpStream.set_nodelay` turns Nagle's algorithm off (or back on). A
@@ -28,6 +30,9 @@ This file records user-facing changes in each Beans release.
 
 ### Changed
 
+- The runtime ABI moves to version 8 for the `beans_poll_wait_into` entry
+  point. A 0.1.27 runtime does not export it, so a program the new compiler
+  builds against `Poller.wait_into` needs the 0.1.28 runtime.
 - The HTTP/1 parser returns the shared literal for the nine request methods
   and the common header names instead of allocating a fresh string per
   message; an uncommon spelling still allocates and keeps its exact case.

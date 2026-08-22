@@ -13,9 +13,11 @@
 #
 # The project is still in the public 1.0 bake, so do not call it 1.0.0 until
 # every release gate in ROADMAP.md has passed.
-compiler=0.1.27
+compiler=0.1.28
 language=1.0
 
-# 7: Bytes.filled, Bytes.append_int_text, and Thread.detach runtime entries.
+# 8: the beans_poll_wait_into runtime entry, which fills a caller-owned event
+# buffer instead of returning a fresh one.
+# Version 7 added Bytes.filled, Bytes.append_int_text, and Thread.detach.
 # Version 6 added per-thread runtime-hook guard entry points.
-runtime_abi=7
+runtime_abi=8
