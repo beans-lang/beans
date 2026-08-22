@@ -1979,6 +1979,124 @@ class MirLowerer {
         }
     }
 
+    fn exact_local_initializer(
+        function: MirFunction,
+        local_id: int) -> int {
+        if local_id < 0 ||
+           local_id >= function.locals.len() {
+            return -1
+        }
+        let local: MirLocal =
+            function.locals[local_id]
+        if local.mutable || local.parameter ||
+           local.captured {
+            return -1
+        }
+        var initialized: int = -1
+        var count: int = 0
+        for block: MirBlock in function.blocks {
+            for instruction: MirInstruction in
+                block.instructions {
+                if instruction.removed { continue }
+                for capture: int in
+                    instruction.capture_locals {
+                    if capture == local_id {
+                        return -1
+                    }
+                }
+                if instruction.local != local_id ||
+                   instruction.op == "borrow" ||
+                   instruction.op == "drop_local" {
+                    continue
+                }
+                if instruction.op != "local_init" ||
+                   instruction.operands.len() != 1 {
+                    return -1
+                }
+                count += 1
+                initialized = instruction.operands[0]
+            }
+        }
+        return if count == 1 { initialized } else { -1 }
+    }
+
+    fn concrete_class_name(type: HirType) -> string {
+        for declaration: HirDeclaration in
+            self.source.declarations {
+            if (declaration.qualified == type.name ||
+                declaration.name == type.name) &&
+               declaration.kind == "class" &&
+               declaration.generics.len() == 0 {
+                return declaration.qualified
+            }
+        }
+        return ""
+    }
+
+    // Follow immutable local initializers through interface upcasts. Reaching
+    // one exact allocation proves the descriptor for every later method call.
+    fn exact_allocated_receiver(
+        function: MirFunction,
+        start: int) -> string {
+        var value: int = start
+        var seen_locals: Map<int, bool> = {}
+        for unused: int in 0..64 {
+            var definition: MirInstruction =
+                new MirInstruction(
+                    "", -1, new HirType("unit"),
+                    "", "", "", 0, 0)
+            match self.definition_for(function, value) {
+                some(found) => { definition = found }
+                none => { return "" }
+            }
+            if definition.op == "new" {
+                return self.concrete_class_name(
+                    definition.type)
+            }
+            if (definition.op == "retain" ||
+                definition.op == "cast") &&
+               definition.operands.len() == 1 {
+                value = definition.operands[0]
+                continue
+            }
+            if definition.op != "borrow" ||
+               definition.local < 0 ||
+               seen_locals.contains_key(
+                   definition.local) {
+                return ""
+            }
+            seen_locals[definition.local] = true
+            value = self.exact_local_initializer(
+                function, definition.local)
+            if value < 0 { return "" }
+        }
+        return ""
+    }
+
+    fn analyze_exact_receivers(function: MirFunction) {
+        if function.declaration || function.external {
+            return
+        }
+        for block: MirBlock in function.blocks {
+            for instruction: MirInstruction in
+                block.instructions {
+                if instruction.removed ||
+                   instruction.op != "method_call" ||
+                   instruction.operands.len() == 0 {
+                    continue
+                }
+                let exact: string =
+                    self.exact_allocated_receiver(
+                        function,
+                        instruction.operands[0])
+                if exact != "" {
+                    instruction.devirtualized_receiver =
+                        exact
+                }
+            }
+        }
+    }
+
     fn analyze_borrow_aliases(function: MirFunction) {
         if function.declaration || function.external ||
            function.locals.len() == 0 {
@@ -4865,6 +4983,14 @@ class MirLowerer {
                 instruction.col,
                 "MIR bounds marker is not an index operation")
         }
+        if instruction.devirtualized_receiver != "" &&
+           instruction.op != "method_call" {
+            self.fail(
+                instruction.file,
+                instruction.line,
+                instruction.col,
+                "MIR devirtualized receiver is not a method call")
+        }
         if instruction.operands.len() !=
            instruction.consumes.len() {
             self.fail(
@@ -5330,6 +5456,7 @@ class MirLowerer {
         self.analyze_constructor_contraction()
         for function: MirFunction in self.mir.functions {
             self.analyze_stack_closures(function)
+            self.analyze_exact_receivers(function)
         }
         for function: MirFunction in self.mir.functions {
             self.analyze_scalar_replacements(function)

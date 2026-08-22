@@ -78,6 +78,10 @@ fn render_mir(program: MirProgram) -> string {
                     detail =
                         "{detail} resolved={instruction.resolved}"
                 }
+                if instruction.devirtualized_receiver != "" {
+                    detail =
+                        "{detail} devirtualized={instruction.devirtualized_receiver}"
+                }
                 if instruction.local >= 0 {
                     detail =
                         "{detail} local=l{instruction.local}"

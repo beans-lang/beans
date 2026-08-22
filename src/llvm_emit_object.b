@@ -311,6 +311,8 @@ partial class LlvmTextEmitter {
         clone.capture_value_mask =
             instruction.capture_value_mask
         clone.dispatch_slot = instruction.dispatch_slot
+        clone.devirtualized_receiver =
+            instruction.devirtualized_receiver
         clone.ownership = instruction.ownership
         clone.effects = instruction.effects
         clone.last_use = instruction.last_use
@@ -2178,6 +2180,38 @@ partial class LlvmTextEmitter {
                 instruction,
                 "LLVM emitter needs a method receiver")
             return ""
+        }
+        if instruction.devirtualized_receiver != "" {
+            let exact: HirType =
+                new HirType(
+                    instruction.devirtualized_receiver)
+            match self.declaration_for(exact) {
+                some(declaration) => {
+                    let symbol: string =
+                        self.method_slot_symbol(
+                            declaration,
+                            if instruction.dispatch_slot != "" {
+                                instruction.dispatch_slot
+                            } else {
+                                "pub:{instruction.text}"
+                            })
+                    if symbol == "null" {
+                        self.fail(
+                            instruction,
+                            "LLVM emitter cannot resolve devirtualized method '{instruction.devirtualized_receiver}.{instruction.text}'")
+                        return ""
+                    }
+                    return self.emit_direct_call(
+                        function, instruction,
+                        values, symbol)
+                }
+                none => {
+                    self.fail(
+                        instruction,
+                        "LLVM emitter cannot find devirtualized receiver '{instruction.devirtualized_receiver}'")
+                    return ""
+                }
+            }
         }
         let receiver_type: HirType =
             self.value_type(
