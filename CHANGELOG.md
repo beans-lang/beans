@@ -4,6 +4,19 @@ This file records user-facing changes in each Beans release.
 
 ## Unreleased
 
+### Added
+
+- A paired abstraction proof suite compares generic/specialized functions,
+  iterator/index loops, closures/direct calls, interface/direct dispatch,
+  Option/Result/manual forms, and safe/unchecked indexing.
+
+### Changed
+
+- MIR now stack-places proven non-escaping scalar closures, removes stable
+  counted Slice bounds checks, devirtualizes exact receivers, keeps narrow
+  custom Results inline, removes proven iterator ARC, and scalar-replaces safe
+  exact objects.
+
 ### Fixed
 
 - Each Beans thread trial-deletes its own genuine cycle candidates, so cycles
