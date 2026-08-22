@@ -6,6 +6,115 @@ partial class LlvmTextEmitter {
         return "getelementptr (i8, ptr @.next.str{id}, i64 16)"
     }
 
+    fn rendered_string_pattern_literals(
+        pattern: string) -> List<string> {
+        var result: List<string> = []
+        if pattern.starts_with("pattern_literal:\"") {
+            result.push(llvm_unquote(
+                pattern.slice(16, pattern.len())))
+            return move result
+        }
+        if !pattern.starts_with("pattern_alternative:(") ||
+           !pattern.ends_with(")") {
+            return move result
+        }
+        let inner: string = pattern.slice(21, pattern.len() - 1)
+        var cursor: int = 0
+        for cursor < inner.len() {
+            let rest: string = inner.slice(cursor, inner.len())
+            if !rest.starts_with("pattern_literal:\"") {
+                return []
+            }
+            let literal_start: int = cursor + 16
+            var end: int = literal_start + 1
+            var closed: bool = false
+            for end < inner.len() {
+                let byte: int = inner.byte_at(end)
+                if byte == 92 && end + 1 < inner.len() {
+                    end += 2
+                    continue
+                }
+                if byte == 34 {
+                    end += 1
+                    closed = true
+                    break
+                }
+                end += 1
+            }
+            if !closed { return [] }
+            result.push(llvm_unquote(
+                inner.slice(literal_start, end)))
+            if end == inner.len() {
+                cursor = end
+                break
+            }
+            if inner.byte_at(end) != 44 { return [] }
+            cursor = end + 1
+        }
+        return move result
+    }
+
+    // String patterns use the same value comparison as `==`. Keep this as a
+    // branch chain so source arm order and a final wildcard stay exact.
+    fn emit_string_match(
+        function: MirFunction,
+        block: MirBlock,
+        values: Map<int, string>,
+        source: MirInstruction) -> string {
+        let terminator: MirTerminator = block.terminator
+        if terminator.targets.len() != terminator.patterns.len() ||
+           terminator.targets.len() == 0 {
+            self.fail_terminator(
+                terminator,
+                "LLVM emitter found malformed string match")
+            return ""
+        }
+        let subject: string = self.value(
+            function, values, terminator.value, source)
+        var output: string = ""
+        var closed: bool = false
+        for index: int in 0..terminator.patterns.len() {
+            let pattern: string = terminator.patterns[index]
+            let target: string = self.edge_target(
+                function, block, terminator.targets[index])
+            if pattern == "pattern_wildcard" {
+                output = "{output}  br label {target}\n"
+                closed = true
+                break
+            }
+            let literals: List<string> =
+                self.rendered_string_pattern_literals(pattern)
+            if literals.len() == 0 {
+                self.fail_terminator(
+                    terminator,
+                    "LLVM emitter only supports string literal patterns and alternatives yet")
+                return ""
+            }
+            var condition: string = ""
+            for literal: string in literals {
+                let leg: int = self.fresh()
+                output =
+                    "{output}  %string.match.raw{leg} = call i64 @beans_str_eq(ptr {subject}, ptr {self.string_pointer(literal)})\n  %string.match.leg{leg} = icmp ne i64 %string.match.raw{leg}, 0\n"
+                if condition == "" {
+                    condition = "%string.match.leg{leg}"
+                } else {
+                    let joined: int = self.fresh()
+                    output =
+                        "{output}  %string.match.any{joined} = or i1 {condition}, %string.match.leg{leg}\n"
+                    condition = "%string.match.any{joined}"
+                }
+            }
+            let branch: int = self.fresh()
+            output =
+                "{output}  br i1 {condition}, label {target}, label %string.match.next{branch}\nstring.match.next{branch}:\n"
+        }
+        if !closed {
+            // The checker requires a wildcard for an open string domain.
+            output = "{output}  unreachable\n"
+        }
+        return "{output}{self.emit_edge_blocks(function, block, values, source)}"
+    }
+
     fn interpolation_pieces(
         instruction: MirInstruction) ->
         List<LlvmInterpolationPiece> {

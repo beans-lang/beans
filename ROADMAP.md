@@ -202,6 +202,20 @@ not part of the hosted 1.0 production promise.
   today requests are intentionally processed in order.
 - [ ] Expand editor clients without moving semantic logic out of the compiler.
 
+### P4 — async v2, language design after the 1.0 gate
+
+Espresso's `respond_later` plus `WorkerPool` covers blocking handlers today;
+async v2 is the language ending that makes that deferral an implementation
+detail behind async handlers. This is a design effort, not a checklist item,
+and nothing in it blocks the 1.0 gate.
+
+- [ ] Async closures: async function values that can be stored in fields,
+  passed as parameters and called through variables.
+- [ ] Dynamic task groups beyond lexical `async let` children.
+- [ ] Lift the 64-parked-await-per-executor limit.
+- [ ] A multi-threaded cycle-collection design that runs while worker
+  threads live (shares its fate with the first P1 item).
+
 ## Required change loop
 
 For a behaviour or compiler change:

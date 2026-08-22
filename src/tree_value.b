@@ -48,6 +48,10 @@ class TreeValue {
     thread_handle: Option<Thread<int>>
     thread_work:
         Option<Mutex<TreeThreadWork>>
+    // Concrete type arguments captured by generic objects and closures.
+    // The tree interpreter is type-erased at runtime, so reflective code
+    // needs this small side channel for operations such as type_of(T).
+    generic_types: Map<string, HirType>
 
     fn init(kind: string) {
         self.kind = kind
@@ -83,6 +87,7 @@ class TreeValue {
         self.channel_value = none
         self.thread_handle = none
         self.thread_work = none
+        self.generic_types = {}
     }
 
     static fn unit() -> TreeValue {
@@ -561,6 +566,7 @@ fn tree_value_copy(value: TreeValue) -> TreeValue {
             new TreeValue("record")
         result.text = value.text
         result.object_id = value.object_id
+        result.generic_types = copy_type_map(value.generic_types)
         match value.bytes_data {
             some(data) => {
                 result.bytes_data =
@@ -589,6 +595,7 @@ fn tree_value_copy(value: TreeValue) -> TreeValue {
                 value.kind, move items)
         result.text = value.text
         result.bool_data = value.bool_data
+        result.generic_types = copy_type_map(value.generic_types)
         return result
     }
     return value
@@ -599,6 +606,7 @@ fn tree_spawn_closure(value: TreeValue) -> TreeValue {
         new TreeValue(value.kind)
     result.text = value.text
     result.closure_node = value.closure_node
+    result.generic_types = copy_type_map(value.generic_types)
     match value.closure_frame {
         some(frame) => {
             result.closure_frame =

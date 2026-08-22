@@ -21,6 +21,92 @@ pub class ServedRequest {
     pub keep_alive: bool = true
 }
 
+// Validation shared by both encode forms; reports whether this status
+// forbids a body, which the writer needs again.
+fn check_response_frame(status: int,
+                        reason: string,
+                        headers: Headers,
+                        body: Bytes) -> Result<bool> {
+    check_response_line(status, reason)?
+    check_headers(headers)?
+    if headers.has("Content-Length") || headers.has("Transfer-Encoding") {
+        return err("respond owns HTTP framing; do not supply Content-Length or Transfer-Encoding", "invalid")
+    }
+    if headers.has("Connection") {
+        return err("respond owns the Connection header through keep_alive", "invalid")
+    }
+    let body_forbidden: bool =
+        (status >= 100 && status < 200) || status == 204 || status == 304
+    if body_forbidden && body.len() != 0 {
+        return err("status {status} cannot carry a response body", "invalid")
+    }
+    return ok(body_forbidden)
+}
+
+fn write_response_frame(target: Bytes,
+                        status: int,
+                        reason: string,
+                        headers: Headers,
+                        body: Bytes,
+                        keep_alive: bool,
+                        body_forbidden: bool) {
+    target.append_string("HTTP/1.1 ")
+    target.append_int_text(status)
+    target.push(32)
+    target.append_string(reason)
+    target.append_string("\r\n")
+    if !body_forbidden {
+        target.append_string("Content-Length: ")
+        target.append_int_text(body.len())
+        target.append_string("\r\n")
+    }
+    if !keep_alive {
+        target.append_string("Connection: close\r\n")
+    }
+    for index: int in 0..headers.count() {
+        target.append_string(headers.name_at(index))
+        target.append_string(": ")
+        target.append_string(headers.value_at(index))
+        target.append_string("\r\n")
+    }
+    target.append_string("\r\n")
+    target.append(body)
+}
+
+/// Encodes one complete HTTP/1.1 response into caller-owned storage. The
+/// target is reused, framing stays owned by std.http, and callers can flush
+/// the returned bytes through a nonblocking output queue.
+pub fn encode_response_into(target: Bytes,
+                            status: int,
+                            reason: string,
+                            headers: Headers,
+                            body: Bytes,
+                            keep_alive: bool) -> Result<bool> {
+    let body_forbidden: bool =
+        check_response_frame(status, reason, headers, body)?
+    target.resize(0)
+    write_response_frame(target, status, reason, headers, body, keep_alive,
+                         body_forbidden)
+    return ok(true)
+}
+
+/// Like `encode_response_into`, appending after whatever `target` already
+/// holds — the form for a server that frames each response straight into
+/// its connection's output queue instead of staging it in a side buffer.
+/// Validation failures leave `target` untouched.
+pub fn encode_response_append(target: Bytes,
+                              status: int,
+                              reason: string,
+                              headers: Headers,
+                              body: Bytes,
+                              keep_alive: bool) -> Result<bool> {
+    let body_forbidden: bool =
+        check_response_frame(status, reason, headers, body)?
+    write_response_frame(target, status, reason, headers, body, keep_alive,
+                         body_forbidden)
+    return ok(true)
+}
+
 /// A listening HTTP server socket.
 pub unique class Server implements Send {
     listener: net.TcpListener
@@ -194,41 +280,8 @@ pub unique class ServerConn implements Send {
         if !self.alive {
             return err("the connection is closed", "closed")
         }
-        check_response_line(status, reason)?
-        check_headers(headers)?
-        if headers.has("Content-Length") || headers.has("Transfer-Encoding") {
-            return err("respond owns HTTP framing; do not supply Content-Length or Transfer-Encoding", "invalid")
-        }
-        if headers.has("Connection") {
-            return err("respond owns the Connection header through keep_alive", "invalid")
-        }
-        let body_forbidden: bool =
-            (status >= 100 && status < 200) || status == 204 || status == 304
-        if body_forbidden && body.len() != 0 {
-            return err("status {status} cannot carry a response body", "invalid")
-        }
-        self.response_buffer.resize(0)
-        self.response_buffer.append_string("HTTP/1.1 ")
-        self.response_buffer.append_int_text(status)
-        self.response_buffer.push(32)
-        self.response_buffer.append_string(reason)
-        self.response_buffer.append_string("\r\n")
-        if !body_forbidden {
-            self.response_buffer.append_string("Content-Length: ")
-            self.response_buffer.append_int_text(body.len())
-            self.response_buffer.append_string("\r\n")
-        }
-        if !keep_alive {
-            self.response_buffer.append_string("Connection: close\r\n")
-        }
-        for index: int in 0..headers.count() {
-            self.response_buffer.append_string(headers.name_at(index))
-            self.response_buffer.append_string(": ")
-            self.response_buffer.append_string(headers.value_at(index))
-            self.response_buffer.append_string("\r\n")
-        }
-        self.response_buffer.append_string("\r\n")
-        self.response_buffer.append(body)
+        encode_response_into(self.response_buffer, status, reason, headers,
+                             body, keep_alive)?
         match self.stream.write_all(self.response_buffer) {
             ok(_) => {}
             err(e) => {

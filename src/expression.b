@@ -3934,6 +3934,11 @@ class ExpressionChecker {
                     [integer, integer, integer, integer],
                     hir_result(bytes)))
             }
+            if name == "wait_into" {
+                return some(new BuiltinSignature(
+                    [integer, integer, integer, integer, bytes],
+                    hir_result(integer)))
+            }
             if name == "wake" {
                 return some(new BuiltinSignature(
                     [integer], hir_result(boolean)))

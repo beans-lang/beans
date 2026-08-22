@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # The gap-report fixes as one suite: multi-line method chains (G1),
 # fn-typed fields callable through member syntax (G2), covariant Self
-# results (G3), trailing parameter defaults (G4), and poisoned backend
-# values after an unsupported-construct error (G9).
+# results (G3), trailing parameter defaults (G4), string literal matches,
+# and poisoned backend values after an unsupported-construct error (G9).
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -35,6 +35,7 @@ run_both move_captures_ok
 run_both fn_field_call_ok
 run_both self_return_ok
 run_both default_params_ok
+run_both string_match
 
 check_bad method_chains_bad.b "expected name after '.'"
 check_bad weak_fields_bad.b "a weak field needs type Option<C> for a non-unique class C, got Option<int>"

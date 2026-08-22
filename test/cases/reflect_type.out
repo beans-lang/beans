@@ -11,3 +11,6 @@ Person.name:string:true:true
 Person.active:bool:false:true
 name
 true
+int
+main.User
+int

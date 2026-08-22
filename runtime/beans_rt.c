@@ -1001,6 +1001,11 @@ static const long long cc_threads = 0;
 #endif
 static _Atomic int cc_pending;
 static int cc_collecting;
+// One husk sweep at a time; a second thread crossing the threshold while a
+// sweep runs just skips — the running sweep is already doing its work.
+// Plain int on purpose: the __atomic_* builtins below want an unqualified
+// object, the way beans_in_deinit is accessed.
+static int cc_sweeping;
 static void cc_collect(int force);
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
 static void cc_worker_roots_begin(void);
@@ -1115,9 +1120,30 @@ void beans_runtime_hook_leave(void) {
     beans_runtime_hook_depth = 0;
 }
 
-static POOL_LOCAL void* pool_free[POOL_CLASSES];
-static POOL_LOCAL char* pool_cur;
-static POOL_LOCAL char* pool_end;
+// The allocator pool and the collector's root batch share one thread-local
+// struct. On Darwin every distinct _Thread_local variable is its own TLV
+// descriptor and costs its own _tlv_get_addr call; one variable means the
+// hot paths pay that call once, not once per field.
+#if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
+#define CC_WORKER_ROOT_BATCH 256
+#endif
+typedef struct {
+    void* pool_free[POOL_CLASSES];
+    char* pool_cur;
+    char* pool_end;
+#if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
+    void* cc_worker_roots[CC_WORKER_ROOT_BATCH];
+    long long cc_worker_root_len;
+    int cc_worker_root_batching;
+#endif
+} BeansHotTls;
+static POOL_LOCAL BeansHotTls beans_hot_tls;
+#define pool_free (beans_hot_tls.pool_free)
+#define pool_cur (beans_hot_tls.pool_cur)
+#define pool_end (beans_hot_tls.pool_end)
+#define cc_worker_roots (beans_hot_tls.cc_worker_roots)
+#define cc_worker_root_len (beans_hot_tls.cc_worker_root_len)
+#define cc_worker_root_batching (beans_hot_tls.cc_worker_root_batching)
 static void** pool_slabs;
 static long long pool_slab_len, pool_slab_cap;
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
@@ -1520,12 +1546,50 @@ static pthread_mutex_t cc_mu = PTHREAD_MUTEX_INITIALIZER;
 // staging, keeps each shell alive and guarantees that only one thread queues it.
 // The final partial batch is published before the worker lowers cc_threads, so a
 // collector that observes zero workers also observes every staged root.
-#if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
-#define CC_WORKER_ROOT_BATCH 256
-static POOL_LOCAL void* cc_worker_roots[CC_WORKER_ROOT_BATCH];
-static POOL_LOCAL long long cc_worker_root_len;
-static POOL_LOCAL int cc_worker_root_batching;
-#endif
+// The batch buffer itself lives in `beans_hot_tls` beside the allocator
+// pool — one thread-local variable, one TLV descriptor.
+
+// The collector's cheap half, runnable while workers are alive. A parked
+// shell whose death cascade already finished — count zero, blackened as the
+// cascade's last touch — is unreachable: the root buffer holds its only
+// pointer, so freeing it here cannot race anything. Live candidates (any
+// count above zero, or a cascade still purple between its decrement and its
+// blacken) stay parked for the real collector. Without this, a process that
+// keeps worker threads alive — every threaded server — could never reclaim
+// husks, because cc_collect waits for cc_threads to reach zero.
+static void cc_sweep_husks(void) {
+    if (__atomic_exchange_n(&cc_sweeping, 1, __ATOMIC_ACQ_REL)) return;
+    void* local[64];
+    CCStack deferred = {local, 0, 64, local};
+    CC_LOCK();
+    long long kept = 0;
+    for (long long i = 0; i < cc_len; i++) {
+        void* p = cc_roots[i];
+        BHead* h = head_of(p);
+        long long meta = cc_meta(h);
+        if ((meta & CC_BUF) && (meta & CC_COLOR) == CC_BLACK &&
+            RC_COUNT(rt_rc_load(h)) == 0) {
+            // pairs with the release fence before the husk blacken in
+            // beans_release: after this, the dying thread's last access
+            // happens-before the free
+            __atomic_thread_fence(__ATOMIC_ACQUIRE);
+            rt_w_and(&h->meta, ~CC_BUF);
+            void* child = cc_free_shell(p, cc_meta(h));
+            if (child) cc_push(&deferred, child);
+        } else {
+            cc_roots[kept++] = p;
+        }
+    }
+    cc_len = kept;
+    // geometric re-arm, exactly like cc_collect: amortized O(1) per park
+    cc_threshold = cc_len * 2 + 256;
+    CC_UNLOCK();
+    __atomic_store_n(&cc_sweeping, 0, __ATOMIC_RELEASE);
+    // released outside the lock: a release can park new possible roots,
+    // and cc_mu is not recursive
+    for (long long i = 0; i < deferred.len; i++) beans_release(deferred.v[i]);
+    if (deferred.v != local) rt_free(deferred.v);
+}
 
 static void cc_append_roots(void** roots, long long count) {
     if (count <= 0) return;
@@ -1546,8 +1610,15 @@ static void cc_append_roots(void** roots, long long count) {
     }
     memcpy(cc_roots + cc_len, roots, (size_t)count * sizeof(void*));
     cc_len = needed;
-    if (cc_len >= cc_threshold) cc_pending = 1;
+    int husks_due = 0;
+    if (cc_len >= cc_threshold) {
+        cc_pending = 1;
+        // with live workers the collector cannot run, so dead husks would
+        // pile up in this buffer forever; sweep them instead
+        husks_due = cc_threads != 0;
+    }
     CC_UNLOCK();
+    if (husks_due) cc_sweep_husks();
 }
 
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
@@ -1641,8 +1712,15 @@ void beans_release(void* p) {
                 }
                 cc_release_children(cur, meta, &st);
                 if (meta & CC_BUF) {
-                    // parked — the buffer still points here, so the collector
-                    // frees the shell later; mark black: this is a dead husk
+                    // parked — the buffer still points here, so a collector
+                    // or husk sweep frees the shell later; mark black: this
+                    // is a dead husk. The blacken is this thread's last
+                    // access, and the fence orders everything before it so a
+                    // sweeping thread that acquires on the black color may
+                    // free the shell.
+#if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
+                    __atomic_thread_fence(__ATOMIC_RELEASE);
+#endif
                     rt_w_and(&h->meta, ~CC_COLOR);
                 } else {
                     void* child = cc_free_shell(cur, meta);
@@ -2194,6 +2272,11 @@ static void cc_collect(int force) {
     if (__atomic_load_n(&beans_in_deinit, __ATOMIC_RELAXED)) return;
     ARC_ADD(arc_collections, 1);
     cc_collecting = 1;
+    // Children handed back by cc_free_shell (a Shared payload) are released
+    // only after CC_UNLOCK: releasing can park a new possible root, which
+    // takes cc_mu again, and cc_mu is not recursive.
+    void* dlocal[64];
+    CCStack deferred = {dlocal, 0, 64, dlocal};
     CC_LOCK();
 
     // keep only live purple candidates; zombies (released while parked)
@@ -2208,7 +2291,7 @@ static void cc_collect(int force) {
             rt_w_and(&h->meta, ~CC_BUF);
             if (RC_COUNT(h->rc) == 0) {
                 void* child = cc_free_shell(p, h->meta);
-                if (child) beans_release(child);
+                if (child) cc_push(&deferred, child);
             }
         }
     }
@@ -2241,7 +2324,7 @@ static void cc_collect(int force) {
         // read; now the whole white set goes at once
         for (long long i = 0; i < dead.len; i++) {
             void* child = cc_free_shell(dead.v[i], head_of(dead.v[i])->meta);
-            if (child) beans_release(child);
+            if (child) cc_push(&deferred, child);
         }
         cc_walk_min = dead.len ? 256
                                : (cc_walk_min * 4 > (1LL << 18) ? (1LL << 18)
@@ -2258,6 +2341,8 @@ static void cc_collect(int force) {
     cc_threshold = cc_len * 2 + 256;
     cc_pending = 0;
     CC_UNLOCK();
+    for (long long i = 0; i < deferred.len; i++) beans_release(deferred.v[i]);
+    if (deferred.v != dlocal) rt_free(deferred.v);
     cc_collecting = 0;
 }
 
@@ -10759,8 +10844,95 @@ BRes beans_poll_remove(long long poller, long long fd) {
 long long beans_poll_remove_out(long long poller, long long fd, void** e_out) { BRes r = beans_poll_remove(poller, fd); *e_out = r.err; return r.val; }
 
 // [i64 count][i64 token, i64 flags] * count
-BRes beans_poll_wait(long long poller, long long wake_read, long long max_events,
-                     long long timeout_ms) {
+// Per-thread scratch reused across beans_poll_wait calls. A busy server waits
+// tens of thousands of times a second, and the token/flag/ident arrays plus
+// the kernel event buffer were four heap allocations on every one of them.
+// Freed when the thread exits; a thread that cannot get scratch falls back to
+// the per-call heap path.
+#if !defined(_WIN32)
+typedef struct {
+    long long* tokens;
+    long long* flags;
+#if !defined(__linux__)
+    uintptr_t* idents;
+#endif
+    void* got;      // struct epoll_event[] on Linux, struct kevent[] elsewhere
+    long long cap;  // in events; the kernel buffer holds cap * 2 + 1 entries
+} PollScratch;
+static pthread_key_t poll_scratch_key;
+static pthread_once_t poll_scratch_once = PTHREAD_ONCE_INIT;
+static int poll_scratch_key_ok;
+static void poll_scratch_drop(void* raw) {
+    PollScratch* s = (PollScratch*)raw;
+    if (!s) return;
+    free(s->tokens);
+    free(s->flags);
+#if !defined(__linux__)
+    free(s->idents);
+#endif
+    free(s->got);
+    free(s);
+}
+static void poll_scratch_make_key(void) {
+    poll_scratch_key_ok =
+        pthread_key_create(&poll_scratch_key, poll_scratch_drop) == 0;
+}
+static PollScratch* poll_scratch_get(long long max_events,
+                                     size_t kernel_entry) {
+    pthread_once(&poll_scratch_once, poll_scratch_make_key);
+    if (!poll_scratch_key_ok) return NULL;
+    PollScratch* s = (PollScratch*)pthread_getspecific(poll_scratch_key);
+    if (!s) {
+        s = (PollScratch*)calloc(1, sizeof *s);
+        if (!s) return NULL;
+        if (pthread_setspecific(poll_scratch_key, s) != 0) {
+            free(s);
+            return NULL;
+        }
+    }
+    if (s->cap < max_events) {
+        long long room = max_events * 2 + 1;
+        long long* tokens =
+            (long long*)malloc((size_t)max_events * sizeof(long long));
+        long long* flags =
+            (long long*)malloc((size_t)max_events * sizeof(long long));
+#if !defined(__linux__)
+        uintptr_t* idents =
+            (uintptr_t*)malloc((size_t)max_events * sizeof(uintptr_t));
+#endif
+        void* got = malloc((size_t)room * kernel_entry);
+        if (!tokens || !flags || !got
+#if !defined(__linux__)
+            || !idents
+#endif
+        ) {
+            free(tokens);
+            free(flags);
+#if !defined(__linux__)
+            free(idents);
+#endif
+            free(got);
+            return NULL;
+        }
+        free(s->tokens);
+        free(s->flags);
+        s->tokens = tokens;
+        s->flags = flags;
+#if !defined(__linux__)
+        free(s->idents);
+        s->idents = idents;
+#endif
+        free(s->got);
+        s->got = got;
+        s->cap = max_events;
+    }
+    return s;
+}
+#endif
+
+static BRes beans_poll_wait_into_impl(long long poller, long long wake_read,
+                                      long long max_events,
+                                      long long timeout_ms, BList* packed) {
     if (poller < 0) return (BRes){0, mk_error("poller: closed", "closed")};
     if (max_events <= 0)
         return (BRes){0, mk_error("the event limit must be positive", "invalid")};
@@ -10773,23 +10945,45 @@ BRes beans_poll_wait(long long poller, long long wake_read, long long max_events
                                               + timeout_ms;
     // Heap, not stack: 4096 events would be 64KB of locals, and a poller can be waited
     // on from a worker thread whose stack is 512KB on macOS.
+#if defined(_WIN32)
     long long* tokens = calloc((size_t)max_events, sizeof(long long));
     long long* flags = calloc((size_t)max_events, sizeof(long long));
-#if !defined(__linux__) && !defined(_WIN32)
-    uintptr_t* idents = calloc((size_t)max_events, sizeof(uintptr_t));
+    if (!tokens || !flags) {
+        free(tokens);
+        free(flags);
+        return (BRes){0, mk_error("poller wait: out of memory", "io")};
+    }
+#else
+    PollScratch* scratch = poll_scratch_get(max_events,
+#if defined(__linux__)
+                                            sizeof(struct epoll_event));
+#else
+                                            sizeof(struct kevent));
+#endif
+    long long* tokens = scratch ? scratch->tokens
+                                : calloc((size_t)max_events, sizeof(long long));
+    long long* flags = scratch ? scratch->flags
+                               : calloc((size_t)max_events, sizeof(long long));
+#if !defined(__linux__)
+    uintptr_t* idents = scratch
+                            ? scratch->idents
+                            : calloc((size_t)max_events, sizeof(uintptr_t));
 #endif
     if (!tokens || !flags
-#if !defined(__linux__) && !defined(_WIN32)
+#if !defined(__linux__)
         || !idents
 #endif
     ) {
-        free(tokens);
-        free(flags);
-#if !defined(__linux__) && !defined(_WIN32)
-        free(idents);
+        if (!scratch) {
+            free(tokens);
+            free(flags);
+#if !defined(__linux__)
+            free(idents);
 #endif
+        }
         return (BRes){0, mk_error("poller wait: out of memory", "io")};
     }
+#endif
     long long found = 0;
 
     for (;;) {
@@ -10801,7 +10995,9 @@ BRes beans_poll_wait(long long poller, long long wake_read, long long max_events
         }
         int woken = 0;
 #if defined(__linux__)
-        struct epoll_event* got = calloc((size_t)room, sizeof(struct epoll_event));
+        struct epoll_event* got =
+            scratch ? (struct epoll_event*)scratch->got
+                    : calloc((size_t)room, sizeof(struct epoll_event));
         if (!got) {
             free(tokens);
             free(flags);
@@ -10810,10 +11006,12 @@ BRes beans_poll_wait(long long poller, long long wake_read, long long max_events
         int n = epoll_wait((int)poller, got, (int)room, budget);
         if (n < 0) {
             int e = net_errno();
-            free(got);
+            if (!scratch) free(got);
             if (e == EINTR) continue; // deadline recomputed above, never extended
-            free(tokens);
-            free(flags);
+            if (!scratch) {
+                free(tokens);
+                free(flags);
+            }
             return (BRes){0, poll_err("poller wait", e)};
         }
         for (int i = 0; i < n && found < max_events; i++) {
@@ -10828,7 +11026,7 @@ BRes beans_poll_wait(long long poller, long long wake_read, long long max_events
             flags[found] = f;
             found++;
         }
-        free(got);
+        if (!scratch) free(got);
 #elif defined(_WIN32)
         // Snapshot the registry under the lock, wait outside it: WSAPoll takes
         // the whole interest set each call, and holding the lock across the
@@ -10910,10 +11108,13 @@ BRes beans_poll_wait(long long poller, long long wake_read, long long max_events
         free(got);
         free(toks);
 #else
-        struct kevent* got = calloc((size_t)room, sizeof(struct kevent));
+        struct kevent* got = scratch
+                                 ? (struct kevent*)scratch->got
+                                 : calloc((size_t)room, sizeof(struct kevent));
         if (!got) {
             free(tokens);
             free(flags);
+            free(idents);
             return (BRes){0, mk_error("poller wait: out of memory", "io")};
         }
         struct timespec ts, *wait_for = NULL;
@@ -10925,11 +11126,13 @@ BRes beans_poll_wait(long long poller, long long wake_read, long long max_events
         int n = kevent((int)poller, NULL, 0, got, (int)room, wait_for);
         if (n < 0) {
             int e = net_errno();
-            free(got);
+            if (!scratch) free(got);
             if (e == EINTR) continue;
-            free(tokens);
-            free(flags);
-            free(idents);
+            if (!scratch) {
+                free(tokens);
+                free(flags);
+                free(idents);
+            }
             return (BRes){0, poll_err("poller wait", e)};
         }
         for (int i = 0; i < n; i++) {
@@ -10956,7 +11159,7 @@ BRes beans_poll_wait(long long poller, long long wake_read, long long max_events
             flags[found] = f;
             found++;
         }
-        free(got);
+        if (!scratch) free(got);
 #endif
         if (woken && wake_read >= 0) {
             // Drain it: level-triggered means an undrained byte would make every
@@ -10977,21 +11180,57 @@ BRes beans_poll_wait(long long poller, long long wake_read, long long max_events
         if (timeout_ms == 0) break;
     }
 
-    BList* packed = bytes_mk(8 + found * 16);
+    beans_bytes_resize(packed, 8 + found * 16, 0, 0);
     char* into = (char*)packed->data;
     rt_store_le(into, (unsigned long long)found, 8);
     for (long long i = 0; i < found; i++) {
         rt_store_le(into + 8 + i * 16, (unsigned long long)tokens[i], 8);
         rt_store_le(into + 8 + i * 16 + 8, (unsigned long long)flags[i], 8);
     }
+#if defined(_WIN32)
     free(tokens);
     free(flags);
-#if !defined(__linux__) && !defined(_WIN32)
-    free(idents);
+#else
+    if (!scratch) {
+        free(tokens);
+        free(flags);
+#if !defined(__linux__)
+        free(idents);
 #endif
+    }
+#endif
+    return (BRes){found, NULL};
+}
+
+BRes beans_poll_wait(long long poller, long long wake_read, long long max_events,
+                     long long timeout_ms) {
+    BList* packed = bytes_mk(0);
+    BRes r = beans_poll_wait_into_impl(
+        poller, wake_read, max_events, timeout_ms, packed);
+    if (r.err) {
+        beans_release(packed);
+        return r;
+    }
     return (BRes){(long long)packed, NULL};
 }
 long long beans_poll_wait_out(long long poller, long long wake_read, long long max_events, long long timeout_ms, void** e_out) { BRes r = beans_poll_wait(poller, wake_read, max_events, timeout_ms); *e_out = r.err; return r.val; }
+
+BRes beans_poll_wait_into(long long poller, long long wake_read,
+                          long long max_events, long long timeout_ms,
+                          BList* packed) {
+    if (!packed)
+        return (BRes){0, mk_error("poller wait: missing output buffer", "invalid")};
+    return beans_poll_wait_into_impl(
+        poller, wake_read, max_events, timeout_ms, packed);
+}
+long long beans_poll_wait_into_out(long long poller, long long wake_read,
+                                   long long max_events, long long timeout_ms,
+                                   BList* packed, void** e_out) {
+    BRes r = beans_poll_wait_into(
+        poller, wake_read, max_events, timeout_ms, packed);
+    *e_out = r.err;
+    return r.val;
+}
 
 // Safe from any thread. One byte into a pipe, written while holding the table lock so
 // the descriptor cannot be closed underneath it. EAGAIN means a wake is already pending,

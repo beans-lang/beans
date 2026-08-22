@@ -65,6 +65,7 @@ pub unique class Poller implements Send {
     wake_read: int
     signal: int
     live: bool = true
+    packed: Bytes = new Bytes(0)
 
     // Private: the descriptors are an implementation detail, and handing them to a
     // caller would let them close one behind the handle's back.
@@ -119,15 +120,14 @@ pub unique class Poller implements Send {
     /// without limit no matter how many descriptors are registered.
     pub fn wait(max_events: int, timeout_ms: int) -> Result<List<Event>> {
         if !self.live { return err("poller: closed", "closed") }
-        let packed: Bytes = ready.wait(self.fd, self.wake_read, max_events,
-                                       timeout_ms)?
-        let count: int = packed.get_i64(0)
+        let count: int = ready.wait_into(
+            self.fd, self.wake_read, max_events, timeout_ms, self.packed)?
         var out: List<Event> = []
         var i: int = 0
         for i < count {
-            let flags: int = packed.get_i64(8 + i * 16 + 8)
+            let flags: int = self.packed.get_i64(8 + i * 16 + 8)
             var e: Event = new Event()
-            e.token = packed.get_i64(8 + i * 16)
+            e.token = self.packed.get_i64(8 + i * 16)
             e.readable = flags % 2 == 1
             e.writable = (flags / 2) % 2 == 1
             e.hangup = (flags / 4) % 2 == 1
@@ -136,6 +136,33 @@ pub unique class Poller implements Send {
             i += 1
         }
         return ok(move out)
+    }
+
+    /// Like `wait`, into a caller-kept list this call fills in place. The first
+    /// `count` entries are overwritten, growing the list only while it is still
+    /// shorter than that; entries past the count keep stale data from earlier
+    /// calls, so read only `0..count`. A steady event loop that passes the same
+    /// list every time therefore allocates nothing per wake.
+    pub fn wait_into(max_events: int, timeout_ms: int,
+                     events: List<Event>) -> Result<int> {
+        if !self.live { return err("poller: closed", "closed") }
+        let count: int = ready.wait_into(
+            self.fd, self.wake_read, max_events, timeout_ms, self.packed)?
+        for events.len() < count {
+            events.push(new Event())
+        }
+        var i: int = 0
+        for i < count {
+            let slot: Event = events[i]
+            let flags: int = self.packed.get_i64(8 + i * 16 + 8)
+            slot.token = self.packed.get_i64(8 + i * 16)
+            slot.readable = flags % 2 == 1
+            slot.writable = (flags / 2) % 2 == 1
+            slot.hangup = (flags / 4) % 2 == 1
+            slot.error = (flags / 8) % 2 == 1
+            i += 1
+        }
+        return ok(count)
     }
 
     /// Makes a blocked `wait` return promptly. Repeated wakes collapse into one, and a

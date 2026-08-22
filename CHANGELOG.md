@@ -4,6 +4,69 @@ This file records user-facing changes in each Beans release.
 
 ## Unreleased
 
+### Added
+
+- `TcpStream.set_nodelay` turns Nagle's algorithm off (or back on). A
+  request/response server wants it off, so a small response is not held
+  back for a coalescing timer.
+- `http.Headers.clear` empties a collection while keeping its storage, so
+  one instance can serve a whole keep-alive connection.
+- `http.RequestParser.feed_range_into` and `finish_into` append events to a
+  caller-owned list — the allocation-free form for a server's read loop.
+- `poll.Poller.wait_into` fills a caller-kept event list in place — the
+  allocation-free form of `wait` for a steady event loop that passes the
+  same list every wake.
+- `http.encode_response_append` frames a response after whatever the target
+  already holds — the form for a server that writes each response straight
+  into its connection's output queue instead of staging it in a side
+  buffer. Validation failures leave the target untouched.
+- `http.RequestParser.recycle` hands a delivered request head back for
+  reuse. The next message fills the shell instead of allocating one, and
+  reuses its target and header-value strings when the peer repeats them
+  byte-for-byte — the shape of every keep-alive connection. Only recycle a
+  request nothing will read again.
+
+### Changed
+
+- The HTTP/1 parser returns the shared literal for the nine request methods
+  and the common header names instead of allocating a fresh string per
+  message; an uncommon spelling still allocates and keeps its exact case.
+- A socket read reuses one per-stream scratch word for the C bridge instead
+  of allocating one per call.
+- The runtime's allocator pool and cycle-collector root batch share one
+  thread-local struct: the hot paths pay one Darwin TLV lookup instead of
+  one per variable.
+- The poller's wait reuses per-thread scratch for its token, flag, and
+  kernel event buffers instead of paying four heap allocations per call —
+  a busy server waits tens of thousands of times a second.
+- Compact typed JSON encoding writes bytes straight from the record instead
+  of building a yyjson document per call, byte-identically: integers have
+  one decimal spelling and strings follow yyjson's exact default escaping.
+  Schemas with float fields keep the document path so real-number
+  formatting stays yyjson's own, and `BEANS_JSON_NO_DIRECT` routes
+  everything through it again if the direct writer is ever suspect.
+
+### Fixed
+
+- Typed JSON encoding now reads generic-list slots in native byte order, so
+  lists of narrow integers, booleans, floats, and strings encode correctly on
+  big-endian targets too.
+- `Poller.wait_into` now reuses its packed event buffer instead of allocating a
+  fresh `Bytes` value on every wake.
+- A program with live worker threads now reclaims dead parked shells from
+  the cycle-collector buffer instead of holding every one until the threads
+  exit. A threaded server used to leak roughly 150 bytes per request —
+  600 MB within seconds under load; the same server now stays flat. Genuine
+  cycle candidates still wait for the collector, which still runs only at
+  thread quiescence.
+- The cycle collector no longer releases a `Shared` payload while holding
+  its own root-buffer lock. The lock is not recursive, so a payload that
+  parked a new candidate during that release would have deadlocked.
+- `beansc run` now passes selected manifest search, library, and framework rows
+  when linking a package's `csrc` host library. Link arguments also enter the
+  cache key, so changing the manifest cannot reuse a library linked under old
+  settings.
+
 ## [0.1.27] - 2026-08-21
 
 ### Added

@@ -3,6 +3,7 @@ package main
 import std.http
 import std.io
 import std.net
+import std.poll
 import std.target
 import std.thread
 import std.time
@@ -88,9 +89,45 @@ fn detached_worker() -> bool {
     return done.load() == 1
 }
 
+fn nonblocking_contract() -> Result<bool> {
+    let listener: net.TcpListener = net.TcpListener.bind("127.0.0.1", 0)?
+    listener.set_nonblocking(true)?
+    let empty: Option<net.TcpStream> = listener.try_accept()?
+    io.println("try accept empty {empty.is_none()}")
+    if empty.is_some() { return ok(false) }
+
+    let client: net.TcpStream =
+        net.TcpStream.connect("127.0.0.1", listener.port()?)?
+    let maybe_server: Option<net.TcpStream> = listener.try_accept()?
+    let server: net.TcpStream = (move maybe_server).expect("accepted")
+    server.set_nonblocking(true)?
+
+    let scratch: Bytes = Bytes.filled(16, 0)
+    let quiet: Option<int> = server.try_read_into(scratch)?
+    io.println("try read quiet {quiet.is_none()}")
+    if quiet.is_some() { return ok(false) }
+
+    let watch: poll.Poller = poll.Poller.open()?
+    watch.add(server.poll_handle(), 1, poll.Interest.read_only())?
+    client.write_text("abcdef")?
+    if watch.wait(1, 2000)?.len() != 1 { return ok(false) }
+    let read: Option<int> = server.try_read_into(scratch)?
+    io.println("try read count {read.or(-1)}")
+    if read.or(-1) != 6 || scratch.slice(0, 6).to_string() != "abcdef" {
+        return ok(false)
+    }
+
+    let reply: Bytes = Bytes.from("012345")
+    let wrote: Option<int> = server.try_write_from(reply, 2)?
+    io.println("try write count {wrote.or(-1)}")
+    if wrote.or(-1) != 4 { return ok(false) }
+    return ok(client.read_exact(4)?.to_string() == "2345")
+}
+
 fn main() {
     io.println("moved HTTP worker {moved_http_worker().or(false)}")
     io.println("reusable read {reusable_read().or(false)}")
     io.println("reuse port {reuse_port().or(false)}")
     io.println("detached worker {detached_worker()}")
+    io.println("nonblocking contract {nonblocking_contract().or(false)}")
 }

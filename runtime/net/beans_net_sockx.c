@@ -17,6 +17,7 @@
   #include <sys/types.h>
   #include <sys/socket.h>
   #include <netinet/in.h>
+  #include <netinet/tcp.h>
   #include <arpa/inet.h>
   #include <netdb.h>
   #include <fcntl.h>
@@ -40,6 +41,7 @@ enum {
     BEANS_SOCKX_ERR_PERMISSION = 114,
     BEANS_SOCKX_ERR_NOT_FOUND = 115,
     BEANS_SOCKX_ERR_IO = 116,
+    BEANS_SOCKX_WOULD_BLOCK = 117,
 };
 
 static int beans_sockx_error_status(int error) {
@@ -67,6 +69,76 @@ static int beans_sockx_error_status(int error) {
         return BEANS_SOCKX_ERR_PERMISSION;
 #endif
     return BEANS_SOCKX_ERR_IO;
+}
+
+// Accepts once from a listener the Beans side has already made nonblocking.
+//
+//   req[0] out: accepted descriptor on success
+//   req[1] out: OS error code on failure
+//
+// Returns BEANS_SOCKX_WOULD_BLOCK when the accept queue is empty. Keeping
+// this distinct from a real timeout is the contract an event loop needs.
+BEANS_NET_API long long beans_sockx_try_accept(long long fd, uint64_t* req) {
+    if (!req || fd < 0) return BEANS_NET_ERR_INVALID;
+#if defined(_WIN32)
+    SOCKET accepted;
+    do {
+        accepted = accept((SOCKET)fd, NULL, NULL);
+    } while (accepted == INVALID_SOCKET && WSAGetLastError() == WSAEINTR);
+    if (accepted == INVALID_SOCKET) {
+        int error = WSAGetLastError();
+        req[1] = (uint64_t)error;
+        if (error == WSAEWOULDBLOCK) return BEANS_SOCKX_WOULD_BLOCK;
+        return beans_sockx_error_status(error);
+    }
+    SetHandleInformation((HANDLE)accepted, HANDLE_FLAG_INHERIT, 0);
+    req[0] = (uint64_t)accepted;
+#else
+    int accepted;
+    do {
+        accepted = accept((int)fd, NULL, NULL);
+    } while (accepted < 0 && errno == EINTR);
+    if (accepted < 0) {
+        int error = errno;
+        req[1] = (uint64_t)error;
+        if (error == EAGAIN || error == EWOULDBLOCK)
+            return BEANS_SOCKX_WOULD_BLOCK;
+        return beans_sockx_error_status(error);
+    }
+    int flags = fcntl(accepted, F_GETFD, 0);
+    if (flags >= 0) fcntl(accepted, F_SETFD, flags | FD_CLOEXEC);
+#ifdef SO_NOSIGPIPE
+    int one = 1;
+    setsockopt(accepted, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+#endif
+    req[0] = (uint64_t)accepted;
+#endif
+    req[1] = 0;
+    return BEANS_NET_OK;
+}
+
+// Toggles Nagle's algorithm. `req[1]` reports the OS error on failure.
+BEANS_NET_API long long beans_sockx_set_nodelay(
+    long long fd, long long on, uint64_t* req) {
+    if (!req || fd < 0) return BEANS_NET_ERR_INVALID;
+    int value = on ? 1 : 0;
+#if defined(_WIN32)
+    if (setsockopt((SOCKET)fd, IPPROTO_TCP, TCP_NODELAY,
+                   (const char*)&value, sizeof value) != 0) {
+        int error = WSAGetLastError();
+        req[1] = (uint64_t)error;
+        return beans_sockx_error_status(error);
+    }
+#else
+    if (setsockopt((int)fd, IPPROTO_TCP, TCP_NODELAY,
+                   &value, sizeof value) != 0) {
+        int error = errno;
+        req[1] = (uint64_t)error;
+        return beans_sockx_error_status(error);
+    }
+#endif
+    req[1] = 0;
+    return BEANS_NET_OK;
 }
 
 // Reads into an existing Beans buffer without changing its length.

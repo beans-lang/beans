@@ -173,6 +173,71 @@ fn check_headers(headers: Headers) -> Result<bool> {
     return ok(true)
 }
 
+fn bytes_equal_text(data: Bytes, text: string) -> bool {
+    if data.len() != text.len() { return false }
+    var index: int = 0
+    for index < data.len() {
+        if data.get(index) != text.byte_at(index) { return false }
+        index += 1
+    }
+    return true
+}
+
+// The shared literal for a common request method, or "" for no match. A hot
+// parse then never allocates a fresh "GET" per message.
+fn intern_method(pending: Bytes) -> string {
+    let size: int = pending.len()
+    if size == 3 {
+        if bytes_equal_text(pending, "GET") { return "GET" }
+        if bytes_equal_text(pending, "PUT") { return "PUT" }
+    } else if size == 4 {
+        if bytes_equal_text(pending, "POST") { return "POST" }
+        if bytes_equal_text(pending, "HEAD") { return "HEAD" }
+    } else if size == 5 {
+        if bytes_equal_text(pending, "PATCH") { return "PATCH" }
+        if bytes_equal_text(pending, "TRACE") { return "TRACE" }
+    } else if size == 6 {
+        if bytes_equal_text(pending, "DELETE") { return "DELETE" }
+    } else if size == 7 {
+        if bytes_equal_text(pending, "OPTIONS") { return "OPTIONS" }
+        if bytes_equal_text(pending, "CONNECT") { return "CONNECT" }
+    }
+    return ""
+}
+
+// The shared literal for a common header name, or "" for no match. Only an
+// exact byte match interns — the parser preserves case, so "host" stays a
+// caller-visible spelling and simply pays for its own string.
+fn intern_field_name(pending: Bytes) -> string {
+    let size: int = pending.len()
+    if size == 4 {
+        if bytes_equal_text(pending, "Host") { return "Host" }
+        if bytes_equal_text(pending, "Date") { return "Date" }
+    } else if size == 6 {
+        if bytes_equal_text(pending, "Accept") { return "Accept" }
+        if bytes_equal_text(pending, "Cookie") { return "Cookie" }
+        if bytes_equal_text(pending, "Origin") { return "Origin" }
+    } else if size == 7 {
+        if bytes_equal_text(pending, "Referer") { return "Referer" }
+        if bytes_equal_text(pending, "Upgrade") { return "Upgrade" }
+    } else if size == 10 {
+        if bytes_equal_text(pending, "Connection") { return "Connection" }
+        if bytes_equal_text(pending, "User-Agent") { return "User-Agent" }
+    } else if size == 12 {
+        if bytes_equal_text(pending, "Content-Type") { return "Content-Type" }
+    } else if size == 13 {
+        if bytes_equal_text(pending, "Authorization") { return "Authorization" }
+        if bytes_equal_text(pending, "Cache-Control") { return "Cache-Control" }
+        if bytes_equal_text(pending, "If-None-Match") { return "If-None-Match" }
+    } else if size == 14 {
+        if bytes_equal_text(pending, "Content-Length") { return "Content-Length" }
+    } else if size == 15 {
+        if bytes_equal_text(pending, "Accept-Encoding") { return "Accept-Encoding" }
+        if bytes_equal_text(pending, "Accept-Language") { return "Accept-Language" }
+    }
+    return ""
+}
+
 fn ascii_lower_equals(a: string, b: string) -> bool {
     if a.len() != b.len() { return false }
     for index: int in 0..a.len() {
@@ -241,6 +306,13 @@ pub class Headers {
 
     pub fn has(name: string) -> bool {
         return self.get(name).is_some()
+    }
+
+    /// Removes every field while keeping the backing storage, so one
+    /// collection can serve a whole keep-alive connection.
+    pub fn clear() {
+        self.names.clear()
+        self.values.clear()
     }
 }
 
@@ -374,6 +446,10 @@ class ParserCore {
     // per-message state, so the head it belongs to is remembered here.
     last_request: Request = new Request()
     last_response: Response = new Response()
+    // One delivered request shell handed back through `recycle`. The next
+    // message fills it instead of allocating, and until then its strings
+    // seed the byte-equal reuse checks in `reused_target`/`reused_value`.
+    spare_request: Option<Request> = none
 
     fn init(request_side: bool, limits: Limits) {
         self.request_side = request_side
@@ -432,18 +508,75 @@ class ParserCore {
         return self.pending_text.to_string()
     }
 
-    fn build_request() -> Request {
-        var head: Request = new Request()
+    // The previous message's identical string instead of a fresh allocation —
+    // the shape of every keep-alive connection, where a peer repeats its
+    // target and headers byte-for-byte. Comparisons are exact, and the spare
+    // belongs to this parser alone, so nothing crosses connections.
+    fn reused_target() -> string {
+        match self.spare_request {
+            some(spare) => {
+                if spare.target != "" &&
+                   bytes_equal_text(self.pending_text, spare.target) {
+                    return spare.target
+                }
+            }
+            none => {}
+        }
+        return self.pending_string()
+    }
+
+    fn reused_value() -> string {
+        match self.spare_request {
+            some(spare) => {
+                let previous: Headers = spare.headers
+                for index: int in 0..previous.count() {
+                    if previous.name_at(index) == self.field_name &&
+                       bytes_equal_text(self.pending_text,
+                                        previous.value_at(index)) {
+                        return previous.value_at(index)
+                    }
+                }
+            }
+            none => {}
+        }
+        return self.pending_string()
+    }
+
+    fn adopt_spare(done: Request) {
+        self.spare_request = some(done)
+    }
+
+    fn fill_request(head: Request) {
         head.method = self.method_text
         head.target = self.target_text
         head.major = self.major
         head.minor = self.minor
         head.headers = self.fields
-        self.fields = new Headers()
         head.content_length = self.content_length
         head.chunked = (self.flags / 8) % 2 == 1
         head.keep_alive = self.keep_alive
         head.upgrade = self.upgrade
+    }
+
+    fn build_request() -> Request {
+        let recycled: Option<Request> = self.spare_request
+        self.spare_request = none
+        match recycled {
+            some(spare) => {
+                // The spare's old headers become the next accumulator once
+                // the reuse checks above are done with them; nothing here
+                // allocates on a keep-alive connection.
+                let next_fields: Headers = spare.headers
+                self.fill_request(spare)
+                next_fields.clear()
+                self.fields = next_fields
+                return spare
+            }
+            none => {}
+        }
+        let head: Request = new Request()
+        self.fill_request(head)
+        self.fields = new Headers()
         return head
     }
 
@@ -594,23 +727,29 @@ class ParserCore {
                     }
                 }
             } else if kind == 12 {
-                self.method_text = self.pending_string()
+                let known_method: string = intern_method(self.pending_text)
+                self.method_text = if known_method != "" {
+                    known_method
+                } else { self.pending_string() }
                 self.seal_pending()
             } else if kind == 13 {
-                self.target_text = self.pending_string()
+                self.target_text = self.reused_target()
                 self.seal_pending()
             } else if kind == 16 {
                 self.status_text = self.pending_string()
                 self.seal_pending()
             } else if kind == 17 {
-                self.field_name = self.pending_string()
+                let known_name: string = intern_field_name(self.pending_text)
+                self.field_name = if known_name != "" {
+                    known_name
+                } else { self.pending_string() }
                 self.field_done = true
                 self.seal_pending()
             } else if kind == 18 {
                 // An empty value never produces a value span; the complete
                 // event alone closes the pair.
                 let value: string = if self.pending_kind == 8 {
-                    self.pending_string()
+                    self.reused_value()
                 } else {
                     ""
                 }
@@ -722,6 +861,9 @@ class ParserCore {
 /// split them. Feed what arrived; get back the events it completed.
 pub class RequestParser {
     core: ParserCore
+    // Request-side runs never produce response events; one forever-empty
+    // list serves every feed instead of a fresh allocation per read.
+    no_responses: List<ResponseEvent> = []
 
     pub fn init() {
         self.core = new ParserCore(true, new Limits())
@@ -749,6 +891,31 @@ pub class RequestParser {
         var unused: List<ResponseEvent> = []
         self.core.run(data, from, to, false, events, unused)?
         return ok(move events)
+    }
+
+    /// Feeds one checked range, appending events into a caller-owned list —
+    /// the allocation-free form for a server's read loop. The caller clears
+    /// the list between feeds; events are valid until then.
+    pub fn feed_range_into(data: Bytes, from: int, to: int,
+                           events: List<RequestEvent>) -> Result<bool> {
+        return self.core.run(data, from, to, false, events,
+                             self.no_responses)
+    }
+
+    /// Signals end-of-stream into a caller-owned list, the way
+    /// `feed_range_into` feeds one.
+    pub fn finish_into(events: List<RequestEvent>) -> Result<bool> {
+        return self.core.run(new Bytes(0), 0, 0, true, events,
+                             self.no_responses)
+    }
+
+    /// Hands a delivered request head back for reuse. The next message fills
+    /// this shell instead of allocating one, and reuses its target and header
+    /// strings when the peer repeats them byte-for-byte — the shape of every
+    /// keep-alive connection. Only recycle a request nothing will read again:
+    /// the parser rewrites every field in place.
+    pub fn recycle(done: Request) {
+        self.core.adopt_spare(done)
     }
 
     /// Signals end-of-stream. A message that needed EOF to end produces its
