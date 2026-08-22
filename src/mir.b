@@ -221,6 +221,12 @@ class MirLowerer {
                 op, result, type, text, node.resolved,
                 node.file, node.line, node.col)
         instruction.dispatch_slot = node.dispatch_slot
+        for index: int in 0..node.type_argument_names.len() {
+            instruction.type_argument_names.push(
+                node.type_argument_names[index])
+            instruction.type_arguments.push(
+                node.type_arguments[index])
+        }
         for operand: int in operands {
             instruction.operands.push(operand)
             instruction.consumes.push(false)
@@ -1705,6 +1711,9 @@ class MirLowerer {
             function.required_feature
         for slot: string in function.dispatch_slots {
             self.current.dispatch_slots.push(slot)
+        }
+        for generic: string in function.generics {
+            self.current.generics.push(generic)
         }
         self.current_block = -1
         self.scopes = []

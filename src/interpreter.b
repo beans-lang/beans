@@ -212,6 +212,15 @@ class TreeInterpreter {
             self.current_type_bindings()
         let bindings: Map<string, HirType> =
             copy_type_map(inherited)
+        // Explicit type arguments seed the bindings first; they may name
+        // the caller's own generics, which resolve through the inherited
+        // frame. This is what binds a generic the signature never
+        // mentions.
+        for index: int in 0..node.type_argument_names.len() {
+            bindings[node.type_argument_names[index]] =
+                self.runtime_type(
+                    node.type_arguments[index], inherited)
+        }
         var argument_offset: int = 0
         if node.kind == "method_call" && node.children.len() != 0 {
             self.bind_owner_type(

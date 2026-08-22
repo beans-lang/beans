@@ -1,9 +1,11 @@
 package main
 
 partial class LlvmTextEmitter {
-    // a free generic call carries no explicit type arguments: bind
-    // them by unifying the template's signature against the concrete
-    // operand and result types the checker already wrote down
+    // A generic call binds its types two ways: explicit type arguments
+    // arrive as name/type pairs on the instruction and seed the bindings
+    // directly — the only way to bind a generic the signature never
+    // mentions — and whatever the source left unwritten is unified from
+    // the concrete operand and result types the checker already wrote.
     fn emit_generic_call(
         function: MirFunction,
         instruction: MirInstruction,
@@ -25,6 +27,11 @@ partial class LlvmTextEmitter {
             return ""
         }
         var bindings: Map<string, HirType> = {}
+        for index: int in
+            0..instruction.type_argument_names.len() {
+            bindings[instruction.type_argument_names[index]] =
+                instruction.type_arguments[index]
+        }
         var bound: bool = true
         for index: int in 0..parameters.len() {
             let parameter: MirLocal =
@@ -51,6 +58,14 @@ partial class LlvmTextEmitter {
         }
         var instance_name: string =
             "{instruction.resolved}$"
+        for index: int in
+            0..instruction.type_argument_names.len() {
+            // Explicit bindings are part of the instance identity: two
+            // calls whose signatures render identically may still bind a
+            // signature-absent generic differently.
+            instance_name =
+                "{instance_name}[{instruction.type_argument_names[index]}={render_hir_type(instruction.type_arguments[index])}]"
+        }
         for index: int in 0..parameters.len() {
             instance_name =
                 "{instance_name}({render_hir_type(self.value_type(function, instruction.operands[index]))})"
@@ -87,6 +102,12 @@ partial class LlvmTextEmitter {
         if function.cleanup_id >= 0 ||
            function.closure_id >= 0 {
             return false
+        }
+        // A declared generic list marks a template even when no signature
+        // type mentions it — such generics bind only through explicit
+        // type arguments at the call site.
+        if function.generics.len() != 0 {
+            return true
         }
         var split: int = -1
         var default_marker: int = -1

@@ -1339,6 +1339,56 @@ class Parser {
         return self.node("error", token.text, token)
     }
 
+    // Decide whether a '<' at the current position opens explicit type
+    // arguments. Beans has no marker symbol to spare for the job, so the
+    // rule is C#'s, restricted to the one place type arguments can occur:
+    // scan a balanced <...> holding only tokens a type can contain, and
+    // require the very next token to be '(' — a call. Anything else keeps
+    // '<' as less-than, so `check(a < b, c > (d))` reads as one generic
+    // call and a comparison still needs its own parentheses.
+    fn generic_call_ahead() -> bool {
+        var index: int = self.pos + 1
+        var depth: int = 1
+        var parens: int = 0
+        var brackets: int = 0
+        let limit: int = self.tokens.len()
+        for index < limit {
+            let kind: string = self.tokens[index].kind
+            if kind == "<" {
+                depth += 1
+            } else if kind == ">" {
+                depth -= 1
+            } else if kind == ">>" {
+                depth -= 2
+            } else if kind == "(" {
+                parens += 1
+            } else if kind == ")" {
+                if parens == 0 { return false }
+                parens -= 1
+            } else if kind == "[" {
+                brackets += 1
+            } else if kind == "]" {
+                if brackets == 0 { return false }
+                brackets -= 1
+            } else if kind == ";" || kind == "int" {
+                // only an array type's `[len; size]` interior
+                if brackets == 0 { return false }
+            } else if kind != "ident" && kind != "." &&
+                      kind != "," && kind != "->" &&
+                      kind != "fn" && kind != "newline" {
+                return false
+            }
+            if depth < 0 { return false }
+            if depth == 0 {
+                if parens != 0 || brackets != 0 { return false }
+                return index + 1 < limit &&
+                       self.tokens[index + 1].kind == "("
+            }
+            index += 1
+        }
+        return false
+    }
+
     fn parse_postfix(start: AstNode) -> AstNode {
         var expression: AstNode = start
         var running: bool = true
@@ -1407,6 +1457,27 @@ class Parser {
                 cast.add(expression)
                 cast.add(self.parse_type())
                 expression = cast
+            } else if self.check("<") && self.generic_call_ahead() {
+                // Explicit type arguments: wrap the callee, and let the
+                // next loop turn build the call the lookahead guaranteed.
+                let opening: Token = self.advance()
+                let wrapper: AstNode =
+                    self.node("type_args", "", opening)
+                wrapper.add(expression)
+                self.skip_newlines()
+                for !self.at_type_close() && !self.at_end() {
+                    wrapper.add(self.parse_type())
+                    if self.pending_type_closes > 0 { break }
+                    if !self.match_token(",") { break }
+                    self.skip_newlines()
+                }
+                self.take_type_close()
+                if wrapper.children.len() == 1 {
+                    self.fail(
+                        opening,
+                        "expected a type argument after '<'")
+                }
+                expression = wrapper
             } else if self.allow_initializer && self.check("\{") {
                 expression = self.parse_initializer(expression)
             } else {

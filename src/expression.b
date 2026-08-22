@@ -32,6 +32,12 @@ class ExpressionChecker {
     // to keep the borrow alive across a suspension, which the task frame
     // cannot do, so check_await refuses while this is nonzero.
     move_only_borrow_depth: int
+    // The type_args node of the call being checked, when the source wrote
+    // explicit type arguments. A resolution that supports them takes the
+    // node with take_call_generics(); check_call fails the call when they
+    // were written but nothing took them.
+    call_generics_syntax: Option<AstNode>
+    call_generics_taken: bool
 
     fn init(signature: SignatureChecker) {
         self.signature = signature
@@ -62,6 +68,8 @@ class ExpressionChecker {
         self.bad_sync_captures = {}
         self.next_binding_id = 0
         self.move_only_borrow_depth = 0
+        self.call_generics_syntax = none
+        self.call_generics_taken = true
         for function: HirFunction in self.program.functions {
             if function.owner != "" {
                 self.methods["{function.owner}.{function.name}"] =
@@ -4511,39 +4519,8 @@ class ExpressionChecker {
         }
         match self.current_function(node.value) {
             some(function) => {
-                if function.is_extern_c {
-                    self.fail(
-                        node,
-                        "extern C function '{function.name}' cannot be stored as a Beans function value yet")
-                }
-                if function.is_async {
-                    self.fail(
-                        node,
-                        "'{function.name}' is async and cannot be stored as a function value — call it with await or 'async let'")
-                }
-                self.require_function_feature(
-                    node, function,
-                    "storing it as a function value")
-                for parameter: HirParameter in
-                    function.parameters {
-                    if parameter.passing != "" {
-                        self.fail(
-                            node,
-                            "function '{function.name}' has ownership parameters and cannot be stored as a value yet")
-                        break
-                    }
-                }
-                let type: HirType = self.function_type(function)
-                // Named Beans functions have no capture environment, so a
-                // send fn annotation may safely give them the stronger type.
-                if expected.name == "fn" && expected.fn_sendable {
-                    type.fn_sendable = true
-                }
-                self.expect_type(node, type, expected)
-                let result: HirNode =
-                    self.make_node(node, "function", node.value, type)
-                result.resolved = function.qualified
-                return result
+                return self.function_value_node(
+                    node, function, expected)
             }
             none => {}
         }
@@ -4559,6 +4536,48 @@ class ExpressionChecker {
                 node.value, self.local_names()))
         return self.make_node(
             node, "error", node.value, poison_hir_type())
+    }
+
+    // A named function used as a value, from its own package or another:
+    // one set of rules, so the two paths cannot drift. Extern C, async and
+    // ownership-parameter functions are refused; a send fn expectation is
+    // honoured because a named function captures nothing.
+    fn function_value_node(node: AstNode,
+                           function: HirFunction,
+                           expected: HirType) -> HirNode {
+        if function.is_extern_c {
+            self.fail(
+                node,
+                "extern C function '{function.name}' cannot be stored as a Beans function value yet")
+        }
+        if function.is_async {
+            self.fail(
+                node,
+                "'{function.name}' is async and cannot be stored as a function value — call it with await or 'async let'")
+        }
+        self.require_function_feature(
+            node, function,
+            "storing it as a function value")
+        for parameter: HirParameter in
+            function.parameters {
+            if parameter.passing != "" {
+                self.fail(
+                    node,
+                    "function '{function.name}' has ownership parameters and cannot be stored as a value yet")
+                break
+            }
+        }
+        let type: HirType = self.function_type(function)
+        // Named Beans functions have no capture environment, so a
+        // send fn annotation may safely give them the stronger type.
+        if expected.name == "fn" && expected.fn_sendable {
+            type.fn_sendable = true
+        }
+        self.expect_type(node, type, expected)
+        let result: HirNode =
+            self.make_node(node, "function", node.value, type)
+        result.resolved = function.qualified
+        return result
     }
 
     fn require_move_block_result(block: AstNode,
@@ -5058,6 +5077,36 @@ class ExpressionChecker {
                 }
                 none => {}
             }
+            // A package's function, used as a value: the same two lookups
+            // the call path makes, twenty lines apart no more. Static
+            // fields and enum variants were tried above and keep winning;
+            // an import alias wins over any value of the same name, which
+            // is also the call path's order.
+            let import_path: string =
+                self.imported_path(receiver_syntax.value)
+            if import_path != "" &&
+               self.signature.resolver.is_loaded_package(
+                   import_path) {
+                match self.functions.get(
+                    package_symbol(import_path, node.value)) {
+                    some(function) => {
+                        self.require_visible(
+                            node, function.is_public,
+                            function.file, "function",
+                            "{receiver_syntax.value}.{node.value}")
+                        return self.function_value_node(
+                            node, function, expected)
+                    }
+                    none => {
+                        self.fail(
+                            node,
+                            "package '{receiver_syntax.value}' ({import_path}) has no function '{node.value}'")
+                        return self.make_node(
+                            node, "error", node.value,
+                            poison_hir_type())
+                    }
+                }
+            }
         }
         let receiver: HirNode =
             self.check_expression(node.children[0], no_hir_type())
@@ -5476,12 +5525,52 @@ class ExpressionChecker {
     fn check_generic_arguments(
         node: AstNode, first: int,
         function: HirFunction, expected: HirType,
+        owner: HirType,
+        explicit_syntax: Option<AstNode>,
         shown: string,
         result: HirNode) {
+        var explicit: List<HirType> = []
+        match explicit_syntax {
+            some(wrapper) => {
+                for index: int in 1..wrapper.children.len() {
+                    explicit.push(
+                        hir_type_from_ast(wrapper.children[index]))
+                }
+            }
+            none => {}
+        }
         var inference: Map<string, HirType> = {}
+        // Explicit type arguments bind the leading generics in declaration
+        // order; inference fills only what was left unwritten, and a
+        // conflicting inferred argument reports through the usual
+        // was-X-then-Y diagnostic.
+        if explicit.len() > function.generics.len() {
+            self.fail(
+                node,
+                "{shown} takes {function.generics.len()} type argument(s), got {explicit.len()}")
+        }
+        for index: int in 0..explicit.len() {
+            if index >= function.generics.len() { break }
+            inference[function.generics[index]] = explicit[index]
+        }
+        // A generic method's parameter patterns may also mention its
+        // owner's generics; those are already concrete on the receiver, so
+        // substitute them first and infer only the function's own.
+        var owner_declaration: Option<HirDeclaration> = none
+        if owner.name != "" {
+            owner_declaration = self.declaration_for(owner)
+        }
         if expected.name != "" {
+            var result_pattern: HirType = function.result
+            match owner_declaration {
+                some(declaration) => {
+                    result_pattern = self.substitute_owner_type(
+                        result_pattern, declaration, owner)
+                }
+                none => {}
+            }
             self.infer_generic_type(
-                function.result, expected,
+                result_pattern, expected,
                 function.generics, inout inference, node)
         }
         let count: int = node.children.len() - first
@@ -5500,14 +5589,62 @@ class ExpressionChecker {
             } else {
                 function.parameters.len()
             }
+        match owner_declaration {
+            some(declaration) => {
+                for generic_index: int in
+                    0..declaration.generics.len() {
+                    if generic_index >= owner.args.len() ||
+                       !self.is_move_only(
+                           owner.args[generic_index]) {
+                        continue
+                    }
+                    let generic: string =
+                        declaration.generics[generic_index]
+                    var mentioned: bool = false
+                    var has_move_source: bool = false
+                    var borrowed_source: bool = false
+                    for parameter: HirParameter in
+                        function.parameters {
+                        if !self.type_mentions_generic(
+                               parameter.type, generic) {
+                            continue
+                        }
+                        mentioned = true
+                        if parameter.passing == "move" {
+                            has_move_source = true
+                        } else {
+                            borrowed_source = true
+                        }
+                    }
+                    let returns_generic: bool =
+                        self.type_mentions_generic(
+                            function.result, generic)
+                    if borrowed_source ||
+                       (returns_generic &&
+                        (!mentioned || !has_move_source)) {
+                        self.fail(
+                            node,
+                            "{shown} cannot use move-only {render_hir_type(owner.args[generic_index])} for generic {generic} — every {generic}-bearing input must be a move parameter")
+                    }
+                }
+            }
+            none => {}
+        }
         var inout_names: Map<string, bool> = {}
         for result.argument_passing.len() <
             result.children.len() {
             result.argument_passing.push("")
         }
         for index: int in 0..shared {
-            let pattern: HirType =
+            var pattern: HirType =
                 function.parameters[index].type
+            match owner_declaration {
+                some(declaration) => {
+                    pattern = self.substitute_owner_type(
+                        pattern, declaration, owner)
+                }
+                none => {}
+            }
             let before: HirType =
                 self.substitute_generic_type(
                     pattern, function.generics,
@@ -5554,17 +5691,27 @@ class ExpressionChecker {
                 match function.parameters[
                     index].default_syntax {
                     some(value) => {
+                        var pattern: HirType =
+                            function.parameters[index].type
+                        match owner_declaration {
+                            some(declaration) => {
+                                pattern =
+                                    self.substitute_owner_type(
+                                        pattern,
+                                        declaration, owner)
+                            }
+                            none => {}
+                        }
                         let wanted: HirType =
                             self.substitute_generic_type(
-                                function.parameters[index].type,
+                                pattern,
                                 function.generics,
                                 inference)
                         result.children.push(
                             self.check_expression(
                                 value,
                                 if self.has_unbound_generic(
-                                    function.parameters[
-                                        index].type,
+                                    pattern,
                                     function.generics,
                                     inference) {
                                     no_hir_type()
@@ -5664,10 +5811,32 @@ class ExpressionChecker {
                 none => {}
             }
         }
+        var result_pattern: HirType = function.result
+        match owner_declaration {
+            some(declaration) => {
+                result_pattern = self.substitute_owner_type(
+                    result_pattern, declaration, owner)
+            }
+            none => {}
+        }
         result.type =
             self.substitute_generic_type(
-                function.result,
+                result_pattern,
                 function.generics, inference)
+        // Explicit type arguments pin the full resolved binding onto the
+        // call node, so both backends can instantiate a generic the
+        // signature alone could never rebind.
+        if explicit.len() != 0 {
+            for generic: string in function.generics {
+                match inference.get(generic) {
+                    some(bound) => {
+                        result.type_argument_names.push(generic)
+                        result.type_arguments.push(bound)
+                    }
+                    none => {}
+                }
+            }
+        }
     }
 
     fn check_builtin_arguments(node: AstNode, first: int,
@@ -6128,6 +6297,8 @@ class ExpressionChecker {
                         self.check_generic_arguments(
                             node, 1, function,
                             expected,
+                            no_hir_type(),
+                            self.take_call_generics(),
                             "'{function.name}'", result)
                     } else {
                         self.check_arguments(
@@ -6701,9 +6872,40 @@ class ExpressionChecker {
         }
     }
 
+    fn take_call_generics() -> Option<AstNode> {
+        self.call_generics_taken = true
+        return self.call_generics_syntax
+    }
+
     fn check_call(node: AstNode,
                   expected: HirType) -> HirNode {
-        let callee: AstNode = node.children[0]
+        // Unwrap explicit type arguments off the callee and hold them for
+        // whichever resolution takes them. The fields nest: an argument's
+        // own call sees its own state and this frame's is restored after.
+        let saved_syntax: Option<AstNode> = self.call_generics_syntax
+        let saved_taken: bool = self.call_generics_taken
+        var callee: AstNode = node.children[0]
+        self.call_generics_syntax = none
+        self.call_generics_taken = true
+        if callee.kind == "type_args" {
+            self.call_generics_syntax = some(callee)
+            self.call_generics_taken = false
+            callee = callee.children[0]
+        }
+        let result: HirNode =
+            self.check_call_resolved(node, callee, expected)
+        if !self.call_generics_taken {
+            self.fail(
+                node,
+                "this call does not take explicit type arguments")
+        }
+        self.call_generics_syntax = saved_syntax
+        self.call_generics_taken = saved_taken
+        return result
+    }
+
+    fn check_call_resolved(node: AstNode, callee: AstNode,
+                           expected: HirType) -> HirNode {
         // Compiler-generated calls pin their callee to a canonical symbol.
         // Async runtime calls use their private package prefix; runtime hooks
         // carry an explicit note. Both skip source-scope visibility because
@@ -6932,6 +7134,8 @@ class ExpressionChecker {
                                     self.check_generic_arguments(
                                         node, 1, function,
                                         expected,
+                                        no_hir_type(),
+                                        self.take_call_generics(),
                                         "'{self.static_syntax_name(receiver_syntax)}.{callee.value}'",
                                         result)
                                 } else {
@@ -7803,11 +8007,29 @@ class ExpressionChecker {
                             } else {
                                 result.children.push(receiver)
                             }
-                            self.check_arguments(
-                                node, 1, function,
-                                receiver.type,
-                                "{display_symbol(declaration.qualified)}.{function.name}",
-                                result)
+                            if function.generics.len() != 0 {
+                                // Instance methods take the same generic
+                                // path as free functions: explicit type
+                                // arguments seed it, and a generic
+                                // argument infers through the receiver's
+                                // substituted parameter patterns.
+                                self.check_generic_arguments(
+                                    node, 1, function,
+                                    expected,
+                                    receiver.type,
+                                    self.take_call_generics(),
+                                    "{display_symbol(declaration.qualified)}.{function.name}",
+                                    result)
+                                if function.returns_self {
+                                    result.type = receiver.type
+                                }
+                            } else {
+                                self.check_arguments(
+                                    node, 1, function,
+                                    receiver.type,
+                                    "{display_symbol(declaration.qualified)}.{function.name}",
+                                    result)
+                            }
                             self.expect_type(
                                 node, result.type, expected)
                             return result
@@ -8030,6 +8252,8 @@ class ExpressionChecker {
                     self.check_generic_arguments(
                         node, 1, function,
                         expected,
+                        no_hir_type(),
+                        self.take_call_generics(),
                         "'{function.name}'", result)
                 } else {
                     self.check_arguments(

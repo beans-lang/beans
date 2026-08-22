@@ -106,6 +106,7 @@ test-frontend: $(BIN)
 	./test/version.sh
 	bash ./test/syntax_v07.sh
 	bash ./test/language_gaps.sh
+	bash ./test/generic_calls.sh
 	bash ./test/private_fields.sh
 	bash ./test/private_methods.sh
 	bash ./test/abstract_classes.sh
@@ -257,6 +258,7 @@ test-core: $(BIN)
 	./test/traits.sh
 	bash ./test/syntax_v07.sh
 	bash ./test/language_gaps.sh
+	bash ./test/generic_calls.sh
 	bash ./test/private_fields.sh
 	bash ./test/private_methods.sh
 	bash ./test/abstract_classes.sh

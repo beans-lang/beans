@@ -4,6 +4,26 @@ This file records user-facing changes in each Beans release.
 
 ## Unreleased
 
+### Added
+
+- Calls take explicit type arguments on every form — free functions,
+  package-qualified functions, instance methods and static methods:
+  `services.add_transient<Greeter>()`, nested arguments included. With no
+  spare symbol for a turbofish, `<` is settled by lookahead: a balanced
+  `<…>` of type tokens followed by `(` reads as type arguments, anything
+  else stays less-than, so `check(a < b, c > (d))` is one generic call and
+  a comparison keeps its own parentheses. Explicit arguments bind the
+  leading generics in declaration order, inference fills what was left
+  unwritten, and both backends instantiate from the written bindings — so
+  a type argument can bind a generic the signature never mentions.
+- A generic method now infers its type parameters from a generic
+  argument, exactly as a free generic function always has: instance
+  methods go through the same inference path as free functions.
+- A package's function is usable as a value: `app.use(pkg.middleware)`
+  compiles instead of requiring a wrapping lambda, under the same rules
+  as a local function name — extern C, async and ownership-parameter
+  functions are refused, and visibility is enforced.
+
 ### Changed
 
 - Reflective dispatch is no longer paid per string: the runtime registry
