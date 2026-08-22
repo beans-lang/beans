@@ -700,6 +700,36 @@ pub fn runtime_builtin_fn(key: string) -> Option<RuntimeBuiltin> {
             ["str", "str", "i64", "i64", "i64", "bool"],
             "i64", "beans_reflect_method_call", false))
     }
+    if key == "std.reflection.method_handle" {
+        return some(new RuntimeBuiltin(
+            ["str", "str"], "i64",
+            "beans_reflect_method_handle", false))
+    }
+    if key == "std.reflection.method_call_handle" {
+        return some(new RuntimeBuiltin(
+            ["i64", "i64", "i64", "i64", "bool"],
+            "i64", "beans_reflect_method_call_handle", false))
+    }
+    if key == "std.reflection.initializer_handle" {
+        return some(new RuntimeBuiltin(
+            ["str"], "i64",
+            "beans_reflect_initializer_handle", false))
+    }
+    if key == "std.reflection.initializer_call_handle" {
+        return some(new RuntimeBuiltin(
+            ["i64", "i64", "i64"], "i64",
+            "beans_reflect_initializer_call_handle", false))
+    }
+    if key == "std.reflection.function_handle" {
+        return some(new RuntimeBuiltin(
+            ["str"], "i64",
+            "beans_reflect_function_handle", false))
+    }
+    if key == "std.reflection.function_call_handle" {
+        return some(new RuntimeBuiltin(
+            ["i64", "i64", "i64"], "i64",
+            "beans_reflect_function_call_handle", false))
+    }
     if key == "std.reflection.initializer_flags" ||
        key == "std.reflection.initializer_parameter_count" {
         return some(new RuntimeBuiltin(

@@ -744,6 +744,18 @@ class AsyncExpander {
             if callee.kind == "field" {
                 return ast_is_pure_place(callee.children[0])
             }
+            // Explicit type arguments wrap the callee; the wrapper is not
+            // a value, and its own children carry the rules below.
+            if callee.kind == "type_args" { return true }
+            return false
+        }
+        if node.kind == "type_args" {
+            if index != 0 { return true }
+            let callee: AstNode = node.children[0]
+            if callee.kind == "name" { return true }
+            if callee.kind == "field" {
+                return ast_is_pure_place(callee.children[0])
+            }
             return false
         }
         if node.kind == "new" && index == 0 { return true }

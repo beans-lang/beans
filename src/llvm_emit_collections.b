@@ -5,6 +5,7 @@ partial class LlvmTextEmitter {
         var next_id: int = 0
         for function: MirFunction in
             self.program.functions {
+            self.function_parents[function.name] = function.parent
             if function.declaration || function.external {
                 continue
             }

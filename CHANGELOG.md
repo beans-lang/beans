@@ -4,6 +4,69 @@ This file records user-facing changes in each Beans release.
 
 ## Unreleased
 
+### Added
+
+- Calls take explicit type arguments on every form — free functions,
+  package-qualified functions, instance methods and static methods:
+  `services.add_transient<Greeter>()`, nested arguments included. With no
+  spare symbol for a turbofish, `<` is settled by lookahead: a balanced
+  `<…>` of type tokens followed by `(` reads as type arguments, anything
+  else stays less-than, so `check(a < b, c > (d))` is one generic call and
+  a comparison keeps its own parentheses. Explicit arguments bind the
+  leading generics in declaration order, inference fills what was left
+  unwritten, and both backends instantiate from the written bindings — so
+  a type argument can bind a generic the signature never mentions.
+- A generic method now infers its type parameters from a generic
+  argument, exactly as a free generic function always has: instance
+  methods go through the same inference path as free functions.
+- A package's function is usable as a value: `app.use(pkg.middleware)`
+  compiles instead of requiring a wrapping lambda, under the same rules
+  as a local function name — extern C, async and ownership-parameter
+  functions are refused, and visibility is enforced.
+
+### Fixed
+
+- A cross-package annotation used bare now fills its defaults correctly:
+  a default value is checked once in the annotation's own declaring
+  scope and reused at every use site, instead of being re-resolved
+  against the using file's imports — where an unqualified name like an
+  enum variant did not exist. `test/cases/annotation_defaults_pkg` locks
+  the behavior on both backends.
+- Native builds of reflection-heavy programs stopped being quadratic in
+  the emitter: the generic-family walk resolves parents through an index
+  with a memo instead of rescanning every function, and family cloning
+  stops at its fixpoint instead of looping the full function count. An
+  Espresso application that took near five minutes to build now builds
+  in about three seconds.
+- Calling an interface method with no linked implementor now compiles
+  and traps at runtime ("no linked implementation") instead of failing
+  the build — a library may call its own extension points without an
+  implementation linked.
+- `json.encode` and `json.decode` forward through a generic function:
+  the struct-shape validation defers to the wrapper's call sites (and
+  the runtime encoder's own error) when the target is the function's
+  own type parameter.
+
+### Changed
+
+- Reflective dispatch is no longer paid per string: the runtime registry
+  hash-indexes its type, method and function tables, resolves a callable
+  once per call instead of five times, keeps each callable's parameter rows
+  attached to its descriptor, and invokes small arities from stack scratch
+  with no allocation. A one-argument `Method.call` drops from ~79µs to
+  ~0.3µs, and cost no longer tracks a symbol's position in the metadata —
+  a program with 100 types and one with 621 now measure the same.
+  `test/reflect_perf.sh` holds both properties.
+- `reflect.Method`, `reflect.Initializer` and `reflect.Function` resolve a
+  handle when constructed and call through it, so a cached descriptor never
+  re-resolves its name strings. A method obtained from a base class now
+  accepts any receiver the declaring class accepts, matching how the same
+  descriptor behaves on the class it was declared on.
+- The runtime ABI moves to version 9 for the six reflection-handle entry
+  points (`beans_reflect_method_handle` and friends). A 0.1.28 runtime does
+  not export them, so programs built by the new compiler need the 0.1.29
+  runtime.
+
 ## [0.1.28] - 2026-08-22
 
 ### Added
