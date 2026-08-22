@@ -76,6 +76,7 @@ class MirInstruction {
     scalar_materialize: bool
     borrow_elided: bool
     stack_closure: bool
+    bounds_elided: bool
     removed: bool
     // Value of the local's `.live` flag on entry to this instruction, as
     // verify_local_ownership's fixpoint sees it: 0 clear on every path,
@@ -116,6 +117,7 @@ class MirInstruction {
         self.scalar_materialize = false
         self.borrow_elided = false
         self.stack_closure = false
+        self.bounds_elided = false
         self.removed = false
         self.live_state = 2
         self.type_argument_names = []

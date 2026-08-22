@@ -165,6 +165,9 @@ fn render_mir(program: MirProgram) -> string {
                 if instruction.stack_closure {
                     detail = "{detail} stack-closure"
                 }
+                if instruction.bounds_elided {
+                    detail = "{detail} bounds-elided"
+                }
                 if instruction.scalar_materialize {
                     detail =
                         "{detail} scalar-materialize"

@@ -327,6 +327,7 @@ partial class LlvmTextEmitter {
             instruction.scalar_materialize
         clone.borrow_elided = instruction.borrow_elided
         clone.stack_closure = instruction.stack_closure
+        clone.bounds_elided = instruction.bounds_elided
         clone.removed = instruction.removed
         // the flag lattice is over the CFG, not over types, so an
         // instance inherits the template's answer unchanged
