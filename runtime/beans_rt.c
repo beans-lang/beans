@@ -1023,7 +1023,7 @@ static int cc_collecting;
 static int cc_sweeping;
 static void cc_collect(int force);
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
-static void cc_worker_collect(int force);
+static void cc_worker_collect(void);
 static void cc_worker_roots_begin(void);
 static void cc_worker_roots_end(void);
 #endif
@@ -1208,7 +1208,7 @@ void* beans_alloc(long long size, long long meta) {
     // condition stays byte-identical to keep clang's fast-path layout)
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
     if (cc_worker_pending && !cc_worker_collecting)
-        cc_worker_collect(0);
+        cc_worker_collect();
 #endif
     if (cc_pending && !cc_collecting && cc_threads == 0) cc_collect(0);
     size_t total = (16 + (size_t)size + 15) & ~(size_t)15;
@@ -1566,25 +1566,40 @@ static inline void cc_release_children(void* p, long long meta, CCStack* st) {
 
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
 // A spawn moves the closure box, but an ordinary capture still aliases its
-// heap cell in the parent frame. Mark those direct cells before pthread_create
-// so an owner-local trial walk never edits their counts. Walking only the
-// closure shape makes this O(captures), not O(the captured object graph).
+// heap cell in the parent frame. Mark the whole captured graph before
+// pthread_create so a possible root left in the parent's local buffer cannot
+// trial-decrement an object while the worker is using or releasing it. The
+// shared bit doubles as the visited mark. A graph already handed to a worker
+// stops the walk at its first marked shell, so a later spawn never walks live
+// shared state.
 //
 // Checked Beans permits no ordinary aliased class to be Send or Sync. A moved
-// unique class/container remains owner-local; the aliasable cross-thread
-// handles (Thread, Mutex and Channel) are boundaries of their own below.
+// unique graph is still marked here because its possible roots may remain in
+// the sending thread's buffer. Objects allocated later by the worker stay
+// owner-local. Thread, Mutex and Channel are boundaries of their own below.
 static void cc_mark_shared_one(void* p) {
     if (!p) return;
     BHead* h = head_of(p);
     if (rt_rc_load(h) < BEANS_IMMORTAL) rt_rc_fetch_or(h, RC_SHARED);
 }
-static void cc_mark_shared_child(void* child, void* unused) {
-    (void)unused;
-    cc_mark_shared_one(child);
+static void cc_mark_shared_push(void* child, void* ctx) {
+    cc_push(ctx, child);
 }
-static void cc_mark_spawn_captures(void* env) {
-    if (!env) return;
-    cc_walk(env, cc_meta(head_of(env)), cc_mark_shared_child, NULL);
+static void cc_mark_shared_graph(void* root) {
+    if (!root) return;
+    void* local[64];
+    CCStack st = {local, 0, 64, local};
+    cc_push(&st, root);
+    while (st.len) {
+        void* p = st.v[--st.len];
+        BHead* h = head_of(p);
+        long long rc = rt_rc_load(h);
+        if (rc >= BEANS_IMMORTAL) continue;
+        long long old = rt_rc_fetch_or(h, RC_SHARED);
+        if (old & RC_SHARED) continue;
+        cc_walk(p, cc_meta(h), cc_mark_shared_push, &st);
+    }
+    if (st.v != local) rt_free(st.v);
 }
 #endif
 
@@ -1737,10 +1752,10 @@ static void cc_worker_roots_begin(void) {
 }
 static void cc_worker_roots_end(void) {
     if (!cc_worker_root_batching) return;
-    cc_worker_collect(1);
-    // Defensive fallback for an exit attempted from inside user deinit. The
-    // local collector correctly refuses that unsafe window; keep those roots
-    // globally parked instead of freeing their vector underneath CC_BUF.
+    // A finished worker may be handing a result or a Mutex-protected graph
+    // back to its joiner. Do not trial-delete that graph during the handoff.
+    // Publish the final partial batch before cc_threads drops instead; the
+    // quiescent global collector handles it after every worker has drained.
     if (cc_worker_root_len)
         cc_append_roots(cc_worker_roots, cc_worker_root_len);
     cc_worker_root_batching = 0;
@@ -2473,11 +2488,11 @@ static long long cc_walk_min = 256; // adaptive gate for trial deletion
 // Mutex, and Channel are hard traversal boundaries. This is an owner-local
 // pause: no worker is stopped or polled, and the global collector remains
 // quiescence-only.
-static void cc_worker_collect(int force) {
+static void cc_worker_collect(void) {
     if (!cc_worker_root_batching || cc_worker_collecting) return;
     if (beans_local_in_deinit) return;
     cc_worker_collecting = 1;
-    for (;;) {
+    {
         ARC_ADD(arc_collections, 1);
         void* dlocal[64];
         CCStack deferred = {dlocal, 0, 64, dlocal};
@@ -2509,8 +2524,7 @@ static void cc_worker_collect(int force) {
         if (global.len) cc_append_roots(global.v, global.len);
         if (global.v != glocal) rt_free(global.v);
 
-        if (cc_worker_root_len &&
-            (force || cc_worker_root_len >= cc_worker_walk_min)) {
+        if (cc_worker_root_len >= cc_worker_walk_min) {
             CCStack st = {0, 0, 0}, aux = {0, 0, 0}, dead = {0, 0, 0};
             int saw_shared = 0;
             for (long long i = 0; i < cc_worker_root_len; i++)
@@ -2579,12 +2593,11 @@ static void cc_worker_collect(int force) {
         cc_worker_pending = 0;
 
         // A Shared shell can hand back a payload whose release parks another
-        // local root. Keep collection non-recursive; a forced shutdown loops
-        // until those deferred roots have also been handled.
+        // local root. Keep collection non-recursive; the next allocation
+        // handles any root parked by these deferred releases.
         for (long long i = 0; i < deferred.len; i++)
             beans_release(deferred.v[i]);
         if (deferred.v != dlocal) rt_free(deferred.v);
-        if (!force || cc_worker_root_len == 0) break;
     }
     cc_worker_collecting = 0;
 }
@@ -12935,7 +12948,7 @@ BThread* beans_thread_spawn(void* thunk, void* env, long long result_ptr) {
     cc_worker_roots_begin(); // idempotent: give the spawning thread local CC
     cc_enable_mt(); // from here every count op is atomic, in every thread
     cc_mark_shared_one(t);
-    cc_mark_spawn_captures(env);
+    cc_mark_shared_graph(env);
     beans_retain(t); // one ref for the handle, one for the running thread
     cc_threads += 1;
     pthread_create(&t->th, NULL, thread_main, t);
@@ -12954,7 +12967,7 @@ BThread* beans_thread_spawn_typed(void* thunk, void* env, long long size,
     cc_enable_mt();
     cc_mark_shared_one(t);
     cc_mark_shared_one(t->payload);
-    cc_mark_spawn_captures(env);
+    cc_mark_shared_graph(env);
     beans_retain(t);
     cc_threads += 1;
     pthread_create(&t->th, NULL, thread_main, t);
