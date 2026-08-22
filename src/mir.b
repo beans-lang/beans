@@ -3411,6 +3411,410 @@ class MirLowerer {
         return members
     }
 
+    fn exact_borrow_local(function: MirFunction,
+                          value: int) -> int {
+        match self.definition_for(function, value) {
+            some(definition) => {
+                if definition.op == "borrow" {
+                    return definition.local
+                }
+            }
+            none => {}
+        }
+        return -1
+    }
+
+    fn exact_int_literal(function: MirFunction,
+                         value: int,
+                         expected: string) -> bool {
+        match self.definition_for(function, value) {
+            some(definition) => {
+                return definition.op == "literal" &&
+                       definition.text == expected &&
+                       definition.type.name == "int"
+            }
+            none => { return false }
+        }
+    }
+
+    fn slice_index_uses_locals(
+        function: MirFunction,
+        instruction: MirInstruction,
+        slice_local: int,
+        index_local: int) -> bool {
+        return instruction.op == "index" &&
+               instruction.operands.len() == 2 &&
+               self.exact_borrow_local(
+                   function,
+                   instruction.operands[0]) == slice_local &&
+               self.exact_borrow_local(
+                   function,
+                   instruction.operands[1]) == index_local
+    }
+
+    // RawPtr.alloc returns storage aligned for its element type. Keep this
+    // proof separate from bounds: ordinary slices may legally describe
+    // unaligned foreign memory and must keep align 1 loads.
+    fn slice_from_aligned_allocation(
+        function: MirFunction,
+        slice_local: int) -> bool {
+        var slice_value: int = -1
+        var slice_initializers: int = 0
+        for block: MirBlock in function.blocks {
+            for instruction: MirInstruction in
+                block.instructions {
+                if instruction.removed ||
+                   instruction.local != slice_local ||
+                   instruction.op == "borrow" {
+                    continue
+                }
+                if instruction.op != "local_init" ||
+                   instruction.operands.len() != 1 {
+                    return false
+                }
+                slice_initializers += 1
+                slice_value = instruction.operands[0]
+            }
+        }
+        if slice_initializers != 1 { return false }
+        var created: MirInstruction =
+            new MirInstruction(
+                "", -1, new HirType("unit"),
+                "", "", "", 0, 0)
+        match self.definition_for(function, slice_value) {
+            some(found) => { created = found }
+            none => { return false }
+        }
+        if created.op != "static_call" ||
+           created.resolved != "Slice.from_raw" ||
+           created.operands.len() != 2 {
+            return false
+        }
+        var pointer: MirInstruction = created
+        match self.definition_for(
+                  function, created.operands[0]) {
+            some(found) => { pointer = found }
+            none => { return false }
+        }
+        if pointer.op == "static_call" &&
+           pointer.resolved == "RawPtr.alloc" {
+            return true
+        }
+        if pointer.op != "borrow" ||
+           pointer.local < 0 ||
+           pointer.local >= function.locals.len() {
+            return false
+        }
+        let owner: MirLocal =
+            function.locals[pointer.local]
+        if owner.mutable || owner.captured ||
+           owner.parameter {
+            return false
+        }
+        var owner_initializers: int = 0
+        for block: MirBlock in function.blocks {
+            for instruction: MirInstruction in
+                block.instructions {
+                if instruction.removed ||
+                   instruction.local != owner.id ||
+                   instruction.op == "borrow" {
+                    continue
+                }
+                if instruction.op != "local_init" ||
+                   instruction.operands.len() != 1 {
+                    return false
+                }
+                owner_initializers += 1
+                match self.definition_for(
+                          function,
+                          instruction.operands[0]) {
+                    some(allocation) => {
+                        if allocation.op != "static_call" ||
+                           allocation.resolved !=
+                               "RawPtr.alloc" {
+                            return false
+                        }
+                    }
+                    none => { return false }
+                }
+            }
+        }
+        return owner_initializers == 1
+    }
+
+    // The narrow counted-loop proof behind bounds-free Slice indexing:
+    //
+    //     i = 0
+    //     for i < slice.len() {
+    //         slice[i]
+    //         i += 1
+    //     }
+    //
+    // One head and one body make the order explicit. Any extra edge, use,
+    // write, capture, or different induction step keeps the runtime check.
+    fn analyze_loop_bounds(function: MirFunction) {
+        if function.declaration || function.external ||
+           function.blocks.len() == 0 {
+            return
+        }
+        var predecessors: List<MirBlockEdges> = []
+        for unused: MirBlock in function.blocks {
+            predecessors.push(new MirBlockEdges())
+        }
+        for block: MirBlock in function.blocks {
+            for target: int in block.terminator.targets {
+                if target >= 0 &&
+                   target < predecessors.len() {
+                    predecessors[target].sources.push(block.id)
+                }
+            }
+        }
+        let dominance: List<MirValueSet> =
+            self.dominators(function)
+        for head: MirBlock in function.blocks {
+            if head.terminator.kind != "branch" ||
+               head.terminator.targets.len() != 2 {
+                continue
+            }
+            var condition: MirInstruction =
+                new MirInstruction(
+                    "", -1, new HirType("unit"),
+                    "", "", "", 0, 0)
+            match self.definition_for(
+                      function,
+                      head.terminator.value) {
+                some(found) => { condition = found }
+                none => { continue }
+            }
+            if condition.op != "binary" ||
+               condition.text != "<" ||
+               condition.operands.len() != 2 {
+                continue
+            }
+            var index_read: MirInstruction = condition
+            match self.definition_for(
+                      function,
+                      condition.operands[0]) {
+                some(found) => { index_read = found }
+                none => { continue }
+            }
+            var length: MirInstruction = condition
+            match self.definition_for(
+                      function,
+                      condition.operands[1]) {
+                some(found) => { length = found }
+                none => { continue }
+            }
+            if index_read.op != "borrow" ||
+               length.op != "builtin_method" ||
+               length.text != "len" ||
+               length.operands.len() != 1 {
+                continue
+            }
+            var slice_read: MirInstruction = length
+            match self.definition_for(
+                      function,
+                      length.operands[0]) {
+                some(found) => { slice_read = found }
+                none => { continue }
+            }
+            if slice_read.op != "borrow" ||
+               index_read.local < 0 ||
+               slice_read.local < 0 ||
+               index_read.local >= function.locals.len() ||
+               slice_read.local >= function.locals.len() {
+                continue
+            }
+            let index_local: MirLocal =
+                function.locals[index_read.local]
+            let slice_local: MirLocal =
+                function.locals[slice_read.local]
+            if index_local.type.name != "int" ||
+               index_local.parameter || index_local.captured ||
+               slice_local.type.name != "Slice" ||
+               slice_local.type.args.len() != 1 ||
+               slice_local.mutable || slice_local.parameter ||
+               slice_local.captured || slice_local.escapes ||
+               !self.slice_from_aligned_allocation(
+                    function, slice_local.id) {
+                continue
+            }
+
+            let body_id: int =
+                head.terminator.targets[0]
+            if body_id < 0 ||
+               body_id >= function.blocks.len() {
+                continue
+            }
+            let body: MirBlock =
+                function.blocks[body_id]
+            if body.terminator.kind != "jump" ||
+               body.terminator.targets.len() != 1 ||
+               body.terminator.targets[0] != head.id ||
+               predecessors[body_id].sources.len() != 1 ||
+               predecessors[body_id].sources[0] != head.id ||
+               predecessors[head.id].sources.len() != 2 {
+                continue
+            }
+            var preheader: int = -1
+            var has_back_edge: bool = false
+            for source: int in
+                predecessors[head.id].sources {
+                if source == body_id {
+                    has_back_edge = true
+                } else {
+                    preheader = source
+                }
+            }
+            if !has_back_edge || preheader < 0 ||
+               preheader >= function.blocks.len() ||
+               !dominance[head.id].contains(preheader) {
+                continue
+            }
+            let members: MirValueSet =
+                self.loop_blocks_of(
+                    function, predecessors,
+                    dominance, head.id)
+            var shape_safe: bool = true
+            for member: MirBlock in function.blocks {
+                if members.contains(member.id) &&
+                   member.id != head.id &&
+                   member.id != body_id {
+                    shape_safe = false
+                }
+            }
+            if !shape_safe { continue }
+
+            var starts_at_zero: bool = false
+            for instruction: MirInstruction in
+                function.blocks[preheader].instructions {
+                if instruction.removed ||
+                   instruction.local != index_local.id ||
+                   instruction.op == "borrow" {
+                    continue
+                }
+                starts_at_zero =
+                    (instruction.op == "local_init" ||
+                     (instruction.op == "assign" &&
+                      instruction.text == "=")) &&
+                    instruction.operands.len() == 1 &&
+                    self.exact_int_literal(
+                        function,
+                        instruction.operands[0], "0")
+            }
+            if !starts_at_zero { continue }
+
+            var indexes: List<MirInstruction> = []
+            var increment_index: int = -1
+            for position: int in
+                0..body.instructions.len() {
+                let instruction: MirInstruction =
+                    body.instructions[position]
+                if instruction.removed { continue }
+                if self.slice_index_uses_locals(
+                       function, instruction,
+                       slice_local.id, index_local.id) {
+                    if increment_index >= 0 {
+                        shape_safe = false
+                    }
+                    indexes.push(instruction)
+                }
+                if instruction.local == index_local.id &&
+                   instruction.op != "borrow" {
+                    if instruction.op != "assign" ||
+                       instruction.text != "+=" ||
+                       instruction.operands.len() != 1 ||
+                       !self.exact_int_literal(
+                            function,
+                            instruction.operands[0], "1") ||
+                       increment_index >= 0 {
+                        shape_safe = false
+                    } else {
+                        increment_index = position
+                    }
+                }
+            }
+            if !shape_safe || increment_index < 0 ||
+               indexes.len() == 0 {
+                continue
+            }
+
+            for member: MirBlock in [head, body] {
+                for instruction: MirInstruction in
+                    member.instructions {
+                    if instruction.removed { continue }
+                    for captured: int in
+                        instruction.capture_locals {
+                        if captured == index_local.id ||
+                           captured == slice_local.id {
+                            shape_safe = false
+                        }
+                    }
+                    if instruction.local == index_local.id &&
+                       instruction.op == "borrow" {
+                        for use: MirPosition in
+                            self.uses_for(
+                                function,
+                                instruction.result) {
+                            let user: MirInstruction =
+                                use.instruction
+                            if member.id == head.id {
+                                if user.result != condition.result ||
+                                   user.operands.len() == 0 ||
+                                   user.operands[0] !=
+                                       instruction.result {
+                                    shape_safe = false
+                                }
+                            } else if
+                                !self.slice_index_uses_locals(
+                                    function, user,
+                                    slice_local.id,
+                                    index_local.id) ||
+                                user.operands[1] !=
+                                    instruction.result {
+                                shape_safe = false
+                            }
+                        }
+                    }
+                    if instruction.local == slice_local.id {
+                        if instruction.op != "borrow" {
+                            shape_safe = false
+                            continue
+                        }
+                        for use: MirPosition in
+                            self.uses_for(
+                                function,
+                                instruction.result) {
+                            let user: MirInstruction =
+                                use.instruction
+                            if member.id == head.id {
+                                if user.result != length.result ||
+                                   user.operands.len() == 0 ||
+                                   user.operands[0] !=
+                                       instruction.result {
+                                    shape_safe = false
+                                }
+                            } else if
+                                !self.slice_index_uses_locals(
+                                    function, user,
+                                    slice_local.id,
+                                    index_local.id) ||
+                                user.operands[0] !=
+                                    instruction.result {
+                                shape_safe = false
+                            }
+                        }
+                    }
+                }
+            }
+            if !shape_safe { continue }
+            for instruction: MirInstruction in indexes {
+                instruction.bounds_elided = true
+                instruction.effects = "none"
+            }
+        }
+    }
+
     fn try_elide_iteration(function: MirFunction,
                            predecessors: List<MirBlockEdges>,
                            dominance: List<MirValueSet>,
@@ -4453,6 +4857,14 @@ class MirLowerer {
                 }
             }
         }
+        if instruction.bounds_elided &&
+           instruction.op != "index" {
+            self.fail(
+                instruction.file,
+                instruction.line,
+                instruction.col,
+                "MIR bounds marker is not an index operation")
+        }
         if instruction.operands.len() !=
            instruction.consumes.len() {
             self.fail(
@@ -4925,6 +5337,7 @@ class MirLowerer {
         for function: MirFunction in self.mir.functions {
             self.mark_reachable(function)
             self.mark_last_uses(function)
+            self.analyze_loop_bounds(function)
             self.analyze_borrowed_iteration(function)
             self.analyze_ownership_transfers(function)
             self.plan_value_lifetimes(function)
