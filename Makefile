@@ -171,6 +171,7 @@ test-runtime: $(BIN)
 	./test/atomics.sh
 	./test/cpu_features.sh
 	./test/clocks_random.sh
+	bash ./test/reflect_perf.sh
 	./test/net_bridge_api.sh
 	./test/log.sh
 	./test/net.sh
@@ -331,6 +332,7 @@ test-core: $(BIN)
 	./test/atomics.sh
 	./test/cpu_features.sh
 	./test/clocks_random.sh
+	bash ./test/reflect_perf.sh
 	./test/net_bridge_api.sh
 	./test/log.sh
 	./test/net.sh

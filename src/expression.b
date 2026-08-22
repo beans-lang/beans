@@ -3408,6 +3408,24 @@ class ExpressionChecker {
                     [string, string, integer, integer,
                      integer, boolean], integer))
             }
+            if name == "method_handle" {
+                return some(new BuiltinSignature(
+                    [string, string], integer))
+            }
+            if name == "method_call_handle" {
+                return some(new BuiltinSignature(
+                    [integer, integer, integer,
+                     integer, boolean], integer))
+            }
+            if name == "initializer_handle" ||
+               name == "function_handle" {
+                return some(new BuiltinSignature([string], integer))
+            }
+            if name == "initializer_call_handle" ||
+               name == "function_call_handle" {
+                return some(new BuiltinSignature(
+                    [integer, integer, integer], integer))
+            }
             if name == "initializer_flags" ||
                name == "initializer_parameter_count" {
                 return some(new BuiltinSignature([string], integer))

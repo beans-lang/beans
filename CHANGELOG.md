@@ -4,6 +4,26 @@ This file records user-facing changes in each Beans release.
 
 ## Unreleased
 
+### Changed
+
+- Reflective dispatch is no longer paid per string: the runtime registry
+  hash-indexes its type, method and function tables, resolves a callable
+  once per call instead of five times, keeps each callable's parameter rows
+  attached to its descriptor, and invokes small arities from stack scratch
+  with no allocation. A one-argument `Method.call` drops from ~79µs to
+  ~0.3µs, and cost no longer tracks a symbol's position in the metadata —
+  a program with 100 types and one with 621 now measure the same.
+  `test/reflect_perf.sh` holds both properties.
+- `reflect.Method`, `reflect.Initializer` and `reflect.Function` resolve a
+  handle when constructed and call through it, so a cached descriptor never
+  re-resolves its name strings. A method obtained from a base class now
+  accepts any receiver the declaring class accepts, matching how the same
+  descriptor behaves on the class it was declared on.
+- The runtime ABI moves to version 9 for the six reflection-handle entry
+  points (`beans_reflect_method_handle` and friends). A 0.1.28 runtime does
+  not export them, so programs built by the new compiler need the 0.1.29
+  runtime.
+
 ## [0.1.28] - 2026-08-22
 
 ### Added
