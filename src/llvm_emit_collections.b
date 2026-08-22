@@ -508,7 +508,10 @@ partial class LlvmTextEmitter {
                 let release: string =
                     self.emit_arc_value(
                         element, old, false)
-                return "{output}  {old} = load {llvm}, ptr %list.store.slot{id}\n  store {llvm} {stored}, ptr %list.store.slot{id}\n{release}"
+                let publish: string =
+                    self.emit_cc_write(
+                        list, element, stored, "list")
+                return "{output}{publish}  {old} = load {llvm}, ptr %list.store.slot{id}\n  store {llvm} {stored}, ptr %list.store.slot{id}\n{release}"
             }
             return "{output}  store {llvm} {stored}, ptr %list.store.slot{id}\n"
         }
@@ -524,8 +527,11 @@ partial class LlvmTextEmitter {
             let converted: LlvmSlotConversion =
                 self.to_slot(
                     element, stored, "list.store{id}")
+            let publish: string =
+                self.emit_cc_write(
+                    list, element, stored, "list")
             output =
-                "{output}  %list.store.old{id} = load i64, ptr %list.store.slot{id}\n  %list.store.old.ptr{id} = inttoptr i64 %list.store.old{id} to ptr\n{converted.setup}  store i64 {converted.value}, ptr %list.store.slot{id}\n  call void @beans_release(ptr %list.store.old.ptr{id})\n"
+                "{output}{publish}  %list.store.old{id} = load i64, ptr %list.store.slot{id}\n  %list.store.old.ptr{id} = inttoptr i64 %list.store.old{id} to ptr\n{converted.setup}  store i64 {converted.value}, ptr %list.store.slot{id}\n  call void @beans_release(ptr %list.store.old.ptr{id})\n"
             return output
         }
         let converted: LlvmSlotConversion =

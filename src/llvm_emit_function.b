@@ -764,6 +764,8 @@ partial class LlvmTextEmitter {
             output =
                 "{output}cell.ready{ready_block}:\n  %cell.slot{id} = load ptr, ptr %l{local.id}\n"
             if self.type_has_owned_refs(local.type) {
+                output =
+                    "{output}{self.emit_cc_write("%cell.slot{id}", local.type, stored, "cell")}"
                 let old: string = "%cell.previous{id}"
                 let release: string =
                     self.emit_arc_value(

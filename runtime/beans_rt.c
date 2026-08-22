@@ -16,9 +16,11 @@
 // subgraph, restores whatever still has external counts, frees the rest.
 // The global buffer only runs when no worker threads are live. Once threads
 // start, each Beans thread owns a private root buffer and trial-deletes only
-// its thread-local graph. That bounds cycles without stopping unrelated
-// workers or adding safepoints to their loops. Everything is iterative — a
-// million-node ring must not overflow the C stack.
+// its thread-local graph. Publication barriers mark graphs that cross worker
+// boundaries and keep later shared pointer writes out of local collection.
+// That bounds local cycles without stopping unrelated workers or adding
+// safepoints to their loops. Everything is iterative — a million-node ring
+// must not overflow the C stack.
 // ---- runtime profile -------------------------------------------------------
 //
 // BEANS_RT_PROFILE decides how much of this file exists. The levels below are
@@ -1582,8 +1584,13 @@ static void cc_mark_shared_one(void* p) {
     BHead* h = head_of(p);
     if (rt_rc_load(h) < BEANS_IMMORTAL) rt_rc_fetch_or(h, RC_SHARED);
 }
+static void cc_mark_shared_graph(void* root);
 static void cc_mark_shared_push(void* child, void* ctx) {
     cc_push(ctx, child);
+}
+static void cc_mark_shared_child_graph(void* child, void* ctx) {
+    (void)ctx;
+    cc_mark_shared_graph(child);
 }
 static void cc_mark_shared_graph(void* root) {
     if (!root) return;
@@ -1600,6 +1607,56 @@ static void cc_mark_shared_graph(void* root) {
         cc_walk(p, cc_meta(h), cc_mark_shared_push, &st);
     }
     if (st.v != local) rt_free(st.v);
+}
+
+// Preserve the owner-local collector's core invariant after the first spawn:
+// every edge leaving an RC_SHARED object must point at another shared object.
+// The compiler calls these before publishing a new class/capture-cell edge;
+// runtime containers call them before publishing their own stored values.
+// Walking stops at an already-shared shell, so the common write of an existing
+// shared value is constant time.
+static int cc_shared_owner(void* owner) {
+    if (!owner || !cc_is_mt()) return 0;
+    BHead* h = head_of(owner);
+    long long rc = rt_rc_load(h);
+    return rc < BEANS_IMMORTAL && (rc & RC_SHARED) != 0;
+}
+static void cc_mark_shared_value(void* value, long long ptr_mask,
+                                 int i64_encoded) {
+    for (int slot = 0;
+         slot < RT_MASK_SLOTS && (ptr_mask >> slot);
+         ++slot) {
+        if (!((ptr_mask >> slot) & 1)) continue;
+        void* child = rt_masked_child(value, slot, i64_encoded);
+        if (child) cc_mark_shared_graph(child);
+    }
+}
+void beans_cc_write(void* owner, void* child) {
+    if (child && cc_shared_owner(owner)) cc_mark_shared_graph(child);
+}
+void beans_cc_write_typed(void* owner, void* value, long long ptr_mask) {
+    if (value && ptr_mask && cc_shared_owner(owner))
+        cc_mark_shared_value(value, ptr_mask, 0);
+}
+static void cc_mark_shared_children(void* owner) {
+    if (!owner) return;
+    BHead* h = head_of(owner);
+    if (rt_rc_load(h) >= BEANS_IMMORTAL) return;
+    cc_walk(owner, cc_meta(h), cc_mark_shared_child_graph, NULL);
+}
+#endif
+
+#if BEANS_RT_PROFILE < BEANS_RT_MINIMAL
+// Generated freestanding code uses the same ABI. Threads cannot exist there,
+// so publication barriers fold to no work without pulling in atomics or TLS.
+void beans_cc_write(void* owner, void* child) {
+    (void)owner;
+    (void)child;
+}
+void beans_cc_write_typed(void* owner, void* value, long long ptr_mask) {
+    (void)owner;
+    (void)value;
+    (void)ptr_mask;
 }
 #endif
 
@@ -1968,6 +2025,7 @@ long long beans_box_get(void* p) { return ((long long*)p)[0]; }
 void beans_box_set(void* p, long long value) {
     long long* box = p;
     if (((head_of(p)->meta & CC_SHAPE) >> 3) & 1) {
+        beans_cc_write(p, (void*)(uintptr_t)value);
         void* old = (void*)box[0];
         if (old) beans_release(old);
     }
@@ -1987,6 +2045,7 @@ void beans_box_get_typed(void* box, void* out, long long size) {
 }
 void beans_box_set_typed(void* box, void* value, long long size,
                          long long ptr_mask, long long cycle_mask) {
+    beans_cc_write_typed(box, value, ptr_mask);
     release_masked_value(box, ptr_mask);
     memcpy(box, value, (size_t)size);
     if (cycle_mask) cc_possible_root(box);
@@ -2148,6 +2207,9 @@ void* beans_object_weak_get(void* p) {
 }
 
 void* beans_shared_new(long long value, long long value_ptr) {
+#if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
+    if (value_ptr) cc_mark_shared_graph((void*)(uintptr_t)value);
+#endif
     BSharedCtrl* ctrl = rt_zalloc(sizeof(BSharedCtrl));
     if (!ctrl) beans_panic("out of memory", 0, 0);
     ctrl->strong = 1;
@@ -2240,6 +2302,7 @@ void* beans_arena_new_typed(long long capacity, long long stride,
 }
 long long beans_arena_put(void* p, long long value) {
     BArena* arena = p;
+    if (arena->ptr_mask) beans_cc_write(arena, (void*)(uintptr_t)value);
     if (arena->len == arena->cap) {
         long long next = arena->cap ? arena->cap * 2 : 8;
         long long* data = rt_realloc(arena->data, (size_t)next * sizeof(long long));
@@ -2253,6 +2316,7 @@ long long beans_arena_put(void* p, long long value) {
 }
 long long beans_arena_put_typed(void* p, void* value) {
     BArena* arena = p;
+    beans_cc_write_typed(arena, value, arena->ptr_mask);
     if (arena->len == arena->cap) {
         long long next = arena->cap ? arena->cap * 2 : 8;
         if (next > (1LL << 58) / arena->stride)
@@ -3337,6 +3401,7 @@ BList* beans_list_new(long long elem_ptr) {
     return l;
 }
 void beans_list_push(BList* l, long long v) {
+    if (l->ptr_mask) beans_cc_write(l, (void*)(uintptr_t)v);
     if (l->len == l->cap) {
         l->cap *= 2;
         l->data = rt_realloc(l->data, (size_t)l->cap * (size_t)list_stride(l));
@@ -3345,6 +3410,7 @@ void beans_list_push(BList* l, long long v) {
     l->data[l->len++] = v;
 }
 void beans_list_push_typed(BList* l, const void* value) {
+    beans_cc_write_typed(l, (void*)value, l->ptr_mask);
     long long stride = list_stride(l);
     if (l->len == l->cap) {
         l->cap *= 2;
@@ -5394,6 +5460,7 @@ void beans_list_insert(BList* l, long long i, long long v, long long line,
         rt_format(b, sizeof b, "insert at %lld out of range (len %lld)", i, l->len);
         beans_panic(b, line, col);
     }
+    if (l->ptr_mask) beans_cc_write(l, (void*)(uintptr_t)v);
     if (l->len == l->cap) {
         l->cap *= 2;
         l->data = rt_realloc(l->data, (size_t)l->cap * 8);
@@ -5409,6 +5476,7 @@ void beans_list_insert_typed(BList* l, long long i, const void* value,
         rt_format(b, sizeof b, "insert at %lld out of range (len %lld)", i, l->len);
         beans_panic(b, line, col);
     }
+    beans_cc_write_typed(l, (void*)value, l->ptr_mask);
     long long stride = list_stride(l);
     if (l->len == l->cap) {
         l->cap *= 2;
@@ -5845,6 +5913,9 @@ static void map_insert_miss(BMap* m, long long key, long long val,
                             unsigned long long h, long long kind,
                             long long (*hf)(long long),
                             unsigned long long insert_slot) {
+    long long flags = (head_of(m)->meta & CC_SHAPE) >> 3;
+    if (flags & 1) beans_cc_write(m, (void*)(uintptr_t)key);
+    if (flags & 2) beans_cc_write(m, (void*)(uintptr_t)val);
     if (m->used == m->cap) {
         long long ow = (m->cap + 63) >> 6;
         m->cap *= 2;
@@ -5875,6 +5946,9 @@ static void map_insert_miss_typed(BMap* m, long long key, void* value,
                                   unsigned long long h, long long kind,
                                   long long (*hf)(long long),
                                   unsigned long long insert_slot) {
+    long long flags = (head_of(m)->meta & CC_SHAPE) >> 3;
+    if (flags & 1) beans_cc_write(m, (void*)(uintptr_t)key);
+    beans_cc_write_typed(m, value, m->value_ptr_mask);
     if (m->used == m->cap) {
         long long ow = (m->cap + 63) >> 6;
         m->cap *= 2;
@@ -5914,6 +5988,7 @@ void beans_map_set(BMap* m, long long key, long long val, long long kind, void* 
     if (i >= 0) {
         long long flags = (head_of(m)->meta & CC_SHAPE) >> 3;
         if (flags & 1) beans_release((void*)key); // duplicate key not stored
+        if (flags & 2) beans_cc_write(m, (void*)(uintptr_t)val);
         if (flags & 2) beans_release((void*)m->data[i * 2 + 1]);
         m->data[i * 2 + 1] = val;
         if (kind == 4 && (flags & 1)) cc_possible_root(m);
@@ -5930,6 +6005,7 @@ __attribute__((always_inline)) void beans_map_set_raw(BMap* m, long long key,
     if (i >= 0) {
         long long flags = (head_of(m)->meta & CC_SHAPE) >> 3;
         if (flags & 1) beans_release((void*)key);
+        if (flags & 2) beans_cc_write(m, (void*)(uintptr_t)val);
         if (flags & 2) beans_release((void*)m->data[i * 2 + 1]);
         m->data[i * 2 + 1] = val;
         return;
@@ -5945,6 +6021,7 @@ void beans_map_set_typed(BMap* m, long long key, void* value, long long kind,
     if (i >= 0) {
         long long flags = (head_of(m)->meta & CC_SHAPE) >> 3;
         if (flags & 1) beans_release((void*)key);
+        beans_cc_write_typed(m, value, m->value_ptr_mask);
         map_release_wide_value(m, map_wide_value(m, i));
         memcpy(map_wide_value(m, i), value, (size_t)m->value_stride);
         if (m->value_cycle_mask || kind == 4) cc_possible_root(m);
@@ -5962,6 +6039,7 @@ __attribute__((always_inline)) void beans_map_set_typed_raw(BMap* m,
     if (i >= 0) {
         long long flags = (head_of(m)->meta & CC_SHAPE) >> 3;
         if (flags & 1) beans_release((void*)key);
+        beans_cc_write_typed(m, value, m->value_ptr_mask);
         map_release_wide_value(m, map_wide_value(m, i));
         memcpy(map_wide_value(m, i), value, (size_t)m->value_stride);
         if (m->value_cycle_mask) cc_possible_root(m);
@@ -12930,8 +13008,19 @@ void beans_thread_release_env(void* env);
 static void* thread_main(void* arg) {
     BThread* t = arg;
     cc_worker_roots_begin();
-    if (t->typed_thunk) t->typed_thunk(t->env, t->payload);
-    else t->result = t->thunk(t->env);
+    if (t->typed_thunk) {
+        t->typed_thunk(t->env, t->payload);
+        // The payload shell was marked at spawn. Publish values written into
+        // it before join can expose them to the parent.
+        cc_mark_shared_children(t->payload);
+    } else {
+        t->result = t->thunk(t->env);
+        long long result_mask =
+            (cc_meta(head_of(t)) & CC_SHAPE) >> 3;
+        if (result_mask &
+            RT_I64_SLOT_MASK_AT(offsetof(BThread, result)))
+            cc_mark_shared_graph((void*)(uintptr_t)t->result);
+    }
     beans_release(t->env);
     beans_release(t); // the running thread's own ref on the handle
     cc_worker_roots_end();
@@ -13052,6 +13141,8 @@ BChan* beans_chan_new_typed(long long cap, long long stride, long long ptr_mask)
     return c;
 }
 long long beans_chan_send(BChan* c, long long v) {
+    if (cc_is_mt() && c->ptr_mask)
+        cc_mark_shared_graph((void*)(uintptr_t)v);
     pthread_mutex_lock(&c->m);
     while (c->count == c->cap && !c->closed) pthread_cond_wait(&c->can_send, &c->m);
     if (c->closed) {
@@ -13065,6 +13156,8 @@ long long beans_chan_send(BChan* c, long long v) {
     return 1;
 }
 long long beans_chan_send_typed(BChan* c, void* value) {
+    if (cc_is_mt() && c->ptr_mask)
+        cc_mark_shared_value(value, c->ptr_mask, 0);
     pthread_mutex_lock(&c->m);
     while (c->count == c->cap && !c->closed) pthread_cond_wait(&c->can_send, &c->m);
     if (c->closed) {

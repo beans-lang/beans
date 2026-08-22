@@ -19,6 +19,9 @@ done
 # reclaimed without global thread quiescence.
 ./build/beansc build --emit ir test/cases/thread_live_cycles.b \
     >"$tmp/live-cycles.ir"
+# A shared owner must publish new reference fields before storing them. This
+# is what keeps owner-local trial deletion away from later worker handoffs.
+grep -q 'call void @beans_cc_write(ptr' build/thread_live_cycles.ll
 clang -O1 -pthread -DBEANS_ARC_STATS -Wno-override-module \
     build/thread_live_cycles.ll build/thread_live_cycles_ffi.c \
     build/beans_rt.c -lm \

@@ -1698,7 +1698,7 @@ partial class LlvmTextEmitter {
                 // swap a fresh handle in, drop the old one, then drop
                 // the consumed object reference: the slot owns only the
                 // handle, so storing adds no count on the referent
-                return "  %field.assign.ptr{address} = getelementptr i8, ptr {receiver}, i64 {layout.field_offsets[name]}\n  %weak.new{address} = call ptr @beans_object_weak_new(ptr {stored})\n  %weak.old{address} = load ptr, ptr %field.assign.ptr{address}\n  store ptr %weak.new{address}, ptr %field.assign.ptr{address}\n  call void @beans_release(ptr %weak.old{address})\n  call void @beans_release(ptr {stored})\n"
+                return "  %field.assign.ptr{address} = getelementptr i8, ptr {receiver}, i64 {layout.field_offsets[name]}\n  %weak.new{address} = call ptr @beans_object_weak_new(ptr {stored})\n{self.emit_cc_write(receiver, layout.field_types[name], "%weak.new{address}", "weak.field")}  %weak.old{address} = load ptr, ptr %field.assign.ptr{address}\n  store ptr %weak.new{address}, ptr %field.assign.ptr{address}\n  call void @beans_release(ptr %weak.old{address})\n  call void @beans_release(ptr {stored})\n"
             }
             none => {
                 self.fail(
@@ -1877,6 +1877,8 @@ partial class LlvmTextEmitter {
                     return "{output}{self.emit_field_compound(instruction, field_type, address, stored, operation, "")}"
                 }
                 if self.type_has_owned_refs(field_type) {
+                    output =
+                        "{output}{self.emit_cc_write(receiver, field_type, stored, "field")}"
                     let previous: int = self.fresh()
                     let old: string =
                         "%field.assign.old{previous}"

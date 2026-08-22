@@ -1,6 +1,30 @@
 package main
 
 partial class LlvmTextEmitter {
+    // Before a shared heap owner publishes a new reference, carry the shared
+    // mark through that value's graph. The runtime returns immediately for a
+    // local owner, so ordinary single-threaded ownership stays unchanged.
+    fn emit_cc_write(owner: string, type: HirType,
+                     value: string, tag: string) -> string {
+        if !self.type_has_owned_refs(type) { return "" }
+        if self.type_is_reference(type) {
+            self.require_declare(
+                "beans_cc_write",
+                "void @beans_cc_write(ptr, ptr)")
+            return "  call void @beans_cc_write(ptr {owner}, ptr {value})\n"
+        }
+        let ptr_mask: int =
+            self.pointer_mask_at(type, 0)
+        let llvm: string = self.type_text(type)
+        if ptr_mask <= 0 || llvm == "" { return "" }
+        let slot: string =
+            self.spill_slot(llvm, "cc.write.{tag}")
+        self.require_declare(
+            "beans_cc_write_typed",
+            "void @beans_cc_write_typed(ptr, ptr, i64)")
+        return "  store {llvm} {value}, ptr {slot}\n  call void @beans_cc_write_typed(ptr {owner}, ptr {slot}, i64 {ptr_mask})\n"
+    }
+
     // Does this local carry a runtime `.live` flag beside its slot? MIR
     // clears live_flag_used once its fixpoint knows the flag's value at
     // every drop and every assignment, and then nobody loads it — so the
