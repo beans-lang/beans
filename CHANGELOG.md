@@ -26,6 +26,12 @@ This file records user-facing changes in each Beans release.
 
 ### Fixed
 
+- A cross-package annotation used bare now fills its defaults correctly:
+  a default value is checked once in the annotation's own declaring
+  scope and reused at every use site, instead of being re-resolved
+  against the using file's imports — where an unqualified name like an
+  enum variant did not exist. `test/cases/annotation_defaults_pkg` locks
+  the behavior on both backends.
 - Native builds of reflection-heavy programs stopped being quadratic in
   the emitter: the generic-family walk resolves parents through an index
   with a memo instead of rescanning every function, and family cloning

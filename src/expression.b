@@ -9877,6 +9877,24 @@ class ExpressionChecker {
         for annotation: HirAnnotation in annotations {
             for argument: HirAnnotationArgument in
                 annotation.arguments {
+                if argument.defaulted && argument.value.is_none() {
+                    // Adopt the default the declaring pass already
+                    // checked in its own scope.
+                    match self.annotation_declaration(annotation.name) {
+                        some(schema) => {
+                            for field: HirAnnotationField in
+                                schema.fields {
+                                if field.name == argument.name {
+                                    argument.value = field.default_value
+                                }
+                            }
+                        }
+                        none => {}
+                    }
+                }
+                if argument.defaulted && argument.value.is_some() {
+                    continue
+                }
                 let value: HirNode =
                     self.check_expression(
                         argument.syntax, argument.type)
@@ -9955,9 +9973,21 @@ class ExpressionChecker {
                         if supplied.contains_key(field.name) { continue }
                         match field.default_syntax {
                             some(value) => {
-                                annotation.arguments.push(
+                                let filled: HirAnnotationArgument =
                                     new HirAnnotationArgument(
-                                        field.name, field.type, value))
+                                        field.name, field.type, value)
+                                // The declaring pass checked this value
+                                // in its own scope; reuse it so a
+                                // cross-package default never resolves
+                                // against the use site's imports.
+                                filled.defaulted = true
+                                match field.default_value {
+                                    some(checked) => {
+                                        filled.value = some(checked)
+                                    }
+                                    none => {}
+                                }
+                                annotation.arguments.push(filled)
                             }
                             none => {
                                 self.fail(
@@ -11087,6 +11117,9 @@ class ExpressionChecker {
     }
 
     fn check_annotation_declarations() {
+        // Defaults first, for every declaration, so an annotation used on
+        // another annotation's declaration can already reuse the checked
+        // default regardless of declaration order.
         for declaration: HirAnnotationDeclaration in
             self.program.annotation_declarations {
             self.current = new HirFunction(
@@ -11096,9 +11129,6 @@ class ExpressionChecker {
                 declaration.line, declaration.col)
             self.scopes = []
             self.push_scope()
-            declaration.annotations =
-                self.check_hir_annotations(
-                    declaration.annotations)
             for field: HirAnnotationField in declaration.fields {
                 match field.default_syntax {
                     some(syntax) => {
@@ -11116,6 +11146,20 @@ class ExpressionChecker {
                     none => {}
                 }
             }
+            self.pop_scope()
+        }
+        for declaration: HirAnnotationDeclaration in
+            self.program.annotation_declarations {
+            self.current = new HirFunction(
+                "$annotations",
+                "{declaration.qualified}.$annotations",
+                "", false, false, declaration.file,
+                declaration.line, declaration.col)
+            self.scopes = []
+            self.push_scope()
+            declaration.annotations =
+                self.check_hir_annotations(
+                    declaration.annotations)
             self.pop_scope()
         }
     }
