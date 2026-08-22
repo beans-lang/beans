@@ -2449,9 +2449,29 @@ class MirLowerer {
             }
             if declaration.kind != "class" ||
                declaration.is_unique ||
-               declaration.generics.len() != 0 ||
-               declaration.relations.len() != 0 {
+               declaration.generics.len() != 0 {
                 return false
+            }
+            // Interface conformance does not change object layout. A base
+            // class does, so keep inheritance on the heap-only path.
+            for index: int in
+                0..declaration.relations.len() {
+                if index >= declaration.relation_kinds.len() ||
+                   declaration.relation_kinds[index] != "implements" {
+                    return false
+                }
+                var interface_found: bool = false
+                for related: HirDeclaration in
+                    self.source.declarations {
+                    if (related.qualified ==
+                            declaration.relations[index].name ||
+                        related.name ==
+                            declaration.relations[index].name) &&
+                       related.kind == "interface" {
+                        interface_found = true
+                    }
+                }
+                if !interface_found { return false }
             }
             for field: HirField in declaration.fields {
                 if !self.scalar_field_type(field.type) {
@@ -2471,6 +2491,105 @@ class MirLowerer {
                 declaration.qualified)
         }
         return false
+    }
+
+    fn scalar_interface_alias(exact: HirType,
+                              alias: HirType) -> bool {
+        var target: string = ""
+        for declaration: HirDeclaration in
+            self.source.declarations {
+            if (declaration.qualified == alias.name ||
+                declaration.name == alias.name) &&
+               declaration.kind == "interface" {
+                target = declaration.qualified
+            }
+        }
+        if target == "" { return false }
+        var pending: List<HirType> = []
+        for declaration: HirDeclaration in
+            self.source.declarations {
+            if (declaration.qualified == exact.name ||
+                declaration.name == exact.name) &&
+               declaration.kind == "class" {
+                for relation: HirType in declaration.relations {
+                    pending.push(relation)
+                }
+            }
+        }
+        var seen: Map<string, bool> = {}
+        for pending.len() != 0 {
+            let relation: HirType =
+                pending.pop().expect("scalar relation")
+            if relation.name == target {
+                return true
+            }
+            if seen.contains_key(relation.name) {
+                continue
+            }
+            seen[relation.name] = true
+            for declaration: HirDeclaration in
+                self.source.declarations {
+                if declaration.qualified == relation.name ||
+                   declaration.name == relation.name {
+                    for parent: HirType in declaration.relations {
+                        pending.push(parent)
+                    }
+                }
+            }
+        }
+        return false
+    }
+
+    // A stack receiver may enter only a body that treats `self` as a source
+    // of scalar fields. Returning, storing, retaining, or forwarding `self`
+    // would let the stack address escape and must keep the object on the heap.
+    fn scalar_receiver_method(exact: string,
+                              method: string) -> bool {
+        var found: bool = false
+        for function: MirFunction in self.mir.functions {
+            if function.name != "{exact}.{method}" {
+                continue
+            }
+            if found || function.declaration || function.external ||
+               !mir_type_is_trivial(function.result) {
+                return false
+            }
+            found = true
+            var receiver: int = -1
+            for local: MirLocal in function.locals {
+                if local.parameter && local.name == "self" {
+                    receiver = local.id
+                }
+            }
+            if receiver < 0 { return false }
+            for block: MirBlock in function.blocks {
+                for instruction: MirInstruction in block.instructions {
+                    if instruction.removed { continue }
+                    for capture: int in instruction.capture_locals {
+                        if capture == receiver { return false }
+                    }
+                    if instruction.local == receiver &&
+                       instruction.op != "borrow" &&
+                       instruction.op != "drop_local" {
+                        return false
+                    }
+                    if instruction.op != "borrow" ||
+                       instruction.local != receiver {
+                        continue
+                    }
+                    for use: MirPosition in
+                        self.uses_for(function, instruction.result) {
+                        if use.instruction.op != "field" ||
+                           use.instruction.operands.len() == 0 ||
+                           use.instruction.operands[0] !=
+                               instruction.result {
+                            return false
+                        }
+                    }
+                }
+            }
+        }
+        return found
     }
 
     fn dominators(function: MirFunction) ->
@@ -2668,9 +2787,12 @@ class MirLowerer {
                                     candidate.local]
                             if alias.parameter ||
                                alias.captured ||
-                               !hir_types_equal(
-                                   alias.type,
-                                   primary.type) {
+                               (!hir_types_equal(
+                                    alias.type,
+                                    primary.type) &&
+                                !self.scalar_interface_alias(
+                                    primary.type,
+                                    alias.type)) {
                                 continue
                             }
                             aliases.add(alias.id)
@@ -2737,6 +2859,17 @@ class MirLowerer {
                                 function, read.result)
                         for use: MirPosition in users {
                             if use.instruction.op == "field" {
+                                preceding.push(use)
+                                continue
+                            }
+                            if use.instruction.op == "method_call" &&
+                               use.instruction.operands.len() != 0 &&
+                               use.instruction.operands[0] == read.result &&
+                               use.instruction.devirtualized_receiver ==
+                                   self.concrete_class_name(primary.type) &&
+                               self.scalar_receiver_method(
+                                   use.instruction.devirtualized_receiver,
+                                   use.instruction.text) {
                                 preceding.push(use)
                                 continue
                             }
@@ -2821,6 +2954,8 @@ class MirLowerer {
                 for local: MirLocal in function.locals {
                     if aliases.contains(local.id) {
                         local.scalar_replaced = true
+                        local.scalar_replaced_owner =
+                            primary.id
                     }
                 }
             }
@@ -3204,6 +3339,8 @@ class MirLowerer {
             self.dominators(function)
         self.analyze_temporary_slice_consumers(
             function, predecessors, dominance)
+        self.analyze_borrowed_list_iterators(
+            function, predecessors, dominance)
         self.analyze_borrowed_array_iteration(
             function, predecessors, dominance)
         for block: MirBlock in function.blocks {
@@ -3224,6 +3361,80 @@ class MirLowerer {
                 self.try_elide_iteration(
                     function, predecessors, dominance,
                     block, index)
+            }
+        }
+    }
+
+    // A list iterator normally owns one reference to its collection. When the
+    // source is an outer local that cannot change or escape during the loop,
+    // that retain/release pair is redundant: the local already keeps the list
+    // alive until the cursor is done.
+    fn analyze_borrowed_list_iterators(
+        function: MirFunction,
+        predecessors: List<MirBlockEdges>,
+        dominance: List<MirValueSet>) {
+        for block: MirBlock in function.blocks {
+            for setup: MirInstruction in block.instructions {
+                if setup.removed || setup.op != "iterate_init" ||
+                   setup.borrow_elided || setup.operands.len() != 1 ||
+                   setup.result < 0 {
+                    continue
+                }
+                let owned: int = setup.operands[0]
+                if owned < 0 || owned >= function.value_types.len() ||
+                   canonical_hir_name(
+                       function.value_types[owned].name) != "List" {
+                    continue
+                }
+                var retained: MirInstruction = setup
+                match self.definition_for(function, owned) {
+                    some(found) => { retained = found }
+                    none => { continue }
+                }
+                if retained.op != "retain" ||
+                   retained.operands.len() != 1 {
+                    continue
+                }
+                let retained_uses: List<MirPosition> =
+                    self.uses_for(function, retained.result)
+                if retained_uses.len() != 1 ||
+                   retained_uses[0].instruction.op != "iterate_init" ||
+                   retained_uses[0].instruction.result != setup.result {
+                    continue
+                }
+                let borrowed: int = retained.operands[0]
+                var read: MirInstruction = setup
+                match self.definition_for(function, borrowed) {
+                    some(found) => { read = found }
+                    none => { continue }
+                }
+                if read.op != "borrow" || read.local < 0 ||
+                   read.local >= function.locals.len() {
+                    continue
+                }
+                var head: int = -1
+                for use: MirPosition in
+                    self.uses_for(function, setup.result) {
+                    if use.instruction.op == "iterate_next" {
+                        head = use.block
+                    }
+                }
+                if head < 0 || head >= function.blocks.len() {
+                    continue
+                }
+                let members: MirValueSet =
+                    self.loop_blocks_of(
+                        function, predecessors, dominance, head)
+                if !self.iterable_stays_stable(
+                       function, members, setup, read.local) {
+                    continue
+                }
+                setup.operands[0] = borrowed
+                if setup.consumes.len() != 0 {
+                    setup.consumes[0] = false
+                }
+                setup.borrow_elided = true
+                retained.removed = true
             }
         }
     }
@@ -4142,6 +4353,10 @@ class MirLowerer {
         // when it is inside the loop's natural blocks.
         if user.op == "assign" &&
            user.text.starts_with("index:") {
+            return user.operands.len() != 0 &&
+                   user.operands[0] == borrowed
+        }
+        if user.op == "index" {
             return user.operands.len() != 0 &&
                    user.operands[0] == borrowed
         }
@@ -5227,8 +5442,18 @@ class MirLowerer {
             if local.scalar_replaced &&
                (local.parameter || local.captured ||
                 local.ownership != "owned" ||
-                !self.scalarizable_class(
-                    local.type.name)) {
+                (!self.scalarizable_class(
+                     local.type.name) &&
+                 (local.scalar_replaced_owner < 0 ||
+                  local.scalar_replaced_owner >=
+                      function.locals.len() ||
+                  local.scalar_replaced_owner == local.id ||
+                  !function.locals[
+                      local.scalar_replaced_owner].scalar_replaced ||
+                  !self.scalar_interface_alias(
+                      function.locals[
+                          local.scalar_replaced_owner].type,
+                      local.type)))) {
                 self.fail(
                     function.file,
                     function.line,

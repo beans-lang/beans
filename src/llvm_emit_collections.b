@@ -2991,6 +2991,10 @@ partial class LlvmTextEmitter {
         self.iterator_kind[instruction.result] = "list"
         self.iterator_collection[instruction.result] =
             collection
+        if instruction.borrow_elided {
+            self.iterator_collection_borrowed[
+                instruction.result] = true
+        }
         return "  store i64 0, ptr {current}\n"
     }
 

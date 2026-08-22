@@ -401,6 +401,8 @@ partial class LlvmTextEmitter {
                 local.ownership_sink
             cloned.scalar_replaced =
                 local.scalar_replaced
+            cloned.scalar_replaced_owner =
+                local.scalar_replaced_owner
             cloned.stack_closure_id =
                 local.stack_closure_id
             match closure_ids.get(

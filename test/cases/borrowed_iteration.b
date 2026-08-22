@@ -35,6 +35,22 @@ fn safe_sum() -> int {
     return total
 }
 
+// A scalar element needs no per-element ARC, but the cursor used to retain
+// and release the whole List once per outer loop. The source local already
+// keeps it alive, so the inner iterator can borrow it.
+fn scalar_repeat_sum() -> int {
+    var values: List<int> = [1, 2, 3, 4]
+    var total: int = 0
+    var round: int = 0
+    for round < 5 {
+        for value: int in values {
+            total += value
+        }
+        round += 1
+    }
+    return total
+}
+
 // Map keys and values use the same proof. A read-only loop borrows both
 // bindings and keeps the Map alive until the cursor is done.
 fn safe_map_sum() -> int {
@@ -96,6 +112,7 @@ fn escaped_bindings() {
 fn main() {
     mutation_during_iteration()
     io.println("sum {safe_sum()}")
+    io.println("scalar sum {scalar_repeat_sum()}")
     io.println("map sum {safe_map_sum()}")
     mutation_during_map_iteration()
     captured_bindings()
