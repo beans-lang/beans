@@ -78,6 +78,10 @@ class MirInstruction {
     // 2 is the safe default, and is what an unreached or synthesized
     // instruction keeps — it reproduces the flag-checking code exactly.
     live_state: int
+    // Explicit generic bindings for a call, as name/type pairs from the
+    // checked HIR. Empty unless the source wrote type arguments.
+    type_argument_names: List<string>
+    type_arguments: List<HirType>
 
     fn init(op: string, result: int, type: HirType,
             text: string, resolved: string,
@@ -108,6 +112,8 @@ class MirInstruction {
         self.borrow_elided = false
         self.removed = false
         self.live_state = 2
+        self.type_argument_names = []
+        self.type_arguments = []
     }
 }
 
@@ -204,6 +210,10 @@ class MirFunction {
     value_ownership: List<string>
     value_alias: List<int>
     blocks: List<MirBlock>
+    // The function's own generic parameter names, straight from the HIR.
+    // Nonempty marks a template even when no signature type mentions them
+    // — those bind only through explicit type arguments at call sites.
+    generics: List<string>
 
     fn init(name: string, result: HirType,
             file: string, line: int, col: int) {
@@ -230,6 +240,7 @@ class MirFunction {
         self.value_ownership = []
         self.value_alias = []
         self.blocks = []
+        self.generics = []
     }
 }
 

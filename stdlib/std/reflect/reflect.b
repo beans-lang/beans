@@ -681,10 +681,16 @@ pub class Parameter {
 pub class Method {
     receiver: Type
     method_name: string
+    // Resolved once here, so a cached descriptor never re-resolves its
+    // strings on a call. Zero when the method does not exist; calls then
+    // fail with the same missing error the lookup would have produced.
+    handle: int
 
     fn init(receiver: Type, method_name: string) {
         self.receiver = receiver
         self.method_name = method_name
+        self.handle = rt.method_handle(
+            receiver.qualified_name(), method_name)
     }
 
     pub fn name() -> string { return self.method_name }
@@ -735,9 +741,9 @@ pub class Method {
         Result<Value, ReflectError> {
         let packed: PackedArguments =
             new PackedArguments(arguments)
-        let handle: int = rt.method_call(
-            self.receiver.qualified, self.method_name,
-            receiver.handle, packed.raw, packed.count, false)
+        let handle: int = rt.method_call_handle(
+            self.handle, receiver.handle,
+            packed.raw, packed.count, false)
         if handle == 0 { return err(runtime_error()) }
         return ok(new Value(handle))
     }
@@ -746,9 +752,8 @@ pub class Method {
         Result<Value, ReflectError> {
         let packed: PackedArguments =
             new PackedArguments(arguments)
-        let handle: int = rt.method_call(
-            self.receiver.qualified, self.method_name,
-            0, packed.raw, packed.count, true)
+        let handle: int = rt.method_call_handle(
+            self.handle, 0, packed.raw, packed.count, true)
         if handle == 0 { return err(runtime_error()) }
         return ok(new Value(handle))
     }
@@ -762,8 +767,13 @@ pub class Method {
 
 pub class Initializer {
     owner: Type
+    // Resolved once, exactly as Method.handle.
+    handle: int
 
-    fn init(owner: Type) { self.owner = owner }
+    fn init(owner: Type) {
+        self.owner = owner
+        self.handle = rt.initializer_handle(owner.qualified_name())
+    }
 
     pub fn declaring_type() -> Type {
         let declared: string =
@@ -802,8 +812,8 @@ pub class Initializer {
     pub fn call(move arguments: List<Value>) ->
         Result<Value, ReflectError> {
         let packed: PackedArguments = new PackedArguments(arguments)
-        let handle: int = rt.initializer_call(
-            self.owner.qualified, packed.raw, packed.count)
+        let handle: int = rt.initializer_call_handle(
+            self.handle, packed.raw, packed.count)
         if handle == 0 { return err(runtime_error()) }
         return ok(new Value(handle))
     }
@@ -851,8 +861,13 @@ pub class Variant {
 
 pub class Function {
     qualified: string
+    // Resolved once, exactly as Method.handle.
+    handle: int
 
-    fn init(qualified: string) { self.qualified = qualified }
+    fn init(qualified: string) {
+        self.qualified = qualified
+        self.handle = rt.function_handle(qualified)
+    }
 
     pub fn qualified_name() -> string { return self.qualified }
     pub fn name() -> string { return rt.function_name(self.qualified) }
@@ -883,8 +898,8 @@ pub class Function {
         Result<Value, ReflectError> {
         let packed: PackedArguments =
             new PackedArguments(arguments)
-        let handle: int = rt.function_call(
-            self.qualified, packed.raw, packed.count)
+        let handle: int = rt.function_call_handle(
+            self.handle, packed.raw, packed.count)
         if handle == 0 { return err(runtime_error()) }
         return ok(new Value(handle))
     }

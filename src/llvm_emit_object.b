@@ -311,6 +311,15 @@ partial class LlvmTextEmitter {
         clone.capture_value_mask =
             instruction.capture_value_mask
         clone.dispatch_slot = instruction.dispatch_slot
+        for index: int in
+            0..instruction.type_argument_names.len() {
+            clone.type_argument_names.push(
+                instruction.type_argument_names[index])
+            clone.type_arguments.push(
+                self.substitute_open(
+                    instruction.type_arguments[index],
+                    bindings))
+        }
         clone.ownership = instruction.ownership
         clone.effects = instruction.effects
         clone.last_use = instruction.last_use
@@ -500,7 +509,9 @@ partial class LlvmTextEmitter {
         // synthetic function a fresh id: cleanup lookup is global,
         // so reusing the template id would make two instantiations
         // call each other's cleanup body.
-        for unused: int in 0..self.program.functions.len() {
+        var grew: bool = true
+        for grew {
+            grew = false
             for candidate: MirFunction in
                 self.program.functions {
                 if !self.function_in_generic_family(
@@ -509,6 +520,7 @@ partial class LlvmTextEmitter {
                    !names.contains_key(candidate.parent) {
                     continue
                 }
+                grew = true
                 let parent: string = names[candidate.parent]
                 if candidate.closure_id >= 0 {
                     let id: int = self.generic_count
@@ -2150,6 +2162,68 @@ partial class LlvmTextEmitter {
         return "{output}  store {llvm} {result}, ptr {address.value}\n"
     }
 
+    // Instantiate one generic method call: explicit type arguments seed
+    // the bindings — the only way to bind a generic the signature never
+    // mentions — unification against the concrete operand and result
+    // types fills the rest, and the instance is keyed on the whole call
+    // shape so distinct bindings never share a body.
+    fn emit_generic_method_instance(
+        function: MirFunction,
+        instruction: MirInstruction,
+        values: Map<int, string>,
+        template_name: string,
+        base_name: string,
+        bindings: Map<string, HirType>) -> string {
+        var instance_name: string = base_name
+        for index: int in
+            0..instruction.type_argument_names.len() {
+            bindings[
+                instruction.type_argument_names[index]] =
+                instruction.type_arguments[index]
+            instance_name =
+                "{instance_name}[{instruction.type_argument_names[index]}={render_hir_type(instruction.type_arguments[index])}]"
+        }
+        match self.generic_templates.get(template_name) {
+            some(template) => {
+                var parameters: List<int> = []
+                for index: int in 0..template.locals.len() {
+                    if template.locals[index].parameter {
+                        parameters.push(index)
+                    }
+                }
+                if parameters.len() ==
+                       instruction.operands.len() {
+                    for index: int in 0..parameters.len() {
+                        let operand_type: HirType =
+                            self.value_type(
+                                function,
+                                instruction.operands[index])
+                        self.unify_open(
+                            template.locals[
+                                parameters[index]].type,
+                            operand_type,
+                            bindings)
+                        instance_name =
+                            "{instance_name}({render_hir_type(operand_type)})"
+                    }
+                }
+                self.unify_open(
+                    template.result,
+                    instruction.type, bindings)
+                instance_name =
+                    "{instance_name}->({render_hir_type(instruction.type)})"
+            }
+            none => {}
+        }
+        let symbol: string =
+            self.instantiate_generic(
+                instruction, template_name,
+                instance_name, bindings)
+        if symbol == "" { return "" }
+        return self.emit_direct_call(
+            function, instruction, values, symbol)
+    }
+
     fn emit_method_call(
         function: MirFunction,
         instruction: MirInstruction,
@@ -2212,16 +2286,27 @@ partial class LlvmTextEmitter {
                         receiver_type
                     bindings[declaration.name] =
                         receiver_type
-                    let symbol: string =
-                        self.instantiate_generic(
-                            instruction,
-                            "{declaration.qualified}.{instruction.text}",
-                            "{render_hir_type(receiver_type)}.{instruction.text}",
-                            bindings)
-                    if symbol == "" { return "" }
-                    return self.emit_direct_call(
-                        function, instruction,
-                        values, symbol)
+                    return self.emit_generic_method_instance(
+                        function, instruction, values,
+                        "{declaration.qualified}.{instruction.text}",
+                        "{render_hir_type(receiver_type)}.{instruction.text}",
+                        bindings)
+                }
+                let method_template: string =
+                    "{declaration.qualified}.{instruction.text}"
+                if self.generic_templates.contains_key(
+                       method_template) {
+                    // A generic method on a non-generic class: dispatch
+                    // is direct — a template cannot sit in a dispatch
+                    // table — and the instance binds from explicit type
+                    // arguments plus unification, like a free generic
+                    // call.
+                    var bindings: Map<string, HirType> = {}
+                    return self.emit_generic_method_instance(
+                        function, instruction, values,
+                        method_template,
+                        method_template,
+                        bindings)
                 }
                 if declaration.kind == "class" {
                     return self.emit_guarded_dynamic_call(
@@ -2259,10 +2344,25 @@ partial class LlvmTextEmitter {
             none => {}
         }
         if slot < 0 {
-            self.fail(
-                instruction,
-                "LLVM emitter has no selector for '{instruction.text}'")
-            return ""
+            // No linked class publishes this selector: the interface has
+            // no implementation in this binary, so this call can never
+            // find a receiver. Trap at runtime instead of refusing the
+            // build, so a library's calls to its own extension points
+            // stay compilable without an implementor linked. The panic
+            // never returns; the frozen undef only satisfies later
+            // references to the call's value.
+            var trapped: string =
+                "  call void @beans_panic(ptr {self.string_pointer("no linked implementation of '{instruction.text}'")}, i64 {instruction.line}, i64 {instruction.col})\n"
+            let dead_type: string =
+                self.type_text(instruction.type)
+            if instruction.result >= 0 &&
+               dead_type != "" && dead_type != "void" {
+                let result: string = "%v{instruction.result}"
+                values[instruction.result] = result
+                trapped =
+                    "{trapped}  {result} = freeze {dead_type} undef\n"
+            }
+            return trapped
         }
         let receiver: string =
             self.value(

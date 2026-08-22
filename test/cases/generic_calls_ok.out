@@ -1,0 +1,14 @@
+int
+Map<string, List<int>>
+kept
+first
+boolx2
+main.Greeter
+main.Greets<-main.Greeter
+main.Crate<int><-main.Wires
+swapped
+7
+main.Greets=main.Greeter
+true|true
+5
+done

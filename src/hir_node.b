@@ -13,6 +13,12 @@ class HirNode {
     annotations: List<HirAnnotation>
     argument_passing: List<string>
     dispatch_slot: string
+    // A generic call's resolved bindings, kept only when the source wrote
+    // explicit type arguments. Both backends seed instantiation from these
+    // pairs, which is what lets a type argument bind a generic the
+    // signature never mentions.
+    type_argument_names: List<string>
+    type_arguments: List<HirType>
 
     fn init(kind: string, value: string, type: HirType,
             file: string, line: int, col: int) {
@@ -28,6 +34,8 @@ class HirNode {
         self.annotations = []
         self.argument_passing = []
         self.dispatch_slot = ""
+        self.type_argument_names = []
+        self.type_arguments = []
     }
 }
 

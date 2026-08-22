@@ -34,6 +34,18 @@ for compiler in "${compilers[@]}"; do
         >"$tmp/xml-contract.$(basename "$compiler")"
     "$compiler" check test/cases/runtime_hooks_ok.b \
         >"$tmp/runtime-hooks.$(basename "$compiler")"
+    # Cross-package annotation defaults resolve in the declaring scope,
+    # on the tree interpreter and a native build alike.
+    "$compiler" run test/cases/annotation_defaults_pkg/main.b \
+        >"$tmp/annotation-defaults.$(basename "$compiler")"
+    diff -u test/cases/annotation_defaults_pkg/main.out \
+        "$tmp/annotation-defaults.$(basename "$compiler")"
+    "$compiler" build test/cases/annotation_defaults_pkg/main.b \
+        -o "$tmp/annotation-defaults-native" >/dev/null
+    "$tmp/annotation-defaults-native" \
+        >"$tmp/annotation-defaults-native.out"
+    diff -u test/cases/annotation_defaults_pkg/main.out \
+        "$tmp/annotation-defaults-native.out"
     "$compiler" run test/cases/runtime_hooks_ok.b \
         >"$tmp/runtime-hooks-tree.$(basename "$compiler")"
     diff -u test/cases/runtime_hooks_ok.out \

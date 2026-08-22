@@ -41,12 +41,17 @@ class HirAnnotationArgument {
     type: HirType
     syntax: AstNode
     value: Option<HirNode>
+    // A default filled in from the annotation declaration: its value was
+    // checked once in the declaring scope and is reused, never re-checked
+    // against the use site's imports.
+    defaulted: bool
 
     fn init(name: string, type: HirType, syntax: AstNode) {
         self.name = name
         self.type = type
         self.syntax = syntax
         self.value = none
+        self.defaulted = false
     }
 }
 
@@ -1177,9 +1182,15 @@ class SignatureChecker {
                         if supplied.contains_key(field.name) { continue }
                         match field.default_syntax {
                             some(value) => {
-                                annotation.arguments.push(
+                                let filled: HirAnnotationArgument =
                                     new HirAnnotationArgument(
-                                        field.name, field.type, value))
+                                        field.name, field.type, value)
+                                // The checker reuses the declaring
+                                // scope's checked default for this
+                                // argument instead of re-resolving its
+                                // syntax against this file's imports.
+                                filled.defaulted = true
+                                annotation.arguments.push(filled)
                             }
                             none => {
                                 self.fail(

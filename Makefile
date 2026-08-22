@@ -106,6 +106,7 @@ test-frontend: $(BIN)
 	./test/version.sh
 	bash ./test/syntax_v07.sh
 	bash ./test/language_gaps.sh
+	bash ./test/generic_calls.sh
 	bash ./test/private_fields.sh
 	bash ./test/private_methods.sh
 	bash ./test/abstract_classes.sh
@@ -171,6 +172,7 @@ test-runtime: $(BIN)
 	./test/atomics.sh
 	./test/cpu_features.sh
 	./test/clocks_random.sh
+	bash ./test/reflect_perf.sh
 	./test/net_bridge_api.sh
 	./test/log.sh
 	./test/net.sh
@@ -256,6 +258,7 @@ test-core: $(BIN)
 	./test/traits.sh
 	bash ./test/syntax_v07.sh
 	bash ./test/language_gaps.sh
+	bash ./test/generic_calls.sh
 	bash ./test/private_fields.sh
 	bash ./test/private_methods.sh
 	bash ./test/abstract_classes.sh
@@ -331,6 +334,7 @@ test-core: $(BIN)
 	./test/atomics.sh
 	./test/cpu_features.sh
 	./test/clocks_random.sh
+	bash ./test/reflect_perf.sh
 	./test/net_bridge_api.sh
 	./test/log.sh
 	./test/net.sh

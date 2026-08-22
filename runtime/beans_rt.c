@@ -3147,12 +3147,20 @@ long long beans_str_hash(char* s) {
 // It is read-only after startup and therefore needs no lock on query paths.
 
 typedef long long (*BReflectInvoke)(void*, void**);
+typedef struct BReflectIdListHead {
+    long long len;
+    long long cap;
+    long long* ids;
+} BReflectIdListHead;
 typedef struct {
     char* name;
     long long kind;
     char* base;
     long long initializer_flags;
     BReflectInvoke initializer;
+    BReflectIdListHead init_params;   // rows in reflect_method_parameters
+    BReflectIdListHead ifaces;        // rows in reflect_interfaces
+    BReflectIdListHead fields;        // rows in reflect_fields
 } BReflectType;
 
 typedef struct {
@@ -3177,6 +3185,7 @@ typedef struct {
     char* result_type;
     long long flags;
     BReflectInvoke call;
+    BReflectIdListHead params;        // rows in reflect_method_parameters
 } BReflectMethod;
 
 typedef struct {
@@ -3206,6 +3215,7 @@ typedef struct {
     char* result_type;
     long long flags;
     BReflectInvoke call;
+    BReflectIdListHead params;        // rows in reflect_function_parameters
 } BReflectFunction;
 
 typedef struct {
@@ -3313,32 +3323,184 @@ static void* reflect_grow(void* data, long long* capacity,
     return grown;
 }
 
+// ---- reflect name indexes -------------------------------------------------
+//
+// Every query used to be a linear scan of a registry table, so lookup cost
+// tracked a symbol's position in the metadata, and a call re-resolved the
+// same strings several times. The indexes below make each resolution one
+// hash probe. They are filled during registration (single-threaded, before
+// main) and read-only afterwards, matching the registry's own contract.
+//
+// Lookup semantics are preserved exactly: the linear scans returned the
+// first registered row that compared equal, so probes return the matching
+// row with the smallest id instead of the first slot hit, which keeps
+// first-registered-wins independent of hash order.
+
+static long long reflect_base_length(char* name);
+static int reflect_base_equal(char* left, char* right);
+
+typedef struct {
+    unsigned long long hash;   // 0 marks an empty slot; hashes never 0
+    long long id;
+} BReflectSlot;
+
+typedef struct {
+    BReflectSlot* slots;
+    long long cap;             // power of two
+    long long len;
+} BReflectIndex;
+
+static BReflectIndex reflect_type_index;
+static BReflectIndex reflect_method_index;
+static BReflectIndex reflect_function_index;
+
+static unsigned long long reflect_hash_span(const char* s, long long n) {
+    unsigned long long h = 1469598103934665603ull;
+    for (long long i = 0; i < n; ++i) {
+        h ^= (unsigned char)s[i];
+        h *= 1099511628211ull;
+    }
+    return h ? h : 1;
+}
+
+static unsigned long long reflect_hash_base(char* name) {
+    return reflect_hash_span(name, reflect_base_length(name));
+}
+
+static unsigned long long reflect_hash_member(char* owner, char* name) {
+    unsigned long long h = reflect_hash_base(owner);
+    h ^= 0xffu;
+    h *= 1099511628211ull;
+    long long n = beans_slen(name);
+    for (long long i = 0; i < n; ++i) {
+        h ^= (unsigned char)name[i];
+        h *= 1099511628211ull;
+    }
+    return h ? h : 1;
+}
+
+static void reflect_index_insert(BReflectIndex* index,
+                                 unsigned long long hash, long long id) {
+    if (!index->cap || index->len * 4 >= index->cap * 3) {
+        long long next = index->cap ? index->cap * 2 : 256;
+        BReflectSlot* slots = (BReflectSlot*)rt_zalloc(
+            (size_t)next * sizeof(BReflectSlot));
+        if (!slots) beans_panic("out of memory", 0, 0);
+        for (long long i = 0; i < index->cap; ++i) {
+            if (!index->slots[i].hash) continue;
+            unsigned long long at =
+                index->slots[i].hash & (unsigned long long)(next - 1);
+            while (slots[at].hash)
+                at = (at + 1) & (unsigned long long)(next - 1);
+            slots[at] = index->slots[i];
+        }
+        rt_free(index->slots);
+        index->slots = slots;
+        index->cap = next;
+    }
+    unsigned long long at = hash & (unsigned long long)(index->cap - 1);
+    while (index->slots[at].hash)
+        at = (at + 1) & (unsigned long long)(index->cap - 1);
+    index->slots[at] = (BReflectSlot){hash, id};
+    ++index->len;
+}
+
+// Probe every chained slot for hash matches and hand each candidate id to
+// the caller through the iterator shape below; callers keep the smallest
+// id whose row actually compares equal.
+#define REFLECT_INDEX_EACH(index, hash_value, id_var, body)                  \
+    do {                                                                     \
+        if ((index).cap) {                                                   \
+            unsigned long long probe_hash = (hash_value);                    \
+            unsigned long long probe_at =                                    \
+                probe_hash & (unsigned long long)((index).cap - 1);          \
+            while ((index).slots[probe_at].hash) {                           \
+                if ((index).slots[probe_at].hash == probe_hash) {            \
+                    long long id_var = (index).slots[probe_at].id;           \
+                    body                                                     \
+                }                                                            \
+                probe_at =                                                   \
+                    (probe_at + 1) & (unsigned long long)((index).cap - 1);  \
+            }                                                                \
+        }                                                                    \
+    } while (0)
+
+static void reflect_id_push(BReflectIdListHead* list, long long id) {
+    if (list->len >= list->cap) {
+        long long next = list->cap ? list->cap * 2 : 4;
+        long long* grown = (long long*)rt_realloc(
+            list->ids, (size_t)next * sizeof(long long));
+        if (!grown) beans_panic("out of memory", 0, 0);
+        list->ids = grown;
+        list->cap = next;
+    }
+    list->ids[list->len++] = id;
+}
+
+// Attach lists are built as rows register. When a member arrives before the
+// row it belongs to (never the case for compiler-emitted metadata, which
+// registers owners first), the orphan flag falls the affected queries back
+// to the original linear scans.
+static int reflect_method_param_orphans;
+static int reflect_init_param_orphans;
+static int reflect_function_param_orphans;
+static int reflect_interface_orphans;
+static int reflect_field_orphans;
+
+// The smallest type id whose base name matches, or -1. This is the shared
+// resolution for every query that used to scan reflect_types front to back.
+static long long reflect_type_id_by_base(char* name) {
+    long long best = -1;
+    REFLECT_INDEX_EACH(reflect_type_index, reflect_hash_base(name), id, {
+        if ((best < 0 || id < best) &&
+            reflect_base_equal(reflect_types[id].name, name)) best = id;
+    });
+    return best;
+}
+
+// The smallest type id whose full name matches exactly (registration keys
+// on the full generic-aware name; queries key on the base).
+static long long reflect_type_id_exact(char* name) {
+    long long best = -1;
+    REFLECT_INDEX_EACH(reflect_type_index, reflect_hash_base(name), id, {
+        if ((best < 0 || id < best) &&
+            beans_str_eq(reflect_types[id].name, name)) best = id;
+    });
+    return best;
+}
+
 void beans_reflect_register_type(char* name, long long kind, char* base) {
-    for (long long i = 0; i < reflect_type_len; ++i)
-        if (beans_str_eq(reflect_types[i].name, name)) return;
+    if (reflect_type_id_exact(name) >= 0) return;
     reflect_types = (BReflectType*)reflect_grow(
         reflect_types, &reflect_type_cap, reflect_type_len,
         sizeof(BReflectType));
-    reflect_types[reflect_type_len++] =
+    reflect_types[reflect_type_len] =
         (BReflectType){name, kind, base, -1, 0};
+    reflect_index_insert(&reflect_type_index, reflect_hash_base(name),
+                         reflect_type_len);
+    ++reflect_type_len;
 }
 
 void beans_reflect_register_initializer(char* owner, long long flags,
                                         void* call) {
-    for (long long i = 0; i < reflect_type_len; ++i) {
-        if (!beans_str_eq(reflect_types[i].name, owner)) continue;
-        reflect_types[i].initializer_flags = flags;
-        reflect_types[i].initializer = (BReflectInvoke)call;
-        return;
-    }
+    long long id = reflect_type_id_exact(owner);
+    if (id < 0) return;
+    reflect_types[id].initializer_flags = flags;
+    reflect_types[id].initializer = (BReflectInvoke)call;
 }
 
 void beans_reflect_register_interface(char* owner, char* interface_name) {
     reflect_interfaces = (BReflectInterface*)reflect_grow(
         reflect_interfaces, &reflect_interface_cap, reflect_interface_len,
         sizeof(BReflectInterface));
-    reflect_interfaces[reflect_interface_len++] =
+    reflect_interfaces[reflect_interface_len] =
         (BReflectInterface){owner, interface_name};
+    long long type = reflect_type_id_by_base(owner);
+    if (type >= 0)
+        reflect_id_push(&reflect_types[type].ifaces, reflect_interface_len);
+    else
+        reflect_interface_orphans = 1;
+    ++reflect_interface_len;
 }
 
 void beans_reflect_register_field(char* owner, char* name,
@@ -3346,8 +3508,14 @@ void beans_reflect_register_field(char* owner, char* name,
     reflect_fields = (BReflectField*)reflect_grow(
         reflect_fields, &reflect_field_cap, reflect_field_len,
         sizeof(BReflectField));
-    reflect_fields[reflect_field_len++] =
+    reflect_fields[reflect_field_len] =
         (BReflectField){owner, name, type_name, flags, 0, 0};
+    long long type = reflect_type_id_by_base(owner);
+    if (type >= 0)
+        reflect_id_push(&reflect_types[type].fields, reflect_field_len);
+    else
+        reflect_field_orphans = 1;
+    ++reflect_field_len;
 }
 
 void beans_reflect_register_field_access(char* owner, char* name,
@@ -3362,23 +3530,41 @@ void beans_reflect_register_field_access(char* owner, char* name,
     }
 }
 
+// The smallest method id whose owner base-matches and name matches — the
+// same row the linear owner scan used to return.
+static long long reflect_method_id_on(char* owner, char* name) {
+    long long best = -1;
+    REFLECT_INDEX_EACH(reflect_method_index,
+                       reflect_hash_member(owner, name), id, {
+        if ((best < 0 || id < best) &&
+            reflect_base_equal(reflect_methods[id].owner, owner) &&
+            beans_str_eq(reflect_methods[id].name, name)) best = id;
+    });
+    return best;
+}
+
 void beans_reflect_register_method(char* owner, char* name,
                                    char* result_type, long long flags) {
     reflect_methods = (BReflectMethod*)reflect_grow(
         reflect_methods, &reflect_method_cap, reflect_method_len,
         sizeof(BReflectMethod));
-    reflect_methods[reflect_method_len++] =
+    reflect_methods[reflect_method_len] =
         (BReflectMethod){owner, name, result_type, flags, 0};
+    reflect_index_insert(&reflect_method_index,
+                         reflect_hash_member(owner, name),
+                         reflect_method_len);
+    ++reflect_method_len;
 }
 
 void beans_reflect_register_method_call(char* owner, char* name, void* call) {
-    for (long long i = 0; i < reflect_method_len; ++i) {
-        if (beans_str_eq(reflect_methods[i].owner, owner) &&
-            beans_str_eq(reflect_methods[i].name, name)) {
-            reflect_methods[i].call = (BReflectInvoke)call;
-            return;
-        }
-    }
+    long long best = -1;
+    REFLECT_INDEX_EACH(reflect_method_index,
+                       reflect_hash_member(owner, name), id, {
+        if ((best < 0 || id < best) &&
+            beans_str_eq(reflect_methods[id].owner, owner) &&
+            beans_str_eq(reflect_methods[id].name, name)) best = id;
+    });
+    if (best >= 0) reflect_methods[best].call = (BReflectInvoke)call;
 }
 
 void beans_reflect_register_method_parameter(char* owner, char* callable,
@@ -3387,8 +3573,24 @@ void beans_reflect_register_method_parameter(char* owner, char* callable,
     reflect_method_parameters = (BReflectMethodParameter*)reflect_grow(
         reflect_method_parameters, &reflect_method_parameter_cap,
         reflect_method_parameter_len, sizeof(BReflectMethodParameter));
-    reflect_method_parameters[reflect_method_parameter_len++] =
+    reflect_method_parameters[reflect_method_parameter_len] =
         (BReflectMethodParameter){owner, callable, name, type_name, passing};
+    if (beans_slen(callable) == 4 && memcmp(callable, "init", 4) == 0) {
+        long long type = reflect_type_id_by_base(owner);
+        if (type >= 0)
+            reflect_id_push(&reflect_types[type].init_params,
+                            reflect_method_parameter_len);
+        else
+            reflect_init_param_orphans = 1;
+    } else {
+        long long method = reflect_method_id_on(owner, callable);
+        if (method >= 0)
+            reflect_id_push(&reflect_methods[method].params,
+                            reflect_method_parameter_len);
+        else
+            reflect_method_param_orphans = 1;
+    }
+    ++reflect_method_parameter_len;
 }
 
 void beans_reflect_register_variant(char* owner, char* name) {
@@ -3419,22 +3621,35 @@ void beans_reflect_register_variant_parameter(char* owner, char* variant,
         (BReflectVariantParameter){owner, variant, name, type_name};
 }
 
+// Functions key on the full qualified name, exactly as registered.
+static long long reflect_function_id_exact(char* qualified) {
+    long long best = -1;
+    REFLECT_INDEX_EACH(reflect_function_index,
+                       reflect_hash_span(qualified, beans_slen(qualified)),
+                       id, {
+        if ((best < 0 || id < best) &&
+            beans_str_eq(reflect_functions[id].qualified, qualified))
+            best = id;
+    });
+    return best;
+}
+
 void beans_reflect_register_function(char* qualified, char* name,
                                      char* result_type, long long flags) {
     reflect_functions = (BReflectFunction*)reflect_grow(
         reflect_functions, &reflect_function_cap, reflect_function_len,
         sizeof(BReflectFunction));
-    reflect_functions[reflect_function_len++] =
+    reflect_functions[reflect_function_len] =
         (BReflectFunction){qualified, name, result_type, flags, 0};
+    reflect_index_insert(&reflect_function_index,
+                         reflect_hash_span(qualified, beans_slen(qualified)),
+                         reflect_function_len);
+    ++reflect_function_len;
 }
 
 void beans_reflect_register_function_call(char* qualified, void* call) {
-    for (long long i = 0; i < reflect_function_len; ++i) {
-        if (beans_str_eq(reflect_functions[i].qualified, qualified)) {
-            reflect_functions[i].call = (BReflectInvoke)call;
-            return;
-        }
-    }
+    long long id = reflect_function_id_exact(qualified);
+    if (id >= 0) reflect_functions[id].call = (BReflectInvoke)call;
 }
 
 void beans_reflect_register_function_parameter(char* function_name, char* name,
@@ -3443,8 +3658,15 @@ void beans_reflect_register_function_parameter(char* function_name, char* name,
     reflect_function_parameters = (BReflectFunctionParameter*)reflect_grow(
         reflect_function_parameters, &reflect_function_parameter_cap,
         reflect_function_parameter_len, sizeof(BReflectFunctionParameter));
-    reflect_function_parameters[reflect_function_parameter_len++] =
+    reflect_function_parameters[reflect_function_parameter_len] =
         (BReflectFunctionParameter){function_name, name, type_name, passing};
+    long long function = reflect_function_id_exact(function_name);
+    if (function >= 0)
+        reflect_id_push(&reflect_functions[function].params,
+                        reflect_function_parameter_len);
+    else
+        reflect_function_param_orphans = 1;
+    ++reflect_function_parameter_len;
 }
 
 void beans_reflect_register_annotation_type(char* name, char* retention,
@@ -3719,9 +3941,7 @@ static int reflect_base_equal(char* left, char* right) {
 }
 
 static long long reflect_find_type(char* name) {
-    for (long long i = 0; i < reflect_type_len; ++i)
-        if (reflect_base_equal(reflect_types[i].name, name)) return i;
-    return -1;
+    return reflect_type_id_by_base(name);
 }
 
 long long beans_reflect_type_argument_count(char* name) {
@@ -3831,11 +4051,21 @@ long long beans_reflect_is_assignable_from(char* wanted, char* actual) {
     if (found < 0) return 0;
     char* current = reflect_types[found].name;
     for (long long pass = 0; pass < reflect_type_len; ++pass) {
-        for (long long i = 0; i < reflect_interface_len; ++i)
-            if (reflect_base_equal(reflect_interfaces[i].owner, current) &&
-                reflect_base_equal(wanted, reflect_interfaces[i].interface_name))
-                return 1;
         long long at = reflect_find_type(current);
+        if (reflect_interface_orphans) {
+            for (long long i = 0; i < reflect_interface_len; ++i)
+                if (reflect_base_equal(reflect_interfaces[i].owner, current) &&
+                    reflect_base_equal(wanted,
+                                       reflect_interfaces[i].interface_name))
+                    return 1;
+        } else if (at >= 0) {
+            BReflectIdListHead* ifaces = &reflect_types[at].ifaces;
+            for (long long i = 0; i < ifaces->len; ++i)
+                if (reflect_base_equal(
+                        wanted,
+                        reflect_interfaces[ifaces->ids[i]].interface_name))
+                    return 1;
+        }
         if (at < 0 || !reflect_types[at].base) break;
         current = reflect_types[at].base;
     }
@@ -4009,6 +4239,21 @@ char* beans_reflect_error_message(void) {
 }
 
 static long long reflect_named_field_id(char* owner, char* name) {
+    if (!reflect_field_orphans) {
+        // Walk derived to base; within one level the last registered row
+        // with the name wins, matching the collect-and-replace listing.
+        long long type = reflect_find_type(owner);
+        for (long long guard = 0;
+             type >= 0 && guard++ <= reflect_type_len;) {
+            BReflectIdListHead* fields = &reflect_types[type].fields;
+            for (long long i = fields->len; i-- > 0;)
+                if (beans_str_eq(reflect_fields[fields->ids[i]].name, name))
+                    return fields->ids[i];
+            if (!reflect_types[type].base) break;
+            type = reflect_find_type(reflect_types[type].base);
+        }
+        return -1;
+    }
     long long total = 0;
     reflect_field_id(owner, 1, -1, &total);
     for (long long i = 0; i < total; ++i) {
@@ -4102,10 +4347,8 @@ static long long reflect_method_id(char* owner, char* name) {
     long long type = reflect_find_type(owner);
     for (long long guard = 0;
          type >= 0 && guard++ <= reflect_type_len;) {
-        for (long long i = 0; i < reflect_method_len; ++i)
-            if (reflect_base_equal(reflect_methods[i].owner,
-                                   reflect_types[type].name) &&
-                beans_str_eq(reflect_methods[i].name, name)) return i;
+        long long id = reflect_method_id_on(reflect_types[type].name, name);
+        if (id >= 0) return id;
         if (!reflect_types[type].base) break;
         type = reflect_find_type(reflect_types[type].base);
     }
@@ -4144,6 +4387,13 @@ static long long reflect_method_parameter_id(char* owner, char* callable,
                                              long long* total) {
     long long method = reflect_method_id(owner, callable);
     if (method < 0) { if (total) *total = -1; return -1; }
+    if (!reflect_method_param_orphans) {
+        BReflectIdListHead* params = &reflect_methods[method].params;
+        if (total) *total = wanted >= 0 && wanted < params->len
+                                ? wanted + 1 : params->len;
+        return wanted >= 0 && wanted < params->len
+                   ? params->ids[wanted] : -1;
+    }
     long long current = 0;
     for (long long i = 0; i < reflect_method_parameter_len; ++i) {
         if (!reflect_base_equal(reflect_method_parameters[i].owner,
@@ -4194,21 +4444,34 @@ static long long reflect_initializer_parameter_id(char* owner,
     long long type = reflect_find_type(owner);
     for (long long guard = 0;
          type >= 0 && guard++ <= reflect_type_len;) {
-        long long current = 0;
-        for (long long i = 0; i < reflect_method_parameter_len; ++i) {
-            if (!reflect_base_equal(reflect_method_parameters[i].owner,
-                                    reflect_types[type].name) ||
-                beans_slen(reflect_method_parameters[i].callable) != 4 ||
-                memcmp(reflect_method_parameters[i].callable, "init", 4) != 0)
-                continue;
-            if (current++ == wanted) {
-                if (total) *total = current;
-                return i;
+        if (!reflect_init_param_orphans) {
+            BReflectIdListHead* params = &reflect_types[type].init_params;
+            if (params->len) {
+                if (wanted >= 0 && wanted < params->len) {
+                    if (total) *total = wanted + 1;
+                    return params->ids[wanted];
+                }
+                if (total) *total = params->len;
+                return -1;
             }
-        }
-        if (current) {
-            if (total) *total = current;
-            return -1;
+        } else {
+            long long current = 0;
+            for (long long i = 0; i < reflect_method_parameter_len; ++i) {
+                if (!reflect_base_equal(reflect_method_parameters[i].owner,
+                                        reflect_types[type].name) ||
+                    beans_slen(reflect_method_parameters[i].callable) != 4 ||
+                    memcmp(reflect_method_parameters[i].callable,
+                           "init", 4) != 0)
+                    continue;
+                if (current++ == wanted) {
+                    if (total) *total = current;
+                    return i;
+                }
+            }
+            if (current) {
+                if (total) *total = current;
+                return -1;
+            }
         }
         if (!reflect_types[type].base) break;
         type = reflect_find_type(reflect_types[type].base);
@@ -4303,9 +4566,7 @@ char* beans_reflect_variant_parameter_type(char* owner, char* variant,
 }
 
 static long long reflect_find_function(char* qualified) {
-    for (long long i = 0; i < reflect_function_len; ++i)
-        if (beans_str_eq(reflect_functions[i].qualified, qualified)) return i;
-    return -1;
+    return reflect_function_id_exact(qualified);
 }
 
 long long beans_reflect_registry_type_count(void) { return reflect_type_len; }
@@ -4336,9 +4597,17 @@ long long beans_reflect_function_flags(char* qualified) {
 static long long reflect_function_parameter_id(char* qualified,
                                                long long wanted,
                                                long long* total) {
-    if (reflect_find_function(qualified) < 0) {
+    long long function = reflect_find_function(qualified);
+    if (function < 0) {
         if (total) *total = -1;
         return -1;
+    }
+    if (!reflect_function_param_orphans) {
+        BReflectIdListHead* params = &reflect_functions[function].params;
+        if (total) *total = wanted >= 0 && wanted < params->len
+                                ? wanted + 1 : params->len;
+        return wanted >= 0 && wanted < params->len
+                   ? params->ids[wanted] : -1;
     }
     long long current = 0;
     for (long long i = 0; i < reflect_function_parameter_len; ++i) {
@@ -4372,6 +4641,10 @@ long long beans_reflect_function_parameter_passing(char* qualified,
     return id >= 0 ? reflect_function_parameters[id].passing : -1;
 }
 
+// Calls up to this many arguments run on stack scratch, with no allocation
+// anywhere on the invoke path.
+#define REFLECT_INVOKE_STACK_ARITY 8
+
 static long long reflect_invoke(BReflectInvoke call, void* receiver,
                                 long long address, long long count,
                                 char** parameter_types,
@@ -4379,10 +4652,14 @@ static long long reflect_invoke(BReflectInvoke call, void* receiver,
     if (!call) return reflect_fail(5);
     if (count < 0) return reflect_fail(6);
     long long* handles = (long long*)(intptr_t)address;
-    void** data = (void**)rt_zalloc(
-        (size_t)(count ? count : 1) * sizeof(void*));
-    BReflectValue** values = (BReflectValue**)rt_zalloc(
-        (size_t)(count ? count : 1) * sizeof(BReflectValue*));
+    void* data_stack[REFLECT_INVOKE_STACK_ARITY];
+    BReflectValue* value_stack[REFLECT_INVOKE_STACK_ARITY];
+    int spilled = count > REFLECT_INVOKE_STACK_ARITY;
+    void** data = spilled
+        ? (void**)rt_zalloc((size_t)count * sizeof(void*)) : data_stack;
+    BReflectValue** values = spilled
+        ? (BReflectValue**)rt_zalloc((size_t)count * sizeof(BReflectValue*))
+        : value_stack;
     if (!data || !values) beans_panic("out of memory", 0, 0);
     for (long long i = 0; i < count; ++i) {
         values[i] = handles
@@ -4391,13 +4668,11 @@ static long long reflect_invoke(BReflectInvoke call, void* receiver,
             (!beans_str_eq(parameter_types[i], values[i]->type_name) &&
              !beans_reflect_is_assignable_from(
                  parameter_types[i], values[i]->type_name))) {
-            rt_free(data);
-            rt_free(values);
+            if (spilled) { rt_free(data); rt_free(values); }
             return reflect_fail(4);
         }
         if (parameter_passing[i] == 2) {
-            rt_free(data);
-            rt_free(values);
+            if (spilled) { rt_free(data); rt_free(values); }
             return reflect_fail(5);
         }
         data[i] = values[i]->data;
@@ -4412,9 +4687,72 @@ static long long reflect_invoke(BReflectInvoke call, void* receiver,
             values[i]->size = 0;
         }
     }
-    rt_free(data);
-    rt_free(values);
+    if (spilled) { rt_free(data); rt_free(values); }
     return result ? result : reflect_fail(5);
+}
+
+// Fill types/passing scratch for one callable from its attached parameter
+// rows. Returns the arity, or -1 when the caller must use the legacy
+// per-index queries (orphaned rows).
+static long long reflect_fill_method_arguments(long long method,
+                                               long long count,
+                                               char** types,
+                                               long long* passing) {
+    if (reflect_method_param_orphans) return -1;
+    BReflectIdListHead* params = &reflect_methods[method].params;
+    if (params->len != count) return params->len;
+    for (long long i = 0; i < count; ++i) {
+        BReflectMethodParameter* row =
+            &reflect_method_parameters[params->ids[i]];
+        types[i] = row->type_name;
+        passing[i] = row->passing;
+    }
+    return count;
+}
+
+static long long reflect_function_invoke(long long id, long long address,
+                                         long long count) {
+    BReflectFunction* function = &reflect_functions[id];
+    if (!(function->flags & 1)) return reflect_fail(2);
+    if (function->flags & (4 | 8 | 16)) return reflect_fail(5);
+    char* type_stack[REFLECT_INVOKE_STACK_ARITY];
+    long long passing_stack[REFLECT_INVOKE_STACK_ARITY];
+    int spilled = count > REFLECT_INVOKE_STACK_ARITY;
+    char** types = spilled
+        ? (char**)rt_zalloc((size_t)(count ? count : 1) * sizeof(char*))
+        : type_stack;
+    long long* passing = spilled
+        ? (long long*)rt_zalloc((size_t)(count ? count : 1) *
+                                sizeof(long long))
+        : passing_stack;
+    if (!types || !passing) beans_panic("out of memory", 0, 0);
+    long long expected = -1;
+    if (!reflect_function_param_orphans && count >= 0) {
+        BReflectIdListHead* params = &function->params;
+        expected = params->len;
+        if (params->len == count)
+            for (long long i = 0; i < count; ++i) {
+                BReflectFunctionParameter* row =
+                    &reflect_function_parameters[params->ids[i]];
+                types[i] = row->type_name;
+                passing[i] = row->passing;
+            }
+    } else if (count >= 0) {
+        expected = beans_reflect_function_parameter_count(
+            function->qualified);
+        if (expected == count)
+            for (long long i = 0; i < count; ++i) {
+                types[i] = beans_reflect_function_parameter_type(
+                    function->qualified, i);
+                passing[i] = beans_reflect_function_parameter_passing(
+                    function->qualified, i);
+            }
+    }
+    long long result = count == expected
+        ? reflect_invoke(function->call, 0, address, count, types, passing)
+        : reflect_fail(6);
+    if (spilled) { rt_free(types); rt_free(passing); }
+    return result;
 }
 
 long long beans_reflect_function_call(char* qualified,
@@ -4423,24 +4761,68 @@ long long beans_reflect_function_call(char* qualified,
     reflect_error_code = 0;
     long long id = reflect_find_function(qualified);
     if (id < 0) return reflect_fail(1);
-    BReflectFunction* function = &reflect_functions[id];
-    if (!(function->flags & 1)) return reflect_fail(2);
-    if (function->flags & (4 | 8 | 16)) return reflect_fail(5);
-    long long expected = beans_reflect_function_parameter_count(qualified);
-    if (count != expected) return reflect_fail(6);
-    char** types = (char**)rt_zalloc(
-        (size_t)(count ? count : 1) * sizeof(char*));
-    long long* passing = (long long*)rt_zalloc(
-        (size_t)(count ? count : 1) * sizeof(long long));
-    if (!types || !passing) beans_panic("out of memory", 0, 0);
-    for (long long i = 0; i < count; ++i) {
-        types[i] = beans_reflect_function_parameter_type(qualified, i);
-        passing[i] = beans_reflect_function_parameter_passing(qualified, i);
+    return reflect_function_invoke(id, address, count);
+}
+
+// The resolved core of a reflective method call: flags, receiver and arity
+// checks, virtual dispatch, then one invoke. checked_owner is the name the
+// receiver is validated against — the caller-supplied owner on the string
+// path, the declaring owner on the handle path.
+static long long reflect_method_invoke(long long id, char* checked_owner,
+                                       long long receiver_raw,
+                                       long long address, long long count,
+                                       long long static_call) {
+    BReflectMethod* method = &reflect_methods[id];
+    if (reflect_special_method(method->name)) return reflect_fail(1);
+    if (!(method->flags & 1)) return reflect_fail(2);
+    if (method->flags & (4 | 8 | 16)) return reflect_fail(5);
+    if (((method->flags & 2) != 0) != (static_call != 0))
+        return reflect_fail(3);
+    BReflectValue* receiver = 0;
+    BReflectInvoke call = method->call;
+    if (!static_call) {
+        receiver = (BReflectValue*)(intptr_t)receiver_raw;
+        if (!receiver || !receiver->data ||
+            (!beans_str_eq(checked_owner, receiver->type_name) &&
+             !beans_reflect_is_assignable_from(checked_owner,
+                                               receiver->type_name)))
+            return reflect_fail(3);
+        /* Virtual dispatch: prefer an override declared by the runtime type. */
+        long long actual = reflect_method_id(receiver->type_name,
+                                             method->name);
+        if (actual >= 0) call = reflect_methods[actual].call;
     }
-    long long result = reflect_invoke(
-        function->call, 0, address, count, types, passing);
-    rt_free(types);
-    rt_free(passing);
+    char* type_stack[REFLECT_INVOKE_STACK_ARITY];
+    long long passing_stack[REFLECT_INVOKE_STACK_ARITY];
+    int spilled = count > REFLECT_INVOKE_STACK_ARITY;
+    char** types = spilled
+        ? (char**)rt_zalloc((size_t)(count ? count : 1) * sizeof(char*))
+        : type_stack;
+    long long* passing = spilled
+        ? (long long*)rt_zalloc((size_t)(count ? count : 1) *
+                                sizeof(long long))
+        : passing_stack;
+    if (!types || !passing) beans_panic("out of memory", 0, 0);
+    long long expected = count < 0 ? -1
+        : reflect_fill_method_arguments(id, count, types, passing);
+    if (expected < 0 && count >= 0) {
+        // Orphaned rows: the attach lists are incomplete, so resolve the
+        // signature through the original scans.
+        expected = beans_reflect_method_parameter_count(method->owner,
+                                                        method->name);
+        if (expected == count)
+            for (long long i = 0; i < count; ++i) {
+                types[i] = beans_reflect_method_parameter_type(
+                    method->owner, method->name, i);
+                passing[i] = beans_reflect_method_parameter_passing(
+                    method->owner, method->name, i);
+            }
+    }
+    long long result = count == expected
+        ? reflect_invoke(call, receiver ? receiver->data : 0,
+                         address, count, types, passing)
+        : reflect_fail(6);
+    if (spilled) { rt_free(types); rt_free(passing); }
     return result;
 }
 
@@ -4452,38 +4834,42 @@ long long beans_reflect_method_call(char* owner, char* name,
     reflect_error_code = 0;
     long long id = reflect_method_id(owner, name);
     if (id < 0 || reflect_special_method(name)) return reflect_fail(1);
-    BReflectMethod* method = &reflect_methods[id];
-    if (!(method->flags & 1)) return reflect_fail(2);
-    if (method->flags & (4 | 8 | 16)) return reflect_fail(5);
-    if (((method->flags & 2) != 0) != (static_call != 0))
-        return reflect_fail(3);
-    BReflectValue* receiver = 0;
-    if (!static_call) {
-        receiver = (BReflectValue*)(intptr_t)receiver_raw;
-        if (!receiver || !receiver->data ||
-            (!beans_str_eq(owner, receiver->type_name) &&
-             !beans_reflect_is_assignable_from(owner, receiver->type_name)))
-            return reflect_fail(3);
-        /* Virtual dispatch: prefer an override declared by the runtime type. */
-        long long actual = reflect_method_id(receiver->type_name, name);
-        if (actual >= 0) { id = actual; method = &reflect_methods[id]; }
-    }
-    long long expected = beans_reflect_method_parameter_count(owner, name);
+    return reflect_method_invoke(id, owner, receiver_raw,
+                                 address, count, static_call);
+}
+
+static long long reflect_initializer_invoke(long long type,
+                                            long long address,
+                                            long long count) {
+    BReflectType* reflected = &reflect_types[type];
+    if (reflected->initializer_flags < 0) return reflect_fail(1);
+    if (!(reflected->initializer_flags & 1)) return reflect_fail(2);
+    if (reflected->initializer_flags & (4 | 8 | 16))
+        return reflect_fail(5);
+    long long expected = 0;
+    reflect_initializer_parameter_id(reflected->name, -1, &expected);
     if (count != expected) return reflect_fail(6);
-    char** types = (char**)rt_zalloc(
-        (size_t)(count ? count : 1) * sizeof(char*));
-    long long* passing = (long long*)rt_zalloc(
-        (size_t)(count ? count : 1) * sizeof(long long));
+    char* type_stack[REFLECT_INVOKE_STACK_ARITY];
+    long long passing_stack[REFLECT_INVOKE_STACK_ARITY];
+    int spilled = count > REFLECT_INVOKE_STACK_ARITY;
+    char** types = spilled
+        ? (char**)rt_zalloc((size_t)(count ? count : 1) * sizeof(char*))
+        : type_stack;
+    long long* passing = spilled
+        ? (long long*)rt_zalloc((size_t)(count ? count : 1) *
+                                sizeof(long long))
+        : passing_stack;
     if (!types || !passing) beans_panic("out of memory", 0, 0);
     for (long long i = 0; i < count; ++i) {
-        types[i] = beans_reflect_method_parameter_type(owner, name, i);
-        passing[i] = beans_reflect_method_parameter_passing(owner, name, i);
+        long long row = reflect_initializer_parameter_id(
+            reflected->name, i, 0);
+        types[i] = row >= 0
+            ? reflect_method_parameters[row].type_name : str_make("", 0);
+        passing[i] = row >= 0 ? reflect_method_parameters[row].passing : -1;
     }
     long long result = reflect_invoke(
-        method->call, receiver ? receiver->data : 0,
-        address, count, types, passing);
-    rt_free(types);
-    rt_free(passing);
+        reflected->initializer, 0, address, count, types, passing);
+    if (spilled) { rt_free(types); rt_free(passing); }
     return result;
 }
 
@@ -4494,26 +4880,86 @@ long long beans_reflect_initializer_call(char* owner,
     long long type = reflect_find_type(owner);
     if (type < 0 || reflect_types[type].initializer_flags < 0)
         return reflect_fail(1);
-    BReflectType* reflected = &reflect_types[type];
-    if (!(reflected->initializer_flags & 1)) return reflect_fail(2);
-    if (reflected->initializer_flags & (4 | 8 | 16))
-        return reflect_fail(5);
-    long long expected = beans_reflect_initializer_parameter_count(owner);
-    if (count != expected) return reflect_fail(6);
-    char** types = (char**)rt_zalloc(
-        (size_t)(count ? count : 1) * sizeof(char*));
-    long long* passing = (long long*)rt_zalloc(
-        (size_t)(count ? count : 1) * sizeof(long long));
-    if (!types || !passing) beans_panic("out of memory", 0, 0);
-    for (long long i = 0; i < count; ++i) {
-        types[i] = beans_reflect_initializer_parameter_type(owner, i);
-        passing[i] = beans_reflect_initializer_parameter_passing(owner, i);
-    }
-    long long result = reflect_invoke(
-        reflected->initializer, 0, address, count, types, passing);
-    rt_free(types);
-    rt_free(passing);
-    return result;
+    return reflect_initializer_invoke(type, address, count);
+}
+
+// ---- resolved handles -----------------------------------------------------
+//
+// A handle pins one registry row, so a cached descriptor stops re-resolving
+// its strings on every use. A handle is the row id offset by one, tagged in
+// the top byte with the namespace it resolves in, so a handle from one
+// namespace fails cleanly in another; zero means the descriptor did not
+// resolve, and the call entries then fail with the same missing code the
+// string entries produce. The receiver of a handle call is validated
+// against the declaring owner, which accepts any receiver the declaring
+// class accepts.
+
+#define REFLECT_HANDLE_TAG_SHIFT 56
+#define REFLECT_HANDLE_METHOD 1ll
+#define REFLECT_HANDLE_INITIALIZER 2ll
+#define REFLECT_HANDLE_FUNCTION 3ll
+
+static long long reflect_handle_id(long long handle, long long tag,
+                                   long long limit) {
+    if (handle <= 0 || (handle >> REFLECT_HANDLE_TAG_SHIFT) != tag)
+        return -1;
+    long long id =
+        (handle & ((1ll << REFLECT_HANDLE_TAG_SHIFT) - 1)) - 1;
+    return id >= 0 && id < limit ? id : -1;
+}
+
+long long beans_reflect_method_handle(char* owner, char* name) {
+    if (reflect_special_method(name)) return 0;
+    long long id = reflect_method_id(owner, name);
+    return id >= 0
+        ? (REFLECT_HANDLE_METHOD << REFLECT_HANDLE_TAG_SHIFT) + id + 1 : 0;
+}
+
+long long beans_reflect_method_call_handle(long long handle,
+                                           long long receiver_raw,
+                                           long long address,
+                                           long long count,
+                                           long long static_call) {
+    reflect_error_code = 0;
+    long long id = reflect_handle_id(handle, REFLECT_HANDLE_METHOD,
+                                     reflect_method_len);
+    if (id < 0) return reflect_fail(1);
+    return reflect_method_invoke(id, reflect_methods[id].owner,
+                                 receiver_raw, address, count, static_call);
+}
+
+long long beans_reflect_initializer_handle(char* owner) {
+    long long type = reflect_find_type(owner);
+    if (type < 0 || reflect_types[type].initializer_flags < 0) return 0;
+    return (REFLECT_HANDLE_INITIALIZER << REFLECT_HANDLE_TAG_SHIFT) +
+           type + 1;
+}
+
+long long beans_reflect_initializer_call_handle(long long handle,
+                                                long long address,
+                                                long long count) {
+    reflect_error_code = 0;
+    long long type = reflect_handle_id(handle, REFLECT_HANDLE_INITIALIZER,
+                                       reflect_type_len);
+    if (type < 0) return reflect_fail(1);
+    return reflect_initializer_invoke(type, address, count);
+}
+
+long long beans_reflect_function_handle(char* qualified) {
+    long long id = reflect_find_function(qualified);
+    return id >= 0
+        ? (REFLECT_HANDLE_FUNCTION << REFLECT_HANDLE_TAG_SHIFT) + id + 1
+        : 0;
+}
+
+long long beans_reflect_function_call_handle(long long handle,
+                                             long long address,
+                                             long long count) {
+    reflect_error_code = 0;
+    long long id = reflect_handle_id(handle, REFLECT_HANDLE_FUNCTION,
+                                     reflect_function_len);
+    if (id < 0) return reflect_fail(1);
+    return reflect_function_invoke(id, address, count);
 }
 
 long long beans_reflect_variant_make(char* owner, char* name,

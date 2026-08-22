@@ -66,6 +66,12 @@ class TreeInterpreter {
     reflect_annotations: Map<int, HirAnnotation>
     reflect_annotation_values: Map<int, TreeReflectAnnotationValue>
     next_reflect_annotation: int
+    // Resolved reflection handles: parallel lists, handle = index + 1.
+    // Kind 0 is a method (owner is the declaring type), 1 an initializer,
+    // 2 a free function (owner holds the qualified name).
+    reflect_handle_kinds: List<int>
+    reflect_handle_owners: List<string>
+    reflect_handle_names: List<string>
     runtime_hook_active: bool
     // Active concrete arguments for the generic function or class method
     // being interpreted. Native code specializes these bodies; the tree
@@ -117,6 +123,9 @@ class TreeInterpreter {
         self.reflect_annotations = {}
         self.reflect_annotation_values = {}
         self.next_reflect_annotation = 1
+        self.reflect_handle_kinds = []
+        self.reflect_handle_owners = []
+        self.reflect_handle_names = []
         self.runtime_hook_active = false
         self.generic_type_bindings = []
         self.debugger = none
@@ -203,6 +212,15 @@ class TreeInterpreter {
             self.current_type_bindings()
         let bindings: Map<string, HirType> =
             copy_type_map(inherited)
+        // Explicit type arguments seed the bindings first; they may name
+        // the caller's own generics, which resolve through the inherited
+        // frame. This is what binds a generic the signature never
+        // mentions.
+        for index: int in 0..node.type_argument_names.len() {
+            bindings[node.type_argument_names[index]] =
+                self.runtime_type(
+                    node.type_arguments[index], inherited)
+        }
         var argument_offset: int = 0
         if node.kind == "method_call" && node.children.len() != 0 {
             self.bind_owner_type(
@@ -1139,7 +1157,98 @@ class TreeInterpreter {
     fn reflection_builtin(
         node: HirNode,
         arguments: List<TreeValue>) -> TreeValue {
-        let name: string = node.value
+        return self.reflection_builtin_named(
+            node, node.value, arguments)
+    }
+
+    // Resolve a reflection handle request, or translate a handle-based
+    // call back into its string-keyed form and re-enter. Handles are
+    // indexes into the parallel handle lists, offset by one so zero can
+    // mean unresolved, mirroring the native registry's contract.
+    fn reflection_handle_builtin(
+        node: HirNode, name: string,
+        arguments: List<TreeValue>) -> TreeValue {
+        if name == "method_handle" {
+            let owner: string = arguments[0].text
+            let method_name: string = arguments[1].text
+            if method_name == "init" || method_name == "deinit" {
+                return TreeValue.integer(0)
+            }
+            match self.reflect_method(owner, method_name) {
+                some(item) => {
+                    self.reflect_handle_kinds.push(0)
+                    self.reflect_handle_owners.push(
+                        display_symbol(item.owner))
+                    self.reflect_handle_names.push(method_name)
+                    return TreeValue.integer(
+                        self.reflect_handle_kinds.len())
+                }
+                none => { return TreeValue.integer(0) }
+            }
+        }
+        if name == "initializer_handle" {
+            let flags: TreeValue = self.reflection_builtin_named(
+                node, "initializer_flags", arguments)
+            if flags.int_data < 0 { return TreeValue.integer(0) }
+            self.reflect_handle_kinds.push(1)
+            self.reflect_handle_owners.push(arguments[0].text)
+            self.reflect_handle_names.push("")
+            return TreeValue.integer(self.reflect_handle_kinds.len())
+        }
+        if name == "function_handle" {
+            let qualified: string = arguments[0].text
+            match self.reflect_function(qualified) {
+                some(_) => {
+                    self.reflect_handle_kinds.push(2)
+                    self.reflect_handle_owners.push(qualified)
+                    self.reflect_handle_names.push("")
+                    return TreeValue.integer(
+                        self.reflect_handle_kinds.len())
+                }
+                none => { return TreeValue.integer(0) }
+            }
+        }
+        let wanted_kind: int =
+            if name == "method_call_handle" { 0 }
+            else if name == "initializer_call_handle" { 1 }
+            else { 2 }
+        let handle: int = arguments[0].int_data
+        if handle <= 0 || handle > self.reflect_handle_kinds.len() ||
+           self.reflect_handle_kinds[handle - 1] != wanted_kind {
+            self.reflect_error_code = 1
+            self.reflect_error_message = "missing reflected member"
+            return TreeValue.integer(0)
+        }
+        let owner: string = self.reflect_handle_owners[handle - 1]
+        if wanted_kind == 0 {
+            var rewritten: List<TreeValue> = [
+                TreeValue.string(owner),
+                TreeValue.string(self.reflect_handle_names[handle - 1]),
+                arguments[1], arguments[2], arguments[3], arguments[4]]
+            return self.reflection_builtin_named(
+                node, "method_call", rewritten)
+        }
+        var rewritten: List<TreeValue> = [
+            TreeValue.string(owner), arguments[1], arguments[2]]
+        return self.reflection_builtin_named(
+            node,
+            if wanted_kind == 1 { "initializer_call" }
+            else { "function_call" },
+            rewritten)
+    }
+
+    fn reflection_builtin_named(
+        node: HirNode, name: string,
+        arguments: List<TreeValue>) -> TreeValue {
+        if name == "method_handle" ||
+           name == "initializer_handle" ||
+           name == "function_handle" ||
+           name == "method_call_handle" ||
+           name == "initializer_call_handle" ||
+           name == "function_call_handle" {
+            return self.reflection_handle_builtin(
+                node, name, arguments)
+        }
         let type_name: string =
             if arguments.len() == 0 { "" } else {
                 arguments[0].text
