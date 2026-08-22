@@ -24,6 +24,23 @@ This file records user-facing changes in each Beans release.
   as a local function name — extern C, async and ownership-parameter
   functions are refused, and visibility is enforced.
 
+### Fixed
+
+- Native builds of reflection-heavy programs stopped being quadratic in
+  the emitter: the generic-family walk resolves parents through an index
+  with a memo instead of rescanning every function, and family cloning
+  stops at its fixpoint instead of looping the full function count. An
+  Espresso application that took near five minutes to build now builds
+  in about three seconds.
+- Calling an interface method with no linked implementor now compiles
+  and traps at runtime ("no linked implementation") instead of failing
+  the build — a library may call its own extension points without an
+  implementation linked.
+- `json.encode` and `json.decode` forward through a generic function:
+  the struct-shape validation defers to the wrapper's call sites (and
+  the runtime encoder's own error) when the target is the function's
+  own type parameter.
+
 ### Changed
 
 - Reflective dispatch is no longer paid per string: the runtime registry

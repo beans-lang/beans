@@ -26,6 +26,11 @@ partial class LlvmTextEmitter {
     string_ids: Map<string, int>
     function_symbols: Map<string, string>
     declarations: Map<string, HirDeclaration>
+    // name -> parent for every lowered function, with a memo of the
+    // family walk: both were linear scans over program.functions, paid
+    // once per function and once per instantiation candidate.
+    function_parents: Map<string, string>
+    generic_family_cache: Map<string, bool>
     class_ids: Map<string, int>
     class_layouts: Map<string, LlvmClassLayout>
     ordered_class_layouts: List<LlvmClassLayout>
@@ -112,6 +117,8 @@ partial class LlvmTextEmitter {
         self.strings = []
         self.string_ids = {}
         self.function_symbols = {}
+        self.function_parents = {}
+        self.generic_family_cache = {}
         self.declarations = {}
         self.class_ids = {}
         self.class_layouts = {}

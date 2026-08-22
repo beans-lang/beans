@@ -158,23 +158,24 @@ partial class LlvmTextEmitter {
     }
 
     fn function_in_generic_family(name: string) -> bool {
+        match self.generic_family_cache.get(name) {
+            some(known) => { return known }
+            none => {}
+        }
+        var member: bool = false
         var current: string = name
         for unused: int in 0..self.program.functions.len() {
             if self.generic_templates.contains_key(current) {
-                return true
+                member = true
+                break
             }
-            var parent: string = ""
-            for function: MirFunction in
-                self.program.functions {
-                if function.name == current {
-                    parent = function.parent
-                    break
-                }
-            }
-            if parent == "" { return false }
+            let parent: string =
+                self.function_parents.get(current).or("")
+            if parent == "" { break }
             current = parent
         }
-        return false
+        self.generic_family_cache[name] = member
+        return member
     }
 
     // one stack slot per call *site*, hoisted into the entry block
@@ -1248,10 +1249,11 @@ partial class LlvmTextEmitter {
             none => {}
         }
         if slot < 0 {
-            self.fail(
-                instruction,
-                "LLVM emitter has no selector for '{instruction.text}'")
-            return output
+            // As in emit_dynamic_call: no linked implementor. The guarded
+            // switch was already emitted, so route its fallback through
+            // the dynamic path, which traps cleanly.
+            return self.emit_dynamic_call(
+                function, instruction, values)
         }
         let offset: int =
             8 + self.program.target.pointer_size() + slot *

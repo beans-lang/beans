@@ -1319,6 +1319,13 @@ class ExpressionChecker {
         if result.name != "Result" || result.args.len() < 1 {
             return
         }
+        // A generic wrapper forwards its own type parameter; the concrete
+        // shape is only known at the wrapper's call sites, so the check
+        // moves to the runtime encoder's own error.
+        if self.generic_name_in(
+               result.args[0].name, self.current.generics) {
+            return
+        }
         var target: HirType = result.args[0]
         if target.name == "List" && target.args.len() == 1 {
             match self.declaration_for(target.args[0]) {
@@ -1368,6 +1375,9 @@ class ExpressionChecker {
     }
 
     fn validate_json_encode(node: AstNode, target: HirType) {
+        if self.generic_name_in(target.name, self.current.generics) {
+            return
+        }
         var record: HirType = target
         if target.name == "List" && target.args.len() == 1 {
             match self.declaration_for(target.args[0]) {

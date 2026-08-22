@@ -509,7 +509,9 @@ partial class LlvmTextEmitter {
         // synthetic function a fresh id: cleanup lookup is global,
         // so reusing the template id would make two instantiations
         // call each other's cleanup body.
-        for unused: int in 0..self.program.functions.len() {
+        var grew: bool = true
+        for grew {
+            grew = false
             for candidate: MirFunction in
                 self.program.functions {
                 if !self.function_in_generic_family(
@@ -518,6 +520,7 @@ partial class LlvmTextEmitter {
                    !names.contains_key(candidate.parent) {
                     continue
                 }
+                grew = true
                 let parent: string = names[candidate.parent]
                 if candidate.closure_id >= 0 {
                     let id: int = self.generic_count
@@ -2341,10 +2344,25 @@ partial class LlvmTextEmitter {
             none => {}
         }
         if slot < 0 {
-            self.fail(
-                instruction,
-                "LLVM emitter has no selector for '{instruction.text}'")
-            return ""
+            // No linked class publishes this selector: the interface has
+            // no implementation in this binary, so this call can never
+            // find a receiver. Trap at runtime instead of refusing the
+            // build, so a library's calls to its own extension points
+            // stay compilable without an implementor linked. The panic
+            // never returns; the frozen undef only satisfies later
+            // references to the call's value.
+            var trapped: string =
+                "  call void @beans_panic(ptr {self.string_pointer("no linked implementation of '{instruction.text}'")}, i64 {instruction.line}, i64 {instruction.col})\n"
+            let dead_type: string =
+                self.type_text(instruction.type)
+            if instruction.result >= 0 &&
+               dead_type != "" && dead_type != "void" {
+                let result: string = "%v{instruction.result}"
+                values[instruction.result] = result
+                trapped =
+                    "{trapped}  {result} = freeze {dead_type} undef\n"
+            }
+            return trapped
         }
         let receiver: string =
             self.value(
