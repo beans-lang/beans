@@ -1030,11 +1030,33 @@ static yyjson_mut_val* beans_json_typed_encode_value(
         const BeansJsonTypedSchema* element_schema,
         uint64_t element_size,
         const unsigned char* value,
+        int i64_slot,
         BeansJsonEncodeContext* context);
+
+static uint64_t beans_json_typed_read_slot(const unsigned char* value) {
+    uint64_t raw;
+    memcpy(&raw, value, sizeof(raw));
+    return raw;
+}
+
+static void* beans_json_typed_read_pointer(const unsigned char* value,
+                                           int i64_slot) {
+    if (i64_slot)
+        return (void*)(uintptr_t)beans_json_typed_read_slot(value);
+    void* pointer = NULL;
+    memcpy(&pointer, value, sizeof(pointer));
+    return pointer;
+}
 
 static uint64_t beans_json_typed_read_integer(const unsigned char* value,
                                               unsigned bits,
-                                              int want_unsigned) {
+                                              int want_unsigned,
+                                              int i64_slot) {
+    // Generic Lists store every scalar or reference in one native-endian
+    // i64 slot. Load that whole word before narrowing: taking the first one,
+    // two, or four bytes only works on little-endian machines, and taking a
+    // pointer-sized prefix loses a 32-bit pointer on big-endian machines.
+    if (i64_slot) return beans_json_typed_read_slot(value);
     uint64_t raw = 0;
     if (bits == 8) {
         if (want_unsigned) {
@@ -1113,7 +1135,7 @@ static yyjson_mut_val* beans_json_typed_encode_object(
                   complex ? complex->element_kind : 0,
                   complex ? complex->element_schema : NULL,
                   complex ? complex->element_size : 0,
-                  value, context)
+                  value, 0, context)
             : yyjson_mut_null(context->doc);
         yyjson_mut_val* key = yyjson_mut_strn(
             context->doc, (const char*)field->primary_name,
@@ -1147,7 +1169,7 @@ static yyjson_mut_val* beans_json_typed_encode_list(
                 ? element_size * 8 << 8 : 0;
         yyjson_mut_val* encoded = beans_json_typed_encode_value(
             element_kind, element_flags, element_schema, 0, NULL, 0,
-            item, context);
+            item, list->stride < 0, context);
         if (!encoded || !yyjson_mut_arr_append(array, encoded)) return NULL;
     }
     return array;
@@ -1160,20 +1182,29 @@ static yyjson_mut_val* beans_json_typed_encode_value(
         const BeansJsonTypedSchema* element_schema,
         uint64_t element_size,
         const unsigned char* value,
+        int i64_slot,
         BeansJsonEncodeContext* context) {
     if (kind == BEANS_JSON_TYPED_BOOL)
-        return yyjson_mut_bool(context->doc, *value != 0);
+        return yyjson_mut_bool(
+            context->doc,
+            i64_slot ? beans_json_typed_read_slot(value) != 0
+                     : *value != 0);
     if (kind == BEANS_JSON_TYPED_SINT || kind == BEANS_JSON_TYPED_UINT) {
         unsigned bits = (unsigned)(flags >> 8);
         uint64_t integer = beans_json_typed_read_integer(
-            value, bits, kind == BEANS_JSON_TYPED_UINT);
+            value, bits, kind == BEANS_JSON_TYPED_UINT, i64_slot);
         return kind == BEANS_JSON_TYPED_UINT
             ? yyjson_mut_uint(context->doc, integer)
             : yyjson_mut_sint(context->doc, (int64_t)integer);
     }
     if (kind == BEANS_JSON_TYPED_F32) {
         float number;
-        memcpy(&number, value, sizeof(number));
+        if (i64_slot) {
+            uint32_t bits = (uint32_t)beans_json_typed_read_slot(value);
+            memcpy(&number, &bits, sizeof(number));
+        } else {
+            memcpy(&number, value, sizeof(number));
+        }
         return yyjson_mut_real(context->doc, (double)number);
     }
     if (kind == BEANS_JSON_TYPED_F64) {
@@ -1182,8 +1213,7 @@ static yyjson_mut_val* beans_json_typed_encode_value(
         return yyjson_mut_real(context->doc, number);
     }
     if (kind == BEANS_JSON_TYPED_STRING) {
-        void* string = NULL;
-        memcpy(&string, value, sizeof(string));
+        void* string = beans_json_typed_read_pointer(value, i64_slot);
         if (!string || !context->string_len) return NULL;
         long long length = context->string_len(string);
         if (length < 0) return NULL;
@@ -1491,23 +1521,25 @@ static int beans_json_direct_value(uint64_t kind, uint64_t flags,
                                    const BeansJsonTypedSchema* element_schema,
                                    uint64_t element_size,
                                    const unsigned char* value,
+                                   int i64_slot,
                                    BeansJsonDirectContext* context) {
     if (kind == BEANS_JSON_TYPED_BOOL) {
-        return *value != 0
+        int boolean = i64_slot ? beans_json_typed_read_slot(value) != 0
+                               : *value != 0;
+        return boolean
             ? beans_json_direct_raw(&context->out, "true", 4)
             : beans_json_direct_raw(&context->out, "false", 5);
     }
     if (kind == BEANS_JSON_TYPED_SINT || kind == BEANS_JSON_TYPED_UINT) {
         unsigned bits = (unsigned)(flags >> 8);
         uint64_t integer = beans_json_typed_read_integer(
-            value, bits, kind == BEANS_JSON_TYPED_UINT);
+            value, bits, kind == BEANS_JSON_TYPED_UINT, i64_slot);
         return kind == BEANS_JSON_TYPED_UINT
             ? beans_json_direct_uint(&context->out, integer)
             : beans_json_direct_sint(&context->out, (int64_t)integer);
     }
     if (kind == BEANS_JSON_TYPED_STRING) {
-        void* string = NULL;
-        memcpy(&string, value, sizeof(string));
+        void* string = beans_json_typed_read_pointer(value, i64_slot);
         if (!string || !context->string_len) return -2;
         long long length = context->string_len(string);
         if (length < 0) return -2;
@@ -1547,7 +1579,7 @@ static int beans_json_direct_value(uint64_t kind, uint64_t flags,
                         ? element_size * 8 << 8 : 0;
                 wrote = beans_json_direct_value(
                     element_kind, element_flags, element_schema, 0, NULL, 0,
-                    item, context);
+                    item, list->stride < 0, context);
             }
             if (wrote != 1) {
                 if (have_skel) beans_json_skel_free(&skel);
@@ -1619,7 +1651,7 @@ static int beans_json_direct_object(const BeansJsonTypedSchema* schema,
             complex ? complex->element_kind : 0,
             complex ? complex->element_schema : NULL,
             complex ? complex->element_size : 0,
-            value, context);
+            value, 0, context);
         if (wrote != 1) return wrote;
     }
     return beans_json_direct_char(&context->out, '}');
@@ -1728,7 +1760,7 @@ static long long beans_json_direct_encode(unsigned char* root,
         void* list = root;
         wrote = beans_json_direct_value(
             BEANS_JSON_TYPED_LIST, 0, NULL, BEANS_JSON_TYPED_STRUCT, schema,
-            schema->record_size, (const unsigned char*)&list, &context);
+            schema->record_size, (const unsigned char*)&list, 0, &context);
     } else {
         wrote = beans_json_direct_object(schema, root, NULL, &context);
     }

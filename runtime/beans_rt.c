@@ -10930,8 +10930,9 @@ static PollScratch* poll_scratch_get(long long max_events,
 }
 #endif
 
-BRes beans_poll_wait(long long poller, long long wake_read, long long max_events,
-                     long long timeout_ms) {
+static BRes beans_poll_wait_into_impl(long long poller, long long wake_read,
+                                      long long max_events,
+                                      long long timeout_ms, BList* packed) {
     if (poller < 0) return (BRes){0, mk_error("poller: closed", "closed")};
     if (max_events <= 0)
         return (BRes){0, mk_error("the event limit must be positive", "invalid")};
@@ -11179,7 +11180,7 @@ BRes beans_poll_wait(long long poller, long long wake_read, long long max_events
         if (timeout_ms == 0) break;
     }
 
-    BList* packed = bytes_mk(8 + found * 16);
+    beans_bytes_resize(packed, 8 + found * 16, 0, 0);
     char* into = (char*)packed->data;
     rt_store_le(into, (unsigned long long)found, 8);
     for (long long i = 0; i < found; i++) {
@@ -11198,9 +11199,38 @@ BRes beans_poll_wait(long long poller, long long wake_read, long long max_events
 #endif
     }
 #endif
+    return (BRes){found, NULL};
+}
+
+BRes beans_poll_wait(long long poller, long long wake_read, long long max_events,
+                     long long timeout_ms) {
+    BList* packed = bytes_mk(0);
+    BRes r = beans_poll_wait_into_impl(
+        poller, wake_read, max_events, timeout_ms, packed);
+    if (r.err) {
+        beans_release(packed);
+        return r;
+    }
     return (BRes){(long long)packed, NULL};
 }
 long long beans_poll_wait_out(long long poller, long long wake_read, long long max_events, long long timeout_ms, void** e_out) { BRes r = beans_poll_wait(poller, wake_read, max_events, timeout_ms); *e_out = r.err; return r.val; }
+
+BRes beans_poll_wait_into(long long poller, long long wake_read,
+                          long long max_events, long long timeout_ms,
+                          BList* packed) {
+    if (!packed)
+        return (BRes){0, mk_error("poller wait: missing output buffer", "invalid")};
+    return beans_poll_wait_into_impl(
+        poller, wake_read, max_events, timeout_ms, packed);
+}
+long long beans_poll_wait_into_out(long long poller, long long wake_read,
+                                   long long max_events, long long timeout_ms,
+                                   BList* packed, void** e_out) {
+    BRes r = beans_poll_wait_into(
+        poller, wake_read, max_events, timeout_ms, packed);
+    *e_out = r.err;
+    return r.val;
+}
 
 // Safe from any thread. One byte into a pipe, written while holding the table lock so
 // the descriptor cannot be closed underneath it. EAGAIN means a wake is already pending,

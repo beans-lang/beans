@@ -1167,6 +1167,11 @@ pub fn runtime_builtin_fn(key: string) -> Option<RuntimeBuiltin> {
             ["i64", "i64", "i64", "i64"],
             "res_bytes", "beans_poll_wait", false))
     }
+    if key == "std.ready.wait_into" {
+        return some(new RuntimeBuiltin(
+            ["i64", "i64", "i64", "i64", "bytes"],
+            "res_i64", "beans_poll_wait_into", false))
+    }
     if key == "std.ready.wake" {
         return some(new RuntimeBuiltin(
             ["i64"],

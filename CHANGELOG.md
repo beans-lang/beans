@@ -48,6 +48,11 @@ This file records user-facing changes in each Beans release.
 
 ### Fixed
 
+- Typed JSON encoding now reads generic-list slots in native byte order, so
+  lists of narrow integers, booleans, floats, and strings encode correctly on
+  big-endian targets too.
+- `Poller.wait_into` now reuses its packed event buffer instead of allocating a
+  fresh `Bytes` value on every wake.
 - A program with live worker threads now reclaims dead parked shells from
   the cycle-collector buffer instead of holding every one until the threads
   exit. A threaded server used to leak roughly 150 bytes per request —

@@ -4518,6 +4518,34 @@ class TreeInterpreter {
                     arguments[2].int_data,
                     arguments[3].int_data))
         }
+        if node.resolved == "std.ready.wait_into" &&
+           arguments.len() == 5 {
+            match arguments[4].bytes_data {
+                some(packed) => {
+                    // The compiler that bootstraps this source predates the
+                    // wait_into runtime entry point. Keep the interpreter's
+                    // behavior correct by copying the old wait result into
+                    // the caller's buffer; compiled programs use the new
+                    // allocation-free entry point below the ABI.
+                    match host_ready.wait(
+                            arguments[0].int_data,
+                            arguments[1].int_data,
+                            arguments[2].int_data,
+                            arguments[3].int_data) {
+                        ok(source) => {
+                            packed.resize(0)
+                            packed.append_range(source, 0, source.len())
+                            return TreeValue.result_ok(
+                                TreeValue.integer(source.get_i64(0)))
+                        }
+                        err(error) => {
+                            return self.host_error(error)
+                        }
+                    }
+                }
+                none => {}
+            }
+        }
         if node.resolved == "std.ready.wake" &&
            arguments.len() == 1 {
             return self.host_bool_result(

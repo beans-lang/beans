@@ -12,6 +12,13 @@ tmp=$(mktemp -d "${TMPDIR:-/tmp}/beans-json-direct.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 beansc=${BEANSC:-./build/beansc}
 
+echo "checking typed list edge cases against their exact output"
+"$beansc" build test/cases/json_direct_edges.b -o "$tmp/edges" >/dev/null
+"$tmp/edges" >"$tmp/edges.direct"
+BEANS_JSON_NO_DIRECT=1 "$tmp/edges" >"$tmp/edges.dom"
+cmp "$tmp/edges.direct" "$tmp/edges.dom"
+cmp test/cases/json_direct_edges.out "$tmp/edges.direct"
+
 echo "checking the writers agree byte for byte in the native build"
 "$beansc" build test/cases/json_direct_fuzz.b -o "$tmp/fuzz" >/dev/null
 for seed in 3 20260821; do
@@ -36,4 +43,10 @@ FUZZ_SEED=7 FUZZ_ROUNDS=40 FUZZ_GIANTS=0 BEANS_JSON_NO_DIRECT=1 \
     "$beansc" run test/cases/json_direct_fuzz.b >"$tmp/interp.dom"
 cmp "$tmp/interp.direct" "$tmp/interp.dom"
 
-echo "ok json direct writer: native and interpreter byte parity, refusals and giants included"
+"$beansc" run test/cases/json_direct_edges.b >"$tmp/edges.interp.direct"
+BEANS_JSON_NO_DIRECT=1 \
+    "$beansc" run test/cases/json_direct_edges.b >"$tmp/edges.interp.dom"
+cmp test/cases/json_direct_edges.out "$tmp/edges.interp.direct"
+cmp "$tmp/edges.interp.direct" "$tmp/edges.interp.dom"
+
+echo "ok json direct writer: typed edges, native/interpreter parity, refusals and giants included"
