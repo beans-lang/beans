@@ -281,6 +281,9 @@ partial class LlvmTextEmitter {
         // collection on either path.
         if self.iterator_kind.contains_key(id) {
             if self.iterator_collection.contains_key(id) {
+                if self.iterator_collection_borrowed.contains_key(id) {
+                    return ""
+                }
                 return "  call void @beans_release(ptr {self.iterator_collection[id]})\n"
             }
             return ""
@@ -938,6 +941,8 @@ partial class LlvmTextEmitter {
                     if self.iterator_kind.contains_key(
                            released) {
                         if self.iterator_collection.contains_key(
+                               released) &&
+                           !self.iterator_collection_borrowed.contains_key(
                                released) &&
                            self.iterator_kind[released] !=
                                "list_slice" {

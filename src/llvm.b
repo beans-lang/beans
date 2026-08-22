@@ -87,6 +87,7 @@ partial class LlvmTextEmitter {
     iterator_type: Map<int, HirType>
     iterator_kind: Map<int, string>
     iterator_collection: Map<int, string>
+    iterator_collection_borrowed: Map<int, bool>
     iterator_map_version: Map<int, string>
     iterator_map_entry: Map<int, string>
     iterator_slice: Map<int, string>

@@ -50,6 +50,11 @@ fn render_mir(program: MirProgram) -> string {
             if local.scalar_replaced {
                 flags.push("scalar-replaced")
             }
+            if local.scalar_replaced_owner >= 0 &&
+               local.scalar_replaced_owner != local.id {
+                flags.push(
+                    "scalar-owner=l{local.scalar_replaced_owner}")
+            }
             if local.stack_closure_id >= 0 {
                 flags.push(
                     "stack-closure={local.stack_closure_id}")

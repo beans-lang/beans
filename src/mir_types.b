@@ -16,6 +16,9 @@ class MirLocal {
     borrows_from: int
     ownership_sink: bool
     scalar_replaced: bool
+    // An interface-typed alias may share the stack object of one exact
+    // scalar-replaced class local. -1 means this local is not such an alias.
+    scalar_replaced_owner: int
     // A non-escaping closure whose environment lives in this function's
     // stack frame. -1 keeps the ordinary heap-owned closure path.
     stack_closure_id: int
@@ -45,6 +48,7 @@ class MirLocal {
         self.borrows_from = -1
         self.ownership_sink = false
         self.scalar_replaced = false
+        self.scalar_replaced_owner = -1
         self.stack_closure_id = -1
         self.live_flag_used = true
     }
