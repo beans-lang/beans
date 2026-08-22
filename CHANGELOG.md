@@ -23,6 +23,9 @@ This file records user-facing changes in each Beans release.
   compiles instead of requiring a wrapping lambda, under the same rules
   as a local function name — extern C, async and ownership-parameter
   functions are refused, and visibility is enforced.
+- A paired abstraction proof suite compares generic/specialized functions,
+  iterator/index loops, closures/direct calls, interface/direct dispatch,
+  Option/Result/manual forms, and safe/unchecked indexing.
 
 ### Fixed
 
@@ -52,6 +55,10 @@ This file records user-facing changes in each Beans release.
 
 ### Changed
 
+- MIR now stack-places proven non-escaping scalar closures, removes stable
+  counted Slice bounds checks, devirtualizes exact receivers, keeps narrow
+  custom Results inline, removes proven iterator ARC, and scalar-replaces safe
+  exact objects.
 - Reflective dispatch is no longer paid per string: the runtime registry
   hash-indexes its type, method and function tables, resolves a callable
   once per call instead of five times, keeps each callable's parameter rows
