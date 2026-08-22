@@ -58,6 +58,39 @@ fn encoding_compiler_identity(compiler: string) -> string {
     return "{compiler}|unknown-version"
 }
 
+// The compiler binary and the C driver it starts can run on different
+// machines under qemu-user. Read the C driver's real default architecture so
+// an interpreted native bridge can choose a linker that understands its
+// explicit target instead of accidentally using the launch machine's `ld`.
+fn compiler_default_arch(compiler: string) -> string {
+    let probe: process.Command = new process.Command(compiler)
+    probe.arg("-dumpmachine")
+    var triple: string = ""
+    match probe.run() {
+        ok(done) => {
+            if done.succeeded() {
+                triple = done.stdout_text().trim()
+            }
+        }
+        err(_) => {}
+    }
+    if triple == "" { return "" }
+    var arch: string = triple
+    match triple.find("-") {
+        some(cut) => { arch = triple.slice(0, cut) }
+        none => {}
+    }
+    if arch == "aarch64" || arch == "arm64" { return "arm64" }
+    if arch == "arm" || arch.starts_with("armv") { return "arm32" }
+    if arch == "i386" || arch == "i486" || arch == "i586" ||
+       arch == "i686" || arch == "x86" { return "x86" }
+    if arch == "amd64" { return "x86_64" }
+    if arch == "ppc" { return "powerpc" }
+    if arch == "ppc64" { return "powerpc64" }
+    if arch == "ppc64le" { return "powerpc64le" }
+    return arch
+}
+
 fn encoding_bridge_translation_unit(root: string, feature: string) -> string {
     if feature == "json" {
         return path.join(root, "beans_enc_json.c")
@@ -115,6 +148,80 @@ fn encoding_bridge_features(packages: List<LoadedPackage>) -> List<string> {
         }
     }
     return move features
+}
+
+// ---- std.log native bridge ----
+
+fn log_source_root() -> string {
+    match os.env("BEANS_LOG") {
+        some(root) => {
+            if root != "" { return root }
+        }
+        none => {}
+    }
+    if Dir.exists("runtime/log") { return "runtime/log" }
+    return path.join(path.parent(stdlib_root()), "log")
+}
+
+fn log_bridge_abi() -> string {
+    return "log-abi-1"
+}
+
+fn log_bridge_inputs(root: string) -> List<string> {
+    var files: List<string> = [
+        path.join(root, "beans_log.cpp"),
+        path.join(root, "beans_log.h"),
+        path.join(root, "vendor/VENDOR.md"),
+        path.join(root, "vendor/quill/LICENSE")]
+    let include_root: string =
+        path.join(root, "vendor/quill/include")
+    match Dir.walk(include_root) {
+        ok(entries) => {
+            var names: List<string> = []
+            for entry: string in entries {
+                if entry.ends_with(".h") { names.push(entry) }
+            }
+            names.sort()
+            for name: string in names {
+                files.push(path.join(include_root, name))
+            }
+        }
+        err(_) => {}
+    }
+    return move files
+}
+
+fn log_bridge_required(packages: List<LoadedPackage>) -> bool {
+    for loaded: LoadedPackage in packages {
+        if loaded.import_path == "std.log" { return true }
+    }
+    return false
+}
+
+fn log_bridge_link_arguments(
+    enabled: bool, target_os: string,
+    target_env: string) -> List<string> {
+    var arguments: List<string> = []
+    if !enabled { return move arguments }
+    // The final link otherwise has only IR and object inputs, so plain clang
+    // does not know it must add a C++ runtime. Driver mode lets each supported
+    // toolchain choose its matching default: libc++ in LLVM-MinGW and on
+    // macOS, libstdc++ in the Linux toolchains.
+    if target_os != "windows" || target_env != "msvc" {
+        arguments.push("-pthread")
+    }
+    // Distro MinGW libstdc++ is built by GCC with emulated TLS. Clang's
+    // native-TLS default gives std::call_once different symbol names, so the
+    // C++ bridge and final support-runtime selection must use GCC's TLS ABI.
+    if target_os == "windows" && target_env != "msvc" {
+        arguments.push("-femulated-tls")
+    }
+    arguments.push("--driver-mode=g++")
+    return move arguments
+}
+
+fn log_symbol(symbol: string) -> bool {
+    return symbol.starts_with("beans_log_")
 }
 
 // ---- runtime/net native bridges ----
@@ -568,6 +675,7 @@ class NativeBuildDriver {
     link_arguments: List<string>
     export_symbols: List<string>
     encoding_features: List<string>
+    log_enabled: bool
     net_features: List<string>
     csrc_sources: List<string>
     errors: List<Diagnostic>
@@ -584,6 +692,7 @@ class NativeBuildDriver {
             move link_arguments: List<string>,
             move export_symbols: List<string>,
             move encoding_features: List<string>,
+            log_enabled: bool,
             move net_features: List<string>,
             move csrc_sources: List<string>) {
         self.target = target
@@ -600,6 +709,7 @@ class NativeBuildDriver {
         self.link_arguments = move link_arguments
         self.export_symbols = move export_symbols
         self.encoding_features = move encoding_features
+        self.log_enabled = log_enabled
         self.net_features = move net_features
         self.csrc_sources = move csrc_sources
         self.errors = []
@@ -1051,6 +1161,149 @@ class NativeBuildDriver {
         }
         if failed { objects.clear() }
         return move objects
+    }
+
+    // ---- std.log bridge object ----
+
+    fn log_optimization_flag() -> string {
+        let flag: string = self.optimization_flag()
+        // Clang 18 miscompiles libstdc++'s std::call_once cleanup for
+        // 32-bit PowerPC at -O0: its PC-relative thunk overwrites the return
+        // address, so the first logger start jumps into the thunk data and
+        // raises SIGILL. -O1 inlines that cleanup and emits valid code. Keep
+        // the workaround inside the hidden bridge; user Beans code still
+        // gets the requested debug optimization level and debug symbols.
+        if self.target.arch == "powerpc" && flag == "-O0" {
+            return "-O1"
+        }
+        return flag
+    }
+
+    fn log_compile_flags(root: string,
+                         pic: bool) -> List<string> {
+        var flags: List<string> = [
+            "-x", "c++", "-std=c++17", "-fexceptions", "-fno-rtti",
+            self.log_optimization_flag()]
+        if self.release { flags.push("-DNDEBUG") }
+        for flag: string in self.debug_flags() {
+            flags.push(flag)
+        }
+        for flag: string in sanitizer_flags() {
+            flags.push(flag)
+        }
+        if self.lto { flags.push("-flto") }
+        if self.target.os != "windows" ||
+           self.target.env != "msvc" {
+            flags.push("-pthread")
+        }
+        if self.target.os == "windows" &&
+           self.target.env != "msvc" {
+            flags.push("-femulated-tls")
+        }
+        flags.push("-fvisibility=hidden")
+        if pic { flags.push("-fPIC") }
+        flags.push(
+            if self.runtime_profile == "minimal" {
+                "-DBEANS_RT_PROFILE=2"
+            } else {
+                "-DBEANS_RT_PROFILE=3"
+            })
+        flags.push("-I{root}")
+        flags.push("-I{path.join(root, "vendor/quill/include")}")
+        for flag: string in self.target_flag_list() {
+            flags.push(flag)
+        }
+        return move flags
+    }
+
+    fn log_cache_path(compiler: string,
+                      root: string,
+                      pic: bool) -> string {
+        var blob: string = log_bridge_abi()
+        blob = "{blob}|{self.target.triple}|{self.target.llvm_triple()}"
+        blob = "{blob}|{self.cpu}|{self.target.features.join(",")}"
+        blob = "{blob}|{self.runtime_profile}|{self.release}|{self.debug}|{self.lto}|{pic}"
+        blob = "{blob}|{self.sysroot}"
+        blob = "{blob}|{encoding_compiler_identity(compiler)}"
+        let include_root: string =
+            path.join(root, "vendor/quill/include")
+        for flag: string in self.log_compile_flags(root, pic) {
+            if flag == "-I{root}" {
+                blob = "{blob}|-I<log-root>"
+            } else if flag == "-I{include_root}" {
+                blob = "{blob}|-I<quill-include>"
+            } else {
+                blob = "{blob}|{flag}"
+            }
+        }
+        for input: string in log_bridge_inputs(root) {
+            match fs.read(input) {
+                ok(text) => { blob = "{blob}|{text}" }
+                err(_) => { blob = "{blob}|missing:{input}" }
+            }
+        }
+        var hash: int = 0
+        var mixed: int = 0
+        for index: int in 0..blob.len() {
+            let byte: int = blob.byte_at(index)
+            hash = (hash * 131 + byte) % 2147483647
+            mixed =
+                (mixed * 16777619 + byte + index % 7) %
+                2147483629
+        }
+        let extension: string = if self.lto { "bc" } else { "o" }
+        return path.join(
+            "build",
+            "beans_log.{self.target.triple}.{hash}x{mixed}.{extension}")
+    }
+
+    fn cached_log_object(compiler: string,
+                         pic: bool) -> string {
+        if !self.log_enabled { return "" }
+        if self.runtime_profile == "freestanding" ||
+           self.target.object_format == "wasm" {
+            self.fail(
+                "std.log",
+                "std.log needs a hosted full or minimal runtime with threads")
+            return ""
+        }
+        let root: string = log_source_root()
+        let source: string = path.join(root, "beans_log.cpp")
+        if !File.exists(source) {
+            self.fail(
+                source,
+                "cannot find the std.log bridge sources; set BEANS_LOG to the directory holding runtime/log")
+            return ""
+        }
+        let object: string =
+            self.log_cache_path(compiler, root, pic)
+        if File.exists(object) { return object }
+        var staging: string = object
+        match random.bytes(8) {
+            ok(seed) => { staging = "{object}.{seed.get_u64(0)}" }
+            err(_) => { staging = "{object}.{time.wall_millis()}" }
+        }
+        let command: process.Command = new process.Command(compiler)
+        for flag: string in self.log_compile_flags(root, pic) {
+            command.arg(flag)
+        }
+        command.arg("-c")
+        command.arg(source)
+        command.arg("-o")
+        command.arg(staging)
+        if !self.run_tool(command, source, "Clang") {
+            return ""
+        }
+        match File.rename(staging, object) {
+            ok(_) => {}
+            err(_) => {
+                match File.remove(staging) {
+                    ok(_) => {}
+                    err(_) => {}
+                }
+            }
+        }
+        return object
     }
 
     // ---- runtime/net bridge objects ----
@@ -1814,6 +2067,19 @@ class NativeBuildDriver {
             }
         }
 
+        // std.log is one cached C++ object. It is absent from programs that
+        // do not import the package.
+        var log_object: string = ""
+        if self.log_enabled {
+            let recorded: int = self.errors.len()
+            log_object =
+                self.cached_log_object(
+                    compiler, emit == "shared")
+            if self.errors.len() != recorded {
+                return false
+            }
+        }
+
         // Imported networking packages become cached bridge objects the
         // same way, one per feature.
         var net_objects: List<string> = []
@@ -1867,6 +2133,18 @@ class NativeBuildDriver {
                         self.fail(
                             member,
                             "cannot place encoding bridge object: {error.msg}")
+                        return false
+                    }
+                }
+            }
+            if log_object != "" {
+                let member: string = "{output}_log.o"
+                match fs.copy(log_object, member) {
+                    ok(_) => { io.println("built {member}") }
+                    err(error) => {
+                        self.fail(
+                            member,
+                            "cannot place std.log bridge object: {error.msg}")
                         return false
                     }
                 }
@@ -1940,6 +2218,7 @@ class NativeBuildDriver {
             for encoding_object: string in encoding_objects {
                 archive.arg(encoding_object)
             }
+            if log_object != "" { archive.arg(log_object) }
             for net_object: string in net_objects {
                 archive.arg(net_object)
             }
@@ -2012,6 +2291,7 @@ class NativeBuildDriver {
             for encoding_object: string in encoding_objects {
                 wasm.arg(encoding_object)
             }
+            if log_object != "" { wasm.arg(log_object) }
             for net_object: string in net_objects {
                 wasm.arg(net_object)
             }
@@ -2119,12 +2399,21 @@ class NativeBuildDriver {
             command.arg(ir_path)
         }
         if ffi_path != "" {
+            if self.log_enabled {
+                command.arg("-x")
+                command.arg("c")
+            }
             command.arg(ffi_path)
+            if self.log_enabled {
+                command.arg("-x")
+                command.arg("none")
+            }
         }
         command.arg(runtime_object)
         for encoding_object: string in encoding_objects {
             command.arg(encoding_object)
         }
+        if log_object != "" { command.arg(log_object) }
         for net_object: string in net_objects {
             command.arg(net_object)
         }
@@ -2139,6 +2428,12 @@ class NativeBuildDriver {
         for argument: string in
             net_bridge_link_arguments(
                 self.net_features, self.target.os) {
+            command.arg(argument)
+        }
+        for argument: string in
+            log_bridge_link_arguments(
+                self.log_enabled, self.target.os,
+                self.target.env) {
             command.arg(argument)
         }
         if self.target.os != "windows" { command.arg("-lm") }

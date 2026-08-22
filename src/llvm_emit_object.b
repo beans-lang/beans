@@ -2154,6 +2154,14 @@ partial class LlvmTextEmitter {
         function: MirFunction,
         instruction: MirInstruction,
         values: Map<int, string>) -> string {
+        let log_level: int =
+            self.log_call_level(instruction.resolved)
+        if log_level >= 0 {
+            let lowered: string =
+                self.emit_logger_log_call(
+                    function, instruction, values, log_level)
+            if lowered != "" { return lowered }
+        }
         if instruction.operands.len() == 0 {
             self.fail(
                 instruction,

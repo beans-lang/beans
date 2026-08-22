@@ -1393,6 +1393,8 @@ fn main() {
                                         move export_symbols,
                                         encoding_bridge_features(
                                             loader.packages),
+                                        log_bridge_required(
+                                            loader.packages),
                                         net_bridge_features(
                                             loader.packages),
                                         csrc_selected(

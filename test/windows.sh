@@ -438,7 +438,7 @@ if "$BEANSC" build --target $TRIPLE --linker lld src/main.b \
     # native toolchain and keeps every one of these cases with no exemption.
     interp_skip="target_info.b cpu_dispatch.b intrinsics.b poller.b processes.b \
 child_process.b signals.b net.b threads.b ffi.b zero_copy_json.b \
-zero_copy_xml.b compress.b crypto.b http.b http2.b websocket.b"
+zero_copy_xml.b compress.b crypto.b http.b http2.b websocket.b logging.b"
     hosted_ran=0
     for src in examples/*.b; do
         name=$(basename "$src")

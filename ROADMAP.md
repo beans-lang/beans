@@ -1,6 +1,6 @@
 # Beans roadmap
 
-Last refreshed for **v0.1.26** on 2026-08-20. This file tracks work that is
+Last refreshed for **v0.1.18** on 2026-08-15. This file tracks work that is
 still open. Completed implementation detail belongs in the code, tests and Git
 history rather than in a growing development diary.
 
@@ -15,7 +15,7 @@ Beans stays small and readable:
 
 ## Current implementation
 
-| area | v0.1.26 state |
+| area | v0.1.18 state |
 |---|---|
 | language contract | 1.0 candidate in `spec/SYNTAX.md` |
 | compiler | self-hosted Beans compiler is the default `beansc` |
@@ -23,9 +23,9 @@ Beans stays small and readable:
 | frontend | packages, resolver, generic checker, typed annotations and reflection, generated JSON/XML decoding, typed HIR, checked MIR and ownership verification |
 | execution | reference interpreter plus MIR-to-LLVM native debug/release/LTO builds |
 | memory | ARC, move checking, typed wide storage and cycle collection |
-| concurrency | OS threads, derived `Send`/`Sync`, sendable closures, move-only handles, atomics, mutexes, channels and structured async/await |
+| concurrency | OS threads, `Send`/`Sync`, atomics, mutexes, channels and structured async/await |
 | modules | canonical package identities, Git dependencies, hashed locks, locked/offline builds |
-| C interop | imports, exports, headers, bindgen, records/unions, globals, TLS, errno, local/any-thread stored callbacks and package-owned `csrc` |
+| C interop | imports, exports, headers, bindgen, records/unions, globals, TLS, errno and callbacks |
 | tooling | semantic LSP, interpreter DAP debugger and platform native debug artifacts |
 | reflection | runtime type/member metadata, annotations, dynamic values, checked access, calls and construction |
 | systems | files, mappings, processes, networking, polling, signals, shared memory, dynamic libraries, SIMD and intrinsics, HTTP/1.1 and HTTP/2, WebSocket, TLS, compression and platform hashes |
@@ -96,7 +96,7 @@ part of the 1.0 promise.
   checks over ownership, concurrency, FFI and encoding cases.
 - [x] Check deterministic source discovery, LLVM, binaries and release
   archives.
-- [x] Build and install-test every required v0.1.26 archive on its release
+- [x] Build and install-test every required v0.1.3 archive on its release
   runner; publish only after the complete 26-target manifest passes.
 - [x] Publish SHA-256 checksums, an SPDX SBOM, GitHub attestations, installers,
   Apache-2.0 and install documentation with the release.
@@ -151,7 +151,7 @@ not part of the hosted 1.0 production promise.
 
 ### Platform work still open
 
-- [ ] Reconcile `targets/support.tsv` archive cells with the v0.1.26 release
+- [ ] Reconcile `targets/support.tsv` archive cells with the v0.1.3 release
   results instead of leaving published packages marked missing.
 - [ ] Complete and require the self-hosting fixed-point gate on x86, x64 and
   ARM64 Windows.

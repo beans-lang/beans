@@ -67,6 +67,32 @@ This file records user-facing changes in each Beans release.
   cache key, so changing the manifest cannot reuse a library linked under old
   settings.
 
+## [0.1.27] - 2026-08-21
+
+### Added
+
+- `std.log`, an asynchronous structured logger backed by the pinned Quill
+  12.1.0 C++17 engine. It provides default and named loggers; trace through
+  fatal levels; console, plain file, size-rotating file, NDJSON and bounded
+  export sinks; per-logger and per-sink filters; string fields; source,
+  process and thread metadata; flush, shutdown and error reporting.
+- Export sinks can drain records in batches. Their move-only `ExportReader`
+  can be sent to a dedicated Beans thread without running Beans callbacks on
+  the native logging backend.
+
+### Changed
+
+- Compiler-known `trace`, `debug`, `info`, `warn`, `error` and `fatal` calls
+  now test the level before evaluating the message in both interpreted and
+  native programs. Disabled short calls therefore avoid interpolation and
+  other message work.
+- Each producer uses a fixed 256 KiB dropping queue instead of a growing
+  queue. A failed enqueue returns `false` and increments `log.dropped()`;
+  export-queue drops remain separate through `ExportSink.dropped()`.
+- Programs link the Quill bridge only when they import `std.log`. Hosted full
+  and minimal runtime profiles support it; freestanding targets reject it
+  with a capability error.
+
 ## [0.1.26] - 2026-08-20
 
 ### Added

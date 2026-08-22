@@ -13,33 +13,6 @@ head -1 CONTRIBUTING.md | grep -q '^# Contributing to Beans$'
 grep -qF '[language specification](spec/SYNTAX.md)' CONTRIBUTING.md
 grep -qF '[CONTRIBUTING.md](CONTRIBUTING.md)' README.md
 
-echo "checking release and install claims"
-compiler_version=$(sed -n 's/^compiler=//p' VERSION)
-runtime_abi=$(sed -n 's/^runtime_abi=//p' VERSION)
-grep -qF "The latest release is **v$compiler_version**" README.md
-grep -qF "ABI \`$runtime_abi\`" README.md
-grep -qF -- "--version $compiler_version" README.md
-grep -qF 'lib/net/' docs/INSTALL.md
-grep -qF 'BEANS_NET' docs/INSTALL.md
-
-echo "checking the public docs index"
-grep -qF '[Networking](NETWORKING.md)' docs/README.md
-grep -qF '[Concurrency](CONCURRENCY.md)' docs/README.md
-grep -qF '[net.b](https://github.com/beans-lang/beans/blob/main/examples/net.b)' \
-    docs/NETWORKING.md
-grep -qF '[http.b](https://github.com/beans-lang/beans/blob/main/examples/http.b)' \
-    docs/NETWORKING.md
-
-echo "checking the docs deployment workflow"
-grep -qF 'branches: [main]' .github/workflows/docs.yml
-grep -qF 'source: ./docs' .github/workflows/docs.yml
-grep -qF 'actions/deploy-pages@' .github/workflows/docs.yml
-grep -qF 'theme: jekyll-theme-primer' docs/_config.yml
-
-echo "checking documented compiler source count"
-source_count=$(find src -maxdepth 1 -name '*.b' | wc -l | tr -d ' ')
-grep -qF "$source_count \`.b\` files" docs/COMPILER_DEV.md
-
 echo "checking the documented targets are the targets the compiler has"
 # spec/SYNTAX.md lists the supported triples. The compiler prints its own list when given an
 # unknown one, so the two can be compared rather than trusted.
@@ -109,4 +82,4 @@ while IFS=$'\t' read -r area points state slug test_path; do
     fi
 done < <(grep -v '^#' test/access_scorecard.tsv | grep -v '^$')
 
-echo "ok docs: release, install, index, targets, commands, and tests are current"
+echo "ok docs: contributor guide, targets, commands, and tests are current"

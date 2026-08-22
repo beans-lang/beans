@@ -921,6 +921,80 @@ partial class LlvmTextEmitter {
         return "{output}  call void @llvm.memcpy.p0.p0.i64(ptr %enc.at{id_tag}, ptr %enc.raw{id_tag}, i64 {count}, i1 false)\n"
     }
 
+    fn log_call_level(name: string) -> int {
+        let shown: string = display_symbol(name)
+        if shown == "std.log.trace" ||
+           shown == "std.log.Logger.trace" { return 0 }
+        if shown == "std.log.debug" ||
+           shown == "std.log.Logger.debug" { return 1 }
+        if shown == "std.log.info" ||
+           shown == "std.log.Logger.info" { return 2 }
+        if shown == "std.log.warn" ||
+           shown == "std.log.Logger.warn" { return 3 }
+        if shown == "std.log.error" ||
+           shown == "std.log.Logger.error" { return 4 }
+        if shown == "std.log.fatal" ||
+           shown == "std.log.Logger.fatal" { return 5 }
+        return -1
+    }
+
+    fn emit_log_intrinsic(function: MirFunction,
+                          instruction: MirInstruction,
+                          values: Map<int, string>) -> string {
+        if instruction.operands.len() != 7 { return "" }
+        var operands: List<string> = []
+        for operand: int in instruction.operands {
+            operands.push(
+                self.value(function, values, operand, instruction))
+        }
+        let id: int = self.fresh()
+        let result: string = "%v{instruction.result}"
+        values[instruction.result] = result
+        self.require_declare(
+            "beans_log_write",
+            "i64 @beans_log_write(i64, i64, ptr, i64, ptr, i64, ptr, i64, i64, i64)")
+        return "  %log.msg.meta.ptr{id} = getelementptr i8, ptr {operands[2]}, i64 -8\n  %log.msg.meta{id} = load i64, ptr %log.msg.meta.ptr{id}\n  %log.msg.shape{id} = and i64 %log.msg.meta{id}, 2305843009213693951\n  %log.msg.len{id} = lshr i64 %log.msg.shape{id}, 3\n  %log.file.meta.ptr{id} = getelementptr i8, ptr {operands[3]}, i64 -8\n  %log.file.meta{id} = load i64, ptr %log.file.meta.ptr{id}\n  %log.file.shape{id} = and i64 %log.file.meta{id}, 2305843009213693951\n  %log.file.len{id} = lshr i64 %log.file.shape{id}, 3\n  %log.fn.meta.ptr{id} = getelementptr i8, ptr {operands[4]}, i64 -8\n  %log.fn.meta{id} = load i64, ptr %log.fn.meta.ptr{id}\n  %log.fn.shape{id} = and i64 %log.fn.meta{id}, 2305843009213693951\n  %log.fn.len{id} = lshr i64 %log.fn.shape{id}, 3\n  %log.status{id} = call i64 @beans_log_write(i64 {operands[0]}, i64 {operands[1]}, ptr {operands[2]}, i64 %log.msg.len{id}, ptr {operands[3]}, i64 %log.file.len{id}, ptr {operands[4]}, i64 %log.fn.len{id}, i64 {operands[5]}, i64 {operands[6]})\n  {result} = icmp ne i64 %log.status{id}, 0\n"
+    }
+
+    fn emit_default_log_call(function: MirFunction,
+                             instruction: MirInstruction,
+                             values: Map<int, string>,
+                             level: int) -> string {
+        if instruction.operands.len() != 1 { return "" }
+        let target: string =
+            package_symbol(
+                "std.log", "default_write_enabled_at_code")
+        if !self.function_symbols.contains_key(target) { return "" }
+        let message: string =
+            self.value(
+                function, values,
+                instruction.operands[0], instruction)
+        let result: string = "%v{instruction.result}"
+        values[instruction.result] = result
+        return "  {result} = call i1 {self.function_symbols[target]}(i64 {level}, ptr {message}, ptr {self.string_pointer(instruction.file)}, ptr {self.string_pointer(display_symbol(function.name))}, i64 {instruction.line}, i64 {instruction.col})\n"
+    }
+
+    fn emit_logger_log_call(function: MirFunction,
+                            instruction: MirInstruction,
+                            values: Map<int, string>,
+                            level: int) -> string {
+        if instruction.operands.len() != 2 { return "" }
+        let target: string =
+            package_symbol("std.log", "Logger.log_at_code")
+        if !self.function_symbols.contains_key(target) { return "" }
+        let receiver: string =
+            self.value(
+                function, values,
+                instruction.operands[0], instruction)
+        let message: string =
+            self.value(
+                function, values,
+                instruction.operands[1], instruction)
+        let result: string = "%v{instruction.result}"
+        values[instruction.result] = result
+        return "  {result} = call i1 {self.function_symbols[target]}(ptr {receiver}, i64 {level}, ptr {message}, ptr {self.string_pointer(instruction.file)}, ptr {self.string_pointer(display_symbol(function.name))}, i64 {instruction.line}, i64 {instruction.col})\n"
+    }
+
     fn emit_println(function: MirFunction,
                     instruction: MirInstruction,
                     values: Map<int, string>) -> string {

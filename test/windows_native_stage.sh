@@ -103,10 +103,11 @@ stage() { # <source> <stem>
         # switched clang and the SDK to MSVC, and in that mixed setup its
         # interpreter cannot build every host DLL these programs need:
         # ffi.b wants a GNU fallback DLL for CRT-only float symbols, and the
-        # std.encoding cases want their vendored bridge, which has no GNU
-        # headers to compile against here. On the i686 and ARM64 MSVC lanes,
-        # the networking bridges have the same problem: the job exposes the
-        # target MSVC headers, not the x86-64 GNU headers of bootstrap beansc.
+        # std.encoding and std.log want their vendored C++ bridges, which
+        # cannot be built for the GNU bootstrap ABI from this MSVC-only
+        # environment. On the i686 and ARM64 MSVC lanes, the networking
+        # bridges have the same problem: the job exposes the target MSVC
+        # headers, not the GNU headers of bootstrap beansc.
         #
         # Both have a tracked output fixture that every other backend is
         # already held to, so the native binary is diffed against that fixed
@@ -115,6 +116,7 @@ stage() { # <source> <stem>
         # toolchain still builds it and the real machine still executes it.
         case "$src" in
             examples/ffi.b) fixture=test/cases/ffi.out ;;
+            examples/logging.b) fixture=test/cases/logging.out ;;
             examples/zero_copy_json.b) fixture=test/cases/zero_copy_json.out ;;
             examples/zero_copy_xml.b) fixture=test/cases/zero_copy_xml.out ;;
             test/cases/encoding_*.b) fixture=${src%.b}.out ;;

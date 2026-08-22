@@ -152,6 +152,30 @@ run_bridge_asan test/cases/websocket_fuzz.b ws 'ok websocket_fuzz' 1 20
 run_bridge_asan test/cases/compress_fuzz.b zlib 'ok compress_fuzz' 1 80
 run_bridge_asan test/cases/crypto_vectors.b hash 'sha256 abc true'
 run_bridge_asan test/cases/json_direct_fuzz.b json_direct 'ok json_direct_fuzz'
+run_bridge_asan test/cases/log_basic.b log 'beans-test|hello beans'
+
+# The public Beans case covers the generated-code boundary. This direct case
+# adds every native sink, both drop modes, a full blocking queue, rotation and
+# four concurrent producers under the same sanitizers.
+cxx=${CXX:-clang++}
+mkdir -p "$out/log_bridge_asan_files"
+echo "ASan/UBSan checking all std.log sinks"
+"$cxx" -std=c++17 -O1 -g -fno-rtti -pthread \
+    -fsanitize=address,undefined -fno-sanitize-recover=undefined \
+    -DBEANS_RT_PROFILE=3 \
+    -Iruntime/log -Iruntime/log/vendor/quill/include \
+    runtime/log/beans_log.cpp test/log_bridge.cpp \
+    -o "$out/log_bridge_cpp_asan"
+ASAN_OPTIONS="detect_leaks=$asan_detect_leaks:halt_on_error=1" \
+    "$out/log_bridge_cpp_asan" "$out/log_bridge_asan_files" \
+    >"$out/log_bridge_cpp_asan.stdout" \
+    2>"$out/log_bridge_cpp_asan.stderr"
+if grep -Eq 'AddressSanitizer|runtime error:' \
+        "$out/log_bridge_cpp_asan.stderr"; then
+    sed -n '1,200p' "$out/log_bridge_cpp_asan.stderr" >&2
+    exit 1
+fi
+echo "ASan/UBSan ok all std.log sinks"
 
 echo "ASan/UBSan checking the TLS bridge and partial-IO driver"
 ASAN_OPTIONS="detect_leaks=$asan_detect_leaks:halt_on_error=1" \
@@ -166,6 +190,36 @@ if grep -Eq 'AddressSanitizer|runtime error:' "$out/tls_bridge.stderr"; then
     exit 1
 fi
 echo "ASan/UBSan ok TLS bridge"
+
+echo "TSan checking the std.log bridge"
+mkdir -p "$out/log_bridge_tsan_files"
+if "$cxx" -std=c++17 -O1 -g -fno-rtti -pthread -fsanitize=thread \
+        -DBEANS_RT_PROFILE=3 \
+        -Iruntime/log -Iruntime/log/vendor/quill/include \
+        runtime/log/beans_log.cpp test/log_bridge.cpp \
+        -o "$out/log_bridge_tsan" >"$out/log_tsan.build" 2>&1; then
+    set +e
+    "$out/log_bridge_tsan" "$out/log_bridge_tsan_files" \
+        >"$out/log_tsan.stdout" 2>"$out/log_tsan.stderr"
+    status=$?
+    set -e
+    if grep -q 'WARNING: ThreadSanitizer' "$out/log_tsan.stderr"; then
+        echo "TSan reported a race in std.log" >&2
+        sed -n '1,200p' "$out/log_tsan.stderr" >&2
+        exit 1
+    fi
+    if grep -q 'ThreadSanitizer: CHECK failed' "$out/log_tsan.stderr"; then
+        echo "TSan cannot start here; skipped std.log" >&2
+    elif [[ "$status" -ne 0 ]]; then
+        echo "TSan std.log program failed" >&2
+        sed -n '1,100p' "$out/log_tsan.stderr" >&2
+        exit 1
+    else
+        echo "TSan ok std.log"
+    fi
+else
+    echo "TSan unavailable for std.log; skipped" >&2
+fi
 
 for file in examples/threads.b examples/shared_weak.b examples/wide_sync.b \
             examples/wide_concurrency.b test/cases/thread_deinit.b \

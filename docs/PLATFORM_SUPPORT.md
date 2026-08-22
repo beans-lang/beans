@@ -1,8 +1,7 @@
 # Rust-level Windows and Linux support
 
 The exact target list and current result live in
-[`targets/support.tsv`](https://github.com/beans-lang/beans/blob/main/targets/support.tsv).
-Run `make platform-status` to
+[`targets/support.tsv`](../targets/support.tsv). Run `make platform-status` to
 check it against both compilers. This document is the implementation order.
 
 The scope is the 25 Windows and Linux targets for which Rust ships host tools:
