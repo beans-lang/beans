@@ -10844,8 +10844,95 @@ BRes beans_poll_remove(long long poller, long long fd) {
 long long beans_poll_remove_out(long long poller, long long fd, void** e_out) { BRes r = beans_poll_remove(poller, fd); *e_out = r.err; return r.val; }
 
 // [i64 count][i64 token, i64 flags] * count
-BRes beans_poll_wait(long long poller, long long wake_read, long long max_events,
-                     long long timeout_ms) {
+// Per-thread scratch reused across beans_poll_wait calls. A busy server waits
+// tens of thousands of times a second, and the token/flag/ident arrays plus
+// the kernel event buffer were four heap allocations on every one of them.
+// Freed when the thread exits; a thread that cannot get scratch falls back to
+// the per-call heap path.
+#if !defined(_WIN32)
+typedef struct {
+    long long* tokens;
+    long long* flags;
+#if !defined(__linux__)
+    uintptr_t* idents;
+#endif
+    void* got;      // struct epoll_event[] on Linux, struct kevent[] elsewhere
+    long long cap;  // in events; the kernel buffer holds cap * 2 + 1 entries
+} PollScratch;
+static pthread_key_t poll_scratch_key;
+static pthread_once_t poll_scratch_once = PTHREAD_ONCE_INIT;
+static int poll_scratch_key_ok;
+static void poll_scratch_drop(void* raw) {
+    PollScratch* s = (PollScratch*)raw;
+    if (!s) return;
+    free(s->tokens);
+    free(s->flags);
+#if !defined(__linux__)
+    free(s->idents);
+#endif
+    free(s->got);
+    free(s);
+}
+static void poll_scratch_make_key(void) {
+    poll_scratch_key_ok =
+        pthread_key_create(&poll_scratch_key, poll_scratch_drop) == 0;
+}
+static PollScratch* poll_scratch_get(long long max_events,
+                                     size_t kernel_entry) {
+    pthread_once(&poll_scratch_once, poll_scratch_make_key);
+    if (!poll_scratch_key_ok) return NULL;
+    PollScratch* s = (PollScratch*)pthread_getspecific(poll_scratch_key);
+    if (!s) {
+        s = (PollScratch*)calloc(1, sizeof *s);
+        if (!s) return NULL;
+        if (pthread_setspecific(poll_scratch_key, s) != 0) {
+            free(s);
+            return NULL;
+        }
+    }
+    if (s->cap < max_events) {
+        long long room = max_events * 2 + 1;
+        long long* tokens =
+            (long long*)malloc((size_t)max_events * sizeof(long long));
+        long long* flags =
+            (long long*)malloc((size_t)max_events * sizeof(long long));
+#if !defined(__linux__)
+        uintptr_t* idents =
+            (uintptr_t*)malloc((size_t)max_events * sizeof(uintptr_t));
+#endif
+        void* got = malloc((size_t)room * kernel_entry);
+        if (!tokens || !flags || !got
+#if !defined(__linux__)
+            || !idents
+#endif
+        ) {
+            free(tokens);
+            free(flags);
+#if !defined(__linux__)
+            free(idents);
+#endif
+            free(got);
+            return NULL;
+        }
+        free(s->tokens);
+        free(s->flags);
+        s->tokens = tokens;
+        s->flags = flags;
+#if !defined(__linux__)
+        free(s->idents);
+        s->idents = idents;
+#endif
+        free(s->got);
+        s->got = got;
+        s->cap = max_events;
+    }
+    return s;
+}
+#endif
+
+static BRes beans_poll_wait_into_impl(long long poller, long long wake_read,
+                                      long long max_events,
+                                      long long timeout_ms, BList* packed) {
     if (poller < 0) return (BRes){0, mk_error("poller: closed", "closed")};
     if (max_events <= 0)
         return (BRes){0, mk_error("the event limit must be positive", "invalid")};
@@ -10858,23 +10945,45 @@ BRes beans_poll_wait(long long poller, long long wake_read, long long max_events
                                               + timeout_ms;
     // Heap, not stack: 4096 events would be 64KB of locals, and a poller can be waited
     // on from a worker thread whose stack is 512KB on macOS.
+#if defined(_WIN32)
     long long* tokens = calloc((size_t)max_events, sizeof(long long));
     long long* flags = calloc((size_t)max_events, sizeof(long long));
-#if !defined(__linux__) && !defined(_WIN32)
-    uintptr_t* idents = calloc((size_t)max_events, sizeof(uintptr_t));
+    if (!tokens || !flags) {
+        free(tokens);
+        free(flags);
+        return (BRes){0, mk_error("poller wait: out of memory", "io")};
+    }
+#else
+    PollScratch* scratch = poll_scratch_get(max_events,
+#if defined(__linux__)
+                                            sizeof(struct epoll_event));
+#else
+                                            sizeof(struct kevent));
+#endif
+    long long* tokens = scratch ? scratch->tokens
+                                : calloc((size_t)max_events, sizeof(long long));
+    long long* flags = scratch ? scratch->flags
+                               : calloc((size_t)max_events, sizeof(long long));
+#if !defined(__linux__)
+    uintptr_t* idents = scratch
+                            ? scratch->idents
+                            : calloc((size_t)max_events, sizeof(uintptr_t));
 #endif
     if (!tokens || !flags
-#if !defined(__linux__) && !defined(_WIN32)
+#if !defined(__linux__)
         || !idents
 #endif
     ) {
-        free(tokens);
-        free(flags);
-#if !defined(__linux__) && !defined(_WIN32)
-        free(idents);
+        if (!scratch) {
+            free(tokens);
+            free(flags);
+#if !defined(__linux__)
+            free(idents);
 #endif
+        }
         return (BRes){0, mk_error("poller wait: out of memory", "io")};
     }
+#endif
     long long found = 0;
 
     for (;;) {
@@ -10886,7 +10995,9 @@ BRes beans_poll_wait(long long poller, long long wake_read, long long max_events
         }
         int woken = 0;
 #if defined(__linux__)
-        struct epoll_event* got = calloc((size_t)room, sizeof(struct epoll_event));
+        struct epoll_event* got =
+            scratch ? (struct epoll_event*)scratch->got
+                    : calloc((size_t)room, sizeof(struct epoll_event));
         if (!got) {
             free(tokens);
             free(flags);
@@ -10895,10 +11006,12 @@ BRes beans_poll_wait(long long poller, long long wake_read, long long max_events
         int n = epoll_wait((int)poller, got, (int)room, budget);
         if (n < 0) {
             int e = net_errno();
-            free(got);
+            if (!scratch) free(got);
             if (e == EINTR) continue; // deadline recomputed above, never extended
-            free(tokens);
-            free(flags);
+            if (!scratch) {
+                free(tokens);
+                free(flags);
+            }
             return (BRes){0, poll_err("poller wait", e)};
         }
         for (int i = 0; i < n && found < max_events; i++) {
@@ -10913,7 +11026,7 @@ BRes beans_poll_wait(long long poller, long long wake_read, long long max_events
             flags[found] = f;
             found++;
         }
-        free(got);
+        if (!scratch) free(got);
 #elif defined(_WIN32)
         // Snapshot the registry under the lock, wait outside it: WSAPoll takes
         // the whole interest set each call, and holding the lock across the
@@ -10995,10 +11108,13 @@ BRes beans_poll_wait(long long poller, long long wake_read, long long max_events
         free(got);
         free(toks);
 #else
-        struct kevent* got = calloc((size_t)room, sizeof(struct kevent));
+        struct kevent* got = scratch
+                                 ? (struct kevent*)scratch->got
+                                 : calloc((size_t)room, sizeof(struct kevent));
         if (!got) {
             free(tokens);
             free(flags);
+            free(idents);
             return (BRes){0, mk_error("poller wait: out of memory", "io")};
         }
         struct timespec ts, *wait_for = NULL;
@@ -11010,11 +11126,13 @@ BRes beans_poll_wait(long long poller, long long wake_read, long long max_events
         int n = kevent((int)poller, NULL, 0, got, (int)room, wait_for);
         if (n < 0) {
             int e = net_errno();
-            free(got);
+            if (!scratch) free(got);
             if (e == EINTR) continue;
-            free(tokens);
-            free(flags);
-            free(idents);
+            if (!scratch) {
+                free(tokens);
+                free(flags);
+                free(idents);
+            }
             return (BRes){0, poll_err("poller wait", e)};
         }
         for (int i = 0; i < n; i++) {
@@ -11041,7 +11159,7 @@ BRes beans_poll_wait(long long poller, long long wake_read, long long max_events
             flags[found] = f;
             found++;
         }
-        free(got);
+        if (!scratch) free(got);
 #endif
         if (woken && wake_read >= 0) {
             // Drain it: level-triggered means an undrained byte would make every
@@ -11062,21 +11180,57 @@ BRes beans_poll_wait(long long poller, long long wake_read, long long max_events
         if (timeout_ms == 0) break;
     }
 
-    BList* packed = bytes_mk(8 + found * 16);
+    beans_bytes_resize(packed, 8 + found * 16, 0, 0);
     char* into = (char*)packed->data;
     rt_store_le(into, (unsigned long long)found, 8);
     for (long long i = 0; i < found; i++) {
         rt_store_le(into + 8 + i * 16, (unsigned long long)tokens[i], 8);
         rt_store_le(into + 8 + i * 16 + 8, (unsigned long long)flags[i], 8);
     }
+#if defined(_WIN32)
     free(tokens);
     free(flags);
-#if !defined(__linux__) && !defined(_WIN32)
-    free(idents);
+#else
+    if (!scratch) {
+        free(tokens);
+        free(flags);
+#if !defined(__linux__)
+        free(idents);
 #endif
+    }
+#endif
+    return (BRes){found, NULL};
+}
+
+BRes beans_poll_wait(long long poller, long long wake_read, long long max_events,
+                     long long timeout_ms) {
+    BList* packed = bytes_mk(0);
+    BRes r = beans_poll_wait_into_impl(
+        poller, wake_read, max_events, timeout_ms, packed);
+    if (r.err) {
+        beans_release(packed);
+        return r;
+    }
     return (BRes){(long long)packed, NULL};
 }
 long long beans_poll_wait_out(long long poller, long long wake_read, long long max_events, long long timeout_ms, void** e_out) { BRes r = beans_poll_wait(poller, wake_read, max_events, timeout_ms); *e_out = r.err; return r.val; }
+
+BRes beans_poll_wait_into(long long poller, long long wake_read,
+                          long long max_events, long long timeout_ms,
+                          BList* packed) {
+    if (!packed)
+        return (BRes){0, mk_error("poller wait: missing output buffer", "invalid")};
+    return beans_poll_wait_into_impl(
+        poller, wake_read, max_events, timeout_ms, packed);
+}
+long long beans_poll_wait_into_out(long long poller, long long wake_read,
+                                   long long max_events, long long timeout_ms,
+                                   BList* packed, void** e_out) {
+    BRes r = beans_poll_wait_into(
+        poller, wake_read, max_events, timeout_ms, packed);
+    *e_out = r.err;
+    return r.val;
+}
 
 // Safe from any thread. One byte into a pipe, written while holding the table lock so
 // the descriptor cannot be closed underneath it. EAGAIN means a wake is already pending,

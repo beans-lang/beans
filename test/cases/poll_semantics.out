@@ -19,5 +19,8 @@ datagrams fed true
 every active socket reported true
 no idle socket invented an event true
 fairness within bounded rounds true
+wait_into reports the whole batch true
+wait_into overwrites in place true
+wait_into keeps the grown list true
 abandoned await cancelled true
 descriptor parks again after cancel true

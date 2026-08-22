@@ -254,6 +254,33 @@ else
     echo "  FAIL: could not build/verify the target_info binary"; cat "$tmp/build.log"; fail=1
 fi
 
+# Generic lists store narrow scalars and references in native-endian i64 slots.
+# This exact-output test catches readers that wrongly inspect the first 1/2/4
+# bytes of those slots, which only fails on big-endian targets.
+echo "== $arch: typed JSON edge encoding under qemu =="
+if cross_build test/cases/json_direct_edges.b "$tmp/json_edges.bin" &&
+   verify_elf "$tmp/json_edges.bin"; then
+    run_qemu "$tmp/json_edges.bin" >"$tmp/json_edges.direct" 2>&1
+    direct_status=$?
+    BEANS_JSON_NO_DIRECT=1 run_qemu "$tmp/json_edges.bin" \
+        >"$tmp/json_edges.dom" 2>&1
+    dom_status=$?
+    if [ "$direct_status" = "0" ] && [ "$dom_status" = "0" ] &&
+       cmp -s test/cases/json_direct_edges.out "$tmp/json_edges.direct" &&
+       cmp -s "$tmp/json_edges.direct" "$tmp/json_edges.dom"; then
+        echo "  ok: direct and DOM writers match typed edge output"
+    else
+        echo "  FAIL: typed JSON edge output differs (direct=$direct_status DOM=$dom_status)"
+        diff -u test/cases/json_direct_edges.out "$tmp/json_edges.direct" | head -20
+        diff -u "$tmp/json_edges.direct" "$tmp/json_edges.dom" | head -20
+        fail=1
+    fi
+else
+    echo "  FAIL: could not build/verify the typed JSON edge binary"
+    cat "$tmp/build.log"
+    fail=1
+fi
+
 # rv64gc's five baseline extensions are guaranteed by the ISA of the binary.
 # Both the natural run and the mask-down path matter: the old detector returned
 # false for every feature, while a detector that ignores the mask is also wrong.

@@ -23,6 +23,13 @@
 
 #include "beans_enc_common.h"
 
+// Nothing here may reference a symbol outside libc — encoding_symbols.sh
+// holds that line, which is why the ABI passes callbacks instead of calling
+// runtime entry points directly. That rules out pthread and thread-locals,
+// and C11 atomics too: on aarch64, GCC lowers a compare-exchange to
+// libgcc's outline-atomics helper. So the typed encoder keeps no state
+// between calls.
+
 // The vendored sources stay byte-identical to the upstream release; all
 // Beans-specific configuration happens here, before inclusion.
 //
@@ -1023,11 +1030,33 @@ static yyjson_mut_val* beans_json_typed_encode_value(
         const BeansJsonTypedSchema* element_schema,
         uint64_t element_size,
         const unsigned char* value,
+        int i64_slot,
         BeansJsonEncodeContext* context);
+
+static uint64_t beans_json_typed_read_slot(const unsigned char* value) {
+    uint64_t raw;
+    memcpy(&raw, value, sizeof(raw));
+    return raw;
+}
+
+static void* beans_json_typed_read_pointer(const unsigned char* value,
+                                           int i64_slot) {
+    if (i64_slot)
+        return (void*)(uintptr_t)beans_json_typed_read_slot(value);
+    void* pointer = NULL;
+    memcpy(&pointer, value, sizeof(pointer));
+    return pointer;
+}
 
 static uint64_t beans_json_typed_read_integer(const unsigned char* value,
                                               unsigned bits,
-                                              int want_unsigned) {
+                                              int want_unsigned,
+                                              int i64_slot) {
+    // Generic Lists store every scalar or reference in one native-endian
+    // i64 slot. Load that whole word before narrowing: taking the first one,
+    // two, or four bytes only works on little-endian machines, and taking a
+    // pointer-sized prefix loses a 32-bit pointer on big-endian machines.
+    if (i64_slot) return beans_json_typed_read_slot(value);
     uint64_t raw = 0;
     if (bits == 8) {
         if (want_unsigned) {
@@ -1106,7 +1135,7 @@ static yyjson_mut_val* beans_json_typed_encode_object(
                   complex ? complex->element_kind : 0,
                   complex ? complex->element_schema : NULL,
                   complex ? complex->element_size : 0,
-                  value, context)
+                  value, 0, context)
             : yyjson_mut_null(context->doc);
         yyjson_mut_val* key = yyjson_mut_strn(
             context->doc, (const char*)field->primary_name,
@@ -1140,7 +1169,7 @@ static yyjson_mut_val* beans_json_typed_encode_list(
                 ? element_size * 8 << 8 : 0;
         yyjson_mut_val* encoded = beans_json_typed_encode_value(
             element_kind, element_flags, element_schema, 0, NULL, 0,
-            item, context);
+            item, list->stride < 0, context);
         if (!encoded || !yyjson_mut_arr_append(array, encoded)) return NULL;
     }
     return array;
@@ -1153,20 +1182,29 @@ static yyjson_mut_val* beans_json_typed_encode_value(
         const BeansJsonTypedSchema* element_schema,
         uint64_t element_size,
         const unsigned char* value,
+        int i64_slot,
         BeansJsonEncodeContext* context) {
     if (kind == BEANS_JSON_TYPED_BOOL)
-        return yyjson_mut_bool(context->doc, *value != 0);
+        return yyjson_mut_bool(
+            context->doc,
+            i64_slot ? beans_json_typed_read_slot(value) != 0
+                     : *value != 0);
     if (kind == BEANS_JSON_TYPED_SINT || kind == BEANS_JSON_TYPED_UINT) {
         unsigned bits = (unsigned)(flags >> 8);
         uint64_t integer = beans_json_typed_read_integer(
-            value, bits, kind == BEANS_JSON_TYPED_UINT);
+            value, bits, kind == BEANS_JSON_TYPED_UINT, i64_slot);
         return kind == BEANS_JSON_TYPED_UINT
             ? yyjson_mut_uint(context->doc, integer)
             : yyjson_mut_sint(context->doc, (int64_t)integer);
     }
     if (kind == BEANS_JSON_TYPED_F32) {
         float number;
-        memcpy(&number, value, sizeof(number));
+        if (i64_slot) {
+            uint32_t bits = (uint32_t)beans_json_typed_read_slot(value);
+            memcpy(&number, &bits, sizeof(number));
+        } else {
+            memcpy(&number, value, sizeof(number));
+        }
         return yyjson_mut_real(context->doc, (double)number);
     }
     if (kind == BEANS_JSON_TYPED_F64) {
@@ -1175,8 +1213,7 @@ static yyjson_mut_val* beans_json_typed_encode_value(
         return yyjson_mut_real(context->doc, number);
     }
     if (kind == BEANS_JSON_TYPED_STRING) {
-        void* string = NULL;
-        memcpy(&string, value, sizeof(string));
+        void* string = beans_json_typed_read_pointer(value, i64_slot);
         if (!string || !context->string_len) return NULL;
         long long length = context->string_len(string);
         if (length < 0) return NULL;
@@ -1189,6 +1226,560 @@ static yyjson_mut_val* beans_json_typed_encode_value(
         return beans_json_typed_encode_list(
             element_kind, element_schema, element_size, value, context);
     return NULL;
+}
+
+// ---- direct compact writer ------------------------------------------------
+// The DOM path below builds a yyjson document per call only to serialize it
+// once and free it. For compact mode over schemas without float fields, this
+// writer emits bytes straight from the record — no document, no nodes, no
+// serializer walk — and byte-identically: integers have one decimal spelling,
+// and strings follow yyjson's default escaping exactly (short escapes,
+// uppercase \u00XX for other controls, validated UTF-8 copied raw). Schemas
+// with floats keep the DOM path so real-number formatting stays yyjson's own
+// dtoa, and nested-list elements keep it so unsupported shapes fail the same
+// way they always did.
+
+typedef struct {
+    char* data;
+    size_t len;
+    size_t cap;
+    int oom;
+} BeansJsonDirect;
+
+typedef struct {
+    BeansJsonStringLenFn string_len;
+    uint64_t* req;
+    BeansJsonDirect out;
+} BeansJsonDirectContext;
+
+// One kilobyte to start: an ordinary API object lands inside it, so the
+// common encode grows its buffer exactly once — at allocation — instead of
+// climbing a ladder of reallocs from a small first guess.
+#define BEANS_JSON_DIRECT_FIRST 1024
+
+static int beans_json_direct_grow(BeansJsonDirect* out, size_t extra) {
+    size_t need = out->len + extra;
+    if (need < out->len) {
+        out->oom = 1;
+        return 0;
+    }
+    if (need <= out->cap) return 1;
+    size_t cap = out->cap ? out->cap : BEANS_JSON_DIRECT_FIRST;
+    while (cap < need) {
+        if (cap > (SIZE_MAX >> 1)) {
+            out->oom = 1;
+            return 0;
+        }
+        cap <<= 1;
+    }
+    char* grown = realloc(out->data, cap);
+    if (!grown) {
+        out->oom = 1;
+        return 0;
+    }
+    out->data = grown;
+    out->cap = cap;
+    return 1;
+}
+
+static int beans_json_direct_raw(BeansJsonDirect* out, const char* text,
+                                 size_t len) {
+    if (!beans_json_direct_grow(out, len)) return 0;
+    memcpy(out->data + out->len, text, len);
+    out->len += len;
+    return 1;
+}
+
+static int beans_json_direct_char(BeansJsonDirect* out, char c) {
+    if (!beans_json_direct_grow(out, 1)) return 0;
+    out->data[out->len++] = c;
+    return 1;
+}
+
+static const char beans_json_digit_pairs[201] =
+    "00010203040506070809101112131415161718192021222324"
+    "25262728293031323334353637383940414243444546474849"
+    "50515253545556575859606162636465666768697071727374"
+    "75767778798081828384858687888990919293949596979899";
+
+static int beans_json_direct_uint(BeansJsonDirect* out, uint64_t value) {
+    char digits[20];
+    int at = 20;
+    while (value >= 100) {
+        unsigned rem = (unsigned)(value % 100);
+        value /= 100;
+        at -= 2;
+        memcpy(digits + at, beans_json_digit_pairs + rem * 2, 2);
+    }
+    if (value >= 10) {
+        at -= 2;
+        memcpy(digits + at, beans_json_digit_pairs + value * 2, 2);
+    } else {
+        digits[--at] = (char)('0' + value);
+    }
+    return beans_json_direct_raw(out, digits + at, (size_t)(20 - at));
+}
+
+static int beans_json_direct_sint(BeansJsonDirect* out, int64_t value) {
+    if (value >= 0) return beans_json_direct_uint(out, (uint64_t)value);
+    if (!beans_json_direct_char(out, '-')) return 0;
+    return beans_json_direct_uint(out, ~(uint64_t)value + 1);
+}
+
+// Bytes that end a plain copy run: below 0x20, the quote, the backslash, or
+// anything non-ASCII. Eight at a time on little-endian hosts, the same trick
+// yyjson's writer uses; the classification is identical to the byte loop.
+static size_t beans_json_plain_span(const unsigned char* src, size_t len) {
+    size_t at = 0;
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    while (at + 8 <= len) {
+        uint64_t word;
+        memcpy(&word, src + at, 8);
+        uint64_t high = word & UINT64_C(0x8080808080808080);
+        // Bytes below 0x20 borrow out of the subtraction; bytes with the
+        // high bit set can false-positive here, but `high` flags them anyway.
+        uint64_t control = (word - UINT64_C(0x2020202020202020)) & ~word &
+                           UINT64_C(0x8080808080808080);
+        uint64_t quoted = word ^ UINT64_C(0x2222222222222222);
+        quoted = (quoted - UINT64_C(0x0101010101010101)) & ~quoted &
+                 UINT64_C(0x8080808080808080);
+        uint64_t slashed = word ^ UINT64_C(0x5C5C5C5C5C5C5C5C);
+        slashed = (slashed - UINT64_C(0x0101010101010101)) & ~slashed &
+                  UINT64_C(0x8080808080808080);
+        uint64_t breaks = high | control | quoted | slashed;
+        if (!breaks) {
+            at += 8;
+            continue;
+        }
+        at += (size_t)(__builtin_ctzll(breaks) >> 3);
+        return at;
+    }
+#endif
+    while (at < len) {
+        unsigned char c = src[at];
+        if (c >= 0x20 && c < 0x80 && c != '"' && c != '\\') at++;
+        else break;
+    }
+    return at;
+}
+
+// 1 written, 0 out of memory, -1 invalid UTF-8 — the same byte classes and
+// sequence checks as yyjson's writer with default flags.
+static int beans_json_direct_string(BeansJsonDirect* out,
+                                    const unsigned char* src, size_t len) {
+    static const char hex[] = "0123456789ABCDEF";
+    if (!beans_json_direct_char(out, '"')) return 0;
+    size_t at = 0;
+    while (at < len) {
+        size_t span = beans_json_plain_span(src + at, len - at);
+        if (span) {
+            if (!beans_json_direct_raw(out, (const char*)src + at, span))
+                return 0;
+            at += span;
+            if (at >= len) break;
+        }
+        unsigned char c = src[at];
+        if (c < 0x80) {
+            char esc[6];
+            size_t esc_len = 2;
+            esc[0] = '\\';
+            if (c == '"') esc[1] = '"';
+            else if (c == '\\') esc[1] = '\\';
+            else if (c == '\b') esc[1] = 'b';
+            else if (c == '\t') esc[1] = 't';
+            else if (c == '\n') esc[1] = 'n';
+            else if (c == '\f') esc[1] = 'f';
+            else if (c == '\r') esc[1] = 'r';
+            else {
+                esc[1] = 'u';
+                esc[2] = '0';
+                esc[3] = '0';
+                esc[4] = hex[c >> 4];
+                esc[5] = hex[c & 15];
+                esc_len = 6;
+            }
+            if (!beans_json_direct_raw(out, esc, esc_len)) return 0;
+            at += 1;
+        } else {
+            size_t need;
+            if (c >= 0xC2 && c <= 0xDF) need = 2;
+            else if (c >= 0xE0 && c <= 0xEF) need = 3;
+            else if (c >= 0xF0 && c <= 0xF4) need = 4;
+            else return -1;
+            if (at + need > len) return -1;
+            unsigned char c1 = src[at + 1];
+            if ((c1 & 0xC0) != 0x80) return -1;
+            if (need == 3) {
+                unsigned char c2 = src[at + 2];
+                if ((c2 & 0xC0) != 0x80) return -1;
+                if (c == 0xE0 && c1 < 0xA0) return -1; // overlong
+                if (c == 0xED && c1 > 0x9F) return -1; // surrogate
+            } else if (need == 4) {
+                unsigned char c2 = src[at + 2];
+                unsigned char c3 = src[at + 3];
+                if ((c2 & 0xC0) != 0x80 || (c3 & 0xC0) != 0x80) return -1;
+                if (c == 0xF0 && c1 < 0x90) return -1; // overlong
+                if (c == 0xF4 && c1 > 0x8F) return -1; // above U+10FFFF
+            }
+            if (!beans_json_direct_raw(out, (const char*)src + at, need))
+                return 0;
+            at += need;
+        }
+    }
+    return beans_json_direct_char(out, '"');
+}
+
+static int beans_json_direct_eligible(const BeansJsonTypedSchema* schema,
+                                      int depth);
+
+// The constant text between one field's value and the next — brace or comma,
+// quote, key, quote, colon — laid out once so a list of records emits each
+// key as a single copy instead of re-deciding how to escape it a thousand
+// times. Built for the duration of one encode and freed with it: the bridge
+// keeps no state between calls, so there is nothing to synchronize.
+typedef struct {
+    char* bytes;
+    uint32_t* off;
+    uint32_t* len;
+} BeansJsonSkel;
+
+static void beans_json_skel_free(BeansJsonSkel* skel) {
+    free(skel->bytes);
+    free(skel->off);
+    free(skel->len);
+    skel->bytes = NULL;
+    skel->off = NULL;
+    skel->len = NULL;
+}
+
+// 1 when the skeleton is usable; 0 when a key needs escaping (no Beans
+// identifier does) or memory ran short, and the caller emits keys inline.
+static int beans_json_skel_build(const BeansJsonTypedSchema* schema,
+                                 BeansJsonSkel* skel) {
+    skel->bytes = NULL;
+    skel->off = NULL;
+    skel->len = NULL;
+    if (!schema->fields || schema->field_count == 0) return 0;
+    size_t total = 0;
+    for (uint64_t index = 0; index < schema->field_count; index++) {
+        const BeansJsonTypedField* field = &schema->fields[index];
+        if (field->flags & BEANS_JSON_TYPED_IGNORED) continue;
+        for (uint64_t at = 0; at < field->primary_name_len; at++) {
+            unsigned char c = field->primary_name[at];
+            if (c < 0x20 || c >= 0x80 || c == '"' || c == '\\') return 0;
+        }
+        total += (size_t)field->primary_name_len + 4;
+    }
+    if (total == 0) return 0;
+    skel->bytes = (char*)malloc(total);
+    skel->off = (uint32_t*)calloc((size_t)schema->field_count,
+                                  sizeof(uint32_t));
+    skel->len = (uint32_t*)calloc((size_t)schema->field_count,
+                                  sizeof(uint32_t));
+    if (!skel->bytes || !skel->off || !skel->len) {
+        beans_json_skel_free(skel);
+        return 0;
+    }
+    size_t pos = 0;
+    int first = 1;
+    for (uint64_t index = 0; index < schema->field_count; index++) {
+        const BeansJsonTypedField* field = &schema->fields[index];
+        if (field->flags & BEANS_JSON_TYPED_IGNORED) continue;
+        size_t start = pos;
+        skel->bytes[pos++] = first ? '{' : ',';
+        first = 0;
+        skel->bytes[pos++] = '"';
+        memcpy(skel->bytes + pos, field->primary_name,
+               (size_t)field->primary_name_len);
+        pos += (size_t)field->primary_name_len;
+        skel->bytes[pos++] = '"';
+        skel->bytes[pos++] = ':';
+        skel->off[index] = (uint32_t)start;
+        skel->len[index] = (uint32_t)(pos - start);
+    }
+    return 1;
+}
+
+// Set before main, read-only afterwards: no atomics needed, and no getenv
+// on the hot path.
+static int beans_json_direct_disabled;
+__attribute__((constructor)) static void beans_json_direct_setup(void) {
+    beans_json_direct_disabled = getenv("BEANS_JSON_NO_DIRECT") != NULL;
+}
+
+static int beans_json_direct_object(const BeansJsonTypedSchema* schema,
+                                    const unsigned char* record,
+                                    const BeansJsonSkel* skel,
+                                    BeansJsonDirectContext* context);
+
+// 1 written, 0 out of memory, -1 invalid string bytes, -2 a shape the DOM
+// walk also refuses (null string or list, missing schema) — mapped by the
+// caller to the same error codes the DOM path reports.
+static int beans_json_direct_value(uint64_t kind, uint64_t flags,
+                                   const BeansJsonTypedSchema* child_schema,
+                                   uint64_t element_kind,
+                                   const BeansJsonTypedSchema* element_schema,
+                                   uint64_t element_size,
+                                   const unsigned char* value,
+                                   int i64_slot,
+                                   BeansJsonDirectContext* context) {
+    if (kind == BEANS_JSON_TYPED_BOOL) {
+        int boolean = i64_slot ? beans_json_typed_read_slot(value) != 0
+                               : *value != 0;
+        return boolean
+            ? beans_json_direct_raw(&context->out, "true", 4)
+            : beans_json_direct_raw(&context->out, "false", 5);
+    }
+    if (kind == BEANS_JSON_TYPED_SINT || kind == BEANS_JSON_TYPED_UINT) {
+        unsigned bits = (unsigned)(flags >> 8);
+        uint64_t integer = beans_json_typed_read_integer(
+            value, bits, kind == BEANS_JSON_TYPED_UINT, i64_slot);
+        return kind == BEANS_JSON_TYPED_UINT
+            ? beans_json_direct_uint(&context->out, integer)
+            : beans_json_direct_sint(&context->out, (int64_t)integer);
+    }
+    if (kind == BEANS_JSON_TYPED_STRING) {
+        void* string = beans_json_typed_read_pointer(value, i64_slot);
+        if (!string || !context->string_len) return -2;
+        long long length = context->string_len(string);
+        if (length < 0) return -2;
+        return beans_json_direct_string(
+            &context->out, (const unsigned char*)string, (size_t)length);
+    }
+    if (kind == BEANS_JSON_TYPED_STRUCT && child_schema)
+        return beans_json_direct_object(child_schema, value, NULL, context);
+    if (kind == BEANS_JSON_TYPED_LIST) {
+        void* list_pointer = NULL;
+        memcpy(&list_pointer, value, sizeof(list_pointer));
+        if (!list_pointer || element_size == 0) return -2;
+        const BeansJsonListPrefix* list =
+            (const BeansJsonListPrefix*)list_pointer;
+        if (!beans_json_direct_char(&context->out, '[')) return 0;
+        size_t stride = beans_json_typed_list_stride(list);
+        // Records repeat, so their key text is worth laying out once.
+        BeansJsonSkel skel = {NULL, NULL, NULL};
+        int have_skel = element_kind == BEANS_JSON_TYPED_STRUCT &&
+                        element_schema && list->len > 1 &&
+                        beans_json_skel_build(element_schema, &skel);
+        for (uint64_t index = 0; index < list->len; index++) {
+            if (index != 0 && !beans_json_direct_char(&context->out, ',')) {
+                if (have_skel) beans_json_skel_free(&skel);
+                return 0;
+            }
+            const unsigned char* item =
+                (const unsigned char*)list->data + index * stride;
+            int wrote;
+            if (have_skel) {
+                wrote = beans_json_direct_object(element_schema, item, &skel,
+                                                 context);
+            } else {
+                uint64_t element_flags =
+                    (element_kind == BEANS_JSON_TYPED_SINT ||
+                     element_kind == BEANS_JSON_TYPED_UINT)
+                        ? element_size * 8 << 8 : 0;
+                wrote = beans_json_direct_value(
+                    element_kind, element_flags, element_schema, 0, NULL, 0,
+                    item, list->stride < 0, context);
+            }
+            if (wrote != 1) {
+                if (have_skel) beans_json_skel_free(&skel);
+                return wrote;
+            }
+        }
+        if (have_skel) beans_json_skel_free(&skel);
+        return beans_json_direct_char(&context->out, ']');
+    }
+    return -2;
+}
+
+static int beans_json_direct_object(const BeansJsonTypedSchema* schema,
+                                    const unsigned char* record,
+                                    const BeansJsonSkel* skel,
+                                    BeansJsonDirectContext* context) {
+    if (!skel && !beans_json_direct_char(&context->out, '{')) return 0;
+    int first = 1;
+    for (uint64_t index = 0; index < schema->field_count; index++) {
+        const BeansJsonTypedField* field = &schema->fields[index];
+        const BeansJsonTypedComplex* complex = schema->complex
+            ? &schema->complex[index] : NULL;
+        if (field->flags & BEANS_JSON_TYPED_IGNORED) continue;
+        context->req[7] = index;
+
+        const unsigned char* value = record + field->value_offset;
+        int present = 1;
+        if (field->flags & BEANS_JSON_TYPED_OPTIONAL) {
+            if (field->presence_offset != UINT64_MAX) {
+                present = record[field->presence_offset] != 0;
+            } else if (field->flags & BEANS_JSON_TYPED_BOXED_OPTION) {
+                uint64_t box_word = 0;
+                memcpy(&box_word, record + field->value_offset,
+                       sizeof(box_word));
+                present = complex && box_word != complex->missing_value;
+                if (present)
+                    value = (const unsigned char*)(uintptr_t)box_word +
+                            complex->box_value_offset;
+            } else {
+                void* pointer = NULL;
+                memcpy(&pointer, record + field->value_offset,
+                       sizeof(pointer));
+                present = pointer != NULL;
+            }
+        }
+
+        int wrote;
+        if (skel) {
+            if (!beans_json_direct_raw(&context->out,
+                                       skel->bytes + skel->off[index],
+                                       skel->len[index]))
+                return 0;
+        } else {
+            if (!first && !beans_json_direct_char(&context->out, ',')) return 0;
+            wrote = beans_json_direct_string(
+                &context->out, field->primary_name,
+                (size_t)field->primary_name_len);
+            if (wrote != 1) return wrote;
+            if (!beans_json_direct_char(&context->out, ':')) return 0;
+        }
+        first = 0;
+        if (!present) {
+            if (!beans_json_direct_raw(&context->out, "null", 4)) return 0;
+            continue;
+        }
+        wrote = beans_json_direct_value(
+            field->kind, field->flags,
+            complex ? complex->child_schema : NULL,
+            complex ? complex->element_kind : 0,
+            complex ? complex->element_schema : NULL,
+            complex ? complex->element_size : 0,
+            value, 0, context);
+        if (wrote != 1) return wrote;
+    }
+    return beans_json_direct_char(&context->out, '}');
+}
+
+static int beans_json_direct_eligible(const BeansJsonTypedSchema* schema,
+                                      int depth) {
+    if (!schema || !schema->fields || depth > 32) return 0;
+    for (uint64_t index = 0; index < schema->field_count; index++) {
+        const BeansJsonTypedField* field = &schema->fields[index];
+        if (field->flags & BEANS_JSON_TYPED_IGNORED) continue;
+        uint64_t kind = field->kind;
+        if (kind == BEANS_JSON_TYPED_F32 || kind == BEANS_JSON_TYPED_F64)
+            return 0;
+        const BeansJsonTypedComplex* complex = schema->complex
+            ? &schema->complex[index] : NULL;
+        if (kind == BEANS_JSON_TYPED_STRUCT) {
+            if (!complex ||
+                !beans_json_direct_eligible(complex->child_schema, depth + 1))
+                return 0;
+        }
+        if (kind == BEANS_JSON_TYPED_LIST) {
+            if (!complex) return 0;
+            uint64_t element = complex->element_kind;
+            if (element == BEANS_JSON_TYPED_F32 ||
+                element == BEANS_JSON_TYPED_F64 ||
+                element == BEANS_JSON_TYPED_LIST)
+                return 0;
+            if (element == BEANS_JSON_TYPED_STRUCT &&
+                !beans_json_direct_eligible(complex->element_schema,
+                                            depth + 1))
+                return 0;
+        }
+    }
+    return 1;
+}
+
+// Roughly how many bytes one record of this schema will occupy: the keys
+// exactly, the values by kind. Nothing is read from the record itself, so
+// this costs one walk of read-only schema data and cannot fail. It only
+// sizes the first allocation — a short guess still grows, a long one only
+// wastes a little — which is what keeps a 50,000-element list from climbing
+// a ladder of reallocs and copying itself at every rung.
+static size_t beans_json_direct_record_size(
+        const BeansJsonTypedSchema* schema, int depth) {
+    if (!schema || !schema->fields || depth > 4) return 32;
+    size_t total = 2; // the braces
+    for (uint64_t index = 0; index < schema->field_count; index++) {
+        const BeansJsonTypedField* field = &schema->fields[index];
+        if (field->flags & BEANS_JSON_TYPED_IGNORED) continue;
+        const BeansJsonTypedComplex* complex = schema->complex
+            ? &schema->complex[index] : NULL;
+        total += (size_t)field->primary_name_len + 4; // "key":,
+        switch (field->kind) {
+            case BEANS_JSON_TYPED_BOOL: total += 5; break;
+            case BEANS_JSON_TYPED_SINT:
+            case BEANS_JSON_TYPED_UINT: total += 8; break;
+            case BEANS_JSON_TYPED_F32:
+            case BEANS_JSON_TYPED_F64: total += 12; break;
+            case BEANS_JSON_TYPED_STRING: total += 24; break;
+            case BEANS_JSON_TYPED_STRUCT:
+                total += beans_json_direct_record_size(
+                    complex ? complex->child_schema : NULL, depth + 1);
+                break;
+            case BEANS_JSON_TYPED_LIST: total += 64; break;
+            default: total += 16; break;
+        }
+    }
+    return total;
+}
+
+static size_t beans_json_direct_first_cap(
+        const BeansJsonTypedSchema* schema, const unsigned char* root) {
+    size_t want = beans_json_direct_record_size(schema, 0);
+    if (schema->flags & BEANS_JSON_TYPED_ROOT_ARRAY) {
+        void* list_pointer = NULL;
+        memcpy(&list_pointer, &root, sizeof(list_pointer));
+        if (list_pointer) {
+            const BeansJsonListPrefix* list =
+                (const BeansJsonListPrefix*)list_pointer;
+            uint64_t count = list->len;
+            // 32 MB of guess is plenty; anything past it grows the ordinary
+            // way rather than trusting an estimate that large.
+            if (count > (32u << 20) / (want + 1)) count = (32u << 20) / (want + 1);
+            want = (size_t)count * (want + 1) + 2;
+        }
+    }
+    if (want < BEANS_JSON_DIRECT_FIRST) want = BEANS_JSON_DIRECT_FIRST;
+    return want;
+}
+
+static long long beans_json_direct_encode(unsigned char* root,
+                                          const BeansJsonTypedSchema* schema,
+                                          BeansJsonStringLenFn string_len,
+                                          uint64_t* req) {
+    BeansJsonDirectContext context;
+    size_t first = beans_json_direct_first_cap(schema, root);
+    context.string_len = string_len;
+    context.req = req;
+    context.out.data = (char*)malloc(first);
+    context.out.len = 0;
+    context.out.cap = context.out.data ? first : 0;
+    context.out.oom = 0;
+    int wrote;
+    if (schema->flags & BEANS_JSON_TYPED_ROOT_ARRAY) {
+        void* list = root;
+        wrote = beans_json_direct_value(
+            BEANS_JSON_TYPED_LIST, 0, NULL, BEANS_JSON_TYPED_STRUCT, schema,
+            schema->record_size, (const unsigned char*)&list, 0, &context);
+    } else {
+        wrote = beans_json_direct_object(schema, root, NULL, &context);
+    }
+    if (wrote != 1) {
+        free(context.out.data);
+        // The DOM walk reports its refusals — null strings and lists, memory
+        // trouble — as a memory error, and only bad string bytes as invalid;
+        // this path keeps that exact mapping.
+        if (wrote == -1) {
+            req[5] = BEANS_JSON_WERR_INVALID;
+            return BEANS_ENC_ERR_INVALID;
+        }
+        req[5] = BEANS_JSON_WERR_MEMORY;
+        return BEANS_ENC_ERR_MEMORY;
+    }
+    req[3] = (uint64_t)(uintptr_t)context.out.data;
+    req[4] = (uint64_t)context.out.len;
+    req[7] = UINT64_MAX;
+    return BEANS_ENC_OK;
 }
 
 // Compiler-generated typed encoding.
@@ -1211,6 +1802,15 @@ BEANS_ENC_API long long beans_enc_json_typed_encode(
         req[5] = BEANS_JSON_WERR_INVALID;
         return BEANS_ENC_ERR_INVALID;
     }
+
+    // BEANS_JSON_NO_DIRECT routes every encode through the DOM path — the
+    // A/B lever the byte-equality fuzz uses, and the escape hatch if the
+    // direct writer is ever suspected in the field. Read once before main,
+    // so the hot path neither rescans the environment nor races on a lazy
+    // first read.
+    if (!beans_json_direct_disabled && req[1] == BEANS_JSON_WRITE_COMPACT &&
+        beans_json_direct_eligible(schema, 0))
+        return beans_json_direct_encode(root, schema, string_len, req);
 
     yyjson_mut_doc* doc = yyjson_mut_doc_new(NULL);
     if (!doc) {

@@ -446,6 +446,10 @@ class ParserCore {
     // per-message state, so the head it belongs to is remembered here.
     last_request: Request = new Request()
     last_response: Response = new Response()
+    // One delivered request shell handed back through `recycle`. The next
+    // message fills it instead of allocating, and until then its strings
+    // seed the byte-equal reuse checks in `reused_target`/`reused_value`.
+    spare_request: Option<Request> = none
 
     fn init(request_side: bool, limits: Limits) {
         self.request_side = request_side
@@ -504,18 +508,75 @@ class ParserCore {
         return self.pending_text.to_string()
     }
 
-    fn build_request() -> Request {
-        var head: Request = new Request()
+    // The previous message's identical string instead of a fresh allocation —
+    // the shape of every keep-alive connection, where a peer repeats its
+    // target and headers byte-for-byte. Comparisons are exact, and the spare
+    // belongs to this parser alone, so nothing crosses connections.
+    fn reused_target() -> string {
+        match self.spare_request {
+            some(spare) => {
+                if spare.target != "" &&
+                   bytes_equal_text(self.pending_text, spare.target) {
+                    return spare.target
+                }
+            }
+            none => {}
+        }
+        return self.pending_string()
+    }
+
+    fn reused_value() -> string {
+        match self.spare_request {
+            some(spare) => {
+                let previous: Headers = spare.headers
+                for index: int in 0..previous.count() {
+                    if previous.name_at(index) == self.field_name &&
+                       bytes_equal_text(self.pending_text,
+                                        previous.value_at(index)) {
+                        return previous.value_at(index)
+                    }
+                }
+            }
+            none => {}
+        }
+        return self.pending_string()
+    }
+
+    fn adopt_spare(done: Request) {
+        self.spare_request = some(done)
+    }
+
+    fn fill_request(head: Request) {
         head.method = self.method_text
         head.target = self.target_text
         head.major = self.major
         head.minor = self.minor
         head.headers = self.fields
-        self.fields = new Headers()
         head.content_length = self.content_length
         head.chunked = (self.flags / 8) % 2 == 1
         head.keep_alive = self.keep_alive
         head.upgrade = self.upgrade
+    }
+
+    fn build_request() -> Request {
+        let recycled: Option<Request> = self.spare_request
+        self.spare_request = none
+        match recycled {
+            some(spare) => {
+                // The spare's old headers become the next accumulator once
+                // the reuse checks above are done with them; nothing here
+                // allocates on a keep-alive connection.
+                let next_fields: Headers = spare.headers
+                self.fill_request(spare)
+                next_fields.clear()
+                self.fields = next_fields
+                return spare
+            }
+            none => {}
+        }
+        let head: Request = new Request()
+        self.fill_request(head)
+        self.fields = new Headers()
         return head
     }
 
@@ -672,7 +733,7 @@ class ParserCore {
                 } else { self.pending_string() }
                 self.seal_pending()
             } else if kind == 13 {
-                self.target_text = self.pending_string()
+                self.target_text = self.reused_target()
                 self.seal_pending()
             } else if kind == 16 {
                 self.status_text = self.pending_string()
@@ -688,7 +749,7 @@ class ParserCore {
                 // An empty value never produces a value span; the complete
                 // event alone closes the pair.
                 let value: string = if self.pending_kind == 8 {
-                    self.pending_string()
+                    self.reused_value()
                 } else {
                     ""
                 }
@@ -800,6 +861,9 @@ class ParserCore {
 /// split them. Feed what arrived; get back the events it completed.
 pub class RequestParser {
     core: ParserCore
+    // Request-side runs never produce response events; one forever-empty
+    // list serves every feed instead of a fresh allocation per read.
+    no_responses: List<ResponseEvent> = []
 
     pub fn init() {
         self.core = new ParserCore(true, new Limits())
@@ -834,15 +898,24 @@ pub class RequestParser {
     /// the list between feeds; events are valid until then.
     pub fn feed_range_into(data: Bytes, from: int, to: int,
                            events: List<RequestEvent>) -> Result<bool> {
-        var unused: List<ResponseEvent> = []
-        return self.core.run(data, from, to, false, events, unused)
+        return self.core.run(data, from, to, false, events,
+                             self.no_responses)
     }
 
     /// Signals end-of-stream into a caller-owned list, the way
     /// `feed_range_into` feeds one.
     pub fn finish_into(events: List<RequestEvent>) -> Result<bool> {
-        var unused: List<ResponseEvent> = []
-        return self.core.run(new Bytes(0), 0, 0, true, events, unused)
+        return self.core.run(new Bytes(0), 0, 0, true, events,
+                             self.no_responses)
+    }
+
+    /// Hands a delivered request head back for reuse. The next message fills
+    /// this shell instead of allocating one, and reuses its target and header
+    /// strings when the peer repeats them byte-for-byte — the shape of every
+    /// keep-alive connection. Only recycle a request nothing will read again:
+    /// the parser rewrites every field in place.
+    pub fn recycle(done: Request) {
+        self.core.adopt_spare(done)
     }
 
     /// Signals end-of-stream. A message that needed EOF to end produces its

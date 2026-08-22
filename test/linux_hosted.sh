@@ -152,6 +152,37 @@ tmp="${TMPDIR:-/tmp}/beans-hosted-$arch.$$"
 mkdir -p "$tmp"
 trap 'rm -rf "$tmp"' EXIT
 
+# An interpreted program that reaches a native bridge — std.net's sockx entry
+# points, for instance — makes the interpreter build that bridge on demand and
+# dlopen it into its own process, so the bridge has to be an $arch object.
+# `beansc build` says so explicitly: it passes --target and -fuse-ld. The
+# interpreter passes neither, only the target's -march/-mabi, and trusts the C
+# driver on PATH to be the target's own. On a real $arch machine it is; under
+# qemu it is the host's clang, which rejects those flags outright — every
+# interpreted bridge call then dies with "unsupported option '-mabi='" while
+# the compiled half of the same example runs fine.
+#
+# BEANS_CC names the C driver the interpreter should use, so give it one that
+# pins the target and links with this arch's linker, the way the driver
+# already does — $linker rather than lld outright, because big-endian ppc64
+# needs its ELFv1 ld. Flags go before "$@" so anything beansc adds still wins.
+if [ -z "${BEANS_CC:-}" ]; then
+    {
+        echo '#!/bin/sh'
+        printf 'exec %s --target=%s -fuse-ld=%s' \
+            "${BEANS_HOST_CC:-clang}" "$triple" "$linker"
+        if [ -n "${BEANS_CLANG_SYSROOT:-}" ]; then
+            printf ' --sysroot=%s' "$BEANS_CLANG_SYSROOT"
+        fi
+        if [ -n "${BEANS_CLANG_GCC_TOOLCHAIN:-}" ]; then
+            printf ' --gcc-toolchain=%s' "$BEANS_CLANG_GCC_TOOLCHAIN"
+        fi
+        printf ' "$@"\n'
+    } >"$tmp/interp-cc"
+    chmod +x "$tmp/interp-cc"
+    export BEANS_CC="$tmp/interp-cc"
+fi
+
 # beansc, as an <arch> binary.
 run_qemu() { QEMU_LD_PREFIX="$sysroot" "$qemu" "${qemu_args[@]}" "$@"; }
 run() { run_qemu "$tmp/beansc.$arch" "$@"; }
