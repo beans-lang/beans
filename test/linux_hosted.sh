@@ -163,13 +163,14 @@ trap 'rm -rf "$tmp"' EXIT
 # the compiled half of the same example runs fine.
 #
 # BEANS_CC names the C driver the interpreter should use, so give it one that
-# pins the target and links with lld, the way the driver already does. Flags
-# go before "$@" so anything beansc adds still wins.
+# pins the target and links with this arch's linker, the way the driver
+# already does — $linker rather than lld outright, because big-endian ppc64
+# needs its ELFv1 ld. Flags go before "$@" so anything beansc adds still wins.
 if [ -z "${BEANS_CC:-}" ]; then
     {
         echo '#!/bin/sh'
-        printf 'exec %s --target=%s -fuse-ld=lld' \
-            "${BEANS_HOST_CC:-clang}" "$triple"
+        printf 'exec %s --target=%s -fuse-ld=%s' \
+            "${BEANS_HOST_CC:-clang}" "$triple" "$linker"
         if [ -n "${BEANS_CLANG_SYSROOT:-}" ]; then
             printf ' --sysroot=%s' "$BEANS_CLANG_SYSROOT"
         fi
