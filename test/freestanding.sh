@@ -139,7 +139,11 @@ async fn main() {
 BEANS
 ./build/beansc build --runtime freestanding "$tmp/free_async.b" --emit ir \
     -o "$tmp/free_async.ll" >/dev/null
-clang -O2 -Wno-override-module "$tmp/free_async.ll" "$tmp/rt.o" "$tmp/host.o" \
+# The async core reaches the runtime through extern "C" entries, so the
+# emitted program carries an FFI companion beside its IR; the freestanding
+# stubs in the runtime satisfy the calls, but the thunks must link too.
+clang -O2 -Wno-override-module "$tmp/free_async.ll" build/free_async_ffi.c \
+    "$tmp/rt.o" "$tmp/host.o" \
     -o "$tmp/prog_async" 2>"$tmp/link_async.log" || {
     echo "the freestanding async program did not link" >&2
     cat "$tmp/link_async.log" >&2

@@ -688,16 +688,22 @@ class MirLowerer {
         }
         self.pop_scope()
         let closure: MirFunction = self.current
+        var by_value_index: int = 0
         for capture: MirCapture in closure.captures {
             if capture.source < 0 ||
                capture.source >= parent.locals.len() {
+                by_value_index += 1
                 continue
             }
             let source: MirLocal =
                 parent.locals[capture.source]
+            // the per-instruction value mask is one machine word, so a
+            // capture past bit 62 always rides a cell instead
             capture.by_value =
+                by_value_index < 63 &&
                 mir_capture_by_value_type(capture.type) &&
                 !source.mutable
+            by_value_index += 1
             if capture.by_value &&
                capture.target >= 0 &&
                capture.target < closure.locals.len() {
@@ -1904,13 +1910,20 @@ class MirLowerer {
                 if closure.removed ||
                    closure.op != "closure" ||
                    closure.result < 0 ||
-                   closure.capture_locals.len() == 0 {
+                   closure.capture_locals.len() == 0 ||
+                   closure.capture_locals.len() > 27 {
+                    // past 27 captures the heap layout chunks into annex
+                    // boxes (the ILP32 walker mask covers 29 slots); the
+                    // stack frame stays flat, so wide closures keep the
+                    // heap path and both layouts stay decidable from the
+                    // capture count alone
                     continue
                 }
                 var safe: bool = true
                 for index: int in
                     0..closure.capture_locals.len() {
-                    if (closure.capture_value_mask &
+                    if index >= 63 ||
+                       (closure.capture_value_mask &
                         (1 << index)) == 0 {
                         safe = false
                     }

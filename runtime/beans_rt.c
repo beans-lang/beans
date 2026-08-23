@@ -14031,15 +14031,16 @@ static void* thread_main(void* arg) {
     // source handle was abandoned, this also drops its late result now.
     beans_release(t);
     cc_worker_roots_end();
-    // The global collector may run again only after every graph root above is
-    // in its buffer. The separately retained scalar signal remains valid even
-    // when releasing the handle freed BThread.
-    cc_threads -= 1;
+    // The completion flip happens while the worker still holds its signal
+    // reference — an abandoned handle may already have dropped the joiner's —
+    // and the release lands before cc_threads falls: every RC touch stays
+    // inside the worker's window, so the quiescent global collector can never
+    // race a straggling release. The signal is a childless scalar; dropping
+    // it after roots_end cannot add a root.
     __atomic_store_n((int*)&signal->complete, 1, __ATOMIC_RELEASE);
     beans_async_notify();
-    // This shared scalar has no child graph. It is the only RC touch after the
-    // worker leaves cc_threads.
     beans_release(signal);
+    cc_threads -= 1;
     return NULL;
 }
 BThread* beans_thread_spawn(void* thunk, void* env, long long result_ptr) {

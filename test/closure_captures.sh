@@ -57,3 +57,16 @@ grep -q 'call ptr @beans_alloc' "$tmp/escaping.ll"
 grep -q 'call ptr @beans_alloc' "$tmp/mutable-total.ll"
 
 echo "ok non-escaping scalar closures use stack storage and direct calls"
+
+echo "checking closure environments wider than the inline header mask"
+# 75 captures: the header mask spells 58 pointer-width slots, so the
+# environment chains annex boxes off its last inline slot. Creation,
+# reads through the chain, the walker, and teardown must all agree.
+./build/beansc run test/cases/wide_closure.b >"$tmp/wide.interp"
+./build/beansc build test/cases/wide_closure.b -o "$tmp/wide.native" \
+    >"$tmp/wide.build" 2>&1
+"$tmp/wide.native" >"$tmp/wide.native.out"
+diff -u test/cases/wide_closure.out "$tmp/wide.interp"
+diff -u test/cases/wide_closure.out "$tmp/wide.native.out"
+
+echo "ok wide closures chain annex environments past the header mask"

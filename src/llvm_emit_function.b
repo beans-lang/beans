@@ -470,57 +470,183 @@ partial class LlvmTextEmitter {
         // Closure boxes keep one fixed eight-byte slot for the code
         // pointer and for each captured cell. On ILP32 the object
         // walker still counts four-byte pointer slots, so a cell at
-        // byte 8 is mask slot 2, not slot 1.
-        let size: int = 8 * (count + 1)
-        var mask: int = 0
-        for index: int in 0..count {
-            if (instruction.capture_value_mask &
+        // byte 8 is mask slot 2, not slot 1. The inline header mask
+        // covers 58 pointer-width slots; a closure too wide for it
+        // chains the excess through annex boxes — ordinary masked
+        // objects hanging off the last inline slot — so the walkers
+        // never need a shape the header cannot spell.
+        let positions: int = (58 * pointer_size) / 8
+        values[instruction.result] = result
+        if count <= positions - 1 {
+            let size: int = 8 * (count + 1)
+            var mask: int = 0
+            for index: int in 0..count {
+                if index < 63 &&
+                   (instruction.capture_value_mask &
+                    (1 << index)) != 0 {
+                    continue
+                }
+                let slot: int =
+                    (8 * (index + 1)) / pointer_size
+                mask = mask | (1 << slot)
+            }
+            var output: string =
+                "  {result} = call ptr @beans_alloc(i64 {size}, i64 {1 | (mask << 3)})\n  store ptr {symbol}, ptr {result}\n"
+            for index: int in 0..count {
+                let stored: string = self.emit_capture_store(
+                    function, instruction, index, result,
+                    8 * (index + 1))
+                output = "{output}{stored}"
+            }
+            return output
+        }
+        let inline_cap: int = positions - 2
+        let annex_cap: int = positions - 1
+        let annex_count: int =
+            (count - inline_cap + annex_cap - 1) / annex_cap
+        var primary_mask: int = 0
+        for index: int in 0..inline_cap {
+            if index < 63 &&
+               (instruction.capture_value_mask &
                 (1 << index)) != 0 {
                 continue
             }
-            let slot: int =
-                (8 * (index + 1)) / pointer_size
-            mask = mask | (1 << slot)
+            let slot: int = (8 * (index + 1)) / pointer_size
+            primary_mask = primary_mask | (1 << slot)
         }
-        values[instruction.result] = result
+        let chain_slot: int =
+            (8 * (positions - 1)) / pointer_size
+        primary_mask = primary_mask | (1 << chain_slot)
         var output: string =
-            "  {result} = call ptr @beans_alloc(i64 {size}, i64 {1 | (mask << 3)})\n  store ptr {symbol}, ptr {result}\n"
-        for index: int in 0..count {
-            let local_index: int =
-                instruction.capture_locals[index]
-            if local_index < 0 ||
-               local_index >= function.locals.len() {
-                self.fail(
-                    instruction,
-                    "LLVM emitter saw invalid capture local")
-                return output
+            "  {result} = call ptr @beans_alloc(i64 {8 * positions}, i64 {1 | (primary_mask << 3)})\n  store ptr {symbol}, ptr {result}\n"
+        var annex_names: List<string> = []
+        for annex_index: int in 0..annex_count {
+            let start: int = inline_cap + annex_index * annex_cap
+            var annex_mask: int = 0
+            for offset: int in 0..annex_cap {
+                let index: int = start + offset
+                if index >= count { break }
+                if index < 63 &&
+                   (instruction.capture_value_mask &
+                    (1 << index)) != 0 {
+                    continue
+                }
+                let slot: int = (8 * offset) / pointer_size
+                annex_mask = annex_mask | (1 << slot)
             }
-            let local: MirLocal =
-                function.locals[local_index]
-            let by_value: bool =
-                (instruction.capture_value_mask &
-                 (1 << index)) != 0
-            if by_value {
-                let llvm: string =
-                    self.type_text(local.type)
-                let address: LlvmSlotConversion =
-                    self.local_value_address(local)
-                let id: int = self.fresh()
-                output =
-                    "{output}{address.setup}  %clo.value{id} = load {llvm}, ptr {address.value}\n  %clo.slot{id} = getelementptr i8, ptr {result}, i64 {8 * (index + 1)}\n  store {llvm} %clo.value{id}, ptr %clo.slot{id}\n"
-                continue
+            if annex_index + 1 < annex_count {
+                annex_mask = annex_mask | (1 << chain_slot)
             }
-            if !self.cell_local(local) {
-                self.fail(
-                    instruction,
-                    "LLVM emitter expected a cell behind captured '{local.name}'")
-                return output
-            }
+            let annex_id: int = self.fresh()
+            let annex: string = "%clo.annex{annex_id}"
+            annex_names.push(annex)
+            output =
+                "{output}  {annex} = call ptr @beans_alloc(i64 {8 * positions}, i64 {1 | (annex_mask << 3)})\n"
+        }
+        for annex_index: int in 0..annex_count {
+            let target: string =
+                if annex_index == 0 {
+                    result
+                } else {
+                    annex_names[annex_index - 1]
+                }
             let id: int = self.fresh()
             output =
-                "{output}  %clo.cell{id} = load ptr, ptr %l{local.id}\n  call void @beans_retain(ptr %clo.cell{id})\n  %clo.slot{id} = getelementptr i8, ptr {result}, i64 {8 * (index + 1)}\n  store ptr %clo.cell{id}, ptr %clo.slot{id}\n"
+                "{output}  %clo.chain{id} = getelementptr i8, ptr {target}, i64 {8 * (positions - 1)}\n  store ptr {annex_names[annex_index]}, ptr %clo.chain{id}\n"
+        }
+        for index: int in 0..count {
+            if index < inline_cap {
+                let stored: string = self.emit_capture_store(
+                    function, instruction, index, result,
+                    8 * (index + 1))
+                output = "{output}{stored}"
+            } else {
+                let annex_index: int =
+                    (index - inline_cap) / annex_cap
+                let offset: int =
+                    (index - inline_cap) % annex_cap
+                let stored: string = self.emit_capture_store(
+                    function, instruction, index,
+                    annex_names[annex_index], 8 * offset)
+                output = "{output}{stored}"
+            }
         }
         return output
+    }
+
+    // Byte path to a capture inside the environment. A wide closure
+    // keeps captures past the inline window in annex boxes chained off
+    // the last inline slot; the setup chases the chain and the value
+    // names the final slot address.
+    fn capture_env_address(total: int, capture_slot: int) ->
+            LlvmSlotConversion {
+        let pointer_size: int =
+            self.program.target.pointer_size()
+        let positions: int = (58 * pointer_size) / 8
+        if total <= positions - 1 ||
+           capture_slot < positions - 2 {
+            return new LlvmSlotConversion(
+                "  %cap{capture_slot}.addr = getelementptr i8, ptr %env, i64 {8 * (capture_slot + 1)}\n",
+                "%cap{capture_slot}.addr")
+        }
+        let inline_cap: int = positions - 2
+        let annex_cap: int = positions - 1
+        let hops: int =
+            (capture_slot - inline_cap) / annex_cap
+        let offset: int =
+            (capture_slot - inline_cap) % annex_cap
+        var setup: string =
+            "  %cap{capture_slot}.h0a = getelementptr i8, ptr %env, i64 {8 * (positions - 1)}\n  %cap{capture_slot}.h0 = load ptr, ptr %cap{capture_slot}.h0a\n"
+        var hop: int = 0
+        for hop < hops {
+            let next: int = hop + 1
+            setup =
+                "{setup}  %cap{capture_slot}.h{next}a = getelementptr i8, ptr %cap{capture_slot}.h{hop}, i64 {8 * (positions - 1)}\n  %cap{capture_slot}.h{next} = load ptr, ptr %cap{capture_slot}.h{next}a\n"
+            hop += 1
+        }
+        setup =
+            "{setup}  %cap{capture_slot}.addr = getelementptr i8, ptr %cap{capture_slot}.h{hops}, i64 {8 * offset}\n"
+        return new LlvmSlotConversion(
+            setup, "%cap{capture_slot}.addr")
+    }
+
+    fn emit_capture_store(
+        function: MirFunction,
+        instruction: MirInstruction,
+        index: int,
+        box: string,
+        byte_offset: int) -> string {
+        let local_index: int =
+            instruction.capture_locals[index]
+        if local_index < 0 ||
+           local_index >= function.locals.len() {
+            self.fail(
+                instruction,
+                "LLVM emitter saw invalid capture local")
+            return ""
+        }
+        let local: MirLocal =
+            function.locals[local_index]
+        let by_value: bool =
+            index < 63 &&
+            (instruction.capture_value_mask &
+             (1 << index)) != 0
+        if by_value {
+            let llvm: string =
+                self.type_text(local.type)
+            let address: LlvmSlotConversion =
+                self.local_value_address(local)
+            let id: int = self.fresh()
+            return "{address.setup}  %clo.value{id} = load {llvm}, ptr {address.value}\n  %clo.slot{id} = getelementptr i8, ptr {box}, i64 {byte_offset}\n  store {llvm} %clo.value{id}, ptr %clo.slot{id}\n"
+        }
+        if !self.cell_local(local) {
+            self.fail(
+                instruction,
+                "LLVM emitter expected a cell behind captured '{local.name}'")
+            return ""
+        }
+        let id: int = self.fresh()
+        return "  %clo.cell{id} = load ptr, ptr %l{local.id}\n  call void @beans_retain(ptr %clo.cell{id})\n  %clo.slot{id} = getelementptr i8, ptr {box}, i64 {byte_offset}\n  store ptr %clo.cell{id}, ptr %clo.slot{id}\n"
     }
 
     fn emit_function_value(
@@ -1731,9 +1857,14 @@ partial class LlvmTextEmitter {
                         "{output}  store ptr %cap{capture_slot}, ptr %l{local.id}\n"
                 } else if capture_slot >= 0 {
                     // borrowed from the box: slot 0 is the code
-                    // pointer, cells follow in fixed eight-byte slots
+                    // pointer, cells follow in fixed eight-byte slots,
+                    // and a wide closure chases its annex chain first
+                    let route: LlvmSlotConversion =
+                        self.capture_env_address(
+                            function.captures.len(),
+                            capture_slot)
                     output =
-                        "{output}  %cap{capture_slot} = getelementptr i8, ptr %env, i64 {8 * (capture_slot + 1)}\n  %cap{capture_slot}.c = load ptr, ptr %cap{capture_slot}\n  store ptr %cap{capture_slot}.c, ptr %l{local.id}\n"
+                        "{output}{route.setup}  %cap{capture_slot}.c = load ptr, ptr {route.value}\n  store ptr %cap{capture_slot}.c, ptr %l{local.id}\n"
                 } else if local.parameter {
                     // a captured parameter starts life in a fresh cell
                     let size: int =
@@ -1766,8 +1897,12 @@ partial class LlvmTextEmitter {
                capture_slot >= 0 &&
                function.captures[
                    capture_slot].by_value {
+                let route: LlvmSlotConversion =
+                    self.capture_env_address(
+                        function.captures.len(),
+                        capture_slot)
                 output =
-                    "{output}  %cap{capture_slot} = getelementptr i8, ptr %env, i64 {8 * (capture_slot + 1)}\n  %cap{capture_slot}.v = load {type}, ptr %cap{capture_slot}\n  store {type} %cap{capture_slot}.v, ptr %l{local.id}\n"
+                    "{output}{route.setup}  %cap{capture_slot}.v = load {type}, ptr {route.value}\n  store {type} %cap{capture_slot}.v, ptr %l{local.id}\n"
             }
             if self.type_has_owned_refs(local.type) &&
                self.live_flag_slot(local) {
