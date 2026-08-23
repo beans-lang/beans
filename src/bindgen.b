@@ -573,8 +573,14 @@ class BindgenGenerator {
                     if name == "" {
                         name = "field_{index}"
                     }
+                    // A public record needs public fields: C has no
+                    // private struct members, and a by-value API (Color.r,
+                    // Image.width) is unusable from a consumer package
+                    // when the record is pub but its rows are not.
+                    let row_visibility: string =
+                        if self.emit_public { "pub " } else { "" }
                     output =
-                        "{output}    {bindgen_name(name, false)}: {self.field_type(written)}\n"
+                        "{output}    {row_visibility}{bindgen_name(name, false)}: {self.field_type(written)}\n"
                     index += 1
                 }
             }

@@ -1,6 +1,6 @@
 # Beans roadmap
 
-Last refreshed for **v0.1.18** on 2026-08-15. This file tracks work that is
+Last refreshed for **v0.1.28** on 2026-08-22. This file tracks work that is
 still open. Completed implementation detail belongs in the code, tests and Git
 history rather than in a growing development diary.
 
@@ -61,9 +61,11 @@ unchecked items in this section have evidence attached to a clean commit.
   explicit unsafe boundaries during normal checking.
 - [x] Put the compiler, language and runtime ABI versions behind
   `VERSION` and verify the generated Beans copy.
-- [ ] Decide the 1.0 bound for cycle churn while worker threads remain live.
-  Today collection waits for workers to drain, so a program that creates cycles
-  forever beside a long-lived worker can grow until that worker exits.
+- [x] Bound thread-owned cycle churn while unrelated workers remain live,
+  without global safepoints or worker polling.
+- [ ] Decide the 1.0 rule for unreachable cycles that cross `Mutex`, `Channel`,
+  or another shared boundary. They currently wait for worker quiescence, so
+  long-lived shared ownership graphs should break back-edges with `Weak<T>`.
 
 ### Packages, interop and tools
 
@@ -174,12 +176,11 @@ not part of the hosted 1.0 production promise.
 
 ### P1 — runtime and performance limits
 
-- [ ] Bound or collect cycles while long-lived workers run.
 - [ ] Remove proven retain/release pairs and reduce false cycle-root candidates.
-- [ ] Stack-allocate non-escaping closure environments and avoid shared capture
-  cells for immutable captures where MIR proves it safe.
-- [ ] Add exact-capacity collection paths and remove proven bounds/capacity
-  checks in hot loops.
+- [ ] Extend stack closure placement beyond the proven immutable scalar case.
+- [ ] Add exact-capacity collection paths and extend proven bounds removal
+  beyond stable counted Slice loops.
+- [ ] Define or collect shared-boundary cycles while workers remain live.
 - [ ] Add a borrowed view design before introducing more copying slice APIs.
 - [ ] Reduce short-string and interpolation allocation without changing value
   semantics.
@@ -213,8 +214,8 @@ and nothing in it blocks the 1.0 gate.
   passed as parameters and called through variables.
 - [ ] Dynamic task groups beyond lexical `async let` children.
 - [ ] Lift the 64-parked-await-per-executor limit.
-- [ ] A multi-threaded cycle-collection design that runs while worker
-  threads live (shares its fate with the first P1 item).
+- [ ] A shared-graph cycle design that does not require all workers to drain
+  (shares its fate with the P1 shared-boundary item).
 
 ## Required change loop
 

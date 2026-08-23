@@ -320,12 +320,16 @@ partial class LlvmTextEmitter {
                     instruction.type_arguments[index],
                     bindings))
         }
+        clone.devirtualized_receiver =
+            instruction.devirtualized_receiver
         clone.ownership = instruction.ownership
         clone.effects = instruction.effects
         clone.last_use = instruction.last_use
         clone.scalar_materialize =
             instruction.scalar_materialize
         clone.borrow_elided = instruction.borrow_elided
+        clone.stack_closure = instruction.stack_closure
+        clone.bounds_elided = instruction.bounds_elided
         clone.removed = instruction.removed
         // the flag lattice is over the CFG, not over types, so an
         // instance inherits the template's answer unchanged
@@ -406,6 +410,17 @@ partial class LlvmTextEmitter {
                 local.ownership_sink
             cloned.scalar_replaced =
                 local.scalar_replaced
+            cloned.scalar_replaced_owner =
+                local.scalar_replaced_owner
+            cloned.stack_closure_id =
+                local.stack_closure_id
+            match closure_ids.get(
+                local.stack_closure_id) {
+                some(id) => {
+                    cloned.stack_closure_id = id
+                }
+                none => {}
+            }
             cloned.live_flag_used =
                 local.live_flag_used
             clone.locals.push(cloned)
@@ -1023,7 +1038,7 @@ partial class LlvmTextEmitter {
                     let old: string =
                         "%static.old{self.fresh()}"
                     output =
-                        "  {old} = load {llvm}, ptr {symbol}\n"
+                        "{self.emit_cc_write_static(field.type, stored, "static")}  {old} = load {llvm}, ptr {symbol}\n"
                     output =
                         "{output}  store {llvm} {stored}, ptr {symbol}\n{self.emit_arc_value(field.type, old, false)}"
                 } else {
@@ -1680,10 +1695,25 @@ partial class LlvmTextEmitter {
                         instruction.operands[1],
                         instruction)
                 let address: int = self.fresh()
+                // The slot owns the handle, but a weak_get hands the
+                // referent itself to whoever holds the shared owner. Publish
+                // both: the handle keeps the edge invariant, and the
+                // referent is what another thread can actually retain.
+                var publish: string =
+                    self.emit_cc_write(
+                        receiver, layout.field_types[name],
+                        "%weak.new{address}", "weak.field")
+                if publish != "" {
+                    self.require_declare(
+                        "beans_cc_write",
+                        "void @beans_cc_write(ptr, ptr)")
+                    publish =
+                        "{publish}  call void @beans_cc_write(ptr {receiver}, ptr {stored})\n"
+                }
                 // swap a fresh handle in, drop the old one, then drop
                 // the consumed object reference: the slot owns only the
                 // handle, so storing adds no count on the referent
-                return "  %field.assign.ptr{address} = getelementptr i8, ptr {receiver}, i64 {layout.field_offsets[name]}\n  %weak.new{address} = call ptr @beans_object_weak_new(ptr {stored})\n  %weak.old{address} = load ptr, ptr %field.assign.ptr{address}\n  store ptr %weak.new{address}, ptr %field.assign.ptr{address}\n  call void @beans_release(ptr %weak.old{address})\n  call void @beans_release(ptr {stored})\n"
+                return "  %field.assign.ptr{address} = getelementptr i8, ptr {receiver}, i64 {layout.field_offsets[name]}\n  %weak.new{address} = call ptr @beans_object_weak_new(ptr {stored})\n{publish}  %weak.old{address} = load ptr, ptr %field.assign.ptr{address}\n  store ptr %weak.new{address}, ptr %field.assign.ptr{address}\n  call void @beans_release(ptr %weak.old{address})\n  call void @beans_release(ptr {stored})\n"
             }
             none => {
                 self.fail(
@@ -1862,6 +1892,8 @@ partial class LlvmTextEmitter {
                     return "{output}{self.emit_field_compound(instruction, field_type, address, stored, operation, "")}"
                 }
                 if self.type_has_owned_refs(field_type) {
+                    output =
+                        "{output}{self.emit_cc_write(receiver, field_type, stored, "field")}"
                     let previous: int = self.fresh()
                     let old: string =
                         "%field.assign.old{previous}"
@@ -1869,7 +1901,7 @@ partial class LlvmTextEmitter {
                         self.emit_arc_value(
                             field_type, old, false)
                     output =
-                        "{output}  {old} = load {type}, ptr %field.assign.ptr{address}\n  store {type} {stored}, ptr %field.assign.ptr{address}\n{release}"
+                        "{output}  {old} = load {type}, ptr %field.assign.ptr{address}\n  store {type} {stored}, ptr %field.assign.ptr{address}\n{self.emit_cc_publish(receiver, field_type)}{release}"
                 } else {
                     output =
                         "{output}  store {type} {stored}, ptr %field.assign.ptr{address}\n"
@@ -2246,6 +2278,76 @@ partial class LlvmTextEmitter {
             self.value_type(
                 function,
                 instruction.operands[0])
+        if instruction.devirtualized_receiver != "" {
+            let exact: HirType =
+                new HirType(
+                    instruction.devirtualized_receiver)
+            match self.declaration_for(exact) {
+                some(declaration) => {
+                    let method_template: string =
+                        "{declaration.qualified}.{instruction.text}"
+                    if declaration.generics.len() != 0 {
+                        if declaration.generics.len() !=
+                               receiver_type.args.len() {
+                            self.fail(
+                                instruction,
+                                "LLVM emitter needs the receiver's type arguments")
+                            return ""
+                        }
+                        var bindings: Map<string, HirType> =
+                            {}
+                        for index: int in
+                            0..declaration.generics.len() {
+                            bindings[
+                                declaration.generics[
+                                    index]] =
+                                receiver_type.args[index]
+                        }
+                        bindings[declaration.qualified] =
+                            receiver_type
+                        bindings[declaration.name] =
+                            receiver_type
+                        return self.emit_generic_method_instance(
+                            function, instruction, values,
+                            method_template,
+                            "{render_hir_type(receiver_type)}.{instruction.text}",
+                            bindings)
+                    }
+                    if self.generic_templates.contains_key(
+                           method_template) {
+                        var bindings: Map<string, HirType> = {}
+                        return self.emit_generic_method_instance(
+                            function, instruction, values,
+                            method_template,
+                            method_template,
+                            bindings)
+                    }
+                    let symbol: string =
+                        self.method_slot_symbol(
+                            declaration,
+                            if instruction.dispatch_slot != "" {
+                                instruction.dispatch_slot
+                            } else {
+                                "pub:{instruction.text}"
+                            })
+                    if symbol == "null" {
+                        self.fail(
+                            instruction,
+                            "LLVM emitter cannot resolve devirtualized method '{instruction.devirtualized_receiver}.{instruction.text}'")
+                        return ""
+                    }
+                    return self.emit_direct_call(
+                        function, instruction,
+                        values, symbol)
+                }
+                none => {
+                    self.fail(
+                        instruction,
+                        "LLVM emitter cannot find devirtualized receiver '{instruction.devirtualized_receiver}'")
+                    return ""
+                }
+            }
+        }
         match self.declaration_for(receiver_type) {
             some(declaration) => {
                 if declaration.kind == "interface" {

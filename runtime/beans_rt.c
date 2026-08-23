@@ -14,10 +14,13 @@
 // deletion (Nim's ORC family): a decrement that doesn't reach zero parks the
 // object as a possible cycle root; a collection trial-deletes each root's
 // subgraph, restores whatever still has external counts, frees the rest.
-// It only runs when no worker threads are live (checked in beans_alloc and
-// at exit), so the mutator is exactly one thread: ourselves, between
-// statements. Everything is iterative — a million-node ring must not
-// overflow the C stack.
+// The global buffer only runs when no worker threads are live. Once threads
+// start, each Beans thread owns a private root buffer and trial-deletes only
+// its thread-local graph. Publication barriers mark graphs that cross worker
+// boundaries and keep later shared pointer writes out of local collection.
+// That bounds local cycles without stopping unrelated workers or adding
+// safepoints to their loops. Everything is iterative — a million-node ring
+// must not overflow the C stack.
 // ---- runtime profile -------------------------------------------------------
 //
 // BEANS_RT_PROFILE decides how much of this file exists. The levels below are
@@ -821,12 +824,14 @@ static void* rt_masked_child(void* value, int slot, int i64_encoded) {
 #define BEANS_IMMORTAL (1LL << 62)
 
 // rc layout: bits 0-47 the count, bits 48-59 the allocation size class
-// (0 = plain malloc), bit 62 immortal. Retain/release preserve the class
-// bits by adding/subtracting 1; every test of the COUNT must mask with
-// RC_COUNT, and class 4095 * 16 bytes stays far under the immortal bit.
+// (0 = plain malloc), bit 60 marks a graph handed across a thread boundary,
+// and bit 62 is immortal. Retain/release preserve the flags by
+// adding/subtracting 1; every test of the COUNT must mask with RC_COUNT, and
+// class 4095 * 16 bytes stays far under the flags.
 #define RC_CLS_SHIFT 48
 #define RC_CLS_MAX 4095LL
 #define RC_COUNT(v) ((v) & ((1LL << RC_CLS_SHIFT) - 1))
+#define RC_SHARED (1LL << 60)
 // rc bit 61: this object's class chain has a deinit — user code runs when the
 // count hits zero. Lives in the rc word (not meta) so pointer-mask walkers and
 // shell frees never see it; retain/release arithmetic can't carry into it.
@@ -878,8 +883,9 @@ static void* rt_extended_child(void* p, long long offset) {
 
 // counts are plain until the first thread spawns (cc_mt flips before
 // pthread_create, so no object is ever touched by two threads while the
-// flag is 0); after that retain/release use atomic ops. The collector
-// keeps plain ops either way — it only runs with zero workers live.
+// flag is 0); after that retain/release use atomic ops. Trial deletion keeps
+// plain temporary count edits: the global walk runs only at quiescence, and an
+// owner-local walk stops before every RC_SHARED boundary.
 // Below the minimal profile there are no threads at all, so the multi-threaded
 // half of every count operation is unreachable — and on a 32-bit target it is
 // worse than unreachable. `rc` is eight bytes, ARMv7-M and RV32 have no 8-byte
@@ -891,8 +897,11 @@ static int cc_mt;
 static int cc_is_mt(void) {
     return __atomic_load_n(&cc_mt, __ATOMIC_RELAXED);
 }
+static int cc_shared_live;
 static void cc_enable_mt(void) {
     __atomic_store_n(&cc_mt, 1, __ATOMIC_RELAXED);
+    // Arms the publication barrier's fast-path gate; see cc_shared_owner.
+    __atomic_store_n(&cc_shared_live, 1, __ATOMIC_RELAXED);
 }
 #else
 static int cc_is_mt(void) { return 0; }
@@ -981,6 +990,12 @@ static void rt_rc_inc(BHead* h) {
     if (cc_is_mt()) __atomic_add_fetch(&h->rc, 1, __ATOMIC_RELAXED);
     else h->rc += 1;
 }
+static long long rt_rc_fetch_or(BHead* h, long long bits) {
+    if (cc_is_mt()) return __atomic_fetch_or(&h->rc, bits, __ATOMIC_RELAXED);
+    long long old = h->rc;
+    h->rc |= bits;
+    return old;
+}
 static long long rt_rc_dec(BHead* h) {
     return cc_is_mt() ? __atomic_sub_fetch(&h->rc, 1, __ATOMIC_ACQ_REL)
                       : (h->rc -= 1);
@@ -989,11 +1004,16 @@ static long long rt_rc_dec(BHead* h) {
 static long long rt_rc_load(BHead* h) { return h->rc; }
 static void rt_rc_store(BHead* h, long long v) { h->rc = v; }
 static void rt_rc_inc(BHead* h) { h->rc += 1; }
+static long long rt_rc_fetch_or(BHead* h, long long bits) {
+    long long old = h->rc;
+    h->rc |= bits;
+    return old;
+}
 static long long rt_rc_dec(BHead* h) { return h->rc -= 1; }
 #endif
 
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
-static _Atomic long long cc_threads;  // live worker threads; collect only at 0
+static _Atomic long long cc_threads;  // global collection only at 0
 #else
 // Same reason: nothing can raise it, and reading an 8-byte _Atomic on a 32-bit
 // target is a libcall.
@@ -1008,6 +1028,7 @@ static int cc_collecting;
 static int cc_sweeping;
 static void cc_collect(int force);
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
+static void cc_worker_collect(void);
 static void cc_worker_roots_begin(void);
 static void cc_worker_roots_end(void);
 #endif
@@ -1018,10 +1039,14 @@ static void cc_worker_roots_end(void);
 // because a mid-destroy object must never be walked.
 extern long long beans_deinit_sel;
 // NOT thread-local: a TLS read compiles to a _tlv_get_addr call. A shared
-// flag is exactly as correct — the collector only runs with zero worker
-// threads, so "any thread is mid-deinit" is the right gate anyway. Plain
-// int + __atomic builtins (an _Atomic type rejects __atomic_add_fetch).
+// flag is exact for the global collector: if any thread is mid-deinit, retry
+// after that user-code window. Owner-local collection uses the TLS counter, so
+// a blocked deinit in one worker cannot hold every other worker's cycles.
+// Plain int + __atomic builtins (an _Atomic type rejects __atomic_add_fetch).
 static int beans_in_deinit;
+#if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
+static _Thread_local int beans_local_in_deinit;
+#endif
 
 // Profile builds recompile the emitted runtime with -DBEANS_ARC_STATS.
 // Normal benchmark binaries do not contain these counters, so measuring
@@ -1057,6 +1082,9 @@ static void arc_report(void) {
             (unsigned long long)arc_cycle_objects);
 #endif
 }
+long long beans_arc_cycle_objects(void) {
+    return (long long)__atomic_load_n(&arc_cycle_objects, __ATOMIC_RELAXED);
+}
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
 __attribute__((constructor)) static void arc_setup(void) { atexit(arc_report); }
 #endif
@@ -1081,7 +1109,13 @@ BEANS_DEINIT_ATTR static void beans_do_deinit(
     void (**methods)(void*) =
         (void (**)(void*))(descriptor + RT_DESC_METHODS_OFFSET);
     __atomic_add_fetch(&beans_in_deinit, 1, __ATOMIC_RELAXED);
+#if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
+    beans_local_in_deinit += 1;
+#endif
     methods[beans_deinit_sel](p);
+#if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
+    beans_local_in_deinit -= 1;
+#endif
     __atomic_sub_fetch(&beans_in_deinit, 1, __ATOMIC_RELAXED);
     rt_rc_store(h, nrc & ~RC_FIN);
 }
@@ -1120,21 +1154,23 @@ void beans_runtime_hook_leave(void) {
     beans_runtime_hook_depth = 0;
 }
 
-// The allocator pool and the collector's root batch share one thread-local
+// The allocator pool and the collector's root state share one thread-local
 // struct. On Darwin every distinct _Thread_local variable is its own TLV
 // descriptor and costs its own _tlv_get_addr call; one variable means the
 // hot paths pay that call once, not once per field.
-#if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
-#define CC_WORKER_ROOT_BATCH 256
-#endif
 typedef struct {
     void* pool_free[POOL_CLASSES];
     char* pool_cur;
     char* pool_end;
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
-    void* cc_worker_roots[CC_WORKER_ROOT_BATCH];
+    void** cc_worker_roots;
     long long cc_worker_root_len;
+    long long cc_worker_root_cap;
+    long long cc_worker_threshold;
+    long long cc_worker_walk_min;
     int cc_worker_root_batching;
+    int cc_worker_pending;
+    int cc_worker_collecting;
 #endif
 } BeansHotTls;
 static POOL_LOCAL BeansHotTls beans_hot_tls;
@@ -1143,7 +1179,12 @@ static POOL_LOCAL BeansHotTls beans_hot_tls;
 #define pool_end (beans_hot_tls.pool_end)
 #define cc_worker_roots (beans_hot_tls.cc_worker_roots)
 #define cc_worker_root_len (beans_hot_tls.cc_worker_root_len)
+#define cc_worker_root_cap (beans_hot_tls.cc_worker_root_cap)
+#define cc_worker_threshold (beans_hot_tls.cc_worker_threshold)
+#define cc_worker_walk_min (beans_hot_tls.cc_worker_walk_min)
 #define cc_worker_root_batching (beans_hot_tls.cc_worker_root_batching)
+#define cc_worker_pending (beans_hot_tls.cc_worker_pending)
+#define cc_worker_collecting (beans_hot_tls.cc_worker_collecting)
 static void** pool_slabs;
 static long long pool_slab_len, pool_slab_cap;
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
@@ -1170,6 +1211,10 @@ void* beans_alloc(long long size, long long meta) {
     // and every stored reference is already counted (a deinit body is the
     // exception — cc_collect itself bails while one runs, so this exact
     // condition stays byte-identical to keep clang's fast-path layout)
+#if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
+    if (cc_worker_pending && !cc_worker_collecting)
+        cc_worker_collect();
+#endif
     if (cc_pending && !cc_collecting && cc_threads == 0) cc_collect(0);
     size_t total = (16 + (size_t)size + 15) & ~(size_t)15;
     long long cls = (long long)(total >> 4);
@@ -1524,6 +1569,145 @@ static inline void cc_release_children(void* p, long long meta, CCStack* st) {
     }
 }
 
+#if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
+// A spawn moves the closure box, but an ordinary capture still aliases its
+// heap cell in the parent frame. Mark the whole captured graph before
+// pthread_create so a possible root left in the parent's local buffer cannot
+// trial-decrement an object while the worker is using or releasing it. The
+// shared bit doubles as the visited mark. A graph already handed to a worker
+// stops the walk at its first marked shell, so a later spawn never walks live
+// shared state.
+//
+// Checked Beans permits no ordinary aliased class to be Send or Sync. A moved
+// unique graph is still marked here because its possible roots may remain in
+// the sending thread's buffer. Objects allocated later by the worker stay
+// owner-local. Thread, Mutex and Channel are boundaries of their own below.
+// Every path that sets an RC_SHARED bit arms cc_shared_live first, so the
+// publication barrier's gate can never be behind the marks it guards. Doing
+// it here rather than at each call site means a new marking site cannot
+// forget. See cc_shared_owner.
+static void cc_mark_shared_arm(void) {
+    __atomic_store_n(&cc_shared_live, 1, __ATOMIC_RELAXED);
+}
+static void cc_mark_shared_one(void* p) {
+    if (!p) return;
+    BHead* h = head_of(p);
+    cc_mark_shared_arm();
+    if (rt_rc_load(h) < BEANS_IMMORTAL) rt_rc_fetch_or(h, RC_SHARED);
+}
+static void cc_mark_shared_graph(void* root);
+static void cc_mark_shared_push(void* child, void* ctx) {
+    cc_push(ctx, child);
+}
+static void cc_mark_shared_child_graph(void* child, void* ctx) {
+    (void)ctx;
+    cc_mark_shared_graph(child);
+}
+static void cc_mark_shared_graph(void* root) {
+    if (!root) return;
+    cc_mark_shared_arm();
+    void* local[64];
+    CCStack st = {local, 0, 64, local};
+    cc_push(&st, root);
+    while (st.len) {
+        void* p = st.v[--st.len];
+        BHead* h = head_of(p);
+        long long rc = rt_rc_load(h);
+        if (rc >= BEANS_IMMORTAL) continue;
+        long long old = rt_rc_fetch_or(h, RC_SHARED);
+        if (old & RC_SHARED) continue;
+        cc_walk(p, cc_meta(h), cc_mark_shared_push, &st);
+    }
+    if (st.v != local) rt_free(st.v);
+}
+
+// Preserve the owner-local collector's core invariant after the first spawn:
+// every edge leaving an RC_SHARED object must point at another shared object.
+// The compiler calls these before publishing a new class/capture-cell edge;
+// runtime containers call them before publishing their own stored values.
+// Walking stops at an already-shared shell, so the common write of an existing
+// shared value is constant time.
+// cc_is_mt() is not the right gate on its own: beans_shared_new marks its
+// payload the moment the Shared is built, which can be long before the first
+// spawn, and cc_walk has no case for the Shared handle — so a graph published
+// into that payload while still single-threaded could never be marked
+// afterwards. This flag stands for "some RC_SHARED mark exists", which both
+// cc_enable_mt and beans_shared_new set, so the barrier's fast path stays the
+// single relaxed load it already was.
+static int cc_shared_owner(void* owner) {
+    if (!owner ||
+        !__atomic_load_n(&cc_shared_live, __ATOMIC_RELAXED)) {
+        return 0;
+    }
+    BHead* h = head_of(owner);
+    long long rc = rt_rc_load(h);
+    return rc < BEANS_IMMORTAL && (rc & RC_SHARED) != 0;
+}
+static void cc_mark_shared_value(void* value, long long ptr_mask,
+                                 int i64_encoded) {
+    for (int slot = 0;
+         slot < RT_MASK_SLOTS && (ptr_mask >> slot);
+         ++slot) {
+        if (!((ptr_mask >> slot) & 1)) continue;
+        void* child = rt_masked_child(value, slot, i64_encoded);
+        if (child) cc_mark_shared_graph(child);
+    }
+}
+void beans_cc_write(void* owner, void* child) {
+    if (child && cc_shared_owner(owner)) cc_mark_shared_graph(child);
+}
+void beans_cc_write_typed(void* owner, void* value, long long ptr_mask) {
+    if (value && ptr_mask && cc_shared_owner(owner))
+        cc_mark_shared_value(value, ptr_mask, 0);
+}
+// A static field is a process-global slot with no heap owner to carry the
+// shared mark, so there is nothing to test against. Nor can this wait for
+// cc_is_mt(): nothing walks a static, so a graph stored there before the
+// first spawn would never be marked, and the worker that reads the slot
+// would find it still owner-local. Mark on the store, always — statics are
+// rare next to field writes, and the walk stops at the first shared shell.
+void beans_cc_write_static(void* child) {
+    if (child) cc_mark_shared_graph(child);
+}
+void beans_cc_write_static_typed(void* value, long long ptr_mask) {
+    if (value && ptr_mask > 0) cc_mark_shared_value(value, ptr_mask, 0);
+}
+static void cc_mark_shared_children(void* owner) {
+    if (!owner) return;
+    BHead* h = head_of(owner);
+    if (rt_rc_load(h) >= BEANS_IMMORTAL) return;
+    cc_walk(owner, cc_meta(h), cc_mark_shared_child_graph, NULL);
+}
+// The compiler's static pointer mask cannot describe every layout: a slot
+// past bit 57, an unaligned reference inside a packed record, an array whose
+// stride is unknown. Those values still carry owned references, so the write
+// falls back to this — the owner's own runtime shape always describes the
+// field, and walking it after the store publishes whatever landed there.
+void beans_cc_publish(void* owner) {
+    if (cc_shared_owner(owner)) cc_mark_shared_children(owner);
+}
+#endif
+
+#if BEANS_RT_PROFILE < BEANS_RT_MINIMAL
+// Generated freestanding code uses the same ABI. Threads cannot exist there,
+// so publication barriers fold to no work without pulling in atomics or TLS.
+void beans_cc_write(void* owner, void* child) {
+    (void)owner;
+    (void)child;
+}
+void beans_cc_write_typed(void* owner, void* value, long long ptr_mask) {
+    (void)owner;
+    (void)value;
+    (void)ptr_mask;
+}
+void beans_cc_publish(void* owner) { (void)owner; }
+void beans_cc_write_static(void* child) { (void)child; }
+void beans_cc_write_static_typed(void* value, long long ptr_mask) {
+    (void)value;
+    (void)ptr_mask;
+}
+#endif
+
 // ---- possible-root buffer ----
 static void** cc_roots;
 static long long cc_len, cc_cap;
@@ -1532,6 +1716,20 @@ static long long cc_threshold = 256;
 static pthread_mutex_t cc_mu = PTHREAD_MUTEX_INITIALIZER;
 #define CC_LOCK() do { if (cc_is_mt()) pthread_mutex_lock(&cc_mu); } while (0)
 #define CC_UNLOCK() do { if (cc_is_mt()) pthread_mutex_unlock(&cc_mu); } while (0)
+static int cc_owner_local_node(BHead* h) {
+    long long rc = rt_rc_load(h);
+    long long kind = cc_meta(h) & 7;
+    // Mutex and Channel contents may be read or changed by any worker. They
+    // are global boundaries even when they were created before first spawn.
+    return rc < BEANS_IMMORTAL && !(rc & RC_SHARED) &&
+           kind != 4 && kind != 5;
+}
+static int cc_shared_boundary(BHead* h) {
+    long long rc = rt_rc_load(h);
+    long long kind = cc_meta(h) & 7;
+    return rc < BEANS_IMMORTAL &&
+           ((rc & RC_SHARED) || kind == 4 || kind == 5);
+}
 #else
 // One thread by construction, so cc_is_mt() can never become true and the lock
 // would be dead weight — and a referenced pthread symbol in a profile that has no
@@ -1540,14 +1738,13 @@ static pthread_mutex_t cc_mu = PTHREAD_MUTEX_INITIALIZER;
 #define CC_UNLOCK() ((void)0)
 #endif
 
-// A worker cannot trigger collection: beans_alloc waits for cc_threads to reach
-// zero. Keep its possible roots in TLS and publish them under the global lock in
-// batches instead of taking that lock for every release. CC_BUF, claimed before
-// staging, keeps each shell alive and guarantees that only one thread queues it.
-// The final partial batch is published before the worker lowers cc_threads, so a
-// collector that observes zero workers also observes every staged root.
-// The batch buffer itself lives in `beans_hot_tls` beside the allocator
-// pool — one thread-local variable, one TLV descriptor.
+// Once threading starts, each Beans thread keeps its possible roots here.
+// Capture cells shared by spawn are marked RC_SHARED and stay on the global
+// fallback; every other traceable root is owned by the current thread unless
+// it is a Mutex or Channel. It can be trial-deleted without stopping another
+// worker. CC_BUF guarantees that exactly one buffer owns each shell. The
+// adaptive vector backs off on hot live graphs while keeping retained roots
+// and memory bounded.
 
 // The collector's cheap half, runnable while workers are alive. A parked
 // shell whose death cascade already finished — count zero, blackened as the
@@ -1613,8 +1810,8 @@ static void cc_append_roots(void** roots, long long count) {
     int husks_due = 0;
     if (cc_len >= cc_threshold) {
         cc_pending = 1;
-        // with live workers the collector cannot run, so dead husks would
-        // pile up in this buffer forever; sweep them instead
+        // with live workers the global collector cannot run, so dead husks
+        // would pile up in this fallback buffer; sweep them instead
         husks_due = cc_threads != 0;
     }
     CC_UNLOCK();
@@ -1622,19 +1819,63 @@ static void cc_append_roots(void** roots, long long count) {
 }
 
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
-static void cc_flush_worker_roots(void) {
-    long long count = cc_worker_root_len;
-    if (!count) return;
-    cc_worker_root_len = 0;
-    cc_append_roots(cc_worker_roots, count);
+static void cc_worker_root_append(void* root) {
+    if (cc_worker_root_len == cc_worker_root_cap) {
+        long long next = cc_worker_root_cap ? cc_worker_root_cap * 2 : 256;
+        if (next < cc_worker_root_cap || next > (1LL << 60))
+            beans_panic("thread cycle root buffer too large", 0, 0);
+        void** grown = rt_realloc(
+            cc_worker_roots, (size_t)next * sizeof(void*));
+        if (!grown) beans_panic("out of memory", 0, 0);
+        cc_worker_roots = grown;
+        cc_worker_root_cap = next;
+    }
+    cc_worker_roots[cc_worker_root_len++] = root;
+    if (cc_worker_root_len >= cc_worker_threshold)
+        cc_worker_pending = 1;
 }
 static void cc_worker_roots_begin(void) {
+    if (cc_worker_root_batching) return;
+    cc_worker_roots = NULL;
     cc_worker_root_len = 0;
+    cc_worker_root_cap = 0;
+    cc_worker_threshold = 256;
+    cc_worker_walk_min = 256;
+    cc_worker_pending = 0;
+    cc_worker_collecting = 0;
     cc_worker_root_batching = 1;
+    // Before the first spawn every global root belongs to this same thread.
+    // Adopt them now so a pre-existing local graph cannot straddle the global
+    // and owner-local buffers after threading begins.
+    if (!cc_is_mt() && cc_len) {
+        for (long long i = 0; i < cc_len; i++)
+            cc_worker_root_append(cc_roots[i]);
+        cc_len = 0;
+        cc_pending = 0;
+        cc_threshold = 256;
+    }
 }
 static void cc_worker_roots_end(void) {
-    cc_flush_worker_roots();
+    if (!cc_worker_root_batching) return;
+    // Detach the buffer before publishing anything. cc_append_roots can
+    // sweep husks, and that sweep runs beans_release outside the lock — a
+    // release that parks another root would otherwise land in the buffer
+    // this function is about to free, stranding the object with CC_BUF set
+    // and no buffer that owns it, where nothing can ever reclaim it.
+    // With batching already off those late roots take the global path.
     cc_worker_root_batching = 0;
+    void** roots = cc_worker_roots;
+    long long len = cc_worker_root_len;
+    cc_worker_roots = NULL;
+    cc_worker_root_len = 0;
+    cc_worker_root_cap = 0;
+    cc_worker_pending = 0;
+    // A finished worker may be handing a result or a Mutex-protected graph
+    // back to its joiner. Do not trial-delete that graph during the handoff.
+    // Publish the final partial batch before cc_threads drops instead; the
+    // quiescent global collector handles it after every worker has drained.
+    if (len) cc_append_roots(roots, len);
+    rt_free(roots);
 }
 #endif
 
@@ -1644,10 +1885,9 @@ static void cc_possible_root(void* p) {
     if (old & CC_BUF) return; // already parked
     ARC_ADD(arc_possible_roots, 1);
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
-    if (cc_worker_root_batching) {
-        cc_worker_roots[cc_worker_root_len++] = p;
-        if (cc_worker_root_len == CC_WORKER_ROOT_BATCH)
-            cc_flush_worker_roots();
+    if (cc_worker_root_batching &&
+        cc_owner_local_node(h)) {
+        cc_worker_root_append(p);
         return;
     }
 #endif
@@ -1840,6 +2080,7 @@ long long beans_box_get(void* p) { return ((long long*)p)[0]; }
 void beans_box_set(void* p, long long value) {
     long long* box = p;
     if (((head_of(p)->meta & CC_SHAPE) >> 3) & 1) {
+        beans_cc_write(p, (void*)(uintptr_t)value);
         void* old = (void*)box[0];
         if (old) beans_release(old);
     }
@@ -1859,6 +2100,7 @@ void beans_box_get_typed(void* box, void* out, long long size) {
 }
 void beans_box_set_typed(void* box, void* value, long long size,
                          long long ptr_mask, long long cycle_mask) {
+    beans_cc_write_typed(box, value, ptr_mask);
     release_masked_value(box, ptr_mask);
     memcpy(box, value, (size_t)size);
     if (cycle_mask) cc_possible_root(box);
@@ -2020,6 +2262,11 @@ void* beans_object_weak_get(void* p) {
 }
 
 void* beans_shared_new(long long value, long long value_ptr) {
+#if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
+    // Marks here, before any spawn: cc_mark_shared_graph arms the barrier
+    // so writes into this graph carry the mark forward from now on.
+    if (value_ptr) cc_mark_shared_graph((void*)(uintptr_t)value);
+#endif
     BSharedCtrl* ctrl = rt_zalloc(sizeof(BSharedCtrl));
     if (!ctrl) beans_panic("out of memory", 0, 0);
     ctrl->strong = 1;
@@ -2112,6 +2359,7 @@ void* beans_arena_new_typed(long long capacity, long long stride,
 }
 long long beans_arena_put(void* p, long long value) {
     BArena* arena = p;
+    if (arena->ptr_mask) beans_cc_write(arena, (void*)(uintptr_t)value);
     if (arena->len == arena->cap) {
         long long next = arena->cap ? arena->cap * 2 : 8;
         long long* data = rt_realloc(arena->data, (size_t)next * sizeof(long long));
@@ -2125,6 +2373,7 @@ long long beans_arena_put(void* p, long long value) {
 }
 long long beans_arena_put_typed(void* p, void* value) {
     BArena* arena = p;
+    beans_cc_write_typed(arena, value, arena->ptr_mask);
     if (arena->len == arena->cap) {
         long long next = arena->cap ? arena->cap * 2 : 8;
         if (next > (1LL << 58) / arena->stride)
@@ -2217,6 +2466,41 @@ static void cc_mark_gray(void* root, CCStack* st) {
     }
 }
 
+#if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
+typedef struct {
+    CCStack* stack;
+    int* saw_shared;
+} CCWorkerMark;
+
+static void cc_worker_visit_push(void* c, void* ctx) {
+    if (!cc_owner_local_node(head_of(c))) return;
+    cc_push(ctx, c);
+}
+
+static void cc_worker_visit_dec_push(void* c, void* ctx) {
+    CCWorkerMark* mark = ctx;
+    BHead* h = head_of(c);
+    if (!cc_owner_local_node(h)) {
+        if (cc_shared_boundary(h)) *mark->saw_shared = 1;
+        return;
+    }
+    h->rc -= 1;
+    cc_push(mark->stack, c);
+}
+static void cc_worker_mark_gray(void* root, CCStack* st, int* saw_shared) {
+    CCWorkerMark mark = {st, saw_shared};
+    cc_push(st, root);
+    while (st->len) {
+        void* p = st->v[--st->len];
+        BHead* h = head_of(p);
+        if (!cc_owner_local_node(h)) continue;
+        if (cc_color(h) == CC_GRAY) continue;
+        cc_set_color(h, CC_GRAY);
+        cc_walk(p, h->meta, cc_worker_visit_dec_push, &mark);
+    }
+}
+#endif
+
 static void cc_visit_inc_push(void* c, void* ctx) {
     BHead* h = head_of(c);
     if (h->rc >= BEANS_IMMORTAL) return;
@@ -2235,6 +2519,28 @@ static void cc_scan_black(void* root, CCStack* st) {
     }
 }
 
+#if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
+static void cc_worker_visit_inc_push(void* c, void* ctx) {
+    BHead* h = head_of(c);
+    if (!cc_owner_local_node(h)) return;
+    h->rc += 1;
+    if (cc_color(h) != CC_BLACK) {
+        cc_set_color(h, CC_BLACK);
+        cc_push(ctx, c);
+    }
+}
+static void cc_worker_scan_black(void* root, CCStack* st) {
+    BHead* h = head_of(root);
+    if (!cc_owner_local_node(h)) return;
+    cc_set_color(h, CC_BLACK);
+    cc_push(st, root);
+    while (st->len) {
+        void* p = st->v[--st->len];
+        cc_walk(p, head_of(p)->meta, cc_worker_visit_inc_push, st);
+    }
+}
+#endif
+
 static void cc_scan(void* root, CCStack* st, CCStack* aux) {
     cc_push(st, root);
     while (st->len) {
@@ -2250,6 +2556,40 @@ static void cc_scan(void* root, CCStack* st, CCStack* aux) {
     }
 }
 
+#if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
+// The owner-local collector clears its own BUF bits before scanning. Any BUF
+// still visible belongs to the global fallback or another owner, so treat that
+// node as an external root and restore its whole reachable subgraph. This keeps
+// a rare shared runtime handle from making two independent root buffers free
+// opposite halves of one graph.
+static void cc_worker_scan(void* root, CCStack* st, CCStack* aux) {
+    cc_push(st, root);
+    while (st->len) {
+        void* p = st->v[--st->len];
+        BHead* h = head_of(p);
+        if (cc_color(h) != CC_GRAY) continue;
+        if ((cc_meta(h) & CC_BUF) || RC_COUNT(h->rc) > 0) {
+            cc_worker_scan_black(p, aux);
+        } else {
+            cc_set_color(h, CC_WHITE);
+            cc_walk(p, h->meta, cc_worker_visit_push, st);
+        }
+    }
+}
+
+static void cc_worker_collect_white(void* root, CCStack* st, CCStack* dead) {
+    cc_push(st, root);
+    while (st->len) {
+        void* p = st->v[--st->len];
+        BHead* h = head_of(p);
+        if (cc_color(h) != CC_WHITE || (h->meta & CC_BUF)) continue;
+        cc_set_color(h, CC_BLACK);
+        cc_walk(p, h->meta, cc_worker_visit_push, st);
+        cc_push(dead, p);
+    }
+}
+#endif
+
 static void cc_collect_white(void* root, CCStack* st, CCStack* dead) {
     cc_push(st, root);
     while (st->len) {
@@ -2263,6 +2603,133 @@ static void cc_collect_white(void* root, CCStack* st, CCStack* dead) {
 }
 
 static long long cc_walk_min = 256; // adaptive gate for trial deletion
+
+#if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
+// Trial-delete only roots owned by the current Beans thread. RC_SHARED,
+// Mutex, and Channel are hard traversal boundaries. This is an owner-local
+// pause: no worker is stopped or polled, and the global collector remains
+// quiescence-only.
+static void cc_worker_collect(void) {
+    if (!cc_worker_root_batching || cc_worker_collecting) return;
+    if (beans_local_in_deinit) return;
+    cc_worker_collecting = 1;
+    {
+        ARC_ADD(arc_collections, 1);
+        void* dlocal[64];
+        CCStack deferred = {dlocal, 0, 64, dlocal};
+        void* glocal[64];
+        CCStack global = {glocal, 0, 64, glocal};
+
+        // Cheap pass first: dead parked shells can go immediately. Live
+        // purple roots stay until the adaptive trial threshold is reached.
+        long long n = 0;
+        for (long long i = 0; i < cc_worker_root_len; i++) {
+            void* p = cc_worker_roots[i];
+            BHead* h = head_of(p);
+            long long meta = cc_meta(h);
+            long long rc = rt_rc_load(h);
+            if (!cc_owner_local_node(h)) {
+                cc_push(&global, p);
+            } else if ((meta & CC_COLOR) == CC_PURPLE &&
+                       RC_COUNT(rc) > 0) {
+                cc_worker_roots[n++] = p;
+            } else {
+                rt_w_and(&h->meta, ~CC_BUF);
+                if (RC_COUNT(rc) == 0) {
+                    void* child = cc_free_shell(p, cc_meta(h));
+                    if (child) cc_push(&deferred, child);
+                }
+            }
+        }
+        cc_worker_root_len = n;
+        if (global.len) cc_append_roots(global.v, global.len);
+        if (global.v != glocal) rt_free(global.v);
+
+        if (cc_worker_root_len >= cc_worker_walk_min) {
+            CCStack st = {0, 0, 0}, aux = {0, 0, 0}, dead = {0, 0, 0};
+            int saw_shared = 0;
+            for (long long i = 0; i < cc_worker_root_len; i++)
+                cc_worker_mark_gray(
+                    cc_worker_roots[i], &st, &saw_shared);
+            if (saw_shared) {
+                // This candidate set reaches a graph another thread may
+                // mutate. Undo every temporary decrement, keep the roots
+                // parked, and let the quiescent global collector handle the
+                // set. A shared candidate can conservatively carry one local
+                // batch with it, but later local-only batches remain local.
+                for (long long i = 0; i < cc_worker_root_len; i++) {
+                    BHead* h = head_of(cc_worker_roots[i]);
+                    if (cc_color(h) == CC_GRAY)
+                        cc_worker_scan_black(cc_worker_roots[i], &aux);
+                }
+                for (long long i = 0; i < cc_worker_root_len; i++)
+                    rt_w_fetch_or(
+                        &head_of(cc_worker_roots[i])->meta, CC_PURPLE);
+                // Hand the batch off before clearing the length, not after:
+                // cc_append_roots can sweep husks and release outside the
+                // lock, and a release that parks a fresh root appends to
+                // this same buffer. Clearing afterwards would drop it with
+                // CC_BUF set and no buffer owning it.
+                {
+                    long long published = cc_worker_root_len;
+                    cc_worker_root_len = 0;
+                    cc_append_roots(cc_worker_roots, published);
+                }
+                rt_free(st.v);
+                rt_free(aux.v);
+                rt_free(dead.v);
+            } else {
+                // Clear every root owned by this local buffer as one set. A
+                // BUF left after this point belongs elsewhere and
+                // cc_worker_scan treats it as externally reachable.
+                for (long long i = 0; i < cc_worker_root_len; i++)
+                    rt_w_and(
+                        &head_of(cc_worker_roots[i])->meta, ~CC_BUF);
+                for (long long i = 0; i < cc_worker_root_len; i++)
+                    cc_worker_scan(cc_worker_roots[i], &st, &aux);
+                for (long long i = 0; i < cc_worker_root_len; i++) {
+                    cc_worker_collect_white(
+                        cc_worker_roots[i], &st, &dead);
+                }
+                cc_worker_root_len = 0;
+                ARC_ADD(arc_cycle_objects, dead.len);
+                if (__atomic_load_n(&weak_live, __ATOMIC_RELAXED))
+                    for (long long i = 0; i < dead.len; i++)
+                        rt_weak_invalidate(dead.v[i]);
+                for (long long i = 0; i < dead.len; i++) {
+                    void* child = cc_free_shell(
+                        dead.v[i], cc_meta(head_of(dead.v[i])));
+                    if (child) cc_push(&deferred, child);
+                }
+                cc_worker_walk_min = dead.len
+                                         ? 256
+                                         : (cc_worker_walk_min * 4 >
+                                                    (1LL << 18)
+                                                ? (1LL << 18)
+                                                : cc_worker_walk_min * 4);
+                rt_free(st.v);
+                rt_free(aux.v);
+                rt_free(dead.v);
+            }
+        }
+
+        long long geometric = cc_worker_root_len * 2 + 256;
+        cc_worker_threshold = geometric < cc_worker_walk_min
+                                  ? geometric
+                                  : cc_worker_walk_min;
+        if (cc_worker_threshold < 256) cc_worker_threshold = 256;
+        cc_worker_pending = 0;
+
+        // A Shared shell can hand back a payload whose release parks another
+        // local root. Keep collection non-recursive; the next allocation
+        // handles any root parked by these deferred releases.
+        for (long long i = 0; i < deferred.len; i++)
+            beans_release(deferred.v[i]);
+        if (deferred.v != dlocal) rt_free(deferred.v);
+    }
+    cc_worker_collecting = 0;
+}
+#endif
 
 static void cc_collect(int force) {
     if (cc_collecting) return;
@@ -2347,6 +2814,19 @@ static void cc_collect(int force) {
 }
 
 static void cc_at_exit(void) {
+#if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
+    // The process entry thread starts a private root buffer at first spawn.
+    // Collect it even when a detached worker is still alive: those roots are
+    // owner-local and need no global quiescence, and publishing them to the
+    // global buffer instead would strand them — the forced sweep below only
+    // runs at zero workers. Drop the adaptive gate so the trial walk cannot
+    // decline this last pass.
+    if (cc_worker_root_batching) {
+        cc_worker_walk_min = 0;
+        cc_worker_collect();
+        cc_worker_roots_end();
+    }
+#endif
     if (cc_threads == 0) cc_collect(1); // forced: leaks must see 0 at exit
 }
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
@@ -2992,6 +3472,7 @@ BList* beans_list_new(long long elem_ptr) {
     return l;
 }
 void beans_list_push(BList* l, long long v) {
+    if (l->ptr_mask) beans_cc_write(l, (void*)(uintptr_t)v);
     if (l->len == l->cap) {
         l->cap *= 2;
         l->data = rt_realloc(l->data, (size_t)l->cap * (size_t)list_stride(l));
@@ -3000,6 +3481,7 @@ void beans_list_push(BList* l, long long v) {
     l->data[l->len++] = v;
 }
 void beans_list_push_typed(BList* l, const void* value) {
+    beans_cc_write_typed(l, (void*)value, l->ptr_mask);
     long long stride = list_stride(l);
     if (l->len == l->cap) {
         l->cap *= 2;
@@ -5049,6 +5531,7 @@ void beans_list_insert(BList* l, long long i, long long v, long long line,
         rt_format(b, sizeof b, "insert at %lld out of range (len %lld)", i, l->len);
         beans_panic(b, line, col);
     }
+    if (l->ptr_mask) beans_cc_write(l, (void*)(uintptr_t)v);
     if (l->len == l->cap) {
         l->cap *= 2;
         l->data = rt_realloc(l->data, (size_t)l->cap * 8);
@@ -5064,6 +5547,7 @@ void beans_list_insert_typed(BList* l, long long i, const void* value,
         rt_format(b, sizeof b, "insert at %lld out of range (len %lld)", i, l->len);
         beans_panic(b, line, col);
     }
+    beans_cc_write_typed(l, (void*)value, l->ptr_mask);
     long long stride = list_stride(l);
     if (l->len == l->cap) {
         l->cap *= 2;
@@ -5500,6 +5984,9 @@ static void map_insert_miss(BMap* m, long long key, long long val,
                             unsigned long long h, long long kind,
                             long long (*hf)(long long),
                             unsigned long long insert_slot) {
+    long long flags = (head_of(m)->meta & CC_SHAPE) >> 3;
+    if (flags & 1) beans_cc_write(m, (void*)(uintptr_t)key);
+    if (flags & 2) beans_cc_write(m, (void*)(uintptr_t)val);
     if (m->used == m->cap) {
         long long ow = (m->cap + 63) >> 6;
         m->cap *= 2;
@@ -5530,6 +6017,9 @@ static void map_insert_miss_typed(BMap* m, long long key, void* value,
                                   unsigned long long h, long long kind,
                                   long long (*hf)(long long),
                                   unsigned long long insert_slot) {
+    long long flags = (head_of(m)->meta & CC_SHAPE) >> 3;
+    if (flags & 1) beans_cc_write(m, (void*)(uintptr_t)key);
+    beans_cc_write_typed(m, value, m->value_ptr_mask);
     if (m->used == m->cap) {
         long long ow = (m->cap + 63) >> 6;
         m->cap *= 2;
@@ -5569,6 +6059,7 @@ void beans_map_set(BMap* m, long long key, long long val, long long kind, void* 
     if (i >= 0) {
         long long flags = (head_of(m)->meta & CC_SHAPE) >> 3;
         if (flags & 1) beans_release((void*)key); // duplicate key not stored
+        if (flags & 2) beans_cc_write(m, (void*)(uintptr_t)val);
         if (flags & 2) beans_release((void*)m->data[i * 2 + 1]);
         m->data[i * 2 + 1] = val;
         if (kind == 4 && (flags & 1)) cc_possible_root(m);
@@ -5585,6 +6076,7 @@ __attribute__((always_inline)) void beans_map_set_raw(BMap* m, long long key,
     if (i >= 0) {
         long long flags = (head_of(m)->meta & CC_SHAPE) >> 3;
         if (flags & 1) beans_release((void*)key);
+        if (flags & 2) beans_cc_write(m, (void*)(uintptr_t)val);
         if (flags & 2) beans_release((void*)m->data[i * 2 + 1]);
         m->data[i * 2 + 1] = val;
         return;
@@ -5600,6 +6092,7 @@ void beans_map_set_typed(BMap* m, long long key, void* value, long long kind,
     if (i >= 0) {
         long long flags = (head_of(m)->meta & CC_SHAPE) >> 3;
         if (flags & 1) beans_release((void*)key);
+        beans_cc_write_typed(m, value, m->value_ptr_mask);
         map_release_wide_value(m, map_wide_value(m, i));
         memcpy(map_wide_value(m, i), value, (size_t)m->value_stride);
         if (m->value_cycle_mask || kind == 4) cc_possible_root(m);
@@ -5617,6 +6110,7 @@ __attribute__((always_inline)) void beans_map_set_typed_raw(BMap* m,
     if (i >= 0) {
         long long flags = (head_of(m)->meta & CC_SHAPE) >> 3;
         if (flags & 1) beans_release((void*)key);
+        beans_cc_write_typed(m, value, m->value_ptr_mask);
         map_release_wide_value(m, map_wide_value(m, i));
         memcpy(map_wide_value(m, i), value, (size_t)m->value_stride);
         if (m->value_cycle_mask) cc_possible_root(m);
@@ -12585,8 +13079,19 @@ void beans_thread_release_env(void* env);
 static void* thread_main(void* arg) {
     BThread* t = arg;
     cc_worker_roots_begin();
-    if (t->typed_thunk) t->typed_thunk(t->env, t->payload);
-    else t->result = t->thunk(t->env);
+    if (t->typed_thunk) {
+        t->typed_thunk(t->env, t->payload);
+        // The payload shell was marked at spawn. Publish values written into
+        // it before join can expose them to the parent.
+        cc_mark_shared_children(t->payload);
+    } else {
+        t->result = t->thunk(t->env);
+        long long result_mask =
+            (cc_meta(head_of(t)) & CC_SHAPE) >> 3;
+        if (result_mask &
+            RT_I64_SLOT_MASK_AT(offsetof(BThread, result)))
+            cc_mark_shared_graph((void*)(uintptr_t)t->result);
+    }
     beans_release(t->env);
     beans_release(t); // the running thread's own ref on the handle
     cc_worker_roots_end();
@@ -12600,7 +13105,10 @@ BThread* beans_thread_spawn(void* thunk, void* env, long long result_ptr) {
     BThread* t = beans_alloc(sizeof(BThread), 1 | (result_mask << 3));
     t->thunk = (long long (*)(void*))thunk;
     t->env = env; // ownership of the closure box moves to the thread
+    cc_worker_roots_begin(); // idempotent: give the spawning thread local CC
     cc_enable_mt(); // from here every count op is atomic, in every thread
+    cc_mark_shared_one(t);
+    cc_mark_shared_graph(env);
     beans_retain(t); // one ref for the handle, one for the running thread
     cc_threads += 1;
     pthread_create(&t->th, NULL, thread_main, t);
@@ -12615,7 +13123,11 @@ BThread* beans_thread_spawn_typed(void* thunk, void* env, long long size,
     t->result_size = size;
     t->typed_thunk = (void (*)(void*, void*))thunk;
     t->env = env;
+    cc_worker_roots_begin();
     cc_enable_mt();
+    cc_mark_shared_one(t);
+    cc_mark_shared_one(t->payload);
+    cc_mark_shared_graph(env);
     beans_retain(t);
     cc_threads += 1;
     pthread_create(&t->th, NULL, thread_main, t);
@@ -12706,6 +13218,12 @@ long long beans_chan_send(BChan* c, long long v) {
         pthread_mutex_unlock(&c->m);
         return 0; // caller panics; caller also still owns v
     }
+    // Publish once the send is committed, not before: a send that fails
+    // above leaves v with the caller, and marking it there would strand its
+    // whole graph on the quiescence-only global buffer for good. The mark
+    // still happens before any receiver can observe the slot.
+    if (cc_is_mt() && c->ptr_mask)
+        cc_mark_shared_graph((void*)(uintptr_t)v);
     c->q[(c->head + c->count) % c->cap] = v;
     c->count += 1;
     pthread_cond_signal(&c->can_recv);
@@ -12719,6 +13237,9 @@ long long beans_chan_send_typed(BChan* c, void* value) {
         pthread_mutex_unlock(&c->m);
         return 0;
     }
+    // Same ordering rule as beans_chan_send above.
+    if (cc_is_mt() && c->ptr_mask)
+        cc_mark_shared_value(value, c->ptr_mask, 0);
     void* destination =
         (char*)c->q + ((c->head + c->count) % c->cap) * c->stride;
     memcpy(destination, value, (size_t)c->stride);

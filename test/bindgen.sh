@@ -97,8 +97,13 @@ cat >"$tmp/multi/core.h" <<'C'
 #ifndef BEANS_BINDGEN_CORE_H
 #define BEANS_BINDGEN_CORE_H
 typedef struct CoreHandle CoreHandle;
+typedef struct CoreInfo {
+    int ready;
+    unsigned char tag;
+} CoreInfo;
 CoreHandle* core_open(void);
 void core_close(CoreHandle* handle);
+CoreInfo core_info(void);
 #endif
 C
 cat >"$tmp/multi/service.h" <<'C'
@@ -123,6 +128,11 @@ grep -F 'pub extern "C" fn core_close(handle: RawPtr<CoreHandle>)' \
     "$multi" >/dev/null
 grep -F 'pub extern "C" fn service_call(handle: RawPtr<CoreHandle>, value: i32) -> i32' \
     "$multi" >/dev/null
+# A pub record carries pub fields: C has no private struct members, and a
+# by-value API is unusable from a consumer that cannot read Color.r or
+# Image.width. The consumer below fails to check without them.
+grep -F '    pub ready: i32' "$multi" >/dev/null
+grep -F '    pub tag: u8' "$multi" >/dev/null
 cat >"$tmp/multi/consumer/beans.pot" <<'MOD'
 module consumer
 require path "../bindings"
@@ -134,6 +144,10 @@ import bindings
 
 fn call(handle: RawPtr<bindings.CoreHandle>) -> i32 {
     unsafe { return bindings.service_call(handle, 7) }
+}
+
+fn ready_flag(info: bindings.CoreInfo) -> i32 {
+    return info.ready
 }
 
 fn main() {}

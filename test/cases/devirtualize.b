@@ -69,6 +69,13 @@ fn argument() -> int {
     return 4
 }
 
+fn choose(first: Metric, second: Metric, pick: bool) -> Metric {
+    if pick {
+        return first
+    }
+    return second
+}
+
 fn main() {
     let add: Add = new Add(3)
     let first: Metric = add
@@ -77,6 +84,9 @@ fn main() {
     let multiply: Multiply = new Multiply(5)
     let second: Metric = multiply
     total += second.value(argument())
+
+    let selected: Metric = choose(first, second, total > 0)
+    total += selected.value(2)
 
     io.println(total)
 

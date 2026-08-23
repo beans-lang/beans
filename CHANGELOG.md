@@ -34,6 +34,9 @@ This file records user-facing changes in each Beans release.
   compiles instead of requiring a wrapping lambda, under the same rules
   as a local function name — extern C, async and ownership-parameter
   functions are refused, and visibility is enforced.
+- A paired abstraction proof suite compares generic/specialized functions,
+  iterator/index loops, closures/direct calls, interface/direct dispatch,
+  Option/Result/manual forms, and safe/unchecked indexing.
 
 ### Fixed
 
@@ -44,6 +47,13 @@ This file records user-facing changes in each Beans release.
   0.1.28 on a Windows CI runner for the shelf libraries.
   `test/install_release.sh` re-archives the host package as a zip with a
   `.cmd` launcher and installs it.
+- `bindgen --pub` now marks record fields `pub` alongside the record
+  itself. C has no private struct members, and a by-value API is unusable
+  from a consumer package that cannot read `Color.r` or `Image.width` —
+  binding raylib.h (598 functions, structs passed by value throughout)
+  hit exactly that. Opaque records and the non-`--pub` mode are
+  unchanged. `test/bindgen.sh` now has the consumer read a bound struct's
+  field through a `require path` dependency.
 - `beansc run` now loads a manifest `link` library through its versioned
   soname when the plain spelling fails. glibc 2.34+ ships `lib<name>.so`
   as a linker script the dynamic loader refuses, and a bare runtime
@@ -82,9 +92,40 @@ This file records user-facing changes in each Beans release.
   the struct-shape validation defers to the wrapper's call sites (and
   the runtime encoder's own error) when the target is the function's
   own type parameter.
+- A graph handed to `thread.spawn` is marked shared before the worker starts,
+  and shared pointer writes carry that mark into newly published values. An
+  owner-local cycle candidate can no longer race a worker using that value.
+- Each Beans thread trial-deletes its own genuine cycle candidates, so cycles
+  created beside a long-lived worker stay bounded without stopping that
+  worker. The global fallback collector remains thread-quiescence-only.
+- A counter borrowed before a counted `Slice` loop — an `inout` argument, say —
+  no longer has its bounds check removed. The callee can store a negative
+  index that still satisfies `index < len`, so the entry value is not
+  provable and the check stays.
+- The publication barrier now covers the writes that carry no heap owner of
+  their own: static fields, reflective field setters, and the referent behind
+  a weak field. A `Shared<T>` built before the first spawn also propagates its
+  mark into values linked in afterwards, instead of leaving them owner-local
+  where another thread could still reach them.
+- A value whose layout is past what a static pointer mask can spell now falls
+  back to walking the owner after the store, rather than silently skipping the
+  barrier.
+- `Channel.send` publishes the sent graph only once the send is committed. A
+  send that fails on a closed channel leaves the value — and the caller's whole
+  graph — unmarked, instead of stranding it on the quiescence-only buffer.
+- A root parked while the thread-local buffer is being handed off is no longer
+  dropped: the buffer is detached before it is published, so a release from the
+  husk sweep cannot leave an object parked in a buffer nobody owns.
+- Exiting with a detached worker still live now collects the entry thread's own
+  cycles instead of publishing them to a global buffer that the forced final
+  sweep skips.
 
 ### Changed
 
+- MIR now stack-places proven non-escaping scalar closures, removes stable
+  counted Slice bounds checks, devirtualizes exact receivers, keeps narrow
+  custom Results inline, removes proven iterator ARC, and scalar-replaces safe
+  exact objects.
 - Reflective dispatch is no longer paid per string: the runtime registry
   hash-indexes its type, method and function tables, resolves a callable
   once per call instead of five times, keeps each callable's parameter rows

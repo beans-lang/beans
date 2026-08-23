@@ -34,6 +34,42 @@ fi
 diff -u "$tmp/oob.interp" "$tmp/oob.native.out"
 grep -q 'slice index 2 out of range (len 2)' "$tmp/oob.interp"
 
+echo "checking stable counted-loop bounds removal"
+./build/beansc mir test/cases/bounds_elision.b >"$tmp/bounds.mir"
+./build/beansc run test/cases/bounds_elision.b >"$tmp/bounds.interp"
+./build/beansc build test/cases/bounds_elision.b -o "$tmp/bounds.native" \
+    >"$tmp/bounds.build" 2>&1
+"$tmp/bounds.native" >"$tmp/bounds.native.out"
+diff -u test/cases/bounds_elision.out "$tmp/bounds.interp"
+diff -u test/cases/bounds_elision.out "$tmp/bounds.native.out"
+test "$(grep -c 'bounds-elided' "$tmp/bounds.mir")" -eq 1
+
+function_body() {
+    local name=$1
+    local destination=$2
+    awk -v marker="; main.$name" '
+        $0 == marker { inside = 1 }
+        inside { print }
+        inside && /^}/ { exit }
+    ' build/bounds_elision.ll >"$destination"
+}
+
+function_body stable "$tmp/stable.ll"
+function_body negative_start "$tmp/negative.ll"
+function_body increment_first "$tmp/increment-first.ll"
+grep -q 'load i32, ptr .* align 4' "$tmp/stable.ll"
+if grep -q 'beans_panic_slice_index\|slice.index.ok' "$tmp/stable.ll"; then
+    echo "stable counted Slice loop kept its bounds branch" >&2
+    exit 1
+fi
+grep -q 'beans_panic_slice_index' "$tmp/negative.ll"
+grep -q 'beans_panic_slice_index' "$tmp/increment-first.ll"
+
+# A counter borrowed before the loop can be written through that borrow, so
+# its entry value is not provable and the bounds branch has to stay.
+function_body borrowed_start "$tmp/borrowed-start.ll"
+grep -q 'beans_panic_slice_index' "$tmp/borrowed-start.ll"
+
 echo "checking raw slice compile failures"
 if ./build/beansc check test/cases/raw_slice_bad.b >"$tmp/bad" 2>&1; then
     echo "raw_slice_bad.b unexpectedly passed" >&2
