@@ -529,6 +529,29 @@ for unsafe_decl in \
 done
 "$beansc" check "$tmp/partly_unsupported.b" >"$tmp/partly_unsupported.check"
 
+# A skip comment names the declaration it dropped. A bare "flexible arrays
+# are unsupported" against a 300-function header leaves the reader to
+# rediscover the victim by hand; the sqlite3.h binding did exactly that.
+cat >"$tmp/named_skips.h" <<'C'
+struct Tail { int used; char data[]; };
+void uses_tail(struct Tail tail);
+void wide(void (*callback)(int, int, int, int, int, int, int));
+int fine(int value);
+C
+"$beansc" bindgen "$tmp/named_skips.h" \
+    -o "$tmp/named_skips.b" --allow-unsupported \
+    >"$tmp/named_skips.out"
+grep -F "// skipped: record 'Tail': flexible arrays are unsupported" \
+    "$tmp/named_skips.b" >"$tmp/match"
+grep -F "// skipped: declaration 'wide': C callback has more than 6 parameters" \
+    "$tmp/named_skips.b" >"$tmp/match"
+grep -F 'fn fine(' "$tmp/named_skips.b" >"$tmp/match"
+if grep -F "fn uses_tail(" "$tmp/named_skips.b" >/dev/null; then
+    echo "bindgen emitted a declaration whose record was dropped" >&2
+    exit 1
+fi
+"$beansc" check "$tmp/named_skips.b" >"$tmp/named_skips.check"
+
 # Success has to mean the bindings are worth having. A header whose only
 # declarations cannot be bound must say so rather than write a lone comment.
 cat >"$tmp/hidden.h" <<'C'
