@@ -1306,7 +1306,7 @@ class Parser {
             self.in_async = true
             let closure: AstNode = self.parse_closure_expression()
             self.in_async = saved_async
-            closure.note = "async"
+            self.stamp_async_closure(closure, false)
             return closure
         }
         if self.check("ident") &&
@@ -1321,8 +1321,7 @@ class Parser {
             self.in_async = true
             let closure: AstNode = self.parse_closure_expression()
             self.in_async = saved_async
-            closure.note = "async"
-            closure.value = "send"
+            self.stamp_async_closure(closure, true)
             return closure
         }
         if self.check("fn") {
@@ -1762,6 +1761,20 @@ class Parser {
         self.fail(start, "expected pattern")
         if !self.at_end() { self.advance() }
         return self.node("pattern_error", start.text, start)
+    }
+
+    // The closure literal may come back wearing its postfix chain — an
+    // immediate call, a field, an index. The async and send marks belong
+    // on the literal itself, the base of that chain, or an invoked async
+    // closure would check as a sync one.
+    fn stamp_async_closure(node: AstNode, sendable: bool) {
+        var base: AstNode = node
+        for base.kind != "closure" && base.children.len() != 0 {
+            base = base.children[0]
+        }
+        if base.kind != "closure" { return }
+        base.note = "async"
+        if sendable { base.value = "send" }
     }
 
     fn parse_closure_expression() -> AstNode {

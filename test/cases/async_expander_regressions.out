@@ -11,3 +11,7 @@ before await false
 option 8 false
 locals 2 1
 capture 1
+unique true true
+enum 4 0
+method GET
+shadow call failed: boom

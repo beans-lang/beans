@@ -107,6 +107,68 @@ async fn run_job<T implements Send>(
     return ok(finished.receive().expect("result"))
 }
 
+unique class Handle {
+    fn init() {}
+    fn tag() -> int { return 9 }
+}
+
+fn open_handle() -> Result<Handle> { return ok(new Handle()) }
+
+async fn held_across_await() -> Result<bool> {
+    let handle: Handle = open_handle()?
+    await aio.yield_now()
+    let tag: int = handle.tag()
+    return ok(tag == 9)
+}
+
+async fn closed_before_await() -> Result<bool> {
+    let handle: Handle = open_handle()?
+    let tag: int = handle.tag()
+    await aio.yield_now()
+    return ok(tag == 9)
+}
+
+enum Feed {
+    body(value: Bytes)
+    done
+}
+
+async fn consume_feed(event: Feed) -> Result<int> {
+    match event {
+        body(piece) => { return ok(piece.len()) }
+        done => {
+            await aio.yield_now()
+            return ok(0)
+        }
+    }
+}
+
+async fn method_kept() -> string {
+    let requested: string = "GET"
+    for value: int in [1] {
+        if value == 1 {
+            await aio.yield_now()
+        }
+    }
+    return "method {requested}"
+}
+
+fn problem(code: int) -> Result<int> {
+    if code > 0 { return err("boom", "shadow") }
+    return ok(code)
+}
+
+async fn shadow_error() -> Result<bool> {
+    let called: Result<int> = problem(3)
+    await aio.yield_now()
+    match called {
+        ok(value) => { return ok(value > 0) }
+        err(problem) => {
+            return err("call failed: {problem.msg}", "shadow")
+        }
+    }
+}
+
 async fn main() {
     let chain: Chain = new Chain()
     let method_result: bool = (await chain.step(0)).or(false)
@@ -128,4 +190,19 @@ async fn main() {
     let job: send fn() -> int = one
     let capture_result: int = (await run_job(move job)).or(0)
     io.println("capture {capture_result}")
+    let held: bool = (await held_across_await()).or(false)
+    let closed: bool = (await closed_before_await()).or(false)
+    io.println("unique {held} {closed}")
+    let fed: int = (await consume_feed(
+        Feed.body(Bytes.from("body")))).or(0)
+    let drained: int = (await consume_feed(Feed.done)).or(9)
+    io.println("enum {fed} {drained}")
+    let kept: string = await method_kept()
+    io.println("{kept}")
+    var shadow_text: string = "unset"
+    match await shadow_error() {
+        ok(fine) => { shadow_text = "ok {fine}" }
+        err(reported) => { shadow_text = reported.msg }
+    }
+    io.println("shadow {shadow_text}")
 }

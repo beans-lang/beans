@@ -351,12 +351,94 @@ class AsyncExpander {
             self.name_of(slot, anchor), "push", [value], anchor))
     }
 
+    // Mirrors the checker's move-only walk with signature-level lookups:
+    // a slot push of a bare name must say `move` exactly when the checker
+    // would demand it, or the re-check refuses the generated push.
+    fn slot_element_moves_seen(type: HirType,
+                               inout seen: Map<string, bool>) -> bool {
+        let key: string = hir_type_key(type)
+        if seen.contains_key(key) { return false }
+        seen[key] = true
+        if type.name == "array" && type.args.len() == 1 {
+            return self.slot_element_moves_seen(
+                type.args[0], inout seen)
+        }
+        let policy: string = builtin_move_policy(type)
+        if policy == "unique" { return true }
+        if policy != "declared" {
+            if type.name == "Option" || type.name == "Result" {
+                for argument: HirType in type.args {
+                    if self.slot_element_moves_seen(
+                        argument, inout seen) {
+                        return true
+                    }
+                }
+            }
+            return false
+        }
+        match self.signature.declaration_for_name(type.name) {
+            some(declaration) => {
+                if declaration.is_unique { return true }
+                if declaration.kind == "class" {
+                    for relation: HirType in declaration.relations {
+                        if self.slot_element_moves_seen(
+                            relation, inout seen) {
+                            return true
+                        }
+                    }
+                } else if declaration.kind == "struct" {
+                    for field: HirField in declaration.fields {
+                        if self.slot_element_moves_seen(
+                            field.type, inout seen) {
+                            return true
+                        }
+                    }
+                } else if declaration.kind == "enum" {
+                    for argument: HirType in type.args {
+                        if self.slot_element_moves_seen(
+                            argument, inout seen) {
+                            return true
+                        }
+                    }
+                }
+            }
+            none => {}
+        }
+        return false
+    }
+
+    fn slot_element_moves(type: HirType) -> bool {
+        var seen: Map<string, bool> = {}
+        return self.slot_element_moves_seen(type, inout seen)
+    }
+
     // Statement-level slot initialization. The value lands in a typed
     // local first so literals, err(...), ok(...), none and friends see the
     // declared type, exactly as they would in the original source spot.
     fn emit_slot_push(slot: string, element: HirType, value: AstNode,
                       anchor: AstNode) {
         if value.kind == "name" || value.kind == "index" {
+            // A move-only value cannot ride a plain name into push: the
+            // re-check demands `move`, exactly as the original source
+            // would have. A name that resolved to a function is not a
+            // local and needs no move — the checker's own demand skips
+            // those the same way. Index reads stay bare — a move-only
+            // value can never be initialized from one in checked source.
+            var names_function: bool = false
+            match value.checked {
+                some(lowered) => {
+                    names_function = lowered.kind == "function"
+                }
+                none => {}
+            }
+            if value.kind == "name" && !names_function &&
+               self.slot_element_moves(element) {
+                let taken: AstNode =
+                    self.node("unary", "move", anchor)
+                taken.add(value)
+                self.emit(self.slot_push(slot, taken, anchor))
+                return
+            }
             self.emit(self.slot_push(slot, value, anchor))
             return
         }
@@ -1068,17 +1150,62 @@ class AsyncExpander {
     fn rewrite_try(node: AstNode, operand: AstNode) -> AstNode {
         let operand_type: HirType = self.checked_type(node.children[0])
         let payload: HirType = self.checked_type(node)
-        let out: string = self.fresh_name("ok_")
-        self.slot_decls.push(
-            self.slot_declaration(out, payload, node))
         let good_name: string =
             if operand_type.name == "Option" { "some" } else { "ok" }
         let bad_name: string =
             if operand_type.name == "Option" { "none" } else { "err" }
         let good_binding: string = self.fresh_name("v")
         let bad_binding: string = self.fresh_name("e")
+        // A move-only payload borrows in a pattern: it can neither copy
+        // nor move into the ok slot. Land the whole subject in an owned
+        // local instead — the match only routes the error, and the good
+        // continuation consumes the subject with move + expect, whose
+        // panic can never fire because the error arm already completed.
+        let moves: bool = self.slot_element_moves(payload)
+        var subject: string = ""
+        var dispatch_operand: AstNode = operand
+        if moves {
+            subject = self.fresh_name("sub_")
+            var landed: AstNode = operand
+            var operand_names_function: bool = false
+            match operand.checked {
+                some(lowered) => {
+                    operand_names_function =
+                        lowered.kind == "function"
+                }
+                none => {}
+            }
+            if operand.kind == "name" && !operand_names_function {
+                let moved: AstNode =
+                    self.node("unary", "move", node)
+                moved.add(operand)
+                landed = moved
+            } else if operand.kind == "index" &&
+                      operand.children.len() == 2 &&
+                      operand.children[0].kind == "name" &&
+                      operand.children[1].kind == "literal" &&
+                      operand.children[1].value == "0" {
+                // a slot read of the move-only operand: consume the
+                // slot, the way `?` consumes its operand in source
+                landed = self.call_method(
+                    operand.children[0], "remove",
+                    [self.int_literal(0, node)], node)
+            }
+            let subject_decl: AstNode =
+                self.node("let", subject, node)
+            subject_decl.add(self.type_ast(operand_type, node))
+            subject_decl.add(landed)
+            self.emit(subject_decl)
+            dispatch_operand = self.name_of(subject, node)
+        }
+        var out: string = ""
+        if !moves {
+            out = self.fresh_name("ok_")
+            self.slot_decls.push(
+                self.slot_declaration(out, payload, node))
+        }
         let dispatch: AstNode = self.node("match", "", node)
-        dispatch.add(operand)
+        dispatch.add(dispatch_operand)
         let good_arm: AstNode = self.node("arm", "", node)
         let good_pattern: AstNode =
             self.node("pattern_name", good_name, node)
@@ -1086,8 +1213,10 @@ class AsyncExpander {
             self.node("pattern_binding", good_binding, node))
         good_arm.add(good_pattern)
         let good_block: AstNode = self.node("block", "", node)
-        good_block.add(self.slot_push(
-            out, self.name_of(good_binding, node), node))
+        if !moves {
+            good_block.add(self.slot_push(
+                out, self.name_of(good_binding, node), node))
+        }
         good_arm.add(good_block)
         dispatch.add(good_arm)
         let bad_arm: AstNode = self.node("arm", "", node)
@@ -1129,7 +1258,18 @@ class AsyncExpander {
         bad_arm.add(bad_block)
         dispatch.add(bad_arm)
         self.emit(self.statement_of(dispatch))
-        return self.slot_take(out, node)
+        if !moves {
+            return self.slot_take(out, node)
+        }
+        let consumed: AstNode = self.node("unary", "move", node)
+        consumed.add(self.name_of(subject, node))
+        let message: AstNode = self.node(
+            "literal",
+            "\"internal: async try error arm already completed\"",
+            node)
+        message.note = "string"
+        return self.call_method(
+            consumed, "expect", [message], node)
     }
 
     // ---- statement rewriting -----------------------------------------
@@ -1653,20 +1793,44 @@ class AsyncExpander {
             match self.find_slot(target.value) {
                 some(slot) => {
                     // The right side evaluates before the old value drops,
-                    // matching ordinary assignment order.
+                    // matching ordinary assignment order. The value may
+                    // interpolate another slotted name — the carry lands
+                    // inside the same borrow loops any piece-reading
+                    // statement gets.
                     let rewritten: AstNode = self.decompose(value)
+                    var names: Map<string, bool> = {}
+                    self.interpolated_slot_names(
+                        rewritten, inout names)
+                    self.thread_capture_slot_names(
+                        rewritten, inout names)
+                    if names.contains_key(target.value) {
+                        self.fail(
+                            statement,
+                            "internal: a statement cannot assign a suspended local it also interpolates — split it in the source")
+                    }
                     let carry: string = self.fresh_name("carry_")
                     let declaration: AstNode =
                         self.node("let", carry, statement)
                     declaration.add(self.type_ast(slot.type, statement))
                     declaration.add(rewritten)
-                    self.emit(declaration)
-                    self.emit(self.slot_clear(slot.slot, statement))
                     let taken: AstNode =
                         self.node("unary", "move", statement)
                     taken.add(self.name_of(carry, statement))
-                    self.emit(self.slot_push(
+                    let inner: AstNode =
+                        self.node("block", "", statement)
+                    inner.add(declaration)
+                    inner.add(self.slot_clear(slot.slot, statement))
+                    inner.add(self.slot_push(
                         slot.slot, taken, statement))
+                    match self.wrap_unit_for_names(
+                        inner, names, statement) {
+                        some(wrapped) => { self.emit(wrapped) }
+                        none => {
+                            for landed: AstNode in inner.children {
+                                self.emit(landed)
+                            }
+                        }
+                    }
                     return
                 }
                 none => {}
@@ -1674,11 +1838,23 @@ class AsyncExpander {
         }
         let rewritten_value: AstNode = self.decompose(value)
         let rewritten_target: AstNode = self.substitute(target)
+        var assign_names: Map<string, bool> = {}
+        self.interpolated_slot_names(
+            rewritten_value, inout assign_names)
+        self.thread_capture_slot_names(
+            rewritten_value, inout assign_names)
         let fresh: AstNode =
             self.node("assign", "=", statement)
         fresh.add(rewritten_target)
         fresh.add(rewritten_value)
-        self.emit(fresh)
+        let landed_assign: AstNode =
+            self.node("block", "", statement)
+        landed_assign.add(fresh)
+        match self.wrap_unit_for_names(
+            landed_assign, assign_names, statement) {
+            some(wrapped) => { self.emit(wrapped) }
+            none => { self.emit(fresh) }
+        }
     }
 
     fn rewrite_if(statement: AstNode) {
@@ -1737,6 +1913,154 @@ class AsyncExpander {
         return node
     }
 
+    fn contains_defer(node: AstNode) -> bool {
+        if node.kind == "defer" { return true }
+        if node.kind == "closure" { return false }
+        for child: AstNode in node.children {
+            if self.contains_defer(child) { return true }
+        }
+        return false
+    }
+
+    // A pattern binding of move-only type is a borrow of the subject: it
+    // can neither copy nor move into an arm slot, so its arm must run
+    // inline inside the dispatch, while the subject is still alive. The
+    // checker already guarantees such an arm cannot await.
+    fn pattern_moves_binding(pattern: AstNode) -> bool {
+        var names: List<string> = []
+        self.collect_pattern_bindings(pattern, inout names)
+        for name: string in names {
+            if self.slot_element_moves(
+                self.binding_type_of(pattern, name)) {
+                return true
+            }
+        }
+        return false
+    }
+
+    // Inline arms handle the plain shapes: transplantable statements plus
+    // at most one trailing flat return. Anything that needs the state
+    // machinery — awaits, `?`, task groups, defers, nested completions,
+    // loop exits into rewritten loops, slotted locals — falls back to the
+    // slotted-arm path.
+    fn inline_arm_allowed(arm: AstNode, out: Option<string>) -> bool {
+        if ast_contains_await(arm) || self.contains_try(arm) ||
+           self.contains_task_group_start(arm) ||
+           self.contains_defer(arm) {
+            return false
+        }
+        let body: AstNode = arm.children[1]
+        if body.kind != "block" {
+            return true
+        }
+        if out.is_some() { return false }
+        var index: int = 0
+        for index < body.children.len() {
+            let statement: AstNode = body.children[index]
+            if statement.kind == "return" {
+                if index != body.children.len() - 1 { return false }
+            } else {
+                if self.contains_completion(statement) { return false }
+                if self.loop_stack.len() != 0 &&
+                   self.contains_loop_exit(statement) {
+                    return false
+                }
+                if (statement.kind == "let" ||
+                    statement.kind == "var") &&
+                   (statement.note == "async" ||
+                    self.local_needs_slot(statement)) {
+                    return false
+                }
+            }
+            index += 1
+        }
+        return true
+    }
+
+    fn build_inline_arm(arm: AstNode, pattern: AstNode,
+                        binding_names: List<string>,
+                        out: Option<string>, out_type: HirType,
+                        join_state: int) -> AstNode {
+        let jump_arm: AstNode = self.node("arm", "", arm)
+        jump_arm.add(pattern)
+        let jump_block: AstNode = self.node("block", "", arm)
+        self.push_scope()
+        for binding: string in binding_names {
+            let mask: AsyncSlot = new AsyncSlot(
+                binding, "",
+                self.binding_type_of(pattern, binding))
+            mask.masked = true
+            let top: AsyncScope =
+                self.scopes[self.scopes.len() - 1]
+            top.bindings[binding] = mask
+        }
+        var terminated: bool = false
+        let body: AstNode = arm.children[1]
+        if body.kind == "block" {
+            for statement: AstNode in body.children {
+                if statement.kind == "return" {
+                    self.append_defer_flushes(jump_block, statement)
+                    if statement.children.len() != 0 {
+                        self.append_completion_value(
+                            jump_block,
+                            self.substitute(statement.children[0]),
+                            statement)
+                    }
+                    jump_block.add(self.set_state_statement(
+                        self.cleanup_state, statement))
+                    jump_block.add(
+                        self.node("continue", "", statement))
+                    terminated = true
+                } else {
+                    jump_block.add(self.wrap_for_pieces(statement))
+                }
+            }
+        } else {
+            let value: AstNode = self.substitute(body)
+            match out {
+                some(destination) => {
+                    let carry: string = self.fresh_name("carry_")
+                    let declaration: AstNode =
+                        self.node("let", carry, arm)
+                    declaration.add(self.type_ast(out_type, arm))
+                    declaration.add(value)
+                    let taken: AstNode =
+                        self.node("unary", "move", arm)
+                    taken.add(self.name_of(carry, arm))
+                    let inner: AstNode = self.node("block", "", arm)
+                    inner.add(declaration)
+                    inner.add(self.slot_push(
+                        destination, taken, arm))
+                    var piece_names: Map<string, bool> = {}
+                    self.interpolated_slot_names(
+                        value, inout piece_names)
+                    self.thread_capture_slot_names(
+                        value, inout piece_names)
+                    match self.wrap_unit_for_names(
+                        inner, piece_names, arm) {
+                        some(wrapped) => { jump_block.add(wrapped) }
+                        none => {
+                            for statement: AstNode in inner.children {
+                                jump_block.add(statement)
+                            }
+                        }
+                    }
+                }
+                none => {
+                    jump_block.add(self.wrap_for_pieces(
+                        self.statement_of(value)))
+                }
+            }
+        }
+        self.pop_scope(false, arm)
+        if !terminated {
+            jump_block.add(
+                self.set_state_statement(join_state, arm))
+        }
+        jump_arm.add(jump_block)
+        return jump_arm
+    }
+
     fn decompose_match(node: AstNode, out: Option<string>,
                        out_type: HirType) {
         let scrutinee: AstNode = self.decompose(node.children[0])
@@ -1754,12 +2078,25 @@ class AsyncExpander {
         var arm_index: int = 1
         for arm_index < node.children.len() {
             let arm: AstNode = node.children[arm_index]
-            let arm_state: int = self.new_state(node)
-            arm_states.push(arm_state)
             let pattern: AstNode = arm.children[0]
             var binding_names: List<string> = []
             self.collect_pattern_bindings(
                 pattern, inout binding_names)
+            if self.pattern_moves_binding(pattern) &&
+               self.inline_arm_allowed(arm, out) {
+                // A move-only payload borrows the subject and cannot be
+                // parked in an arm slot; the arm body runs inline in the
+                // dispatch, exactly as the borrow rules require.
+                dispatch.add(self.build_inline_arm(
+                    arm, pattern, binding_names, out, out_type,
+                    join_state))
+                arm_states.push(0 - 1)
+                arm_slot_names.push(new AsyncArmSlots())
+                arm_index += 1
+                continue
+            }
+            let arm_state: int = self.new_state(node)
+            arm_states.push(arm_state)
             let slot_names: AsyncArmSlots = new AsyncArmSlots()
             for binding: string in binding_names {
                 slot_names.names.push(
@@ -1792,6 +2129,12 @@ class AsyncExpander {
         var cursor: int = 0
         for arm_index < node.children.len() {
             let arm: AstNode = node.children[arm_index]
+            if arm_states[cursor] < 0 {
+                // inline arm: its body already ran inside the dispatch
+                arm_index += 1
+                cursor += 1
+                continue
+            }
             self.enter_state(arm_states[cursor])
             self.push_scope()
             let pattern: AstNode = arm.children[0]
@@ -2102,6 +2445,94 @@ class AsyncExpander {
         }
     }
 
+    // The completion value may interpolate a slotted local or capture one
+    // in a thread closure; both re-resolve by name at the re-check, so
+    // the carry-and-push lands inside the same one-element borrow loops
+    // every other piece-reading statement gets.
+    fn append_completion_value(block: AstNode, result_value: AstNode,
+                               anchor: AstNode) {
+        if self.body_is_unit {
+            block.add(self.wrap_for_pieces(
+                self.statement_of(result_value)))
+            return
+        }
+        var names: Map<string, bool> = {}
+        self.interpolated_slot_names(result_value, inout names)
+        self.thread_capture_slot_names(result_value, inout names)
+        var landed_value: AstNode = result_value
+        var names_function: bool = false
+        match result_value.checked {
+            some(lowered) => {
+                names_function = lowered.kind == "function"
+            }
+            none => {}
+        }
+        if result_value.kind == "name" && !names_function &&
+           self.slot_element_moves(self.function.body_result) {
+            let moved: AstNode = self.node("unary", "move", anchor)
+            moved.add(result_value)
+            landed_value = moved
+        }
+        let carry: string = self.fresh_name("carry_")
+        let declaration: AstNode = self.node("let", carry, anchor)
+        declaration.add(self.type_ast(
+            self.function.body_result, anchor))
+        declaration.add(landed_value)
+        let taken: AstNode = self.node("unary", "move", anchor)
+        taken.add(self.name_of(carry, anchor))
+        let store: AstNode = self.call_method(
+            self.name_of("result$", anchor), "push", [taken], anchor)
+        let inner: AstNode = self.node("block", "", anchor)
+        inner.add(declaration)
+        inner.add(self.statement_of(store))
+        match self.wrap_unit_for_names(inner, names, anchor) {
+            some(wrapped) => { block.add(wrapped) }
+            none => {
+                for statement: AstNode in inner.children {
+                    block.add(statement)
+                }
+            }
+        }
+    }
+
+    // Wraps a generated multi-statement block in the one-element borrow
+    // loops for the given piece/capture names, the block riding directly
+    // as the innermost loop body — a bare block is not a statement. none
+    // means no name needed a wrap: the caller emits the children flat.
+    fn wrap_unit_for_names(inner: AstNode, names: Map<string, bool>,
+                           anchor: AstNode) -> Option<AstNode> {
+        var wrap_slots: List<AsyncSlot> = []
+        for name: string in names.keys() {
+            match self.find_slot(name) {
+                some(slot) => { wrap_slots.push(slot) }
+                none => {}
+            }
+        }
+        if wrap_slots.len() == 0 { return none }
+        var wrapped: AstNode = inner
+        var index: int = wrap_slots.len() - 1
+        for index >= 0 {
+            let slot: AsyncSlot = wrap_slots[index]
+            let loop_node: AstNode =
+                self.node("for", slot.name, anchor)
+            let binding: AstNode =
+                self.node("binding", slot.name, anchor)
+            binding.add(self.type_ast(slot.type, anchor))
+            loop_node.add(binding)
+            loop_node.add(self.name_of(slot.slot, anchor))
+            if wrapped.kind == "block" {
+                loop_node.add(wrapped)
+            } else {
+                let body: AstNode = self.node("block", "", anchor)
+                body.add(wrapped)
+                loop_node.add(body)
+            }
+            wrapped = loop_node
+            index -= 1
+        }
+        return some(wrapped)
+    }
+
     fn emit_completion(value: Option<AstNode>, anchor: AstNode) {
         let flush: AstNode = self.node("block", "", anchor)
         self.append_defer_flushes(flush, anchor)
@@ -2110,12 +2541,11 @@ class AsyncExpander {
         }
         match value {
             some(result_value) => {
-                if self.body_is_unit {
-                    self.emit(self.statement_of(result_value))
-                } else {
-                    self.emit_slot_push(
-                        "result$", self.function.body_result,
-                        result_value, anchor)
+                let landed: AstNode = self.node("block", "", anchor)
+                self.append_completion_value(
+                    landed, result_value, anchor)
+                for statement: AstNode in landed.children {
+                    self.emit(statement)
                 }
             }
             none => {}
