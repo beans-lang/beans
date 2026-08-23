@@ -189,7 +189,7 @@ runs_as "$tmp/compat_task.b" "$tmp/compat_task.expected"
 
 # ---- the old public task model is gone -------------------------------------
 
-echo "checking the old std.async surface no longer resolves"
+echo "checking std.async exposes no public Task"
 cat > "$tmp/dead_task.b" <<'EOF'
 import std.async as aio
 
@@ -197,7 +197,7 @@ fn main() {
     let t: aio.Task<int> = aio.run(1)
 }
 EOF
-rejects "$tmp/dead_task.b" "no module 'std.async'"
+reject_same "$tmp/dead_task.b" "unknown type 'aio.Task'"
 
 echo "checking the internal runtime package cannot be imported"
 cat > "$tmp/dead_import.b" <<'EOF'
@@ -881,6 +881,33 @@ run_matrix "$tmp/sem_basic.b" "$tmp/sem_basic.expected"
 echo "checking async callable values, literals, send literals, and unique receivers"
 run_matrix test/cases/async_callable_value.b \
     test/cases/async_callable_value.out
+
+echo "checking yield_now reports runnable without blocking the executor"
+run_matrix test/cases/async_yield.b test/cases/async_yield.out
+
+echo "checking TaskGroup completion order, polling, cancellation, and reuse"
+run_matrix test/cases/async_task_group.b test/cases/async_task_group.out
+
+echo "checking TaskGroup moves unique results through every take path"
+run_matrix test/cases/async_task_group_move.b \
+    test/cases/async_task_group_move.out
+
+echo "checking TaskGroup drains 10k queued completions in linear time"
+DEADLINE=30 run_matrix test/cases/async_task_group_many.b \
+    test/cases/async_task_group_many.out
+
+cat > "$tmp/rej_group_sync_start.b" <<'EOF'
+import std.async as aio
+
+fn work() -> int { return 1 }
+
+async fn main() {
+    let group: aio.TaskGroup<int> = new aio.TaskGroup<int>()
+    group.start(work())
+}
+EOF
+reject_same "$tmp/rej_group_sync_start.b" \
+    "TaskGroup.start needs a call to an async callable"
 
 echo "checking control flow around awaits"
 cat > "$tmp/sem_control.b" <<'BEANS'

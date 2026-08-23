@@ -4506,6 +4506,14 @@ class ExpressionChecker {
             self.local_scope_index(binding.name) <
                 self.capture_floor_depth
         if !captured { return }
+        if binding.move_state == "task_group" &&
+           !self.current.expanded &&
+           !self.async_abi_context {
+            self.fail(
+                node,
+                "TaskGroup is scope-bound and cannot be captured")
+            return
+        }
         binding.borrowed = true
         let capture_key: string = "{binding.id}"
         if binding.inout_parameter &&
@@ -4796,7 +4804,13 @@ class ExpressionChecker {
                     self.make_node(
                         node, "unary", "move", binding.type)
                 result.children.push(operand)
-                if binding.move_state == "moved" {
+                if binding.move_state == "task_group" &&
+                   !self.current.expanded &&
+                   !self.async_abi_context {
+                    self.fail(
+                        node,
+                        "TaskGroup is scope-bound and cannot be moved")
+                } else if binding.move_state == "moved" {
                     self.fail(
                         node,
                         "value '{source.value}' was already moved")
@@ -5515,6 +5529,14 @@ class ExpressionChecker {
                            owner.args[generic_index]) {
                         continue
                     }
+                    // TaskGroup owns its children and their result slots.
+                    // Its take methods can move T out without consuming the
+                    // group itself; the group stays open and reusable.
+                    if self.is_task_group(owner) ||
+                       canonical_hir_name(owner.name) ==
+                           async_rt_symbol("Task") {
+                        continue
+                    }
                     let generic: string =
                         declaration.generics[generic_index]
                     var mentioned: bool = false
@@ -5704,6 +5726,11 @@ class ExpressionChecker {
                     if generic_index >= owner.args.len() ||
                        !self.is_move_only(
                            owner.args[generic_index]) {
+                        continue
+                    }
+                    if self.is_task_group(owner) ||
+                       canonical_hir_name(owner.name) ==
+                           async_rt_symbol("Task") {
                         continue
                     }
                     let generic: string =
@@ -7049,6 +7076,74 @@ class ExpressionChecker {
         return source_result
     }
 
+    fn is_task_group(type: HirType) -> bool {
+        return type.name == package_symbol(
+            "std.async", "TaskGroup") &&
+            type.args.len() == 1
+    }
+
+    fn check_task_group_start(
+        node: AstNode, receiver_syntax: AstNode,
+        receiver: HirNode, expected: HirType) -> HirNode {
+        let unit: HirType = new HirType("unit")
+        if !self.current.is_async {
+            self.fail(
+                node,
+                "TaskGroup.start is only valid inside an async callable")
+        }
+        if receiver_syntax.kind != "name" {
+            self.fail(
+                receiver_syntax,
+                "TaskGroup must be a direct scope-bound local")
+        } else {
+            match self.find_local(receiver_syntax.value) {
+                some(binding) => {
+                    if binding.move_state != "task_group" {
+                        self.fail(
+                            receiver_syntax,
+                            "TaskGroup must be constructed and bound directly in this async callable")
+                    }
+                }
+                none => {
+                    self.fail(
+                        receiver_syntax,
+                        "TaskGroup must be a direct scope-bound local")
+                }
+            }
+        }
+        let count: int = node.children.len() - 1
+        if count != 1 || node.children[1].kind != "call" {
+            self.fail(
+                node,
+                "TaskGroup.start needs one exact async call")
+            for index: int in 1..node.children.len() {
+                self.check_expression(
+                    node.children[index], no_hir_type())
+            }
+            return self.make_node(
+                node, "error", "start", poison_hir_type())
+        }
+        let call: AstNode = node.children[1]
+        call.await_allowed = true
+        call.note = "task_group_start"
+        let child: HirNode = self.check_expression(
+            call, receiver.type.args[0])
+        if call.await_allowed {
+            call.await_allowed = false
+            if child.type.name != "poison" {
+                self.fail(
+                    call,
+                    "TaskGroup.start needs a call to an async callable")
+            }
+        }
+        self.expect_type(node, unit, expected)
+        let result: HirNode = self.make_node(
+            node, "task_group_start", "start", unit)
+        result.children.push(receiver)
+        result.children.push(child)
+        return result
+    }
+
     fn take_call_generics() -> Option<AstNode> {
         self.call_generics_taken = true
         return self.call_generics_syntax
@@ -7871,6 +7966,12 @@ class ExpressionChecker {
                     node, "error", callee.value,
                     poison_hir_type())
             }
+            if self.is_task_group(receiver.type) &&
+               callee.value == "start" {
+                return self.check_task_group_start(
+                    node, callee.children[0], receiver,
+                    expected)
+            }
             if receiver.type.name == "decimal" &&
                callee.value == "round" {
                 let count: int =
@@ -8084,9 +8185,11 @@ class ExpressionChecker {
             }
             match self.method_for(receiver.type, callee.value) {
                 some(function) => {
-                    self.require_method_visible(
-                        node, function, "method",
-                        "{render_hir_type(receiver.type)}.{callee.value}")
+                    if callee.note != "async_group_internal" {
+                        self.require_method_visible(
+                            node, function, "method",
+                            "{render_hir_type(receiver.type)}.{callee.value}")
+                    }
                     var owner: Option<HirDeclaration> =
                         self.declaration_for(receiver.type)
                     if function.owner != "" {
@@ -10317,6 +10420,31 @@ class ExpressionChecker {
         result.type = actual
         result.binding_id = self.declare(
             node, actual, node.kind == "var", false, false)
+        if self.is_task_group(actual) {
+            var direct_new: bool = false
+            match initializer {
+                some(expression) => {
+                    direct_new = expression.kind == "new"
+                }
+                none => {}
+            }
+            if !(self.current.is_async || self.async_abi_context) {
+                self.fail(
+                    node,
+                    "TaskGroup can only be constructed in an async callable")
+            }
+            if node.kind != "let" || !direct_new {
+                self.fail(
+                    node,
+                    "TaskGroup must be constructed and bound directly to a let local")
+            }
+            match self.find_local(node.value) {
+                some(binding) => {
+                    binding.move_state = "task_group"
+                }
+                none => {}
+            }
+        }
         if starts_child {
             match self.find_local(node.value) {
                 some(binding) => {
@@ -11195,6 +11323,11 @@ class ExpressionChecker {
             self.check_hir_annotations(function.annotations)
         self.validate_target_type(
             function.syntax, function.result)
+        if self.is_task_group(function.result) {
+            self.fail(
+                function.syntax,
+                "TaskGroup is scope-bound and cannot be returned")
+        }
         if function.owner != "" && !function.is_static {
             let self_node: AstNode =
                 new AstNode("name", "self",
@@ -11223,6 +11356,11 @@ class ExpressionChecker {
                     parameter.line, parameter.col)
             self.validate_target_type(
                 parameter_node, parameter.type)
+            if self.is_task_group(parameter.type) {
+                self.fail(
+                    parameter_node,
+                    "TaskGroup is scope-bound and cannot be passed as a parameter")
+            }
             parameter.binding_id = self.declare(
                 parameter_node, parameter.type,
                 parameter.passing == "inout",
@@ -11274,6 +11412,11 @@ class ExpressionChecker {
                         field.line, field.col)
                 self.validate_target_type(
                     field_node, field.type)
+                if self.is_task_group(field.type) {
+                    self.fail(
+                        field_node,
+                        "TaskGroup is scope-bound and cannot be stored in a field")
+                }
                 if field.is_weak {
                     var weak_target: bool = false
                     if field.type.name == "Option" &&
@@ -11313,6 +11456,11 @@ class ExpressionChecker {
                         field.line, field.col)
                 self.validate_target_type(
                     field_node, field.type)
+                if self.is_task_group(field.type) {
+                    self.fail(
+                        field_node,
+                        "TaskGroup is scope-bound and cannot be stored in a field")
+                }
                 field.annotations =
                     self.check_hir_annotations(
                         field.annotations)

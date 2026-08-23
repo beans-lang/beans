@@ -96,6 +96,23 @@ fn async_rt_symbol(name: string) -> string {
     return package_symbol(async_rt_package(), name)
 }
 
+fn ast_needs_async_runtime(node: AstNode) -> bool {
+    if node.kind == "fn" && value_marks_async(node.value) {
+        return true
+    }
+    if node.kind == "closure" && node.note == "async" {
+        return true
+    }
+    if node.kind == "fn_type" &&
+       module_words(node.value).contains("async") {
+        return true
+    }
+    for child: AstNode in node.children {
+        if ast_needs_async_runtime(child) { return true }
+    }
+    return false
+}
+
 // One name selected in `import {…} from path`: the symbol `name` of the
 // import's target, bound in its own file as `binding` — the `as` alias
 // when one was written, the name itself otherwise.
@@ -1684,19 +1701,8 @@ class ModuleLoader {
         for package: LoadedPackage in self.packages {
             for file: ParsedModuleFile in package.files {
                 for declaration: AstNode in file.ast.children {
-                    if declaration.kind == "fn" &&
-                       value_marks_async(declaration.value) {
+                    if ast_needs_async_runtime(declaration) {
                         wanted = true
-                    }
-                    if declaration.kind == "class" ||
-                       declaration.kind == "interface" ||
-                       declaration.kind == "enum" {
-                        for member: AstNode in declaration.children {
-                            if member.kind == "fn" &&
-                               value_marks_async(member.value) {
-                                wanted = true
-                            }
-                        }
                     }
                 }
             }

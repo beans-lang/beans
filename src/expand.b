@@ -841,6 +841,7 @@ class AsyncExpander {
     // without re-entering its body, and a child's own scan reaches the
     // grandchildren, so the poll depth is bounded by the task tree.
     fn append_child_scan(pending: AstNode, wait: string,
+                         runnable: string,
                          anchor: AstNode) {
         var scope_index: int = 0
         for scope_index < self.scopes.len() {
@@ -872,6 +873,18 @@ class AsyncExpander {
                     self.slot_read(slot.slot, anchor), "poll_once",
                     [], anchor))
                 body.add(step_decl)
+                let ran: AstNode = self.node("binary", "==", anchor)
+                ran.add(self.name_of(step, anchor))
+                ran.add(self.int_literal(2, anchor))
+                let mark: AstNode = self.node("if", "", anchor)
+                mark.add(ran)
+                let mark_body: AstNode =
+                    self.node("block", "", anchor)
+                mark_body.add(self.assign_statement(
+                    self.name_of(runnable, anchor),
+                    self.bool_literal(true, anchor), anchor))
+                mark.add(mark_body)
+                body.add(mark)
                 poll_child.add(body)
                 pending.add(poll_child)
             }
@@ -888,16 +901,40 @@ class AsyncExpander {
         let poll_state: int = self.new_state(node)
         self.emit_transition(poll_state, node)
         self.enter_state(poll_state)
-        // if wait$[0].poll_once() == 0 { <poll siblings>; return 0 }
-        let poll: AstNode = self.call_method(
-            self.slot_read(wait, node), "poll_once", [], node)
-        let compare: AstNode = self.node("binary", "==", node)
-        compare.add(poll)
-        compare.add(self.int_literal(0, node))
+        // Poll the awaited task exactly once this turn. A runnable result is
+        // propagated after every sibling gets the same one-poll turn; only a
+        // fully blocked pass returns 0 to the driver.
+        let awaited_step: string = self.fresh_name("awaited_step_")
+        let step_decl: AstNode = self.node("let", awaited_step, node)
+        let step_type: AstNode = self.node("type", "int", node)
+        step_type.resolved = "int"
+        step_decl.add(step_type)
+        step_decl.add(self.call_method(
+            self.slot_read(wait, node), "poll_once", [], node))
+        self.emit(step_decl)
+        let compare: AstNode = self.node("binary", "!=", node)
+        compare.add(self.name_of(awaited_step, node))
+        compare.add(self.int_literal(1, node))
         let suspend: AstNode = self.node("if", "", node)
         suspend.add(compare)
         let pending: AstNode = self.node("block", "", node)
-        self.append_child_scan(pending, wait, node)
+        let runnable: string = self.fresh_name("runnable_")
+        let runnable_decl: AstNode = self.node("var", runnable, node)
+        let bool_type: AstNode = self.node("type", "bool", node)
+        bool_type.resolved = "bool"
+        runnable_decl.add(bool_type)
+        let initial: AstNode = self.node("binary", "==", node)
+        initial.add(self.name_of(awaited_step, node))
+        initial.add(self.int_literal(2, node))
+        runnable_decl.add(initial)
+        pending.add(runnable_decl)
+        self.append_child_scan(pending, wait, runnable, node)
+        let has_runnable: AstNode = self.node("if", "", node)
+        has_runnable.add(self.name_of(runnable, node))
+        let runnable_body: AstNode = self.node("block", "", node)
+        runnable_body.add(self.return_int(2, node))
+        has_runnable.add(runnable_body)
+        pending.add(has_runnable)
         pending.add(self.return_int(0, node))
         suspend.add(pending)
         self.emit(suspend)
@@ -1041,6 +1078,96 @@ class AsyncExpander {
         self.pop_scope(true, block)
     }
 
+    fn is_task_group_start(node: AstNode) -> bool {
+        match node.checked {
+            some(checked) => {
+                return checked.kind == "task_group_start"
+            }
+            none => {}
+        }
+        return false
+    }
+
+    fn contains_task_group_start(node: AstNode) -> bool {
+        if self.is_task_group_start(node) { return true }
+        if node.kind == "closure" { return false }
+        for child: AstNode in node.children {
+            if self.contains_task_group_start(child) {
+                return true
+            }
+        }
+        return false
+    }
+
+    fn rewrite_task_group_start(call: AstNode) {
+        let callee: AstNode = call.children[0]
+        let receiver: AstNode = callee.children[0]
+        var group_type: HirType = poison_hir_type()
+        match receiver.checked {
+            some(checked) => { group_type = checked.type }
+            none => {}
+        }
+        let value_type: HirType =
+            if group_type.args.len() == 1 {
+                group_type.args[0]
+            } else {
+                poison_hir_type()
+            }
+        let task_type: HirType = hir_named(
+            async_rt_symbol("Task"), [value_type])
+        let task_name: string = self.fresh_name("group_task_")
+        let task_decl: AstNode = self.node("let", task_name, call)
+        task_decl.add(self.type_ast(task_type, call))
+        task_decl.add(self.readiness_swap(
+            self.decompose(call.children[1])))
+        self.emit(task_decl)
+
+        let poll: AstNode = self.node("closure", "", call)
+        poll.add(self.node("params", "", call))
+        let poll_result: AstNode = self.node("result", "", call)
+        let int_type: AstNode = self.node("type", "int", call)
+        int_type.resolved = "int"
+        poll_result.add(int_type)
+        poll.add(poll_result)
+        let poll_body: AstNode = self.node("block", "", call)
+        let poll_return: AstNode = self.node("return", "", call)
+        poll_return.add(self.call_method(
+            self.name_of(task_name, call), "poll_once", [], call))
+        poll_body.add(poll_return)
+        poll.add(poll_body)
+
+        let taker: AstNode = self.node("closure", "", call)
+        taker.add(self.node("params", "", call))
+        let take_result: AstNode = self.node("result", "", call)
+        take_result.add(self.type_ast(value_type, call))
+        taker.add(take_result)
+        let take_body: AstNode = self.node("block", "", call)
+        let take_return: AstNode = self.node("return", "", call)
+        take_return.add(self.call_method(
+            self.name_of(task_name, call), "finish", [], call))
+        take_body.add(take_return)
+        taker.add(take_body)
+
+        let cancel: AstNode = self.node("closure", "", call)
+        cancel.add(self.node("params", "", call))
+        let cancel_body: AstNode = self.node("block", "", call)
+        cancel_body.add(self.statement_of(self.call_method(
+            self.name_of(task_name, call),
+            "cancel_now", [], call)))
+        cancel.add(cancel_body)
+
+        let helper_field: AstNode = self.node(
+            "field", "_start_parts", call)
+        helper_field.note = "async_group_internal"
+        helper_field.add(self.substitute(receiver))
+        let helper_call: AstNode = self.node("call", "", call)
+        helper_call.add(helper_field)
+        helper_call.add(poll)
+        helper_call.add(taker)
+        helper_call.add(cancel)
+        self.emit(self.statement_of(helper_call))
+    }
+
     fn rewrite_statement(statement: AstNode) {
         if !ast_contains_await(statement) &&
            !self.statement_needs_rewrite(statement) {
@@ -1060,7 +1187,8 @@ class AsyncExpander {
            !self.contains_completion(statement) &&
            !(self.loop_stack.len() != 0 &&
              self.contains_loop_exit(statement)) &&
-           !self.contains_try(statement) {
+           !self.contains_try(statement) &&
+           !self.contains_task_group_start(statement) {
             self.emit_with_piece_bindings(statement)
             return
         }
@@ -1078,6 +1206,10 @@ class AsyncExpander {
         }
         if statement.kind == "expression" {
             let inner: AstNode = statement.children[0]
+            if self.is_task_group_start(inner) {
+                self.rewrite_task_group_start(inner)
+                return
+            }
             // A match in statement position produces no value: block arms
             // push nothing, so the value path's pick slot would stay empty
             // and the join's take would blow up.
@@ -1139,6 +1271,7 @@ class AsyncExpander {
     }
 
     fn statement_needs_rewrite(node: AstNode) -> bool {
+        if self.contains_task_group_start(node) { return true }
         // an async let always lowers: the child task lives in a slot even
         // when nothing after it suspends
         if (node.kind == "let" || node.kind == "var") &&
@@ -1200,7 +1333,18 @@ class AsyncExpander {
         return false
     }
 
+    fn is_task_group_type(type: HirType) -> bool {
+        return canonical_hir_name(type.name) == package_symbol(
+            "std.async", "TaskGroup") && type.args.len() == 1
+    }
+
     fn local_needs_slot(node: AstNode) -> bool {
+        match node.checked {
+            some(lowered) => {
+                if self.is_task_group_type(lowered.type) { return true }
+            }
+            none => {}
+        }
         if node.note == "async_hoist" { return true }
         if self.defer_names.contains_key(node.value) { return true }
         return false
@@ -2055,7 +2199,40 @@ class AsyncExpander {
 
     // ---- driving -----------------------------------------------------
 
+    fn expand_runtime_task_function(
+        function: HirFunction, maker_symbol: string) {
+        let anchor: AstNode = function.syntax
+        let task_type: HirType = hir_named(
+            async_rt_symbol("Task"), [function.body_result])
+        let call: AstNode = self.node("call", "", anchor)
+        let callee: AstNode = self.node(
+            "name", symbol_name(maker_symbol), anchor)
+        callee.resolved = maker_symbol
+        call.add(callee)
+        let hand_back: AstNode = self.node("return", "", anchor)
+        hand_back.add(call)
+        let body: AstNode = self.node("block", "", anchor)
+        body.add(hand_back)
+        let syntax: AstNode = self.node(
+            "fn", function.syntax.value, anchor)
+        for child: AstNode in function.syntax.children {
+            if child.kind != "block" { syntax.add(child) }
+        }
+        syntax.add(body)
+        function.syntax = syntax
+        function.result = task_type
+        function.body_result = task_type
+        function.expanded = true
+        function.body = []
+    }
+
     fn expand_function(function: HirFunction) {
+        if function.qualified ==
+           package_symbol("std.async", "yield_now") {
+            self.expand_runtime_task_function(
+                function, async_rt_symbol("yield_task"))
+            return
+        }
         self.function = function
         self.states = []
         self.slot_decls = []
@@ -2247,10 +2424,18 @@ class AsyncExpander {
             maker.add(root_decl)
             let drive: AstNode = self.node("for", "", anchor)
             let drive_body: AstNode = self.node("block", "", anchor)
-            let poll: AstNode = self.call_method(
-                self.name_of("root$", anchor), "poll_once", [], anchor)
+            let root_step: AstNode = self.node(
+                "let", "root_step$", anchor)
+            let root_step_type: AstNode =
+                self.node("type", "int", anchor)
+            root_step_type.resolved = "int"
+            root_step.add(root_step_type)
+            root_step.add(self.call_method(
+                self.name_of("root$", anchor), "poll_once", [],
+                anchor))
+            drive_body.add(root_step)
             let done: AstNode = self.node("binary", "==", anchor)
-            done.add(poll)
+            done.add(self.name_of("root_step$", anchor))
             done.add(self.int_literal(1, anchor))
             let leave: AstNode = self.node("if", "", anchor)
             leave.add(done)
@@ -2269,6 +2454,16 @@ class AsyncExpander {
             leave_block.add(self.node("return", "", anchor))
             leave.add(leave_block)
             drive_body.add(leave)
+            let runnable: AstNode = self.node("binary", "==", anchor)
+            runnable.add(self.name_of("root_step$", anchor))
+            runnable.add(self.int_literal(2, anchor))
+            let repoll: AstNode = self.node("if", "", anchor)
+            repoll.add(runnable)
+            let repoll_body: AstNode =
+                self.node("block", "", anchor)
+            repoll_body.add(self.node("continue", "", anchor))
+            repoll.add(repoll_body)
+            drive_body.add(repoll)
             if self.has_reactor {
                 // Pending means something is parked on readiness: block
                 // in the reactor until it can move. Never a busy spin.

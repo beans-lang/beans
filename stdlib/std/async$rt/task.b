@@ -5,7 +5,7 @@
 // only author of Task values.
 //
 // A Task<T> is one suspended async body: `poll_fn` advances it and
-// reports 0 (pending) or 1 (ready), `take_fn` moves the finished value
+// reports 0 (blocked), 1 (ready), or 2 (runnable), `take_fn` moves the finished value
 // out exactly once, `cancel_fn` runs the cleanup completion would have
 // run and fires only when an unfinished task is dropped — deinit runs it
 // before the captured values release, which is what makes dropping a
@@ -33,6 +33,23 @@ pub fn driver_stall() {
     panic("async deadlock: every task is waiting and none is parked on readiness")
 }
 
+/// One cooperative turn. The first poll reports runnable, so the driver
+/// immediately polls the task tree again without entering a reactor. The
+/// second poll completes.
+pub fn yield_task() -> Task<unit> {
+    var yielded: bool = false
+    return new Task<unit>(
+        fn() -> int {
+            if !yielded {
+                yielded = true
+                return 2
+            }
+            return 1
+        },
+        fn() {},
+        fn() {})
+}
+
 pub unique class Task<T> {
     pub poll_fn: fn() -> int
     pub take_fn: fn() -> T
@@ -46,23 +63,38 @@ pub unique class Task<T> {
         self.cancel_fn = cancel_fn
     }
 
-    /// Advances the task by one step without blocking. 0 means pending,
-    /// 1 means ready: the result can be taken. Polling after readiness
-    /// reports ready again without re-entering the body.
+    /// Advances the task by one step without blocking. 0 means blocked,
+    /// 1 means ready, and 2 means runnable: poll the tree again without
+    /// blocking. Polling after readiness reports ready again without
+    /// re-entering the body.
     pub fn poll_once() -> int {
         if self.finished { return 1 }
         let step: fn() -> int = self.poll_fn
         let status: int = step()
+        if status < 0 || status > 2 {
+            panic("async runtime: task returned an invalid poll status")
+        }
         if status == 1 { self.finished = true }
         return status
+    }
+
+    pub fn finish() -> T {
+        let taker: fn() -> T = self.take_fn
+        return taker()
+    }
+
+    pub fn cancel_now() {
+        if self.finished { return }
+        let cancel: fn() = self.cancel_fn
+        cancel()
+        self.finished = true
     }
 
     fn deinit() {
         // An unfinished task is being cancelled: run the armed cleanup
         // before the closures release the captured values.
         if !self.finished {
-            let cancel: fn() = self.cancel_fn
-            cancel()
+            self.cancel_now()
         }
     }
 }
