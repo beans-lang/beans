@@ -4,6 +4,31 @@ This file records user-facing changes in each Beans release.
 
 ## Unreleased
 
+### Added
+
+- `beansc build --debug` writes a Beans source line table, so a native
+  debugger can stop inside the binary that ships. `lldb` and `gdb` resolve
+  `break main.b:12`, show `main.helper` rather than `.next.fn7` in a
+  backtrace, step a statement at a time, and print locals: scalars and
+  `bool`s by value, strings as their text, and lists, maps and objects as
+  their Beans type and an address. The metadata is written only by
+  `--debug`; every other build is byte-for-byte what it was.
+  `beansc debug-adapter` is unchanged and remains the debugger that knows
+  every Beans value exactly.
+- Editors reach it with no debugger of their own: VS Code's Beans launch
+  configuration takes `"mode": "native"` and builds before handing the
+  binary to CodeLLDB, LLDB DAP or the C/C++ extension, and Zed's built-in
+  debugger drives the same binary from a `.zed/debug.json` build step.
+
+### Fixed
+
+- A `--debug` build kept the frame pointer in the C runtime but not in the
+  Beans functions beside it. `-fno-omit-frame-pointer` reaches Clang, and
+  Clang applies it to the C it compiles; a function that arrives as LLVM IR
+  carries its own attributes or none. Emitted functions now ask for it, so a
+  frame-pointer walk — a profiler, a crash reporter — no longer loses the
+  stack at the first Beans call.
+
 ## [0.1.29] - 2026-08-23
 
 ### Added
