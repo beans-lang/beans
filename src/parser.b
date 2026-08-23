@@ -1306,7 +1306,7 @@ class Parser {
             self.in_async = true
             let closure: AstNode = self.parse_closure_expression()
             self.in_async = saved_async
-            self.stamp_async_closure(closure, false)
+            self.stamp_closure_marks(closure, true, false)
             return closure
         }
         if self.check("ident") &&
@@ -1321,7 +1321,16 @@ class Parser {
             self.in_async = true
             let closure: AstNode = self.parse_closure_expression()
             self.in_async = saved_async
-            self.stamp_async_closure(closure, true)
+            self.stamp_closure_marks(closure, true, true)
+            return closure
+        }
+        if self.check("ident") &&
+           self.current().text == "send" &&
+           self.pos + 1 < self.tokens.len() &&
+           self.tokens[self.pos + 1].kind == "fn" {
+            self.advance()
+            let closure: AstNode = self.parse_closure_expression()
+            self.stamp_closure_marks(closure, false, true)
             return closure
         }
         if self.check("fn") {
@@ -1767,13 +1776,14 @@ class Parser {
     // immediate call, a field, an index. The async and send marks belong
     // on the literal itself, the base of that chain, or an invoked async
     // closure would check as a sync one.
-    fn stamp_async_closure(node: AstNode, sendable: bool) {
+    fn stamp_closure_marks(node: AstNode, is_async: bool,
+                           sendable: bool) {
         var base: AstNode = node
         for base.kind != "closure" && base.children.len() != 0 {
             base = base.children[0]
         }
         if base.kind != "closure" { return }
-        base.note = "async"
+        if is_async { base.note = "async" }
         if sendable { base.value = "send" }
     }
 

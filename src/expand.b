@@ -67,6 +67,19 @@ import std.os
 //     programs, so they link under the minimal and freestanding
 //     runtime profiles.
 
+// `?` inside an interpolation piece of an async body can never lower:
+// piece text re-resolves inside the maker, whose poll closure does not
+// return Result. The checker refuses it up front, closure pieces keep
+// their own `?` because they re-check against their own result.
+fn ast_contains_piece_try(node: AstNode) -> bool {
+    if node.kind == "try" { return true }
+    if node.kind == "closure" { return false }
+    for child: AstNode in node.children {
+        if ast_contains_piece_try(child) { return true }
+    }
+    return false
+}
+
 fn ast_contains_await(node: AstNode) -> bool {
     // A closure owns its own suspension points. Its enclosing async frame
     // must treat the closure value as an ordinary expression.
@@ -450,6 +463,36 @@ class AsyncExpander {
         let taken: AstNode = self.node("unary", "move", anchor)
         taken.add(self.name_of(carry, anchor))
         self.emit(self.slot_push(slot, taken, anchor))
+    }
+
+    // emit_slot_push plus the borrow loops for any slotted name the
+    // value's interpolations read or thread closures capture.
+    fn emit_slot_push_wrapped(slot: string, element: HirType,
+                              value: AstNode, anchor: AstNode) {
+        var names: Map<string, bool> = {}
+        self.interpolated_slot_names(value, inout names)
+        self.thread_capture_slot_names(value, inout names)
+        if names.len() == 0 {
+            self.emit_slot_push(slot, element, value, anchor)
+            return
+        }
+        let carry: string = self.fresh_name("carry_")
+        let declaration: AstNode = self.node("let", carry, anchor)
+        declaration.add(self.type_ast(element, anchor))
+        declaration.add(value)
+        let taken: AstNode = self.node("unary", "move", anchor)
+        taken.add(self.name_of(carry, anchor))
+        let inner: AstNode = self.node("block", "", anchor)
+        inner.add(declaration)
+        inner.add(self.slot_push(slot, taken, anchor))
+        match self.wrap_unit_for_names(inner, names, anchor) {
+            some(wrapped) => { self.emit(wrapped) }
+            none => {
+                for statement: AstNode in inner.children {
+                    self.emit(statement)
+                }
+            }
+        }
     }
 
     fn slot_clear(slot: string, anchor: AstNode) -> AstNode {
@@ -978,7 +1021,7 @@ class AsyncExpander {
         let wait: string = self.fresh_name("await_")
         self.slot_decls.push(
             self.slot_declaration(wait, task_type, node))
-        self.emit_slot_push(wait, task_type, operand, node)
+        self.emit_slot_push_wrapped(wait, task_type, operand, node)
         return self.drain_task_slot(wait, value_type, node)
     }
 
@@ -1124,7 +1167,8 @@ class AsyncExpander {
         let flag: string = self.fresh_name("short_")
         self.slot_decls.push(self.slot_declaration(
             flag, new HirType("bool"), node))
-        self.emit_slot_push(flag, new HirType("bool"), left, node)
+        self.emit_slot_push_wrapped(
+            flag, new HirType("bool"), left, node)
         let right_state: int = self.new_state(node)
         let join_state: int = self.new_state(node)
         var condition: AstNode = self.slot_read(flag, node)
@@ -1138,10 +1182,44 @@ class AsyncExpander {
         self.enter_state(right_state)
         let right: AstNode = self.decompose(node.children[1])
         self.emit(self.slot_clear(flag, node))
-        self.emit_slot_push(flag, new HirType("bool"), right, node)
+        self.emit_slot_push_wrapped(
+            flag, new HirType("bool"), right, node)
         self.emit_transition(join_state, node)
         self.enter_state(join_state)
         return self.slot_take(flag, node)
+    }
+
+    // The failure half of a rewritten `?`: armed defers flush, the
+    // rebuilt error (or none) lands in result$, and the early exit
+    // completes through the shared cleanup state like every other
+    // completion.
+    fn append_try_failure(bad_block: AstNode, bad_name: string,
+                          bad_binding: string, node: AstNode) {
+        self.append_defer_flushes(bad_block, node)
+        var failure: AstNode = self.name_of("none", node)
+        if bad_name == "err" {
+            let rebuilt: AstNode = self.node("call", "", node)
+            rebuilt.add(self.name_of("err", node))
+            rebuilt.add(self.name_of(bad_binding, node))
+            failure = rebuilt
+        }
+        if !self.body_is_unit {
+            let carry: string = self.fresh_name("carry_")
+            let declaration: AstNode = self.node("let", carry, node)
+            declaration.add(self.type_ast(
+                self.function.body_result, node))
+            declaration.add(failure)
+            bad_block.add(declaration)
+            let taken: AstNode = self.node("unary", "move", node)
+            taken.add(self.name_of(carry, node))
+            let store: AstNode = self.call_method(
+                self.name_of("result$", node), "push",
+                [taken], node)
+            bad_block.add(self.statement_of(store))
+        }
+        bad_block.add(self.set_state_statement(
+            self.cleanup_state, node))
+        bad_block.add(self.node("continue", "", node))
     }
 
     // `E?` in an async body: the poll closure returns int, so propagation
@@ -1228,33 +1306,8 @@ class AsyncExpander {
         }
         bad_arm.add(bad_pattern)
         let bad_block: AstNode = self.node("block", "", node)
-        self.append_defer_flushes(bad_block, node)
-        var failure: AstNode = self.name_of("none", node)
-        if bad_name == "err" {
-            let rebuilt: AstNode = self.node("call", "", node)
-            rebuilt.add(self.name_of("err", node))
-            rebuilt.add(self.name_of(bad_binding, node))
-            failure = rebuilt
-        }
-        if !self.body_is_unit {
-            let carry: string = self.fresh_name("carry_")
-            let declaration: AstNode = self.node("let", carry, node)
-            declaration.add(self.type_ast(
-                self.function.body_result, node))
-            declaration.add(failure)
-            bad_block.add(declaration)
-            let taken: AstNode = self.node("unary", "move", node)
-            taken.add(self.name_of(carry, node))
-            let store: AstNode = self.call_method(
-                self.name_of("result$", node), "push",
-                [taken], node)
-            bad_block.add(self.statement_of(store))
-        }
-        // the early error exit completes through the shared cleanup
-        // state like every other completion
-        bad_block.add(self.set_state_statement(
-            self.cleanup_state, node))
-        bad_block.add(self.node("continue", "", node))
+        self.append_try_failure(
+            bad_block, bad_name, bad_binding, node)
         bad_arm.add(bad_block)
         dispatch.add(bad_arm)
         self.emit(self.statement_of(dispatch))
@@ -1324,11 +1377,40 @@ class AsyncExpander {
         let task_type: HirType = hir_named(
             async_rt_symbol("Task"), [value_type])
         let task_name: string = self.fresh_name("group_task_")
+        // Interpolation pieces and send closures in the started call
+        // re-resolve names at the re-check, so slotted names they touch
+        // re-bind as borrows around the whole start sequence — the
+        // task local and the registration must share that scope.
+        var names: Map<string, bool> = {}
+        self.interpolated_slot_names(call.children[1], inout names)
+        self.thread_capture_slot_names(call.children[1], inout names)
+        var wrap_slots: List<AsyncSlot> = []
+        for name: string in names.keys() {
+            match self.find_slot(name) {
+                some(borrowed) => { wrap_slots.push(borrowed) }
+                none => {}
+            }
+        }
+        if wrap_slots.len() != 0 {
+            self.push_scope()
+            for borrowed: AsyncSlot in wrap_slots {
+                let mask: AsyncSlot = new AsyncSlot(
+                    borrowed.name, "", borrowed.type)
+                mask.masked = true
+                self.scopes[self.scopes.len() - 1].bindings[
+                    borrowed.name] = mask
+            }
+        }
+        let rewritten_start: AstNode = self.readiness_swap(
+            self.decompose(call.children[1]))
+        if wrap_slots.len() != 0 {
+            self.pop_scope(false, call)
+        }
         let task_decl: AstNode = self.node("let", task_name, call)
         task_decl.add(self.type_ast(task_type, call))
-        task_decl.add(self.readiness_swap(
-            self.decompose(call.children[1])))
-        self.emit(task_decl)
+        task_decl.add(rewritten_start)
+        let landed: AstNode = self.node("block", "", call)
+        landed.add(task_decl)
 
         let poll: AstNode = self.node("closure", "", call)
         poll.add(self.node("params", "", call))
@@ -1378,7 +1460,15 @@ class AsyncExpander {
         helper_call.add(poll)
         helper_call.add(taker)
         helper_call.add(cancel)
-        self.emit(self.statement_of(helper_call))
+        landed.add(self.statement_of(helper_call))
+        match self.wrap_unit_for_names(landed, names, call) {
+            some(wrapped) => { self.emit(wrapped) }
+            none => {
+                for statement: AstNode in landed.children {
+                    self.emit(statement)
+                }
+            }
+        }
     }
 
     fn rewrite_statement(statement: AstNode) {
@@ -1429,6 +1519,14 @@ class AsyncExpander {
             if inner.kind == "match" {
                 self.decompose_match(
                     inner, none, poison_hir_type())
+                return
+            }
+            // A synchronous expression that only touches slotted names is
+            // one transplanted statement: the piece wrap re-binds names
+            // its interpolations and send closures resolve at re-check.
+            if !ast_contains_await(inner) &&
+               !self.contains_try(inner) {
+                self.emit_with_piece_bindings(statement)
                 return
             }
             let rewritten: AstNode =
@@ -1766,7 +1864,7 @@ class AsyncExpander {
                 let rewritten: AstNode = self.decompose(initializer)
                 let slot: AsyncSlot = self.declare_slot(
                     statement.value, declared, statement)
-                self.emit_slot_push(
+                self.emit_slot_push_wrapped(
                     slot.slot, declared, rewritten, statement)
             }
             none => {
@@ -1778,6 +1876,14 @@ class AsyncExpander {
     }
 
     fn rewrite_assign(statement: AstNode) {
+        let landed: AstNode = self.node("block", "", statement)
+        self.append_assign(statement, landed)
+        for rewritten: AstNode in landed.children {
+            self.emit(rewritten)
+        }
+    }
+
+    fn append_assign(statement: AstNode, out_block: AstNode) {
         let target: AstNode = statement.children[0]
         var value: AstNode = statement.children[1]
         if statement.value != "=" {
@@ -1824,10 +1930,10 @@ class AsyncExpander {
                         slot.slot, taken, statement))
                     match self.wrap_unit_for_names(
                         inner, names, statement) {
-                        some(wrapped) => { self.emit(wrapped) }
+                        some(wrapped) => { out_block.add(wrapped) }
                         none => {
                             for landed: AstNode in inner.children {
-                                self.emit(landed)
+                                out_block.add(landed)
                             }
                         }
                     }
@@ -1852,8 +1958,8 @@ class AsyncExpander {
         landed_assign.add(fresh)
         match self.wrap_unit_for_names(
             landed_assign, assign_names, statement) {
-            some(wrapped) => { self.emit(wrapped) }
-            none => { self.emit(fresh) }
+            some(wrapped) => { out_block.add(wrapped) }
+            none => { out_block.add(fresh) }
         }
     }
 
@@ -1892,12 +1998,12 @@ class AsyncExpander {
         self.enter_state(then_state)
         let then_value: AstNode =
             self.decompose(self.branch_value(node.children[1]))
-        self.emit_slot_push(out, out_type, then_value, node)
+        self.emit_slot_push_wrapped(out, out_type, then_value, node)
         self.emit_transition(join_state, node)
         self.enter_state(else_state)
         let else_value: AstNode =
             self.decompose(self.branch_value(node.children[2]))
-        self.emit_slot_push(out, out_type, else_value, node)
+        self.emit_slot_push_wrapped(out, out_type, else_value, node)
         self.emit_transition(join_state, node)
         self.enter_state(join_state)
     }
@@ -1938,43 +2044,319 @@ class AsyncExpander {
         return false
     }
 
-    // Inline arms handle the plain shapes: transplantable statements plus
-    // at most one trailing flat return. Anything that needs the state
-    // machinery — awaits, `?`, task groups, defers, nested completions,
-    // loop exits into rewritten loops, slotted locals — falls back to the
-    // slotted-arm path.
+    // Inline arms rebuild an await-free arm body in place: structure is
+    // kept, and only the statements the state machinery would have
+    // rewritten — returns, statement-level `?`, assignments to slotted
+    // names — are rewritten inline. Completion transitions work from any
+    // nesting depth because `continue` always reaches the poll loop.
+    // Anything outside the vetted shapes — awaits, task groups, defers,
+    // `?` in value position, async-let — falls back to the slotted path.
+    fn inline_allowed_block(block: AstNode, loop_depth: int) -> bool {
+        for statement: AstNode in block.children {
+            if !self.inline_allowed_statement(statement, loop_depth) {
+                return false
+            }
+        }
+        return true
+    }
+
+    fn inline_allowed_match(node: AstNode, loop_depth: int) -> bool {
+        if self.contains_try(node.children[0]) ||
+           ast_contains_await(node.children[0]) {
+            return false
+        }
+        var arm_index: int = 1
+        for arm_index < node.children.len() {
+            let arm: AstNode = node.children[arm_index]
+            let body: AstNode = arm.children[1]
+            if body.kind == "block" {
+                if !self.inline_allowed_block(body, loop_depth) {
+                    return false
+                }
+            } else {
+                if self.contains_try(body) { return false }
+            }
+            arm_index += 1
+        }
+        return true
+    }
+
+    fn inline_allowed_statement(statement: AstNode,
+                                loop_depth: int) -> bool {
+        if ast_contains_await(statement) { return false }
+        if self.contains_task_group_start(statement) { return false }
+        if statement.kind == "defer" { return false }
+        if statement.kind == "return" {
+            return statement.children.len() == 0 ||
+                   !self.contains_try(statement.children[0])
+        }
+        if statement.kind == "break" ||
+           statement.kind == "continue" {
+            return loop_depth > 0
+        }
+        if statement.kind == "let" || statement.kind == "var" {
+            if statement.note == "async" { return false }
+            return !self.contains_try(statement)
+        }
+        if statement.kind == "assign" {
+            return !self.contains_try(statement)
+        }
+        if statement.kind == "expression" {
+            let inner: AstNode = statement.children[0]
+            if inner.kind == "try" {
+                return !self.contains_try(inner.children[0])
+            }
+            if inner.kind == "match" {
+                return self.inline_allowed_match(inner, loop_depth)
+            }
+            return !self.contains_try(statement)
+        }
+        if statement.kind == "if" {
+            if self.contains_try(statement.children[0]) {
+                return false
+            }
+            if !self.inline_allowed_block(
+                statement.children[1], loop_depth) {
+                return false
+            }
+            if statement.children.len() > 2 {
+                let alternate: AstNode = statement.children[2]
+                if alternate.kind == "block" {
+                    return self.inline_allowed_block(
+                        alternate, loop_depth)
+                }
+                return self.inline_allowed_statement(
+                    alternate, loop_depth)
+            }
+            return true
+        }
+        if statement.kind == "match" {
+            return self.inline_allowed_match(statement, loop_depth)
+        }
+        if statement.kind == "for" {
+            var child_index: int = 0
+            for child_index < statement.children.len() - 1 {
+                if self.contains_try(
+                    statement.children[child_index]) {
+                    return false
+                }
+                child_index += 1
+            }
+            let body: AstNode =
+                statement.children[statement.children.len() - 1]
+            if body.kind != "block" { return false }
+            return self.inline_allowed_block(body, loop_depth + 1)
+        }
+        if statement.kind == "unsafe" {
+            return self.inline_allowed_block(
+                statement.children[0], loop_depth)
+        }
+        return false
+    }
+
     fn inline_arm_allowed(arm: AstNode, out: Option<string>) -> bool {
-        if ast_contains_await(arm) || self.contains_try(arm) ||
+        if ast_contains_await(arm) ||
            self.contains_task_group_start(arm) ||
            self.contains_defer(arm) {
             return false
         }
         let body: AstNode = arm.children[1]
         if body.kind != "block" {
-            return true
+            return !self.contains_try(body)
         }
         if out.is_some() { return false }
-        var index: int = 0
-        for index < body.children.len() {
-            let statement: AstNode = body.children[index]
-            if statement.kind == "return" {
-                if index != body.children.len() - 1 { return false }
+        return self.inline_allowed_block(body, 0)
+    }
+
+    // A statement-level `E?` whose value is discarded: route only the
+    // error, leave the payload in its arm untouched — even a move-only
+    // payload is fine as an unused borrow.
+    fn inline_try_statement(try_node: AstNode) -> AstNode {
+        let operand: AstNode =
+            self.substitute(try_node.children[0])
+        let operand_type: HirType =
+            self.checked_type(try_node.children[0])
+        let good_name: string =
+            if operand_type.name == "Option" { "some" } else { "ok" }
+        let bad_name: string =
+            if operand_type.name == "Option" { "none" } else { "err" }
+        let good_binding: string = self.fresh_name("v")
+        let bad_binding: string = self.fresh_name("e")
+        let dispatch: AstNode = self.node("match", "", try_node)
+        dispatch.add(operand)
+        let good_arm: AstNode = self.node("arm", "", try_node)
+        let good_pattern: AstNode =
+            self.node("pattern_name", good_name, try_node)
+        good_pattern.add(self.node(
+            "pattern_binding", good_binding, try_node))
+        good_arm.add(good_pattern)
+        good_arm.add(self.node("block", "", try_node))
+        dispatch.add(good_arm)
+        let bad_arm: AstNode = self.node("arm", "", try_node)
+        let bad_pattern: AstNode =
+            self.node("pattern_name", bad_name, try_node)
+        if bad_name == "err" {
+            bad_pattern.add(self.node(
+                "pattern_binding", bad_binding, try_node))
+        }
+        bad_arm.add(bad_pattern)
+        let bad_block: AstNode = self.node("block", "", try_node)
+        self.append_try_failure(
+            bad_block, bad_name, bad_binding, try_node)
+        bad_arm.add(bad_block)
+        dispatch.add(bad_arm)
+        return self.statement_of(dispatch)
+    }
+
+    fn inline_build_match(node: AstNode) -> AstNode {
+        let rebuilt: AstNode = self.node("match", "", node)
+        rebuilt.add(self.substitute(node.children[0]))
+        var arm_index: int = 1
+        for arm_index < node.children.len() {
+            let arm: AstNode = node.children[arm_index]
+            let pattern: AstNode = arm.children[0]
+            var binding_names: List<string> = []
+            self.collect_pattern_bindings(
+                pattern, inout binding_names)
+            let fresh_arm: AstNode = self.node("arm", "", arm)
+            fresh_arm.add(pattern)
+            self.push_scope()
+            for binding: string in binding_names {
+                let mask: AsyncSlot = new AsyncSlot(
+                    binding, "",
+                    self.binding_type_of(pattern, binding))
+                mask.masked = true
+                self.scopes[self.scopes.len() - 1].bindings[
+                    binding] = mask
+            }
+            let body: AstNode = arm.children[1]
+            if body.kind == "block" {
+                let fresh_body: AstNode = self.node("block", "", arm)
+                self.inline_build_block(body, fresh_body)
+                fresh_arm.add(fresh_body)
             } else {
-                if self.contains_completion(statement) { return false }
-                if self.loop_stack.len() != 0 &&
-                   self.contains_loop_exit(statement) {
-                    return false
-                }
-                if (statement.kind == "let" ||
-                    statement.kind == "var") &&
-                   (statement.note == "async" ||
-                    self.local_needs_slot(statement)) {
-                    return false
+                fresh_arm.add(self.substitute(body))
+            }
+            self.pop_scope(false, arm)
+            rebuilt.add(fresh_arm)
+            arm_index += 1
+        }
+        return rebuilt
+    }
+
+    fn inline_build_block(source: AstNode, target: AstNode) {
+        for statement: AstNode in source.children {
+            self.inline_build_statement(statement, target)
+        }
+    }
+
+    fn inline_build_statement(statement: AstNode, target: AstNode) {
+        if statement.kind == "return" {
+            self.append_defer_flushes(target, statement)
+            if statement.children.len() != 0 {
+                self.append_completion_value(
+                    target,
+                    self.substitute(statement.children[0]),
+                    statement)
+            }
+            target.add(self.set_state_statement(
+                self.cleanup_state, statement))
+            target.add(self.node("continue", "", statement))
+            return
+        }
+        if statement.kind == "expression" &&
+           statement.children[0].kind == "try" {
+            target.add(self.inline_try_statement(
+                statement.children[0]))
+            return
+        }
+        if statement.kind == "expression" &&
+           statement.children[0].kind == "match" {
+            target.add(self.statement_of(
+                self.inline_build_match(statement.children[0])))
+            return
+        }
+        if statement.kind == "match" {
+            target.add(self.inline_build_match(statement))
+            return
+        }
+        if statement.kind == "if" {
+            let rebuilt: AstNode = self.node("if", "", statement)
+            rebuilt.add(self.substitute(statement.children[0]))
+            let then_block: AstNode =
+                self.node("block", "", statement)
+            self.inline_build_block(
+                statement.children[1], then_block)
+            rebuilt.add(then_block)
+            if statement.children.len() > 2 {
+                let alternate: AstNode = statement.children[2]
+                if alternate.kind == "block" {
+                    let alt_block: AstNode =
+                        self.node("block", "", statement)
+                    self.inline_build_block(alternate, alt_block)
+                    rebuilt.add(alt_block)
+                } else {
+                    let alt_holder: AstNode =
+                        self.node("block", "", statement)
+                    self.inline_build_statement(
+                        alternate, alt_holder)
+                    rebuilt.add(alt_holder.children[0])
                 }
             }
-            index += 1
+            target.add(rebuilt)
+            return
         }
-        return true
+        if statement.kind == "for" {
+            let rebuilt: AstNode =
+                self.node("for", statement.value, statement)
+            var child_index: int = 0
+            for child_index < statement.children.len() - 1 {
+                rebuilt.add(self.substitute(
+                    statement.children[child_index]))
+                child_index += 1
+            }
+            var masked: bool = false
+            if statement.children.len() >= 2 &&
+               statement.children[0].kind == "binding" {
+                self.push_scope()
+                let mask: AsyncSlot = new AsyncSlot(
+                    statement.children[0].value, "",
+                    self.checked_type(statement.children[0]))
+                mask.masked = true
+                self.scopes[self.scopes.len() - 1].bindings[
+                    statement.children[0].value] = mask
+                masked = true
+            }
+            let body_block: AstNode =
+                self.node("block", "", statement)
+            self.inline_build_block(
+                statement.children[statement.children.len() - 1],
+                body_block)
+            if masked { self.pop_scope(false, statement) }
+            rebuilt.add(body_block)
+            target.add(rebuilt)
+            return
+        }
+        if statement.kind == "unsafe" {
+            let rebuilt: AstNode =
+                self.node("unsafe", "", statement)
+            let inner: AstNode = self.node("block", "", statement)
+            self.inline_build_block(statement.children[0], inner)
+            rebuilt.add(inner)
+            target.add(rebuilt)
+            return
+        }
+        if statement.kind == "assign" {
+            self.append_assign(statement, target)
+            return
+        }
+        if (statement.kind == "let" || statement.kind == "var") &&
+           statement.note == "async_hoist" {
+            // the conservative hoist mark cannot matter here: the arm
+            // never suspends, so the local lives inside one poll pass
+            statement.note = ""
+        }
+        target.add(self.wrap_for_pieces(statement))
     }
 
     fn build_inline_arm(arm: AstNode, pattern: AstNode,
@@ -1994,27 +2376,9 @@ class AsyncExpander {
                 self.scopes[self.scopes.len() - 1]
             top.bindings[binding] = mask
         }
-        var terminated: bool = false
         let body: AstNode = arm.children[1]
         if body.kind == "block" {
-            for statement: AstNode in body.children {
-                if statement.kind == "return" {
-                    self.append_defer_flushes(jump_block, statement)
-                    if statement.children.len() != 0 {
-                        self.append_completion_value(
-                            jump_block,
-                            self.substitute(statement.children[0]),
-                            statement)
-                    }
-                    jump_block.add(self.set_state_statement(
-                        self.cleanup_state, statement))
-                    jump_block.add(
-                        self.node("continue", "", statement))
-                    terminated = true
-                } else {
-                    jump_block.add(self.wrap_for_pieces(statement))
-                }
-            }
+            self.inline_build_block(body, jump_block)
         } else {
             let value: AstNode = self.substitute(body)
             match out {
@@ -2053,10 +2417,11 @@ class AsyncExpander {
             }
         }
         self.pop_scope(false, arm)
-        if !terminated {
-            jump_block.add(
-                self.set_state_statement(join_state, arm))
-        }
+        // After a completing body this is dead code past its continue —
+        // the slotted-arm path leaves the same dead transition after a
+        // returning arm, and both compilers tolerate it.
+        jump_block.add(
+            self.set_state_statement(join_state, arm))
         jump_arm.add(jump_block)
         return jump_arm
     }
@@ -2069,7 +2434,8 @@ class AsyncExpander {
         let keep: string = self.fresh_name("subject_")
         self.slot_decls.push(
             self.slot_declaration(keep, scrutinee_type, node))
-        self.emit_slot_push(keep, scrutinee_type, scrutinee, node)
+        self.emit_slot_push_wrapped(
+            keep, scrutinee_type, scrutinee, node)
         let join_state: int = self.new_state(node)
         let dispatch: AstNode = self.node("match", "", node)
         dispatch.add(self.slot_read(keep, node))
@@ -2162,12 +2528,13 @@ class AsyncExpander {
                 match out {
                     some(destination) => {
                         let value: AstNode = self.decompose(body)
-                        self.emit_slot_push(
+                        self.emit_slot_push_wrapped(
                             destination, out_type, value, arm)
                     }
                     none => {
                         let value: AstNode = self.decompose(body)
-                        self.emit(self.statement_of(value))
+                        self.emit(self.wrap_for_pieces(
+                            self.statement_of(value)))
                     }
                 }
             }
@@ -2338,7 +2705,7 @@ class AsyncExpander {
             list_slot = self.fresh_name("iter_")
             self.slot_decls.push(self.slot_declaration(
                 list_slot, iterable_type, statement))
-            self.emit_slot_push(
+            self.emit_slot_push_wrapped(
                 list_slot, self.checked_type(iterable), source,
                 statement)
             list_place = self.slot_read(list_slot, statement)
@@ -2563,6 +2930,28 @@ class AsyncExpander {
 
     // ---- hoist pre-pass ----------------------------------------------
 
+    // Awaits are not the only thing that splits a body into states: an
+    // if, for, or match that carries a completion, a `?`, a task-group
+    // start, or a loop exit is rewritten into states too, and a local
+    // declared before one and read after it would be stranded in an
+    // earlier state's block. Over-marking is safe — a slot keeps the
+    // exact-once drop at the same scope exit — so loop exits count
+    // without knowing whether the enclosing loop itself rewrites.
+    fn statement_splits_states(statement: AstNode) -> bool {
+        if ast_contains_await(statement) { return true }
+        if statement.kind == "if" || statement.kind == "for" ||
+           statement.kind == "match" ||
+           (statement.kind == "expression" &&
+            statement.children.len() == 1 &&
+            statement.children[0].kind == "match") {
+            return self.contains_completion(statement) ||
+                   self.contains_try(statement) ||
+                   self.contains_task_group_start(statement) ||
+                   self.contains_loop_exit(statement)
+        }
+        return false
+    }
+
     fn mark_hoists(block: AstNode, awaits_after_block: bool) {
         var seen_after: bool = awaits_after_block
         var index: int = block.children.len() - 1
@@ -2584,14 +2973,14 @@ class AsyncExpander {
                 }
             }
             if statement.kind == "for" {
-                let loops_await: bool =
-                    ast_contains_await(statement)
+                let loops_split: bool =
+                    self.statement_splits_states(statement)
                 let body: AstNode =
                     statement.children[
                         statement.children.len() - 1]
                 if body.kind == "block" {
                     self.mark_hoists(
-                        body, seen_after || loops_await)
+                        body, seen_after || loops_split)
                 }
             }
             if statement.kind == "match" {
@@ -2626,7 +3015,7 @@ class AsyncExpander {
                 self.mark_hoists(
                     statement.children[0], seen_after)
             }
-            if ast_contains_await(statement) {
+            if self.statement_splits_states(statement) {
                 seen_after = true
             }
             index -= 1

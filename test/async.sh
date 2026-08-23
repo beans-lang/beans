@@ -688,6 +688,52 @@ EOF
 reject_same "$tmp/rej_mr_async_closure.b" \
     "this closure must return int — the body can finish without a return"
 
+# an immediately invoked async closure is still an async invocation: the
+# literal keeps its mark under the postfix chain, so the bare call is
+# refused exactly like any other un-awaited async call
+cat > "$tmp/rej_iife.b" <<'EOF'
+async fn main() {
+    async fn() -> int {
+        return 1
+    }()
+}
+EOF
+reject_same "$tmp/rej_iife.b" \
+    "async callable invocation must be directly awaited"
+
+# `?` inside an interpolation piece of an async body can never lower:
+# piece text re-resolves inside the maker, which is not a Result function
+cat > "$tmp/rej_piece_try.b" <<'EOF'
+import std.io
+
+fn risky() -> Result<int> { return ok(2) }
+
+async fn report() -> Result<int> {
+    io.println("value {risky()?}")
+    return ok(1)
+}
+
+async fn main() {
+    let ignored: Result<int> = await report()
+}
+EOF
+reject_same "$tmp/rej_piece_try.b" \
+    "'?' is not allowed inside string interpolation in an async function"
+
+# the sendable closure literal spells its form directly, like its async
+# twin; captures still follow the Send rules
+cat > "$tmp/acc_send_literal.b" <<'EOF'
+import std.io
+import std.thread
+
+fn main() {
+    let job: send fn() -> int = send fn() -> int { return 7 }
+    let worker: Thread<int> = thread.spawn(move job)
+    io.println("{worker.join()}")
+}
+EOF
+accepts "$tmp/acc_send_literal.b"
+
 cat > "$tmp/rej_mr_sync.b" <<'EOF'
 fn plain() -> int {
 }

@@ -4414,6 +4414,12 @@ class ExpressionChecker {
                     node,
                     "await is not allowed inside string interpolation — bind the awaited value to a local first")
             }
+            if self.current.is_async && !self.current.expanded &&
+               ast_contains_piece_try(expression) {
+                self.fail(
+                    node,
+                    "'?' is not allowed inside string interpolation in an async function — bind the value to a local first")
+            }
             for diagnostic: Diagnostic in parser.errors {
                 self.fail(
                     node,

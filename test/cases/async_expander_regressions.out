@@ -14,4 +14,6 @@ capture 1
 unique true true
 enum 4 0
 method GET
+split 42 0
+guarded 4 false
 shadow call failed: boom

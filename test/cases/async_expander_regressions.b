@@ -143,6 +143,36 @@ async fn consume_feed(event: Feed) -> Result<int> {
     }
 }
 
+async fn keep_across_split(flag: bool) -> int {
+    await aio.yield_now()
+    let kept: int = 41
+    if flag { return 0 }
+    return kept + 1
+}
+
+fn guard(fine: bool) -> Result<bool> {
+    if fine { return ok(true) }
+    return err("guard refused", "guard")
+}
+
+async fn consume_guarded(event: Feed, limit: int) -> Result<int> {
+    match event {
+        body(piece) => {
+            let grown: int = piece.len()
+            if grown > limit {
+                guard(false)?
+                return ok(0 - 1)
+            }
+            guard(true)?
+            return ok(grown)
+        }
+        done => {
+            await aio.yield_now()
+            return ok(0)
+        }
+    }
+}
+
 async fn method_kept() -> string {
     let requested: string = "GET"
     for value: int in [1] {
@@ -199,6 +229,14 @@ async fn main() {
     io.println("enum {fed} {drained}")
     let kept: string = await method_kept()
     io.println("{kept}")
+    let across: int = await keep_across_split(false)
+    let cut: int = await keep_across_split(true)
+    io.println("split {across} {cut}")
+    let fits: int = (await consume_guarded(
+        Feed.body(Bytes.from("body")), 10)).or(0 - 9)
+    let refused: bool = (await consume_guarded(
+        Feed.body(Bytes.from("body")), 2)).is_ok()
+    io.println("guarded {fits} {refused}")
     var shadow_text: string = "unset"
     match await shadow_error() {
         ok(fine) => { shadow_text = "ok {fine}" }
