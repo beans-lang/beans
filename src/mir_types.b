@@ -16,6 +16,12 @@ class MirLocal {
     borrows_from: int
     ownership_sink: bool
     scalar_replaced: bool
+    // An interface-typed alias may share the stack object of one exact
+    // scalar-replaced class local. -1 means this local is not such an alias.
+    scalar_replaced_owner: int
+    // A non-escaping closure whose environment lives in this function's
+    // stack frame. -1 keeps the ordinary heap-owned closure path.
+    stack_closure_id: int
     // The `.live` flag is a runtime i1 the backend allocates beside the
     // slot. verify_local_ownership clears this when every drop and every
     // assignment for the local knows the flag's value statically, and the
@@ -42,6 +48,8 @@ class MirLocal {
         self.borrows_from = -1
         self.ownership_sink = false
         self.scalar_replaced = false
+        self.scalar_replaced_owner = -1
+        self.stack_closure_id = -1
         self.live_flag_used = true
     }
 }
@@ -53,6 +61,7 @@ class MirInstruction {
     text: string
     resolved: string
     dispatch_slot: string
+    devirtualized_receiver: string
     operands: List<int>
     consumes: List<bool>
     releases: List<int>
@@ -71,6 +80,8 @@ class MirInstruction {
     last_use: bool
     scalar_materialize: bool
     borrow_elided: bool
+    stack_closure: bool
+    bounds_elided: bool
     removed: bool
     // Value of the local's `.live` flag on entry to this instruction, as
     // verify_local_ownership's fixpoint sees it: 0 clear on every path,
@@ -92,6 +103,7 @@ class MirInstruction {
         self.text = text
         self.resolved = resolved
         self.dispatch_slot = ""
+        self.devirtualized_receiver = ""
         self.operands = []
         self.consumes = []
         self.releases = []
@@ -110,6 +122,8 @@ class MirInstruction {
         self.last_use = false
         self.scalar_materialize = false
         self.borrow_elided = false
+        self.stack_closure = false
+        self.bounds_elided = false
         self.removed = false
         self.live_state = 2
         self.type_argument_names = []

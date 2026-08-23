@@ -437,6 +437,36 @@ partial class LlvmTextEmitter {
                 "getelementptr (i8, ptr {global}, i64 16)"
             return ""
         }
+        if instruction.stack_closure {
+            let slots: int = count + 1
+            let storage: string =
+                self.spill_slot(
+                    "[{slots} x i64]", "closure.stack")
+            values[instruction.result] = storage
+            var output: string =
+                "  store ptr {symbol}, ptr {storage}\n"
+            for index: int in 0..count {
+                let local_index: int =
+                    instruction.capture_locals[index]
+                if local_index < 0 ||
+                   local_index >= function.locals.len() {
+                    self.fail(
+                        instruction,
+                        "LLVM emitter saw invalid stack capture local")
+                    return output
+                }
+                let local: MirLocal =
+                    function.locals[local_index]
+                let llvm: string =
+                    self.type_text(local.type)
+                let address: LlvmSlotConversion =
+                    self.local_value_address(local)
+                let id: int = self.fresh()
+                output =
+                    "{output}{address.setup}  %clo.value{id} = load {llvm}, ptr {address.value}\n  %clo.slot{id} = getelementptr i8, ptr {storage}, i64 {8 * (index + 1)}\n  store {llvm} %clo.value{id}, ptr %clo.slot{id}\n"
+            }
+            return output
+        }
         // Closure boxes keep one fixed eight-byte slot for the code
         // pointer and for each captured cell. On ILP32 the object
         // walker still counts four-byte pointer slots, so a cell at
@@ -630,14 +660,39 @@ partial class LlvmTextEmitter {
             return ""
         }
         let id: int = self.fresh()
+        var callee: string = "%closure.fn{id}"
         var output: string =
             "  %closure.fn{id} = load ptr, ptr {box}\n{argument_setup}"
+        match self.borrowed_local_of.get(
+            instruction.operands[0]) {
+            some(local_id) => {
+                if local_id >= 0 &&
+                   local_id < function.locals.len() {
+                    let closure_id: int =
+                        function.locals[
+                            local_id].stack_closure_id
+                    if closure_id >= 0 {
+                        let name: string =
+                            "{function.name}.$closure.{closure_id}"
+                        if !self.function_symbols.contains_key(name) {
+                            self.fail(
+                                instruction,
+                                "LLVM emitter cannot find stack closure '{name}'")
+                            return ""
+                        }
+                        callee = self.function_symbols[name]
+                        output = argument_setup
+                    }
+                }
+            }
+            none => {}
+        }
         if return_type == "void" {
-            return "{output}  call void %closure.fn{id}({arguments.join(", ")})\n"
+            return "{output}  call void {callee}({arguments.join(", ")})\n"
         }
         let result: string = "%v{instruction.result}"
         values[instruction.result] = result
-        return "{output}  {result} = call {return_type} %closure.fn{id}({arguments.join(", ")})\n"
+        return "{output}  {result} = call {return_type} {callee}({arguments.join(", ")})\n"
     }
 
     // ---- concurrency handles ----
@@ -709,6 +764,8 @@ partial class LlvmTextEmitter {
             output =
                 "{output}cell.ready{ready_block}:\n  %cell.slot{id} = load ptr, ptr %l{local.id}\n"
             if self.type_has_owned_refs(local.type) {
+                output =
+                    "{output}{self.emit_cc_write("%cell.slot{id}", local.type, stored, "cell")}"
                 let old: string = "%cell.previous{id}"
                 let release: string =
                     self.emit_arc_value(

@@ -1,0 +1,7 @@
+# name	variants	full_size	seed
+generic	generic,specialized	200000000	17
+iteration	iterator,indexed	100000000	17
+closure	closure,direct	100000000	17
+dispatch	interface,manual,direct	100000000	17
+sum_types	option,manual_option,result,manual_result	10000000	17
+bounds	safe,unchecked	100000000	17

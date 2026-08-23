@@ -508,7 +508,10 @@ partial class LlvmTextEmitter {
                 let release: string =
                     self.emit_arc_value(
                         element, old, false)
-                return "{output}  {old} = load {llvm}, ptr %list.store.slot{id}\n  store {llvm} {stored}, ptr %list.store.slot{id}\n{release}"
+                let publish: string =
+                    self.emit_cc_write(
+                        list, element, stored, "list")
+                return "{output}{publish}  {old} = load {llvm}, ptr %list.store.slot{id}\n  store {llvm} {stored}, ptr %list.store.slot{id}\n{release}"
             }
             return "{output}  store {llvm} {stored}, ptr %list.store.slot{id}\n"
         }
@@ -524,8 +527,11 @@ partial class LlvmTextEmitter {
             let converted: LlvmSlotConversion =
                 self.to_slot(
                     element, stored, "list.store{id}")
+            let publish: string =
+                self.emit_cc_write(
+                    list, element, stored, "list")
             output =
-                "{output}  %list.store.old{id} = load i64, ptr %list.store.slot{id}\n  %list.store.old.ptr{id} = inttoptr i64 %list.store.old{id} to ptr\n{converted.setup}  store i64 {converted.value}, ptr %list.store.slot{id}\n  call void @beans_release(ptr %list.store.old.ptr{id})\n"
+                "{output}{publish}  %list.store.old{id} = load i64, ptr %list.store.slot{id}\n  %list.store.old.ptr{id} = inttoptr i64 %list.store.old{id} to ptr\n{converted.setup}  store i64 {converted.value}, ptr %list.store.slot{id}\n  call void @beans_release(ptr %list.store.old.ptr{id})\n"
             return output
         }
         let converted: LlvmSlotConversion =
@@ -2678,10 +2684,16 @@ partial class LlvmTextEmitter {
         let bad: int = self.fresh()
         let result: string =
             "%v{instruction.result}"
+        var alignment: int =
+            self.type_alignment(element)
+        if alignment < 1 { alignment = 1 }
+        values[instruction.result] = result
+        if instruction.bounds_elided {
+            return "  %slice.index.ptr{id} = extractvalue \{ptr, i64\} {slice}, 0\n  %slice.index.item{id} = getelementptr {element_llvm}, ptr %slice.index.ptr{id}, i64 {index}\n  {result} = load {element_llvm}, ptr %slice.index.item{id}, align {alignment}\n"
+        }
         self.require_declare(
             "beans_panic_slice_index",
             "void @beans_panic_slice_index(i64, i64, i64, i64)")
-        values[instruction.result] = result
         var output: string =
             "  %slice.index.ptr{id} = extractvalue \{ptr, i64\} {slice}, 0\n  %slice.index.len{id} = extractvalue \{ptr, i64\} {slice}, 1\n  %slice.index.ok{id} = icmp ult i64 {index}, %slice.index.len{id}\n  br i1 %slice.index.ok{id}, label %slice.index.have{okay}, label %slice.index.bad{bad}\n"
         output =
@@ -2986,6 +2998,10 @@ partial class LlvmTextEmitter {
         self.iterator_kind[instruction.result] = "list"
         self.iterator_collection[instruction.result] =
             collection
+        if instruction.borrow_elided {
+            self.iterator_collection_borrowed[
+                instruction.result] = true
+        }
         return "  store i64 0, ptr {current}\n"
     }
 

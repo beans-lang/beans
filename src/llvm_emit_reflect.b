@@ -788,8 +788,40 @@ partial class LlvmTextEmitter {
                 body =
                     "{body}  call void {retain}(ptr %incoming)\n"
             }
+            // Reflective writes install a graph into an arbitrary receiver,
+            // exactly like a direct field assignment, so they owe the same
+            // publication barrier. `%incoming` already points at the value,
+            // so this needs no spill slot of its own.
+            if self.type_has_owned_refs(field.type) {
+                if self.type_is_reference(field.type) {
+                    self.require_declare(
+                        "beans_cc_write",
+                        "void @beans_cc_write(ptr, ptr)")
+                    body =
+                        "{body}  call void @beans_cc_write(ptr {base}, ptr %reflect.field.new{id})\n"
+                } else {
+                    let mask: int =
+                        self.pointer_mask_at(field.type, 0)
+                    if mask > 0 {
+                        self.require_declare(
+                            "beans_cc_write_typed",
+                            "void @beans_cc_write_typed(ptr, ptr, i64)")
+                        body =
+                            "{body}  call void @beans_cc_write_typed(ptr {base}, ptr %incoming, i64 {mask})\n"
+                    }
+                }
+            }
             body =
                 "{body}  store {llvm} %reflect.field.new{id}, ptr {address}{access}\n"
+            if self.type_has_owned_refs(field.type) &&
+               !self.type_is_reference(field.type) &&
+               self.pointer_mask_at(field.type, 0) < 0 {
+                self.require_declare(
+                    "beans_cc_publish",
+                    "void @beans_cc_publish(ptr)")
+                body =
+                    "{body}  call void @beans_cc_publish(ptr {base})\n"
+            }
             if drop != "null" {
                 body =
                     "{body}  %reflect.field.old.slot{id} = alloca {llvm}\n  store {llvm} %reflect.field.old{id}, ptr %reflect.field.old.slot{id}\n  call void {drop}(ptr %reflect.field.old.slot{id})\n"

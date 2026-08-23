@@ -13,10 +13,21 @@ partial class LlvmTextEmitter {
            type.args.len() > 2 {
             return false
         }
-        return self.wide_inline_value(
-                   type.args[0]) ||
-               self.wide_inline_value(
-                   self.result_error_type(type))
+        let okay: HirType = type.args[0]
+        let failed: HirType =
+            self.result_error_type(type)
+        if self.wide_inline_value(okay) ||
+           self.wide_inline_value(failed) {
+            return true
+        }
+        // Keep the default Error ABI boxed. An explicit custom error whose
+        // two arms each fit one runtime slot can use the same inline shape as
+        // wide Results: {is_error, okay, failed}. Inactive arms stay zero, so
+        // the existing aggregate ARC walk remains safe.
+        return type.args.len() == 2 &&
+               canonical_hir_name(failed.name) != "Error" &&
+               self.slot_compatible(okay) &&
+               self.slot_compatible(failed)
     }
 
     // A wide payload without references is stored whole after the

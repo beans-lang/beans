@@ -94,6 +94,7 @@ run_asan examples/wide_sync.b wide_sync
 run_asan examples/wide_concurrency.b wide_concurrency
 run_asan test/cases/thread_deinit.b thread_deinit
 run_asan test/cases/thread_cycles.b thread_cycles
+run_asan test/cases/shared_publication.b shared_publication
 run_asan test/cases/async_cross_thread_close.b async_cross_thread_close
 run_asan examples/stdlib_beans.b stdlib_beans
 run_asan examples/ffi.b ffi
@@ -226,6 +227,7 @@ for file in examples/threads.b examples/shared_weak.b examples/wide_sync.b \
             test/cases/thread_cycles.b test/cases/async_cross_thread_close.b \
             examples/unsafe_raw.b examples/atomics.b \
             test/cases/runtime_hooks_threads.b \
+            test/cases/shared_publication.b \
             test/cases/json_threads.b; do
     echo "TSan checking $file"
     name=$(basename "$file" .b)
@@ -274,6 +276,44 @@ for file in examples/threads.b examples/shared_weak.b examples/wide_sync.b \
         echo "TSan unavailable for $file; skipped" >&2
     fi
 done
+
+# The owner-local cycle collector needs its own TSan run: it reads the ARC
+# counters through an extern, so it only links with the stats build. This is
+# the one program where a Beans thread trial-deletes its own graph while other
+# workers are live, which is exactly the code plain rc arithmetic runs in.
+echo "TSan checking test/cases/thread_live_cycles.b"
+rm -f build/thread_live_cycles_ffi.c
+./build/beansc build --emit ir test/cases/thread_live_cycles.b \
+    >"$out/live-cycles-tsan.ir"
+if clang -O1 -g -pthread -fsanitize=thread -DBEANS_ARC_STATS \
+    -Wno-override-module build/thread_live_cycles.ll \
+    build/thread_live_cycles_ffi.c build/beans_rt.c \
+    -lm -o "$out/thread_live_cycles_tsan"; then
+    set +e
+    BEANS_NO_POOL=1 "$out/thread_live_cycles_tsan" \
+        >"$out/thread_live_cycles.stdout" \
+        2>"$out/thread_live_cycles.stderr"
+    status=$?
+    set -e
+    if grep -q 'WARNING: ThreadSanitizer' \
+        "$out/thread_live_cycles.stderr"; then
+        echo "TSan reported a race in test/cases/thread_live_cycles.b" >&2
+        sed -n '1,200p' "$out/thread_live_cycles.stderr" >&2
+        exit 1
+    fi
+    if grep -q 'ThreadSanitizer: CHECK failed' \
+        "$out/thread_live_cycles.stderr"; then
+        echo "TSan cannot start here (emulated syscall); skipped" >&2
+    elif [[ "$status" -ne 0 ]]; then
+        echo "TSan binary for thread_live_cycles exited $status" >&2
+        sed -n '1,60p' "$out/thread_live_cycles.stderr" >&2
+        exit 1
+    else
+        echo "TSan ok test/cases/thread_live_cycles.b"
+    fi
+else
+    echo "TSan unavailable for thread_live_cycles.b; skipped" >&2
+fi
 
 # TSan over the compiler itself ran here against the C++ stage-0 binary and
 # went with it. The threaded programs above are still built by this compiler

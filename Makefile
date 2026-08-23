@@ -63,7 +63,7 @@ $(BIN): $(SELF_HOST_SRC) $(RUNTIME_COPY)
 	$(BEANSC_BOOT) build --release src/main.b -o $(BIN).new
 	rm -f $(BIN) && mv $(BIN).new $(BIN)
 
-.PHONY: run clean install test test-ci test-core test-quick test-frontend test-semantics test-runtime test-ffi test-platform platform-status test-platform-manifest test-compiler-arch-objects test-musl-hosted test-armv6hf-hosted test-release-package test-install-release test-release-completeness test-c-abi-tier1 test-barq-core test-sanitize fuzz-oop fuzz-oop-smoke fuzz-oop-long fuzz-reflection fuzz-reflection-smoke fuzz-net fuzz-net-soak fuzz-differential fuzz-differential-smoke test-fixpoint test-clean-self-host test-linux test-linux-arch test-linux-hosted test-windows test-windows-native test-windows-native-i686 test-windows-native-arm64 test-windows-arch test-windows-hosted test-encoding-targets test-encoding-windows access-score self-host-next test-self-host test-self-host-full bench-compiler bench-quick bench-full bench-verify bench-profile
+.PHONY: run clean install test test-ci test-core test-quick test-frontend test-semantics test-runtime test-ffi test-platform platform-status test-platform-manifest test-compiler-arch-objects test-musl-hosted test-armv6hf-hosted test-release-package test-install-release test-release-completeness test-c-abi-tier1 test-barq-core test-sanitize fuzz-oop fuzz-oop-smoke fuzz-oop-long fuzz-reflection fuzz-reflection-smoke fuzz-net fuzz-net-soak fuzz-differential fuzz-differential-smoke test-fixpoint test-clean-self-host test-linux test-linux-arch test-linux-hosted test-windows test-windows-native test-windows-native-i686 test-windows-native-arm64 test-windows-arch test-windows-hosted test-encoding-targets test-encoding-windows access-score self-host-next test-self-host test-self-host-full bench-compiler bench-quick bench-full bench-verify bench-profile bench-abstractions bench-abstractions-quick
 run: $(BIN)
 	./$(BIN) parse examples/hello.b examples/tour.b
 
@@ -583,6 +583,12 @@ bench-verify: $(BIN)
 bench-profile: $(BIN)
 	@test -n "$(NAME)" || { echo "usage: make bench-profile NAME=trees"; exit 2; }
 	./bench/profile.sh "$(NAME)"
+
+bench-abstractions: $(BIN)
+	./bench/abstractions/run.sh full
+
+bench-abstractions-quick: $(BIN)
+	./bench/abstractions/run.sh quick
 
 clean:
 	rm -rf build
