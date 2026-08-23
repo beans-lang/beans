@@ -1807,7 +1807,8 @@ class ModuleLoader {
                                                 normalized_entry.len())
         }
         let first: string = relative.split("/")[0]
-        return first == "examples" || first == "tests"
+        return first == "examples" || first == "tests" ||
+               first == "bench"
     }
 
     fn load_library_entry(entry: string) {

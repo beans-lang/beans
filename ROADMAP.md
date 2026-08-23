@@ -205,9 +205,9 @@ not part of the hosted 1.0 production promise.
 
 ### P4 — async v2 after the 1.0 gate
 
-Espresso's `respond_later` plus `WorkerPool` covers blocking handlers today;
-async v2 is the language ending that makes that deferral an implementation
-detail behind async handlers. Nothing here blocks the 1.0 gate.
+Espresso 0.3 consumed this work: its handlers are async by default, its
+server is a task per connection, and the old `respond_later` deferral is
+gone. Nothing here blocks the 1.0 gate.
 
 - [x] Add first-class `async fn` and `send async fn` callable types, closure
   literals, storage and indirect calls, while keeping the task ABI hidden.
@@ -216,7 +216,8 @@ detail behind async handlers. Nothing here blocks the 1.0 gate.
 - [x] Add scope-bound `TaskGroup<T>` with dynamic starts, completion-order
   takes, spawn-order drains, newest-first cancellation and reuse.
 - [x] Add the runnable scheduler state, `yield_now`, monotonic timers, sticky
-  cross-thread `Event`, and non-blocking channel waits.
+  cross-thread `Event`, non-blocking channel waits, and the synchronous
+  `try_send`/`try_receive` verdicts an executor-fed worker drains with.
 - [x] Add `thread.spawn_async` and directly awaited `Thread.join_async` without
   adding detach or sync-to-async escape hatches.
 - [x] Unlimited parked readiness with an indexed owner/descriptor/stable-token
