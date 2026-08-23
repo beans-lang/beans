@@ -63,6 +63,9 @@ class ExpressionChecker {
     // were written but nothing took them.
     call_generics_syntax: Option<AstNode>
     call_generics_taken: bool
+    // True only while checking the exact initializer of
+    // `let group = new TaskGroup<T>()`.
+    allow_task_group_new: bool
 
     fn init(signature: SignatureChecker) {
         self.signature = signature
@@ -98,6 +101,7 @@ class ExpressionChecker {
         self.move_only_borrow_depth = 0
         self.call_generics_syntax = none
         self.call_generics_taken = true
+        self.allow_task_group_new = false
         for function: HirFunction in self.program.functions {
             if function.owner != "" {
                 self.methods["{function.owner}.{function.name}"] =
@@ -7057,6 +7061,15 @@ class ExpressionChecker {
     fn validate_async_call(node: AstNode,
                            function: HirFunction) {
         if !function.is_async { return }
+        if self.signature.runtime_profile == "freestanding" &&
+           (function.qualified == package_symbol(
+                "std.async", "sleep_millis") ||
+            function.qualified == package_symbol(
+                "std.async", "sleep_until")) {
+            self.fail(
+                node,
+                "std.async.{function.name} needs clocks, which the freestanding runtime does not have — it needs at least the minimal runtime")
+        }
         // After expansion the "async" function is really a synchronous
         // task maker; the re-check of expanded bodies calls it bare.
         if function.expanded { return }
@@ -7173,6 +7186,14 @@ class ExpressionChecker {
             type.args.len() == 1
     }
 
+    fn contains_task_group(type: HirType) -> bool {
+        if self.is_task_group(type) { return true }
+        for argument: HirType in type.args {
+            if self.contains_task_group(argument) { return true }
+        }
+        return false
+    }
+
     fn check_task_group_start(
         node: AstNode, receiver_syntax: AstNode,
         receiver: HirNode, expected: HirType) -> HirNode {
@@ -7181,6 +7202,11 @@ class ExpressionChecker {
             self.fail(
                 node,
                 "TaskGroup.start is only valid inside an async callable")
+        }
+        if node.note != "expression_statement" {
+            self.fail(
+                node,
+                "TaskGroup.start must be a direct expression statement")
         }
         if receiver_syntax.kind != "name" {
             self.fail(
@@ -8184,6 +8210,13 @@ class ExpressionChecker {
                         callee.value == "join_async"
                     let runtime_async: bool =
                         channel_async || thread_async
+                    if channel_async &&
+                       self.signature.runtime_profile ==
+                           "freestanding" {
+                        self.fail(
+                            node,
+                            "Channel.{callee.value} needs threads, which the freestanding runtime does not have — it needs at least the minimal runtime")
+                    }
                     if thread_async {
                         self.validate_thread_async_receiver(
                             node, callee.children[0])
@@ -8808,6 +8841,13 @@ class ExpressionChecker {
         }
         if type.name == "Arena" ||
            type.name == "Channel" {
+            if type.name == "Channel" &&
+               self.signature.runtime_profile ==
+                   "freestanding" {
+                self.fail(
+                    node,
+                    "Channel needs threads, which the freestanding runtime does not have — it needs at least the minimal runtime")
+            }
             if type.args.len() != 1 {
                 self.fail(
                     node,
@@ -8894,6 +8934,14 @@ class ExpressionChecker {
                     self.fail(
                         node,
                         "cannot build singleton class '{declaration.name}' — use {declaration.name}.instance")
+                }
+                if self.is_task_group(type) &&
+                   !self.allow_task_group_new &&
+                   !(self.current.expanded ||
+                     self.async_abi_context) {
+                    self.fail(
+                        node,
+                        "TaskGroup must be constructed and bound directly to a let local")
                 }
                 // a segment-parsed type may still spell an import
                 // alias; the constructed value's type uses the
@@ -9605,7 +9653,8 @@ class ExpressionChecker {
         self.current.result = checked_result
         self.current.body_result = checked_result
         self.current.is_async =
-            saved_async || node.note == "async"
+            node.note == "async" ||
+            node.note == "async_expanded"
         self.await_in_closure = node.note == "async"
         self.async_abi_context =
             saved_async_abi || node.note == "async_expanded"
@@ -10529,6 +10578,21 @@ class ExpressionChecker {
         }
         match initializer {
             some(expression) => {
+                let saved_group_new: bool =
+                    self.allow_task_group_new
+                var direct_group_new: bool =
+                    node.kind == "let" &&
+                    expression.kind == "new" &&
+                    self.is_task_group(declared)
+                if node.kind == "let" &&
+                   expression.kind == "new" &&
+                   expression.children.len() != 0 &&
+                   !direct_group_new {
+                    direct_group_new = self.is_task_group(
+                        hir_type_from_ast(
+                            expression.children[0]))
+                }
+                self.allow_task_group_new = direct_group_new
                 if starts_child {
                     if expression.kind != "call" {
                         self.fail(
@@ -10541,6 +10605,7 @@ class ExpressionChecker {
                 }
                 let value: HirNode =
                     self.check_expression(expression, declared)
+                self.allow_task_group_new = saved_group_new
                 if starts_child && expression.await_allowed {
                     expression.await_allowed = false
                     if value.type.name != "poison" {
@@ -10571,7 +10636,9 @@ class ExpressionChecker {
         result.type = actual
         result.binding_id = self.declare(
             node, actual, node.kind == "var", false, false)
-        if self.is_task_group(actual) {
+        if self.contains_task_group(actual) &&
+           !(self.current.expanded ||
+             self.async_abi_context) {
             var direct_new: bool = false
             match initializer {
                 some(expression) => {
@@ -10584,16 +10651,19 @@ class ExpressionChecker {
                     node,
                     "TaskGroup can only be constructed in an async callable")
             }
-            if node.kind != "let" || !direct_new {
+            if !self.is_task_group(actual) ||
+               node.kind != "let" || !direct_new {
                 self.fail(
                     node,
                     "TaskGroup must be constructed and bound directly to a let local")
             }
-            match self.find_local(node.value) {
-                some(binding) => {
-                    binding.move_state = "task_group"
+            if self.is_task_group(actual) {
+                match self.find_local(node.value) {
+                    some(binding) => {
+                        binding.move_state = "task_group"
+                    }
+                    none => {}
                 }
-                none => {}
             }
         }
         if starts_child {
@@ -11119,8 +11189,12 @@ class ExpressionChecker {
             let result: HirNode =
                 self.make_node(
                     node, "expression", "", new HirType("unit"))
+            let expression: AstNode = node.children[0]
+            if expression.kind == "call" {
+                expression.note = "expression_statement"
+            }
             result.children.push(self.check_expression(
-                node.children[0],
+                expression,
                 if node.children[0].kind == "match" {
                     new HirType("discard")
                 } else {
@@ -11474,7 +11548,7 @@ class ExpressionChecker {
             self.check_hir_annotations(function.annotations)
         self.validate_target_type(
             function.syntax, function.result)
-        if self.is_task_group(function.result) {
+        if self.contains_task_group(function.result) {
             self.fail(
                 function.syntax,
                 "TaskGroup is scope-bound and cannot be returned")
@@ -11507,7 +11581,7 @@ class ExpressionChecker {
                     parameter.line, parameter.col)
             self.validate_target_type(
                 parameter_node, parameter.type)
-            if self.is_task_group(parameter.type) {
+            if self.contains_task_group(parameter.type) {
                 self.fail(
                     parameter_node,
                     "TaskGroup is scope-bound and cannot be passed as a parameter")
@@ -11563,7 +11637,7 @@ class ExpressionChecker {
                         field.line, field.col)
                 self.validate_target_type(
                     field_node, field.type)
-                if self.is_task_group(field.type) {
+                if self.contains_task_group(field.type) {
                     self.fail(
                         field_node,
                         "TaskGroup is scope-bound and cannot be stored in a field")
@@ -11607,7 +11681,7 @@ class ExpressionChecker {
                         field.line, field.col)
                 self.validate_target_type(
                     field_node, field.type)
-                if self.is_task_group(field.type) {
+                if self.contains_task_group(field.type) {
                     self.fail(
                         field_node,
                         "TaskGroup is scope-bound and cannot be stored in a field")

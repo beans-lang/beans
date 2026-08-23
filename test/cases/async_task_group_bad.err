@@ -1,0 +1,14 @@
+test/cases/async_task_group_bad.b:4:5: error: TaskGroup is scope-bound and cannot be stored in a field
+test/cases/async_task_group_bad.b:9:17: error: TaskGroup is scope-bound and cannot be passed as a parameter
+test/cases/async_task_group_bad.b:11:1: error: TaskGroup is scope-bound and cannot be returned
+test/cases/async_task_group_bad.b:21:36: error: TaskGroup.start must be a direct expression statement
+test/cases/async_task_group_bad.b:22:21: error: TaskGroup.start must be a direct expression statement
+test/cases/async_task_group_bad.b:26:5: error: TaskGroup must be constructed and bound directly to a let local
+test/cases/async_task_group_bad.b:28:18: error: TaskGroup must be constructed and bound directly to a let local
+test/cases/async_task_group_bad.b:27:5: error: TaskGroup must be constructed and bound directly to a let local
+test/cases/async_task_group_bad.b:33:15: error: 'async let' is only valid inside an async function
+test/cases/async_task_group_bad.b:33:36: error: 'work' is async and can only be called from an async function
+test/cases/async_task_group_bad.b:34:9: error: TaskGroup can only be constructed in an async callable
+test/cases/async_task_group_bad.b:35:20: error: TaskGroup.start is only valid inside an async callable
+test/cases/async_task_group_bad.b:35:25: error: 'work' is async and can only be called from an async function
+test/cases/async_task_group_bad.b: 13 error(s)

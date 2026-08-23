@@ -438,7 +438,7 @@ async fn outer() -> int {
 fn main() {}
 EOF
 reject_same "$tmp/rej_closure.b" \
-    "await cannot be used inside a closure — only directly in the async function body"
+    "await is only valid inside an async function"
 
 cat > "$tmp/rej_defer.b" <<'EOF'
 fn discard(v: int) {}
@@ -934,6 +934,21 @@ run_matrix test/cases/async_task_group_move.b \
 echo "checking TaskGroup drains 10k queued completions in linear time"
 DEADLINE=30 run_matrix test/cases/async_task_group_many.b \
     test/cases/async_task_group_many.out
+
+echo "checking TaskGroup reclaims each row while an older child stays pending"
+DEADLINE=30 run_matrix test/cases/async_task_group_reclaim.b \
+    test/cases/async_task_group_reclaim.out
+
+echo "checking TaskGroup containment, construction, and start positions"
+set +e
+diagnostics "$BEANSC" test/cases/async_task_group_bad.b >"$tmp/group_bad"
+group_bad_status=$?
+set -e
+if [ "$group_bad_status" -eq 0 ]; then
+    echo "async: async_task_group_bad.b accepted" >&2
+    exit 1
+fi
+diff -u test/cases/async_task_group_bad.err "$tmp/group_bad"
 
 cat > "$tmp/rej_group_sync_start.b" <<'EOF'
 import std.async as aio
@@ -2510,6 +2525,37 @@ echo "checking pure async still checks and emits for the other profiles"
 # 32-bit target without complaint.
 "$BEANSC" llvm --target i686-unknown-linux-gnu "$tmp/prof_pure.b" >/dev/null
 "$BEANSC" llvm --target wasm32-wasip1 --runtime minimal "$tmp/prof_pure.b" >/dev/null
+
+echo "checking freestanding refuses timer and async Channel waits at check time"
+cat > "$tmp/prof_timer.b" <<'BEANS'
+import std.async as aio
+
+async fn main() {
+    await aio.sleep_millis(1)
+    await aio.sleep_until(1)
+}
+BEANS
+set +e
+"$BEANSC" check --runtime freestanding "$tmp/prof_timer.b" \
+    >"$tmp/prof_timer.err" 2>&1; timer_status=$?
+set -e
+[ "$timer_status" -ne 0 ]
+[ "$(grep -c 'needs clocks' "$tmp/prof_timer.err")" -eq 2 ]
+
+cat > "$tmp/prof_channel.b" <<'BEANS'
+async fn wait_on(channel: Channel<int>) {
+    await channel.send_async(1)
+    let value: Option<int> = await channel.receive_async()
+}
+
+fn main() {}
+BEANS
+set +e
+"$BEANSC" check --runtime freestanding "$tmp/prof_channel.b" \
+    >"$tmp/prof_channel.err" 2>&1; channel_status=$?
+set -e
+[ "$channel_status" -ne 0 ]
+[ "$(grep -c 'needs threads' "$tmp/prof_channel.err")" -eq 2 ]
 
 echo "checking the poller still needs the full profile beside async"
 cat > "$tmp/prof_poll.b" <<'BEANS'
