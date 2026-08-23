@@ -26,8 +26,8 @@ extern "C" fn beans_async_reactor_unregister(wake: int) -> int
 // park_state / park_finish / park_stale):
 // poller registration is keyed by descriptor, so a second await parked on
 // the same descriptor would silently cancel the first one's interest — the
-// table refuses that up front — and it lets the driver notice a descriptor
-// that was closed while an await still waits on it. Kernel events carry the
+// table refuses that up front — and runtime-managed closes mark every matching
+// wait dead before the descriptor can be reused. Kernel events carry the
 // registry's stable slot+generation token. The driver marks that exact row
 // READY; tasks never probe an ephemeral poller or trust a reused fd number.
 

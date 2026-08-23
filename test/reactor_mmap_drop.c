@@ -9,6 +9,7 @@ typedef struct {
     pthread_cond_t changed;
     int fd;
     int ready;
+    int waiting;
     int go;
     int result[2];
 } SharedClose;
@@ -21,17 +22,73 @@ typedef struct {
 static void* same_fd_owner(void* raw) {
     SharedCloseArg* arg = raw;
     SharedClose* shared = arg->shared;
+    BRes opened = beans_poll_open();
+    if (opened.err) return NULL;
+    BList* triple = (BList*)opened.val;
+    long long poller = (long long)rt_load_le((char*)triple->data, 8);
+    long long wake_read =
+        (long long)rt_load_le((char*)triple->data + 8, 8);
+    long long wake =
+        (long long)rt_load_le((char*)triple->data + 16, 8);
     long long token = beans_reactor_note_park(shared->fd);
+    int armed = token > 0 &&
+        beans_reactor_arm_park(token, poller, wake, 0) == 1;
     pthread_mutex_lock(&shared->lock);
     shared->ready++;
     pthread_cond_broadcast(&shared->changed);
     while (!shared->go)
         pthread_cond_wait(&shared->changed, &shared->lock);
+    shared->waiting++;
+    pthread_cond_broadcast(&shared->changed);
     pthread_mutex_unlock(&shared->lock);
+    BRes waited = beans_poll_wait(poller, wake_read, 1, 1000);
+    int woke = !waited.err;
+    if (woke) beans_release((BList*)waited.val);
     shared->result[arg->index] =
-        token > 0 && beans_reactor_park_state(token) == 2 &&
+        armed && woke && beans_reactor_park_state(token) == 2 &&
         beans_reactor_finish_park(token) == 1 &&
         beans_reactor_shutdown_parks() == 1;
+    BRes closed = beans_poll_close(poller, wake_read, wake);
+    if (closed.err) shared->result[arg->index] = 0;
+    beans_release(triple);
+    return NULL;
+}
+
+typedef struct {
+    pthread_mutex_t lock;
+    pthread_cond_t changed;
+    int fd;
+    long long token;
+    long long poller;
+    long long wake;
+    int inside;
+    int close_started;
+} ArmBarrier;
+
+static ArmBarrier* active_arm_barrier;
+
+static void arm_barrier_hook(long long fd) {
+    ArmBarrier* barrier = active_arm_barrier;
+    if (!barrier || barrier->fd != fd) return;
+    pthread_mutex_lock(&barrier->lock);
+    barrier->inside = 1;
+    pthread_cond_broadcast(&barrier->changed);
+    while (!barrier->close_started)
+        pthread_cond_wait(&barrier->changed, &barrier->lock);
+    pthread_mutex_unlock(&barrier->lock);
+}
+
+static void* arm_barrier_close(void* raw) {
+    ArmBarrier* barrier = raw;
+    pthread_mutex_lock(&barrier->lock);
+    while (!barrier->inside)
+        pthread_cond_wait(&barrier->changed, &barrier->lock);
+    barrier->close_started = 1;
+    pthread_cond_broadcast(&barrier->changed);
+    pthread_mutex_unlock(&barrier->lock);
+    beans_reactor_close_begin(barrier->fd);
+    close(barrier->fd);
+    beans_reactor_close_end(barrier->fd);
     return NULL;
 }
 
@@ -69,6 +126,46 @@ int main(void) {
     beans_release(mapping);
     if (beans_reactor_park_state(token) != 2) return 5;
     if (beans_reactor_finish_park(token) != 1) return 6;
+
+    // Growth failures are transactional even with live rows. Fail the slot
+    // expansion, then each half of the hash rehash, and prove every earlier
+    // token remains live before a retry succeeds and the set drains.
+    enum { OOM_ROWS = 24 };
+    int oom_fds[OOM_ROWS][2];
+    long long oom_tokens[OOM_ROWS];
+    for (int i = 0; i < OOM_ROWS; i++) {
+        if (pipe(oom_fds[i]) != 0) return 60;
+        oom_tokens[i] = 0;
+    }
+    for (int i = 0; i < 16; i++) {
+        oom_tokens[i] = beans_reactor_note_park(oom_fds[i][0]);
+        if (oom_tokens[i] <= 0) return 61;
+    }
+    beans_reactor_test_fail_allocation(1);
+    if (beans_reactor_note_park(oom_fds[16][0]) != -1) return 62;
+    for (int i = 0; i < 16; i++)
+        if (beans_reactor_park_state(oom_tokens[i]) != 0) return 63;
+    beans_reactor_test_fail_allocation(0);
+    oom_tokens[16] = beans_reactor_note_park(oom_fds[16][0]);
+    if (oom_tokens[16] <= 0) return 64;
+    for (int i = 17; i < 23; i++) {
+        oom_tokens[i] = beans_reactor_note_park(oom_fds[i][0]);
+        if (oom_tokens[i] <= 0) return 65;
+    }
+    beans_reactor_test_fail_allocation(1);
+    if (beans_reactor_note_park(oom_fds[23][0]) != -1) return 66;
+    beans_reactor_test_fail_allocation(2);
+    if (beans_reactor_note_park(oom_fds[23][0]) != -1) return 67;
+    for (int i = 0; i < 23; i++)
+        if (beans_reactor_park_state(oom_tokens[i]) != 0) return 68;
+    beans_reactor_test_fail_allocation(0);
+    oom_tokens[23] = beans_reactor_note_park(oom_fds[23][0]);
+    if (oom_tokens[23] <= 0) return 69;
+    for (int i = 0; i < OOM_ROWS; i++) {
+        if (beans_reactor_finish_park(oom_tokens[i]) != 1) return 70;
+        close(oom_fds[i][0]);
+        close(oom_fds[i][1]);
+    }
 
     enum { SCALE = 10000 };
     struct rlimit limit;
@@ -154,29 +251,30 @@ int main(void) {
         close(old_fd);
         int next[2];
         if (pipe(next) != 0 || next[0] != old_fd) return 43;
+        if (beans_reactor_note_park(next[0]) != -2) return 44;
         if (beans_reactor_arm_park(dying, poller, wake, 0) != 0 ||
             beans_reactor_park_state(dying) != 2 ||
             beans_reactor_finish_park(dying) != 1)
-            return 44;
+            return 45;
         beans_reactor_close_end(old_fd);
         close(current[1]);
         long long live = beans_reactor_note_park(next[0]);
         if (live <= 0 ||
             beans_reactor_arm_park(live, poller, wake, 0) != 1 ||
             write(next[1], "x", 1) != 1)
-            return 45;
+            return 46;
         BRes one = beans_poll_wait(poller, wake_read, 1, 1000);
-        if (one.err) return 46;
+        if (one.err) return 47;
         BList* event = (BList*)one.val;
-        if (rt_load_le((char*)event->data, 8) != 1) return 47;
+        if (rt_load_le((char*)event->data, 8) != 1) return 48;
         long long event_token = (long long)rt_load_le(
             (char*)event->data + 8, 8);
         if (event_token != live || beans_reactor_mark_ready(event_token) != 1 ||
             beans_reactor_finish_park(live) != 1)
-            return 48;
+            return 49;
         beans_release(event);
         char byte;
-        if (read(next[0], &byte, 1) != 1) return 49;
+        if (read(next[0], &byte, 1) != 1) return 50;
         current[0] = next[0];
         current[1] = next[1];
     }
@@ -184,28 +282,100 @@ int main(void) {
     close(current[0]);
     beans_reactor_close_end(current[0]);
     close(current[1]);
+
+    // Hold arm inside the registry lock while another thread begins close.
+    // Arm must finish installing the stable token first; close then acquires
+    // that same lock, tombstones the exact row, and wakes it DEAD.
+    int barrier_fds[2];
+    if (pipe(barrier_fds) != 0) return 52;
+    ArmBarrier barrier;
+    memset(&barrier, 0, sizeof barrier);
+    pthread_mutex_init(&barrier.lock, NULL);
+    pthread_cond_init(&barrier.changed, NULL);
+    barrier.fd = barrier_fds[0];
+    barrier.poller = poller;
+    barrier.wake = wake;
+    barrier.token = beans_reactor_note_park(barrier.fd);
+    if (barrier.token <= 0) return 53;
+    active_arm_barrier = &barrier;
+    beans_reactor_test_set_arm_hook(arm_barrier_hook);
+    pthread_t closer;
+    if (pthread_create(&closer, NULL, arm_barrier_close, &barrier) != 0)
+        return 54;
+    int armed = beans_reactor_arm_park(
+        barrier.token, poller, wake, 0);
+    beans_reactor_test_set_arm_hook(NULL);
+    active_arm_barrier = NULL;
+    pthread_join(closer, NULL);
+    if (armed != 1 || beans_reactor_park_state(barrier.token) != 2 ||
+        beans_reactor_finish_park(barrier.token) != 1)
+        return 55;
+    pthread_cond_destroy(&barrier.changed);
+    pthread_mutex_destroy(&barrier.lock);
+    close(barrier_fds[1]);
+
     poll_closed = beans_poll_close(poller, wake_read, wake);
-    if (poll_closed.err) return 50;
+    if (poll_closed.err) return 56;
     beans_release(triple);
 
-    // A queued token from A cannot ready B after the fd and slot are reused.
-    int a = dup(ends[1]);
-    if (a < 0) return 18;
-    long long old = beans_reactor_note_park(a);
-    if (old <= 0 || beans_reactor_finish_park(old) != 1) return 19;
-    close(a);
-    int b = dup(ends[1]);
-    if (b < 0) return 20;
-    long long fresh = beans_reactor_note_park(b);
-    if (fresh <= 0 || fresh == old) return 21;
-    if (beans_reactor_mark_ready(old) != 0 ||
+    // Keep a real kernel event for A unconsumed while its fd and token slot
+    // are reused by B. The copied old token is ignored; only B's later event
+    // can make B ready.
+    opened = beans_poll_open();
+    if (opened.err) return 71;
+    triple = (BList*)opened.val;
+    poller = (long long)rt_load_le((char*)triple->data, 8);
+    wake_read = (long long)rt_load_le((char*)triple->data + 8, 8);
+    wake = (long long)rt_load_le((char*)triple->data + 16, 8);
+    int queued_a[2];
+    if (pipe(queued_a) != 0) return 72;
+    long long old = beans_reactor_note_park(queued_a[0]);
+    if (old <= 0 ||
+        beans_reactor_arm_park(old, poller, wake, 0) != 1 ||
+        write(queued_a[1], "a", 1) != 1)
+        return 73;
+    BRes queued = beans_poll_wait(poller, wake_read, 1, 1000);
+    if (queued.err) return 74;
+    BList* queued_events = (BList*)queued.val;
+    if (rt_load_le((char*)queued_events->data, 8) != 1) return 75;
+    long long queued_token = (long long)rt_load_le(
+        (char*)queued_events->data + 8, 8);
+    if (queued_token != old || beans_reactor_finish_park(old) != 1)
+        return 76;
+    int reused_fd = queued_a[0];
+    beans_reactor_close_begin(reused_fd);
+    close(reused_fd);
+    int queued_b[2];
+    if (pipe(queued_b) != 0 || queued_b[0] != reused_fd) return 77;
+    beans_reactor_close_end(reused_fd);
+    close(queued_a[1]);
+    long long fresh = beans_reactor_note_park(queued_b[0]);
+    if (fresh <= 0 || fresh == old ||
+        beans_reactor_arm_park(fresh, poller, wake, 0) != 1)
+        return 78;
+    if (beans_reactor_mark_ready(queued_token) != 0 ||
         beans_reactor_park_state(fresh) != 0)
-        return 22;
-    if (beans_reactor_mark_ready(fresh) != 1 ||
-        beans_reactor_park_state(fresh) != 1)
-        return 23;
-    if (beans_reactor_finish_park(fresh) != 1) return 24;
-    close(b);
+        return 79;
+    beans_release(queued_events);
+    if (write(queued_b[1], "b", 1) != 1) return 80;
+    BRes fresh_wait = beans_poll_wait(poller, wake_read, 1, 1000);
+    if (fresh_wait.err) return 81;
+    BList* fresh_events = (BList*)fresh_wait.val;
+    if (rt_load_le((char*)fresh_events->data, 8) != 1) return 82;
+    long long fresh_event = (long long)rt_load_le(
+        (char*)fresh_events->data + 8, 8);
+    if (fresh_event != fresh ||
+        beans_reactor_mark_ready(fresh_event) != 1 ||
+        beans_reactor_finish_park(fresh) != 1)
+        return 83;
+    beans_release(fresh_events);
+    beans_reactor_close_begin(queued_b[0]);
+    close(queued_b[0]);
+    beans_reactor_close_end(queued_b[0]);
+    close(queued_b[1]);
+    poll_closed = beans_poll_close(poller, wake_read, wake);
+    if (poll_closed.err) return 84;
+    beans_release(triple);
 
     // A slot at generation wrap is retired forever instead of aliasing an old
     // token. The next reservation must come from another slot.
@@ -260,14 +430,14 @@ int main(void) {
     pthread_mutex_lock(&shared.lock);
     while (shared.ready != 2)
         pthread_cond_wait(&shared.changed, &shared.lock);
+    shared.go = 1;
+    pthread_cond_broadcast(&shared.changed);
+    while (shared.waiting != 2)
+        pthread_cond_wait(&shared.changed, &shared.lock);
     pthread_mutex_unlock(&shared.lock);
     beans_reactor_close_begin(shared_ends[0]);
     close(shared_ends[0]);
     beans_reactor_close_end(shared_ends[0]);
-    pthread_mutex_lock(&shared.lock);
-    shared.go = 1;
-    pthread_cond_broadcast(&shared.changed);
-    pthread_mutex_unlock(&shared.lock);
     pthread_join(workers[0], NULL);
     pthread_join(workers[1], NULL);
     if (!shared.result[0] || !shared.result[1]) return 32;

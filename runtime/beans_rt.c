@@ -12645,7 +12645,6 @@ struct BeansParkOwner {
     size_t rows;
     size_t row_count;
     size_t dead_count;
-    size_t stale_cursor;
     long long wake;
     int wake_pending;
     int shutting_down;
@@ -12670,6 +12669,7 @@ static BeansParkOwner* beans_park_owners;
 static BeansParkClosing* beans_park_closing;
 static pthread_mutex_t beans_parked_lock = PTHREAD_MUTEX_INITIALIZER;
 static _Thread_local BeansParkOwner* beans_parked_owner;
+static void (*beans_park_test_arm_hook)(long long);
 
 // Test-only failure injection is intentionally scoped to registry growth. A
 // failed reservation leaves no published row and no kernel registration.
@@ -12795,7 +12795,6 @@ static BeansParkOwner* beans_reactor_owner_locked(void) {
     BeansParkOwner* owner = beans_park_calloc(1, sizeof *owner);
     if (!owner) return NULL;
     owner->rows = BEANS_PARK_NONE;
-    owner->stale_cursor = BEANS_PARK_NONE;
     owner->next = beans_park_owners;
     if (owner->next) owner->next->prev = owner;
     beans_park_owners = owner;
@@ -12960,8 +12959,6 @@ long long beans_reactor_note_park(long long fd) {
         beans_parked[row->owner_next].owner_prev = slot;
     owner->rows = slot;
     owner->row_count++;
-    if (owner->stale_cursor == BEANS_PARK_NONE)
-        owner->stale_cursor = slot;
     beans_park_link_active_locked(slot);
     beans_parked_rows++;
     long long token = (long long)beans_park_token(slot, row->generation);
@@ -12989,6 +12986,8 @@ long long beans_reactor_arm_park(long long token, long long poller,
         beans_park_flush_wakes();
         return 0;
     }
+    if (beans_park_test_arm_hook)
+        beans_park_test_arm_hook(row->fd);
     if (poll_apply((int)poller, net_fd_of(row->fd), token,
                    !write, write != 0, 1) != 0) {
         int e = net_errno();
@@ -13042,7 +13041,6 @@ long long beans_reactor_mark_ready(long long token) {
 static void beans_park_finish_slot_locked(size_t slot) {
     BeansParked* row = &beans_parked[slot];
     BeansParkOwner* owner = row->owner;
-    size_t next_owner = row->owner_next;
     if (row->state == BEANS_PARK_LIVE ||
         row->state == BEANS_PARK_READY) {
         if (row->armed)
@@ -13056,13 +13054,9 @@ static void beans_park_finish_slot_locked(size_t slot) {
         beans_parked[row->owner_prev].owner_next = row->owner_next;
     if (row->owner_next != BEANS_PARK_NONE)
         beans_parked[row->owner_next].owner_prev = row->owner_prev;
-    if (owner->stale_cursor == slot)
-        owner->stale_cursor = next_owner != BEANS_PARK_NONE
-                                  ? next_owner : owner->rows;
     if (row->state == BEANS_PARK_DEAD) owner->dead_count--;
     owner->row_count--;
     if (owner->row_count == 0) {
-        owner->stale_cursor = BEANS_PARK_NONE;
         owner->wake = 0;
         owner->wake_pending = 0;
     }
@@ -13143,40 +13137,16 @@ void beans_reactor_close_end(long long fd) {
     pthread_mutex_unlock(&beans_parked_lock);
 }
 
-// 1 when some park owned by this executor can never fire, else -1. The
-// POSIX probe is a fallback for a close that bypassed the runtime. Runtime
-// closes use the dead flag and active wake above, which remains the only
-// reliable path once a descriptor number has already been reused.
+// 1 when a runtime-managed close made one of this executor's parks dead,
+// else -1. Raw external closes cannot be made generation-safe: by the time a
+// probe runs, the same descriptor number may already name a different file.
+// Every runtime-owned close therefore uses close_begin/close_end instead.
 long long beans_reactor_stale_park(void) {
     pthread_mutex_lock(&beans_parked_lock);
     BeansParkOwner* owner = beans_parked_owner;
-    if (owner && owner->dead_count) {
-        pthread_mutex_unlock(&beans_parked_lock);
-        return 1;
-    }
-    size_t at = owner ? owner->stale_cursor : BEANS_PARK_NONE;
-    size_t limit = owner && owner->row_count < BEANS_PARK_WAKE_BATCH
-                       ? owner->row_count : BEANS_PARK_WAKE_BATCH;
-    for (size_t scanned = 0; scanned < limit; scanned++) {
-        if (at == BEANS_PARK_NONE) at = owner->rows;
-        BeansParked* row = &beans_parked[at];
-        size_t next = row->owner_next;
-#if !defined(_WIN32)
-        if (row->state == BEANS_PARK_LIVE &&
-            !beans_reactor_fd_valid(row->fd)) {
-            beans_park_mark_dead_locked(at);
-            owner->stale_cursor = next != BEANS_PARK_NONE
-                                      ? next : owner->rows;
-            pthread_mutex_unlock(&beans_parked_lock);
-            beans_park_flush_wakes();
-            return 1;
-        }
-#endif
-        at = next;
-    }
-    if (owner) owner->stale_cursor = at != BEANS_PARK_NONE ? at : owner->rows;
+    long long stale = owner && owner->dead_count ? 1 : -1;
     pthread_mutex_unlock(&beans_parked_lock);
-    return -1;
+    return stale;
 }
 
 // Interpreter processes can drive several programs in sequence. The end of
@@ -13217,6 +13187,22 @@ long long beans_reactor_test_set_generation(long long slot,
     }
     pthread_mutex_unlock(&beans_parked_lock);
     return changed;
+}
+
+long long beans_reactor_test_fail_allocation(long long at) {
+    pthread_mutex_lock(&beans_parked_lock);
+    beans_park_alloc_count = 0;
+    beans_park_alloc_fail_at = at > 0 ? at : -1;
+    pthread_mutex_unlock(&beans_parked_lock);
+    return 1;
+}
+
+long long beans_reactor_test_set_arm_hook(
+    void (*hook)(long long)) {
+    pthread_mutex_lock(&beans_parked_lock);
+    beans_park_test_arm_hook = hook;
+    pthread_mutex_unlock(&beans_parked_lock);
+    return 1;
 }
 
 #endif // BEANS_RT_PROFILE >= BEANS_RT_FULL — sockets + readiness poller
