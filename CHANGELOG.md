@@ -6,6 +6,17 @@ This file records user-facing changes in each Beans release.
 
 ### Added
 
+- Named imports: `import {name, other as alias} from path` binds exactly
+  the selection — functions, types, enums, interfaces, annotations — and
+  the bare names then work everywhere the qualified names did: calls,
+  values, types, `new`, static access, patterns, `@annotations`. When the
+  path is a namespace folder rather than a package, the braces select its
+  sub-packages: `import {json, xml} from std.encoding` is two module
+  imports on one line. Selected names live in the file's one import
+  namespace — collisions with another import or with a declaration of the
+  importing package fail at the import line, as does selecting a name the
+  target does not declare or does not export. Resolution stays fully
+  compile-time, so both import spellings produce identical programs.
 - Calls take explicit type arguments on every form — free functions,
   package-qualified functions, instance methods and static methods:
   `services.add_transient<Greeter>()`, nested arguments included. With no

@@ -1,5 +1,21 @@
 package main
 
+// std.asm/std.intrinsic and the raw dl call rows stay unsafe no matter
+// how the name reached the call — module-qualified or selected with
+// `import {…} from`.
+fn unsafe_module_call(import_path: string, name: string) -> bool {
+    if import_path == "std.asm" || import_path == "std.intrinsic" {
+        return true
+    }
+    return import_path == "std.dl" &&
+           (name == "call0" || name == "call1" ||
+            name == "call2" || name == "call3" ||
+            name == "call_void0" || name == "call_void1" ||
+            name == "call_void2" || name == "call_void3" ||
+            name == "call_f64_1" || name == "call_f64_i32" ||
+            name == "call_f32_1" || name == "call_f32_i32")
+}
+
 class ExpressionChecker {
     signature: SignatureChecker
     program: HirProgram
@@ -8,6 +24,9 @@ class ExpressionChecker {
     declarations: Map<string, HirDeclaration>
     c_globals: Map<string, HirCGlobal>
     imports: Map<string, string>
+    // Names bound by `import {…} from path`, keyed "file|binding" and
+    // valued "path\nname" — the target package and the original symbol.
+    named_imports: Map<string, string>
     errors: List<Diagnostic>
     scopes: List<LocalScope>
     current: HirFunction
@@ -47,6 +66,7 @@ class ExpressionChecker {
         self.declarations = {}
         self.c_globals = {}
         self.imports = {}
+        self.named_imports = {}
         self.errors = []
         self.scopes = []
         self.current = new HirFunction(
@@ -94,6 +114,14 @@ class ExpressionChecker {
                 for imported: ModuleImport in file.imports {
                     var target: string = imported.resolved
                     if target == "" { target = imported.path }
+                    if imported.names.len() != 0 {
+                        for named: NamedImport in imported.names {
+                            self.named_imports[
+                                "{file.path}|{named.binding}"] =
+                                "{target}\n{named.name}"
+                        }
+                        continue
+                    }
                     self.imports[
                         "{file.path}|{imported.binding}"] = target
                 }
@@ -2402,6 +2430,13 @@ class ExpressionChecker {
             "{self.current.file}|{name}").or("")
     }
 
+    // A name bound by `import {…} from path` in the current file:
+    // "path\nname" — the target package and original symbol — or "".
+    fn named_import_target(name: string) -> string {
+        return self.named_imports.get(
+            "{self.current.file}|{name}").or("")
+    }
+
     fn package_path_for_file(file_path: string) -> string {
         for package: LoadedPackage in
             self.signature.resolver.loader.packages {
@@ -2489,7 +2524,29 @@ class ExpressionChecker {
     fn static_declaration(
         syntax: AstNode) -> Option<HirDeclaration> {
         if syntax.kind == "name" {
-            return self.current_declaration(syntax.value)
+            match self.current_declaration(syntax.value) {
+                some(declaration) => { return some(declaration) }
+                none => {}
+            }
+            // A type selected with `import {…} from path` is usable
+            // statically by its bare binding.
+            let encoded: string =
+                self.named_import_target(syntax.value)
+            if encoded != "" {
+                let parts: List<string> = encoded.split("\n")
+                match self.declarations.get(
+                    package_symbol(parts[0], parts[1])) {
+                    some(declaration) => {
+                        self.require_visible(
+                            syntax, declaration.is_public,
+                            declaration.file, "type",
+                            syntax.value)
+                        return some(declaration)
+                    }
+                    none => {}
+                }
+            }
+            return none
         }
         if syntax.kind == "field" &&
            syntax.children.len() == 1 &&
@@ -4534,6 +4591,33 @@ class ExpressionChecker {
             }
             none => {}
         }
+        let encoded: string = self.named_import_target(node.value)
+        if encoded != "" {
+            let parts: List<string> = encoded.split("\n")
+            let import_path: string = parts[0]
+            let original: string = parts[1]
+            if self.signature.resolver.is_loaded_package(
+                import_path) {
+                match self.functions.get(
+                    package_symbol(import_path, original)) {
+                    some(function) => {
+                        self.require_visible(
+                            node, function.is_public,
+                            function.file, "function",
+                            node.value)
+                        return self.function_value_node(
+                            node, function, expected)
+                    }
+                    none => {}
+                }
+            } else {
+                self.fail(
+                    node,
+                    "'{original}' from {import_path} is a compiler builtin and can't be stored as a value — call it directly")
+                return self.make_node(
+                    node, "error", node.value, poison_hir_type())
+            }
+        }
         if node.value == "self" {
             self.fail(node, "self isn't available here")
             return self.make_node(
@@ -6108,8 +6192,11 @@ class ExpressionChecker {
         return result
     }
 
+    // `shown_prefix` is the module name the source wrote before the dot,
+    // or "" when the function arrived bare through `import {…} from`.
     fn check_package_call(node: AstNode, callee: AstNode,
                           import_path: string,
+                          shown_prefix: string,
                           expected: HirType) -> Option<HirNode> {
         if import_path == "std.asm" {
             return some(
@@ -6288,7 +6375,11 @@ class ExpressionChecker {
                     self.require_visible(
                         node, function.is_public,
                         function.file, "function",
-                        "{node.children[0].children[0].value}.{callee.value}")
+                        if shown_prefix == "" {
+                            callee.value
+                        } else {
+                            "{shown_prefix}.{callee.value}"
+                        })
                     self.require_function_feature(
                         node, function, "the call")
                     if function.is_extern_c &&
@@ -7217,37 +7308,14 @@ class ExpressionChecker {
                 let import_path: string =
                     self.imported_path(receiver_syntax.value)
                 if import_path != "" {
-                    let unsafe_module_call: bool =
-                        import_path == "std.asm" ||
-                        import_path == "std.intrinsic" ||
-                        (import_path == "std.dl" &&
-                         (callee.value == "call0" ||
-                          callee.value == "call1" ||
-                          callee.value == "call2" ||
-                          callee.value == "call3" ||
-                          callee.value ==
-                              "call_void0" ||
-                          callee.value ==
-                              "call_void1" ||
-                          callee.value ==
-                              "call_void2" ||
-                          callee.value ==
-                              "call_void3" ||
-                          callee.value ==
-                              "call_f64_1" ||
-                          callee.value ==
-                              "call_f64_i32" ||
-                          callee.value ==
-                              "call_f32_1" ||
-                          callee.value ==
-                              "call_f32_i32"))
-                    if unsafe_module_call {
+                    if unsafe_module_call(import_path, callee.value) {
                         self.require_unsafe(
                             node,
                             "{receiver_syntax.value}.{callee.value}")
                     }
                     match self.check_package_call(
-                        node, callee, import_path, expected) {
+                        node, callee, import_path,
+                        receiver_syntax.value, expected) {
                         some(result) => { return result }
                         none => {
                             self.fail(
@@ -8275,6 +8343,52 @@ class ExpressionChecker {
                 return result
             }
             none => {
+                let encoded: string =
+                    self.named_import_target(callee.value)
+                if encoded != "" {
+                    let parts: List<string> = encoded.split("\n")
+                    let import_path: string = parts[0]
+                    let original: string = parts[1]
+                    if unsafe_module_call(import_path, original) {
+                        self.require_unsafe(node, callee.value)
+                    }
+                    // The shared package-call path reads the function
+                    // name off the callee node, so an `as` alias hands
+                    // it a clone carrying the original name.
+                    var target: AstNode = callee
+                    if original != callee.value {
+                        target = new AstNode(
+                            "name", original, callee.line, callee.col)
+                    }
+                    match self.check_package_call(
+                        node, target, import_path, "", expected) {
+                        some(result) => { return result }
+                        none => {
+                            match self.declarations.get(
+                                package_symbol(
+                                    import_path, original)) {
+                                some(declaration) => {
+                                    if declaration.kind ==
+                                       "class" {
+                                        self.fail(
+                                            node,
+                                            "classes are built with 'new {callee.value}(...)'")
+                                        return self.make_node(
+                                            node, "error", "call",
+                                            poison_hir_type())
+                                    }
+                                }
+                                none => {}
+                            }
+                            self.fail(
+                                node,
+                                "package '{import_path}' has no function '{original}'")
+                            return self.make_node(
+                                node, "error", "call",
+                                poison_hir_type())
+                        }
+                    }
+                }
                 match self.current_declaration(callee.value) {
                     some(declaration) => {
                         if declaration.kind == "class" {
