@@ -575,13 +575,16 @@ partial class LlvmTextEmitter {
         instruction: MirInstruction,
         values: Map<int, string>) -> string {
         let payload: HirType = instruction.type
+        let unit_payload: bool =
+            canonical_hir_name(payload.name) == "unit"
         let subject_type: HirType =
             self.value_type(
                 function,
                 instruction.operands[0])
         let wide_boxed: bool =
             self.result_wide_boxable(payload)
-        if !self.result_is_inline(subject_type) &&
+        if !unit_payload &&
+           !self.result_is_inline(subject_type) &&
            ((!self.slot_compatible(payload) ||
              self.type_text(payload) == "" ||
              self.type_text(payload) == "void") &&
@@ -650,6 +653,9 @@ partial class LlvmTextEmitter {
             } else {
                 self.result_error_type(result_type)
             }
+        if canonical_hir_name(payload.name) == "unit" {
+            return new LlvmSlotConversion("", "0")
+        }
         let id: int = self.fresh()
         if self.result_is_inline(result_type) {
             let result: string =
@@ -693,6 +699,10 @@ partial class LlvmTextEmitter {
         target: string,
         tag: string) -> string {
         let tagged: int = if is_ok { 0 } else { 1 }
+        if is_ok &&
+           canonical_hir_name(payload.name) == "unit" {
+            return "  {target} = call ptr @beans_alloc(i64 16, i64 1)\n  store i64 0, ptr {target}\n"
+        }
         if self.result_wide_boxable(payload) {
             let offset: int =
                 self.result_payload_offset(payload)
@@ -1009,9 +1019,12 @@ partial class LlvmTextEmitter {
             return ""
         }
         let payload: HirType = instruction.type
+        let unit_payload: bool =
+            canonical_hir_name(payload.name) == "unit"
         let wide_boxed: bool =
             self.result_wide_boxable(payload)
-        if !self.result_is_inline(subject_type) &&
+        if !unit_payload &&
+           !self.result_is_inline(subject_type) &&
            (self.wide_inline_value(payload) &&
                 canonical_hir_name(payload.name) !=
                     "decimal" ||
@@ -1031,6 +1044,13 @@ partial class LlvmTextEmitter {
         let consumed: bool =
             instruction.consumes.len() == 1 &&
             instruction.consumes[0]
+        if unit_payload {
+            values[instruction.result] = "0"
+            if consumed {
+                return "  call void @beans_release(ptr {subject})\n"
+            }
+            return ""
+        }
         let id: int = self.fresh()
         let result: string = "%v{instruction.result}"
         if self.result_is_inline(subject_type) {
@@ -1191,6 +1211,13 @@ partial class LlvmTextEmitter {
             return ""
         }
         let value_type: HirType = result_type.args[0]
+        if canonical_hir_name(value_type.name) == "unit" {
+            // Both arms produce the same zero-width value. Operand
+            // instructions already evaluated the fallback, and normal ARC
+            // cleanup still releases the Result box.
+            values[instruction.result] = "0"
+            return ""
+        }
         if !self.result_is_inline(result_type) &&
            !self.slot_compatible(value_type) {
             self.fail(
@@ -1282,6 +1309,10 @@ partial class LlvmTextEmitter {
             self.fail(
                 instruction,
                 "LLVM emitter found malformed result pattern binding '{instruction.resolved}'")
+            return ""
+        }
+        if canonical_hir_name(payload.name) == "unit" {
+            // A unit pattern binding has no storage or SSA payload.
             return ""
         }
         let wide_boxed: bool =

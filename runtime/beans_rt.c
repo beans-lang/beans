@@ -4577,7 +4577,12 @@ long long beans_reflect_type_kind(char* name) {
     REFLECT_NAME("RawPtr", 18);
 #undef REFLECT_NAME
     if (n && name[0] == '[') return 16;
-    if (n >= 3 && memcmp(name, "fn(", 3) == 0) return 19;
+    long long callable = 0;
+    if (n >= 5 && memcmp(name, "send ", 5) == 0) callable = 5;
+    if (n - callable >= 6 &&
+        memcmp(name + callable, "async ", 6) == 0) callable += 6;
+    if (n - callable >= 3 &&
+        memcmp(name + callable, "fn(", 3) == 0) return 19;
     return 20;
 }
 

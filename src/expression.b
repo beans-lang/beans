@@ -267,6 +267,7 @@ class ExpressionChecker {
     fn is_c_function_pointer_callback(
         type: HirType) -> bool {
         if type.name != "fn" ||
+           type.fn_async ||
            type.fn_parameter_count < 0 ||
            type.fn_parameter_count > 6 {
             return false
@@ -4201,10 +4202,16 @@ class ExpressionChecker {
         if (type.name == "StoredCallback" ||
             type.name == "LocalStoredCallback") &&
            type.args.len() == 1 &&
-           type.args[0].name != "fn" {
+           (type.args[0].name != "fn" ||
+            type.args[0].fn_async) {
             self.fail(
                 node,
-                "{type.name} needs a C callback function type")
+                if type.args[0].name == "fn" &&
+                   type.args[0].fn_async {
+                    "{type.name} cannot store an async callback"
+                } else {
+                    "{type.name} needs a C callback function type"
+                })
         }
         if type.name == "CFunctionPtr" &&
            type.args.len() == 1 &&
@@ -4212,7 +4219,12 @@ class ExpressionChecker {
                type.args[0]) {
             self.fail(
                 node,
-                "CFunctionPtr needs a C callback function type")
+                if type.args[0].name == "fn" &&
+                   type.args[0].fn_async {
+                    "CFunctionPtr cannot use an async callback type"
+                } else {
+                    "CFunctionPtr needs a C callback function type"
+                })
         }
         if (type.name == "RawPtr" ||
             type.name == "Slice") &&

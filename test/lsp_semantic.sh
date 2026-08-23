@@ -201,6 +201,9 @@ fn main() {
 BEANS
 
 complete() { "$bin" sem-probe complete "$1"; }
+completion_details() {
+    "$bin" sem-probe completion-details "$1"
+}
 
 got=$(complete "$scratch/members.b:24:7")
 grep -q '^item field a1 field:main::Alpha.a1$' <<<"$got" ||
@@ -445,6 +448,51 @@ got=$(complete "$scratch/builtin_completion.b:3:12")
 grep -q '^item function spawn builtin_module:std.thread.spawn$' <<<"$got" ||
     fail "thread. should offer spawn:
 $got"
+grep -q '^item function spawn_async builtin_module:std.thread.spawn_async$' <<<"$got" ||
+    fail "thread. should offer spawn_async:
+$got"
+details=$(completion_details "$scratch/builtin_completion.b:3:12")
+grep -qxF \
+    'detail builtin_module:std.thread.spawn_async fn std.thread.spawn_async(send async fn() -> T) -> Thread<T>' \
+    <<<"$details" || fail "spawn_async should show its exact async entry shape:
+$details"
+
+cat >"$scratch/async_builtin_completion.b" <<'BEANS'
+fn main() {
+    let channel: Channel<int> = new Channel<int>(1)
+    channel.
+}
+BEANS
+got=$(complete "$scratch/async_builtin_completion.b:3:13")
+for want in send_async receive_async; do
+    grep -q "^item method $want builtin:Channel.$want$" <<<"$got" ||
+        fail "Channel. should offer $want:
+$got"
+done
+details=$(completion_details "$scratch/async_builtin_completion.b:3:13")
+grep -qxF \
+    'detail builtin:Channel.send_async async fn Channel<int>.send_async(int)' \
+    <<<"$details" || fail "send_async should render as async:
+$details"
+grep -qxF \
+    'detail builtin:Channel.receive_async async fn Channel<int>.receive_async() -> Option<int>' \
+    <<<"$details" || fail "receive_async should render as async:
+$details"
+
+cat >"$scratch/async_thread_completion.b" <<'BEANS'
+fn inspect(worker: Thread<int>) {
+    worker.
+}
+BEANS
+got=$(complete "$scratch/async_thread_completion.b:2:12")
+grep -q '^item method join_async builtin:Thread.join_async$' <<<"$got" ||
+    fail "Thread. should offer join_async:
+$got"
+details=$(completion_details "$scratch/async_thread_completion.b:2:12")
+grep -qxF \
+    'detail builtin:Thread.join_async async fn Thread<int>.join_async() -> Result<int>' \
+    <<<"$details" || fail "join_async should render as async:
+$details"
 got=$(complete "$scratch/builtin_completion.b:5:9")
 grep -q '^item class MemoryOrder builtin:MemoryOrder$' <<<"$got" ||
     fail "Memo should offer MemoryOrder:
@@ -528,7 +576,11 @@ start = checker.index("fn builtin_method(receiver: HirType")
 end = checker.index("fn builtin_static(type_name: string", start)
 body = checker[start:end]
 # only bare `name == "..."`, never `receiver.name == "..."`
-wanted = set(re.findall(r'(?<!\.)\bname == "([a-z_0-9]+)"', body))
+wanted = {
+    name for name in
+    re.findall(r'(?<!\.)\bname == "([a-z_0-9]+)"', body)
+    if not name.startswith("_async_")
+}
 
 listing = pathlib.Path("src/completion_builtins.b").read_text()
 lstart = listing.index("fn semantic_builtin_member_names()")

@@ -6,6 +6,7 @@
 //     beansc sem-probe visible  file.b:line:col
 //     beansc sem-probe members  file.b:line:col
 //     beansc sem-probe complete file.b:line:col
+//     beansc sem-probe completion-details file.b:line:col
 //     beansc sem-probe builds   file.b:line:col
 //
 // Positions are 1-based lines and 1-based byte columns, the same shape the
@@ -194,13 +195,17 @@ fn run_semantic_probe(mode: string, spec: string) -> int {
             }
         }
     }
-    if mode == "complete" {
+    if mode == "complete" || mode == "completion-details" {
         for item: SemanticCompletion in
             semantic_completions(
                 workspace, parsed.file, text, parsed.line,
                 parsed.col) {
-            io.println(
-                "item {item.kind} {item.label} {item.id}")
+            if mode == "complete" {
+                io.println(
+                    "item {item.kind} {item.label} {item.id}")
+            } else if item.detail != "" {
+                io.println("detail {item.id} {item.detail}")
+            }
         }
         return 0
     }

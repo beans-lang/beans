@@ -81,5 +81,11 @@ async fn main() {
     group.cancel_all()
     print_next(group.try_next())
 
+    group.start(work(8))
+    group.start(pending("middle after take"))
+    group.start(pending("new after take"))
+    print_next(await group.next())
+    group.cancel_all()
+
     await lexical_cancel()
 }

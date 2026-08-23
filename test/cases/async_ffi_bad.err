@@ -1,0 +1,12 @@
+test/cases/async_ffi_bad.b:2:5: error: extern C storage cannot contain an async callable type, got CFunctionPtr<async fn(i32) -> i32>
+test/cases/async_ffi_bad.b:6:5: error: extern C storage cannot contain an async callable type, got main.CallbackSlot
+test/cases/async_ffi_bad.b:14:12: error: async callable types cannot cross the C ABI, got CFunctionPtr<async fn() -> int>
+test/cases/async_ffi_bad.b:9:27: error: async callable types cannot cross the C ABI, got async fn() -> int
+test/cases/async_ffi_bad.b:11:5: error: async callable types cannot cross the C ABI, got CFunctionPtr<async fn() -> int>
+test/cases/async_ffi_bad.b:12:27: error: async callable types cannot cross the C ABI, got main.NestedSlot
+test/cases/async_ffi_bad.b:13:12: error: async callable types cannot cross the C ABI, got async fn() -> int
+test/cases/async_ffi_bad.b:18:5: error: async callable types cannot cross the C ABI, got async fn() -> int
+test/cases/async_ffi_bad.b:2:5: error: CFunctionPtr cannot use an async callback type
+test/cases/async_ffi_bad.b:23:5: error: StoredCallback cannot store an async callback
+test/cases/async_ffi_bad.b:26:5: error: LocalStoredCallback cannot store an async callback
+test/cases/async_ffi_bad.b: 11 error(s)

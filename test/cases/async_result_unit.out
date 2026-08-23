@@ -1,0 +1,5 @@
+join true
+equal true false
+match ok
+try 7
+try error false

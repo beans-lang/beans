@@ -343,6 +343,16 @@ EOF
 reject_same "$tmp/rej_fn_value.b" \
     "expected fn() -> int, got async fn() -> int"
 
+cat > "$tmp/rej_sync_fn_value.b" <<'EOF'
+fn plain() -> int { return 1 }
+
+async fn main() {
+    let f: async fn() -> int = plain
+}
+EOF
+reject_same "$tmp/rej_sync_fn_value.b" \
+    "expected async fn() -> int, got fn() -> int"
+
 cat > "$tmp/rej_async_value_bare.b" <<'EOF'
 async fn work() -> int { return 1 }
 
@@ -439,6 +449,17 @@ fn main() {}
 EOF
 reject_same "$tmp/rej_closure.b" \
     "await is only valid inside an async function"
+
+echo "checking async callable types never cross the C ABI"
+set +e
+diagnostics "$BEANSC" test/cases/async_ffi_bad.b >"$tmp/ffi_bad"
+ffi_bad_status=$?
+set -e
+if [ "$ffi_bad_status" -eq 0 ]; then
+    echo "async: async_ffi_bad.b accepted" >&2
+    exit 1
+fi
+diff -u test/cases/async_ffi_bad.err "$tmp/ffi_bad"
 
 cat > "$tmp/rej_defer.b" <<'EOF'
 fn discard(v: int) {}
@@ -882,6 +903,10 @@ echo "checking async callable values, literals, send literals, and unique receiv
 run_matrix test/cases/async_callable_value.b \
     test/cases/async_callable_value.out
 
+echo "checking reflected async callable names and kinds"
+run_matrix test/cases/async_reflect_types.b \
+    test/cases/async_reflect_types.out
+
 echo "checking yield_now reports runnable without blocking the executor"
 run_matrix test/cases/async_yield.b test/cases/async_yield.out
 
@@ -919,6 +944,10 @@ diff -u test/cases/async_thread_bad.err "$tmp/thread_bad"
 echo "checking repeated sync Thread.join has native/interpreter parity"
 run_matrix test/cases/async_thread_sync_repeat.b \
     test/cases/async_thread_sync_repeat.out 3
+
+echo "checking Result<unit> across join, expect, or, match, equality, and ?"
+run_matrix test/cases/async_result_unit.b \
+    test/cases/async_result_unit.out
 
 echo "checking join is a full worker teardown barrier"
 DEADLINE=30 run_matrix test/cases/thread_join_exit_cycles.b \

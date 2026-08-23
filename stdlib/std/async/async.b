@@ -256,14 +256,15 @@ pub unique class TaskGroup<T> {
     /// Cancels active members newest-first, drops queued values, and reopens
     /// the empty group for reuse.
     pub fn cancel_all() {
-        var index: int = self.states.len() - 1
-        for index >= 0 {
-            if self.states[index] == 0 {
-                let cancel: fn() = self.cancellers[index].expect(
-                    "active TaskGroup row")
-                cancel()
-            }
-            index -= 1
+        var order: List<int> = self.active_indices.clone()
+        let ids: List<int> = self.spawn_ids.clone()
+        order.sort_by(fn(left: int, right: int) -> bool {
+            return ids[left] > ids[right]
+        })
+        for index: int in order {
+            let cancel: fn() = self.cancellers[index].expect(
+                "active TaskGroup row")
+            cancel()
         }
         self._reset()
     }

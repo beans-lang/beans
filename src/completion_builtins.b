@@ -25,16 +25,16 @@ fn semantic_builtin_member_names() -> List<string> {
             "ge", "get", "get_i64", "get_u16", "get_u32", "get_u64",
             "get_u8", "get_uvarint", "gt", "index_of", "insert",
             "is_empty", "is_expired", "is_none", "is_null", "is_ok",
-            "is_some", "join", "keys", "lane", "lane_count", "last",
+            "is_some", "join", "join_async", "keys", "lane", "lane_count", "last",
             "le", "len", "lines", "load", "lock", "lt", "max",
             "min", "mul", "ne", "notify_all", "notify_one",
             "offset", "or", "parse_int_range_or", "pop", "product",
             "push", "put_i64", "put_u16", "put_u32", "put_u64",
             "put_u8", "range_equals", "read", "read_at", "read_text",
             "read_text_at",
-            "read_volatile", "receive", "remove", "repeat",
+            "read_volatile", "receive", "receive_async", "remove", "repeat",
             "replace", "reserve", "resize", "reverse", "rfind",
-            "round", "seek", "seek_from_end", "select", "send",
+            "round", "seek", "seek_from_end", "select", "send", "send_async",
             "set", "shl", "shr", "size", "slice", "sort", "sort_by",
             "sort_by_key", "split", "starts_with", "store",
             "store_unaligned", "sub", "subslice", "sum", "sync",
@@ -53,8 +53,14 @@ fn semantic_render_builtin(receiver: HirType, name: string,
     for parameter: HirType in signature.parameters {
         parts.push(sem_type_text(parameter, ""))
     }
+    let effect: string =
+        if name == "send_async" ||
+           name == "receive_async" ||
+           name == "join_async" {
+            "async "
+        } else { "" }
     var rendered: string =
-        "fn {sem_type_text(receiver, "")}.{name}({parts.join(", ")})"
+        "{effect}fn {sem_type_text(receiver, "")}.{name}({parts.join(", ")})"
     if signature.result.name != "unit" {
         rendered =
             "{rendered} -> {sem_type_text(signature.result, "")}"
@@ -232,14 +238,22 @@ fn semantic_builtin_module_completions(
         }
         none => {}
     }
-    // `thread.spawn` is generic over the closure result and has its own checker
-    // path, so it cannot be represented by BuiltinSignature.
+    // The thread entry points are generic over the closure result and have
+    // their own checker path, so they cannot be represented by
+    // BuiltinSignature.
     if package_path == "std.thread" {
         let spawn: SemanticCompletion =
             new SemanticCompletion(
                 "spawn", "function", "builtin_module:std.thread.spawn")
         spawn.detail = "fn std.thread.spawn(send fn() -> T) -> Thread<T>"
         items.push(spawn)
+        let spawn_async: SemanticCompletion =
+            new SemanticCompletion(
+                "spawn_async", "function",
+                "builtin_module:std.thread.spawn_async")
+        spawn_async.detail =
+            "fn std.thread.spawn_async(send async fn() -> T) -> Thread<T>"
+        items.push(spawn_async)
     }
     return move items
 }

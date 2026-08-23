@@ -732,6 +732,9 @@ partial class LlvmTextEmitter {
         }
         let local: MirLocal =
             function.locals[instruction.local]
+        if canonical_hir_name(local.type.name) == "unit" {
+            return ""
+        }
         let type: string = self.type_text(local.type)
         if type == "" || instruction.operands.len() != 1 {
             self.fail(
@@ -838,6 +841,9 @@ partial class LlvmTextEmitter {
             canonical_hir_name(type.name)
         let llvm: string = self.type_text(type)
         let id: int = self.fresh()
+        if name == "unit" {
+            return new LlvmSlotConversion("", "true")
+        }
         if self.type_is_raw_pointer(type) {
             return new LlvmSlotConversion(
                 "  %inline.eq{tag}{id} = icmp eq ptr {left}, {right}\n",

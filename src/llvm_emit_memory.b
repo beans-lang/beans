@@ -456,6 +456,10 @@ partial class LlvmTextEmitter {
         }
         let local: MirLocal =
             function.locals[instruction.local]
+        if canonical_hir_name(local.type.name) == "unit" {
+            values[instruction.result] = "0"
+            return ""
+        }
         let type: string = self.type_text(local.type)
         if type == "" {
             self.fail(

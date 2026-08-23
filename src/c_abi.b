@@ -102,7 +102,8 @@ class CAbiChecker {
     }
 
     fn is_c_callback(type: HirType) -> bool {
-        if type.name != "fn" || type.fn_parameter_count < 0 ||
+        if type.name != "fn" || type.fn_async ||
+           type.fn_parameter_count < 0 ||
            type.fn_parameter_count > 6 {
             return false
         }
@@ -113,6 +114,37 @@ class CAbiChecker {
         }
         return self.is_c_abi_type(
             self.callback_result(type), true)
+    }
+
+    fn contains_async_callable_from(
+        type: HirType, seen: Map<string, bool>) -> bool {
+        if type.name == "fn" && type.fn_async { return true }
+        for argument: HirType in type.args {
+            if self.contains_async_callable_from(argument, seen) {
+                return true
+            }
+        }
+        match self.declarations.get(type.name) {
+            some(declaration) => {
+                if declaration.is_opaque ||
+                   seen.contains_key(declaration.qualified) {
+                    return false
+                }
+                seen[declaration.qualified] = true
+                for field: HirField in declaration.fields {
+                    if self.contains_async_callable_from(
+                           field.type, seen) {
+                        return true
+                    }
+                }
+            }
+            none => {}
+        }
+        return false
+    }
+
+    fn contains_async_callable(type: HirType) -> bool {
+        return self.contains_async_callable_from(type, {})
     }
 
     fn is_inline_c_storage(type: HirType) -> bool {
@@ -140,7 +172,11 @@ class CAbiChecker {
         for declaration: HirDeclaration in self.program.declarations {
             if !declaration.is_c_layout { continue }
             for field: HirField in declaration.fields {
-                if !self.is_inline_c_storage(field.type) {
+                if self.contains_async_callable(field.type) {
+                    self.fail_field(
+                        field,
+                        "extern C storage cannot contain an async callable type, got {render_hir_type(field.type)}")
+                } else if !self.is_inline_c_storage(field.type) {
                     self.fail_field(
                         field,
                         "struct/union fields need inline scalar, RawPtr, fixed-array, or nested struct storage, got {render_hir_type(field.type)}")
@@ -197,7 +233,11 @@ class CAbiChecker {
                         parameter,
                         "extern parameters cannot use move or inout")
                 }
-                if !self.is_c_abi_type(parameter.type, false) &&
+                if self.contains_async_callable(parameter.type) {
+                    self.fail_parameter(
+                        parameter,
+                        "async callable types cannot cross the C ABI, got {render_hir_type(parameter.type)}")
+                } else if !self.is_c_abi_type(parameter.type, false) &&
                    !self.is_c_callback(parameter.type) {
                     self.fail_parameter(
                         parameter,
@@ -210,7 +250,11 @@ class CAbiChecker {
                         "exported C functions cannot take callbacks yet; pass a RawPtr function address")
                 }
             }
-            if !self.is_c_abi_type(function.result, true) {
+            if self.contains_async_callable(function.result) {
+                self.fail_function(
+                    function,
+                    "async callable types cannot cross the C ABI, got {render_hir_type(function.result)}")
+            } else if !self.is_c_abi_type(function.result, true) {
                 self.fail_function(
                     function,
                     "extern return needs an integer, float, bool, RawPtr, extern \"C\" struct/union, or no value, got {render_hir_type(function.result)}")
@@ -221,7 +265,11 @@ class CAbiChecker {
     fn check_globals() {
         for global: HirCGlobal in
             self.program.c_globals {
-            if !self.is_c_abi_type(
+            if self.contains_async_callable(global.type) {
+                self.fail_global(
+                    global,
+                    "async callable types cannot cross the C ABI, got {render_hir_type(global.type)}")
+            } else if !self.is_c_abi_type(
                     global.type, false) {
                 self.fail_global(
                     global,

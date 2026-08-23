@@ -1,0 +1,8 @@
+fn() -> int:function_type
+send fn() -> int:function_type
+async fn() -> int:function_type
+send async fn() -> int:function_type
+async fn(int) -> int:function_type
+send async fn() -> int:function_type
+async fn(int) -> int:function_type
+send async fn() -> int:function_type

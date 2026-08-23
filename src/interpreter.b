@@ -2169,7 +2169,16 @@ class TreeInterpreter {
             if base.starts_with("[") { return TreeValue.integer(16) }
             if base == "Slice" { return TreeValue.integer(17) }
             if base == "RawPtr" { return TreeValue.integer(18) }
-            if base.starts_with("fn(") { return TreeValue.integer(19) }
+            var callable: string = base
+            if callable.starts_with("send ") {
+                callable = callable.slice(5, callable.len())
+            }
+            if callable.starts_with("async ") {
+                callable = callable.slice(6, callable.len())
+            }
+            if callable.starts_with("fn(") {
+                return TreeValue.integer(19)
+            }
             match self.reflect_declaration(type_name) {
                 some(declaration) => {
                     if declaration.kind == "class" {
@@ -4275,7 +4284,7 @@ class TreeInterpreter {
             let result: TreeValue =
                 new TreeValue("thread")
             result.thread_handle =
-                some(handle)
+                some(move handle)
             result.thread_work = some(work)
             result.thread_done = some(done)
             return result

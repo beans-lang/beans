@@ -121,15 +121,27 @@ class CHeaderRenderer {
         }
         if name == "fn" {
             self.error =
-                "C exports with callback types cannot produce a header yet"
+                if type.fn_async {
+                    "async callable types cannot cross the C ABI"
+                } else {
+                    "C exports with callback types cannot produce a header yet"
+                }
             return false
         }
         if name == "CFunctionPtr" {
             if type.args.len() != 1 ||
                canonical_hir_name(
-                   type.args[0].name) != "fn" {
+                   type.args[0].name) != "fn" ||
+               type.args[0].fn_async {
                 self.error =
-                    "CFunctionPtr in a C header needs a C callback function type"
+                    if type.args.len() == 1 &&
+                       canonical_hir_name(
+                           type.args[0].name) == "fn" &&
+                       type.args[0].fn_async {
+                        "async callable types cannot cross the C ABI"
+                    } else {
+                        "CFunctionPtr in a C header needs a C callback function type"
+                    }
                 return false
             }
             let callback: HirType = type.args[0]
