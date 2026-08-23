@@ -322,6 +322,17 @@ class AsyncExpander {
         return call
     }
 
+    fn call_name(symbol: string, arguments: List<AstNode>,
+                 anchor: AstNode) -> AstNode {
+        let callee: AstNode = self.node(
+            "name", symbol_name(symbol), anchor)
+        callee.resolved = symbol
+        let call: AstNode = self.node("call", "", anchor)
+        call.add(callee)
+        for argument: AstNode in arguments { call.add(argument) }
+        return call
+    }
+
     fn slot_read(slot: string, anchor: AstNode) -> AstNode {
         let index: AstNode = self.node("index", "", anchor)
         index.add(self.name_of(slot, anchor))
@@ -571,7 +582,8 @@ class AsyncExpander {
         var is_spawn: bool = false
         match node.checked {
             some(checked) => {
-                is_spawn = checked.resolved == "std.thread.spawn"
+                is_spawn = checked.resolved == "std.thread.spawn" ||
+                           checked.resolved == "std.thread.spawn_async"
             }
             none => {}
         }
@@ -782,6 +794,43 @@ class AsyncExpander {
         match operand.checked {
             some(checked) => { target = checked.resolved }
             none => {}
+        }
+        if target == "Channel.send_async" ||
+           target == "Channel.receive_async" ||
+           target == "Thread.join_async" {
+            let maker: AstNode = self.node("call", "", operand)
+            var unit_join: bool = false
+            if target == "Thread.join_async" {
+                match operand.checked {
+                    some(checked) => {
+                        unit_join = checked.type.name == "Result" &&
+                                    checked.type.args.len() >= 1 &&
+                                    canonical_hir_name(
+                                        checked.type.args[0].name) == "unit"
+                    }
+                    none => {}
+                }
+            }
+            let maker_name: string =
+                if target == "Channel.send_async" {
+                    "channel_send_task"
+                } else if unit_join {
+                    "thread_join_unit_task"
+                } else if target == "Thread.join_async" {
+                    "thread_join_task"
+                } else {
+                    "channel_receive_task"
+                }
+            let callee: AstNode = self.node(
+                "name", maker_name, operand)
+            callee.resolved = async_rt_symbol(maker_name)
+            maker.add(callee)
+            let field: AstNode = operand.children[0]
+            maker.add(field.children[0])
+            for index: int in 1..operand.children.len() {
+                maker.add(operand.children[index])
+            }
+            return maker
         }
         // std.net is a source package, so its functions carry canonical
         // symbols; matching the short spelling here would silently stop
@@ -1142,10 +1191,15 @@ class AsyncExpander {
         take_result.add(self.type_ast(value_type, call))
         taker.add(take_result)
         let take_body: AstNode = self.node("block", "", call)
-        let take_return: AstNode = self.node("return", "", call)
-        take_return.add(self.call_method(
-            self.name_of(task_name, call), "finish", [], call))
-        take_body.add(take_return)
+        let finish: AstNode = self.call_method(
+            self.name_of(task_name, call), "finish", [], call)
+        if canonical_hir_name(value_type.name) == "unit" {
+            take_body.add(self.statement_of(finish))
+        } else {
+            let take_return: AstNode = self.node("return", "", call)
+            take_return.add(finish)
+            take_body.add(take_return)
+        }
         taker.add(take_body)
 
         let cancel: AstNode = self.node("closure", "", call)
@@ -2139,6 +2193,35 @@ class AsyncExpander {
                 changed = true
             }
         }
+        var call_target: string = ""
+        match node.checked {
+            some(checked) => { call_target = checked.resolved }
+            none => {}
+        }
+        if node.kind == "call" &&
+           call_target == "std.thread.spawn_async" {
+            var unit_result: bool = false
+            match node.checked {
+                some(checked) => {
+                    unit_result = checked.type.name == "Thread" &&
+                                  checked.type.args.len() == 1 &&
+                                  canonical_hir_name(
+                                      checked.type.args[0].name) == "unit"
+                }
+                none => {}
+            }
+            let adapter: string = if unit_result {
+                "spawn_async_unit_adapter"
+            } else {
+                "spawn_async_adapter"
+            }
+            let callee: AstNode = self.node(
+                "name", adapter, node)
+            callee.resolved =
+                async_rt_symbol(adapter)
+            node.children[0] = callee
+            return true
+        }
         if node.kind != "closure" || node.note != "async" {
             return changed
         }
@@ -2158,6 +2241,17 @@ class AsyncExpander {
            source_type.fn_parameter_count < source_type.args.len() {
             source_result = source_type.args[
                 source_type.fn_parameter_count]
+        }
+        // The nested state-machine rewrite mutates this shared syntax tree.
+        // Keep the source move-capture names aside: they belong to the outer
+        // closure value, not to the maker body being rewritten.
+        var source_move_names: List<string> = []
+        for child: AstNode in node.children {
+            if child.kind == "move_captures" {
+                for moved: AstNode in child.children {
+                    source_move_names.push(moved.value)
+                }
+            }
         }
         let synthetic: HirFunction = new HirFunction(
             "closure", "async closure", "", false, false,
@@ -2181,7 +2275,16 @@ class AsyncExpander {
             some(body) => {
                 var children: List<AstNode> = []
                 for child: AstNode in node.children {
-                    if child.kind != "block" { children.push(child) }
+                    if child.kind == "move_captures" {
+                        let moves: AstNode = self.node(
+                            "move_captures", "", node)
+                        for name: string in source_move_names {
+                            moves.add(self.name_of(name, node))
+                        }
+                        children.push(moves)
+                    } else if child.kind != "block" {
+                        children.push(child)
+                    }
                 }
                 children.push(body)
                 node.children = move children
@@ -2197,10 +2300,78 @@ class AsyncExpander {
         return true
     }
 
+    fn expand_thread_adapter(
+        function: HirFunction, unit_result: bool) {
+        let anchor: AstNode = function.syntax
+        let invoke: AstNode = self.node("call", "", anchor)
+        invoke.add(self.name_of("body", anchor))
+        let run: AstNode = self.node("call", "", anchor)
+        let runner: AstNode = self.node(
+            "name",
+            if unit_result {
+                "worker_run_unit_task"
+            } else {
+                "worker_run_task"
+            }, anchor)
+        runner.resolved = async_rt_symbol(
+            if unit_result {
+                "worker_run_unit_task"
+            } else {
+                "worker_run_task"
+            })
+        run.add(runner)
+        run.add(invoke)
+
+        let worker: AstNode = self.node("closure", "send", anchor)
+        worker.add(self.node("params", "", anchor))
+        let moves: AstNode = self.node(
+            "move_captures", "", anchor)
+        moves.add(self.name_of("body", anchor))
+        worker.add(moves)
+        let result: AstNode = self.node("result", "", anchor)
+        result.add(self.type_ast(
+            if unit_result {
+                new HirType("unit")
+            } else {
+                new HirType("T")
+            }, anchor))
+        worker.add(result)
+        let worker_body: AstNode = self.node("block", "", anchor)
+        if unit_result {
+            worker_body.add(self.statement_of(run))
+        } else {
+            let worker_return: AstNode = self.node("return", "", anchor)
+            worker_return.add(run)
+            worker_body.add(worker_return)
+        }
+        worker.add(worker_body)
+
+        let spawn: AstNode = self.node("call", "", anchor)
+        let spawn_field: AstNode = self.node("field", "spawn", anchor)
+        spawn_field.add(self.name_of("thread", anchor))
+        spawn.add(spawn_field)
+        spawn.add(worker)
+        let hand_back: AstNode = self.node("return", "", anchor)
+        hand_back.add(spawn)
+        let body: AstNode = self.node("block", "", anchor)
+        body.add(hand_back)
+
+        let syntax: AstNode = self.node(
+            "fn", function.syntax.value, anchor)
+        for child: AstNode in function.syntax.children {
+            if child.kind != "block" { syntax.add(child) }
+        }
+        syntax.add(body)
+        function.syntax = syntax
+        function.expanded = true
+        function.body = []
+    }
+
     // ---- driving -----------------------------------------------------
 
-    fn expand_runtime_task_function(
-        function: HirFunction, maker_symbol: string) {
+    fn expand_runtime_task_call(
+        function: HirFunction, maker_symbol: string,
+        arguments: List<AstNode>) {
         let anchor: AstNode = function.syntax
         let task_type: HirType = hir_named(
             async_rt_symbol("Task"), [function.body_result])
@@ -2209,6 +2380,7 @@ class AsyncExpander {
             "name", symbol_name(maker_symbol), anchor)
         callee.resolved = maker_symbol
         call.add(callee)
+        for argument: AstNode in arguments { call.add(argument) }
         let hand_back: AstNode = self.node("return", "", anchor)
         hand_back.add(call)
         let body: AstNode = self.node("block", "", anchor)
@@ -2226,11 +2398,64 @@ class AsyncExpander {
         function.body = []
     }
 
+    fn expand_runtime_task_function(
+        function: HirFunction, maker_symbol: string) {
+        var arguments: List<AstNode> = []
+        for parameter: HirParameter in function.parameters {
+            arguments.push(self.name_of(parameter.name, function.syntax))
+        }
+        self.expand_runtime_task_call(
+            function, maker_symbol, move arguments)
+    }
+
+    fn expand_event_wait(function: HirFunction) {
+        let anchor: AstNode = function.syntax
+        let predicate: AstNode = self.node("closure", "", anchor)
+        predicate.add(self.node("params", "", anchor))
+        let result: AstNode = self.node("result", "", anchor)
+        let bool_type: AstNode = self.node("type", "bool", anchor)
+        bool_type.resolved = "bool"
+        result.add(bool_type)
+        predicate.add(result)
+        let body: AstNode = self.node("block", "", anchor)
+        let hand_back: AstNode = self.node("return", "", anchor)
+        hand_back.add(self.call_method(
+            self.name_of("self", anchor), "_is_set", [], anchor))
+        body.add(hand_back)
+        predicate.add(body)
+        self.expand_runtime_task_call(
+            function, async_rt_symbol("event_wait_task"),
+            [predicate])
+    }
+
     fn expand_function(function: HirFunction) {
         if function.qualified ==
            package_symbol("std.async", "yield_now") {
             self.expand_runtime_task_function(
                 function, async_rt_symbol("yield_task"))
+            return
+        }
+        if function.qualified ==
+           package_symbol("std.async", "sleep_millis") {
+            self.expand_runtime_task_function(
+                function, async_rt_symbol("sleep_millis_task"))
+            return
+        }
+        if function.qualified ==
+           package_symbol("std.async", "sleep_until") {
+            self.expand_runtime_task_function(
+                function, async_rt_symbol("sleep_until_task"))
+            return
+        }
+        if function.qualified ==
+           package_symbol("std.async", "group_turn") {
+            self.expand_runtime_task_function(
+                function, async_rt_symbol("group_turn_task"))
+            return
+        }
+        if function.owner == package_symbol("std.async", "Event") &&
+           function.name == "wait" {
+            self.expand_event_wait(function)
             return
         }
         self.function = function
@@ -2424,6 +2649,8 @@ class AsyncExpander {
             maker.add(root_decl)
             let drive: AstNode = self.node("for", "", anchor)
             let drive_body: AstNode = self.node("block", "", anchor)
+            drive_body.add(self.statement_of(self.call_name(
+                async_rt_symbol("driver_cycle_begin"), [], anchor)))
             let root_step: AstNode = self.node(
                 "let", "root_step$", anchor)
             let root_step_type: AstNode =
@@ -2474,16 +2701,16 @@ class AsyncExpander {
                 wait_call.add(wait_callee)
                 drive_body.add(self.statement_of(wait_call))
             } else {
-                // No readiness source exists in this program, so pending
-                // after a full poll cycle can never resolve: report the
-                // deadlock without ever naming a poller symbol — this is
-                // what lets pure async link under every runtime profile.
-                let stall_call: AstNode = self.node("call", "", anchor)
-                let stall_callee: AstNode = self.node(
-                    "name", "driver_stall", anchor)
-                stall_callee.resolved = async_rt_symbol("driver_stall")
-                stall_call.add(stall_callee)
-                drive_body.add(self.statement_of(stall_call))
+                // Event, timer, channel and thread waits use the profile-free
+                // condition driver. Its freestanding fallback reports the
+                // same deadlock when no hosted wake source exists.
+                let wait_call: AstNode = self.node("call", "", anchor)
+                let wait_callee: AstNode = self.node(
+                    "name", "driver_wait_basic", anchor)
+                wait_callee.resolved =
+                    async_rt_symbol("driver_wait_basic")
+                wait_call.add(wait_callee)
+                drive_body.add(self.statement_of(wait_call))
             }
             drive.add(drive_body)
             maker.add(drive)
@@ -2515,6 +2742,19 @@ class AsyncExpander {
     fn run() -> bool {
         var any: bool = false
         var closure_changed: Map<string, bool> = {}
+        for function: HirFunction in self.program.functions {
+            if function.qualified ==
+               async_rt_symbol("spawn_async_adapter") {
+                self.expand_thread_adapter(function, false)
+                closure_changed[function.qualified] = true
+                any = true
+            } else if function.qualified ==
+                      async_rt_symbol("spawn_async_unit_adapter") {
+                self.expand_thread_adapter(function, true)
+                closure_changed[function.qualified] = true
+                any = true
+            }
+        }
         for function: HirFunction in self.program.functions {
             self.function = function
             if function.has_body &&

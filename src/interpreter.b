@@ -27,6 +27,19 @@ extern "C" fn beans_tree_ffi_invoke_bridge(
     contexts: RawPtr<RawPtr<u8> >)
 extern "C" fn beans_tree_stored_close(
     value: RawPtr<u8>)
+extern "C" fn beans_async_cycle_begin() -> int
+extern "C" fn beans_async_note_waiter() -> int
+extern "C" fn beans_async_note_timer(deadline_nanos: int) -> int
+extern "C" fn beans_async_wait_timeout() -> int
+extern "C" fn beans_async_wait_basic() -> int
+extern "C" fn beans_async_now_nanos() -> int
+extern "C" fn beans_async_reactor_register(wake: int) -> int
+extern "C" fn beans_async_reactor_unregister(wake: int) -> int
+extern "C" fn beans_async_event_new() -> int
+extern "C" fn beans_async_event_is_set(handle: int) -> int
+extern "C" fn beans_async_event_set(handle: int) -> int
+extern "C" fn beans_async_event_free(handle: int) -> int
+extern "C" fn beans_async_external_notify() -> int
 
 class TreeInterpreter {
     program: HirProgram
@@ -420,6 +433,23 @@ class TreeInterpreter {
                 "runtime panic at {node.line}:{col}: {message}"
             // Stop with the frames still standing, so a person can see what
             // the program was doing when it failed.
+            match self.debugger {
+                some(session) => {
+                    session.at_panic(self.panic_text)
+                }
+                none => {}
+            }
+        }
+        return TreeValue.unit()
+    }
+
+    // Native builtin helpers do not receive a source position.  Keep tree
+    // builtin lifecycle failures byte-identical to their runtime panics.
+    fn fail_builtin(message: string) -> TreeValue {
+        if !self.failed {
+            self.failed = true
+            self.panic_text =
+                "runtime panic at 0:0: {message}"
             match self.debugger {
                 some(session) => {
                     session.at_panic(self.panic_text)
@@ -4228,12 +4258,18 @@ class TreeInterpreter {
                             arguments[0]),
                         node,
                         self.singletons))
+            let done: AtomicInt = new AtomicInt(0)
             let handle: Thread<int> =
                 host_thread.spawn(fn() -> int {
                     work.with_lock(
                         fn(state: TreeThreadWork) {
                             state.run()
                         })
+                    done.store(1)
+                    var notified: int = 0
+                    unsafe {
+                        notified = beans_async_external_notify()
+                    }
                     return 0
                 })
             let result: TreeValue =
@@ -4241,6 +4277,7 @@ class TreeInterpreter {
             result.thread_handle =
                 some(handle)
             result.thread_work = some(work)
+            result.thread_done = some(done)
             return result
         }
         if node.resolved == "std.thread.yield_now" {
@@ -7526,12 +7563,270 @@ class TreeInterpreter {
         return none
     }
 
+    fn tree_async_notify() {
+        var notified: int = 0
+        unsafe { notified = beans_async_external_notify() }
+    }
+
+    fn tree_channel_send(
+        node: HirNode, receiver: TreeValue,
+        value: TreeValue) -> bool {
+        for {
+            var sent: bool = false
+            var closed: bool = false
+            var signal: Option<Channel<int>> = none
+            match receiver.channel_cell {
+                some(cell) => {
+                    cell.with_lock(fn(state: TreeChannelState) {
+                        closed = state.closed
+                        if !closed &&
+                           state.values.len() < state.capacity &&
+                           state.async_senders.len() == 0 {
+                            state.values.push(
+                                tree_value_copy(value))
+                            sent = true
+                            if state.receive_waiters.len() != 0 {
+                                let waiter: Channel<int> =
+                                    state.receive_waiters.remove(0)
+                                waiter.send(1)
+                            }
+                        } else if !closed {
+                            let waiter: Channel<int> =
+                                new Channel<int>(1)
+                            state.send_waiters.push(waiter)
+                            signal = some(waiter)
+                        }
+                    })
+                }
+                none => {
+                    self.fail(node, "channel has no host state")
+                    return false
+                }
+            }
+            if sent {
+                self.tree_async_notify()
+                return true
+            }
+            if closed { return false }
+            match signal {
+                some(waiter) => { waiter.receive() }
+                none => {}
+            }
+        }
+    }
+
+    fn tree_channel_receive(
+        node: HirNode, receiver: TreeValue) -> Option<TreeValue> {
+        for {
+            var value: Option<TreeValue> = none
+            var done: bool = false
+            var signal: Option<Channel<int>> = none
+            match receiver.channel_cell {
+                some(cell) => {
+                    cell.with_lock(fn(state: TreeChannelState) {
+                        if state.values.len() != 0 &&
+                           state.async_receivers.len() == 0 {
+                            value = some(state.values.remove(0))
+                            done = true
+                            if state.send_waiters.len() != 0 {
+                                let waiter: Channel<int> =
+                                    state.send_waiters.remove(0)
+                                waiter.send(1)
+                            }
+                        } else if state.closed &&
+                                  state.values.len() == 0 {
+                            done = true
+                        } else {
+                            let waiter: Channel<int> =
+                                new Channel<int>(1)
+                            state.receive_waiters.push(waiter)
+                            signal = some(waiter)
+                        }
+                    })
+                }
+                none => {
+                    self.fail(node, "channel has no host state")
+                    return none
+                }
+            }
+            if done {
+                self.tree_async_notify()
+                return value
+            }
+            match signal {
+                some(waiter) => { waiter.receive() }
+                none => {}
+            }
+        }
+    }
+
+    fn tree_channel_close(receiver: TreeValue) {
+        match receiver.channel_cell {
+            some(cell) => {
+                cell.with_lock(fn(state: TreeChannelState) {
+                    state.closed = true
+                    for waiter: Channel<int> in state.send_waiters {
+                        waiter.send(1)
+                    }
+                    for waiter: Channel<int> in state.receive_waiters {
+                        waiter.send(1)
+                    }
+                    state.send_waiters = []
+                    state.receive_waiters = []
+                })
+            }
+            none => {}
+        }
+        self.tree_async_notify()
+    }
+
+    fn tree_channel_remove_ticket(
+        tickets: List<int>, ticket: int) -> bool {
+        for index: int in 0..tickets.len() {
+            if tickets[index] == ticket {
+                tickets.remove(index)
+                return true
+            }
+        }
+        return false
+    }
+
+    fn tree_channel_async_method(
+        node: HirNode, receiver: TreeValue,
+        arguments: List<TreeValue>) -> Option<TreeValue> {
+        if receiver.kind != "channel" ||
+           !node.value.starts_with("_async_") ||
+           arguments.len() < 2 {
+            return none
+        }
+        let ticket: int = arguments[1].int_data
+        var status: int = 0
+        var changed: bool = false
+        var taken: Option<TreeValue> = none
+        match receiver.channel_cell {
+            some(cell) => {
+                cell.with_lock(fn(state: TreeChannelState) {
+                    if node.value == "_async_send_poll" {
+                        if !state.async_senders.contains(ticket) {
+                            state.async_senders.push(ticket)
+                        }
+                        if state.closed {
+                            self.tree_channel_remove_ticket(
+                                state.async_senders, ticket)
+                            status = 0 - 1
+                            changed = true
+                        } else if state.async_senders.len() != 0 &&
+                                  state.async_senders[0] == ticket &&
+                                  state.values.len() < state.capacity {
+                            state.async_senders.remove(0)
+                            state.values.push(
+                                tree_value_copy(arguments[2]))
+                            for waiter: Channel<int> in
+                                state.send_waiters {
+                                waiter.send(1)
+                            }
+                            state.send_waiters = []
+                            if state.receive_waiters.len() != 0 {
+                                let waiter: Channel<int> =
+                                    state.receive_waiters.remove(0)
+                                waiter.send(1)
+                            }
+                            status = 1
+                            changed = true
+                        }
+                    } else if node.value == "_async_receive_poll" {
+                        if !state.async_receivers.contains(ticket) {
+                            state.async_receivers.push(ticket)
+                        }
+                        if state.async_receivers.len() != 0 &&
+                           state.async_receivers[0] == ticket &&
+                           state.values.len() != 0 {
+                            state.async_receivers.remove(0)
+                            state.result_tickets.push(ticket)
+                            state.results.push(state.values.remove(0))
+                            for waiter: Channel<int> in
+                                state.receive_waiters {
+                                waiter.send(1)
+                            }
+                            state.receive_waiters = []
+                            if state.send_waiters.len() != 0 {
+                                let waiter: Channel<int> =
+                                    state.send_waiters.remove(0)
+                                waiter.send(1)
+                            }
+                            status = 1
+                            changed = true
+                        } else if state.async_receivers.len() != 0 &&
+                                  state.async_receivers[0] == ticket &&
+                                  state.closed {
+                            state.async_receivers.remove(0)
+                            status = 2
+                            changed = true
+                        }
+                    } else if node.value == "_async_receive_take" {
+                        for index: int in 0..state.result_tickets.len() {
+                            if state.result_tickets[index] == ticket {
+                                state.result_tickets.remove(index)
+                                taken = some(state.results.remove(index))
+                                break
+                            }
+                        }
+                    } else if node.value == "_async_cancel" {
+                        changed = self.tree_channel_remove_ticket(
+                            state.async_senders, ticket)
+                        if self.tree_channel_remove_ticket(
+                               state.async_receivers, ticket) {
+                            changed = true
+                        }
+                        if changed {
+                            for waiter: Channel<int> in
+                                state.send_waiters {
+                                waiter.send(1)
+                            }
+                            for waiter: Channel<int> in
+                                state.receive_waiters {
+                                waiter.send(1)
+                            }
+                            state.send_waiters = []
+                            state.receive_waiters = []
+                        }
+                    }
+                })
+            }
+            none => {
+                return some(self.fail(
+                    node, "channel has no host state"))
+            }
+        }
+        if changed { self.tree_async_notify() }
+        if node.value == "_async_receive_take" {
+            match taken {
+                some(value) => {
+                    return some(TreeValue.option_some(value))
+                }
+                none => {
+                    return some(self.fail(
+                        node, "async channel result is not ready"))
+                }
+            }
+        }
+        if node.value == "_async_cancel" {
+            return some(TreeValue.unit())
+        }
+        return some(TreeValue.integer(status))
+    }
+
     fn builtin_method(node: HirNode,
                       arguments: List<TreeValue>) -> TreeValue {
         if arguments.len() == 0 {
             return self.fail(node, "method has no receiver")
         }
         let receiver: TreeValue = arguments[0]
+        match self.tree_channel_async_method(
+                node, receiver, arguments) {
+            some(value) => { return value }
+            none => {}
+        }
         match self.c_function_pointer_method(
                 node, receiver, arguments) {
             some(value) => { return value }
@@ -8417,22 +8712,11 @@ class TreeInterpreter {
         if receiver.kind == "channel" &&
            node.value == "send" &&
            arguments.len() == 2 {
-            if receiver.bool_data {
-                return self.fail(
-                    node, "send on closed channel")
-            }
-            match receiver.channel_value {
-                some(channel) => {
-                    channel.send(
-                        new Mutex(
-                            new TreeMutexCell(
-                                tree_value_copy(
-                                    arguments[1]))))
-                }
-                none => {
+            if !self.tree_channel_send(
+                   node, receiver, arguments[1]) {
+                if !self.failed {
                     return self.fail(
-                        node,
-                        "channel has no host queue")
+                        node, "send on closed channel")
                 }
             }
             return TreeValue.unit()
@@ -8440,53 +8724,81 @@ class TreeInterpreter {
         if receiver.kind == "channel" &&
            (node.value == "receive" ||
             node.value == "try_receive") {
-            match receiver.channel_value {
-                some(channel) => {
-                    match channel.receive() {
-                        some(cell) => {
-                            var value: TreeValue =
-                                TreeValue.unit()
-                            cell.with_lock(
-                                fn(state: TreeMutexCell) {
-                                    value =
-                                        tree_value_copy(
-                                            state.value)
-                                })
-                            return TreeValue.option_some(
-                                value)
-                        }
-                        none => {
-                            return TreeValue.option_none()
-                        }
-                    }
+            match self.tree_channel_receive(node, receiver) {
+                some(value) => {
+                    return TreeValue.option_some(value)
                 }
-                none => {
-                    return self.fail(
-                        node,
-                        "channel has no host queue")
-                }
+                none => { return TreeValue.option_none() }
             }
         }
         if receiver.kind == "channel" &&
            node.value == "close" {
             receiver.bool_data = true
-            match receiver.channel_value {
-                some(channel) => {
-                    channel.close()
-                }
-                none => {}
-            }
+            self.tree_channel_close(receiver)
             return TreeValue.unit()
         }
         if receiver.kind == "thread" &&
+           node.value == "_async_join_poll" {
+            if receiver.bool_data {
+                return TreeValue.integer(0 - 1)
+            }
+            match receiver.thread_done {
+                some(done) => {
+                    return TreeValue.integer(
+                        if done.load() != 0 { 1 } else { 0 })
+                }
+                none => { return TreeValue.integer(0 - 1) }
+            }
+        }
+        if receiver.kind == "thread" &&
+           node.value == "_async_join_claim" {
+            if receiver.bool_data {
+                return TreeValue.boolean(false)
+            }
+            receiver.bool_data = true
+            match receiver.thread_handle {
+                some(handle) => {
+                    handle.join()
+                    receiver.thread_handle = none
+                    return TreeValue.boolean(true)
+                }
+                none => { return TreeValue.boolean(false) }
+            }
+        }
+        if receiver.kind == "thread" &&
+           node.value == "_async_join_take" {
+            var result: TreeValue = TreeValue.unit()
+            match receiver.thread_work {
+                some(work) => {
+                    work.with_lock(fn(state: TreeThreadWork) {
+                        if state.failed {
+                            self.failed = true
+                            self.panic_text = state.panic_text
+                        }
+                        match state.result {
+                            some(value) => {
+                                result = tree_value_copy(value)
+                            }
+                            none => {}
+                        }
+                    })
+                }
+                none => {}
+            }
+            receiver.thread_work = none
+            receiver.thread_done = none
+            return result
+        }
+        if receiver.kind == "thread" &&
            node.value == "join" {
-            if receiver.items.len() == 1 {
-                return tree_value_copy(
-                    receiver.items[0])
+            if receiver.bool_data {
+                return self.fail_builtin(
+                    "thread already joined")
             }
             match receiver.thread_handle {
                 some(handle) => {
                     handle.join()
+                    receiver.thread_handle = none
                 }
                 none => {
                     return self.fail(
@@ -8517,24 +8829,10 @@ class TreeInterpreter {
                 }
                 none => {}
             }
-            receiver.items = [
-                tree_value_copy(result)]
+            receiver.thread_work = none
+            receiver.thread_done = none
+            receiver.bool_data = true
             return result
-        }
-        if receiver.kind == "thread" &&
-           node.value == "detach" {
-            match receiver.thread_handle {
-                some(_) => {
-                    receiver.thread_handle = none
-                    receiver.thread_work = none
-                    return TreeValue.unit()
-                }
-                none => {
-                    return self.fail(
-                        node,
-                        "thread already joined or detached")
-                }
-            }
         }
         if receiver.kind == "mutex" &&
            node.value == "with_lock" &&
@@ -9404,10 +9702,10 @@ class TreeInterpreter {
                     arguments[0].int_data
             }
             if kind == "channel" {
-                result.channel_value =
-                    some(new Channel<
-                        Mutex<TreeMutexCell>>(
-                            result.int_data))
+                result.channel_cell =
+                    some(new Mutex(
+                        new TreeChannelState(
+                            result.int_data)))
             }
         } else if kind == "mutex" ||
                   kind == "atomic" {
@@ -12578,6 +12876,51 @@ class TreeInterpreter {
     fn call_extern(
         function: HirFunction,
         arguments: List<TreeValue>) -> TreeValue {
+        // These scheduler operations belong to the interpreter process's own
+        // runtime. Calling them directly also keeps their symbols linked into
+        // the self-hosted compiler when no compiler code itself uses async.
+        var async_runtime_result: int = 0
+        var async_runtime_call: bool = true
+        unsafe {
+            if function.extern_name == "beans_async_cycle_begin" {
+                async_runtime_result = beans_async_cycle_begin()
+            } else if function.extern_name == "beans_async_note_waiter" {
+                async_runtime_result = beans_async_note_waiter()
+            } else if function.extern_name == "beans_async_note_timer" {
+                async_runtime_result = beans_async_note_timer(
+                    arguments[0].int_data)
+            } else if function.extern_name == "beans_async_wait_timeout" {
+                async_runtime_result = beans_async_wait_timeout()
+            } else if function.extern_name == "beans_async_wait_basic" {
+                async_runtime_result = beans_async_wait_basic()
+            } else if function.extern_name == "beans_async_now_nanos" {
+                async_runtime_result = beans_async_now_nanos()
+            } else if function.extern_name ==
+                          "beans_async_reactor_register" {
+                async_runtime_result = beans_async_reactor_register(
+                    arguments[0].int_data)
+            } else if function.extern_name ==
+                          "beans_async_reactor_unregister" {
+                async_runtime_result = beans_async_reactor_unregister(
+                    arguments[0].int_data)
+            } else if function.extern_name == "beans_async_event_new" {
+                async_runtime_result = beans_async_event_new()
+            } else if function.extern_name == "beans_async_event_is_set" {
+                async_runtime_result = beans_async_event_is_set(
+                    arguments[0].int_data)
+            } else if function.extern_name == "beans_async_event_set" {
+                async_runtime_result = beans_async_event_set(
+                    arguments[0].int_data)
+            } else if function.extern_name == "beans_async_event_free" {
+                async_runtime_result = beans_async_event_free(
+                    arguments[0].int_data)
+            } else {
+                async_runtime_call = false
+            }
+        }
+        if async_runtime_call {
+            return TreeValue.integer(async_runtime_result)
+        }
         let symbol: int =
             self.extern_symbol_address(function)
         if self.failed { return TreeValue.unit() }

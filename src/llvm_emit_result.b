@@ -774,16 +774,22 @@ partial class LlvmTextEmitter {
             instruction.operands[0]
         let operand_type: HirType =
             self.value_type(function, operand_id)
-        let operand: string =
-            self.value(
-                function, values,
-                operand_id, instruction)
         let consumed: bool =
             instruction.consumes.len() >= 1 &&
             instruction.consumes[0]
         let id: int = self.fresh()
         let result: string = "%v{instruction.result}"
         values[instruction.result] = result
+        if is_ok &&
+           canonical_hir_name(result_type.args[0].name) == "unit" {
+            // A void-producing operand has no SSA value. Result<unit> still
+            // owns a tagged box so its Error arm keeps the normal ABI.
+            return "  {result} = call ptr @beans_alloc(i64 16, i64 1)\n  store i64 0, ptr {result}\n"
+        }
+        let operand: string =
+            self.value(
+                function, values,
+                operand_id, instruction)
         if self.result_is_inline(result_type) {
             let payload: HirType =
                 if is_ok {

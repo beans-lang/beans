@@ -271,12 +271,16 @@ typedef SRWLOCK pthread_mutex_t;
 typedef CONDITION_VARIABLE pthread_cond_t;
 typedef HANDLE pthread_t;
 typedef struct {
+    int detached;
+} pthread_attr_t;
+typedef struct {
     INIT_ONCE once;
     void (*routine)(void);
 } pthread_once_t;
 
 #define PTHREAD_MUTEX_INITIALIZER SRWLOCK_INIT
 #define PTHREAD_ONCE_INIT {INIT_ONCE_STATIC_INIT, NULL}
+#define PTHREAD_CREATE_DETACHED 1
 
 typedef SSIZE_T rt_ssize_t;
 #define read _read
@@ -357,9 +361,21 @@ static DWORD WINAPI win_thread_start(void* raw) {
     start.routine(start.argument);
     return 0;
 }
-static int pthread_create(pthread_t* thread, const void* unused,
+static int pthread_attr_init(pthread_attr_t* attr) {
+    attr->detached = 0;
+    return 0;
+}
+static int pthread_attr_setdetachstate(pthread_attr_t* attr, int state) {
+    if (state != PTHREAD_CREATE_DETACHED) return EINVAL;
+    attr->detached = 1;
+    return 0;
+}
+static int pthread_attr_destroy(pthread_attr_t* attr) {
+    (void)attr;
+    return 0;
+}
+static int pthread_create(pthread_t* thread, const pthread_attr_t* attr,
                           void* (*routine)(void*), void* argument) {
-    (void)unused;
     WinThreadStart* start = (WinThreadStart*)malloc(sizeof(WinThreadStart));
     if (!start) return ENOMEM;
     start->routine = routine;
@@ -369,6 +385,10 @@ static int pthread_create(pthread_t* thread, const void* unused,
         free(start);
         return EAGAIN;
     }
+    if (attr && attr->detached) {
+        CloseHandle(*thread);
+        *thread = NULL;
+    }
     return 0;
 }
 static int pthread_join(pthread_t thread, void** result) {
@@ -377,10 +397,6 @@ static int pthread_join(pthread_t thread, void** result) {
     CloseHandle(thread);
     return waited == WAIT_OBJECT_0 ? 0 : EINVAL;
 }
-static int pthread_detach(pthread_t thread) {
-    return CloseHandle(thread) ? 0 : EINVAL;
-}
-
 static BOOL CALLBACK win_once_start(PINIT_ONCE raw, PVOID parameter,
                                     PVOID* context) {
     (void)raw;
@@ -1300,6 +1316,17 @@ typedef struct {
     long long version;
 } BMap;
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
+typedef struct BChanWaiter {
+    struct BChanWaiter* previous;
+    struct BChanWaiter* next;
+    void* channel;
+    void* value_channel;
+    void* value;
+    long long word;
+    int kind;
+    int queued;
+    int has_value;
+} BChanWaiter;
 typedef struct {
     pthread_mutex_t m;
     pthread_cond_t can_send, can_recv;
@@ -1307,12 +1334,69 @@ typedef struct {
     long long head, count, cap;
     int closed;
     long long stride, ptr_mask;
+    BChanWaiter* send_head;
+    BChanWaiter* send_tail;
+    BChanWaiter* recv_head;
+    BChanWaiter* recv_tail;
 } BChan;
 typedef struct {
     pthread_mutex_t m;
     long long inner;
 } BMutex;
 #endif // BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
+
+#if BEANS_RT_PROFILE < BEANS_RT_MINIMAL
+// Link-safe single-thread fallbacks. Freestanding code can still use sticky
+// Event state, yield_now and TaskGroup. A genuinely blocked wait has no clock,
+// thread or reactor that could wake it, so the normal async deadlock path wins.
+static long long beans_async_has_waiter;
+long long beans_async_cycle_begin(void) {
+    beans_async_has_waiter = 0;
+    return 1;
+}
+long long beans_async_note_waiter(void) {
+    beans_async_has_waiter = 1;
+    return 1;
+}
+long long beans_async_note_timer(long long deadline_nanos) {
+    (void)deadline_nanos;
+    beans_async_has_waiter = 1;
+    return 1;
+}
+
+long long beans_async_now_nanos(void) { return 0; }
+long long beans_async_wait_timeout(void) {
+    return beans_async_has_waiter ? -1 : -2;
+}
+long long beans_async_wait_basic(void) { return 0; }
+long long beans_async_external_notify(void) { return 1; }
+long long beans_async_reactor_register(long long wake) {
+    (void)wake;
+    return 0;
+}
+long long beans_async_reactor_unregister(long long wake) {
+    (void)wake;
+    return 1;
+}
+long long beans_async_event_new(void) {
+    long long* state = rt_alloc(sizeof(long long));
+    if (!state) beans_panic("out of memory", 0, 0);
+    *state = 0;
+    return (long long)(intptr_t)state;
+}
+long long beans_async_event_is_set(long long raw) {
+    return raw && *(long long*)(intptr_t)raw != 0;
+}
+long long beans_async_event_set(long long raw) {
+    if (!raw) return 0;
+    *(long long*)(intptr_t)raw = 1;
+    return 1;
+}
+long long beans_async_event_free(long long raw) {
+    rt_free((void*)(intptr_t)raw);
+    return 1;
+}
+#endif
 
 // one shape-walker for destruction and all collector phases
 static void cc_walk(void* p, long long meta, void (*fn)(void*, void*), void* ctx) {
@@ -12175,12 +12259,15 @@ long long beans_poll_wait_into_out(long long poller, long long wake_read,
 // Safe from any thread. One byte into a pipe, written while holding the table lock so
 // the descriptor cannot be closed underneath it. EAGAIN means a wake is already pending,
 // which is exactly as good as writing another.
-BRes beans_poll_wake(long long handle) {
+// Zero is success, -1 is a stale handle, and a positive value is the host
+// error.  Internal executor wakeups use this form so a finishing worker never
+// allocates an Error after it has left the cycle-collector worker set.
+static int beans_poll_wake_try(long long handle) {
     pthread_mutex_lock(&poll_wakers_lock);
     net_fd_t fd = poll_waker_fd(handle);
     if (!net_fd_ok(fd)) {
         pthread_mutex_unlock(&poll_wakers_lock);
-        return (BRes){0, mk_error("poller wake: that poller is closed", "closed")};
+        return -1;
     }
     char one = 1;
     for (;;) {
@@ -12191,15 +12278,23 @@ BRes beans_poll_wake(long long handle) {
 #endif
         if (wrote == 1) {
             pthread_mutex_unlock(&poll_wakers_lock);
-            return (BRes){1, NULL};
+            return 0;
         }
         if (wrote < 0 && net_errno() == EINTR) continue;
         int e = net_errno();
         pthread_mutex_unlock(&poll_wakers_lock);
         if (wrote < 0 && (e == EAGAIN || e == EWOULDBLOCK))
-            return (BRes){1, NULL}; // already awake, and one byte is enough
-        return (BRes){0, poll_err("poller wake", e)};
+            return 0; // already awake, and one byte is enough
+        return e ? e : EIO;
     }
+}
+BRes beans_poll_wake(long long handle) {
+    int status = beans_poll_wake_try(handle);
+    if (status == 0) return (BRes){1, NULL};
+    if (status < 0)
+        return (BRes){0, mk_error(
+            "poller wake: that poller is closed", "closed")};
+    return (BRes){0, poll_err("poller wake", status)};
 }
 long long beans_poll_wake_out(long long handle, void** e_out) { BRes r = beans_poll_wake(handle); *e_out = r.err; return r.val; }
 
@@ -12427,8 +12522,7 @@ void beans_reactor_note_close(long long fd) {
         }
         pthread_mutex_unlock(&beans_parked_lock);
         for (int i = 0; i < wake_count; i++) {
-            BRes ignored = beans_poll_wake(wakes[i]);
-            if (ignored.err) beans_release(ignored.err);
+            (void)beans_poll_wake_try(wakes[i]);
         }
     } while (more);
 }
@@ -13064,20 +13158,224 @@ void beans_tree_ffi_invoke_bridge(void* bridge, void* symbol, void* result,
 // threads, CPU detection and futex-backed wait/notify need a hosted platform:
 // pthreads, sysctl or getauxval, and a futex. A freestanding program has one
 // thread by construction.
+// ---- async executor wake state ---------------------------------------------
+//
+// Event, timer, channel and thread waits all feed one epoch. The executor
+// snapshots it before polling the task tree, so a notification in the small
+// gap between a task reporting blocked and the driver sleeping cannot be
+// lost. Full-profile executors also register their poller wake handle; one
+// notification then wakes both a condition wait and every reactor wait.
+typedef struct BAsyncReactor {
+    long long wake;
+    struct BAsyncReactor* next;
+} BAsyncReactor;
+
+typedef struct {
+    _Atomic long long set;
+} BAsyncEvent;
+
+static pthread_mutex_t beans_async_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t beans_async_cond;
+static pthread_once_t beans_async_once = PTHREAD_ONCE_INIT;
+static unsigned long long beans_async_epoch;
+static BAsyncReactor* beans_async_reactors;
+static _Thread_local unsigned long long beans_async_seen_epoch;
+static _Thread_local long long beans_async_has_waiter;
+static _Thread_local long long beans_async_deadline_ns = -1;
+
+static void beans_async_init(void) {
+#if defined(CLOCK_MONOTONIC) && !defined(__APPLE__) && !defined(_WIN32)
+    pthread_condattr_t attr;
+    pthread_condattr_init(&attr);
+    pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+    pthread_cond_init(&beans_async_cond, &attr);
+    pthread_condattr_destroy(&attr);
+#else
+    pthread_cond_init(&beans_async_cond, NULL);
+#endif
+}
+
+static void beans_async_notify(void) {
+    pthread_once(&beans_async_once, beans_async_init);
+    pthread_mutex_lock(&beans_async_lock);
+    beans_async_epoch += 1;
+    pthread_cond_broadcast(&beans_async_cond);
+#if BEANS_RT_PROFILE >= BEANS_RT_FULL
+    for (BAsyncReactor* row = beans_async_reactors; row; row = row->next) {
+        (void)beans_poll_wake_try(row->wake);
+    }
+#endif
+    pthread_mutex_unlock(&beans_async_lock);
+}
+
+long long beans_async_external_notify(void) {
+    beans_async_notify();
+    return 1;
+}
+
+long long beans_async_cycle_begin(void) {
+    pthread_once(&beans_async_once, beans_async_init);
+    pthread_mutex_lock(&beans_async_lock);
+    beans_async_seen_epoch = beans_async_epoch;
+    pthread_mutex_unlock(&beans_async_lock);
+    beans_async_has_waiter = 0;
+    beans_async_deadline_ns = -1;
+    return 1;
+}
+
+long long beans_async_note_waiter(void) {
+    beans_async_has_waiter = 1;
+    return 1;
+}
+
+long long beans_async_note_timer(long long deadline_nanos) {
+    if (beans_async_deadline_ns < 0 || deadline_nanos < beans_async_deadline_ns)
+        beans_async_deadline_ns = deadline_nanos;
+    return 1;
+}
+
+long long beans_async_now_nanos(void) {
+    return beans_time_monotonic_nanos();
+}
+
+// -2: no generic source can wake; -1: an untimed waiter; >=0: timer delay.
+long long beans_async_wait_timeout(void) {
+    pthread_once(&beans_async_once, beans_async_init);
+    pthread_mutex_lock(&beans_async_lock);
+    int notified = beans_async_epoch != beans_async_seen_epoch;
+    pthread_mutex_unlock(&beans_async_lock);
+    if (notified) return 0;
+    if (beans_async_deadline_ns >= 0) {
+        long long now = beans_time_monotonic_nanos();
+        long long left = beans_async_deadline_ns - now;
+        if (left <= 0) return 0;
+        return left / 1000000LL + (left % 1000000LL != 0);
+    }
+    return beans_async_has_waiter ? -1 : -2;
+}
+
+long long beans_async_wait_basic(void) {
+    pthread_once(&beans_async_once, beans_async_init);
+    long long timeout = beans_async_wait_timeout();
+    if (timeout == -2) return 0;
+    pthread_mutex_lock(&beans_async_lock);
+    if (beans_async_epoch == beans_async_seen_epoch) {
+        if (timeout < 0) {
+            pthread_cond_wait(&beans_async_cond, &beans_async_lock);
+        } else if (timeout > 0) {
+            struct timespec until;
+#if defined(CLOCK_MONOTONIC) && !defined(__APPLE__) && !defined(_WIN32)
+            until.tv_sec = (time_t)(beans_async_deadline_ns / 1000000000LL);
+            until.tv_nsec = (long)(beans_async_deadline_ns % 1000000000LL);
+            pthread_cond_timedwait(
+                &beans_async_cond, &beans_async_lock, &until);
+#elif defined(__APPLE__)
+            until.tv_sec = (time_t)(timeout / 1000);
+            until.tv_nsec = (long)((timeout % 1000) * 1000000LL);
+            pthread_cond_timedwait_relative_np(
+                &beans_async_cond, &beans_async_lock, &until);
+#else
+            beans_wall_timespec(&until);
+            until.tv_sec += (time_t)(timeout / 1000);
+            until.tv_nsec += (long)((timeout % 1000) * 1000000LL);
+            if (until.tv_nsec >= 1000000000L) {
+                until.tv_sec += 1;
+                until.tv_nsec -= 1000000000L;
+            }
+            pthread_cond_timedwait(
+                &beans_async_cond, &beans_async_lock, &until);
+#endif
+        }
+    }
+    pthread_mutex_unlock(&beans_async_lock);
+    return 1;
+}
+
+long long beans_async_reactor_register(long long wake) {
+#if BEANS_RT_PROFILE >= BEANS_RT_FULL
+    pthread_once(&beans_async_once, beans_async_init);
+    BAsyncReactor* row = malloc(sizeof *row);
+    if (!row) return 0;
+    row->wake = wake;
+    pthread_mutex_lock(&beans_async_lock);
+    row->next = beans_async_reactors;
+    beans_async_reactors = row;
+    pthread_mutex_unlock(&beans_async_lock);
+    return 1;
+#else
+    (void)wake;
+    return 0;
+#endif
+}
+
+long long beans_async_reactor_unregister(long long wake) {
+#if BEANS_RT_PROFILE >= BEANS_RT_FULL
+    pthread_once(&beans_async_once, beans_async_init);
+    pthread_mutex_lock(&beans_async_lock);
+    BAsyncReactor** at = &beans_async_reactors;
+    while (*at) {
+        BAsyncReactor* row = *at;
+        if (row->wake == wake) {
+            *at = row->next;
+            free(row);
+            break;
+        }
+        at = &row->next;
+    }
+    pthread_mutex_unlock(&beans_async_lock);
+#else
+    (void)wake;
+#endif
+    return 1;
+}
+
+long long beans_async_event_new(void) {
+    BAsyncEvent* event = malloc(sizeof *event);
+    if (!event) beans_panic("out of memory", 0, 0);
+    __atomic_store_n((long long*)&event->set, 0, __ATOMIC_RELAXED);
+    return (long long)(intptr_t)event;
+}
+
+long long beans_async_event_is_set(long long raw) {
+    BAsyncEvent* event = (BAsyncEvent*)(intptr_t)raw;
+    return event && __atomic_load_n(
+        (long long*)&event->set, __ATOMIC_ACQUIRE) != 0;
+}
+
+long long beans_async_event_set(long long raw) {
+    BAsyncEvent* event = (BAsyncEvent*)(intptr_t)raw;
+    if (!event) return 0;
+    long long before = __atomic_exchange_n(
+        (long long*)&event->set, 1, __ATOMIC_ACQ_REL);
+    if (!before) beans_async_notify();
+    return 1;
+}
+
+long long beans_async_event_free(long long raw) {
+    free((void*)(intptr_t)raw);
+    return 1;
+}
+
 // ---- threads ----
+typedef struct {
+    _Atomic int complete;
+} BThreadSignal;
+
 typedef struct {
     void* payload;
     long long result;
+    BThreadSignal* signal;
     pthread_t th;
     long long (*thunk)(void*);
     void (*typed_thunk)(void*, void*);
     void* env;
     long long result_size;
-    int joined;
+    _Atomic int joined;
 } BThread;
 void beans_thread_release_env(void* env);
 static void* thread_main(void* arg) {
     BThread* t = arg;
+    BThreadSignal* signal = t->signal;
     cc_worker_roots_begin();
     if (t->typed_thunk) {
         t->typed_thunk(t->env, t->payload);
@@ -13093,33 +13391,67 @@ static void* thread_main(void* arg) {
             cc_mark_shared_graph((void*)(uintptr_t)t->result);
     }
     beans_release(t->env);
-    beans_release(t); // the running thread's own ref on the handle
+    t->env = NULL;
+    // Join includes destruction of moved captures, like pthread_join did.
+    // Drop the running handle ref as the worker's final graph touch. If the
+    // source handle was abandoned, this also drops its late result now.
+    beans_release(t);
     cc_worker_roots_end();
-    // last heap touch is done — the cycle collector may run again
+    // The global collector may run again only after every graph root above is
+    // in its buffer. The separately retained scalar signal remains valid even
+    // when releasing the handle freed BThread.
     cc_threads -= 1;
+    __atomic_store_n((int*)&signal->complete, 1, __ATOMIC_RELEASE);
+    beans_async_notify();
+    // This shared scalar has no child graph. It is the only RC touch after the
+    // worker leaves cc_threads.
+    beans_release(signal);
     return NULL;
 }
 BThread* beans_thread_spawn(void* thunk, void* env, long long result_ptr) {
     long long result_mask =
         result_ptr ? RT_I64_SLOT_MASK_AT(offsetof(BThread, result)) : 0;
-    BThread* t = beans_alloc(sizeof(BThread), 1 | (result_mask << 3));
+    long long signal_mask =
+        1LL << (offsetof(BThread, signal) / RT_SLOT_STRIDE);
+    BThread* t = beans_alloc(
+        sizeof(BThread), 1 | ((result_mask | signal_mask) << 3));
+    t->signal = beans_alloc(sizeof(BThreadSignal), 1);
+    beans_retain(t->signal); // worker publication ref
     t->thunk = (long long (*)(void*))thunk;
     t->env = env; // ownership of the closure box moves to the thread
     cc_worker_roots_begin(); // idempotent: give the spawning thread local CC
     cc_enable_mt(); // from here every count op is atomic, in every thread
     cc_mark_shared_one(t);
+    cc_mark_shared_one(t->signal);
     cc_mark_shared_graph(env);
     beans_retain(t); // one ref for the handle, one for the running thread
     cc_threads += 1;
-    pthread_create(&t->th, NULL, thread_main, t);
+    pthread_attr_t attr;
+    if (pthread_attr_init(&attr) != 0 ||
+        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED) != 0)
+        beans_panic("thread spawn failed", 0, 0);
+    int created = pthread_create(&t->th, &attr, thread_main, t);
+    pthread_attr_destroy(&attr);
+    if (created != 0) {
+        cc_threads -= 1;
+        beans_release(t);
+        beans_release(t->signal);
+        beans_panic("thread spawn failed", 0, 0);
+    }
     return t;
 }
 BThread* beans_thread_spawn_typed(void* thunk, void* env, long long size,
                                   long long ptr_mask) {
     if (size <= 0 || size > (1LL << 30))
         beans_panic("invalid thread result size", 0, 0);
-    BThread* t = beans_alloc(sizeof(BThread), 1 | (1LL << 3));
+    long long pointer_mask =
+        (1LL << (offsetof(BThread, payload) / RT_SLOT_STRIDE)) |
+        (1LL << (offsetof(BThread, signal) / RT_SLOT_STRIDE));
+    BThread* t = beans_alloc(
+        sizeof(BThread), 1 | (pointer_mask << 3));
     t->payload = beans_alloc(size, 1 | (ptr_mask << 3));
+    t->signal = beans_alloc(sizeof(BThreadSignal), 1);
+    beans_retain(t->signal);
     t->result_size = size;
     t->typed_thunk = (void (*)(void*, void*))thunk;
     t->env = env;
@@ -13127,24 +13459,46 @@ BThread* beans_thread_spawn_typed(void* thunk, void* env, long long size,
     cc_enable_mt();
     cc_mark_shared_one(t);
     cc_mark_shared_one(t->payload);
+    cc_mark_shared_one(t->signal);
     cc_mark_shared_graph(env);
     beans_retain(t);
     cc_threads += 1;
-    pthread_create(&t->th, NULL, thread_main, t);
+    pthread_attr_t attr;
+    if (pthread_attr_init(&attr) != 0 ||
+        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED) != 0)
+        beans_panic("thread spawn failed", 0, 0);
+    int created = pthread_create(&t->th, &attr, thread_main, t);
+    pthread_attr_destroy(&attr);
+    if (created != 0) {
+        cc_threads -= 1;
+        beans_release(t);
+        beans_release(t->signal);
+        beans_panic("thread spawn failed", 0, 0);
+    }
     return t;
 }
 long long beans_thread_join(BThread* t) {
-    if (t->joined) beans_panic("thread already joined", 0, 0);
-    t->joined = 1;
-    pthread_join(t->th, NULL);
+    if (__atomic_exchange_n((int*)&t->joined, 1, __ATOMIC_ACQ_REL))
+        beans_panic("thread already joined", 0, 0);
+    pthread_once(&beans_async_once, beans_async_init);
+    pthread_mutex_lock(&beans_async_lock);
+    while (!__atomic_load_n(
+               (int*)&t->signal->complete, __ATOMIC_ACQUIRE))
+        pthread_cond_wait(&beans_async_cond, &beans_async_lock);
+    pthread_mutex_unlock(&beans_async_lock);
     long long result = t->result;
     t->result = 0; // ownership of a pointer result moves to the caller
     return result;
 }
 void beans_thread_join_typed(BThread* t, void* out, long long size) {
-    if (t->joined) beans_panic("thread already joined", 0, 0);
-    t->joined = 1;
-    pthread_join(t->th, NULL);
+    if (__atomic_exchange_n((int*)&t->joined, 1, __ATOMIC_ACQ_REL))
+        beans_panic("thread already joined", 0, 0);
+    pthread_once(&beans_async_once, beans_async_init);
+    pthread_mutex_lock(&beans_async_lock);
+    while (!__atomic_load_n(
+               (int*)&t->signal->complete, __ATOMIC_ACQUIRE))
+        pthread_cond_wait(&beans_async_cond, &beans_async_lock);
+    pthread_mutex_unlock(&beans_async_lock);
     if (size != t->result_size) beans_panic("thread result size mismatch", 0, 0);
     void* payload = t->payload;
     memcpy(out, payload, (size_t)size);
@@ -13152,13 +13506,35 @@ void beans_thread_join_typed(BThread* t, void* out, long long size) {
     t->payload = NULL;
     beans_release(payload);
 }
-void beans_thread_detach(BThread* t) {
-    if (t->joined) beans_panic("thread already joined or detached", 0, 0);
-    if (pthread_detach(t->th) != 0)
-        beans_panic("thread detach failed", 0, 0);
-    t->joined = 1;
+long long beans_thread_async_join_poll(BThread* t) {
+    if (__atomic_load_n((int*)&t->joined, __ATOMIC_ACQUIRE)) return -1;
+    return __atomic_load_n(
+        (int*)&t->signal->complete, __ATOMIC_ACQUIRE) ? 1 : 0;
 }
-
+long long beans_thread_async_join_claim(BThread* t) {
+    if (__atomic_exchange_n((int*)&t->joined, 1, __ATOMIC_ACQ_REL)) return 0;
+    // Workers are detached at creation, so the OS reaps them whether a
+    // source handle is joined or abandoned. The ready poll's acquire load is
+    // the join barrier; after the claim there is no fallible OS join step.
+    return __atomic_load_n(
+        (int*)&t->signal->complete, __ATOMIC_ACQUIRE) ? 1 : 0;
+}
+long long beans_thread_async_take(BThread* t) {
+    long long result = t->result;
+    t->result = 0;
+    return result;
+}
+long long beans_thread_async_take_typed(BThread* t, void* out,
+                                        long long size) {
+    if (size != t->result_size)
+        beans_panic("thread result size mismatch", 0, 0);
+    void* payload = t->payload;
+    memcpy(out, payload, (size_t)size);
+    memset(payload, 0, (size_t)size);
+    t->payload = NULL;
+    beans_release(payload);
+    return 1;
+}
 BMutex* beans_mutex_new(long long inner, long long inner_ptr) {
     BMutex* mu = beans_alloc(sizeof(BMutex), 5 | (inner_ptr << 3));
     pthread_mutex_init(&mu->m, NULL);
@@ -13211,9 +13587,242 @@ BChan* beans_chan_new_typed(long long cap, long long stride, long long ptr_mask)
     pthread_cond_init(&c->can_recv, NULL);
     return c;
 }
+
+static void chan_waiter_enqueue(BChan* c, BChanWaiter* waiter, int kind) {
+    if (waiter->queued) return;
+    BChanWaiter** head = kind == 1 ? &c->send_head : &c->recv_head;
+    BChanWaiter** tail = kind == 1 ? &c->send_tail : &c->recv_tail;
+    waiter->previous = *tail;
+    waiter->next = NULL;
+    waiter->channel = c;
+    waiter->kind = kind;
+    waiter->queued = 1;
+    if (*tail) (*tail)->next = waiter;
+    else *head = waiter;
+    *tail = waiter;
+}
+
+static void chan_waiter_remove(BChan* c, BChanWaiter* waiter) {
+    if (!waiter || !waiter->queued || waiter->channel != c) return;
+    BChanWaiter** head = waiter->kind == 1 ? &c->send_head : &c->recv_head;
+    BChanWaiter** tail = waiter->kind == 1 ? &c->send_tail : &c->recv_tail;
+    if (waiter->previous) waiter->previous->next = waiter->next;
+    else *head = waiter->next;
+    if (waiter->next) waiter->next->previous = waiter->previous;
+    else *tail = waiter->previous;
+    waiter->previous = NULL;
+    waiter->next = NULL;
+    waiter->channel = NULL;
+    waiter->queued = 0;
+}
+
+static void chan_retain_value(BChan* c, void* value) {
+    int i64_encoded = c->stride < 0;
+    for (int slot = 0; slot < RT_MASK_SLOTS && (c->ptr_mask >> slot); slot++) {
+        if (!((c->ptr_mask >> slot) & 1)) continue;
+        void* child = rt_masked_child(value, slot, i64_encoded);
+        if (child) beans_retain(child);
+    }
+}
+
+static void chan_release_value(BChan* c, void* value) {
+    int i64_encoded = c->stride < 0;
+    for (int slot = 0; slot < RT_MASK_SLOTS && (c->ptr_mask >> slot); slot++) {
+        if (!((c->ptr_mask >> slot) & 1)) continue;
+        void* child = rt_masked_child(value, slot, i64_encoded);
+        if (child) beans_release(child);
+    }
+}
+
+long long beans_chan_async_waiter_new(void) {
+    BChanWaiter* waiter = calloc(1, sizeof *waiter);
+    if (!waiter) beans_panic("out of memory", 0, 0);
+    return (long long)(intptr_t)waiter;
+}
+
+long long beans_chan_async_waiter_free(long long raw) {
+    BChanWaiter* waiter = (BChanWaiter*)(intptr_t)raw;
+    if (!waiter) return 1;
+    if (waiter->queued)
+        beans_panic("async channel waiter freed while queued", 0, 0);
+    if (waiter->has_value) {
+        BChan* c = waiter->value_channel;
+        void* value = c->stride < 0 ? (void*)&waiter->word : waiter->value;
+        chan_release_value(c, value);
+    }
+    free(waiter->value);
+    free(waiter);
+    return 1;
+}
+
+long long beans_chan_async_cancel(BChan* c, long long raw) {
+    BChanWaiter* waiter = (BChanWaiter*)(intptr_t)raw;
+    if (!waiter) return 1;
+    pthread_mutex_lock(&c->m);
+    int queued = waiter->queued && waiter->channel == c;
+    if (queued) chan_waiter_remove(c, waiter);
+    pthread_cond_broadcast(&c->can_send);
+    pthread_cond_broadcast(&c->can_recv);
+    pthread_mutex_unlock(&c->m);
+    if (queued) beans_async_notify();
+    return 1;
+}
+
+// -1 closed, 0 blocked, 1 committed. The async task keeps owning `value`;
+// the channel retains its own copy only when the send commits.
+long long beans_chan_async_send(BChan* c, long long raw, long long value) {
+    BChanWaiter* waiter = (BChanWaiter*)(intptr_t)raw;
+    pthread_mutex_lock(&c->m);
+    chan_waiter_enqueue(c, waiter, 1);
+    if (c->closed) {
+        chan_waiter_remove(c, waiter);
+        pthread_mutex_unlock(&c->m);
+        beans_async_notify();
+        return -1;
+    }
+    if (c->send_head != waiter || c->count == c->cap) {
+        pthread_mutex_unlock(&c->m);
+        return 0;
+    }
+    if (cc_is_mt() && c->ptr_mask)
+        cc_mark_shared_graph((void*)(uintptr_t)value);
+    if (c->ptr_mask && value) beans_retain((void*)(uintptr_t)value);
+    c->q[(c->head + c->count) % c->cap] = value;
+    c->count += 1;
+    chan_waiter_remove(c, waiter);
+    pthread_cond_broadcast(&c->can_send);
+    pthread_cond_signal(&c->can_recv);
+    pthread_mutex_unlock(&c->m);
+    beans_async_notify();
+    return 1;
+}
+
+long long beans_chan_async_send_typed(BChan* c, long long raw, void* value) {
+    BChanWaiter* waiter = (BChanWaiter*)(intptr_t)raw;
+    pthread_mutex_lock(&c->m);
+    chan_waiter_enqueue(c, waiter, 1);
+    if (c->closed) {
+        chan_waiter_remove(c, waiter);
+        pthread_mutex_unlock(&c->m);
+        beans_async_notify();
+        return -1;
+    }
+    if (c->send_head != waiter || c->count == c->cap) {
+        pthread_mutex_unlock(&c->m);
+        return 0;
+    }
+    if (cc_is_mt() && c->ptr_mask)
+        cc_mark_shared_value(value, c->ptr_mask, 0);
+    chan_retain_value(c, value);
+    void* destination =
+        (char*)c->q + ((c->head + c->count) % c->cap) * c->stride;
+    memcpy(destination, value, (size_t)c->stride);
+    c->count += 1;
+    chan_waiter_remove(c, waiter);
+    pthread_cond_broadcast(&c->can_send);
+    pthread_cond_signal(&c->can_recv);
+    pthread_mutex_unlock(&c->m);
+    beans_async_notify();
+    return 1;
+}
+
+// 0 blocked, 1 value held by the ticket, 2 closed and drained.
+long long beans_chan_async_recv(BChan* c, long long raw) {
+    BChanWaiter* waiter = (BChanWaiter*)(intptr_t)raw;
+    pthread_mutex_lock(&c->m);
+    chan_waiter_enqueue(c, waiter, 2);
+    if (c->recv_head != waiter) {
+        pthread_mutex_unlock(&c->m);
+        return 0;
+    }
+    if (c->count == 0) {
+        if (!c->closed) {
+            pthread_mutex_unlock(&c->m);
+            return 0;
+        }
+        chan_waiter_remove(c, waiter);
+        pthread_mutex_unlock(&c->m);
+        beans_async_notify();
+        return 2;
+    }
+    waiter->word = c->q[c->head];
+    waiter->value_channel = c;
+    waiter->has_value = 1;
+    c->q[c->head] = 0;
+    c->head = (c->head + 1) % c->cap;
+    c->count -= 1;
+    chan_waiter_remove(c, waiter);
+    pthread_cond_signal(&c->can_send);
+    pthread_cond_broadcast(&c->can_recv);
+    pthread_mutex_unlock(&c->m);
+    beans_async_notify();
+    return 1;
+}
+
+long long beans_chan_async_recv_typed(BChan* c, long long raw) {
+    BChanWaiter* waiter = (BChanWaiter*)(intptr_t)raw;
+    pthread_mutex_lock(&c->m);
+    chan_waiter_enqueue(c, waiter, 2);
+    if (c->recv_head != waiter) {
+        pthread_mutex_unlock(&c->m);
+        return 0;
+    }
+    if (c->count == 0) {
+        if (!c->closed) {
+            pthread_mutex_unlock(&c->m);
+            return 0;
+        }
+        chan_waiter_remove(c, waiter);
+        pthread_mutex_unlock(&c->m);
+        beans_async_notify();
+        return 2;
+    }
+    void* source = (char*)c->q + c->head * c->stride;
+    if (!waiter->value) {
+        waiter->value = malloc((size_t)c->stride);
+        if (!waiter->value) beans_panic("out of memory", 0, 0);
+    }
+    memcpy(waiter->value, source, (size_t)c->stride);
+    waiter->value_channel = c;
+    waiter->has_value = 1;
+    memset(source, 0, (size_t)c->stride);
+    c->head = (c->head + 1) % c->cap;
+    c->count -= 1;
+    chan_waiter_remove(c, waiter);
+    pthread_cond_signal(&c->can_send);
+    pthread_cond_broadcast(&c->can_recv);
+    pthread_mutex_unlock(&c->m);
+    beans_async_notify();
+    return 1;
+}
+
+
+long long beans_chan_async_take(BChan* c, long long raw) {
+    BChanWaiter* waiter = (BChanWaiter*)(intptr_t)raw;
+    if (!waiter || !waiter->has_value || waiter->value_channel != c)
+        beans_panic("async channel result is not ready", 0, 0);
+    long long value = waiter->word;
+    waiter->word = 0;
+    waiter->value_channel = NULL;
+    waiter->has_value = 0;
+    return value;
+}
+
+long long beans_chan_async_take_typed(BChan* c, long long raw, void* out) {
+    BChanWaiter* waiter = (BChanWaiter*)(intptr_t)raw;
+    if (!waiter || !waiter->has_value || waiter->value_channel != c)
+        beans_panic("async channel result is not ready", 0, 0);
+    memcpy(out, waiter->value, (size_t)c->stride);
+    memset(waiter->value, 0, (size_t)c->stride);
+    waiter->value_channel = NULL;
+    waiter->has_value = 0;
+    return 1;
+}
+
 long long beans_chan_send(BChan* c, long long v) {
     pthread_mutex_lock(&c->m);
-    while (c->count == c->cap && !c->closed) pthread_cond_wait(&c->can_send, &c->m);
+    while ((c->count == c->cap || c->send_head) && !c->closed)
+        pthread_cond_wait(&c->can_send, &c->m);
     if (c->closed) {
         pthread_mutex_unlock(&c->m);
         return 0; // caller panics; caller also still owns v
@@ -13228,11 +13837,13 @@ long long beans_chan_send(BChan* c, long long v) {
     c->count += 1;
     pthread_cond_signal(&c->can_recv);
     pthread_mutex_unlock(&c->m);
+    beans_async_notify();
     return 1;
 }
 long long beans_chan_send_typed(BChan* c, void* value) {
     pthread_mutex_lock(&c->m);
-    while (c->count == c->cap && !c->closed) pthread_cond_wait(&c->can_send, &c->m);
+    while ((c->count == c->cap || c->send_head) && !c->closed)
+        pthread_cond_wait(&c->can_send, &c->m);
     if (c->closed) {
         pthread_mutex_unlock(&c->m);
         return 0;
@@ -13246,11 +13857,13 @@ long long beans_chan_send_typed(BChan* c, void* value) {
     c->count += 1;
     pthread_cond_signal(&c->can_recv);
     pthread_mutex_unlock(&c->m);
+    beans_async_notify();
     return 1;
 }
 long long beans_chan_recv(BChan* c, long long* ok) {
     pthread_mutex_lock(&c->m);
-    while (c->count == 0 && !c->closed) pthread_cond_wait(&c->can_recv, &c->m);
+    while ((c->count == 0 && !c->closed) || c->recv_head)
+        pthread_cond_wait(&c->can_recv, &c->m);
     if (c->count == 0) {
         *ok = 0;
         pthread_mutex_unlock(&c->m);
@@ -13262,11 +13875,13 @@ long long beans_chan_recv(BChan* c, long long* ok) {
     *ok = 1;
     pthread_cond_signal(&c->can_send);
     pthread_mutex_unlock(&c->m);
+    beans_async_notify();
     return v;
 }
 long long beans_chan_recv_typed(BChan* c, void* out) {
     pthread_mutex_lock(&c->m);
-    while (c->count == 0 && !c->closed) pthread_cond_wait(&c->can_recv, &c->m);
+    while ((c->count == 0 && !c->closed) || c->recv_head)
+        pthread_cond_wait(&c->can_recv, &c->m);
     if (c->count == 0) {
         pthread_mutex_unlock(&c->m);
         return 0;
@@ -13278,6 +13893,7 @@ long long beans_chan_recv_typed(BChan* c, void* out) {
     c->count -= 1;
     pthread_cond_signal(&c->can_send);
     pthread_mutex_unlock(&c->m);
+    beans_async_notify();
     return 1;
 }
 void beans_chan_close(BChan* c) {
@@ -13286,6 +13902,7 @@ void beans_chan_close(BChan* c) {
     pthread_cond_broadcast(&c->can_send);
     pthread_cond_broadcast(&c->can_recv);
     pthread_mutex_unlock(&c->m);
+    beans_async_notify();
 }
 
 typedef struct { _Atomic long long v; } BAtomic;

@@ -1,0 +1,13 @@
+completed 3
+cancel true true
+worker survived true
+abandoned dropped true
+retry 7
+repeat closed
+capture 5
+sync capture 6 true
+async capture 6 true
+unit ok
+reference
+wide 8
+result 9

@@ -521,6 +521,7 @@ class ModuleLoader {
     csrc_rows: List<ModuleLink>
     overlays: Map<string, string>
     want_reactor: bool
+    want_async_thread: bool
     has_local_dependencies: bool
     // The depth-first stack of packages being loaded, and the import edge
     // that pushed each one (stack_edges[i] led to stack[i]).
@@ -554,6 +555,7 @@ class ModuleLoader {
         self.csrc_rows = []
         self.overlays = {}
         self.want_reactor = false
+        self.want_async_thread = false
         self.has_local_dependencies = false
         self.stack = []
         self.stack_edges = []
@@ -1675,6 +1677,17 @@ class ModuleLoader {
                name == "reactor.b" && !self.want_reactor {
                 continue
             }
+            if import_path == async_rt_package() &&
+               (name == "thread_basic.b" ||
+                name == "thread_reactor.b") {
+                if !self.want_async_thread {
+                    continue
+                }
+                if (name == "thread_reactor.b") !=
+                   self.want_reactor {
+                    continue
+                }
+            }
             let file_path: string = path.join(dir, name)
             let parsed: ParsedModuleFile = self.parse_file(file_path)
             self.record_file(package, parsed)
@@ -1700,6 +1713,11 @@ class ModuleLoader {
         var wanted: bool = false
         for package: LoadedPackage in self.packages {
             for file: ParsedModuleFile in package.files {
+                for imported: ModuleImport in file.imports {
+                    if imported.path == "std.thread" {
+                        self.want_async_thread = true
+                    }
+                }
                 for declaration: AstNode in file.ast.children {
                     if ast_needs_async_runtime(declaration) {
                         wanted = true

@@ -1334,6 +1334,22 @@ partial class LlvmTextEmitter {
                 output =
                     self.emit_channel_close(
                         function, instruction, values)
+            } else if instruction.text == "_async_send_poll" {
+                output =
+                    self.emit_channel_async_send_poll(
+                        function, instruction, values)
+            } else if instruction.text == "_async_receive_poll" {
+                output =
+                    self.emit_channel_async_receive_poll(
+                        function, instruction, values)
+            } else if instruction.text == "_async_receive_take" {
+                output =
+                    self.emit_channel_async_receive_take(
+                        function, instruction, values)
+            } else if instruction.text == "_async_cancel" {
+                output =
+                    self.emit_channel_async_cancel(
+                        function, instruction, values)
             } else {
                 self.fail(
                     instruction,
@@ -1348,15 +1364,22 @@ partial class LlvmTextEmitter {
                           instruction.operands[0]).name) ==
                       "Thread" &&
                   (instruction.text == "join" ||
-                   instruction.text == "detach") {
+                   instruction.text == "_async_join_poll" ||
+                   instruction.text == "_async_join_claim" ||
+                   instruction.text == "_async_join_take") {
             if instruction.text == "join" {
                 output =
                     self.emit_thread_join(
                         function, instruction, values)
+            } else if instruction.text == "_async_join_poll" {
+                output = self.emit_thread_async_join_poll(
+                    function, instruction, values)
+            } else if instruction.text == "_async_join_claim" {
+                output = self.emit_thread_async_join_claim(
+                    function, instruction, values)
             } else {
-                output =
-                    self.emit_thread_detach(
-                        function, instruction, values)
+                output = self.emit_thread_async_join_take(
+                    function, instruction, values)
             }
         } else if instruction.op ==
                       "builtin_method" &&

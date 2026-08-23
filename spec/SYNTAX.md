@@ -1597,10 +1597,6 @@ let t: Thread<int> = thread.spawn(fn() -> int {
 })
 let n: int = t.join()               // wait + get the value
 
-// discard the result and release the OS thread resource when it finishes
-let background: Thread<int> = thread.spawn(fn() -> int { return work() })
-background.detach()
-
 // mutex wraps the data itself — no way to touch it without holding the lock
 let ledger: Mutex<Ledger> = new Mutex(new Ledger())
 ledger.with_lock(fn(l: Ledger) {
@@ -1633,8 +1629,8 @@ hits.add(1)
   `TcpListener`, `TcpStream`, `UdpSocket`, `http.Server`, and
   `http.ServerConn` make this promise. `Result<T>` is `Send` when `T` and its
   error type are, so a worker can use `?` and return a typed error.
-- `Thread<T>.detach()` discards the result without waiting. The running thread
-  keeps its work alive and the OS thread resource is released when it finishes.
+- `Thread<T>` has no public detach operation. Dropping a handle does not stop
+  its worker; the runtime reaps the OS thread and drops any late result.
 
 ### async and await (v0.9, first version implemented)
 
@@ -1802,8 +1798,8 @@ async fn main() {
   import is refused at check time, naming the capability. A pure async
   program that somehow ends up pending reports the async deadlock above
   rather than reaching for a poller it does not have.
-- **Not yet in this first version:** dynamic task groups, detached tasks,
-  async closures, `inout` on a directly awaited call. They layer on this
+- **Not yet in this first version:** dynamic task groups, async closures,
+  `inout` on a directly awaited call. They layer on this
   model without changing it.
 
 ## Targets and the build (v0.8, implemented)
@@ -2567,7 +2563,7 @@ let worker: Thread<Result<bool>> = thread.spawn(
         return conn.respond(200, "OK", new http.Headers(), Bytes.from("hello"),
                             request.keep_alive)
     })
-worker.detach()
+let served: bool = worker.join()?
 
 // HTTP/2 is the same message model with streams named explicitly.
 let session: http.Http2Connection = http.Http2Connection.adopt(move socket, true)?
@@ -2601,8 +2597,9 @@ secure_h2.send_data(id, last_chunk, true)?
   from a reused buffer and creates strings only for typed fields that survive
   the parser.
 - **Server concurrency is an ownership choice.** `ServerConn` is a move-only
-  `Send` handle, so an accept loop can move each connection to a worker and
-  detach it. `Server.bind_reuse_port` supports one accept loop per worker on
+  `Send` handle, so an accept loop can move each connection to a worker. The
+  owning scope keeps the worker handles and joins them before exit.
+  `Server.bind_reuse_port` supports one accept loop per worker on
   macOS and Linux. `ServerConn` reuses its read and response buffers.
 - **Strict mode is the only mode.** The lenient flags that exist for ancient
   peers and request-smuggling papers are not exposed. What llhttp rejects, this
@@ -3463,7 +3460,7 @@ declares one, so `package` stays usable as an ordinary identifier.
 - Package-private by default, `pub` to expose, and `priv` for declaring-type
   private fields and methods
 - OS threads + checked `Send` captures/returns + explicit move transfer for unique
-  `Send` handles + detach + `Mutex<T>.with_lock` + `Channel<T>`
+  `Send` handles + `Mutex<T>.with_lock` + `Channel<T>`
 - `decimal` built-in for money (v0.2)
 - Go-style remote imports from git hosts + beans.pot (v0.2)
 - `Result<T>`, error type defaults to built-in `Error`

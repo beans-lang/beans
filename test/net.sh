@@ -454,7 +454,7 @@ expect_error "of non-Send type main.FakeHandle" test/cases/class_fake_send.b
 # Fabricating a socket from an arbitrary integer is not something callers can do.
 expect_error "init of 'net.TcpStream' isn't pub" test/cases/socket_private_init.b
 
-echo "checking concurrent ownership, reusable reads, reuse-port, and detach"
+echo "checking concurrent ownership, reusable reads, reuse-port, and join"
 ./build/beansc run test/cases/net_concurrency.b >"$tmp/concurrency.interp"
 ./build/beansc build test/cases/net_concurrency.b -o "$tmp/concurrency" \
     >"$tmp/concurrency.build" 2>&1

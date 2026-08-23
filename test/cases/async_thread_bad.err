@@ -1,0 +1,8 @@
+test/cases/async_thread_bad.b:9:19: error: Thread.join_async receiver 'worker' is borrowed; directly await it on an owned local
+test/cases/async_thread_bad.b:13:43: error: Thread.join_async must be directly awaited on an owned local
+test/cases/async_thread_bad.b:19:54: error: Thread.join_async must be directly awaited on an owned local
+test/cases/async_thread_bad.b:28:34: error: Thread.join_async must be directly awaited on an owned local
+test/cases/async_thread_bad.b:34:22: error: Thread.join_async must be directly awaited on an owned local
+test/cases/async_thread_bad.b:34:22: error: async runtime operation must be directly awaited or started by TaskGroup.start
+test/cases/async_thread_bad.b:40:11: error: Thread<int> has no method 'detach'
+test/cases/async_thread_bad.b: 7 error(s)

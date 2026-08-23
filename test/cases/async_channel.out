@@ -1,0 +1,5 @@
+middle -1
+receives 10 20 worker 2
+sends 1 2 3 seen 123
+closed -9 -9 -9
+parcel 42

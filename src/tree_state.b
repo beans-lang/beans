@@ -74,6 +74,30 @@ class TreeMutexCell {
     }
 }
 
+class TreeChannelState {
+    values: List<TreeValue>
+    capacity: int
+    closed: bool
+    send_waiters: List<Channel<int>>
+    receive_waiters: List<Channel<int>>
+    async_senders: List<int>
+    async_receivers: List<int>
+    result_tickets: List<int>
+    results: List<TreeValue>
+
+    fn init(capacity: int) {
+        self.values = []
+        self.capacity = if capacity > 0 { capacity } else { 1 }
+        self.closed = false
+        self.send_waiters = []
+        self.receive_waiters = []
+        self.async_senders = []
+        self.async_receivers = []
+        self.result_tickets = []
+        self.results = []
+    }
+}
+
 class TreeSingletonState {
     values: Map<string, TreeValue>
     static_values: Map<string, TreeValue>
@@ -111,9 +135,14 @@ unique class TreeThreadWork implements Send {
         let interpreter: TreeInterpreter =
             new TreeInterpreter(self.program, [])
         interpreter.singletons = self.singletons
+        // Drop the worker closure, including moved captures, before the host
+        // thread publishes completion.  Keeping it in TreeThreadWork until
+        // join made interpreter joins return before capture destructors ran.
+        let closure: TreeValue = self.closure
+        self.closure = TreeValue.unit()
         self.result =
             some(interpreter.invoke_closure(
-                self.node, self.closure, []))
+                self.node, closure, []))
         self.failed = interpreter.failed
         self.panic_text = interpreter.panic_text
     }

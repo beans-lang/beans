@@ -98,10 +98,14 @@ partial class LlvmTextEmitter {
                 self.type_text(type.args[0])
             let failed: string =
                 self.type_text(error)
-            if okay == "" || okay == "void" ||
+            let unit_okay: bool =
+                canonical_hir_name(type.args[0].name) == "unit"
+            if (!unit_okay &&
+                (okay == "" || okay == "void")) ||
                failed == "" || failed == "void" {
                 return ""
             }
+            if unit_okay { return "ptr" }
             if self.result_is_inline(type) {
                 return "\{ i1, {okay}, {failed} \}"
             }

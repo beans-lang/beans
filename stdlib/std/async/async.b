@@ -1,7 +1,51 @@
 package async
 
+extern "C" fn beans_async_event_new() -> int
+extern "C" fn beans_async_event_is_set(handle: int) -> int
+extern "C" fn beans_async_event_set(handle: int) -> int
+extern "C" fn beans_async_event_free(handle: int) -> int
+
+async fn group_turn(status: int) -> unit {}
+
 /// Cooperatively gives every runnable task one turn before this task resumes.
-pub async fn yield_now() {}
+pub async fn yield_now() -> unit {}
+
+/// Sleeps without blocking the executor thread.
+pub async fn sleep_millis(duration_ms: int) -> unit {}
+
+/// Sleeps until a std.time.monotonic_nanos() deadline.
+pub async fn sleep_until(deadline_nanos: int) -> unit {}
+
+/// A sticky cross-thread signal. Once set, every current and future wait
+/// completes; repeated set calls are harmless.
+pub class Event implements Send, Sync {
+    handle: int
+
+    pub fn init() {
+        unsafe { self.handle = beans_async_event_new() }
+    }
+
+    pub fn set() {
+        var signalled: int = 0
+        unsafe { signalled = beans_async_event_set(self.handle) }
+    }
+
+    pub fn is_set() -> bool { return self._is_set() }
+
+    fn _is_set() -> bool {
+        var set: int = 0
+        unsafe { set = beans_async_event_is_set(self.handle) }
+        return set == 1
+    }
+
+    pub async fn wait() -> unit {}
+
+    fn deinit() {
+        var freed: int = 0
+        unsafe { freed = beans_async_event_free(self.handle) }
+        self.handle = 0
+    }
+}
 
 /// A scope-bound set of dynamically started children. Task handles stay
 /// compiler-internal; the group stores only their poll/take/cancel adapters.
@@ -115,7 +159,7 @@ pub unique class TaskGroup<T> {
             let status: int = self._poll_pass()
             if self._has_ready() { return self._take_ready() }
             if self._active_count() == 0 { return none }
-            await yield_now()
+            await group_turn(status)
         }
     }
 
@@ -131,7 +175,7 @@ pub unique class TaskGroup<T> {
     pub async fn wait_all() -> List<T> {
         for self._active_count() != 0 {
             let status: int = self._poll_pass()
-            if self._active_count() != 0 { await yield_now() }
+            if self._active_count() != 0 { await group_turn(status) }
         }
         return self._take_all_ready()
     }

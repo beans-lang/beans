@@ -5,7 +5,8 @@ cd "$(dirname "$0")/.."
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/beans-thread-cleanup.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 
-for name in thread_deinit thread_cycles shared_publication; do
+for name in thread_deinit thread_cycles thread_join_exit_cycles \
+            shared_publication; do
     ./build/beansc run "test/cases/$name.b" >"$tmp/$name.interp"
     ./build/beansc build "test/cases/$name.b" -o "$tmp/$name.native" \
         >"$tmp/$name.build" 2>&1
@@ -13,6 +14,30 @@ for name in thread_deinit thread_cycles shared_publication; do
     diff -u "test/cases/$name.out" "$tmp/$name.interp"
     diff -u "test/cases/$name.out" "$tmp/$name.native.out"
 done
+
+# A join is a full worker teardown barrier. Both a sync worker and an async
+# worker leave cycle roots, then main returns immediately after the second
+# join. The exit sweep must see zero live workers and reclaim every allocation.
+./build/beansc build --emit ir test/cases/thread_join_exit_cycles.b \
+    >"$tmp/join-exit.ir"
+clang -O1 -pthread -DBEANS_ARC_STATS -Wno-override-module \
+    build/thread_join_exit_cycles.ll \
+    build/thread_join_exit_cycles_ffi.c build/beans_rt.c -lm \
+    -o "$tmp/thread-join-exit"
+BEANS_NO_POOL=1 "$tmp/thread-join-exit" \
+    >"$tmp/thread-join-exit.out" 2>"$tmp/thread-join-exit.stats"
+stats=$(tail -1 "$tmp/thread-join-exit.stats")
+allocations=$(sed -n \
+    's/.*allocations=\([0-9][0-9]*\).*/\1/p' <<<"$stats")
+frees=$(sed -n \
+    's/.*frees=\([0-9][0-9]*\).*/\1/p' <<<"$stats")
+cycle_objects=$(sed -n \
+    's/.*cycle_objects=\([0-9][0-9]*\).*/\1/p' <<<"$stats")
+if [[ -z "$allocations" || "$allocations" != "$frees" ||
+      -z "$cycle_objects" || "$cycle_objects" -lt 4000 ]]; then
+    echo "join returned before complete worker cleanup: $stats" >&2
+    exit 1
+fi
 
 # Build this probe directly with ARC counters. It reads the counter before the
 # long-lived worker exits, proving real cycles (not only dead husks) were

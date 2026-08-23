@@ -73,20 +73,14 @@ fn reuse_port() -> Result<bool> {
     return ok(first.port()? == second.port()?)
 }
 
-fn detached_worker() -> bool {
+fn joined_worker() -> bool {
     let done: AtomicInt = new AtomicInt(0)
     let worker: Thread<int> = thread.spawn(fn() -> int {
         time.sleep_millis(20)
         done.store(1)
         return 0
     })
-    worker.detach()
-    var turns: int = 0
-    for done.load() == 0 && turns < 200 {
-        time.sleep_millis(1)
-        turns += 1
-    }
-    return done.load() == 1
+    return worker.join() == 0 && done.load() == 1
 }
 
 fn nonblocking_contract() -> Result<bool> {
@@ -128,6 +122,6 @@ fn main() {
     io.println("moved HTTP worker {moved_http_worker().or(false)}")
     io.println("reusable read {reusable_read().or(false)}")
     io.println("reuse port {reuse_port().or(false)}")
-    io.println("detached worker {detached_worker()}")
+    io.println("joined worker {joined_worker()}")
     io.println("nonblocking contract {nonblocking_contract().or(false)}")
 }

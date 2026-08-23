@@ -13,7 +13,7 @@ fn semantic_builtin_member_names() -> List<string> {
             "atomic_compare_exchange", "atomic_fetch_add",
             "atomic_load", "atomic_store", "bit_and", "bit_not",
             "bit_or", "bit_xor", "byte_at", "call", "chars",
-            "clear", "detach",
+            "clear",
             "clone", "close", "compare_exchange", "contains",
             "contains_key", "context", "copy_from", "count_chars",
             "crc32", "div", "downgrade", "element_align",

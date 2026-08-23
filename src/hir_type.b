@@ -210,6 +210,9 @@ fn builtin_thread_policy(type: HirType) -> string {
     if name == "Bytes" || name == "File" || name == "MMap" {
         return "send_only"
     }
+    if name == package_symbol("std.async", "Event") {
+        return "always"
+    }
     if name == "Shared" || name == "Weak" {
         return "shared_arguments"
     }
@@ -237,7 +240,7 @@ fn builtin_move_policy(type: HirType) -> string {
        name == "Map" || name == "OrderedMap" ||
        name == "StoredCallback" || name == "LocalStoredCallback" ||
        name == "Bytes" ||
-       name == "File" || name == "MMap" {
+       name == "File" || name == "MMap" || name == "Thread" {
         return "unique"
     }
     if name == "fn" {

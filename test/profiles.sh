@@ -168,6 +168,14 @@ echo "checking what each profile still allows"
 ./build/beansc build --runtime minimal test/cases/profile_clocks.b \
     -o "$tmp/clocks" >/dev/null 2>&1
 "$tmp/clocks" >/dev/null
+for profile in full minimal; do
+    ./build/beansc build --runtime "$profile" \
+        test/cases/profile_threads.b -o "$tmp/threads-$profile" \
+        >/dev/null 2>&1
+    "$tmp/threads-$profile" >"$tmp/threads-$profile.out"
+    diff -u test/cases/profile_threads.out \
+        "$tmp/threads-$profile.out"
+done
 
 echo "checking the freestanding runtime needs no libc service"
 # What "freestanding" has to mean, measured rather than asserted: the object may need

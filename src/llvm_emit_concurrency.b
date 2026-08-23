@@ -246,6 +246,118 @@ partial class LlvmTextEmitter {
         return "  call void @beans_chan_close(ptr {receiver})\n"
     }
 
+    fn emit_channel_async_send_poll(
+        function: MirFunction,
+        instruction: MirInstruction,
+        values: Map<int, string>) -> string {
+        if instruction.operands.len() != 3 {
+            self.fail(instruction, "LLVM emitter needs a channel, ticket and value")
+            return ""
+        }
+        let receiver_type: HirType =
+            self.value_type(function, instruction.operands[0])
+        let element: HirType = receiver_type.args[0]
+        if !self.handle_inner_supported(instruction, element, false) {
+            return ""
+        }
+        let receiver: string = self.value(
+            function, values, instruction.operands[0], instruction)
+        let ticket: string = self.value(
+            function, values, instruction.operands[1], instruction)
+        let value: string = self.value(
+            function, values, instruction.operands[2], instruction)
+        let result: string = "%v{instruction.result}"
+        values[instruction.result] = result
+        if self.wide_inline_value(element) {
+            let llvm: string = self.type_text(element)
+            let slot: string = self.spill_slot(llvm, "channel.async.send")
+            self.require_declare(
+                "beans_chan_async_send_typed",
+                "i64 @beans_chan_async_send_typed(ptr, i64, ptr)")
+            return "  store {llvm} {value}, ptr {slot}\n  {result} = call i64 @beans_chan_async_send_typed(ptr {receiver}, i64 {ticket}, ptr {slot})\n"
+        }
+        let conversion: LlvmSlotConversion =
+            self.to_slot(element, value, "async.send")
+        self.require_declare(
+            "beans_chan_async_send",
+            "i64 @beans_chan_async_send(ptr, i64, i64)")
+        return "{conversion.setup}  {result} = call i64 @beans_chan_async_send(ptr {receiver}, i64 {ticket}, i64 {conversion.value})\n"
+    }
+
+    fn emit_channel_async_receive_poll(
+        function: MirFunction,
+        instruction: MirInstruction,
+        values: Map<int, string>) -> string {
+        let receiver_type: HirType =
+            self.value_type(function, instruction.operands[0])
+        let element: HirType = receiver_type.args[0]
+        let receiver: string = self.value(
+            function, values, instruction.operands[0], instruction)
+        let ticket: string = self.value(
+            function, values, instruction.operands[1], instruction)
+        let result: string = "%v{instruction.result}"
+        values[instruction.result] = result
+        if self.wide_inline_value(element) {
+            self.require_declare(
+                "beans_chan_async_recv_typed",
+                "i64 @beans_chan_async_recv_typed(ptr, i64)")
+            return "  {result} = call i64 @beans_chan_async_recv_typed(ptr {receiver}, i64 {ticket})\n"
+        }
+        self.require_declare(
+            "beans_chan_async_recv",
+            "i64 @beans_chan_async_recv(ptr, i64)")
+        return "  {result} = call i64 @beans_chan_async_recv(ptr {receiver}, i64 {ticket})\n"
+    }
+
+    fn emit_channel_async_receive_take(
+        function: MirFunction,
+        instruction: MirInstruction,
+        values: Map<int, string>) -> string {
+        let receiver_type: HirType =
+            self.value_type(function, instruction.operands[0])
+        let element: HirType = receiver_type.args[0]
+        let option: string = self.type_text(instruction.type)
+        let receiver: string = self.value(
+            function, values, instruction.operands[0], instruction)
+        let ticket: string = self.value(
+            function, values, instruction.operands[1], instruction)
+        let result: string = "%v{instruction.result}"
+        values[instruction.result] = result
+        let id: int = self.fresh()
+        if self.wide_inline_value(element) {
+            let llvm: string = self.type_text(element)
+            let slot: string = self.spill_slot(llvm, "channel.async.take")
+            self.require_declare(
+                "beans_chan_async_take_typed",
+                "i64 @beans_chan_async_take_typed(ptr, i64, ptr)")
+            return "  store {llvm} zeroinitializer, ptr {slot}\n  %async.take.ok{id} = call i64 @beans_chan_async_take_typed(ptr {receiver}, i64 {ticket}, ptr {slot})\n  %async.take.value{id} = load {llvm}, ptr {slot}\n  %async.take.payload{id} = insertvalue {option} poison, {llvm} %async.take.value{id}, 1\n  {result} = insertvalue {option} %async.take.payload{id}, i1 true, 0\n"
+        }
+        self.require_declare(
+            "beans_chan_async_take",
+            "i64 @beans_chan_async_take(ptr, i64)")
+        let conversion: LlvmSlotConversion = self.from_slot(
+            element, "%async.take.raw{id}", "%async.take.value{id}",
+            "async.take")
+        if option == "ptr" {
+            return "  %async.take.raw{id} = call i64 @beans_chan_async_take(ptr {receiver}, i64 {ticket})\n  {result} = inttoptr i64 %async.take.raw{id} to ptr\n"
+        }
+        return "  %async.take.raw{id} = call i64 @beans_chan_async_take(ptr {receiver}, i64 {ticket})\n{conversion.setup}  %async.take.payload{id} = insertvalue {option} poison, {self.type_text(element)} {conversion.value}, 1\n  {result} = insertvalue {option} %async.take.payload{id}, i1 true, 0\n"
+    }
+
+    fn emit_channel_async_cancel(
+        function: MirFunction,
+        instruction: MirInstruction,
+        values: Map<int, string>) -> string {
+        let receiver: string = self.value(
+            function, values, instruction.operands[0], instruction)
+        let ticket: string = self.value(
+            function, values, instruction.operands[1], instruction)
+        self.require_declare(
+            "beans_chan_async_cancel",
+            "i64 @beans_chan_async_cancel(ptr, i64)")
+        return "  %async.cancel{self.fresh()} = call i64 @beans_chan_async_cancel(ptr {receiver}, i64 {ticket})\n"
+    }
+
     // ownership of the closure box moves to the thread (MIR marks
     // the operand consumed), and the code pointer rides separately
     fn emit_thread_spawn(
@@ -355,18 +467,68 @@ partial class LlvmTextEmitter {
         return "  %join.raw{id} = call i64 @beans_thread_join(ptr {receiver})\n{conversion.setup}"
     }
 
-    fn emit_thread_detach(
+    fn emit_thread_async_join_poll(
         function: MirFunction,
         instruction: MirInstruction,
         values: Map<int, string>) -> string {
-        let receiver: string =
-            self.value(
-                function, values,
-                instruction.operands[0], instruction)
+        let receiver: string = self.value(
+            function, values, instruction.operands[0], instruction)
+        let result: string = "%v{instruction.result}"
+        values[instruction.result] = result
         self.require_declare(
-            "beans_thread_detach",
-            "void @beans_thread_detach(ptr)")
-        return "  call void @beans_thread_detach(ptr {receiver})\n"
+            "beans_thread_async_join_poll",
+            "i64 @beans_thread_async_join_poll(ptr)")
+        return "  {result} = call i64 @beans_thread_async_join_poll(ptr {receiver})\n"
+    }
+
+    fn emit_thread_async_join_claim(
+        function: MirFunction,
+        instruction: MirInstruction,
+        values: Map<int, string>) -> string {
+        let receiver: string = self.value(
+            function, values, instruction.operands[0], instruction)
+        let result: string = "%v{instruction.result}"
+        values[instruction.result] = result
+        let id: int = self.fresh()
+        self.require_declare(
+            "beans_thread_async_join_claim",
+            "i64 @beans_thread_async_join_claim(ptr)")
+        return "  %async.join.claim{id} = call i64 @beans_thread_async_join_claim(ptr {receiver})\n  {result} = icmp ne i64 %async.join.claim{id}, 0\n"
+    }
+
+    fn emit_thread_async_join_take(
+        function: MirFunction,
+        instruction: MirInstruction,
+        values: Map<int, string>) -> string {
+        let receiver_type: HirType = self.value_type(
+            function, instruction.operands[0])
+        let payload: HirType = receiver_type.args[0]
+        let receiver: string = self.value(
+            function, values, instruction.operands[0], instruction)
+        if canonical_hir_name(payload.name) == "unit" {
+            self.require_declare(
+                "beans_thread_async_take",
+                "i64 @beans_thread_async_take(ptr)")
+            return "  %async.join.void{self.fresh()} = call i64 @beans_thread_async_take(ptr {receiver})\n"
+        }
+        let result: string = "%v{instruction.result}"
+        values[instruction.result] = result
+        if self.wide_inline_value(payload) {
+            let llvm: string = self.type_text(payload)
+            let slot: string = self.spill_slot(llvm, "thread.async.take")
+            self.require_declare(
+                "beans_thread_async_take_typed",
+                "i64 @beans_thread_async_take_typed(ptr, ptr, i64)")
+            return "  %async.join.take{self.fresh()} = call i64 @beans_thread_async_take_typed(ptr {receiver}, ptr {slot}, i64 {self.type_size(payload)})\n  {result} = load {llvm}, ptr {slot}\n"
+        }
+        let id: int = self.fresh()
+        self.require_declare(
+            "beans_thread_async_take",
+            "i64 @beans_thread_async_take(ptr)")
+        let conversion: LlvmSlotConversion = self.from_slot(
+            payload, "%async.join.raw{id}", result, "async.join")
+        values[instruction.result] = conversion.value
+        return "  %async.join.raw{id} = call i64 @beans_thread_async_take(ptr {receiver})\n{conversion.setup}"
     }
 
     // maps a folded MemoryOrder tag (MemoryOrder declaration

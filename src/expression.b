@@ -845,7 +845,7 @@ class ExpressionChecker {
             return trait == "Clone"
         }
         if type.name == "Thread" && type.args.len() == 1 {
-            return trait == "Clone"
+            return false
         }
         if type.name == "List" && type.args.len() == 1 {
             if trait == "Eq" || trait == "Hash" {
@@ -2891,8 +2891,20 @@ class ExpressionChecker {
                 return some(new BuiltinSignature(
                     [], receiver.args[0]))
             }
-            if name == "detach" {
-                return some(new BuiltinSignature([], unit))
+            if name == "join_async" {
+                return some(new BuiltinSignature(
+                    [], hir_named("Result", [receiver.args[0]])))
+            }
+            if name == "_async_join_poll" {
+                return some(new BuiltinSignature([], integer))
+            }
+            if name == "_async_join_claim" {
+                return some(new BuiltinSignature(
+                    [], boolean))
+            }
+            if name == "_async_join_take" {
+                return some(new BuiltinSignature(
+                    [], receiver.args[0]))
             }
         }
         if receiver.name == "Mutex" &&
@@ -2909,12 +2921,34 @@ class ExpressionChecker {
             if name == "send" {
                 return some(new BuiltinSignature([value], unit))
             }
+            if name == "send_async" {
+                return some(new BuiltinSignature([value], unit))
+            }
             if name == "receive" {
+                return some(new BuiltinSignature(
+                    [], hir_option(value)))
+            }
+            if name == "receive_async" {
                 return some(new BuiltinSignature(
                     [], hir_option(value)))
             }
             if name == "close" {
                 return some(new BuiltinSignature([], unit))
+            }
+            if name == "_async_send_poll" {
+                return some(new BuiltinSignature(
+                    [integer, value], integer))
+            }
+            if name == "_async_receive_poll" {
+                return some(new BuiltinSignature(
+                    [integer], integer))
+            }
+            if name == "_async_receive_take" {
+                return some(new BuiltinSignature(
+                    [integer], hir_option(value)))
+            }
+            if name == "_async_cancel" {
+                return some(new BuiltinSignature([integer], unit))
             }
         }
         if receiver.name == "AtomicInt" {
@@ -5915,6 +5949,22 @@ class ExpressionChecker {
                            package_symbol("std.encoding.xml", "decode_with_options") {
                         continue
                     }
+                    if function.qualified ==
+                           async_rt_symbol("channel_send_task") ||
+                       function.qualified ==
+                           async_rt_symbol("channel_receive_task") ||
+                       function.qualified ==
+                           async_rt_symbol("thread_join_task") ||
+                       function.qualified ==
+                           async_rt_symbol("worker_run_task") ||
+                       function.qualified ==
+                           async_rt_symbol("worker_run_unit_task") ||
+                       function.qualified ==
+                           async_rt_symbol("spawn_async_adapter") ||
+                       function.qualified ==
+                           async_rt_symbol("spawn_async_unit_adapter") {
+                        continue
+                    }
                     if !self.is_move_only(actual) { continue }
                     var mentioned: bool = false
                     var has_move_source: bool = false
@@ -6350,12 +6400,15 @@ class ExpressionChecker {
             }
         }
         if import_path == "std.thread" &&
-           callee.value == "spawn" {
+           (callee.value == "spawn" ||
+            callee.value == "spawn_async") {
+            let async_entry: bool =
+                callee.value == "spawn_async"
             let count: int = node.children.len() - 1
             if count != 1 {
                 self.fail(
                     node,
-                    "thread.spawn takes 1 closure, got {count}")
+                    "thread.{callee.value} takes 1 closure, got {count}")
                 return some(self.make_node(
                     node, "error", "spawn",
                     poison_hir_type()))
@@ -6373,12 +6426,17 @@ class ExpressionChecker {
             }
             if closure.type.name != "fn" ||
                !closure.type.fn_sendable ||
+               closure.type.fn_async != async_entry ||
                closure.type.fn_parameter_count != 0 ||
                closure.type.fn_parameter_count >=
                    closure.type.args.len() {
                 self.fail(
                     node,
-                    "thread.spawn needs a send fn closure with no parameters")
+                    if async_entry {
+                        "thread.spawn_async needs a send async fn closure with no parameters"
+                    } else {
+                        "thread.spawn needs a send fn closure with no parameters"
+                    })
                 return some(self.make_node(
                     node, "error", "spawn",
                     poison_hir_type()))
@@ -6398,14 +6456,19 @@ class ExpressionChecker {
             }
             self.require_move_source(
                 node.children[1], closure.type,
-                "thread.spawn argument")
+                "thread.{callee.value} argument")
             self.expect_type(
                 node, result_type, expected)
             let result: HirNode =
                 self.make_node(
-                    node, "builtin_call",
-                    "spawn", result_type)
-            result.resolved = "std.thread.spawn"
+                    node,
+                    if async_entry {
+                        "builtin_async_spawn"
+                    } else {
+                        "builtin_call"
+                    },
+                    callee.value, result_type)
+            result.resolved = "std.thread.{callee.value}"
             result.children.push(closure)
             return some(result)
         }
@@ -7052,6 +7115,34 @@ class ExpressionChecker {
         }
     }
 
+    fn validate_thread_async_receiver(
+        node: AstNode, receiver: AstNode) {
+        // A join wait borrows the one source owner for the whole suspension.
+        // It cannot escape through async let or a task group, where another
+        // source use could race the hidden task's eventual claim.
+        if self.current.expanded || self.async_abi_context { return }
+        if node.note != "direct_await" || receiver.kind != "name" {
+            self.fail(
+                node,
+                "Thread.join_async must be directly awaited on an owned local")
+            return
+        }
+        match self.find_local(receiver.value) {
+            some(binding) => {
+                if binding.borrowed {
+                    self.fail(
+                        receiver,
+                        "Thread.join_async receiver '{receiver.value}' is borrowed; directly await it on an owned local")
+                }
+            }
+            none => {
+                self.fail(
+                    receiver,
+                    "Thread.join_async must be directly awaited on an owned local")
+            }
+        }
+    }
+
     fn async_callable_result(node: AstNode,
                              callable: HirType,
                              source_result: HirType) -> HirType {
@@ -7198,9 +7289,17 @@ class ExpressionChecker {
                             function.name,
                             function.result)
                     result.resolved = function.qualified
-                    self.check_arguments(
-                        node, 1, function, no_hir_type(),
-                        "'{function.name}'", result)
+                    if function.generics.len() != 0 {
+                        self.check_generic_arguments(
+                            node, 1, function, expected,
+                            no_hir_type(),
+                            self.take_call_generics(),
+                            "'{function.name}'", result)
+                    } else {
+                        self.check_arguments(
+                            node, 1, function, no_hir_type(),
+                            "'{function.name}'", result)
+                    }
                     self.expect_type(node, result.type, expected)
                     return result
                 }
@@ -8076,6 +8175,49 @@ class ExpressionChecker {
                         self.require_unsafe(
                             node, "CFunctionPtr.call")
                     }
+                    let channel_async: bool =
+                        receiver.type.name == "Channel" &&
+                        (callee.value == "send_async" ||
+                         callee.value == "receive_async")
+                    let thread_async: bool =
+                        receiver.type.name == "Thread" &&
+                        callee.value == "join_async"
+                    let runtime_async: bool =
+                        channel_async || thread_async
+                    if thread_async {
+                        self.validate_thread_async_receiver(
+                            node, callee.children[0])
+                    }
+                    if runtime_async &&
+                       !(self.current.expanded || self.async_abi_context) {
+                        let allowed: bool = node.await_allowed
+                        node.await_allowed = false
+                        if !self.current.is_async {
+                            self.fail(
+                                node,
+                                "an async runtime operation can only be called from an async function")
+                        } else if !allowed {
+                            self.fail(
+                                node,
+                                "async runtime operation must be directly awaited or started by TaskGroup.start")
+                        }
+                    }
+                    if receiver.type.name == "Channel" &&
+                       callee.value.starts_with("_async_") &&
+                       !self.current.qualified.starts_with(
+                           "{async_rt_package()}::") {
+                        self.fail(
+                            node,
+                            "Channel has no method '{callee.value}'")
+                    }
+                    if receiver.type.name == "Thread" &&
+                       callee.value.starts_with("_async_") &&
+                       !self.current.qualified.starts_with(
+                           "{async_rt_package()}::") {
+                        self.fail(
+                            node,
+                            "Thread has no method '{callee.value}'")
+                    }
                     if receiver.type.name == "Bytes" &&
                        callee.value == "as_ptr" {
                         self.require_unsafe(
@@ -8108,10 +8250,18 @@ class ExpressionChecker {
                     }
                     let result: HirNode =
                         self.make_node(
-                            node, "builtin_method",
+                            node,
+                            if runtime_async {
+                                "builtin_async_method"
+                            } else {
+                                "builtin_method"
+                            },
                             callee.value, signature.result)
-                    result.resolved =
+                    result.resolved = if runtime_async {
+                        "{receiver.type.name}.{callee.value}"
+                    } else {
                         "{hir_type_key(receiver.type)}.{callee.value}"
+                    }
                     result.children.push(receiver)
                     if receiver.type.name == "Atomic" {
                         self.check_atomic_arguments(
@@ -8142,7 +8292,8 @@ class ExpressionChecker {
                                   (receiver.type.name == "Arena" &&
                                    callee.value == "add") ||
                                   (receiver.type.name == "Channel" &&
-                                   callee.value == "send") {
+                                   (callee.value == "send" ||
+                                    callee.value == "send_async")) {
                             self.require_move_source(
                                 node.children[1],
                                 result.children[

@@ -47,8 +47,8 @@ fn connected_pair(keep: List<net.TcpStream>) -> Result<bool> {
     let accepted: net.TcpStream = listener.accept()?
     keep.push(move accepted)
     // The visitor thread owns its end and exits on EOF when ours closes;
-    // its Thread handle is dropped here, which detaches nothing — join
-    // happens implicitly at process end. The test never blocks on it.
+    // its Thread handle is dropped here. That does not stop the worker, and
+    // this test deliberately does not wait for it.
     return ok(true)
 }
 

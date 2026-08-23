@@ -1,7 +1,7 @@
 moved HTTP worker true
 reusable read true
 reuse port true
-detached worker true
+joined worker true
 try accept empty true
 try read quiet true
 try read count 6

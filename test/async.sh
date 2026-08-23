@@ -885,6 +885,45 @@ run_matrix test/cases/async_callable_value.b \
 echo "checking yield_now reports runnable without blocking the executor"
 run_matrix test/cases/async_yield.b test/cases/async_yield.out
 
+echo "checking sticky Event, timer deadlines, cancellation, and lifetime"
+DEADLINE=30 run_matrix test/cases/async_event_timer.b \
+    test/cases/async_event_timer.out
+
+echo "checking Event notification cannot race lazy reactor registration"
+DEADLINE=30 run_matrix test/cases/async_event_reactor_race.b \
+    test/cases/async_event_reactor_race.out
+
+echo "checking async Channel values, FIFO cancellation, close, and wakeups"
+DEADLINE=30 run_matrix test/cases/async_channel.b \
+    test/cases/async_channel.out
+DEADLINE=30 run_matrix test/cases/async_channel_races.b \
+    test/cases/async_channel_races.out
+DEADLINE=30 run_matrix test/cases/async_channel_typed.b \
+    test/cases/async_channel_typed.out
+DEADLINE=30 run_matrix test/cases/async_channel_closed_send.b \
+    test/cases/async_channel_closed_send.out 3
+
+echo "checking spawn_async and direct join_async ownership"
+DEADLINE=30 run_matrix test/cases/async_thread.b \
+    test/cases/async_thread.out
+set +e
+diagnostics "$BEANSC" test/cases/async_thread_bad.b >"$tmp/thread_bad"
+thread_bad_status=$?
+set -e
+if [ "$thread_bad_status" -eq 0 ]; then
+    echo "async: async_thread_bad.b accepted" >&2
+    exit 1
+fi
+diff -u test/cases/async_thread_bad.err "$tmp/thread_bad"
+
+echo "checking repeated sync Thread.join has native/interpreter parity"
+run_matrix test/cases/async_thread_sync_repeat.b \
+    test/cases/async_thread_sync_repeat.out 3
+
+echo "checking join is a full worker teardown barrier"
+DEADLINE=30 run_matrix test/cases/thread_join_exit_cycles.b \
+    test/cases/thread_join_exit_cycles.out
+
 echo "checking TaskGroup completion order, polling, cancellation, and reuse"
 run_matrix test/cases/async_task_group.b test/cases/async_task_group.out
 

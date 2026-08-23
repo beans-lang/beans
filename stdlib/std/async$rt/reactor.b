@@ -11,6 +11,10 @@ package async_rt
 
 import std.ready
 
+extern "C" fn beans_async_wait_timeout() -> int
+extern "C" fn beans_async_reactor_register(wake: int) -> int
+extern "C" fn beans_async_reactor_unregister(wake: int) -> int
+
 // Thread-local state lives in the runtime's task slots because Beans has no
 // globals: [0..2] the shared poller triple from ready.open, [3] how many
 // readiness awaits are parked. Slot 0 stores the poller handle plus one,
@@ -36,6 +40,14 @@ fn reactor_poller() -> int {
                     0, triple.get_i64(0) + 1)
                 let b: int = ready.set_task_slot(1, triple.get_i64(8))
                 let c: int = ready.set_task_slot(2, triple.get_i64(16))
+                var registered: int = 0
+                unsafe {
+                    registered = beans_async_reactor_register(
+                        triple.get_i64(16))
+                }
+                if registered != 1 {
+                    panic("async runtime: cannot register the reactor wake handle")
+                }
             }
             err(problem) => {
                 panic("async runtime: cannot open the reactor")
@@ -191,12 +203,24 @@ pub fn reactor_park(fd: int, write: bool) -> Task<bool> {
 /// never fires its registration again, so the driver skips the block and
 /// lets the next poll finish that await with false.
 pub fn driver_wait() {
-    if ready.task_slot(3) == 0 {
+    var timeout: int = 0
+    unsafe { timeout = beans_async_wait_timeout() }
+    if ready.task_slot(3) == 0 && timeout == 0 - 2 {
         panic("async deadlock: every task is waiting and none is parked on readiness")
     }
     if ready.park_stale() >= 0 { return }
+    if ready.task_slot(0) == 0 {
+        var waited: int = 0
+        unsafe { waited = beans_async_wait_basic() }
+        if waited == 0 {
+            panic("async deadlock: every task is waiting and none is parked on readiness")
+        }
+        return
+    }
     let poller: int = ready.task_slot(0) - 1
-    match ready.wait(poller, ready.task_slot(1), 16, 0 - 1) {
+    let poll_timeout: int =
+        if timeout == 0 - 2 { 0 - 1 } else { timeout }
+    match ready.wait(poller, ready.task_slot(1), 16, poll_timeout) {
         ok(packed) => {}
         err(waited) => {
             panic("async runtime: the reactor wait failed")
@@ -210,6 +234,11 @@ pub fn driver_wait() {
 /// dead poller and the closed descriptors would be a leak.
 pub fn driver_shutdown() {
     if ready.task_slot(0) != 0 {
+        var unregistered: int = 0
+        unsafe {
+            unregistered = beans_async_reactor_unregister(
+                ready.task_slot(2))
+        }
         let closed: Result<bool> = ready.close(
             ready.task_slot(0) - 1, ready.task_slot(1),
             ready.task_slot(2))
