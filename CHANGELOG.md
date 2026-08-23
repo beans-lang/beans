@@ -37,6 +37,13 @@ This file records user-facing changes in each Beans release.
 
 ### Fixed
 
+- `bindgen --pub` now marks record fields `pub` alongside the record
+  itself. C has no private struct members, and a by-value API is unusable
+  from a consumer package that cannot read `Color.r` or `Image.width` —
+  binding raylib.h (598 functions, structs passed by value throughout)
+  hit exactly that. Opaque records and the non-`--pub` mode are
+  unchanged. `test/bindgen.sh` now has the consumer read a bound struct's
+  field through a `require path` dependency.
 - Every bindgen skip comment now names the declaration it dropped. A
   type-mapping refusal used to surface as a bare `// skipped: flexible
   arrays are unsupported`, leaving the reader of a large header to find
