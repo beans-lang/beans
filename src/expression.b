@@ -9633,10 +9633,7 @@ class ExpressionChecker {
             }
             none => {}
         }
-        let saved_result: HirType = self.current.result
-        let saved_body_result: HirType =
-            self.current.body_result
-        let saved_async: bool = self.current.is_async
+        let saved_current: HirFunction = self.current
         let saved_await_in_closure: bool =
             self.await_in_closure
         let saved_async_abi: bool =
@@ -9674,11 +9671,28 @@ class ExpressionChecker {
             } else {
                 result_type
             }
-        self.current.result = checked_result
-        self.current.body_result = checked_result
-        self.current.is_async =
+        // A closure has its own return/effect context. Do not temporarily
+        // write those fields into the registered enclosing HirFunction:
+        // recursive calls resolve that same object from the function maps,
+        // and would observe the closure's result while its body is checked.
+        let closure_current: HirFunction = new HirFunction(
+            saved_current.name, saved_current.qualified,
+            saved_current.owner, saved_current.is_public,
+            saved_current.is_private, saved_current.file,
+            node.line, node.col)
+        closure_current.result = checked_result
+        closure_current.body_result = checked_result
+        closure_current.is_async =
             node.note == "async" ||
             node.note == "async_expanded"
+        closure_current.expanded = saved_current.expanded
+        closure_current.is_static = saved_current.is_static
+        closure_current.required_feature =
+            saved_current.required_feature
+        for generic: string in saved_current.generics {
+            closure_current.generics.push(generic)
+        }
+        self.current = closure_current
         self.await_in_closure = node.note == "async"
         self.async_abi_context =
             saved_async_abi || node.note == "async_expanded"
@@ -9723,9 +9737,7 @@ class ExpressionChecker {
             }
         }
         self.pop_scope()
-        self.current.result = saved_result
-        self.current.body_result = saved_body_result
-        self.current.is_async = saved_async
+        self.current = saved_current
         self.await_in_closure = saved_await_in_closure
         self.async_abi_context = saved_async_abi
         self.capture_floor_depth = saved_capture_floor

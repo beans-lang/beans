@@ -903,6 +903,10 @@ echo "checking async callable values, literals, send literals, and unique receiv
 run_matrix test/cases/async_callable_value.b \
     test/cases/async_callable_value.out
 
+echo "checking async expansion recursion, try, local, and capture regressions"
+run_matrix test/cases/async_expander_regressions.b \
+    test/cases/async_expander_regressions.out
+
 echo "checking reflected async callable names and kinds"
 run_matrix test/cases/async_reflect_types.b \
     test/cases/async_reflect_types.out

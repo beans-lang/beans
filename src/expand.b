@@ -580,14 +580,18 @@ class AsyncExpander {
     fn thread_capture_slot_names(node: AstNode,
                                  inout found: Map<string, bool>) {
         var is_spawn: bool = false
+        var is_send_closure: bool = false
         match node.checked {
             some(checked) => {
                 is_spawn = checked.resolved == "std.thread.spawn" ||
                            checked.resolved == "std.thread.spawn_async"
+                is_send_closure = node.kind == "closure" &&
+                                  checked.type.name == "fn" &&
+                                  checked.type.fn_sendable
             }
             none => {}
         }
-        if is_spawn {
+        if is_spawn || is_send_closure {
             var inner: Map<string, bool> = {}
             ast_names_in(node, inout inner)
             for name: string in inner.keys() {
@@ -689,7 +693,8 @@ class AsyncExpander {
     // ---- await decomposition -----------------------------------------
 
     fn decompose(node: AstNode) -> AstNode {
-        if !ast_contains_await(node) {
+        if !ast_contains_await(node) &&
+           !self.contains_try(node) {
             return self.substitute(node)
         }
         if node.kind == "await" {
@@ -721,21 +726,23 @@ class AsyncExpander {
         }
         // Children evaluate left to right; whatever runs before a later
         // suspension must be kept in a slot rather than re-evaluated.
-        var last_await: int = -1
+        var last_split: int = -1
         var index: int = 0
         for index < node.children.len() {
-            if ast_contains_await(node.children[index]) {
-                last_await = index
+            if ast_contains_await(node.children[index]) ||
+               self.contains_try(node.children[index]) {
+                last_split = index
             }
             index += 1
         }
         index = 0
         for index < node.children.len() {
             let child: AstNode = node.children[index]
-            if index < last_await &&
+            if index < last_split &&
                !self.hoist_exempt(node, index) &&
                !ast_is_pure_place(child) {
-                if ast_contains_await(child) {
+                if ast_contains_await(child) ||
+                   self.contains_try(child) {
                     node.children[index] = self.decompose(child)
                 } else {
                     let child_type: HirType = self.checked_type(child)
@@ -746,7 +753,8 @@ class AsyncExpander {
                         keep, child_type, self.substitute(child), child)
                     node.children[index] = self.slot_take(keep, child)
                 }
-            } else if ast_contains_await(child) {
+            } else if ast_contains_await(child) ||
+                      self.contains_try(child) {
                 node.children[index] = self.decompose(child)
             } else {
                 node.children[index] = self.substitute(child)
@@ -2161,6 +2169,21 @@ class AsyncExpander {
                 for arm < statement.children.len() {
                     let arm_node: AstNode =
                         statement.children[arm]
+                    if arm_node.children.len() > 1 &&
+                       arm_node.children[1].kind == "block" {
+                        self.mark_hoists(
+                            arm_node.children[1], seen_after)
+                    }
+                    arm += 1
+                }
+            }
+            if statement.kind == "expression" &&
+               statement.children.len() == 1 &&
+               statement.children[0].kind == "match" {
+                let match_node: AstNode = statement.children[0]
+                var arm: int = 1
+                for arm < match_node.children.len() {
+                    let arm_node: AstNode = match_node.children[arm]
                     if arm_node.children.len() > 1 &&
                        arm_node.children[1].kind == "block" {
                         self.mark_hoists(

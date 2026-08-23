@@ -1,0 +1,13 @@
+method true
+free 1
+mark 1
+checked
+try 3
+mark 4
+rejected
+stopped false
+rejected
+before await false
+option 8 false
+locals 2 1
+capture 1
