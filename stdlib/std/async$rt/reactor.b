@@ -22,15 +22,14 @@ extern "C" fn beans_async_reactor_unregister(wake: int) -> int
 // is closed, and the Windows poller registry hands out slot 0 first — so
 // only the shifted zero can mean "not open yet". Every backend zero-fills
 // fresh task slots, which is exactly that state. The runtime also keeps
-// the parked-descriptor registry (ready.park_note / park_bind /
-// park_forget / park_stale):
+// the parked-descriptor registry (ready.park_note / park_arm /
+// park_state / park_finish / park_stale):
 // poller registration is keyed by descriptor, so a second await parked on
 // the same descriptor would silently cancel the first one's interest — the
 // table refuses that up front — and it lets the driver notice a descriptor
-// that was closed while an await still waits on it. The driver blocks on
-// the shared poller when the root task reports pending; parked awaits
-// re-check their own descriptor with an ephemeral zero-timeout poller,
-// which level-triggered readiness makes correct.
+// that was closed while an await still waits on it. Kernel events carry the
+// registry's stable slot+generation token. The driver marks that exact row
+// READY; tasks never probe an ephemeral poller or trust a reused fd number.
 
 fn reactor_poller() -> int {
     if ready.task_slot(0) == 0 {
@@ -57,50 +56,12 @@ fn reactor_poller() -> int {
     return ready.task_slot(0) - 1
 }
 
-// One readiness check without blocking. 1 = ready now, 0 = not yet,
-// -1 = the descriptor cannot be watched (closed or invalid), which the
-// caller must treat as "this readiness will never come".
-fn probe_now(fd: int, write: bool) -> int {
-    var verdict: int = 0 - 1
-    match ready.open() {
-        ok(triple) => {
-            let eph: int = triple.get_i64(0)
-            let eph_wake: int = triple.get_i64(8)
-            let eph_signal: int = triple.get_i64(16)
-            match ready.add(eph, fd, fd, !write, write, true) {
-                ok(added) => {
-                    match ready.wait(eph, eph_wake, 1, 0) {
-                        ok(packed) => {
-                            verdict =
-                                if packed.get_i64(0) > 0 { 1 } else { 0 }
-                        }
-                        err(waited) => {}
-                    }
-                }
-                err(adding) => {}
-            }
-            let closed: Result<bool> =
-                ready.close(eph, eph_wake, eph_signal)
-        }
-        err(opening) => {
-            panic("async runtime: cannot open the reactor")
-        }
-    }
-    return verdict
-}
-
 // Deregisters a park exactly once: the poller registration, the parked
 // table, and the parked count move together, and the count can only
-// fall when the table really held the token. A dead park never touches
-// the poller: the close already dropped the registration with the
-// descriptor, and the number may belong to a brand-new resource whose
-// own registration must not be disturbed.
-fn unpark(fd: int, token: int, dead: bool) {
-    if !dead {
-        let poller: int = ready.task_slot(0) - 1
-        let removed: Result<bool> = ready.remove(poller, fd)
-    }
-    if ready.park_forget(token) == 1 {
+// fall when the table really held the token. The runtime's central finish
+// removes kernel interest only for LIVE/READY. DEAD never touches a reused fd.
+fn unpark(token: int) {
+    if ready.park_finish(token) == 1 {
         let count: int = ready.task_slot(3)
         if count <= 0 {
             panic("async runtime: the parked count went negative")
@@ -138,44 +99,32 @@ pub fn reactor_park(fd: int, write: bool) -> Task<bool> {
                 if noted == 0 {
                     panic("async runtime: two awaits are parked on one descriptor — await the first before starting the second")
                 }
-                if noted < 0 {
-                    panic("async runtime: too many awaits are parked at once")
+                if noted == 0 - 1 {
+                    panic("async runtime: out of memory reserving a parked await")
                 }
                 let poller: int = reactor_poller()
-                if ready.park_bind(noted, ready.task_slot(2)) != 1 {
-                    // A close raced the small interval between validation and
-                    // lazy reactor creation. The token, not the descriptor,
-                    // says this await is already dead.
-                    let forgotten: int = ready.park_forget(noted)
+                let armed: int = ready.park_arm(
+                    noted, poller, ready.task_slot(2), write)
+                if armed != 1 {
+                    // A close raced lazy reactor creation, the fd became
+                    // invalid, or the poller refused it. Finish the reserved
+                    // token without touching a possibly reused descriptor.
+                    let finished: int = ready.park_finish(noted)
+                    if armed < 0 {
+                        panic("async runtime: cannot arm a parked await")
+                    }
                     fired_cell.push(false)
                     return 1
-                }
-                match ready.add(poller, fd, fd, !write, write, true) {
-                    ok(added) => {}
-                    err(adding) => {
-                        // closed or invalid: never ready, finish false
-                        let forgotten: int = ready.park_forget(noted)
-                        fired_cell.push(false)
-                        return 1
-                    }
                 }
                 let count: int = ready.task_slot(3)
                 let bumped: int = ready.set_task_slot(3, count + 1)
                 token_cell.push(noted)
             }
-            // the dead check comes before the probe: a probe on a reused
-            // number would read the new resource's readiness as this one's
-            if ready.park_dead(token_cell[0]) == 1 {
-                unpark(fd, token_cell[0], true)
-                token_cell.clear()
-                fired_cell.push(false)
-                return 1
-            }
-            let verdict: int = probe_now(fd, write)
-            if verdict == 0 { return 0 }
-            unpark(fd, token_cell[0], false)
+            let state: int = ready.park_state(token_cell[0])
+            if state == 0 { return 0 }
+            unpark(token_cell[0])
             token_cell.clear()
-            fired_cell.push(verdict == 1)
+            fired_cell.push(state == 1)
             return 1
         },
         fn() -> bool {
@@ -187,8 +136,7 @@ pub fn reactor_park(fd: int, write: bool) -> Task<bool> {
             // await whose descriptor was closed cannot disturb a reused
             // number either
             if token_cell.len() != 0 {
-                unpark(fd, token_cell[0],
-                       ready.park_dead(token_cell[0]) == 1)
+                unpark(token_cell[0])
                 token_cell.clear()
             }
         })
@@ -220,8 +168,16 @@ pub fn driver_wait() {
     let poller: int = ready.task_slot(0) - 1
     let poll_timeout: int =
         if timeout == 0 - 2 { 0 - 1 } else { timeout }
-    match ready.wait(poller, ready.task_slot(1), 16, poll_timeout) {
-        ok(packed) => {}
+    match ready.wait(poller, ready.task_slot(1), 64, poll_timeout) {
+        ok(packed) => {
+            let count: int = packed.get_i64(0)
+            var index: int = 0
+            for index < count {
+                let marked: int = ready.park_mark_ready(
+                    packed.get_i64(8 + index * 16))
+                index += 1
+            }
+        }
         err(waited) => {
             panic("async runtime: the reactor wait failed")
         }
@@ -233,6 +189,10 @@ pub fn driver_wait() {
 /// programs in one lifetime; without this the next run would inherit a
 /// dead poller and the closed descriptors would be a leak.
 pub fn driver_shutdown() {
+    // Remove every exact token while the poller is still live. This also
+    // drops the stable owner shell, so a later interpreter run gets a fresh
+    // owner and stale queued tokens cannot name it.
+    let parks: int = ready.park_shutdown()
     if ready.task_slot(0) != 0 {
         var unregistered: int = 0
         unsafe {
@@ -247,5 +207,4 @@ pub fn driver_shutdown() {
         let c: int = ready.set_task_slot(2, 0)
         let d: int = ready.set_task_slot(3, 0)
     }
-    let parks: int = ready.park_shutdown()
 }

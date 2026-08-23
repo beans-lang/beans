@@ -207,8 +207,9 @@ fn semantic_builtin_module_names(package_path: string) -> List<string> {
     }
     if package_path == "std.ready" {
         return ["open", "add", "remove", "wait", "wait_into", "wake", "close",
-                "task_slot", "set_task_slot", "park_note", "park_bind",
-                "park_forget", "park_stale", "park_dead", "park_shutdown"]
+                "task_slot", "set_task_slot", "park_note", "park_arm",
+                "park_state", "park_finish", "park_mark_ready", "park_stale",
+                "park_shutdown"]
     }
     return []
 }

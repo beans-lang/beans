@@ -35,6 +35,11 @@ extern "C" fn beans_async_wait_basic() -> int
 extern "C" fn beans_async_now_nanos() -> int
 extern "C" fn beans_async_reactor_register(wake: int) -> int
 extern "C" fn beans_async_reactor_unregister(wake: int) -> int
+extern "C" fn beans_reactor_arm_park(
+    token: int, poller: int, wake: int, write: int) -> int
+extern "C" fn beans_reactor_park_state(token: int) -> int
+extern "C" fn beans_reactor_finish_park(token: int) -> int
+extern "C" fn beans_reactor_mark_ready(token: int) -> int
 extern "C" fn beans_async_event_new() -> int
 extern "C" fn beans_async_event_is_set(handle: int) -> int
 extern "C" fn beans_async_event_set(handle: int) -> int
@@ -4638,24 +4643,44 @@ class TreeInterpreter {
             return TreeValue.integer(host_ready.park_note(
                 arguments[0].int_data))
         }
-        if node.resolved == "std.ready.park_bind" &&
-           arguments.len() == 2 {
-            return TreeValue.integer(host_ready.park_bind(
-                arguments[0].int_data,
-                arguments[1].int_data))
+        if node.resolved == "std.ready.park_arm" &&
+           arguments.len() == 4 {
+            var armed: int = 0
+            unsafe {
+                armed = beans_reactor_arm_park(
+                    arguments[0].int_data,
+                    arguments[1].int_data,
+                    arguments[2].int_data,
+                    if arguments[3].bool_data { 1 } else { 0 })
+            }
+            return TreeValue.integer(armed)
         }
-        if node.resolved == "std.ready.park_forget" &&
+        if node.resolved == "std.ready.park_state" &&
            arguments.len() == 1 {
-            return TreeValue.integer(host_ready.park_forget(
-                arguments[0].int_data))
+            var state: int = 0
+            unsafe {
+                state = beans_reactor_park_state(arguments[0].int_data)
+            }
+            return TreeValue.integer(state)
+        }
+        if node.resolved == "std.ready.park_finish" &&
+           arguments.len() == 1 {
+            var finished: int = 0
+            unsafe {
+                finished = beans_reactor_finish_park(arguments[0].int_data)
+            }
+            return TreeValue.integer(finished)
+        }
+        if node.resolved == "std.ready.park_mark_ready" &&
+           arguments.len() == 1 {
+            var marked: int = 0
+            unsafe {
+                marked = beans_reactor_mark_ready(arguments[0].int_data)
+            }
+            return TreeValue.integer(marked)
         }
         if node.resolved == "std.ready.park_stale" {
             return TreeValue.integer(host_ready.park_stale())
-        }
-        if node.resolved == "std.ready.park_dead" &&
-           arguments.len() == 1 {
-            return TreeValue.integer(host_ready.park_dead(
-                arguments[0].int_data))
         }
         if node.resolved == "std.ready.park_shutdown" {
             return TreeValue.integer(host_ready.park_shutdown())

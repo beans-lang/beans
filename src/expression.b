@@ -4114,21 +4114,19 @@ class ExpressionChecker {
                 return some(new BuiltinSignature(
                     [integer], integer))
             }
-            if name == "park_bind" {
+            if name == "park_arm" {
                 return some(new BuiltinSignature(
-                    [integer, integer], integer))
+                    [integer, integer, integer, boolean], integer))
             }
-            if name == "park_forget" {
+            if name == "park_state" ||
+               name == "park_finish" ||
+               name == "park_mark_ready" {
                 return some(new BuiltinSignature(
                     [integer], integer))
             }
             if name == "park_stale" {
                 return some(new BuiltinSignature(
                     [], integer))
-            }
-            if name == "park_dead" {
-                return some(new BuiltinSignature(
-                    [integer], integer))
             }
             if name == "park_shutdown" {
                 return some(new BuiltinSignature(

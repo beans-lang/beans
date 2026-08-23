@@ -1988,6 +1988,10 @@ woke 18 sent 18
 BEANS
 DEADLINE=45 run_matrix "$tmp/sem_hard_batch.b" "$tmp/sem_hard_batch.expected"
 
+echo "checking 256 parked tasks drain stable tokens in 64-event batches"
+DEADLINE=90 run_matrix test/cases/async_park_scale.b \
+    test/cases/async_park_scale.out
+
 echo "checking a cancelled park frees the descriptor for a later await"
 cat > "$tmp/sem_hard_repark.b" <<'BEANS'
 import std.io
@@ -2927,6 +2931,10 @@ case "$(uname -s)" in
         ${CC:-clang} -std=c11 -O1 -g -pthread test/reactor_mmap_drop.c \
             "${reactor_libs[@]}" -o "$native_dir/reactor_mmap_drop"
         "$native_dir/reactor_mmap_drop"
+        for fail_at in 1 2 3 4; do
+            BEANS_TEST_PARK_ALLOC_FAIL_AT="$fail_at" \
+                "$native_dir/reactor_mmap_drop"
+        done
         ;;
 esac
 

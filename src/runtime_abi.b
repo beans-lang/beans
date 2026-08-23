@@ -1227,25 +1227,30 @@ pub fn runtime_builtin_fn(key: string) -> Option<RuntimeBuiltin> {
             ["i64"],
             "i64", "beans_reactor_note_park", false))
     }
-    if key == "std.ready.park_bind" {
+    if key == "std.ready.park_arm" {
         return some(new RuntimeBuiltin(
-            ["i64", "i64"],
-            "i64", "beans_reactor_bind_park", false))
+            ["i64", "i64", "i64", "bool"],
+            "i64", "beans_reactor_arm_park", false))
     }
-    if key == "std.ready.park_forget" {
+    if key == "std.ready.park_state" {
         return some(new RuntimeBuiltin(
             ["i64"],
-            "i64", "beans_reactor_forget_park", false))
+            "i64", "beans_reactor_park_state", false))
+    }
+    if key == "std.ready.park_finish" {
+        return some(new RuntimeBuiltin(
+            ["i64"],
+            "i64", "beans_reactor_finish_park", false))
+    }
+    if key == "std.ready.park_mark_ready" {
+        return some(new RuntimeBuiltin(
+            ["i64"],
+            "i64", "beans_reactor_mark_ready", false))
     }
     if key == "std.ready.park_stale" {
         return some(new RuntimeBuiltin(
             [],
             "i64", "beans_reactor_stale_park", false))
-    }
-    if key == "std.ready.park_dead" {
-        return some(new RuntimeBuiltin(
-            ["i64"],
-            "i64", "beans_reactor_park_dead", false))
     }
     if key == "std.ready.park_shutdown" {
         return some(new RuntimeBuiltin(

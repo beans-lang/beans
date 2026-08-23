@@ -47,10 +47,11 @@
 
 #if BEANS_RT_PROFILE >= BEANS_RT_FULL
 // Defined with the readiness reactor far below; every runtime path that
-// closes a descriptor reports it here so a parked await on that number
-// finishes false instead of attaching itself to whatever resource the
-// OS hands the number to next.
-void beans_reactor_note_close(long long fd);
+// closes a descriptor brackets the physical close with these calls. The
+// registry keeps a tombstone between them, so a concurrent park cannot attach
+// to the old descriptor or to a newly-reused descriptor number.
+void beans_reactor_close_begin(long long fd);
+void beans_reactor_close_end(long long fd);
 #endif
 
 // ---- portable decimal ------------------------------------------------------
@@ -1488,6 +1489,7 @@ static void cc_walk(void* p, long long meta, void (*fn)(void*, void*), void* ctx
 typedef struct {
     long long fd;
     long long closed;
+    long long park_closing;
 } BFile;
 typedef struct {
     char* p;
@@ -1495,6 +1497,7 @@ typedef struct {
     long long fd;
     long long writable;
     long long closed;
+    long long park_closing;
 } BMMap;
 
 typedef struct {
@@ -1573,17 +1576,21 @@ static void* cc_free_shell(void* p, long long meta) {
             if (m->p) munmap(m->p, (size_t)m->len);
 #endif
             if (m->fd >= 0) {
-                beans_reactor_note_close(m->fd);
+                if (!m->park_closing) beans_reactor_close_begin(m->fd);
                 close((int)m->fd);
+                beans_reactor_close_end(m->fd);
             }
 #endif
         } else {
             BFile* f = p; // net; close() / f.close() is the real API
             if (f->fd >= 0) {
 #if BEANS_RT_PROFILE >= BEANS_RT_FULL
-                beans_reactor_note_close(f->fd);
+                if (!f->park_closing) beans_reactor_close_begin(f->fd);
 #endif
                 close((int)f->fd);
+#if BEANS_RT_PROFILE >= BEANS_RT_FULL
+                beans_reactor_close_end(f->fd);
+#endif
             }
         }
 #endif
@@ -7743,14 +7750,21 @@ BRes beans_file_close(BFile* f) {
     // own "don't touch shared resources while mutators run" gate. Zero cost
     // single-threaded, where cc_threads is 0 and the fd closes now.
 #if BEANS_RT_PROFILE >= BEANS_RT_FULL
-    beans_reactor_note_close(f->fd);
+    beans_reactor_close_begin(f->fd);
+    f->park_closing = 1;
 #endif
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
     if (cc_threads > 0) return (BRes){1, NULL};
 #endif
     long long fd = f->fd;
     f->fd = -1;
-    if (close((int)fd) != 0) return (BRes){0, op_err_obj("close", errno)};
+    int failed = close((int)fd) != 0;
+    int e = errno;
+#if BEANS_RT_PROFILE >= BEANS_RT_FULL
+    beans_reactor_close_end(fd);
+    f->park_closing = 0;
+#endif
+    if (failed) return (BRes){0, op_err_obj("close", e)};
     return (BRes){1, NULL};
 }
 long long beans_file_close_out(BFile* f, void** e_out) { BRes r = beans_file_close(f); *e_out = r.err; return r.val; }
@@ -8907,10 +8921,14 @@ long long beans_proc_read_to_end_out(long long fd, long long limit, void** e_out
 BRes beans_proc_close(long long fd) {
     if (fd < 0) return (BRes){0, mk_error("stream is closed", "closed")};
 #if BEANS_RT_PROFILE >= BEANS_RT_FULL
-    beans_reactor_note_close(fd);
+    beans_reactor_close_begin(fd);
 #endif
-    if (close((int)fd) != 0 && errno != EINTR)
-        return (BRes){0, op_err_obj("close", errno)};
+    int failed = close((int)fd) != 0 && errno != EINTR;
+    int e = errno;
+#if BEANS_RT_PROFILE >= BEANS_RT_FULL
+    beans_reactor_close_end(fd);
+#endif
+    if (failed) return (BRes){0, op_err_obj("close", e)};
     return (BRes){1, NULL};
 }
 long long beans_proc_close_out(long long fd, void** e_out) { BRes r = beans_proc_close(fd); *e_out = r.err; return r.val; }
@@ -9191,7 +9209,10 @@ BRes beans_mmap_close(BMMap* m) {
     if (m->closed) return (BRes){0, mk_error("mmap already closed", "closed")};
     m->closed = 1;
 #if BEANS_RT_PROFILE >= BEANS_RT_FULL
-    if (m->fd >= 0) beans_reactor_note_close(m->fd);
+    if (m->fd >= 0) {
+        beans_reactor_close_begin(m->fd);
+        m->park_closing = 1;
+    }
 #endif
     // defer munmap+close while workers run (see beans_file_close): a racing op
     // reading through the mapping must not have it pulled out from under it
@@ -9199,7 +9220,14 @@ BRes beans_mmap_close(BMMap* m) {
     int bad = m->p && fs_unmap(m->p, m->len) != 0;
     int e = errno;
     m->p = NULL;
-    if (m->fd >= 0) close((int)m->fd);
+    if (m->fd >= 0) {
+        long long fd = m->fd;
+        close((int)fd);
+#if BEANS_RT_PROFILE >= BEANS_RT_FULL
+        beans_reactor_close_end(fd);
+        m->park_closing = 0;
+#endif
+    }
     m->fd = -1;
     if (bad) return (BRes){0, op_err_obj("close", e)};
     return (BRes){1, NULL};
@@ -11427,15 +11455,15 @@ long long beans_net_set_nonblocking_out(long long fd, long long on, void** e_out
 BRes beans_net_close(long long fd) {
     net_init();
     if (fd < 0) return (BRes){0, net_closed_err("close")};
-    // A parked await on this number must finish false off its dead flag,
-    // never off whatever resource the number is reused for. Marked before
-    // the close so no window exists where the number is free but the
-    // entry still looks live.
-    beans_reactor_note_close(fd);
+    // Keep a registry tombstone across the physical close. A concurrent arm
+    // sees it and cannot register either the dying fd or its reused number.
+    beans_reactor_close_begin(fd);
     // EINTR from close must not be retried: on Linux the descriptor is already gone,
     // so a retry would close whatever number was handed out next.
-    if (net_close(net_fd_of(fd)) != 0 && net_errno() != EINTR)
-        return (BRes){0, net_err_op("close", net_errno())};
+    int failed = net_close(net_fd_of(fd)) != 0 && net_errno() != EINTR;
+    int e = net_errno();
+    beans_reactor_close_end(fd);
+    if (failed) return (BRes){0, net_err_op("close", e)};
     return (BRes){1, NULL};
 }
 long long beans_net_close_out(long long fd, void** e_out) { BRes r = beans_net_close(fd); *e_out = r.err; return r.val; }
@@ -11874,17 +11902,14 @@ long long beans_poll_remove_out(long long poller, long long fd, void** e_out) { 
 
 // [i64 count][i64 token, i64 flags] * count
 // Per-thread scratch reused across beans_poll_wait calls. A busy server waits
-// tens of thousands of times a second, and the token/flag/ident arrays plus
-// the kernel event buffer were four heap allocations on every one of them.
+// tens of thousands of times a second, and the token/flag arrays plus the
+// kernel event buffer were three heap allocations on every one of them.
 // Freed when the thread exits; a thread that cannot get scratch falls back to
 // the per-call heap path.
 #if !defined(_WIN32)
 typedef struct {
     long long* tokens;
     long long* flags;
-#if !defined(__linux__)
-    uintptr_t* idents;
-#endif
     void* got;      // struct epoll_event[] on Linux, struct kevent[] elsewhere
     long long cap;  // in events; the kernel buffer holds cap * 2 + 1 entries
 } PollScratch;
@@ -11896,9 +11921,6 @@ static void poll_scratch_drop(void* raw) {
     if (!s) return;
     free(s->tokens);
     free(s->flags);
-#if !defined(__linux__)
-    free(s->idents);
-#endif
     free(s->got);
     free(s);
 }
@@ -11925,21 +11947,10 @@ static PollScratch* poll_scratch_get(long long max_events,
             (long long*)malloc((size_t)max_events * sizeof(long long));
         long long* flags =
             (long long*)malloc((size_t)max_events * sizeof(long long));
-#if !defined(__linux__)
-        uintptr_t* idents =
-            (uintptr_t*)malloc((size_t)max_events * sizeof(uintptr_t));
-#endif
         void* got = malloc((size_t)room * kernel_entry);
-        if (!tokens || !flags || !got
-#if !defined(__linux__)
-            || !idents
-#endif
-        ) {
+        if (!tokens || !flags || !got) {
             free(tokens);
             free(flags);
-#if !defined(__linux__)
-            free(idents);
-#endif
             free(got);
             return NULL;
         }
@@ -11947,10 +11958,6 @@ static PollScratch* poll_scratch_get(long long max_events,
         free(s->flags);
         s->tokens = tokens;
         s->flags = flags;
-#if !defined(__linux__)
-        free(s->idents);
-        s->idents = idents;
-#endif
         free(s->got);
         s->got = got;
         s->cap = max_events;
@@ -11993,22 +12000,10 @@ static BRes beans_poll_wait_into_impl(long long poller, long long wake_read,
                                 : calloc((size_t)max_events, sizeof(long long));
     long long* flags = scratch ? scratch->flags
                                : calloc((size_t)max_events, sizeof(long long));
-#if !defined(__linux__)
-    uintptr_t* idents = scratch
-                            ? scratch->idents
-                            : calloc((size_t)max_events, sizeof(uintptr_t));
-#endif
-    if (!tokens || !flags
-#if !defined(__linux__)
-        || !idents
-#endif
-    ) {
+    if (!tokens || !flags) {
         if (!scratch) {
             free(tokens);
             free(flags);
-#if !defined(__linux__)
-            free(idents);
-#endif
         }
         return (BRes){0, mk_error("poller wait: out of memory", "io")};
     }
@@ -12143,7 +12138,6 @@ static BRes beans_poll_wait_into_impl(long long poller, long long wake_read,
         if (!got) {
             free(tokens);
             free(flags);
-            free(idents);
             return (BRes){0, mk_error("poller wait: out of memory", "io")};
         }
         struct timespec ts, *wait_for = NULL;
@@ -12160,7 +12154,6 @@ static BRes beans_poll_wait_into_impl(long long poller, long long wake_read,
             if (!scratch) {
                 free(tokens);
                 free(flags);
-                free(idents);
             }
             return (BRes){0, poll_err("poller wait", e)};
         }
@@ -12172,18 +12165,17 @@ static BRes beans_poll_wait_into_impl(long long poller, long long wake_read,
             if (got[i].filter == EVFILT_WRITE) f |= POLL_WRITABLE;
             if (got[i].flags & EV_EOF) f |= POLL_HANGUP;
             if (got[i].flags & EV_ERROR) f |= POLL_ERROR;
-            // kqueue reports read and write as separate events for one descriptor.
-            // epoll reports one with both bits, so they are merged here — otherwise the
-            // same program would see a different number of events per platform.
+            // kqueue reports read and write as separate events. Merge by the
+            // registration token, not ident(fd): a queued stale event and a new
+            // registration may carry the same reused descriptor number.
             long long at = -1;
             for (long long j = 0; j < found; j++)
-                if (idents[j] == got[i].ident) { at = j; break; }
+                if (tokens[j] == token) { at = j; break; }
             if (at >= 0) {
                 flags[at] |= f;
                 continue;
             }
             if (found >= max_events) continue;
-            idents[found] = got[i].ident;
             tokens[found] = token;
             flags[found] = f;
             found++;
@@ -12223,9 +12215,6 @@ static BRes beans_poll_wait_into_impl(long long poller, long long wake_read,
     if (!scratch) {
         free(tokens);
         free(flags);
-#if !defined(__linux__)
-        free(idents);
-#endif
     }
 #endif
     return (BRes){found, NULL};
@@ -12350,43 +12339,300 @@ long long beans_set_task_slot(long long index, long long value) {
     return 1;
 }
 
-// Parked awaits are shared state. A worker may close a descriptor owned by an
-// executor on another thread, so a thread-local table loses the notification
-// and leaves that executor asleep forever. The registry is protected by one
-// mutex; every lookup and mutation, including cancellation and shutdown, goes
-// through it.
-//
-// The executor itself still stays thread-local. `owner` separates two reactors
-// that happen to watch the same descriptor, while the globally unique token is
-// the await's stable identity after close and descriptor reuse. `wake` is the
-// poller's slot-plus-generation handle, never its raw write descriptor. A close
-// copies those handles under this mutex and wakes them only after unlocking, so
-// no reactor mutex is nested and a concurrent shutdown merely makes the copied
-// handle stale.
-#define BEANS_PARKED_MAX 64
-typedef struct BeansParked {
-    long long fd;
-    long long token;
-    long long owner;
-    long long wake;
-    int dead;
-    struct BeansParked* next;
-} BeansParked;
-static BeansParked* beans_parked;
-static long long beans_parked_token_next;
-static long long beans_parked_owner_next;
-static pthread_mutex_t beans_parked_lock = PTHREAD_MUTEX_INITIALIZER;
-static _Thread_local long long beans_parked_owner;
+// Parked awaits are shared state. Rows live in generation-tagged slots: a
+// kernel event carries the slot token, never the descriptor number, so an old
+// queued event cannot wake a later user of a reused fd or slot. The two hash
+// indexes make owner+fd duplicate checks and close fan-out amortized O(1), and
+// the stable owner shell lets close queue a wake without allocating.
+#define BEANS_PARK_NONE ((size_t)-1)
+#define BEANS_PARK_WAKE_BATCH 64
+#define BEANS_PARK_FREE 0
+#define BEANS_PARK_LIVE 1
+#define BEANS_PARK_READY 2
+#define BEANS_PARK_DEAD 3
+#define BEANS_PARK_RETIRED 4
 
-static long long beans_reactor_owner_locked(void) {
-    if (beans_parked_owner == 0) {
-        beans_parked_owner = ++beans_parked_owner_next;
-        if (beans_parked_owner <= 0) {
-            beans_parked_owner_next = 1;
-            beans_parked_owner = 1;
-        }
+typedef struct BeansParkOwner BeansParkOwner;
+typedef struct {
+    long long fd;
+    long long poller;
+    long long wake;
+    BeansParkOwner* owner;
+    uint32_t generation;
+    unsigned char state;
+    unsigned char armed;
+    size_t next_free;
+    size_t exact_prev;
+    size_t exact_next;
+    size_t fd_prev;
+    size_t fd_next;
+    size_t owner_prev;
+    size_t owner_next;
+} BeansParked;
+
+struct BeansParkOwner {
+    size_t rows;
+    size_t row_count;
+    size_t dead_count;
+    size_t stale_cursor;
+    long long wake;
+    int wake_pending;
+    int shutting_down;
+    BeansParkOwner* prev;
+    BeansParkOwner* next;
+};
+
+typedef struct BeansParkClosing {
+    long long fd;
+    unsigned int users;
+    struct BeansParkClosing* next;
+} BeansParkClosing;
+
+static BeansParked* beans_parked;
+static size_t beans_parked_cap;
+static size_t beans_parked_free = BEANS_PARK_NONE;
+static size_t beans_parked_rows;
+static size_t* beans_park_exact;
+static size_t* beans_park_fd;
+static size_t beans_park_index_cap;
+static BeansParkOwner* beans_park_owners;
+static BeansParkClosing* beans_park_closing;
+static pthread_mutex_t beans_parked_lock = PTHREAD_MUTEX_INITIALIZER;
+static _Thread_local BeansParkOwner* beans_parked_owner;
+
+// Test-only failure injection is intentionally scoped to registry growth. A
+// failed reservation leaves no published row and no kernel registration.
+static long long beans_park_alloc_fail_at = LLONG_MIN;
+static long long beans_park_alloc_count;
+
+static int beans_park_alloc_allowed(void) {
+    if (beans_park_alloc_fail_at == LLONG_MIN) {
+        const char* text = getenv("BEANS_TEST_PARK_ALLOC_FAIL_AT");
+        beans_park_alloc_fail_at = text && *text ? strtoll(text, NULL, 10) : -1;
     }
-    return beans_parked_owner;
+    beans_park_alloc_count++;
+    return beans_park_alloc_fail_at <= 0 ||
+           beans_park_alloc_count != beans_park_alloc_fail_at;
+}
+
+static void* beans_park_calloc(size_t count, size_t size) {
+    if (!beans_park_alloc_allowed()) return NULL;
+    return calloc(count, size);
+}
+
+static void* beans_park_realloc(void* old, size_t size) {
+    if (!beans_park_alloc_allowed()) return NULL;
+    return realloc(old, size);
+}
+
+static size_t beans_park_hash(unsigned long long value) {
+    value ^= value >> 33;
+    value *= 0xff51afd7ed558ccdULL;
+    value ^= value >> 33;
+    value *= 0xc4ceb9fe1a85ec53ULL;
+    value ^= value >> 33;
+    return (size_t)value;
+}
+
+static size_t beans_park_exact_bucket(BeansParkOwner* owner, long long fd) {
+    unsigned long long key = (unsigned long long)(uintptr_t)owner;
+    key ^= (unsigned long long)fd + 0x9e3779b97f4a7c15ULL +
+           (key << 6) + (key >> 2);
+    return beans_park_hash(key) & (beans_park_index_cap - 1);
+}
+
+static size_t beans_park_fd_bucket(long long fd) {
+    return beans_park_hash((unsigned long long)fd) &
+           (beans_park_index_cap - 1);
+}
+
+static int beans_park_rehash(size_t wanted) {
+    size_t cap = beans_park_index_cap ? beans_park_index_cap : 32;
+    while (cap < wanted) {
+        if (cap > SIZE_MAX / 2) return 0;
+        cap *= 2;
+    }
+    size_t* exact = beans_park_calloc(cap, sizeof *exact);
+    size_t* by_fd = beans_park_calloc(cap, sizeof *by_fd);
+    if (!exact || !by_fd) {
+        free(exact);
+        free(by_fd);
+        return 0;
+    }
+    for (size_t i = 0; i < cap; i++) {
+        exact[i] = BEANS_PARK_NONE;
+        by_fd[i] = BEANS_PARK_NONE;
+    }
+    size_t* old_exact = beans_park_exact;
+    size_t* old_fd = beans_park_fd;
+    beans_park_index_cap = cap;
+    beans_park_exact = exact;
+    beans_park_fd = by_fd;
+    for (size_t i = 0; i < beans_parked_cap; i++) {
+        BeansParked* row = &beans_parked[i];
+        if (row->state != BEANS_PARK_LIVE &&
+            row->state != BEANS_PARK_READY)
+            continue;
+        size_t eb = beans_park_exact_bucket(row->owner, row->fd);
+        row->exact_prev = BEANS_PARK_NONE;
+        row->exact_next = exact[eb];
+        if (row->exact_next != BEANS_PARK_NONE)
+            beans_parked[row->exact_next].exact_prev = i;
+        exact[eb] = i;
+        size_t fb = beans_park_fd_bucket(row->fd);
+        row->fd_prev = BEANS_PARK_NONE;
+        row->fd_next = by_fd[fb];
+        if (row->fd_next != BEANS_PARK_NONE)
+            beans_parked[row->fd_next].fd_prev = i;
+        by_fd[fb] = i;
+    }
+    free(old_exact);
+    free(old_fd);
+    return 1;
+}
+
+static int beans_park_ensure_indexes(void) {
+    if (beans_park_index_cap &&
+        beans_parked_rows + 1 < beans_park_index_cap * 3 / 4)
+        return 1;
+    size_t wanted = beans_park_index_cap ? beans_park_index_cap * 2 : 32;
+    return beans_park_rehash(wanted);
+}
+
+static int beans_park_ensure_slot(void) {
+    if (beans_parked_free != BEANS_PARK_NONE) return 1;
+    size_t old_cap = beans_parked_cap;
+    size_t cap = old_cap ? old_cap * 2 : 16;
+    if (cap <= old_cap || cap > (size_t)INT32_MAX) return 0;
+    BeansParked* rows = beans_park_realloc(
+        beans_parked, cap * sizeof *beans_parked);
+    if (!rows) return 0;
+    beans_parked = rows;
+    beans_parked_cap = cap;
+    for (size_t i = cap; i-- > old_cap;) {
+        memset(&beans_parked[i], 0, sizeof beans_parked[i]);
+        beans_parked[i].generation = 1;
+        beans_parked[i].state = BEANS_PARK_FREE;
+        beans_parked[i].next_free = beans_parked_free;
+        beans_parked_free = i;
+    }
+    return 1;
+}
+
+static BeansParkOwner* beans_reactor_owner_locked(void) {
+    if (beans_parked_owner) return beans_parked_owner;
+    BeansParkOwner* owner = beans_park_calloc(1, sizeof *owner);
+    if (!owner) return NULL;
+    owner->rows = BEANS_PARK_NONE;
+    owner->stale_cursor = BEANS_PARK_NONE;
+    owner->next = beans_park_owners;
+    if (owner->next) owner->next->prev = owner;
+    beans_park_owners = owner;
+    beans_parked_owner = owner;
+    return owner;
+}
+
+static unsigned long long beans_park_token(size_t slot, uint32_t generation) {
+    return ((unsigned long long)(slot + 1) << 32) |
+           (unsigned long long)generation;
+}
+
+static size_t beans_park_token_slot(long long token) {
+    if (token <= 0) return BEANS_PARK_NONE;
+    unsigned long long bits = (unsigned long long)token;
+    unsigned long long encoded = bits >> 32;
+    if (encoded == 0 || encoded - 1 >= beans_parked_cap)
+        return BEANS_PARK_NONE;
+    size_t slot = (size_t)(encoded - 1);
+    BeansParked* row = &beans_parked[slot];
+    if (row->state == BEANS_PARK_FREE ||
+        row->state == BEANS_PARK_RETIRED ||
+        row->generation != (uint32_t)bits)
+        return BEANS_PARK_NONE;
+    return slot;
+}
+
+static int beans_park_is_closing_locked(long long fd) {
+    for (BeansParkClosing* row = beans_park_closing; row; row = row->next)
+        if (row->fd == fd) return 1;
+    return 0;
+}
+
+static size_t beans_park_find_exact_locked(BeansParkOwner* owner,
+                                           long long fd) {
+    if (!beans_park_index_cap) return BEANS_PARK_NONE;
+    size_t at = beans_park_exact[beans_park_exact_bucket(owner, fd)];
+    while (at != BEANS_PARK_NONE) {
+        BeansParked* row = &beans_parked[at];
+        if (row->owner == owner && row->fd == fd) return at;
+        at = row->exact_next;
+    }
+    return BEANS_PARK_NONE;
+}
+
+static void beans_park_link_active_locked(size_t slot) {
+    BeansParked* row = &beans_parked[slot];
+    size_t eb = beans_park_exact_bucket(row->owner, row->fd);
+    row->exact_prev = BEANS_PARK_NONE;
+    row->exact_next = beans_park_exact[eb];
+    if (row->exact_next != BEANS_PARK_NONE)
+        beans_parked[row->exact_next].exact_prev = slot;
+    beans_park_exact[eb] = slot;
+    size_t fb = beans_park_fd_bucket(row->fd);
+    row->fd_prev = BEANS_PARK_NONE;
+    row->fd_next = beans_park_fd[fb];
+    if (row->fd_next != BEANS_PARK_NONE)
+        beans_parked[row->fd_next].fd_prev = slot;
+    beans_park_fd[fb] = slot;
+}
+
+static void beans_park_unlink_active_locked(size_t slot) {
+    BeansParked* row = &beans_parked[slot];
+    size_t eb = beans_park_exact_bucket(row->owner, row->fd);
+    if (row->exact_prev == BEANS_PARK_NONE)
+        beans_park_exact[eb] = row->exact_next;
+    else
+        beans_parked[row->exact_prev].exact_next = row->exact_next;
+    if (row->exact_next != BEANS_PARK_NONE)
+        beans_parked[row->exact_next].exact_prev = row->exact_prev;
+    size_t fb = beans_park_fd_bucket(row->fd);
+    if (row->fd_prev == BEANS_PARK_NONE)
+        beans_park_fd[fb] = row->fd_next;
+    else
+        beans_parked[row->fd_prev].fd_next = row->fd_next;
+    if (row->fd_next != BEANS_PARK_NONE)
+        beans_parked[row->fd_next].fd_prev = row->fd_prev;
+    row->exact_prev = row->exact_next = BEANS_PARK_NONE;
+    row->fd_prev = row->fd_next = BEANS_PARK_NONE;
+}
+
+static void beans_park_mark_dead_locked(size_t slot) {
+    BeansParked* row = &beans_parked[slot];
+    if (row->state != BEANS_PARK_LIVE &&
+        row->state != BEANS_PARK_READY)
+        return;
+    beans_park_unlink_active_locked(slot);
+    row->state = BEANS_PARK_DEAD;
+    row->owner->dead_count++;
+    if (row->owner && row->wake) row->owner->wake_pending = 1;
+}
+
+static void beans_park_flush_wakes(void) {
+    for (;;) {
+        long long wakes[BEANS_PARK_WAKE_BATCH];
+        size_t count = 0;
+        pthread_mutex_lock(&beans_parked_lock);
+        for (BeansParkOwner* owner = beans_park_owners;
+             owner && count < BEANS_PARK_WAKE_BATCH; owner = owner->next) {
+            if (!owner->wake_pending) continue;
+            owner->wake_pending = 0;
+            if (owner->wake) wakes[count++] = owner->wake;
+        }
+        pthread_mutex_unlock(&beans_parked_lock);
+        for (size_t i = 0; i < count; i++)
+            (void)beans_poll_wake_try(wakes[i]);
+        if (count < BEANS_PARK_WAKE_BATCH) return;
+    }
 }
 
 // Validation is deliberately done here, before std.async opens its shared
@@ -12406,130 +12652,224 @@ static int beans_reactor_fd_valid(long long fd) {
 #endif
 }
 
-// token (> 0) = noted, 0 = duplicate live park in this executor,
-// -1 = this executor's table is full, -2 = invalid descriptor. These remain
-// separate so the async layer can return false only for the invalid case.
+// token (> 0) = reserved, 0 = duplicate live park in this executor,
+// -1 = out of memory, -2 = invalid or closing descriptor.
 long long beans_reactor_note_park(long long fd) {
     pthread_mutex_lock(&beans_parked_lock);
-    if (!beans_reactor_fd_valid(fd)) {
+    if (beans_park_is_closing_locked(fd) || !beans_reactor_fd_valid(fd)) {
         pthread_mutex_unlock(&beans_parked_lock);
         return -2;
     }
-    long long owner = beans_reactor_owner_locked();
-    long long count = 0;
-    for (BeansParked* p = beans_parked; p; p = p->next) {
-        if (p->owner != owner) continue;
-        count++;
-        if (!p->dead && p->fd == fd) {
-            pthread_mutex_unlock(&beans_parked_lock);
-            return 0;
-        }
-    }
-    if (count == BEANS_PARKED_MAX) {
+    BeansParkOwner* owner = beans_reactor_owner_locked();
+    if (!owner || !beans_park_ensure_slot() ||
+        !beans_park_ensure_indexes()) {
         pthread_mutex_unlock(&beans_parked_lock);
         return -1;
     }
-    BeansParked* p = malloc(sizeof *p);
-    if (!p) {
+    if (owner->shutting_down) {
         pthread_mutex_unlock(&beans_parked_lock);
         return -1;
     }
-    long long token = ++beans_parked_token_next;
-    if (token <= 0) token = beans_parked_token_next = 1;
-    p->fd = fd;
-    p->token = token;
-    p->owner = owner;
-    p->wake = 0;
-    p->dead = 0;
-    p->next = beans_parked;
-    beans_parked = p;
+    if (beans_park_find_exact_locked(owner, fd) != BEANS_PARK_NONE) {
+        pthread_mutex_unlock(&beans_parked_lock);
+        return 0;
+    }
+    size_t slot = beans_parked_free;
+    BeansParked* row = &beans_parked[slot];
+    beans_parked_free = row->next_free;
+    row->fd = fd;
+    row->poller = -1;
+    row->wake = 0;
+    row->owner = owner;
+    row->state = BEANS_PARK_LIVE;
+    row->armed = 0;
+    row->owner_prev = BEANS_PARK_NONE;
+    row->owner_next = owner->rows;
+    if (row->owner_next != BEANS_PARK_NONE)
+        beans_parked[row->owner_next].owner_prev = slot;
+    owner->rows = slot;
+    owner->row_count++;
+    if (owner->stale_cursor == BEANS_PARK_NONE)
+        owner->stale_cursor = slot;
+    beans_park_link_active_locked(slot);
+    beans_parked_rows++;
+    long long token = (long long)beans_park_token(slot, row->generation);
     pthread_mutex_unlock(&beans_parked_lock);
     return token;
 }
 
-// Connects a reserved token to its owning reactor after that reactor opens.
-// 1 = live and bound, 0 = the descriptor closed in between or token unknown.
-long long beans_reactor_bind_park(long long token, long long wake) {
+// Atomically validates, binds the owner wake, and installs the stable token in
+// the poller while close is excluded by the same registry mutex.
+long long beans_reactor_arm_park(long long token, long long poller,
+                                 long long wake, long long write) {
     pthread_mutex_lock(&beans_parked_lock);
-    long long owner = beans_parked_owner;
-    for (BeansParked* p = beans_parked; p; p = p->next) {
-        if (p->owner != owner || p->token != token) continue;
-        p->wake = wake;
-        long long live = p->dead ? 0 : 1;
+    size_t slot = beans_park_token_slot(token);
+    if (slot == BEANS_PARK_NONE ||
+        beans_parked[slot].owner != beans_parked_owner) {
         pthread_mutex_unlock(&beans_parked_lock);
-        return live;
+        return 0;
     }
+    BeansParked* row = &beans_parked[slot];
+    if (row->state != BEANS_PARK_LIVE ||
+        beans_park_is_closing_locked(row->fd) ||
+        !beans_reactor_fd_valid(row->fd)) {
+        beans_park_mark_dead_locked(slot);
+        pthread_mutex_unlock(&beans_parked_lock);
+        beans_park_flush_wakes();
+        return 0;
+    }
+    if (poll_apply((int)poller, net_fd_of(row->fd), token,
+                   !write, write != 0, 1) != 0) {
+        int e = net_errno();
+        beans_park_mark_dead_locked(slot);
+        pthread_mutex_unlock(&beans_parked_lock);
+        beans_park_flush_wakes();
+        // A valid OS descriptor is not necessarily watchable (epoll rejects
+        // regular files with EPERM, for example). That readiness can never
+        // fire and completes false. Resource/poller failures stay loud.
+        return e == EBADF || e == EPERM || e == EINVAL || e == ENODEV
+                   ? 0 : -1;
+    }
+    row->poller = poller;
+    row->wake = wake;
+    row->armed = 1;
+    row->owner->wake = wake;
     pthread_mutex_unlock(&beans_parked_lock);
-    return 0;
+    return 1;
 }
 
-// 1 = removed, 0 = no entry owned by this executor carries that token.
-long long beans_reactor_forget_park(long long token) {
+// LIVE=0, READY=1, DEAD=2, unknown/stale=-1.
+long long beans_reactor_park_state(long long token) {
     pthread_mutex_lock(&beans_parked_lock);
-    BeansParked** at = &beans_parked;
-    while (*at) {
-        BeansParked* p = *at;
-        if (p->owner == beans_parked_owner && p->token == token) {
-            *at = p->next;
-            free(p);
+    size_t slot = beans_park_token_slot(token);
+    long long state = -1;
+    if (slot != BEANS_PARK_NONE &&
+        beans_parked[slot].owner == beans_parked_owner) {
+        state = beans_parked[slot].state == BEANS_PARK_LIVE ? 0 :
+                beans_parked[slot].state == BEANS_PARK_READY ? 1 : 2;
+    }
+    pthread_mutex_unlock(&beans_parked_lock);
+    return state;
+}
+
+// Consumes one exact kernel token. Stale tokens and tokens already made DEAD
+// by close are ignored, including after descriptor and slot reuse.
+long long beans_reactor_mark_ready(long long token) {
+    pthread_mutex_lock(&beans_parked_lock);
+    size_t slot = beans_park_token_slot(token);
+    long long marked = 0;
+    if (slot != BEANS_PARK_NONE &&
+        beans_parked[slot].owner == beans_parked_owner &&
+        beans_parked[slot].state == BEANS_PARK_LIVE) {
+        beans_parked[slot].state = BEANS_PARK_READY;
+        marked = 1;
+    }
+    pthread_mutex_unlock(&beans_parked_lock);
+    return marked;
+}
+
+static void beans_park_finish_slot_locked(size_t slot) {
+    BeansParked* row = &beans_parked[slot];
+    BeansParkOwner* owner = row->owner;
+    size_t next_owner = row->owner_next;
+    if (row->state == BEANS_PARK_LIVE ||
+        row->state == BEANS_PARK_READY) {
+        if (row->armed)
+            (void)poll_apply((int)row->poller, net_fd_of(row->fd),
+                             0, 0, 0, 0);
+        beans_park_unlink_active_locked(slot);
+    }
+    if (row->owner_prev == BEANS_PARK_NONE)
+        owner->rows = row->owner_next;
+    else
+        beans_parked[row->owner_prev].owner_next = row->owner_next;
+    if (row->owner_next != BEANS_PARK_NONE)
+        beans_parked[row->owner_next].owner_prev = row->owner_prev;
+    if (owner->stale_cursor == slot)
+        owner->stale_cursor = next_owner != BEANS_PARK_NONE
+                                  ? next_owner : owner->rows;
+    if (row->state == BEANS_PARK_DEAD) owner->dead_count--;
+    owner->row_count--;
+    if (owner->row_count == 0) {
+        owner->stale_cursor = BEANS_PARK_NONE;
+        owner->wake = 0;
+        owner->wake_pending = 0;
+    }
+    row->owner = NULL;
+    row->armed = 0;
+    row->wake = 0;
+    row->poller = -1;
+    row->owner_prev = row->owner_next = BEANS_PARK_NONE;
+    beans_parked_rows--;
+    if (row->generation == UINT32_MAX) {
+        row->state = BEANS_PARK_RETIRED;
+        row->next_free = BEANS_PARK_NONE;
+    } else {
+        row->generation++;
+        row->state = BEANS_PARK_FREE;
+        row->next_free = beans_parked_free;
+        beans_parked_free = slot;
+    }
+}
+
+long long beans_reactor_finish_park(long long token) {
+    pthread_mutex_lock(&beans_parked_lock);
+    size_t slot = beans_park_token_slot(token);
+    if (slot == BEANS_PARK_NONE ||
+        beans_parked[slot].owner != beans_parked_owner) {
+        pthread_mutex_unlock(&beans_parked_lock);
+        return 0;
+    }
+    beans_park_finish_slot_locked(slot);
+    pthread_mutex_unlock(&beans_parked_lock);
+    return 1;
+}
+
+// Begin installs a tombstone before marking rows DEAD. Arm sees the tombstone
+// until end, so the physical close and immediate fd reuse cannot land between
+// validation and registration.
+void beans_reactor_close_begin(long long fd) {
+    pthread_mutex_lock(&beans_parked_lock);
+    BeansParkClosing* closing = beans_park_closing;
+    while (closing && closing->fd != fd) closing = closing->next;
+    if (closing) {
+        closing->users++;
+    } else {
+        closing = calloc(1, sizeof *closing);
+        if (!closing) {
             pthread_mutex_unlock(&beans_parked_lock);
-            return 1;
+            beans_panic("async runtime: cannot guard descriptor close", 0, 0);
         }
-        at = &p->next;
+        closing->fd = fd;
+        closing->users = 1;
+        closing->next = beans_park_closing;
+        beans_park_closing = closing;
+    }
+    if (beans_park_index_cap) {
+        size_t at = beans_park_fd[beans_park_fd_bucket(fd)];
+        while (at != BEANS_PARK_NONE) {
+            BeansParked* row = &beans_parked[at];
+            size_t next = row->fd_next;
+            if (row->fd == fd) beans_park_mark_dead_locked(at);
+            at = next;
+        }
     }
     pthread_mutex_unlock(&beans_parked_lock);
-    return 0;
+    beans_park_flush_wakes();
 }
 
-// 1 = the parked descriptor was closed under the await, 0 = still live,
-// -1 = no entry owned by this executor carries that token.
-long long beans_reactor_park_dead(long long token) {
+void beans_reactor_close_end(long long fd) {
     pthread_mutex_lock(&beans_parked_lock);
-    for (BeansParked* p = beans_parked; p; p = p->next) {
-        if (p->owner != beans_parked_owner || p->token != token) continue;
-        long long dead = p->dead ? 1 : 0;
-        pthread_mutex_unlock(&beans_parked_lock);
-        return dead;
+    BeansParkClosing** at = &beans_park_closing;
+    while (*at && (*at)->fd != fd) at = &(*at)->next;
+    if (*at) {
+        BeansParkClosing* closing = *at;
+        if (--closing->users == 0) {
+            *at = closing->next;
+            free(closing);
+        }
     }
     pthread_mutex_unlock(&beans_parked_lock);
-    return -1;
-}
-
-// Every runtime path that closes a descriptor reports it here. Mark every
-// matching token across all executors, then wake each distinct owning reactor.
-// Waking outside the registry mutex avoids lock inversion with reactor close.
-void beans_reactor_note_close(long long fd) {
-    int more;
-    do {
-        long long wakes[BEANS_PARKED_MAX];
-        int wake_count = 0;
-        more = 0;
-        pthread_mutex_lock(&beans_parked_lock);
-        for (BeansParked* p = beans_parked; p; p = p->next) {
-            if (p->dead || p->fd != fd) continue;
-            if (p->wake == 0) {
-                p->dead = 1;
-                continue;
-            }
-            int seen = 0;
-            for (int i = 0; i < wake_count; i++)
-                if (wakes[i] == p->wake) seen = 1;
-            if (seen) {
-                p->dead = 1;
-                continue;
-            }
-            if (wake_count == BEANS_PARKED_MAX) {
-                more = 1;
-                continue;
-            }
-            p->dead = 1;
-            wakes[wake_count++] = p->wake;
-        }
-        pthread_mutex_unlock(&beans_parked_lock);
-        for (int i = 0; i < wake_count; i++) {
-            (void)beans_poll_wake_try(wakes[i]);
-        }
-    } while (more);
 }
 
 // 1 when some park owned by this executor can never fire, else -1. The
@@ -12538,20 +12878,32 @@ void beans_reactor_note_close(long long fd) {
 // reliable path once a descriptor number has already been reused.
 long long beans_reactor_stale_park(void) {
     pthread_mutex_lock(&beans_parked_lock);
-    for (BeansParked* p = beans_parked; p; p = p->next) {
-        if (p->owner != beans_parked_owner) continue;
-        if (p->dead) {
-            pthread_mutex_unlock(&beans_parked_lock);
-            return 1;
-        }
+    BeansParkOwner* owner = beans_parked_owner;
+    if (owner && owner->dead_count) {
+        pthread_mutex_unlock(&beans_parked_lock);
+        return 1;
+    }
+    size_t at = owner ? owner->stale_cursor : BEANS_PARK_NONE;
+    size_t limit = owner && owner->row_count < BEANS_PARK_WAKE_BATCH
+                       ? owner->row_count : BEANS_PARK_WAKE_BATCH;
+    for (size_t scanned = 0; scanned < limit; scanned++) {
+        if (at == BEANS_PARK_NONE) at = owner->rows;
+        BeansParked* row = &beans_parked[at];
+        size_t next = row->owner_next;
 #if !defined(_WIN32)
-        if (!beans_reactor_fd_valid(p->fd)) {
-            p->dead = 1;
+        if (row->state == BEANS_PARK_LIVE &&
+            !beans_reactor_fd_valid(row->fd)) {
+            beans_park_mark_dead_locked(at);
+            owner->stale_cursor = next != BEANS_PARK_NONE
+                                      ? next : owner->rows;
             pthread_mutex_unlock(&beans_parked_lock);
+            beans_park_flush_wakes();
             return 1;
         }
 #endif
+        at = next;
     }
+    if (owner) owner->stale_cursor = at != BEANS_PARK_NONE ? at : owner->rows;
     pthread_mutex_unlock(&beans_parked_lock);
     return -1;
 }
@@ -12563,19 +12915,37 @@ long long beans_reactor_stale_park(void) {
 // recycled descriptor.
 long long beans_reactor_shutdown_parks(void) {
     pthread_mutex_lock(&beans_parked_lock);
-    BeansParked** at = &beans_parked;
-    while (*at) {
-        BeansParked* p = *at;
-        if (p->owner == beans_parked_owner) {
-            *at = p->next;
-            free(p);
-        } else {
-            at = &p->next;
-        }
+    BeansParkOwner* owner = beans_parked_owner;
+    if (!owner) {
+        pthread_mutex_unlock(&beans_parked_lock);
+        return 1;
     }
-    beans_parked_owner = 0;
+    owner->shutting_down = 1;
+    while (owner->rows != BEANS_PARK_NONE)
+        beans_park_finish_slot_locked(owner->rows);
+    if (owner->prev) owner->prev->next = owner->next;
+    else beans_park_owners = owner->next;
+    if (owner->next) owner->next->prev = owner->prev;
+    beans_parked_owner = NULL;
     pthread_mutex_unlock(&beans_parked_lock);
+    free(owner);
     return 1;
+}
+
+// Hooks for the direct C registry tests. A generation is changed only while a
+// slot is free; forcing UINT32_MAX proves that its next finish retires it.
+long long beans_reactor_test_set_generation(long long slot,
+                                            long long generation) {
+    pthread_mutex_lock(&beans_parked_lock);
+    long long changed = 0;
+    if (slot >= 0 && (size_t)slot < beans_parked_cap &&
+        generation > 0 && (unsigned long long)generation <= UINT32_MAX &&
+        beans_parked[slot].state == BEANS_PARK_FREE) {
+        beans_parked[slot].generation = (uint32_t)generation;
+        changed = 1;
+    }
+    pthread_mutex_unlock(&beans_parked_lock);
+    return changed;
 }
 
 #endif // BEANS_RT_PROFILE >= BEANS_RT_FULL — sockets + readiness poller
@@ -12833,9 +13203,11 @@ BRes beans_signal_close(long long fd, BList* packed) {
     } else if (error) {
         beans_release(error);
     }
-    beans_reactor_note_close(fd);
-    if (close((int)fd) != 0 && errno != EINTR)
-        return (BRes){0, op_err_obj("signal close", errno)};
+    beans_reactor_close_begin(fd);
+    int failed = close((int)fd) != 0 && errno != EINTR;
+    int e = errno;
+    beans_reactor_close_end(fd);
+    if (failed) return (BRes){0, op_err_obj("signal close", e)};
     return (BRes){1, NULL};
 }
 long long beans_signal_close_out(long long fd, BList* packed, void** e_out) { BRes r = beans_signal_close(fd, packed); *e_out = r.err; return r.val; }
