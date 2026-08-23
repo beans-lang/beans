@@ -55,6 +55,27 @@ This file records user-facing changes in each Beans release.
 - Each Beans thread trial-deletes its own genuine cycle candidates, so cycles
   created beside a long-lived worker stay bounded without stopping that
   worker. The global fallback collector remains thread-quiescence-only.
+- A counter borrowed before a counted `Slice` loop — an `inout` argument, say —
+  no longer has its bounds check removed. The callee can store a negative
+  index that still satisfies `index < len`, so the entry value is not
+  provable and the check stays.
+- The publication barrier now covers the writes that carry no heap owner of
+  their own: static fields, reflective field setters, and the referent behind
+  a weak field. A `Shared<T>` built before the first spawn also propagates its
+  mark into values linked in afterwards, instead of leaving them owner-local
+  where another thread could still reach them.
+- A value whose layout is past what a static pointer mask can spell now falls
+  back to walking the owner after the store, rather than silently skipping the
+  barrier.
+- `Channel.send` publishes the sent graph only once the send is committed. A
+  send that fails on a closed channel leaves the value — and the caller's whole
+  graph — unmarked, instead of stranding it on the quiescence-only buffer.
+- A root parked while the thread-local buffer is being handed off is no longer
+  dropped: the buffer is detached before it is published, so a release from the
+  husk sweep cannot leave an object parked in a buffer nobody owns.
+- Exiting with a detached worker still live now collects the entry thread's own
+  cycles instead of publishing them to a global buffer that the forced final
+  sweep skips.
 
 ### Changed
 

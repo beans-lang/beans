@@ -45,6 +45,25 @@ fn increment_first(storage: RawPtr<i32>) -> int {
     }
 }
 
+// An `inout` argument lowers to a borrow of the counter. The callee may
+// store anything behind it — including a negative index that still passes
+// `index < view.len()` — so the counted-loop proof must not fire here.
+fn reset_counter(inout value: int) { value = -8 }
+
+fn borrowed_start(storage: RawPtr<i32>) -> int {
+    unsafe {
+        let view: Slice<i32> = Slice.from_raw(storage, 4)
+        var total: int = 0
+        var index: int = 0
+        reset_counter(inout index)
+        for index < view.len() {
+            total += view[index] as int
+            index += 1
+        }
+        return total
+    }
+}
+
 fn main() {
     io.println(stable())
 }

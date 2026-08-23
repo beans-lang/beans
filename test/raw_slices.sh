@@ -65,6 +65,11 @@ fi
 grep -q 'beans_panic_slice_index' "$tmp/negative.ll"
 grep -q 'beans_panic_slice_index' "$tmp/increment-first.ll"
 
+# A counter borrowed before the loop can be written through that borrow, so
+# its entry value is not provable and the bounds branch has to stay.
+function_body borrowed_start "$tmp/borrowed-start.ll"
+grep -q 'beans_panic_slice_index' "$tmp/borrowed-start.ll"
+
 echo "checking raw slice compile failures"
 if ./build/beansc check test/cases/raw_slice_bad.b >"$tmp/bad" 2>&1; then
     echo "raw_slice_bad.b unexpectedly passed" >&2

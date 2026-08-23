@@ -1038,7 +1038,7 @@ partial class LlvmTextEmitter {
                     let old: string =
                         "%static.old{self.fresh()}"
                     output =
-                        "  {old} = load {llvm}, ptr {symbol}\n"
+                        "{self.emit_cc_write_static(field.type, stored, "static")}  {old} = load {llvm}, ptr {symbol}\n"
                     output =
                         "{output}  store {llvm} {stored}, ptr {symbol}\n{self.emit_arc_value(field.type, old, false)}"
                 } else {
@@ -1695,10 +1695,25 @@ partial class LlvmTextEmitter {
                         instruction.operands[1],
                         instruction)
                 let address: int = self.fresh()
+                // The slot owns the handle, but a weak_get hands the
+                // referent itself to whoever holds the shared owner. Publish
+                // both: the handle keeps the edge invariant, and the
+                // referent is what another thread can actually retain.
+                var publish: string =
+                    self.emit_cc_write(
+                        receiver, layout.field_types[name],
+                        "%weak.new{address}", "weak.field")
+                if publish != "" {
+                    self.require_declare(
+                        "beans_cc_write",
+                        "void @beans_cc_write(ptr, ptr)")
+                    publish =
+                        "{publish}  call void @beans_cc_write(ptr {receiver}, ptr {stored})\n"
+                }
                 // swap a fresh handle in, drop the old one, then drop
                 // the consumed object reference: the slot owns only the
                 // handle, so storing adds no count on the referent
-                return "  %field.assign.ptr{address} = getelementptr i8, ptr {receiver}, i64 {layout.field_offsets[name]}\n  %weak.new{address} = call ptr @beans_object_weak_new(ptr {stored})\n{self.emit_cc_write(receiver, layout.field_types[name], "%weak.new{address}", "weak.field")}  %weak.old{address} = load ptr, ptr %field.assign.ptr{address}\n  store ptr %weak.new{address}, ptr %field.assign.ptr{address}\n  call void @beans_release(ptr %weak.old{address})\n  call void @beans_release(ptr {stored})\n"
+                return "  %field.assign.ptr{address} = getelementptr i8, ptr {receiver}, i64 {layout.field_offsets[name]}\n  %weak.new{address} = call ptr @beans_object_weak_new(ptr {stored})\n{publish}  %weak.old{address} = load ptr, ptr %field.assign.ptr{address}\n  store ptr %weak.new{address}, ptr %field.assign.ptr{address}\n  call void @beans_release(ptr %weak.old{address})\n  call void @beans_release(ptr {stored})\n"
             }
             none => {
                 self.fail(
@@ -1886,7 +1901,7 @@ partial class LlvmTextEmitter {
                         self.emit_arc_value(
                             field_type, old, false)
                     output =
-                        "{output}  {old} = load {type}, ptr %field.assign.ptr{address}\n  store {type} {stored}, ptr %field.assign.ptr{address}\n{release}"
+                        "{output}  {old} = load {type}, ptr %field.assign.ptr{address}\n  store {type} {stored}, ptr %field.assign.ptr{address}\n{self.emit_cc_publish(receiver, field_type)}{release}"
                 } else {
                     output =
                         "{output}  store {type} {stored}, ptr %field.assign.ptr{address}\n"

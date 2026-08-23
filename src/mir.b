@@ -4027,8 +4027,16 @@ class MirLowerer {
             for instruction: MirInstruction in
                 function.blocks[preheader].instructions {
                 if instruction.removed ||
-                   instruction.local != index_local.id ||
-                   instruction.op == "borrow" {
+                   instruction.local != index_local.id {
+                    continue
+                }
+                // A borrow of the counter before the loop can be an `inout`
+                // argument, and the callee may store any value behind it —
+                // including a negative one that still satisfies
+                // `index < len`. The entry value is no longer provable, so
+                // the counted-loop proof has to give up here.
+                if instruction.op == "borrow" {
+                    shape_safe = false
                     continue
                 }
                 starts_at_zero =
@@ -4040,7 +4048,7 @@ class MirLowerer {
                         function,
                         instruction.operands[0], "0")
             }
-            if !starts_at_zero { continue }
+            if !shape_safe || !starts_at_zero { continue }
 
             var indexes: List<MirInstruction> = []
             var increment_index: int = -1
@@ -4087,6 +4095,16 @@ class MirLowerer {
                            captured == slice_local.id {
                             shape_safe = false
                         }
+                    }
+                    // The body's single `+= 1` was proven above. Anything
+                    // else that writes the counter — including a write in
+                    // the guard block, which that scan never saw — leaves
+                    // the induction unknown.
+                    if instruction.local == index_local.id &&
+                       instruction.op != "borrow" &&
+                       member.id == head.id {
+                        shape_safe = false
+                        continue
                     }
                     if instruction.local == index_local.id &&
                        instruction.op == "borrow" {

@@ -16,6 +16,10 @@ partial class LlvmTextEmitter {
         let ptr_mask: int =
             self.pointer_mask_at(type, 0)
         let llvm: string = self.type_text(type)
+        // A zero mask means this value holds no references. A negative one
+        // means the layout is beyond what a static mask can spell — the
+        // references are still there, so emit_cc_publish covers the store
+        // instead of dropping the barrier.
         if ptr_mask <= 0 || llvm == "" { return "" }
         let slot: string =
             self.spill_slot(llvm, "cc.write.{tag}")
@@ -23,6 +27,44 @@ partial class LlvmTextEmitter {
             "beans_cc_write_typed",
             "void @beans_cc_write_typed(ptr, ptr, i64)")
         return "  store {llvm} {value}, ptr {slot}\n  call void @beans_cc_write_typed(ptr {owner}, ptr {slot}, i64 {ptr_mask})\n"
+    }
+
+    // A static field has no heap owner whose shared bit could gate the
+    // write, and it is reachable from every thread by construction. Publish
+    // unconditionally instead of testing an owner.
+    fn emit_cc_write_static(type: HirType, value: string,
+                            tag: string) -> string {
+        if !self.type_has_owned_refs(type) { return "" }
+        if self.type_is_reference(type) {
+            self.require_declare(
+                "beans_cc_write_static",
+                "void @beans_cc_write_static(ptr)")
+            return "  call void @beans_cc_write_static(ptr {value})\n"
+        }
+        let ptr_mask: int =
+            self.pointer_mask_at(type, 0)
+        let llvm: string = self.type_text(type)
+        if ptr_mask <= 0 || llvm == "" { return "" }
+        let slot: string =
+            self.spill_slot(llvm, "cc.static.{tag}")
+        self.require_declare(
+            "beans_cc_write_static_typed",
+            "void @beans_cc_write_static_typed(ptr, i64)")
+        return "  store {llvm} {value}, ptr {slot}\n  call void @beans_cc_write_static_typed(ptr {slot}, i64 {ptr_mask})\n"
+    }
+
+    // The post-store half of the publication barrier, emitted only for the
+    // values emit_cc_write cannot describe. The owner's runtime shape always
+    // covers the field, so walking the owner once the store has landed marks
+    // the graph that emit_cc_write had to skip.
+    fn emit_cc_publish(owner: string, type: HirType) -> string {
+        if !self.type_has_owned_refs(type) { return "" }
+        if self.type_is_reference(type) { return "" }
+        if self.pointer_mask_at(type, 0) >= 0 { return "" }
+        self.require_declare(
+            "beans_cc_publish",
+            "void @beans_cc_publish(ptr)")
+        return "  call void @beans_cc_publish(ptr {owner})\n"
     }
 
     // Does this local carry a runtime `.live` flag beside its slot? MIR

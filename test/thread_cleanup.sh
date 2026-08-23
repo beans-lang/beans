@@ -5,7 +5,7 @@ cd "$(dirname "$0")/.."
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/beans-thread-cleanup.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 
-for name in thread_deinit thread_cycles; do
+for name in thread_deinit thread_cycles shared_publication; do
     ./build/beansc run "test/cases/$name.b" >"$tmp/$name.interp"
     ./build/beansc build "test/cases/$name.b" -o "$tmp/$name.native" \
         >"$tmp/$name.build" 2>&1
@@ -22,6 +22,13 @@ done
 # A shared owner must publish new reference fields before storing them. This
 # is what keeps owner-local trial deletion away from later worker handoffs.
 grep -q 'call void @beans_cc_write(ptr' build/thread_live_cycles.ll
+# Publication points with no heap owner of their own need their own barrier:
+# a static slot is reachable from every thread, and Shared marks its payload
+# before the first spawn, so writes into that graph must carry the mark too.
+./build/beansc build --emit ir test/cases/shared_publication.b \
+    >"$tmp/shared-publication.ir"
+grep -q 'call void @beans_cc_write_static(ptr' build/shared_publication.ll
+grep -q 'call void @beans_cc_write(ptr' build/shared_publication.ll
 clang -O1 -pthread -DBEANS_ARC_STATS -Wno-override-module \
     build/thread_live_cycles.ll build/thread_live_cycles_ffi.c \
     build/beans_rt.c -lm \

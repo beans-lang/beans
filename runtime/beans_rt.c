@@ -897,8 +897,11 @@ static int cc_mt;
 static int cc_is_mt(void) {
     return __atomic_load_n(&cc_mt, __ATOMIC_RELAXED);
 }
+static int cc_shared_live;
 static void cc_enable_mt(void) {
     __atomic_store_n(&cc_mt, 1, __ATOMIC_RELAXED);
+    // Arms the publication barrier's fast-path gate; see cc_shared_owner.
+    __atomic_store_n(&cc_shared_live, 1, __ATOMIC_RELAXED);
 }
 #else
 static int cc_is_mt(void) { return 0; }
@@ -1579,9 +1582,17 @@ static inline void cc_release_children(void* p, long long meta, CCStack* st) {
 // unique graph is still marked here because its possible roots may remain in
 // the sending thread's buffer. Objects allocated later by the worker stay
 // owner-local. Thread, Mutex and Channel are boundaries of their own below.
+// Every path that sets an RC_SHARED bit arms cc_shared_live first, so the
+// publication barrier's gate can never be behind the marks it guards. Doing
+// it here rather than at each call site means a new marking site cannot
+// forget. See cc_shared_owner.
+static void cc_mark_shared_arm(void) {
+    __atomic_store_n(&cc_shared_live, 1, __ATOMIC_RELAXED);
+}
 static void cc_mark_shared_one(void* p) {
     if (!p) return;
     BHead* h = head_of(p);
+    cc_mark_shared_arm();
     if (rt_rc_load(h) < BEANS_IMMORTAL) rt_rc_fetch_or(h, RC_SHARED);
 }
 static void cc_mark_shared_graph(void* root);
@@ -1594,6 +1605,7 @@ static void cc_mark_shared_child_graph(void* child, void* ctx) {
 }
 static void cc_mark_shared_graph(void* root) {
     if (!root) return;
+    cc_mark_shared_arm();
     void* local[64];
     CCStack st = {local, 0, 64, local};
     cc_push(&st, root);
@@ -1615,8 +1627,18 @@ static void cc_mark_shared_graph(void* root) {
 // runtime containers call them before publishing their own stored values.
 // Walking stops at an already-shared shell, so the common write of an existing
 // shared value is constant time.
+// cc_is_mt() is not the right gate on its own: beans_shared_new marks its
+// payload the moment the Shared is built, which can be long before the first
+// spawn, and cc_walk has no case for the Shared handle — so a graph published
+// into that payload while still single-threaded could never be marked
+// afterwards. This flag stands for "some RC_SHARED mark exists", which both
+// cc_enable_mt and beans_shared_new set, so the barrier's fast path stays the
+// single relaxed load it already was.
 static int cc_shared_owner(void* owner) {
-    if (!owner || !cc_is_mt()) return 0;
+    if (!owner ||
+        !__atomic_load_n(&cc_shared_live, __ATOMIC_RELAXED)) {
+        return 0;
+    }
     BHead* h = head_of(owner);
     long long rc = rt_rc_load(h);
     return rc < BEANS_IMMORTAL && (rc & RC_SHARED) != 0;
@@ -1638,11 +1660,31 @@ void beans_cc_write_typed(void* owner, void* value, long long ptr_mask) {
     if (value && ptr_mask && cc_shared_owner(owner))
         cc_mark_shared_value(value, ptr_mask, 0);
 }
+// A static field is a process-global slot with no heap owner to carry the
+// shared mark, so there is nothing to test against. Nor can this wait for
+// cc_is_mt(): nothing walks a static, so a graph stored there before the
+// first spawn would never be marked, and the worker that reads the slot
+// would find it still owner-local. Mark on the store, always — statics are
+// rare next to field writes, and the walk stops at the first shared shell.
+void beans_cc_write_static(void* child) {
+    if (child) cc_mark_shared_graph(child);
+}
+void beans_cc_write_static_typed(void* value, long long ptr_mask) {
+    if (value && ptr_mask > 0) cc_mark_shared_value(value, ptr_mask, 0);
+}
 static void cc_mark_shared_children(void* owner) {
     if (!owner) return;
     BHead* h = head_of(owner);
     if (rt_rc_load(h) >= BEANS_IMMORTAL) return;
     cc_walk(owner, cc_meta(h), cc_mark_shared_child_graph, NULL);
+}
+// The compiler's static pointer mask cannot describe every layout: a slot
+// past bit 57, an unaligned reference inside a packed record, an array whose
+// stride is unknown. Those values still carry owned references, so the write
+// falls back to this — the owner's own runtime shape always describes the
+// field, and walking it after the store publishes whatever landed there.
+void beans_cc_publish(void* owner) {
+    if (cc_shared_owner(owner)) cc_mark_shared_children(owner);
 }
 #endif
 
@@ -1655,6 +1697,12 @@ void beans_cc_write(void* owner, void* child) {
 }
 void beans_cc_write_typed(void* owner, void* value, long long ptr_mask) {
     (void)owner;
+    (void)value;
+    (void)ptr_mask;
+}
+void beans_cc_publish(void* owner) { (void)owner; }
+void beans_cc_write_static(void* child) { (void)child; }
+void beans_cc_write_static_typed(void* value, long long ptr_mask) {
     (void)value;
     (void)ptr_mask;
 }
@@ -1809,18 +1857,25 @@ static void cc_worker_roots_begin(void) {
 }
 static void cc_worker_roots_end(void) {
     if (!cc_worker_root_batching) return;
-    // A finished worker may be handing a result or a Mutex-protected graph
-    // back to its joiner. Do not trial-delete that graph during the handoff.
-    // Publish the final partial batch before cc_threads drops instead; the
-    // quiescent global collector handles it after every worker has drained.
-    if (cc_worker_root_len)
-        cc_append_roots(cc_worker_roots, cc_worker_root_len);
+    // Detach the buffer before publishing anything. cc_append_roots can
+    // sweep husks, and that sweep runs beans_release outside the lock — a
+    // release that parks another root would otherwise land in the buffer
+    // this function is about to free, stranding the object with CC_BUF set
+    // and no buffer that owns it, where nothing can ever reclaim it.
+    // With batching already off those late roots take the global path.
     cc_worker_root_batching = 0;
-    rt_free(cc_worker_roots);
+    void** roots = cc_worker_roots;
+    long long len = cc_worker_root_len;
     cc_worker_roots = NULL;
     cc_worker_root_len = 0;
     cc_worker_root_cap = 0;
     cc_worker_pending = 0;
+    // A finished worker may be handing a result or a Mutex-protected graph
+    // back to its joiner. Do not trial-delete that graph during the handoff.
+    // Publish the final partial batch before cc_threads drops instead; the
+    // quiescent global collector handles it after every worker has drained.
+    if (len) cc_append_roots(roots, len);
+    rt_free(roots);
 }
 #endif
 
@@ -2208,6 +2263,8 @@ void* beans_object_weak_get(void* p) {
 
 void* beans_shared_new(long long value, long long value_ptr) {
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
+    // Marks here, before any spawn: cc_mark_shared_graph arms the barrier
+    // so writes into this graph carry the mark forward from now on.
     if (value_ptr) cc_mark_shared_graph((void*)(uintptr_t)value);
 #endif
     BSharedCtrl* ctrl = rt_zalloc(sizeof(BSharedCtrl));
@@ -2608,9 +2665,16 @@ static void cc_worker_collect(void) {
                 for (long long i = 0; i < cc_worker_root_len; i++)
                     rt_w_fetch_or(
                         &head_of(cc_worker_roots[i])->meta, CC_PURPLE);
-                cc_append_roots(
-                    cc_worker_roots, cc_worker_root_len);
-                cc_worker_root_len = 0;
+                // Hand the batch off before clearing the length, not after:
+                // cc_append_roots can sweep husks and release outside the
+                // lock, and a release that parks a fresh root appends to
+                // this same buffer. Clearing afterwards would drop it with
+                // CC_BUF set and no buffer owning it.
+                {
+                    long long published = cc_worker_root_len;
+                    cc_worker_root_len = 0;
+                    cc_append_roots(cc_worker_roots, published);
+                }
                 rt_free(st.v);
                 rt_free(aux.v);
                 rt_free(dead.v);
@@ -2752,9 +2816,16 @@ static void cc_collect(int force) {
 static void cc_at_exit(void) {
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
     // The process entry thread starts a private root buffer at first spawn.
-    // Drain it even when a detached worker is still alive; its graph is local
-    // and needs no global quiescence.
-    if (cc_worker_root_batching) cc_worker_roots_end();
+    // Collect it even when a detached worker is still alive: those roots are
+    // owner-local and need no global quiescence, and publishing them to the
+    // global buffer instead would strand them — the forced sweep below only
+    // runs at zero workers. Drop the adaptive gate so the trial walk cannot
+    // decline this last pass.
+    if (cc_worker_root_batching) {
+        cc_worker_walk_min = 0;
+        cc_worker_collect();
+        cc_worker_roots_end();
+    }
 #endif
     if (cc_threads == 0) cc_collect(1); // forced: leaks must see 0 at exit
 }
@@ -13141,14 +13212,18 @@ BChan* beans_chan_new_typed(long long cap, long long stride, long long ptr_mask)
     return c;
 }
 long long beans_chan_send(BChan* c, long long v) {
-    if (cc_is_mt() && c->ptr_mask)
-        cc_mark_shared_graph((void*)(uintptr_t)v);
     pthread_mutex_lock(&c->m);
     while (c->count == c->cap && !c->closed) pthread_cond_wait(&c->can_send, &c->m);
     if (c->closed) {
         pthread_mutex_unlock(&c->m);
         return 0; // caller panics; caller also still owns v
     }
+    // Publish once the send is committed, not before: a send that fails
+    // above leaves v with the caller, and marking it there would strand its
+    // whole graph on the quiescence-only global buffer for good. The mark
+    // still happens before any receiver can observe the slot.
+    if (cc_is_mt() && c->ptr_mask)
+        cc_mark_shared_graph((void*)(uintptr_t)v);
     c->q[(c->head + c->count) % c->cap] = v;
     c->count += 1;
     pthread_cond_signal(&c->can_recv);
@@ -13156,14 +13231,15 @@ long long beans_chan_send(BChan* c, long long v) {
     return 1;
 }
 long long beans_chan_send_typed(BChan* c, void* value) {
-    if (cc_is_mt() && c->ptr_mask)
-        cc_mark_shared_value(value, c->ptr_mask, 0);
     pthread_mutex_lock(&c->m);
     while (c->count == c->cap && !c->closed) pthread_cond_wait(&c->can_send, &c->m);
     if (c->closed) {
         pthread_mutex_unlock(&c->m);
         return 0;
     }
+    // Same ordering rule as beans_chan_send above.
+    if (cc_is_mt() && c->ptr_mask)
+        cc_mark_shared_value(value, c->ptr_mask, 0);
     void* destination =
         (char*)c->q + ((c->head + c->count) % c->cap) * c->stride;
     memcpy(destination, value, (size_t)c->stride);

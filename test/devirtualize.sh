@@ -91,5 +91,6 @@ grep -q 'call ptr @beans_alloc' \
     build/test-scalar-interface-fallback.ll
 diff <(./build/beansc run "$scalar_source" 2>&1) \
      <("$scalar_binary" 2>&1)
+diff -u test/cases/scalar_interface.out <("$scalar_binary" 2>&1)
 
 echo "ok exact receivers call directly, safe objects use the stack, and dynamic or mutating receivers keep fallbacks"
