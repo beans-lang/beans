@@ -13,7 +13,7 @@
 #
 # The project is still in the public 1.0 bake, so do not call it 1.0.0 until
 # every release gate in ROADMAP.md has passed.
-compiler=0.1.29
+compiler=0.1.30
 language=1.0
 
 # 9: resolved reflection handles — beans_reflect_method_handle,

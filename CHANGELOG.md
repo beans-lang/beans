@@ -2,7 +2,7 @@
 
 This file records user-facing changes in each Beans release.
 
-## Unreleased
+## [0.1.30] - 2026-08-24
 
 ### Added
 
