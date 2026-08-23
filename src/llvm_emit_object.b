@@ -2259,12 +2259,54 @@ partial class LlvmTextEmitter {
                 "LLVM emitter needs a method receiver")
             return ""
         }
+        let receiver_type: HirType =
+            self.value_type(
+                function,
+                instruction.operands[0])
         if instruction.devirtualized_receiver != "" {
             let exact: HirType =
                 new HirType(
                     instruction.devirtualized_receiver)
             match self.declaration_for(exact) {
                 some(declaration) => {
+                    let method_template: string =
+                        "{declaration.qualified}.{instruction.text}"
+                    if declaration.generics.len() != 0 {
+                        if declaration.generics.len() !=
+                               receiver_type.args.len() {
+                            self.fail(
+                                instruction,
+                                "LLVM emitter needs the receiver's type arguments")
+                            return ""
+                        }
+                        var bindings: Map<string, HirType> =
+                            {}
+                        for index: int in
+                            0..declaration.generics.len() {
+                            bindings[
+                                declaration.generics[
+                                    index]] =
+                                receiver_type.args[index]
+                        }
+                        bindings[declaration.qualified] =
+                            receiver_type
+                        bindings[declaration.name] =
+                            receiver_type
+                        return self.emit_generic_method_instance(
+                            function, instruction, values,
+                            method_template,
+                            "{render_hir_type(receiver_type)}.{instruction.text}",
+                            bindings)
+                    }
+                    if self.generic_templates.contains_key(
+                           method_template) {
+                        var bindings: Map<string, HirType> = {}
+                        return self.emit_generic_method_instance(
+                            function, instruction, values,
+                            method_template,
+                            method_template,
+                            bindings)
+                    }
                     let symbol: string =
                         self.method_slot_symbol(
                             declaration,
@@ -2291,10 +2333,6 @@ partial class LlvmTextEmitter {
                 }
             }
         }
-        let receiver_type: HirType =
-            self.value_type(
-                function,
-                instruction.operands[0])
         match self.declaration_for(receiver_type) {
             some(declaration) => {
                 if declaration.kind == "interface" {
