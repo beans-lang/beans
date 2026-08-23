@@ -402,6 +402,8 @@ class BindgenGenerator {
                     some(record) => {
                         match record.node.get("inner") {
                             some(inner) => {
+                                let clean: int =
+                                    self.errors.len()
                                 for field:
                                         BindgenJson in
                                     inner.items {
@@ -411,6 +413,9 @@ class BindgenGenerator {
                                         self.need(field)
                                     }
                                 }
+                                bindgen_name_errors(
+                                    self, clean,
+                                    "record '{record.c_name}'")
                             }
                             none => {}
                         }
@@ -1053,6 +1058,7 @@ fn run_self_bindgen(
             continue
         }
         selected.push(node)
+        let clean: int = generator.errors.len()
         if kind == "VarDecl" {
             generator.need(node)
         } else {
@@ -1071,6 +1077,8 @@ fn run_self_bindgen(
             }
             none => {}
         }
+        bindgen_name_errors(
+            generator, clean, "declaration '{name}'")
     }
     generator.close_dependencies()
     // Dependency discovery calls the same type parser as rendering. Keep its
@@ -1111,6 +1119,9 @@ fn run_self_bindgen(
                     let rendered: string =
                         generator.record_text(record)
                     if generator.errors.len() != before {
+                        bindgen_name_errors(
+                            generator, before,
+                            "record '{record.c_name}'")
                         unsupported_records[record.beans] = true
                     } else {
                         record_output[record.beans] = rendered
@@ -1321,6 +1332,10 @@ fn run_self_bindgen(
             }
             declaration_output =
                 "{declaration_output}\n"
+        }
+        if generator.errors.len() != before {
+            bindgen_name_errors(
+                generator, before, "declaration '{c_name}'")
         }
         var unsafe_dependency: string = ""
         for unsupported: string in

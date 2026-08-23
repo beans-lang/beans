@@ -295,3 +295,29 @@ fn bindgen_requested_file(
     }
     return false
 }
+
+// True when an error already names its own location: the attribute checks
+// and the dependency scans write "record '...' is packed" or
+// "field '...' in record '...'", and stamping an owner on those would say
+// the same name twice.
+fn bindgen_error_is_located(text: string) -> bool {
+    return text.starts_with("record '") ||
+           text.starts_with("field '") ||
+           text.starts_with("declaration '") ||
+           text.starts_with("variadic function '")
+}
+
+// A type-mapping error names what it found, never where: "flexible arrays
+// are unsupported" gives the reader of a 300-function header no way to
+// know which declaration carried the array. The renderer cannot see its
+// top-level owner, so the record and declaration loops stamp the owner
+// onto every error their rendering produced — a skip comment is only
+// auditable against a coverage list when it names its declaration.
+fn bindgen_name_errors(
+    generator: BindgenGenerator, from: int, owner: string) {
+    for index: int in from..generator.errors.len() {
+        let text: string = generator.errors[index]
+        if bindgen_error_is_located(text) { continue }
+        generator.errors[index] = "{owner}: {text}"
+    }
+}

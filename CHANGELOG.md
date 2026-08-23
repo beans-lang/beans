@@ -37,6 +37,15 @@ This file records user-facing changes in each Beans release.
 
 ### Fixed
 
+- Every bindgen skip comment now names the declaration it dropped. A
+  type-mapping refusal used to surface as a bare `// skipped: flexible
+  arrays are unsupported`, leaving the reader of a large header to find
+  the victim by hand — binding sqlite3.h (306 public functions) produced
+  exactly that. The record, declaration and dependency-closure passes
+  stamp their owner onto each diagnostic (`declaration 'sqlite3_version':
+  flexible arrays are unsupported`), errors that already carry a location
+  are left alone, and duplicate reports collapse into the named form.
+  `test/bindgen.sh` locks the shape.
 - A cross-package annotation used bare now fills its defaults correctly:
   a default value is checked once in the annotation's own declaring
   scope and reused at every use site, instead of being re-resolved
