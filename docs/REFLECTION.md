@@ -1,7 +1,6 @@
 # Beans reflection
 
-Status: sync calls and async callable metadata are implemented. Async reflected
-calls are part of the async v2 contract and are not implemented yet.
+Status: implemented contract and verification list, including async calls.
 
 Reflection is typed runtime metadata. It lets a program inspect Beans types,
 annotations, fields, enum variants, functions, methods, and initializers. It
@@ -104,9 +103,12 @@ the wrong half returns the stable `unsupported` reflection error; it never
 converts an async call into a sync one. Initializers cannot be async, so
 `Initializer` has no async call method.
 
-The split APIs are the contract, but are not implemented yet. Until they are,
-async declarations can be inspected but every reflected attempt to execute one
-is rejected.
+Argument checks happen before the reflected body starts. The call keeps its
+receiver and moved arguments alive across every suspension. Normal completion
+moves the final value into the returned box. Cancelling before the first poll,
+while pending, or after readiness drops every owned value exactly once. A panic
+in the target follows the normal async rule: it surfaces when polled and keeps
+the target source position.
 
 ## Runtime annotations
 
@@ -165,11 +167,11 @@ public. Union construction and overlapping field access stay unsupported.
 - [x] Implement checked class/struct construction and enum variant creation.
 - [x] Implement checked public sync calls for functions, static methods,
       instance methods, virtual methods, and initializers.
-- [x] Reject `deinit`, open generic, async, extern, variadic, and `inout` calls
-      with stable reflection error kinds.
+- [x] Reject `deinit`, open generic, extern, variadic, and `inout` calls, plus
+      async targets passed to sync call methods, with stable error kinds.
 - [x] Preserve `async fn` and `send async fn` names, kinds, parameters and
       results in runtime metadata.
-- [ ] Add `Function.call_async`, `Method.call_async`, and
+- [x] Add `Function.call_async`, `Method.call_async`, and
       `Method.call_static_async` without exposing the hidden task ABI.
 - [x] Support all operations in both tree interpreters and both LLVM emitters.
 - [x] Cover ownership, inheritance, overrides, visibility, generics,

@@ -56,9 +56,10 @@ stable across builds or shared-library boundaries.
 Reflection does not bypass Beans rules. Private members stay inaccessible.
 Field writes, calls, construction, and enum creation check receiver types,
 argument types, argument counts, moves, and visibility. Async callable types
-keep their `async fn` or `send async fn` spelling in metadata. The current sync
-call APIs reject async targets; async v2 reserves separate `call_async` methods
-that return the completed `Value` without exposing the hidden task ABI.
+keep their `async fn` or `send async fn` spelling in metadata. Sync call APIs
+reject async targets; `Function.call_async`, `Method.call_async`, and
+`Method.call_static_async` run async targets and return the completed `Value`
+without exposing the hidden task ABI.
 `deinit`, open generic, extern, variadic, and `inout` calls remain unsupported.
 There is no `setAccessible`, proxy generation, stack inspection, class loader,
 or raw-memory escape.
@@ -1781,10 +1782,10 @@ async fn main() {
   waits through `std.net` need `full`. Unsupported profiles fail at check time.
 - **Reflection keeps the effect visible.** Metadata renders `async fn` and
   `send async fn` types as written. Sync `Function.call`, `Method.call`, and
-  `Method.call_static` never run an async target. The v2 reflection design adds
+  `Method.call_static` never run an async target. The v2 reflection API provides
   separate async call methods that await the target and return its final
   `Value`; it never reflects or returns the hidden task ABI. See
-  [`docs/REFLECTION.md`](../docs/REFLECTION.md) for its implementation status.
+  [`docs/REFLECTION.md`](../docs/REFLECTION.md) for the full call contract.
 
 ## Targets and the build (v0.8, implemented)
 

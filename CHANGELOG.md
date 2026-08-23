@@ -15,6 +15,9 @@ This file records user-facing changes in each Beans release.
   cross-thread `Event`. `Channel` adds `send_async` and `receive_async`.
 - `thread.spawn_async` runs a parameterless sendable async closure on a worker
   executor. `Thread.join_async` waits without blocking the caller's executor.
+- Reflection adds `Function.call_async`, `Method.call_async`, and
+  `Method.call_static_async`. They await an async target and return its final
+  boxed value without exposing a task handle.
 
 ### Changed
 
@@ -25,8 +28,12 @@ This file records user-facing changes in each Beans release.
   owned local receiver. Other forms remain rejected so the unique borrow
   cannot escape across suspension.
 - Reflection metadata now preserves `async fn` and `send async fn` callable
-  names, kinds, parameter types and result types. Reflected execution still
-  rejects async targets until the separate async call APIs are implemented.
+  names, kinds, parameter types and result types. Sync and async targets use
+  separate reflected call APIs, so reflection never erases the call effect.
+- Readiness awaits now use an unlimited indexed registry keyed by executor and
+  descriptor, with stable slot-generation tokens and close tombstones that
+  stay safe across descriptor reuse. The 64-event limit is only one driver's
+  wake batch, not a limit on parked waits.
 
 ## [0.1.29] - 2026-08-23
 

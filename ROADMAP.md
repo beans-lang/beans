@@ -219,9 +219,9 @@ detail behind async handlers. Nothing here blocks the 1.0 gate.
   cross-thread `Event`, and non-blocking channel waits.
 - [x] Add `thread.spawn_async` and directly awaited `Thread.join_async` without
   adding detach or sync-to-async escape hatches.
-- [ ] Unlimited parked readiness with an indexed owner/descriptor/stable-token
+- [x] Unlimited parked readiness with an indexed owner/descriptor/stable-token
   registry; 64 is only an internal wake batch.
-- [ ] Split reflection execution into sync `call` and async `call_async` APIs;
+- [x] Split reflection execution into sync `call` and async `call_async` APIs;
   never expose the hidden task ABI through `Value`.
 - [ ] A shared-graph cycle design that does not require all workers to drain
   (shares its fate with the P1 shared-boundary item).
