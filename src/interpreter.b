@@ -6339,12 +6339,9 @@ class TreeInterpreter {
             "{source}static BeansFfiDispatch stored_dispatch;\n"
         if same_thread {
             // the bridge init runs on the registering thread, so it is
-            // the one to record; the entry checks every call after that.
-            // beans_out_flush lives in the host process and resolves at
-            // load (dynamic_lookup / -shared), keeping panic output
-            // ordered the way beans_panic orders it natively.
+            // the one to record; the entry checks every call after that
             source =
-                "{source}void beans_out_flush(void);\nstatic pthread_t stored_owner;\nstatic int stored_owner_set;\n"
+                "{source}static pthread_t stored_owner;\nstatic int stored_owner_set;\n"
         }
         source =
             "{source}{c_result} beans_stored_entry({parameters}) \{\n  void* context = (void*)value{context_index};\n  void* arguments[{slots}] = \{{address_text}\};\n"
@@ -6352,9 +6349,12 @@ class TreeInterpreter {
             // the same words and the same exit code the native runtime's
             // beans_panic produces, so one program means one thing:
             // aborting here gave the interpreter 134 where a built binary
-            // exits 3
+            // exits 3. On this pthread-only path the host buffers stdout
+            // through stdio, so fflush orders the panic like beans_panic
+            // does without importing a host symbol the dynamic loader
+            // may not export on every platform.
             source =
-                "{source}  if (stored_owner_set && !pthread_equal(stored_owner, pthread_self())) \{\n    beans_out_flush();\n    fprintf(stderr, \"runtime panic at 0:0: same-thread stored callback invoked from another thread\\n\");\n    exit(3);\n  \}\n"
+                "{source}  if (stored_owner_set && !pthread_equal(stored_owner, pthread_self())) \{\n    fflush(stdout);\n    fprintf(stderr, \"runtime panic at 0:0: same-thread stored callback invoked from another thread\\n\");\n    exit(3);\n  \}\n"
         }
         if c_result == "void" {
             source =
