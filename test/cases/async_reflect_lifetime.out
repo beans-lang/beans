@@ -1,0 +1,13 @@
+before 1
+blocked true
+pending 1
+value_type
+invalid 1
+argument_count
+arity 1
+receiver_type
+wrong receiver 1
+receiver_type
+wrong static 1
+receiver blocked true
+alive

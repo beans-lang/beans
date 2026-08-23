@@ -79,6 +79,9 @@ class TreeInterpreter {
     reflect_values: Map<int, TreeValue>
     reflect_value_types: Map<int, string>
     next_reflect_value: int
+    reflect_async_tasks: Map<int, TreeValue>
+    reflect_async_result_types: Map<int, string>
+    next_reflect_async_call: int
     reflect_error_code: int
     reflect_error_message: string
     reflect_annotations: Map<int, HirAnnotation>
@@ -136,6 +139,9 @@ class TreeInterpreter {
         self.reflect_values = {}
         self.reflect_value_types = {}
         self.next_reflect_value = 1
+        self.reflect_async_tasks = {}
+        self.reflect_async_result_types = {}
+        self.next_reflect_async_call = 1
         self.reflect_error_code = 0
         self.reflect_error_message = ""
         self.reflect_annotations = {}
@@ -841,11 +847,17 @@ class TreeInterpreter {
         }
     }
 
+    fn reflect_hidden_symbol(name: string) -> bool {
+        return symbol_package(name) == async_rt_package()
+    }
+
     fn reflect_declaration(name: string) ->
         Option<HirDeclaration> {
         let base: string = self.reflect_base_name(name)
         for declaration: HirDeclaration in
             self.program.declarations {
+            if self.reflect_hidden_symbol(
+                   declaration.qualified) { continue }
             if display_symbol(declaration.qualified) == base ||
                declaration.name == base {
                 return some(declaration)
@@ -1025,6 +1037,60 @@ class TreeInterpreter {
         return none
     }
 
+    fn reflect_method_signature_equal(declared: HirFunction,
+                                      candidate: HirFunction) -> bool {
+        if candidate.is_static ||
+           declared.is_async != candidate.is_async ||
+           render_hir_type(self.reflect_source_result(declared)) !=
+               render_hir_type(self.reflect_source_result(candidate)) ||
+           declared.parameters.len() != candidate.parameters.len() {
+            return false
+        }
+        for index: int in 0..declared.parameters.len() {
+            if declared.parameters[index].passing !=
+                   candidate.parameters[index].passing ||
+               render_hir_type(declared.parameters[index].type) !=
+                   render_hir_type(candidate.parameters[index].type) {
+                return false
+            }
+        }
+        return true
+    }
+
+    fn reflect_instance_method(name: string,
+                               callable: string,
+                               declared: HirFunction) ->
+        Option<TreeReflectMethod> {
+        match self.reflect_declaration(name) {
+            some(declaration) => {
+                for function: HirFunction in self.program.functions {
+                    if function.owner == declaration.qualified &&
+                       function.name == callable &&
+                       function.is_public &&
+                       self.reflect_method_signature_equal(
+                           declared, function) {
+                        return some(new TreeReflectMethod(
+                            function, declaration.qualified))
+                    }
+                }
+                for index: int in 0..declaration.relations.len() {
+                    if index < declaration.relation_kinds.len() &&
+                       declaration.relation_kinds[index] == "extends" {
+                        match self.reflect_instance_method(
+                                  render_hir_type(
+                                      declaration.relations[index]),
+                                  callable, declared) {
+                            some(item) => { return some(item) }
+                            none => {}
+                        }
+                    }
+                }
+            }
+            none => {}
+        }
+        return none
+    }
+
     fn reflect_callable_flags(function: HirFunction) -> int {
         var flags: int = 0
         if function.is_public { flags = flags | 1 }
@@ -1035,6 +1101,15 @@ class TreeInterpreter {
         return flags
     }
 
+    fn reflect_source_result(function: HirFunction) -> HirType {
+        if function.is_async && function.expanded &&
+           function.result.name == async_rt_symbol("Task") &&
+           function.result.args.len() == 1 {
+            return function.result.args[0]
+        }
+        return function.result
+    }
+
     fn reflect_parameter_passing(passing: string) -> int {
         if passing == "move" { return 1 }
         if passing == "inout" { return 2 }
@@ -1043,7 +1118,8 @@ class TreeInterpreter {
 
     fn reflect_function(name: string) -> Option<HirFunction> {
         for function: HirFunction in self.program.functions {
-            if function.owner == "" &&
+            if !self.reflect_hidden_symbol(function.qualified) &&
+               function.owner == "" &&
                display_symbol(function.qualified) == name {
                 return some(function)
             }
@@ -1256,7 +1332,8 @@ class TreeInterpreter {
             }
         }
         let wanted_kind: int =
-            if name == "method_call_handle" { 0 }
+            if name == "method_call_handle" ||
+               name == "method_call_async_handle" { 0 }
             else if name == "initializer_call_handle" { 1 }
             else { 2 }
         let handle: int = arguments[0].int_data
@@ -1273,14 +1350,19 @@ class TreeInterpreter {
                 TreeValue.string(self.reflect_handle_names[handle - 1]),
                 arguments[1], arguments[2], arguments[3], arguments[4]]
             return self.reflection_builtin_named(
-                node, "method_call", rewritten)
+                node,
+                if name == "method_call_async_handle" {
+                    "method_call_async"
+                } else { "method_call" }, rewritten)
         }
         var rewritten: List<TreeValue> = [
             TreeValue.string(owner), arguments[1], arguments[2]]
         return self.reflection_builtin_named(
             node,
             if wanted_kind == 1 { "initializer_call" }
-            else { "function_call" },
+            else if name == "function_call_async_handle" {
+                "function_call_async"
+            } else { "function_call" },
             rewritten)
     }
 
@@ -1291,8 +1373,10 @@ class TreeInterpreter {
            name == "initializer_handle" ||
            name == "function_handle" ||
            name == "method_call_handle" ||
+           name == "method_call_async_handle" ||
            name == "initializer_call_handle" ||
-           name == "function_call_handle" {
+           name == "function_call_handle" ||
+           name == "function_call_async_handle" {
             return self.reflection_handle_builtin(
                 node, name, arguments)
         }
@@ -1965,10 +2049,99 @@ class TreeInterpreter {
                 }
             }
         }
-        if name == "function_call" || name == "method_call" {
+        if name == "async_call_poll" ||
+           name == "async_call_take" ||
+           name == "async_call_drop" {
+            let handle: int = arguments[0].int_data
+            if name == "async_call_drop" {
+                match self.reflect_async_tasks.get(handle) {
+                    some(task) => {
+                        var finished: bool = false
+                        match task.fields.entries.get("finished") {
+                            some(done) => { finished = done.bool_data }
+                            none => {}
+                        }
+                        if !finished {
+                            match task.fields.entries.get("cancel_fn") {
+                                some(cancel) => {
+                                    self.invoke_closure(node, cancel, [])
+                                    task.fields.entries["finished"] =
+                                        TreeValue.boolean(true)
+                                }
+                                none => {}
+                            }
+                        }
+                    }
+                    none => {}
+                }
+                self.reflect_async_tasks.remove(handle)
+                self.reflect_async_result_types.remove(handle)
+                return TreeValue.integer(1)
+            }
+            match self.reflect_async_tasks.get(handle) {
+                some(task) => {
+                    if name == "async_call_poll" {
+                        match task.fields.entries.get("finished") {
+                            some(done) => {
+                                if done.bool_data {
+                                    return TreeValue.integer(1)
+                                }
+                            }
+                            none => {}
+                        }
+                        match task.fields.entries.get("poll_fn") {
+                            some(poll) => {
+                                let status: TreeValue =
+                                    self.invoke_closure(node, poll, [])
+                                if self.failed { return TreeValue.integer(0) }
+                                if status.int_data < 0 ||
+                                   status.int_data > 2 {
+                                    return self.fail(
+                                        node,
+                                        "async runtime: task returned an invalid poll status")
+                                }
+                                if status.int_data == 1 {
+                                    task.fields.entries["finished"] =
+                                        TreeValue.boolean(true)
+                                }
+                                return status
+                            }
+                            none => {}
+                        }
+                    } else {
+                        match task.fields.entries.get("take_fn") {
+                            some(taker) => {
+                                let result: TreeValue =
+                                    self.invoke_closure(node, taker, [])
+                                if self.failed { return TreeValue.integer(0) }
+                                let result_type: string =
+                                    self.reflect_async_result_types.get(
+                                        handle).or("")
+                                self.reflect_async_tasks.remove(handle)
+                                self.reflect_async_result_types.remove(handle)
+                                let value_handle: int =
+                                    self.next_reflect_value
+                                self.next_reflect_value += 1
+                                self.reflect_values[value_handle] = result
+                                self.reflect_value_types[value_handle] =
+                                    result_type
+                                return TreeValue.integer(value_handle)
+                            }
+                            none => {}
+                        }
+                    }
+                }
+                none => {}
+            }
+            return self.fail(node, "invalid reflected async call")
+        }
+        if name == "function_call" || name == "method_call" ||
+           name == "function_call_async" ||
+           name == "method_call_async" {
             self.reflect_error_code = 0
             self.reflect_error_message = ""
-            let method_call: bool = name == "method_call"
+            let async_call: bool = name.ends_with("_async")
+            let method_call: bool = name.starts_with("method_call")
             let owner: string = if method_call {
                 arguments[0].text
             } else { "" }
@@ -2010,7 +2183,7 @@ class TreeInterpreter {
                             "reflected member is not public"
                         return TreeValue.integer(0)
                     }
-                    if function.is_async ||
+                    if function.is_async != async_call ||
                        function.generics.len() != 0 ||
                        function.is_extern_c {
                         self.reflect_error_code = 5
@@ -2045,8 +2218,9 @@ class TreeInterpreter {
                                     return TreeValue.integer(0)
                                 }
                                 receiver = some(value)
-                                match self.reflect_method(
-                                          actual, callable_name) {
+                                match self.reflect_instance_method(
+                                          actual, callable_name,
+                                          function) {
                                     some(actual_method) => {
                                         callable = some(
                                             actual_method.callable)
@@ -2116,6 +2290,12 @@ class TreeInterpreter {
                         }
                     }
                     let selected: HirFunction = callable.or(function)
+                    if selected.is_async != async_call {
+                        self.reflect_error_code = 5
+                        self.reflect_error_message =
+                            "reflected operation is unsupported"
+                        return TreeValue.integer(0)
+                    }
                     let result: TreeValue =
                         self.invoke(selected, values, receiver)
                     if self.failed { return TreeValue.integer(0) }
@@ -2124,6 +2304,15 @@ class TreeInterpreter {
                             self.reflect_values.remove(handles[index])
                             self.reflect_value_types.remove(handles[index])
                         }
+                    }
+                    if async_call {
+                        let handle: int = self.next_reflect_async_call
+                        self.next_reflect_async_call += 1
+                        self.reflect_async_tasks[handle] = result
+                        self.reflect_async_result_types[handle] =
+                            render_hir_type(
+                                self.reflect_source_result(selected))
+                        return TreeValue.integer(handle)
                     }
                     let handle: int = self.next_reflect_value
                     self.next_reflect_value += 1
@@ -2307,7 +2496,8 @@ class TreeInterpreter {
                     }
                     if name == "method_result" {
                         return TreeValue.string(
-                            render_hir_type(item.callable.result))
+                            render_hir_type(self.reflect_source_result(
+                                item.callable)))
                     }
                     if name == "method_parameter_count" {
                         return TreeValue.integer(
@@ -2398,7 +2588,8 @@ class TreeInterpreter {
                     }
                     if name == "function_result" {
                         return TreeValue.string(
-                            render_hir_type(item.result))
+                            render_hir_type(
+                                self.reflect_source_result(item)))
                     }
                     if name == "function_flags" {
                         return TreeValue.integer(
@@ -2437,23 +2628,33 @@ class TreeInterpreter {
             }
         }
         if name == "registry_type_count" {
-            return TreeValue.integer(
-                self.program.declarations.len())
+            var count: int = 0
+            for item: HirDeclaration in self.program.declarations {
+                if !self.reflect_hidden_symbol(item.qualified) {
+                    count += 1
+                }
+            }
+            return TreeValue.integer(count)
         }
         if name == "registry_type_at" {
             let index: int = arguments[0].int_data
-            return TreeValue.string(
-                if index >= 0 &&
-                   index < self.program.declarations.len() {
-                    display_symbol(
-                        self.program.declarations[index].qualified)
-                } else { "" })
+            var current: int = 0
+            for item: HirDeclaration in self.program.declarations {
+                if self.reflect_hidden_symbol(item.qualified) { continue }
+                if current == index {
+                    return TreeValue.string(
+                        display_symbol(item.qualified))
+                }
+                current += 1
+            }
+            return TreeValue.string("")
         }
         if name == "registry_function_count" ||
            name == "registry_function_at" {
             var items: List<string> = []
             for item: HirFunction in self.program.functions {
-                if item.owner == "" {
+                if item.owner == "" &&
+                   !self.reflect_hidden_symbol(item.qualified) {
                     items.push(display_symbol(item.qualified))
                 }
             }

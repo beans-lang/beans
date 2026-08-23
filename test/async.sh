@@ -907,6 +907,70 @@ echo "checking reflected async callable names and kinds"
 run_matrix test/cases/async_reflect_types.b \
     test/cases/async_reflect_types.out
 
+echo "checking async reflection calls, source results, ownership, and cancellation"
+run_matrix test/cases/async_reflect_calls.b \
+    test/cases/async_reflect_calls.out
+run_matrix test/cases/async_reflect_lifetime.b \
+    test/cases/async_reflect_lifetime.out
+run_matrix test/cases/async_reflect_panic.b \
+    test/cases/async_reflect_panic.out 3
+guard_dir="$tmp/async_reflect_guard"
+mkdir -p "$guard_dir"
+printf '%s\n' 'module main' 'kind application' >"$guard_dir/beans.pot"
+cp test/cases/async_reflect_guard.b "$guard_dir/main.b"
+sed 's/^package async_rt$/package main/' \
+    'stdlib/std/async$rt/reflect.b' >"$guard_dir/reflect.b"
+run_matrix "$guard_dir/main.b" test/cases/async_reflect_guard.out
+for target in wasm32-wasip1 arm-unknown-linux-gnueabi; do
+    ir="$tmp/async_reflect.$target.ll"
+    "$BEANSC" build --target "$target" --emit ir \
+        test/cases/async_reflect_calls.b -o "$ir" >/dev/null
+    grep -q 'reflect.async.poll.ptr.*i64 4' "$ir"
+    grep -q 'reflect.async.take.ptr.*i64 8' "$ir"
+    grep -q 'reflect.async.done.ptr.*i64 16' "$ir"
+done
+"$BEANSC" build --runtime minimal test/cases/async_reflect_calls.b \
+    -o "$native_dir/async_reflect_minimal" >/dev/null
+maybe_deadline "$native_dir/async_reflect_minimal" \
+    >"$tmp/async_reflect_minimal.out"
+diff -u test/cases/async_reflect_calls.out \
+    "$tmp/async_reflect_minimal.out"
+"$BEANSC" check --runtime freestanding \
+    test/cases/async_reflect_calls.b >/dev/null
+rm -f build/async_reflect_calls_ffi.c
+"$BEANSC" build --runtime freestanding --emit ir \
+    test/cases/async_reflect_calls.b \
+    -o "$tmp/async_reflect_freestanding.ll" >/dev/null
+cat >"$tmp/async_reflect_host.c" <<'HOST'
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+void* beans_host_alloc(unsigned long long size, unsigned long long align) {
+    void* result = NULL;
+    if (posix_memalign(&result, (size_t)align, (size_t)size) != 0)
+        return NULL;
+    memset(result, 0, (size_t)size);
+    return result;
+}
+void* beans_host_realloc(void* value, unsigned long long size) {
+    return realloc(value, (size_t)size);
+}
+void beans_host_free(void* value) { free(value); }
+void beans_host_write(int stream, const char* bytes,
+                      unsigned long long length) {
+    fwrite(bytes, 1, (size_t)length, stream == 2 ? stderr : stdout);
+}
+void beans_host_exit(int code) { exit(code); }
+HOST
+clang -O1 -DBEANS_RT_PROFILE=1 -Wno-override-module \
+    "$tmp/async_reflect_freestanding.ll" runtime/beans_rt.c \
+    build/async_reflect_calls_ffi.c "$tmp/async_reflect_host.c" -lm \
+    -o "$native_dir/async_reflect_freestanding"
+maybe_deadline "$native_dir/async_reflect_freestanding" \
+    >"$tmp/async_reflect_freestanding.out"
+diff -u test/cases/async_reflect_calls.out \
+    "$tmp/async_reflect_freestanding.out"
+
 echo "checking yield_now reports runnable without blocking the executor"
 run_matrix test/cases/async_yield.b test/cases/async_yield.out
 

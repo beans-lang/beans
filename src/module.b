@@ -522,6 +522,7 @@ class ModuleLoader {
     overlays: Map<string, string>
     want_reactor: bool
     want_async_thread: bool
+    want_async_reflect: bool
     has_local_dependencies: bool
     // The depth-first stack of packages being loaded, and the import edge
     // that pushed each one (stack_edges[i] led to stack[i]).
@@ -556,6 +557,7 @@ class ModuleLoader {
         self.overlays = {}
         self.want_reactor = false
         self.want_async_thread = false
+        self.want_async_reflect = false
         self.has_local_dependencies = false
         self.stack = []
         self.stack_edges = []
@@ -1678,12 +1680,18 @@ class ModuleLoader {
                 continue
             }
             if import_path == async_rt_package() &&
+               name == "reflect.b" && !self.want_async_reflect {
+                continue
+            }
+            if import_path == async_rt_package() &&
                (name == "thread_basic.b" ||
-                name == "thread_reactor.b") {
+                name == "thread_reactor.b" ||
+                name == "thread_join.b") {
                 if !self.want_async_thread {
                     continue
                 }
-                if (name == "thread_reactor.b") !=
+                if name != "thread_join.b" &&
+                   (name == "thread_reactor.b") !=
                    self.want_reactor {
                     continue
                 }
@@ -1748,6 +1756,8 @@ class ModuleLoader {
         // lets them link under the minimal and freestanding profiles.
         self.want_reactor =
             self.state.get("std.net").or(0) == 2
+        self.want_async_reflect =
+            self.state.get("std.reflect").or(0) == 2
         self.load_package(async_rt_package(), dir,
                           "std", standard_root, "", "", 1, 1)
     }

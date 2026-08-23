@@ -1,6 +1,19 @@
 package main
 
 partial class LlvmTextEmitter {
+    fn reflection_hidden_symbol(name: string) -> bool {
+        return symbol_package(name) == async_rt_package()
+    }
+
+    fn reflection_source_result(function: HirFunction) -> HirType {
+        if function.is_async && function.expanded &&
+           function.result.name == async_rt_symbol("Task") &&
+           function.result.args.len() == 1 {
+            return function.result.args[0]
+        }
+        return function.result
+    }
+
     fn declaration_for(
         type: HirType) -> Option<HirDeclaration> {
         return self.declarations.get(type.name)
@@ -159,6 +172,8 @@ partial class LlvmTextEmitter {
         }
         for declaration: HirDeclaration in
             self.program.declarations {
+            if self.reflection_hidden_symbol(
+                   declaration.qualified) { continue }
             var kind: int = 20
             if declaration.kind == "class" { kind = 7 }
             if declaration.kind == "interface" { kind = 8 }
@@ -282,6 +297,8 @@ partial class LlvmTextEmitter {
         }
         for function: HirFunction in
             self.program.reflection_functions {
+            if self.reflection_hidden_symbol(
+                   function.qualified) { continue }
             var flags: int = 0
             if function.is_public { flags = flags | 1 }
             if function.is_static { flags = flags | 2 }
@@ -290,8 +307,8 @@ partial class LlvmTextEmitter {
                 flags = flags | 8
             }
             if function.is_extern_c { flags = flags | 16 }
-            let result: string =
-                render_hir_type(function.result)
+            let result: string = render_hir_type(
+                self.reflection_source_result(function))
             if function.owner != "" {
                 let owner: string =
                     display_symbol(function.owner)
@@ -301,6 +318,10 @@ partial class LlvmTextEmitter {
                     self.reflection_callable_action(function)
                 output =
                     "{output}  call void @beans_reflect_register_method_call(ptr {self.string_pointer(owner)}, ptr {self.string_pointer(function.name)}, ptr {action})\n"
+                if function.is_async {
+                    output =
+                        "{output}  call void @beans_reflect_register_method_async_call(ptr {self.string_pointer(owner)}, ptr {self.string_pointer(function.name)}, ptr {self.reflection_async_callable_action(function, "start")}, ptr {self.reflection_async_callable_action(function, "poll")}, ptr {self.reflection_async_callable_action(function, "take")}, ptr {self.reflection_async_callable_action(function, "drop")})\n"
+                }
                 output =
                     "{output}{self.emit_reflection_annotations(3, owner, function.name, -1, function.annotations)}"
                 var parameter_index: int = 0
@@ -328,6 +349,10 @@ partial class LlvmTextEmitter {
                     self.reflection_callable_action(function)
                 output =
                     "{output}  call void @beans_reflect_register_function_call(ptr {self.string_pointer(qualified)}, ptr {action})\n"
+                if function.is_async {
+                    output =
+                        "{output}  call void @beans_reflect_register_function_async_call(ptr {self.string_pointer(qualified)}, ptr {self.reflection_async_callable_action(function, "start")}, ptr {self.reflection_async_callable_action(function, "poll")}, ptr {self.reflection_async_callable_action(function, "take")}, ptr {self.reflection_async_callable_action(function, "drop")})\n"
+                }
                 output =
                     "{output}{self.emit_reflection_annotations(4, qualified, "", -1, function.annotations)}"
                 var parameter_index: int = 0
@@ -917,6 +942,137 @@ partial class LlvmTextEmitter {
                     function.result, false)
             body =
                 "{body}  %reflect.call.result = call {result_llvm} {target}({arguments.join(", ")})\n  %reflect.call.result.slot = alloca {result_llvm}\n  store {result_llvm} %reflect.call.result, ptr %reflect.call.result.slot\n  %reflect.call.box = call i64 @beans_reflect_value_new(ptr {self.string_pointer(render_hir_type(function.result))}, ptr %reflect.call.result.slot, i64 {result_size}, ptr {retain}, ptr {drop})\n  ret i64 %reflect.call.box\n\}\n"
+        }
+        self.value_eq_functions.push(body)
+        return symbol
+    }
+
+    fn reflection_async_callable_supported(
+        function: HirFunction) -> bool {
+        if !function.has_body || !function.is_async ||
+           !function.expanded || function.is_extern_c ||
+           function.is_inout || function.generics.len() != 0 ||
+           function.name == "init" || function.name == "deinit" ||
+           !self.function_symbols.contains_key(function.qualified) ||
+           function.result.name != async_rt_symbol("Task") ||
+           function.result.args.len() != 1 {
+            return false
+        }
+        for parameter: HirParameter in function.parameters {
+            if parameter.passing == "inout" ||
+               self.type_text(parameter.type) == "" ||
+               self.type_text(parameter.type) == "void" {
+                return false
+            }
+        }
+        let source: HirType =
+            self.reflection_source_result(function)
+        let source_llvm: string = self.type_text(source)
+        if source_llvm == "" ||
+           (source_llvm != "void" &&
+            self.type_size(source) < 0) {
+            return false
+        }
+        match self.class_layout(function.result) {
+            some(layout) => {
+                return layout.field_offsets.contains_key("poll_fn") &&
+                       layout.field_offsets.contains_key("take_fn") &&
+                       layout.field_offsets.contains_key("finished")
+            }
+            none => { return false }
+        }
+    }
+
+    fn reflection_async_callable_action(
+        function: HirFunction, part: string) -> string {
+        if !self.reflection_async_callable_supported(function) {
+            return "null"
+        }
+        let key: string =
+            "async:{part}:{function.qualified}"
+        match self.reflection_callable_actions.get(key) {
+            some(symbol) => { return symbol }
+            none => {}
+        }
+        let symbol: string =
+            "@.next.reflect.async{self.reflection_callable_actions.len()}"
+        self.reflection_callable_actions[key] = symbol
+        if part == "drop" {
+            self.value_eq_functions.push(
+                "define internal void {symbol}(ptr %task) \{\nentry:\n  call void @beans_release(ptr %task)\n  ret void\n\}\n")
+            return symbol
+        }
+        if part == "poll" {
+            let id: int = self.fresh()
+            let task_layout: LlvmClassLayout =
+                self.class_layout(function.result).expect(
+                    "reflected async Task layout")
+            let poll_offset: int =
+                task_layout.field_offsets["poll_fn"]
+            let finished_offset: int =
+                task_layout.field_offsets["finished"]
+            let body: string =
+                "define internal i64 {symbol}(ptr %task) \{\nentry:\n  %reflect.async.done.ptr{id} = getelementptr i8, ptr %task, i64 {finished_offset}\n  %reflect.async.done{id} = load i1, ptr %reflect.async.done.ptr{id}\n  br i1 %reflect.async.done{id}, label %reflect.async.already{id}, label %reflect.async.poll{id}\nreflect.async.already{id}:\n  ret i64 1\nreflect.async.poll{id}:\n  %reflect.async.poll.ptr{id} = getelementptr i8, ptr %task, i64 {poll_offset}\n  %reflect.async.poll.closure{id} = load ptr, ptr %reflect.async.poll.ptr{id}\n  call void @beans_retain(ptr %reflect.async.poll.closure{id})\n  %reflect.async.poll.fn{id} = load ptr, ptr %reflect.async.poll.closure{id}\n  %reflect.async.status{id} = call i64 %reflect.async.poll.fn{id}(ptr %reflect.async.poll.closure{id})\n  call void @beans_release(ptr %reflect.async.poll.closure{id})\n  %reflect.async.low{id} = icmp sge i64 %reflect.async.status{id}, 0\n  %reflect.async.high{id} = icmp sle i64 %reflect.async.status{id}, 2\n  %reflect.async.valid{id} = and i1 %reflect.async.low{id}, %reflect.async.high{id}\n  br i1 %reflect.async.valid{id}, label %reflect.async.checked{id}, label %reflect.async.invalid{id}\nreflect.async.invalid{id}:\n  call void @beans_panic(ptr {self.string_pointer("async runtime: task returned an invalid poll status")}, i64 0, i64 0)\n  unreachable\nreflect.async.checked{id}:\n  %reflect.async.ready{id} = icmp eq i64 %reflect.async.status{id}, 1\n  br i1 %reflect.async.ready{id}, label %reflect.async.mark{id}, label %reflect.async.return{id}\nreflect.async.mark{id}:\n  store i1 1, ptr %reflect.async.done.ptr{id}\n  br label %reflect.async.return{id}\nreflect.async.return{id}:\n  ret i64 %reflect.async.status{id}\n\}\n"
+            self.value_eq_functions.push(body)
+            return symbol
+        }
+        var setup: string = ""
+        var arguments: List<string> = []
+        if function.owner != "" && !function.is_static {
+            let receiver_type: HirType = new HirType(function.owner)
+            let receiver_llvm: string =
+                self.type_text(receiver_type)
+            if receiver_llvm == "" || receiver_llvm == "void" {
+                return "null"
+            }
+            let id: int = self.fresh()
+            let loaded: string = "%reflect.async.self{id}"
+            setup =
+                "{setup}  {loaded} = load {receiver_llvm}, ptr %receiver\n"
+            setup =
+                "{setup}{self.append_internal_argument(receiver_type, loaded, arguments)}"
+        }
+        for index: int in 0..function.parameters.len() {
+            let parameter: HirParameter = function.parameters[index]
+            let llvm: string = self.type_text(parameter.type)
+            let id: int = self.fresh()
+            let slot: string = "%reflect.async.arg.slot{id}"
+            let data: string = "%reflect.async.arg.data{id}"
+            let loaded: string = "%reflect.async.arg{id}"
+            setup =
+                "{setup}  {slot} = getelementptr ptr, ptr %arguments, i64 {index}\n  {data} = load ptr, ptr {slot}\n  {loaded} = load {llvm}, ptr {data}\n"
+            setup =
+                "{setup}{self.append_internal_argument(parameter.type, loaded, arguments)}"
+        }
+        if part == "start" {
+            let target: string =
+                self.function_symbols[function.qualified]
+            self.value_eq_functions.push(
+                "define internal i64 {symbol}(ptr %receiver, ptr %arguments) \{\nentry:\n{setup}  %reflect.async.task = call ptr {target}({arguments.join(", ")})\n  %reflect.async.handle = ptrtoint ptr %reflect.async.task to i64\n  ret i64 %reflect.async.handle\n\}\n")
+            return symbol
+        }
+        let source: HirType =
+            self.reflection_source_result(function)
+        let result_llvm: string = self.type_text(source)
+        let result_size: int = self.type_size(source)
+        let retain: string =
+            self.reflection_value_action(source, true)
+        let drop: string =
+            self.reflection_value_action(source, false)
+        let id: int = self.fresh()
+        let task_layout: LlvmClassLayout =
+            self.class_layout(function.result).expect(
+                "reflected async Task layout")
+        let take_offset: int =
+            task_layout.field_offsets["take_fn"]
+        var body: string =
+            "define internal i64 {symbol}(ptr %task) \{\nentry:\n  %reflect.async.take.ptr{id} = getelementptr i8, ptr %task, i64 {take_offset}\n  %reflect.async.take.closure{id} = load ptr, ptr %reflect.async.take.ptr{id}\n  call void @beans_retain(ptr %reflect.async.take.closure{id})\n  %reflect.async.take.fn{id} = load ptr, ptr %reflect.async.take.closure{id}\n"
+        if result_llvm == "void" {
+            body =
+                "{body}  call void %reflect.async.take.fn{id}(ptr %reflect.async.take.closure{id})\n  call void @beans_release(ptr %reflect.async.take.closure{id})\n  %reflect.async.box{id} = call i64 @beans_reflect_value_new(ptr {self.string_pointer("unit")}, ptr null, i64 0, ptr null, ptr null)\n  ret i64 %reflect.async.box{id}\n\}\n"
+        } else {
+            body =
+                "{body}  %reflect.async.result{id} = call {result_llvm} %reflect.async.take.fn{id}(ptr %reflect.async.take.closure{id})\n  call void @beans_release(ptr %reflect.async.take.closure{id})\n  %reflect.async.result.slot{id} = alloca {result_llvm}\n  store {result_llvm} %reflect.async.result{id}, ptr %reflect.async.result.slot{id}\n  %reflect.async.box{id} = call i64 @beans_reflect_value_new(ptr {self.string_pointer(render_hir_type(source))}, ptr %reflect.async.result.slot{id}, i64 {result_size}, ptr {retain}, ptr {drop})\n  ret i64 %reflect.async.box{id}\n\}\n"
         }
         self.value_eq_functions.push(body)
         return symbol

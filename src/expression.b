@@ -3549,6 +3549,11 @@ class ExpressionChecker {
                     [integer, integer, integer,
                      integer, boolean], integer))
             }
+            if name == "method_call_async_handle" {
+                return some(new BuiltinSignature(
+                    [integer, integer, integer,
+                     integer, boolean], integer))
+            }
             if name == "initializer_handle" ||
                name == "function_handle" {
                 return some(new BuiltinSignature([string], integer))
@@ -3557,6 +3562,15 @@ class ExpressionChecker {
                name == "function_call_handle" {
                 return some(new BuiltinSignature(
                     [integer, integer, integer], integer))
+            }
+            if name == "function_call_async_handle" {
+                return some(new BuiltinSignature(
+                    [integer, integer, integer], integer))
+            }
+            if name == "async_call_poll" ||
+               name == "async_call_take" ||
+               name == "async_call_drop" {
+                return some(new BuiltinSignature([integer], integer))
             }
             if name == "initializer_flags" ||
                name == "initializer_parameter_count" {

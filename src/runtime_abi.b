@@ -710,6 +710,11 @@ pub fn runtime_builtin_fn(key: string) -> Option<RuntimeBuiltin> {
             ["i64", "i64", "i64", "i64", "bool"],
             "i64", "beans_reflect_method_call_handle", false))
     }
+    if key == "std.reflection.method_call_async_handle" {
+        return some(new RuntimeBuiltin(
+            ["i64", "i64", "i64", "i64", "bool"],
+            "i64", "beans_reflect_method_call_async_handle", false))
+    }
     if key == "std.reflection.initializer_handle" {
         return some(new RuntimeBuiltin(
             ["str"], "i64",
@@ -729,6 +734,18 @@ pub fn runtime_builtin_fn(key: string) -> Option<RuntimeBuiltin> {
         return some(new RuntimeBuiltin(
             ["i64", "i64", "i64"], "i64",
             "beans_reflect_function_call_handle", false))
+    }
+    if key == "std.reflection.function_call_async_handle" {
+        return some(new RuntimeBuiltin(
+            ["i64", "i64", "i64"], "i64",
+            "beans_reflect_function_call_async_handle", false))
+    }
+    if key == "std.reflection.async_call_poll" ||
+       key == "std.reflection.async_call_take" ||
+       key == "std.reflection.async_call_drop" {
+        return some(new RuntimeBuiltin(
+            ["i64"], "i64",
+            "beans_reflect_{key.slice(15, key.len())}", false))
     }
     if key == "std.reflection.initializer_flags" ||
        key == "std.reflection.initializer_parameter_count" {

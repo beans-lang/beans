@@ -797,8 +797,19 @@ class AsyncExpander {
         }
         if target == "Channel.send_async" ||
            target == "Channel.receive_async" ||
-           target == "Thread.join_async" {
+           target == "Thread.join_async" ||
+           target == package_symbol("std.reflect", "await_call") {
             let maker: AstNode = self.node("call", "", operand)
+            if target == package_symbol("std.reflect", "await_call") {
+                let callee: AstNode = self.node(
+                    "name", "reflect_call_task", operand)
+                callee.resolved = async_rt_symbol("reflect_call_task")
+                maker.add(callee)
+                for index: int in 1..operand.children.len() {
+                    maker.add(operand.children[index])
+                }
+                return maker
+            }
             var unit_join: bool = false
             if target == "Thread.join_async" {
                 match operand.checked {
@@ -2429,6 +2440,12 @@ class AsyncExpander {
     }
 
     fn expand_function(function: HirFunction) {
+        if function.qualified ==
+           package_symbol("std.reflect", "await_call") {
+            self.expand_runtime_task_function(
+                function, async_rt_symbol("reflect_call_task"))
+            return
+        }
         if function.qualified ==
            package_symbol("std.async", "yield_now") {
             self.expand_runtime_task_function(

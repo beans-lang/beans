@@ -3720,6 +3720,15 @@ long long beans_str_hash(char* s) {
 // It is read-only after startup and therefore needs no lock on query paths.
 
 typedef long long (*BReflectInvoke)(void*, void**);
+typedef long long (*BReflectAsyncPoll)(void*);
+typedef long long (*BReflectAsyncTake)(void*);
+typedef void (*BReflectAsyncDrop)(void*);
+typedef struct {
+    BReflectInvoke start;
+    BReflectAsyncPoll poll;
+    BReflectAsyncTake take;
+    BReflectAsyncDrop drop;
+} BReflectAsyncBundle;
 typedef struct BReflectIdListHead {
     long long len;
     long long cap;
@@ -3758,6 +3767,7 @@ typedef struct {
     char* result_type;
     long long flags;
     BReflectInvoke call;
+    BReflectAsyncBundle async_call;
     BReflectIdListHead params;        // rows in reflect_method_parameters
 } BReflectMethod;
 
@@ -3788,6 +3798,7 @@ typedef struct {
     char* result_type;
     long long flags;
     BReflectInvoke call;
+    BReflectAsyncBundle async_call;
     BReflectIdListHead params;        // rows in reflect_function_parameters
 } BReflectFunction;
 
@@ -4122,7 +4133,7 @@ void beans_reflect_register_method(char* owner, char* name,
         reflect_methods, &reflect_method_cap, reflect_method_len,
         sizeof(BReflectMethod));
     reflect_methods[reflect_method_len] =
-        (BReflectMethod){owner, name, result_type, flags, 0};
+        (BReflectMethod){owner, name, result_type, flags, 0, {0, 0, 0, 0}};
     reflect_index_insert(&reflect_method_index,
                          reflect_hash_member(owner, name),
                          reflect_method_len);
@@ -4138,6 +4149,22 @@ void beans_reflect_register_method_call(char* owner, char* name, void* call) {
             beans_str_eq(reflect_methods[id].name, name)) best = id;
     });
     if (best >= 0) reflect_methods[best].call = (BReflectInvoke)call;
+}
+
+void beans_reflect_register_method_async_call(char* owner, char* name,
+                                               void* start, void* poll,
+                                               void* take, void* drop) {
+    long long best = -1;
+    REFLECT_INDEX_EACH(reflect_method_index,
+                       reflect_hash_member(owner, name), id, {
+        if ((best < 0 || id < best) &&
+            beans_str_eq(reflect_methods[id].owner, owner) &&
+            beans_str_eq(reflect_methods[id].name, name)) best = id;
+    });
+    if (best < 0) return;
+    reflect_methods[best].async_call = (BReflectAsyncBundle){
+        (BReflectInvoke)start, (BReflectAsyncPoll)poll,
+        (BReflectAsyncTake)take, (BReflectAsyncDrop)drop};
 }
 
 void beans_reflect_register_method_parameter(char* owner, char* callable,
@@ -4213,7 +4240,8 @@ void beans_reflect_register_function(char* qualified, char* name,
         reflect_functions, &reflect_function_cap, reflect_function_len,
         sizeof(BReflectFunction));
     reflect_functions[reflect_function_len] =
-        (BReflectFunction){qualified, name, result_type, flags, 0};
+        (BReflectFunction){qualified, name, result_type, flags, 0,
+                           {0, 0, 0, 0}};
     reflect_index_insert(&reflect_function_index,
                          reflect_hash_span(qualified, beans_slen(qualified)),
                          reflect_function_len);
@@ -4223,6 +4251,16 @@ void beans_reflect_register_function(char* qualified, char* name,
 void beans_reflect_register_function_call(char* qualified, void* call) {
     long long id = reflect_function_id_exact(qualified);
     if (id >= 0) reflect_functions[id].call = (BReflectInvoke)call;
+}
+
+void beans_reflect_register_function_async_call(char* qualified,
+                                                 void* start, void* poll,
+                                                 void* take, void* drop) {
+    long long id = reflect_function_id_exact(qualified);
+    if (id < 0) return;
+    reflect_functions[id].async_call = (BReflectAsyncBundle){
+        (BReflectInvoke)start, (BReflectAsyncPoll)poll,
+        (BReflectAsyncTake)take, (BReflectAsyncDrop)drop};
 }
 
 void beans_reflect_register_function_parameter(char* function_name, char* name,
@@ -4933,6 +4971,51 @@ static long long reflect_method_id(char* owner, char* name) {
     return -1;
 }
 
+static int reflect_method_signature_equal(long long declared,
+                                          long long candidate) {
+    BReflectMethod* left = &reflect_methods[declared];
+    BReflectMethod* right = &reflect_methods[candidate];
+    if (((left->flags ^ right->flags) & 4) != 0 ||
+        !beans_str_eq(left->result_type, right->result_type) ||
+        left->params.len != right->params.len) return 0;
+    for (long long i = 0; i < left->params.len; ++i) {
+        BReflectMethodParameter* lp =
+            &reflect_method_parameters[left->params.ids[i]];
+        BReflectMethodParameter* rp =
+            &reflect_method_parameters[right->params.ids[i]];
+        if (lp->passing != rp->passing ||
+            !beans_str_eq(lp->type_name, rp->type_name)) return 0;
+    }
+    return 1;
+}
+
+// Resolve only a real instance override of the cached method. A static or
+// differently typed same-name member on a child owns no instance dispatch
+// slot and must not replace the cached adapter.
+static long long reflect_instance_override_id(char* owner,
+                                               long long declared) {
+    long long type = reflect_find_type(owner);
+    BReflectMethod* wanted = &reflect_methods[declared];
+    for (long long guard = 0;
+         type >= 0 && guard++ <= reflect_type_len;) {
+        long long best = -1;
+        char* current = reflect_types[type].name;
+        REFLECT_INDEX_EACH(reflect_method_index,
+                           reflect_hash_member(current, wanted->name), id, {
+            if ((best < 0 || id < best) &&
+                reflect_base_equal(reflect_methods[id].owner, current) &&
+                beans_str_eq(reflect_methods[id].name, wanted->name) &&
+                (reflect_methods[id].flags & 1) &&
+                !(reflect_methods[id].flags & 2) &&
+                reflect_method_signature_equal(declared, id)) best = id;
+        });
+        if (best >= 0) return best;
+        if (!reflect_types[type].base) break;
+        type = reflect_find_type(reflect_types[type].base);
+    }
+    return declared;
+}
+
 long long beans_reflect_method_count(char* owner, long long inherited) {
     long long total = 0;
     reflect_method_list_id(owner, inherited, -1, &total);
@@ -5269,6 +5352,63 @@ static long long reflect_invoke(BReflectInvoke call, void* receiver,
     return result ? result : reflect_fail(5);
 }
 
+typedef struct {
+    void* task;
+    BReflectAsyncBundle bundle;
+} BReflectAsyncCall;
+
+static long long reflect_async_invoke(BReflectAsyncBundle bundle,
+                                      void* receiver,
+                                      long long address, long long count,
+                                      char** parameter_types,
+                                      long long* parameter_passing) {
+    if (!bundle.start || !bundle.poll || !bundle.take || !bundle.drop)
+        return reflect_fail(5);
+    BReflectAsyncCall* call =
+        (BReflectAsyncCall*)rt_zalloc(sizeof(BReflectAsyncCall));
+    if (!call) beans_panic("out of memory", 0, 0);
+    long long task = reflect_invoke(bundle.start, receiver, address, count,
+                                    parameter_types, parameter_passing);
+    if (!task) {
+        rt_free(call);
+        return 0;
+    }
+    call->task = (void*)(intptr_t)task;
+    call->bundle = bundle;
+    return (long long)(intptr_t)call;
+}
+
+long long beans_reflect_async_call_poll(long long handle) {
+    BReflectAsyncCall* call = (BReflectAsyncCall*)(intptr_t)handle;
+    if (!call || !call->task || !call->bundle.poll)
+        beans_panic("invalid reflected async call", 0, 0);
+    long long status = call->bundle.poll(call->task);
+    if (status < 0 || status > 2)
+        beans_panic("reflected async call returned an invalid poll status",
+                    0, 0);
+    return status;
+}
+
+long long beans_reflect_async_call_take(long long handle) {
+    BReflectAsyncCall* call = (BReflectAsyncCall*)(intptr_t)handle;
+    if (!call || !call->task || !call->bundle.take || !call->bundle.drop)
+        beans_panic("invalid reflected async call", 0, 0);
+    long long result = call->bundle.take(call->task);
+    call->bundle.drop(call->task);
+    call->task = 0;
+    rt_free(call);
+    return result;
+}
+
+long long beans_reflect_async_call_drop(long long handle) {
+    BReflectAsyncCall* call = (BReflectAsyncCall*)(intptr_t)handle;
+    if (!call) return 0;
+    if (call->task && call->bundle.drop) call->bundle.drop(call->task);
+    call->task = 0;
+    rt_free(call);
+    return 1;
+}
+
 // Fill types/passing scratch for one callable from its attached parameter
 // rows. Returns the arity, or -1 when the caller must use the legacy
 // per-index queries (orphaned rows).
@@ -5333,6 +5473,54 @@ static long long reflect_function_invoke(long long id, long long address,
     return result;
 }
 
+static long long reflect_function_async_invoke(long long id,
+                                               long long address,
+                                               long long count) {
+    BReflectFunction* function = &reflect_functions[id];
+    if (!(function->flags & 1)) return reflect_fail(2);
+    if (!(function->flags & 4) || (function->flags & (8 | 16)))
+        return reflect_fail(5);
+    char* type_stack[REFLECT_INVOKE_STACK_ARITY];
+    long long passing_stack[REFLECT_INVOKE_STACK_ARITY];
+    int spilled = count > REFLECT_INVOKE_STACK_ARITY;
+    char** types = spilled
+        ? (char**)rt_zalloc((size_t)(count ? count : 1) * sizeof(char*))
+        : type_stack;
+    long long* passing = spilled
+        ? (long long*)rt_zalloc((size_t)(count ? count : 1) *
+                                sizeof(long long))
+        : passing_stack;
+    if (!types || !passing) beans_panic("out of memory", 0, 0);
+    long long expected = -1;
+    if (!reflect_function_param_orphans && count >= 0) {
+        BReflectIdListHead* params = &function->params;
+        expected = params->len;
+        if (params->len == count)
+            for (long long i = 0; i < count; ++i) {
+                BReflectFunctionParameter* row =
+                    &reflect_function_parameters[params->ids[i]];
+                types[i] = row->type_name;
+                passing[i] = row->passing;
+            }
+    } else if (count >= 0) {
+        expected = beans_reflect_function_parameter_count(
+            function->qualified);
+        if (expected == count)
+            for (long long i = 0; i < count; ++i) {
+                types[i] = beans_reflect_function_parameter_type(
+                    function->qualified, i);
+                passing[i] = beans_reflect_function_parameter_passing(
+                    function->qualified, i);
+            }
+    }
+    long long result = count == expected
+        ? reflect_async_invoke(function->async_call, 0, address, count,
+                               types, passing)
+        : reflect_fail(6);
+    if (spilled) { rt_free(types); rt_free(passing); }
+    return result;
+}
+
 long long beans_reflect_function_call(char* qualified,
                                       long long address,
                                       long long count) {
@@ -5366,8 +5554,8 @@ static long long reflect_method_invoke(long long id, char* checked_owner,
                                                receiver->type_name)))
             return reflect_fail(3);
         /* Virtual dispatch: prefer an override declared by the runtime type. */
-        long long actual = reflect_method_id(receiver->type_name,
-                                             method->name);
+        long long actual = reflect_instance_override_id(
+            receiver->type_name, id);
         if (actual >= 0) call = reflect_methods[actual].call;
     }
     char* type_stack[REFLECT_INVOKE_STACK_ARITY];
@@ -5399,6 +5587,65 @@ static long long reflect_method_invoke(long long id, char* checked_owner,
     long long result = count == expected
         ? reflect_invoke(call, receiver ? receiver->data : 0,
                          address, count, types, passing)
+        : reflect_fail(6);
+    if (spilled) { rt_free(types); rt_free(passing); }
+    return result;
+}
+
+static long long reflect_method_async_invoke(long long id,
+                                             char* checked_owner,
+                                             long long receiver_raw,
+                                             long long address,
+                                             long long count,
+                                             long long static_call) {
+    BReflectMethod* method = &reflect_methods[id];
+    if (reflect_special_method(method->name)) return reflect_fail(1);
+    if (!(method->flags & 1)) return reflect_fail(2);
+    if (!(method->flags & 4) || (method->flags & (8 | 16)))
+        return reflect_fail(5);
+    if (((method->flags & 2) != 0) != (static_call != 0))
+        return reflect_fail(3);
+    BReflectValue* receiver = 0;
+    BReflectAsyncBundle bundle = method->async_call;
+    if (!static_call) {
+        receiver = (BReflectValue*)(intptr_t)receiver_raw;
+        if (!receiver || !receiver->data ||
+            (!beans_str_eq(checked_owner, receiver->type_name) &&
+             !beans_reflect_is_assignable_from(checked_owner,
+                                               receiver->type_name)))
+            return reflect_fail(3);
+        /* The runtime override owns a complete, type-matched adapter set. */
+        long long actual = reflect_instance_override_id(
+            receiver->type_name, id);
+        if (actual >= 0) bundle = reflect_methods[actual].async_call;
+    }
+    char* type_stack[REFLECT_INVOKE_STACK_ARITY];
+    long long passing_stack[REFLECT_INVOKE_STACK_ARITY];
+    int spilled = count > REFLECT_INVOKE_STACK_ARITY;
+    char** types = spilled
+        ? (char**)rt_zalloc((size_t)(count ? count : 1) * sizeof(char*))
+        : type_stack;
+    long long* passing = spilled
+        ? (long long*)rt_zalloc((size_t)(count ? count : 1) *
+                                sizeof(long long))
+        : passing_stack;
+    if (!types || !passing) beans_panic("out of memory", 0, 0);
+    long long expected = count < 0 ? -1
+        : reflect_fill_method_arguments(id, count, types, passing);
+    if (expected < 0 && count >= 0) {
+        expected = beans_reflect_method_parameter_count(method->owner,
+                                                        method->name);
+        if (expected == count)
+            for (long long i = 0; i < count; ++i) {
+                types[i] = beans_reflect_method_parameter_type(
+                    method->owner, method->name, i);
+                passing[i] = beans_reflect_method_parameter_passing(
+                    method->owner, method->name, i);
+            }
+    }
+    long long result = count == expected
+        ? reflect_async_invoke(bundle, receiver ? receiver->data : 0,
+                               address, count, types, passing)
         : reflect_fail(6);
     if (spilled) { rt_free(types); rt_free(passing); }
     return result;
@@ -5506,6 +5753,20 @@ long long beans_reflect_method_call_handle(long long handle,
                                  receiver_raw, address, count, static_call);
 }
 
+long long beans_reflect_method_call_async_handle(long long handle,
+                                                 long long receiver_raw,
+                                                 long long address,
+                                                 long long count,
+                                                 long long static_call) {
+    reflect_error_code = 0;
+    long long id = reflect_handle_id(handle, REFLECT_HANDLE_METHOD,
+                                     reflect_method_len);
+    if (id < 0) return reflect_fail(1);
+    return reflect_method_async_invoke(
+        id, reflect_methods[id].owner, receiver_raw,
+        address, count, static_call);
+}
+
 long long beans_reflect_initializer_handle(char* owner) {
     long long type = reflect_find_type(owner);
     if (type < 0 || reflect_types[type].initializer_flags < 0) return 0;
@@ -5538,6 +5799,16 @@ long long beans_reflect_function_call_handle(long long handle,
                                      reflect_function_len);
     if (id < 0) return reflect_fail(1);
     return reflect_function_invoke(id, address, count);
+}
+
+long long beans_reflect_function_call_async_handle(long long handle,
+                                                   long long address,
+                                                   long long count) {
+    reflect_error_code = 0;
+    long long id = reflect_handle_id(handle, REFLECT_HANDLE_FUNCTION,
+                                     reflect_function_len);
+    if (id < 0) return reflect_fail(1);
+    return reflect_function_async_invoke(id, address, count);
 }
 
 long long beans_reflect_variant_make(char* owner, char* name,

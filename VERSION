@@ -16,7 +16,9 @@
 compiler=0.1.29
 language=1.0
 
-# 9: resolved reflection handles — beans_reflect_method_handle,
+# 10: async reflection call handles and compiler-generated async callable
+# start/poll/take/drop adapters.
+# Version 9 added resolved reflection handles — beans_reflect_method_handle,
 # beans_reflect_method_call_handle, beans_reflect_initializer_handle,
 # beans_reflect_initializer_call_handle, beans_reflect_function_handle and
 # beans_reflect_function_call_handle — so cached descriptors stop
@@ -25,4 +27,4 @@ language=1.0
 # caller-owned event buffer instead of returning a fresh one.
 # Version 7 added Bytes.filled, Bytes.append_int_text, and Thread.detach.
 # Version 6 added per-thread runtime-hook guard entry points.
-runtime_abi=9
+runtime_abi=10

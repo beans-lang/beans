@@ -86,6 +86,10 @@ fn runtime_error() -> ReflectError {
     return new ReflectError(kind, rt.error_message())
 }
 
+// The async expander replaces this marker with the compiler-private task
+// that owns and drives one low-level reflected call.
+async fn await_call(handle: int) -> int { return 0 }
+
 /// One checked constant stored in a runtime annotation.
 pub class AnnotationValue {
     id: int
@@ -748,6 +752,18 @@ pub class Method {
         return ok(new Value(handle))
     }
 
+    pub async fn call_async(receiver: Value,
+                            move arguments: List<Value>) ->
+        Result<Value, ReflectError> {
+        let packed: PackedArguments =
+            new PackedArguments(arguments)
+        let handle: int = rt.method_call_async_handle(
+            self.handle, receiver.handle,
+            packed.raw, packed.count, false)
+        if handle == 0 { return err(runtime_error()) }
+        return ok(new Value(await await_call(handle)))
+    }
+
     pub fn call_static(move arguments: List<Value>) ->
         Result<Value, ReflectError> {
         let packed: PackedArguments =
@@ -756,6 +772,16 @@ pub class Method {
             self.handle, 0, packed.raw, packed.count, true)
         if handle == 0 { return err(runtime_error()) }
         return ok(new Value(handle))
+    }
+
+    pub async fn call_static_async(move arguments: List<Value>) ->
+        Result<Value, ReflectError> {
+        let packed: PackedArguments =
+            new PackedArguments(arguments)
+        let handle: int = rt.method_call_async_handle(
+            self.handle, 0, packed.raw, packed.count, true)
+        if handle == 0 { return err(runtime_error()) }
+        return ok(new Value(await await_call(handle)))
     }
 
     pub fn annotations() -> List<Annotation> {
@@ -902,6 +928,16 @@ pub class Function {
             self.handle, packed.raw, packed.count)
         if handle == 0 { return err(runtime_error()) }
         return ok(new Value(handle))
+    }
+
+    pub async fn call_async(move arguments: List<Value>) ->
+        Result<Value, ReflectError> {
+        let packed: PackedArguments =
+            new PackedArguments(arguments)
+        let handle: int = rt.function_call_async_handle(
+            self.handle, packed.raw, packed.count)
+        if handle == 0 { return err(runtime_error()) }
+        return ok(new Value(await await_call(handle)))
     }
 
     pub fn annotations() -> List<Annotation> {

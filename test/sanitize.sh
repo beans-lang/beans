@@ -109,6 +109,15 @@ run_asan test/cases/reflect_members.b reflect_members
 run_asan test/cases/reflect_value.b reflect_value
 run_asan test/cases/reflect_fields.b reflect_fields
 run_asan test/cases/reflect_calls.b reflect_calls
+run_asan test/cases/async_reflect_calls.b async_reflect_calls
+run_asan test/cases/async_reflect_lifetime.b async_reflect_lifetime
+guard_src="$out/async_reflect_guard_src"
+mkdir -p "$guard_src"
+printf '%s\n' 'module main' 'kind application' >"$guard_src/beans.pot"
+cp test/cases/async_reflect_guard.b "$guard_src/async_reflect_guard.b"
+sed 's/^package async_rt$/package main/' \
+    'stdlib/std/async$rt/reflect.b' >"$guard_src/reflect.b"
+run_asan "$guard_src/async_reflect_guard.b" async_reflect_guard
 run_asan test/cases/reflect_construct.b reflect_construct
 run_asan test/cases/reflect_annotations.b reflect_annotations
 run_asan test/cases/runtime_hooks_ok.b runtime_hooks_ok
