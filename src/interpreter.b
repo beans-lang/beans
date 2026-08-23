@@ -340,6 +340,17 @@ class TreeInterpreter {
                 } else {
                     names = ["lib{link.value}.so",
                              link.value]
+                    // glibc 2.34+ ships lib<name>.so as a linker script
+                    // (GROUP ( lib<name>.so.6 ... )), which the dynamic
+                    // loader refuses to open, and a bare runtime package
+                    // carries only the versioned object. The loadable file
+                    // is lib<name>.so.<n>, so those spellings are
+                    // candidates too — libm.so.6, libX11.so.6, libGL.so.1
+                    // all land inside this range.
+                    for suffix: int in 0..10 {
+                        names.push(
+                            "lib{link.value}.so.{suffix}")
+                    }
                 }
                 for directory: string in search_paths {
                     for name: string in names {
