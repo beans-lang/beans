@@ -105,4 +105,27 @@ OUT
 diff -u "$tmp/expected" "$tmp/native.out"
 diff -u "$tmp/expected" "$tmp/interp.out"
 
+# On ELF hosts the loadable object is often only the versioned soname:
+# glibc 2.34+ ships lib<name>.so as a linker script the dynamic loader
+# refuses, and a bare runtime package carries lib<name>.so.6 with no dev
+# symlink at all. The interpreter has to reach the versioned spelling —
+# `link linux library "m"` broke exactly this way on Ubuntu 24.04.
+if [[ $(uname -s) != Darwin ]]; then
+    mkdir -p "$tmp/versioned"
+    cp "$tmp/project/main.b" "$tmp/project/bindings.b" "$tmp/versioned/"
+    clang -shared -fPIC "$tmp/link_probe.c" -I"$tmp" \
+        -o "$tmp/versioned/liblink_probe.so.6"
+    cat >"$tmp/versioned/beans.pot" <<'MOD'
+module link_probe
+link all search "."
+link all library "link_probe"
+MOD
+    if ! "$beansc" run "$tmp/versioned/main.b" \
+        >"$tmp/versioned.out" 2>&1; then
+        cat "$tmp/versioned.out" >&2
+        exit 1
+    fi
+    diff -u "$tmp/expected" "$tmp/versioned.out"
+fi
+
 echo "bindgen link ok"
