@@ -147,6 +147,38 @@ grep -q 'Published targets:' "$tmp/unsup.out"
 test ! -e "$tmp/never"
 echo "  unsupported platforms get a useful message"
 
+# A Windows release ships as .zip with a beansc.cmd launcher. The unpack
+# path must not go through `tar xzf` (GNU tar reads only the tarball),
+# and the layout check must accept the .cmd spelling. The probe package
+# is this host's own, re-archived, so the staged launcher still answers.
+if command -v zip >/dev/null 2>&1 && command -v unzip >/dev/null 2>&1; then
+    zip_asset="beans-v$version-zip-probe.zip"
+    stage_zip="$tmp/zipstage"
+    mkdir "$stage_zip"
+    tar xzf "$dist/$asset" -C "$stage_zip"
+    mv "$stage_zip/beans-v$version-$target/bin/beansc" \
+       "$stage_zip/beans-v$version-$target/bin/beansc.cmd"
+    (cd "$stage_zip" && zip -qr "$dist/$zip_asset" "beans-v$version-$target")
+    if command -v sha256sum >/dev/null 2>&1; then
+        zip_sha=$(cd "$dist" && sha256sum "$zip_asset" | cut -d' ' -f1)
+    else
+        zip_sha=$(cd "$dist" && shasum -a 256 "$zip_asset" | cut -d' ' -f1)
+    fi
+    {
+        cat "$dist/beans-release-manifest.tsv"
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+            "$version" "zip-probe" "$os" "$arch" "$libc" "$class" \
+            "$zip_asset" "$zip_sha" yes
+    } >"$tmp/zip-manifest.tsv"
+    BEANS_INSTALL_BASE_URL="$dist" \
+    BEANS_INSTALL_MANIFEST="$tmp/zip-manifest.tsv" \
+    BEANS_TARGET=zip-probe \
+    sh tools/install-release.sh --prefix "$tmp/zipped" --no-modify-path \
+        >"$tmp/zip.out" 2>&1 || { cat "$tmp/zip.out" >&2; exit 1; }
+    test "$("$tmp/zipped/bin/beansc.cmd" --version)" = "$version_text"
+    echo "  a .zip package with a .cmd launcher installs"
+fi
+
 # -------------------------------------------------- what the install can do
 export PATH="$prefix/bin:$PATH"
 work="$tmp/work"

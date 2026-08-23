@@ -40,6 +40,13 @@ This file records user-facing changes in each Beans release.
 
 ### Fixed
 
+- The shell installer handles Windows packages: a `.zip` asset unpacks
+  with `unzip` (GNU tar reads only the tarball, and Git Bash ships GNU
+  tar), and the layout and post-install checks accept the
+  `bin/beansc.cmd` launcher Windows packages ship. Found installing
+  0.1.28 on a Windows CI runner for the shelf libraries.
+  `test/install_release.sh` re-archives the host package as a zip with a
+  `.cmd` launcher and installs it.
 - `bindgen --pub` now marks record fields `pub` alongside the record
   itself. C has no private struct members, and a by-value API is unusable
   from a consumer package that cannot read `Color.r` or `Image.width` —
