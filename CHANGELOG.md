@@ -19,9 +19,54 @@ This file records user-facing changes in each Beans release.
   configuration takes `"mode": "native"` and builds before handing the
   binary to CodeLLDB, LLDB DAP or the C/C++ extension, and Zed's built-in
   debugger drives the same binary from a `.zed/debug.json` build step.
+- A minimal float surface, identical in both compilers: `abs` now works
+  natively on `f32` and on every sized integer width (they were
+  interpreter-only), and floats gain `floor()`, `ceil()`, `is_nan()`, and
+  the constants `float.infinity()` / `f32.infinity()`. NaN, signed zero,
+  and the infinities render the same under `beansc run` and a built
+  binary.
+- Fixed-array element assignment now reaches through real places:
+  `self.cells[i] = x` in an `inout fn`, struct fields (`one.cells[0]`),
+  nested chains (`outer.inner.grid[1][0]`), class-held arrays, and
+  compound operators all store through the original storage in both
+  compilers. Bases with no storage behind them — temporaries, `let`
+  roots, list elements — are refused at check time with a message naming
+  the fix.
+- Struct fields may declare defaults exactly like class fields, and the
+  spec now says so: an all-defaulted struct builds from `Style {}`, and a
+  partial literal keeps the remaining defaults.
+- `List<f32>` stores its elements at four bytes instead of widening each
+  one into an eight-byte slot, halving an f32 column's memory. Every list
+  operation, JSON decoding included, carries the typed representation.
+- Method calls on `singleton class` receivers devirtualize: a singleton
+  cannot be extended, so its static type proves the exact runtime class
+  and every call is direct instead of a descriptor dispatch.
+- The spec guarantees `main()` runs on the real process main thread under
+  both compilers — the footing AppKit and dispatch-main-queue programs
+  need — and a suite probes it.
 
 ### Fixed
 
+- `\{` escapes now mean the same thing in both compilers. The tree
+  interpreter decoded escapes before splitting interpolations, so a
+  literal `{` written as `\{` swallowed the next real slot:
+  `io.println("A: \{\} n={n}")` printed `A: 7 n=` under `beansc run` and
+  `A: {} n=7` natively. The interpreter now walks the raw literal exactly
+  the way the checker and the native emitter do.
+- `"{{}}"` still parses as an interpolation opening on a map literal —
+  `{{` is not an escape — but the error now says so and names `\{` as
+  the fix.
+- `List.min()` and `List.max()` answered wrong natively for every element
+  type outside `int`, `float`, and `string`: sized integers, unsigned
+  integers above the signed range, and `f32` compared through a
+  comparator row that had no comparator and returned the first element.
+  Both now use the same order-kind table as `List.sort()`.
+- A fixed-array element store to a captured local corrupted the capture
+  cell natively and crashed; the store now goes through the cell the way
+  every read does.
+- The same-thread stored-callback violation now stops `beansc run` the
+  way it stops a built binary: the beans_panic wording and exit code 3,
+  where the interpreter previously aborted with SIGABRT (exit 134).
 - A `--debug` build kept the frame pointer in the C runtime but not in the
   Beans functions beside it. `-fno-omit-frame-pointer` reaches Clang, and
   Clang applies it to the C it compiles; a function that arrives as LLVM IR
