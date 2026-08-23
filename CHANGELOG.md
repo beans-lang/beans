@@ -26,6 +26,15 @@ This file records user-facing changes in each Beans release.
 
 ### Fixed
 
+- `beansc run` now loads a manifest `link` library through its versioned
+  soname when the plain spelling fails. glibc 2.34+ ships `lib<name>.so`
+  as a linker script the dynamic loader refuses, and a bare runtime
+  package carries only `lib<name>.so.<n>` — so `link linux library "m"`
+  failed on Ubuntu 24.04 (found by the sqlite shelf package's first CI
+  run). The interpreter now tries `lib<name>.so.0` through `.so.9` after
+  the unversioned spellings, which covers libm.so.6, libX11.so.6 and
+  libGL.so.1 alike; native linking is unchanged. `test/bindgen_link.sh`
+  locks it with a library that exists only as `liblink_probe.so.6`.
 - A cross-package annotation used bare now fills its defaults correctly:
   a default value is checked once in the annotation's own declaring
   scope and reused at every use site, instead of being re-resolved
