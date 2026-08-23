@@ -6,6 +6,17 @@ This file records user-facing changes in each Beans release.
 
 ### Added
 
+- Named imports: `import {name, other as alias} from path` binds exactly
+  the selection — functions, types, enums, interfaces, annotations — and
+  the bare names then work everywhere the qualified names did: calls,
+  values, types, `new`, static access, patterns, `@annotations`. When the
+  path is a namespace folder rather than a package, the braces select its
+  sub-packages: `import {json, xml} from std.encoding` is two module
+  imports on one line. Selected names live in the file's one import
+  namespace — collisions with another import or with a declaration of the
+  importing package fail at the import line, as does selecting a name the
+  target does not declare or does not export. Resolution stays fully
+  compile-time, so both import spellings produce identical programs.
 - Calls take explicit type arguments on every form — free functions,
   package-qualified functions, instance methods and static methods:
   `services.add_transient<Greeter>()`, nested arguments included. With no
@@ -35,6 +46,15 @@ This file records user-facing changes in each Beans release.
   the unversioned spellings, which covers libm.so.6, libX11.so.6 and
   libGL.so.1 alike; native linking is unchanged. `test/bindgen_link.sh`
   locks it with a library that exists only as `liblink_probe.so.6`.
+- Every bindgen skip comment now names the declaration it dropped. A
+  type-mapping refusal used to surface as a bare `// skipped: flexible
+  arrays are unsupported`, leaving the reader of a large header to find
+  the victim by hand — binding sqlite3.h (306 public functions) produced
+  exactly that. The record, declaration and dependency-closure passes
+  stamp their owner onto each diagnostic (`declaration 'sqlite3_version':
+  flexible arrays are unsupported`), errors that already carry a location
+  are left alone, and duplicate reports collapse into the named form.
+  `test/bindgen.sh` locks the shape.
 - A cross-package annotation used bare now fills its defaults correctly:
   a default value is checked once in the annotation's own declaring
   scope and reused at every use site, instead of being re-resolved

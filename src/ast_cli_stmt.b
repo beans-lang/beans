@@ -323,6 +323,26 @@ fn render_cli_ast(node: AstNode) -> string {
     var import_count: int = 0
     for child: AstNode in node.children {
         if child.kind != "import" { continue }
+        var named: string = ""
+        for part: AstNode in child.children {
+            if part.kind != "named" { continue }
+            var piece: string = part.value
+            for grand: AstNode in part.children {
+                if grand.kind == "alias" {
+                    piece = "{piece} as {grand.value}"
+                }
+            }
+            if named == "" {
+                named = piece
+            } else {
+                named = "{named}, {piece}"
+            }
+        }
+        if named != "" {
+            output = "{output}import \{{named}\} from {child.value}\n"
+            import_count += 1
+            continue
+        }
         output = "{output}import {child.value}"
         for part: AstNode in child.children {
             if part.kind == "alias" {

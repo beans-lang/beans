@@ -249,6 +249,40 @@ import gitlab.com/tools/csv as csvlib
   let b: wholesale.Cart = new wholesale.Cart()
   ```
 
+### Named imports
+
+`import {…} from path` binds exactly the names it selects — no module
+name — and resolves at compile time like the module-qualified form, so
+the two spellings produce identical programs:
+
+```beans
+import {println} from std.io
+import {Value, parse, encode as to_json} from std.encoding.json
+import {json, xml} from std.encoding
+
+fn main() {
+    println(to_json(parse("[1]").expect("parse")).expect("encode"))
+    let v: Value = parse("true").expect("again")
+    json.encode(3).expect("modules still work")
+}
+```
+
+- A selection names anything `pub` in the target: functions, classes,
+  structs, enums, interfaces, annotations. The bare name then works
+  everywhere the qualified name did — calls, values, types, `new`,
+  static access, patterns, `@annotations`.
+- `as` renames one selection inside the braces
+  (`{encode as to_json}`); the list itself takes no trailing `as`.
+- When the path is a namespace folder rather than a package
+  (`std.encoding`), the selection names its sub-packages and each binds
+  as a module: `import {json, xml} from std.encoding` is
+  `import std.encoding.json` + `import std.encoding.xml` on one line.
+- Selected names share the one namespace of the file's import bindings:
+  colliding with another import or with a declaration of the importing
+  package is an error at the import line, and locals still shadow.
+- The import line also checks the selection: a name the target does not
+  declare, or one that is not `pub`, fails where it is written.
+
   They stay separate everywhere — separate types, separate private methods,
   separate generated symbols. A declared name and an alias are source-facing
   only; neither decides visibility.
