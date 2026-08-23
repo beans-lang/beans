@@ -40,6 +40,13 @@ This file records user-facing changes in each Beans release.
 
 ### Fixed
 
+- `bindgen --pub` now marks record fields `pub` alongside the record
+  itself. C has no private struct members, and a by-value API is unusable
+  from a consumer package that cannot read `Color.r` or `Image.width` —
+  binding raylib.h (598 functions, structs passed by value throughout)
+  hit exactly that. Opaque records and the non-`--pub` mode are
+  unchanged. `test/bindgen.sh` now has the consumer read a bound struct's
+  field through a `require path` dependency.
 - `beansc run` now loads a manifest `link` library through its versioned
   soname when the plain spelling fails. glibc 2.34+ ships `lib<name>.so`
   as a linker script the dynamic loader refuses, and a bare runtime
