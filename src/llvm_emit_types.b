@@ -387,11 +387,12 @@ partial class LlvmTextEmitter {
         if self.type_is_reference(type) {
             return true
         }
-        // a wide Option is an inline {i1, T} with no declaration
-        // behind it: masks answer 0, so ask the payload directly —
-        // drops once skipped the whole aggregate and the payload's
-        // references leaked with their deinit never run
-        if canonical_hir_name(type.name) == "Option" &&
+        let name: string =
+            canonical_hir_name(type.name)
+        // Inline aggregates are retained and released field by field.
+        // Do not use pointer_mask_at as the ownership test: -1 means the
+        // layout cannot fit runtime metadata, not that it owns no refs.
+        if name == "Option" &&
            type.args.len() == 1 {
             return self.type_has_owned_refs(
                 type.args[0])
@@ -402,7 +403,34 @@ partial class LlvmTextEmitter {
                    self.type_has_owned_refs(
                        self.result_error_type(type))
         }
-        return self.pointer_mask_at(type, 0) > 0
+        if name == "array" &&
+           type.args.len() == 1 &&
+           type.array_length > 0 {
+            return self.type_has_owned_refs(
+                type.args[0])
+        }
+        match self.declaration_for(type) {
+            some(declaration) => {
+                if declaration.kind != "struct" {
+                    return false
+                }
+                match self.record_layout(type) {
+                    some(layout) => {
+                        for field: HirField in
+                            layout.declaration.fields {
+                            if self.type_has_owned_refs(
+                                   layout.field_types[
+                                       field.name]) {
+                                return true
+                            }
+                        }
+                    }
+                    none => {}
+                }
+            }
+            none => {}
+        }
+        return false
     }
 
     fn substitute_open(

@@ -124,8 +124,8 @@ fi
 
 echo "checking a class past the inline mask uses its descriptor shape"
 # 58 slots is 464 bytes at an 8-byte stride. A pointer beyond that cannot be named by
-# the mask at all, so it has to be an error — a silently unwalked field is a leak that
-# only shows up under the collector.
+# the mask at all, so the class needs its extended shape — a silently unwalked field
+# is a leak that only shows up under the collector.
 cat >"$tmp/wide.b" <<'WIDE'
 // 60 string fields puts the last ones past the 58-slot mask.
 import std.io
@@ -212,4 +212,96 @@ WIDE
 grep -qx 'last pointer dropped' "$tmp/wide.out"
 grep -q '@.next.classshape' build/wide.ll
 
-echo "ok object ABI: one stride, one Error layout, extended class shapes on both sides"
+echo "checking an oversized inline field keeps its ARC"
+cat >"$tmp/wide_field.b" <<'WIDE_FIELD'
+import std.io
+
+class Node { tag: int = 0 }
+
+struct Big {
+    // The tail lands in slot 58, just outside the inline mask.
+    f0: int = 0
+    f1: int = 0
+    f2: int = 0
+    f3: int = 0
+    f4: int = 0
+    f5: int = 0
+    f6: int = 0
+    f7: int = 0
+    f8: int = 0
+    f9: int = 0
+    f10: int = 0
+    f11: int = 0
+    f12: int = 0
+    f13: int = 0
+    f14: int = 0
+    f15: int = 0
+    f16: int = 0
+    f17: int = 0
+    f18: int = 0
+    f19: int = 0
+    f20: int = 0
+    f21: int = 0
+    f22: int = 0
+    f23: int = 0
+    f24: int = 0
+    f25: int = 0
+    f26: int = 0
+    f27: int = 0
+    f28: int = 0
+    f29: int = 0
+    f30: int = 0
+    f31: int = 0
+    f32: int = 0
+    f33: int = 0
+    f34: int = 0
+    f35: int = 0
+    f36: int = 0
+    f37: int = 0
+    f38: int = 0
+    f39: int = 0
+    f40: int = 0
+    f41: int = 0
+    f42: int = 0
+    f43: int = 0
+    f44: int = 0
+    f45: int = 0
+    f46: int = 0
+    f47: int = 0
+    f48: int = 0
+    f49: int = 0
+    f50: int = 0
+    f51: int = 0
+    f52: int = 0
+    f53: int = 0
+    f54: int = 0
+    f55: int = 0
+    f56: int = 0
+    f57: int = 0
+    tail: Node
+}
+
+class Owner {
+    slot: Big = Big { tail: new Node() }
+}
+
+fn main() {
+    let owner: Owner = new Owner()
+    var i: int = 0
+    for i < 1000 {
+        owner.slot = Big { tail: new Node() }
+        i += 1
+    }
+    io.println("done")
+}
+WIDE_FIELD
+./build/beansc build --emit ir "$tmp/wide_field.b" >"$tmp/wide_field.log" 2>&1
+grep -q 'field.assign.old' build/wide_field.ll
+clang -O1 -DBEANS_ARC_STATS -Wno-override-module \
+    build/wide_field.ll build/beans_rt.c -lm -o "$tmp/wide_field"
+"$tmp/wide_field" >"$tmp/wide_field.out" 2>"$tmp/wide_field.stats"
+grep -qx 'done' "$tmp/wide_field.out"
+grep -Eq 'beans arc stats: allocations=1002 .* frees=1002 ' \
+    "$tmp/wide_field.stats"
+
+echo "ok object ABI: one stride, Error layout, extended shapes, and oversized inline ARC"
