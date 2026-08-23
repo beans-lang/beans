@@ -240,6 +240,133 @@ else
     echo "  $debugged stopped on prog.b:$loop_line, named the frames and read a local"
 fi
 
-echo "ok --debug: unoptimized, no LTO, frame pointers, Beans line table"
+# --- an object's fields, at the offsets the program really uses -------------
+# The whole risk of describing a layout is describing it wrong: a debugger that
+# reads the wrong offset shows a wrong value confidently, which is worse than
+# showing an address. So this does not assert a layout — it makes the program
+# print its own fields and requires the debugger to agree, field for field,
+# across widths that pack and pad differently.
+cat >"$work/obj.b" <<'BEANS'
+package main
+
+import std.io
+
+class Animal {
+    name: string
+    legs: int
+
+    fn init(name: string, legs: int) {
+        self.name = name
+        self.legs = legs
+    }
+}
+
+class Dog extends Animal {
+    flag: bool
+    tiny: u8
+    small: i16
+    medium: i32
+    ratio: f32
+    exact: float
+
+    fn init() {
+        super.init("Rex", 4)
+        self.flag = true
+        self.tiny = 200
+        self.small = -300
+        self.medium = 70000
+        self.ratio = 0.5
+        self.exact = 2.25
+    }
+}
+
+class Node {
+    value: int
+    next: Option<Node>
+
+    fn init(value: int) {
+        self.value = value
+        self.next = none
+    }
+}
+
+struct Point {
+    x: int
+    y: float
+}
+
+fn look(dog: Dog, head: Node, at: Point) {
+    io.println("{dog.name} {dog.legs} {dog.small} {dog.medium} {dog.exact}")
+    io.println("{head.value} {at.x} {at.y}")
+}
+
+fn main() {
+    let dog: Dog = new Dog()
+    let head: Node = new Node(10)
+    head.next = some(new Node(20))
+    look(dog, head, Point { x: 7, y: 1.5 })
+}
+BEANS
+# Found rather than counted: a line number written down here goes stale the
+# first time anyone edits the program above, and a breakpoint that lands on a
+# closing brace resolves to nothing and takes the whole check with it.
+object_line=$(grep -n 'head.value' "$work/obj.b" | head -1 | cut -d: -f1)
+[ -n "$object_line" ] || fail "the object program lost the line to stop on"
+
+"$bin" build --debug "$work/obj.b" -o "$work/obj" >"$work/obj.log" 2>&1 ||
+    fail "building the object program failed: $(cat "$work/obj.log")"
+printed=$("$work/obj") || fail "the object program did not run"
+[ "$printed" = "Rex 4 -300 70000 2.25
+10 7 1.5" ] || fail "the object program printed: $printed"
+
+# A base class's fields come first so a subclass pointer works where the base
+# is expected; both halves have to be described, at their real offsets.
+"$bin" build --emit ir --debug "$work/obj.b" -o "$work/obj.ll" >/dev/null 2>&1 ||
+    fail "emitting IR for the object program failed"
+for member in name legs flag tiny small medium ratio exact value next x y; do
+    grep -q "DW_TAG_member, name: \"$member\"" "$work/obj.ll" ||
+        fail "the field '$member' is not described, so a debugger cannot show it"
+done
+grep -q 'DW_TAG_structure_type, name: "main.Dog"' "$work/obj.ll" ||
+    fail "a class should reach the debugger as a structure, not an address"
+grep -q 'DW_TAG_structure_type, name: "main.Point"' "$work/obj.ll" ||
+    fail "a struct should be described too"
+
+if [ "$debugged" = lldb ]; then
+    lldb "$work/obj" -b \
+        -o "breakpoint set --file obj.b --line $object_line" \
+        -o run \
+        -o 'p *dog' -o 'p *head' -o 'p at' -o 'p head->next->value' \
+        -o kill >"$work/obj_lldb" 2>&1 || true
+    # Every value the program printed, read back out of the object.
+    for expected in 'name = "Rex"' 'legs = 4' 'flag = true' 'small = -300' \
+                    'medium = 70000' 'ratio = 0.5' 'exact = 2.25' \
+                    'value = 10' 'x = 7' 'y = 1.5'; do
+        grep -qF "$expected" "$work/obj_lldb" ||
+            fail "lldb did not read '$expected' out of the object:
+$(cat "$work/obj_lldb")"
+    done
+    # A class holding an Option of itself must not send the description into
+    # a loop, and must still be walkable.
+    grep -qE '^\(long\) 20$' "$work/obj_lldb" ||
+        fail "a linked Option<Node> should be walkable: $(cat "$work/obj_lldb")"
+    echo "  lldb read every field of an object, a base class and a struct"
+elif [ "$debugged" = gdb ]; then
+    gdb -batch -nx \
+        -ex "break obj.b:$object_line" -ex run \
+        -ex 'print *dog' -ex 'print *head' -ex 'print at' \
+        "$work/obj" >"$work/obj_gdb" 2>&1 || true
+    for expected in 'name = ' 'legs = 4' 'medium = 70000' 'value = 10' 'x = 7'; do
+        grep -qF "$expected" "$work/obj_gdb" ||
+            fail "gdb did not read '$expected' out of the object:
+$(cat "$work/obj_gdb")"
+    done
+    echo "  gdb read every field of an object, a base class and a struct"
+else
+    echo "  (no debugger — checked the field descriptions in the IR only)"
+fi
+
+echo "ok --debug: unoptimized, no LTO, frame pointers, Beans line table,"
+echo "   objects with their fields"
 echo "   (native source debugging works; 'beansc debug-adapter' stays the"
 echo "    richer interpreter debugger)"

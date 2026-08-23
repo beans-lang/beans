@@ -425,9 +425,22 @@ gdb -ex 'break main.b:12' -ex run -ex bt ./main
 ```
 
 `lldb` and `gdb` stop on a Beans line, name Beans functions in a backtrace
-(`main.helper`, not `.next.fn7`), step a statement at a time, and print locals:
-scalars, `bool`s and strings by value, lists, maps and objects as their Beans
-type and address. Editors reach the same thing — see
+(`main.helper`, not `.next.fn7`), step a statement at a time, and print locals.
+Classes, structs and unions carry their fields, so an object opens:
+
+```
+(main.Dog) dog = 0x0000000bac800070 {
+  name = "Rex"
+  legs = 4
+  breed = "collie"
+}
+```
+
+Fields inherited from a base class come first and are there too, and a linked
+`Option<T>` walks. A runtime handle
+with no Beans declaration behind it — a `List`, a `Map`, a `Channel` — shows its
+Beans type and an address, because its fields belong to the C runtime rather
+than to any declaration. Editors reach the same thing — see
 [beans-lang/editors](https://github.com/beans-lang/editors) for VS Code's
 `"mode": "native"` and Zed's `.zed/debug.json`.
 
@@ -435,7 +448,9 @@ Reach for the native debugger when the bug is about the compiled program: a
 crash inside the runtime or a C library, threads, timing. Reach for
 `debug-adapter` when the question is about a Beans value, because the
 interpreter knows all of them exactly. `test/native_debug.sh` holds both claims
-to end-to-end evidence, breakpoint included.
+to end-to-end evidence: it drives a real debugger to a Beans line and requires
+every field it reads out of an object to match what the program itself
+printed.
 
 ## Developing
 
