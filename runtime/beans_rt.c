@@ -12181,6 +12181,7 @@ long long beans_poll_remove_out(long long poller, long long fd, void** e_out) { 
 typedef struct {
     long long* tokens;
     long long* flags;
+    long long* idents; // kqueue merge key: same token on two descriptors stays two events
     void* got;      // struct epoll_event[] on Linux, struct kevent[] elsewhere
     long long cap;  // in events; the kernel buffer holds cap * 2 + 1 entries
 } PollScratch;
@@ -12192,6 +12193,7 @@ static void poll_scratch_drop(void* raw) {
     if (!s) return;
     free(s->tokens);
     free(s->flags);
+    free(s->idents);
     free(s->got);
     free(s);
 }
@@ -12218,17 +12220,22 @@ static PollScratch* poll_scratch_get(long long max_events,
             (long long*)malloc((size_t)max_events * sizeof(long long));
         long long* flags =
             (long long*)malloc((size_t)max_events * sizeof(long long));
+        long long* idents =
+            (long long*)malloc((size_t)max_events * sizeof(long long));
         void* got = malloc((size_t)room * kernel_entry);
-        if (!tokens || !flags || !got) {
+        if (!tokens || !flags || !idents || !got) {
             free(tokens);
             free(flags);
+            free(idents);
             free(got);
             return NULL;
         }
         free(s->tokens);
         free(s->flags);
+        free(s->idents);
         s->tokens = tokens;
         s->flags = flags;
+        s->idents = idents;
         free(s->got);
         s->got = got;
         s->cap = max_events;
@@ -12271,10 +12278,13 @@ static BRes beans_poll_wait_into_impl(long long poller, long long wake_read,
                                 : calloc((size_t)max_events, sizeof(long long));
     long long* flags = scratch ? scratch->flags
                                : calloc((size_t)max_events, sizeof(long long));
-    if (!tokens || !flags) {
+    long long* idents = scratch ? scratch->idents
+                                : calloc((size_t)max_events, sizeof(long long));
+    if (!tokens || !flags || !idents) {
         if (!scratch) {
             free(tokens);
             free(flags);
+            free(idents);
         }
         return (BRes){0, mk_error("poller wait: out of memory", "io")};
     }
@@ -12294,8 +12304,11 @@ static BRes beans_poll_wait_into_impl(long long poller, long long wake_read,
             scratch ? (struct epoll_event*)scratch->got
                     : calloc((size_t)room, sizeof(struct epoll_event));
         if (!got) {
-            free(tokens);
-            free(flags);
+            if (!scratch) {
+                free(tokens);
+                free(flags);
+                free(idents);
+            }
             return (BRes){0, mk_error("poller wait: out of memory", "io")};
         }
         int n = epoll_wait((int)poller, got, (int)room, budget);
@@ -12306,6 +12319,7 @@ static BRes beans_poll_wait_into_impl(long long poller, long long wake_read,
             if (!scratch) {
                 free(tokens);
                 free(flags);
+                free(idents);
             }
             return (BRes){0, poll_err("poller wait", e)};
         }
@@ -12407,8 +12421,11 @@ static BRes beans_poll_wait_into_impl(long long poller, long long wake_read,
                                  ? (struct kevent*)scratch->got
                                  : calloc((size_t)room, sizeof(struct kevent));
         if (!got) {
-            free(tokens);
-            free(flags);
+            if (!scratch) {
+                free(tokens);
+                free(flags);
+                free(idents);
+            }
             return (BRes){0, mk_error("poller wait: out of memory", "io")};
         }
         struct timespec ts, *wait_for = NULL;
@@ -12425,6 +12442,7 @@ static BRes beans_poll_wait_into_impl(long long poller, long long wake_read,
             if (!scratch) {
                 free(tokens);
                 free(flags);
+                free(idents);
             }
             return (BRes){0, poll_err("poller wait", e)};
         }
@@ -12436,18 +12454,25 @@ static BRes beans_poll_wait_into_impl(long long poller, long long wake_read,
             if (got[i].filter == EVFILT_WRITE) f |= POLL_WRITABLE;
             if (got[i].flags & EV_EOF) f |= POLL_HANGUP;
             if (got[i].flags & EV_ERROR) f |= POLL_ERROR;
-            // kqueue reports read and write as separate events. Merge by the
-            // registration token, not ident(fd): a queued stale event and a new
-            // registration may carry the same reused descriptor number.
+            // kqueue reports read and write as separate events. Merge one
+            // registration's pair by (descriptor, token): the token alone
+            // would fold two descriptors that share a caller token into one
+            // event, and the descriptor alone would fold a queued stale
+            // event into a new registration on the reused number.
+            long long ident = (long long)got[i].ident;
             long long at = -1;
             for (long long j = 0; j < found; j++)
-                if (tokens[j] == token) { at = j; break; }
+                if (tokens[j] == token && idents[j] == ident) {
+                    at = j;
+                    break;
+                }
             if (at >= 0) {
                 flags[at] |= f;
                 continue;
             }
             if (found >= max_events) continue;
             tokens[found] = token;
+            idents[found] = ident;
             flags[found] = f;
             found++;
         }
@@ -12486,6 +12511,7 @@ static BRes beans_poll_wait_into_impl(long long poller, long long wake_read,
     if (!scratch) {
         free(tokens);
         free(flags);
+        free(idents);
     }
 #endif
     return (BRes){found, NULL};
@@ -14518,6 +14544,73 @@ long long beans_chan_recv_typed(BChan* c, void* out) {
     while ((c->count == 0 && !c->closed) || c->recv_head)
         pthread_cond_wait(&c->can_recv, &c->m);
     if (c->count == 0) {
+        pthread_mutex_unlock(&c->m);
+        return 0;
+    }
+    void* source = (char*)c->q + c->head * c->stride;
+    memcpy(out, source, (size_t)c->stride);
+    memset(source, 0, (size_t)c->stride);
+    c->head = (c->head + 1) % c->cap;
+    c->count -= 1;
+    pthread_cond_signal(&c->can_send);
+    pthread_mutex_unlock(&c->m);
+    beans_async_notify();
+    return 1;
+}
+// The try twins: a verdict instead of a wait. Fairness holds — a queued
+// async sender or receiver keeps its place, so a try call reports
+// would-block rather than jumping the FIFO.
+long long beans_chan_try_send(BChan* c, long long v) {
+    pthread_mutex_lock(&c->m);
+    if (c->closed || c->count == c->cap || c->send_head) {
+        pthread_mutex_unlock(&c->m);
+        return 0; // caller still owns v
+    }
+    if (cc_is_mt() && c->ptr_mask)
+        cc_mark_shared_graph((void*)(uintptr_t)v);
+    c->q[(c->head + c->count) % c->cap] = v;
+    c->count += 1;
+    pthread_cond_signal(&c->can_recv);
+    pthread_mutex_unlock(&c->m);
+    beans_async_notify();
+    return 1;
+}
+long long beans_chan_try_send_typed(BChan* c, void* value) {
+    pthread_mutex_lock(&c->m);
+    if (c->closed || c->count == c->cap || c->send_head) {
+        pthread_mutex_unlock(&c->m);
+        return 0;
+    }
+    if (cc_is_mt() && c->ptr_mask)
+        cc_mark_shared_value(value, c->ptr_mask, 0);
+    void* destination =
+        (char*)c->q + ((c->head + c->count) % c->cap) * c->stride;
+    memcpy(destination, value, (size_t)c->stride);
+    c->count += 1;
+    pthread_cond_signal(&c->can_recv);
+    pthread_mutex_unlock(&c->m);
+    beans_async_notify();
+    return 1;
+}
+long long beans_chan_try_recv(BChan* c, long long* ok) {
+    pthread_mutex_lock(&c->m);
+    if (c->count == 0 || c->recv_head) {
+        *ok = 0;
+        pthread_mutex_unlock(&c->m);
+        return 0;
+    }
+    long long v = c->q[c->head];
+    c->head = (c->head + 1) % c->cap;
+    c->count -= 1;
+    *ok = 1;
+    pthread_cond_signal(&c->can_send);
+    pthread_mutex_unlock(&c->m);
+    beans_async_notify();
+    return v;
+}
+long long beans_chan_try_recv_typed(BChan* c, void* out) {
+    pthread_mutex_lock(&c->m);
+    if (c->count == 0 || c->recv_head) {
         pthread_mutex_unlock(&c->m);
         return 0;
     }

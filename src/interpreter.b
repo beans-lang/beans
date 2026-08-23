@@ -7806,6 +7806,13 @@ class TreeInterpreter {
     fn tree_channel_send(
         node: HirNode, receiver: TreeValue,
         value: TreeValue) -> bool {
+        return self.tree_channel_send_wait(
+            node, receiver, value, true)
+    }
+
+    fn tree_channel_send_wait(
+        node: HirNode, receiver: TreeValue,
+        value: TreeValue, blocking: bool) -> bool {
         for {
             var sent: bool = false
             var closed: bool = false
@@ -7843,6 +7850,7 @@ class TreeInterpreter {
                 return true
             }
             if closed { return false }
+            if !blocking { return false }
             match signal {
                 some(waiter) => { waiter.receive() }
                 none => {}
@@ -7852,6 +7860,13 @@ class TreeInterpreter {
 
     fn tree_channel_receive(
         node: HirNode, receiver: TreeValue) -> Option<TreeValue> {
+        return self.tree_channel_receive_wait(
+            node, receiver, true)
+    }
+
+    fn tree_channel_receive_wait(
+        node: HirNode, receiver: TreeValue,
+        blocking: bool) -> Option<TreeValue> {
         for {
             var value: Option<TreeValue> = none
             var done: bool = false
@@ -7888,6 +7903,7 @@ class TreeInterpreter {
                 self.tree_async_notify()
                 return value
             }
+            if !blocking { return none }
             match signal {
                 some(waiter) => { waiter.receive() }
                 none => {}
@@ -8945,6 +8961,13 @@ class TreeInterpreter {
                 receiver.items[slot])
         }
         if receiver.kind == "channel" &&
+           node.value == "try_send" &&
+           arguments.len() == 2 {
+            return TreeValue.boolean(
+                self.tree_channel_send_wait(
+                    node, receiver, arguments[1], false))
+        }
+        if receiver.kind == "channel" &&
            node.value == "send" &&
            arguments.len() == 2 {
             if !self.tree_channel_send(
@@ -8959,7 +8982,8 @@ class TreeInterpreter {
         if receiver.kind == "channel" &&
            (node.value == "receive" ||
             node.value == "try_receive") {
-            match self.tree_channel_receive(node, receiver) {
+            match self.tree_channel_receive_wait(
+                node, receiver, node.value == "receive") {
                 some(value) => {
                     return TreeValue.option_some(value)
                 }

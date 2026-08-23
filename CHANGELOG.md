@@ -13,6 +13,10 @@ This file records user-facing changes in each Beans release.
   provides `try_next`, `next`, `wait_all` and newest-first `cancel_all`.
 - `std.async` adds cooperative `yield_now`, monotonic sleeps and sticky
   cross-thread `Event`. `Channel` adds `send_async` and `receive_async`.
+- `Channel.try_send` and `Channel.try_receive` answer immediately — `false`
+  or `none` — where the blocking forms would wait, and defer to queued async
+  senders and receivers so the FIFO order holds. `try_send` needs a copyable
+  element: a refused move-only value would be lost.
 - `thread.spawn_async` runs a parameterless sendable async closure on a worker
   executor. `Thread.join_async` waits without blocking the caller's executor.
 - Reflection adds `Function.call_async`, `Method.call_async`, and

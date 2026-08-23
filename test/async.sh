@@ -1039,6 +1039,8 @@ DEADLINE=30 run_matrix test/cases/async_channel_races.b \
     test/cases/async_channel_races.out
 DEADLINE=30 run_matrix test/cases/async_channel_typed.b \
     test/cases/async_channel_typed.out
+DEADLINE=30 run_matrix test/cases/async_channel_try.b \
+    test/cases/async_channel_try.out
 DEADLINE=30 run_matrix test/cases/async_channel_closed_send.b \
     test/cases/async_channel_closed_send.out 3
 

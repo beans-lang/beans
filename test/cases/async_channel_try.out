@@ -1,0 +1,7 @@
+empty true
+filled true true false
+drained 1
+closed send false
+closed drain 2
+closed empty true
+handoff true total true
