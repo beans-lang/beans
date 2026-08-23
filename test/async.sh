@@ -341,7 +341,37 @@ async fn main() {
 }
 EOF
 reject_same "$tmp/rej_fn_value.b" \
-    "'work' is async and cannot be stored as a function value"
+    "expected fn() -> int, got async fn() -> int"
+
+cat > "$tmp/rej_async_value_bare.b" <<'EOF'
+async fn work() -> int { return 1 }
+
+async fn main() {
+    let local: async fn() -> int = work
+    local()
+}
+EOF
+reject_same "$tmp/rej_async_value_bare.b" \
+    "async callable invocation must be directly awaited or started by TaskGroup.start"
+
+cat > "$tmp/rej_async_field_bare.b" <<'EOF'
+async fn work() -> int { return 1 }
+
+class Holder {
+    pub callback: async fn() -> int
+
+    pub fn init(callback: async fn() -> int) {
+        self.callback = callback
+    }
+}
+
+async fn main() {
+    let holder: Holder = new Holder(work)
+    holder.callback()
+}
+EOF
+reject_same "$tmp/rej_async_field_bare.b" \
+    "async callable invocation must be directly awaited or started by TaskGroup.start"
 
 cat > "$tmp/rej_bare_arg.b" <<'EOF'
 async fn work() -> int { return 1 }
@@ -431,10 +461,40 @@ unique class Pipe {
     pub async fn read_all() -> int { return self.fd }
 }
 
-fn main() {}
+async fn main() {
+    let pipe: Pipe = new Pipe()
+    async let result: int = pipe.read_all()
+}
 EOF
 reject_same "$tmp/rej_unique.b" \
-    "async instance methods are not available on a unique class"
+    "an async method on unique main.Pipe must be directly awaited on an owned local"
+
+cat > "$tmp/rej_unique_borrowed.b" <<'EOF'
+unique class Pipe {
+    pub async fn read_all() -> int { return 1 }
+}
+
+async fn borrowed(pipe: Pipe) -> int {
+    return await pipe.read_all()
+}
+
+fn main() {}
+EOF
+reject_same "$tmp/rej_unique_borrowed.b" \
+    "async method receiver 'pipe' is borrowed; directly await it on an owned local"
+
+cat > "$tmp/rej_unique_stored.b" <<'EOF'
+unique class Pipe {
+    pub async fn read_all() -> int { return 1 }
+}
+
+async fn main() {
+    let pipes: List<Pipe> = [new Pipe()]
+    let value: int = await pipes[0].read_all()
+}
+EOF
+reject_same "$tmp/rej_unique_stored.b" \
+    "a directly awaited async method on unique main.Pipe needs an owned local receiver"
 
 cat > "$tmp/rej_override_sync.b" <<'EOF'
 class Base {
@@ -600,14 +660,12 @@ reject_same "$tmp/rej_mr_closure.b" \
 
 cat > "$tmp/rej_mr_async_closure.b" <<'EOF'
 async fn main() {
-    let c: fn() -> int = async fn() -> int { return 1 }
+    let c: async fn() -> int = async fn() -> int {
+    }
 }
 EOF
-# there are no async closures: in expression position `async` is only an
-# identifier, so the pair never parses. The parsers recover from the
-# malformed tail differently for any identifier (not an async divergence),
-# so this pins the shared refusal, not the recovery cascade.
-rejects "$tmp/rej_mr_async_closure.b" "expected end of statement"
+reject_same "$tmp/rej_mr_async_closure.b" \
+    "this closure must return int — the body can finish without a return"
 
 cat > "$tmp/rej_mr_sync.b" <<'EOF'
 fn plain() -> int {
@@ -819,6 +877,10 @@ running 2+10
 nested 12
 BEANS
 run_matrix "$tmp/sem_basic.b" "$tmp/sem_basic.expected"
+
+echo "checking async callable values, literals, send literals, and unique receivers"
+run_matrix test/cases/async_callable_value.b \
+    test/cases/async_callable_value.out
 
 echo "checking control flow around awaits"
 cat > "$tmp/sem_control.b" <<'BEANS'

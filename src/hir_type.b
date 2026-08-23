@@ -29,8 +29,9 @@ fn hir_type_key(type: HirType) -> string {
             result =
                 hir_type_key(type.args[type.fn_parameter_count])
         }
-        let prefix: string =
+        var prefix: string =
             if type.fn_sendable { "send " } else { "" }
+        if type.fn_async { prefix = "{prefix}async " }
         return "{prefix}fn({parameters.join(",")})->{result}"
     }
     let name: string = canonical_hir_name(type.name)
@@ -101,6 +102,13 @@ fn hir_function(parameters: List<HirType>,
     return result
 }
 
+fn hir_async_function(parameters: List<HirType>,
+                      result_type: HirType) -> HirType {
+    let result: HirType = hir_function(parameters, result_type)
+    result.fn_async = true
+    return result
+}
+
 fn hir_send_function(parameters: List<HirType>,
                      result_type: HirType) -> HirType {
     let result: HirType = hir_function(parameters, result_type)
@@ -123,7 +131,8 @@ fn hir_type_from_ast(node: AstNode) -> HirType {
     }
     if node.kind == "fn_type" {
         let result: HirType = new HirType("fn")
-        result.fn_sendable = node.value == "send"
+        result.fn_sendable = module_words(node.value).contains("send")
+        result.fn_async = module_words(node.value).contains("async")
         for child: AstNode in node.children {
             result.args.push(hir_type_from_ast(child))
         }

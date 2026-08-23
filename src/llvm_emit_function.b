@@ -552,11 +552,19 @@ partial class LlvmTextEmitter {
                     "@.next.fnref{self.ffi_functions.len()}"
                 self.callback_dispatches[
                     adapter_key] = adapter
-                let result_type: HirType =
+                let source_result: HirType =
                     if count < instruction.type.args.len() {
                         instruction.type.args[count]
                     } else {
                         new HirType("unit")
+                    }
+                let result_type: HirType =
+                    if instruction.type.fn_async {
+                        hir_named(
+                            async_rt_symbol("Task"),
+                            [source_result])
+                    } else {
+                        source_result
                     }
                 let result_llvm: string =
                     self.type_text(result_type)

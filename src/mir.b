@@ -571,7 +571,14 @@ class MirLowerer {
         if type.name == "fn" &&
            type.fn_parameter_count >= 0 &&
            type.fn_parameter_count < type.args.len() {
-            return type.args[type.fn_parameter_count]
+            let source_result: HirType =
+                type.args[type.fn_parameter_count]
+            if type.fn_async {
+                return hir_named(
+                    async_rt_symbol("Task"),
+                    [source_result])
+            }
+            return source_result
         }
         return new HirType("unit")
     }

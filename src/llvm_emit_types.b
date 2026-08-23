@@ -157,6 +157,7 @@ partial class LlvmTextEmitter {
         result.fn_parameter_count =
             type.fn_parameter_count
         result.fn_sendable = type.fn_sendable
+        result.fn_async = type.fn_async
         for argument: HirType in type.args {
             result.args.push(
                 self.substitute_class_type(
@@ -448,6 +449,7 @@ partial class LlvmTextEmitter {
         result.fn_parameter_count =
             type.fn_parameter_count
         result.fn_sendable = type.fn_sendable
+        result.fn_async = type.fn_async
         for argument: HirType in type.args {
             result.args.push(
                 self.substitute_open(
@@ -476,7 +478,8 @@ partial class LlvmTextEmitter {
         if canonical_hir_name(open.name) !=
                canonical_hir_name(concrete.name) ||
            (open.name == "fn" &&
-            open.fn_sendable != concrete.fn_sendable) ||
+            (open.fn_sendable != concrete.fn_sendable ||
+             open.fn_async != concrete.fn_async)) ||
            open.args.len() != concrete.args.len() {
             return false
         }

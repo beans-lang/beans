@@ -68,6 +68,9 @@ import std.os
 //     runtime profiles.
 
 fn ast_contains_await(node: AstNode) -> bool {
+    // A closure owns its own suspension points. Its enclosing async frame
+    // must treat the closure value as an ordinary expression.
+    if node.kind == "closure" { return false }
     if node.kind == "await" { return true }
     for child: AstNode in node.children {
         if ast_contains_await(child) { return true }
@@ -265,6 +268,14 @@ class AsyncExpander {
         if type.name == "fn" {
             let result: AstNode = self.node("fn_type", "", anchor)
             if type.fn_sendable { result.value = "send" }
+            if type.fn_async {
+                result.value =
+                    if result.value == "" {
+                        "async"
+                    } else {
+                        "{result.value} async"
+                    }
+            }
             for argument: HirType in type.args {
                 result.add(self.type_ast(argument, anchor))
             }
@@ -1973,6 +1984,75 @@ class AsyncExpander {
         }
     }
 
+    // Lower async closure literals with the same state-machine builder used
+    // by named async functions. The resulting closure still carries its
+    // source `async fn(...) -> R` type, but its body is a synchronous maker
+    // that returns the hidden Task<R> ABI value.
+    fn expand_async_closures(node: AstNode) -> bool {
+        var changed: bool = false
+        for child: AstNode in node.children {
+            if self.expand_async_closures(child) {
+                changed = true
+            }
+        }
+        if node.kind != "closure" || node.note != "async" {
+            return changed
+        }
+        var source_type: HirType = poison_hir_type()
+        match node.checked {
+            some(checked) => { source_type = checked.type }
+            none => {
+                self.fail(
+                    node,
+                    "internal: async closure was not checked before expansion")
+                return true
+            }
+        }
+        var source_result: HirType = new HirType("unit")
+        if source_type.name == "fn" &&
+           source_type.fn_parameter_count >= 0 &&
+           source_type.fn_parameter_count < source_type.args.len() {
+            source_result = source_type.args[
+                source_type.fn_parameter_count]
+        }
+        let synthetic: HirFunction = new HirFunction(
+            "closure", "async closure", "", false, false,
+            self.function.file, node.line, node.col)
+        synthetic.syntax = node
+        synthetic.result = source_result
+        synthetic.body_result = source_result
+        synthetic.is_async = true
+        synthetic.has_body = true
+        let nested: AsyncExpander =
+            new AsyncExpander(self.signature)
+        nested.expand_function(synthetic)
+        for diagnostic: Diagnostic in nested.errors {
+            self.errors.push(diagnostic)
+        }
+        var maker: Option<AstNode> = none
+        for child: AstNode in synthetic.syntax.children {
+            if child.kind == "block" { maker = some(child) }
+        }
+        match maker {
+            some(body) => {
+                var children: List<AstNode> = []
+                for child: AstNode in node.children {
+                    if child.kind != "block" { children.push(child) }
+                }
+                children.push(body)
+                node.children = move children
+                node.note = "async_expanded"
+                node.checked = none
+            }
+            none => {
+                self.fail(
+                    node,
+                    "internal: async closure expansion produced no maker body")
+            }
+        }
+        return true
+    }
+
     // ---- driving -----------------------------------------------------
 
     fn expand_function(function: HirFunction) {
@@ -2239,6 +2319,16 @@ class AsyncExpander {
 
     fn run() -> bool {
         var any: bool = false
+        var closure_changed: Map<string, bool> = {}
+        for function: HirFunction in self.program.functions {
+            self.function = function
+            if function.has_body &&
+               self.expand_async_closures(function.syntax) {
+                closure_changed[function.qualified] = true
+                function.body = []
+                any = true
+            }
+        }
         for function: HirFunction in self.program.functions {
             if function.is_async && !function.expanded &&
                function.has_body {
@@ -2277,8 +2367,10 @@ class AsyncExpander {
         let recheck: ExpressionChecker =
             new ExpressionChecker(self.signature)
         for function: HirFunction in self.program.functions {
-            if function.is_async && function.expanded &&
-               function.has_body {
+            if function.has_body &&
+               ((function.is_async && function.expanded) ||
+                closure_changed.contains_key(
+                    function.qualified)) {
                 recheck.check_function(function)
             }
         }

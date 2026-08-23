@@ -152,6 +152,7 @@ class TreeInterpreter {
         result.array_length = type.array_length
         result.fn_parameter_count = type.fn_parameter_count
         result.fn_sendable = type.fn_sendable
+        result.fn_async = type.fn_async
         for argument: HirType in type.args {
             result.args.push(self.runtime_type(argument, bindings))
         }

@@ -26,6 +26,10 @@ class HirType {
     // still the same runtime shape, but it owns its captures and may move to
     // one other thread.
     fn_sendable: bool
+    // Asyncness belongs to the callable type. The result in args stays the
+    // source result R; lowering alone changes an invocation to the hidden
+    // async$rt.Task<R> ABI.
+    fn_async: bool
 
     fn init(name: string) {
         self.name = name
@@ -33,6 +37,7 @@ class HirType {
         self.array_length = -1
         self.fn_parameter_count = -1
         self.fn_sendable = false
+        self.fn_async = false
     }
 }
 
@@ -718,7 +723,8 @@ class SignatureChecker {
         }
         if node.kind == "fn_type" {
             let result: HirType = new HirType("fn")
-            result.fn_sendable = node.value == "send"
+            result.fn_sendable = module_words(node.value).contains("send")
+            result.fn_async = module_words(node.value).contains("async")
             for child: AstNode in node.children {
                 result.args.push(self.lower_type(child, file))
             }
@@ -2321,8 +2327,9 @@ fn render_hir_type(type: HirType) -> string {
             result =
                 render_hir_type(type.args[type.fn_parameter_count])
         }
-        let prefix: string =
+        var prefix: string =
             if type.fn_sendable { "send " } else { "" }
+        if type.fn_async { prefix = "{prefix}async " }
         return "{prefix}fn({parts.join(", ")}) -> {result}"
     }
     let shown: string = display_symbol(type.name)

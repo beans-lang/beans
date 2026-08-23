@@ -955,16 +955,36 @@ class Parser {
             return array
         }
         var sendable: bool = false
+        var asynchronous: bool = false
         if self.check("ident") &&
            self.current().text == "send" &&
            self.pos + 1 < self.tokens.len() &&
-           self.tokens[self.pos + 1].kind == "fn" {
+           (self.tokens[self.pos + 1].kind == "fn" ||
+            (self.tokens[self.pos + 1].kind == "ident" &&
+             self.tokens[self.pos + 1].text == "async" &&
+             self.pos + 2 < self.tokens.len() &&
+             self.tokens[self.pos + 2].kind == "fn")) {
             self.advance()
             sendable = true
+        }
+        if self.check("ident") &&
+           self.current().text == "async" &&
+           self.pos + 1 < self.tokens.len() &&
+           self.tokens[self.pos + 1].kind == "fn" {
+            self.advance()
+            asynchronous = true
         }
         if self.match_token("fn") {
             let function: AstNode = self.node("fn_type", "", start)
             if sendable { function.value = "send" }
+            if asynchronous {
+                function.value =
+                    if function.value == "" {
+                        "async"
+                    } else {
+                        "{function.value} async"
+                    }
+            }
             self.expect("(", "expected '('")
             self.skip_newlines()
             for !self.check(")") && !self.at_end() {
@@ -1276,6 +1296,34 @@ class Parser {
             self.expect("(", "expected '('")
             self.parse_arguments(result)
             return self.parse_postfix(result)
+        }
+        if self.check("ident") &&
+           self.current().text == "async" &&
+           self.pos + 1 < self.tokens.len() &&
+           self.tokens[self.pos + 1].kind == "fn" {
+            self.advance()
+            let saved_async: bool = self.in_async
+            self.in_async = true
+            let closure: AstNode = self.parse_closure_expression()
+            self.in_async = saved_async
+            closure.note = "async"
+            return closure
+        }
+        if self.check("ident") &&
+           self.current().text == "send" &&
+           self.pos + 2 < self.tokens.len() &&
+           self.tokens[self.pos + 1].kind == "ident" &&
+           self.tokens[self.pos + 1].text == "async" &&
+           self.tokens[self.pos + 2].kind == "fn" {
+            self.advance()
+            self.advance()
+            let saved_async: bool = self.in_async
+            self.in_async = true
+            let closure: AstNode = self.parse_closure_expression()
+            self.in_async = saved_async
+            closure.note = "async"
+            closure.value = "send"
+            return closure
         }
         if self.check("fn") {
             return self.parse_closure_expression()
