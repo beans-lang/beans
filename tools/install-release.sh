@@ -251,17 +251,41 @@ fi
 note "checksum verified"
 
 # ------------------------------------------------------- unpack and validate
+# Windows packages are .zip; everywhere else ships .tar.gz. GNU tar (Git
+# Bash's tar) does not read zip archives, so each format gets its own tool.
 mkdir "$work/stage"
-tar xzf "$work/$asset" -C "$work/stage" ||
-    die "cannot unpack $asset; nothing was installed"
+case $asset in
+    *.zip)
+        if command -v unzip >/dev/null 2>&1; then
+            unzip -q "$work/$asset" -d "$work/stage" ||
+                die "cannot unpack $asset; nothing was installed"
+        else
+            # bsdtar reads zip; plain GNU tar does not and says so.
+            tar xf "$work/$asset" -C "$work/stage" ||
+                die "cannot unpack $asset (no unzip, and this tar does not read zip); nothing was installed"
+        fi
+        ;;
+    *)
+        tar xzf "$work/$asset" -C "$work/stage" ||
+            die "cannot unpack $asset; nothing was installed"
+        ;;
+esac
 unpacked=$(find "$work/stage" -mindepth 1 -maxdepth 1 -type d | head -1)
 [ -n "$unpacked" ] || die "$asset does not contain a package directory"
-[ -x "$unpacked/bin/beansc" ] ||
+# A Windows package launches through bin/beansc.cmd; everywhere else the
+# launcher is bin/beansc. Git Bash and MSYS run a .cmd directly.
+launcher=
+if [ -x "$unpacked/bin/beansc" ]; then
+    launcher="$unpacked/bin/beansc"
+elif [ -f "$unpacked/bin/beansc.cmd" ]; then
+    launcher="$unpacked/bin/beansc.cmd"
+else
     die "$asset has no bin/beansc; nothing was installed"
+fi
 
 # The staged compiler has to answer before anything is moved into place, so a
 # corrupt or wrong-architecture download can never replace a working install.
-staged_version=$("$unpacked/bin/beansc" --version 2>/dev/null) ||
+staged_version=$("$launcher" --version 2>/dev/null) ||
     die "the downloaded compiler does not run on this machine ($machine); nothing was installed"
 note "staged $staged_version"
 
@@ -332,6 +356,7 @@ say ""
 say "    $line"
 say ""
 
-PATH="$bin_dir:$PATH" "$prefix/bin/beansc" --version ||
+launcher_name=$(basename "$launcher")
+PATH="$bin_dir:$PATH" "$prefix/bin/$launcher_name" --version ||
     die "the installed compiler did not run"
 note "run 'beansc doctor' to see what this installation can build"
