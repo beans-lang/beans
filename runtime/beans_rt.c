@@ -1018,6 +1018,12 @@ static int cc_collecting;
 // Plain int on purpose: the __atomic_* builtins below want an unqualified
 // object, the way beans_in_deinit is accessed.
 static int cc_sweeping;
+// Workers walking their local candidate graphs right now. A parked
+// candidate keeps its fields for the re-trace, so it may still carry an
+// edge to a shared husk another thread is about to free — the sweeper
+// and the walkers exclude each other (seq-cst on both sides, so the
+// store-buffer interleaving where each misses the other cannot happen).
+static int cc_worker_walkers;
 static void cc_collect(int force);
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
 static void cc_worker_collect(void);
@@ -1743,7 +1749,13 @@ static int cc_shared_boundary(BHead* h) {
 // keeps worker threads alive — every threaded server — could never reclaim
 // husks, because cc_collect waits for cc_threads to reach zero.
 static void cc_sweep_husks(void) {
-    if (__atomic_exchange_n(&cc_sweeping, 1, __ATOMIC_ACQ_REL)) return;
+    if (__atomic_exchange_n(&cc_sweeping, 1, __ATOMIC_SEQ_CST)) return;
+    if (__atomic_load_n(&cc_worker_walkers, __ATOMIC_SEQ_CST) != 0) {
+        // a worker's trial walk may hold stale edges into the husk set;
+        // skip this sweep, the next root append re-arms it
+        __atomic_store_n(&cc_sweeping, 0, __ATOMIC_RELEASE);
+        return;
+    }
     void* local[64];
     CCStack deferred = {local, 0, 64, local};
     CC_LOCK();
@@ -2600,6 +2612,12 @@ static long long cc_walk_min = 256; // adaptive gate for trial deletion
 static void cc_worker_collect(void) {
     if (!cc_worker_root_batching || cc_worker_collecting) return;
     if (beans_local_in_deinit) return;
+    __atomic_add_fetch(&cc_worker_walkers, 1, __ATOMIC_SEQ_CST);
+    if (__atomic_load_n(&cc_sweeping, __ATOMIC_SEQ_CST)) {
+        // the sweeper is mid-free; try again at the next allocation
+        __atomic_sub_fetch(&cc_worker_walkers, 1, __ATOMIC_SEQ_CST);
+        return;
+    }
     cc_worker_collecting = 1;
     {
         ARC_ADD(arc_collections, 1);
@@ -2716,6 +2734,7 @@ static void cc_worker_collect(void) {
         if (deferred.v != dlocal) rt_free(deferred.v);
     }
     cc_worker_collecting = 0;
+    __atomic_sub_fetch(&cc_worker_walkers, 1, __ATOMIC_SEQ_CST);
 }
 #endif
 
