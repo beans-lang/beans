@@ -37,6 +37,13 @@ This file records user-facing changes in each Beans release.
 
 ### Fixed
 
+- The shell installer handles Windows packages: a `.zip` asset unpacks
+  with `unzip` (GNU tar reads only the tarball, and Git Bash ships GNU
+  tar), and the layout and post-install checks accept the
+  `bin/beansc.cmd` launcher Windows packages ship. Found installing
+  0.1.28 on a Windows CI runner for the shelf libraries.
+  `test/install_release.sh` re-archives the host package as a zip with a
+  `.cmd` launcher and installs it.
 - Every bindgen skip comment now names the declaration it dropped. A
   type-mapping refusal used to surface as a bare `// skipped: flexible
   arrays are unsupported`, leaving the reader of a large header to find
