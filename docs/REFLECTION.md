@@ -1,6 +1,7 @@
 # Beans reflection
 
-Status: implemented contract and verification list.
+Status: sync calls and async callable metadata are implemented. Async reflected
+calls are part of the async v2 contract and are not implemented yet.
 
 Reflection is typed runtime metadata. It lets a program inspect Beans types,
 annotations, fields, enum variants, functions, methods, and initializers. It
@@ -65,15 +66,47 @@ let restored: List<int> =
     (move owned as? List<int>).expect("List<int>")
 ```
 
-`Field.get`, `Field.set`, `Method.call`, `Function.call`, `Initializer.call`,
-and `Variant.make` return `Result` for unknown receivers, bad argument counts,
-bad argument types, inaccessible members, unsupported signatures, and errors
-reported by the called operation. A reflected call cannot expose `deinit`.
+`Field.get`, `Field.set`, `Method.call`, `Method.call_static`, `Function.call`,
+`Initializer.call`, and `Variant.make` return `Result` for unknown receivers,
+bad argument counts, bad argument types, inaccessible members, unsupported
+signatures, and errors reported by the called operation. A reflected call
+cannot expose `deinit`.
 
-Open generic declarations have metadata but cannot be called. The first
-runtime version also rejects reflected calls to async, `extern`, variadic, and
-`inout` signatures. Those forms need a separate execution design; silently
-calling them with the wrong ownership or ABI would be unsafe.
+Open generic declarations have metadata but cannot be called. The sync call
+methods reject async, `extern`, variadic, and `inout` signatures. They never
+start hidden async work.
+
+## Async callable metadata and calls
+
+Reflection preserves the source type. `Type.qualified_name()` renders
+`async fn(A) -> T` and `send async fn(A) -> T`, and their kind is
+`function_type`. Field, parameter, and result descriptors keep those types.
+`Function.is_async()` and `Method.is_async()` report the call effect. No
+descriptor exposes the compiler's hidden task ABI.
+
+Async v2 keeps execution explicit with separate APIs:
+
+```beans
+let value: Result<reflect.Value, reflect.ReflectError> =
+    await function.call_async(move function_arguments)
+
+let result: Result<reflect.Value, reflect.ReflectError> =
+    await method.call_async(receiver, move method_arguments)
+
+let static_result: Result<reflect.Value, reflect.ReflectError> =
+    await method.call_static_async(move static_arguments)
+```
+
+`Function.call_async`, `Method.call_async`, and `Method.call_static_async` are
+themselves async and return the target's final boxed result. They accept only
+async targets. The existing sync call methods accept only sync targets. Using
+the wrong half returns the stable `unsupported` reflection error; it never
+converts an async call into a sync one. Initializers cannot be async, so
+`Initializer` has no async call method.
+
+The split APIs are the contract, but are not implemented yet. Until they are,
+async declarations can be inspected but every reflected attempt to execute one
+is rejected.
 
 ## Runtime annotations
 
@@ -134,6 +167,10 @@ public. Union construction and overlapping field access stay unsupported.
       instance methods, virtual methods, and initializers.
 - [x] Reject `deinit`, open generic, async, extern, variadic, and `inout` calls
       with stable reflection error kinds.
+- [x] Preserve `async fn` and `send async fn` names, kinds, parameters and
+      results in runtime metadata.
+- [ ] Add `Function.call_async`, `Method.call_async`, and
+      `Method.call_static_async` without exposing the hidden task ABI.
 - [x] Support all operations in both tree interpreters and both LLVM emitters.
 - [x] Cover ownership, inheritance, overrides, visibility, generics,
       annotations, containers, enums, bad arguments, and unsupported calls.

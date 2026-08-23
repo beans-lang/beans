@@ -4,6 +4,30 @@ This file records user-facing changes in each Beans release.
 
 ## Unreleased
 
+### Added
+
+- Async functions are first-class `async fn` values. Async closure literals,
+  `send async fn` closures, fields, collections, parameters, results and
+  generic storage keep the async call effect in their type.
+- `std.async.TaskGroup<T>` starts a dynamic, scope-bound set of async calls and
+  provides `try_next`, `next`, `wait_all` and newest-first `cancel_all`.
+- `std.async` adds cooperative `yield_now`, monotonic sleeps and sticky
+  cross-thread `Event`. `Channel` adds `send_async` and `receive_async`.
+- `thread.spawn_async` runs a parameterless sendable async closure on a worker
+  executor. `Thread.join_async` waits without blocking the caller's executor.
+
+### Changed
+
+- Async source calls keep their declared result type. The task record is now a
+  compiler-only ABI detail; there is no public task, future, polling protocol,
+  detach, `block_on`, or C ABI conversion.
+- Async methods on unique classes are allowed through a direct await on an
+  owned local receiver. Other forms remain rejected so the unique borrow
+  cannot escape across suspension.
+- Reflection metadata now preserves `async fn` and `send async fn` callable
+  names, kinds, parameter types and result types. Reflected execution still
+  rejects async targets until the separate async call APIs are implemented.
+
 ## [0.1.29] - 2026-08-23
 
 ### Added

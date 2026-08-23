@@ -203,17 +203,26 @@ not part of the hosted 1.0 production promise.
   today requests are intentionally processed in order.
 - [ ] Expand editor clients without moving semantic logic out of the compiler.
 
-### P4 — async v2, language design after the 1.0 gate
+### P4 — async v2 after the 1.0 gate
 
 Espresso's `respond_later` plus `WorkerPool` covers blocking handlers today;
 async v2 is the language ending that makes that deferral an implementation
-detail behind async handlers. This is a design effort, not a checklist item,
-and nothing in it blocks the 1.0 gate.
+detail behind async handlers. Nothing here blocks the 1.0 gate.
 
-- [ ] Async closures: async function values that can be stored in fields,
-  passed as parameters and called through variables.
-- [ ] Dynamic task groups beyond lexical `async let` children.
-- [ ] Lift the 64-parked-await-per-executor limit.
+- [x] Add first-class `async fn` and `send async fn` callable types, closure
+  literals, storage and indirect calls, while keeping the task ABI hidden.
+- [x] Allow async methods on unique receivers only through a direct await on
+  an owned local, and keep async callable types out of the C ABI.
+- [x] Add scope-bound `TaskGroup<T>` with dynamic starts, completion-order
+  takes, spawn-order drains, newest-first cancellation and reuse.
+- [x] Add the runnable scheduler state, `yield_now`, monotonic timers, sticky
+  cross-thread `Event`, and non-blocking channel waits.
+- [x] Add `thread.spawn_async` and directly awaited `Thread.join_async` without
+  adding detach or sync-to-async escape hatches.
+- [ ] Unlimited parked readiness with an indexed owner/descriptor/stable-token
+  registry; 64 is only an internal wake batch.
+- [ ] Split reflection execution into sync `call` and async `call_async` APIs;
+  never expose the hidden task ABI through `Value`.
 - [ ] A shared-graph cycle design that does not require all workers to drain
   (shares its fate with the P1 shared-boundary item).
 

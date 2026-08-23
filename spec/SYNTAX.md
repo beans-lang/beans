@@ -55,8 +55,11 @@ stable across builds or shared-library boundaries.
 
 Reflection does not bypass Beans rules. Private members stay inaccessible.
 Field writes, calls, construction, and enum creation check receiver types,
-argument types, argument counts, moves, and visibility. `deinit`, open generic,
-async, extern, variadic, and `inout` calls are not reflective call targets.
+argument types, argument counts, moves, and visibility. Async callable types
+keep their `async fn` or `send async fn` spelling in metadata. The current sync
+call APIs reject async targets; async v2 reserves separate `call_async` methods
+that return the completed `Value` without exposing the hidden task ABI.
+`deinit`, open generic, extern, variadic, and `inout` calls remain unsupported.
 There is no `setAccessible`, proxy generation, stack inspection, class loader,
 or raw-memory escape.
 
@@ -1632,175 +1635,156 @@ hits.add(1)
 - `Thread<T>` has no public detach operation. Dropping a handle does not stop
   its worker; the runtime reaps the OS thread and drops any late result.
 
-### async and await (v0.9, first version implemented)
+### async and await (v2 contract)
 
-Asyncness is an **effect on the callable**, not a type. `async fn f() -> R`
-declares a function whose calls must be waited on; the call still has type
-`R`. There is no public task, future, executor, or polling protocol — the
-compiler and runtime schedule everything behind the scenes, on the one
-thread that entered `main`. `thread.spawn` stays the tool for CPU-heavy or
-blocking work.
+Asyncness is part of a callable's type and call effect. A declaration
+`async fn f() -> T` has callable type `async fn() -> T`; its source call still
+produces `T`. The compiler lowers the call to a cold internal task, but that
+ABI type is not part of the language or standard library.
 
 ```beans
+import std.async as aio
 import std.io
 
-async fn double_later(a: int) -> int {
-    return a * 2
+async fn double_later(value: int) -> int {
+    await aio.yield_now()
+    return value * 2
 }
 
-async fn fetch_size(a: int) -> Result<int> {
-    let doubled: int = await double_later(a)   // doubled: int
-    return ok(doubled)
+async fn apply(work: async fn(int) -> int, value: int) -> int {
+    return await work(value)
 }
 
 async fn main() {
-    let n: Result<int> = await fetch_size(21)
-    io.println("{n.or(-1)}")
+    let work: async fn(int) -> int = double_later
+    let group: aio.TaskGroup<int> = new aio.TaskGroup<int>()
+    group.start(work(20))
+    group.start(work(21))
+    let values: List<int> = await group.wait_all()
+    for value: int in values {
+        io.println("{value}")
+    }
 }
 ```
 
-- **`async` and `await` are not keywords.** `async` means something only
-  immediately before `fn` — at the top level, in class and enum bodies, and
-  in interfaces — and `await` only inside an async body. Everywhere else
-  both stay ordinary identifiers, so existing functions, locals, fields, and
-  methods by those names keep working, as do user classes named `Task` or
-  `Future`.
-- **Every async call is waited on, exactly where it happens.** A call to an
-  async function is legal in two positions only: directly under `await`, or
-  as the initializer of an `async let`. Anywhere else — bare statement,
-  argument, receiver, stored into a variable — it is refused: *async call
-  must be awaited or started with 'async let'*. A synchronous function
-  cannot call an async one at all (*'f' is async and can only be called
-  from an async function*), and an async function cannot be stored as a
-  `fn` value. There is no run/block_on escape hatch back into sync code.
-- **`async let` starts a structured child.** `async let x: R = f(args)` is
-  legal only inside an async body; the initializer must be a direct async
-  call, the arguments evaluate right there in the parent, and the child
-  belongs to the enclosing lexical scope. The written type is the eventual
-  result: `await x` produces `R`, exactly once — a plain read is refused
-  (*async let binding 'x' must be awaited*), so the hidden handle can
-  never escape, and a second await is refused (*was already awaited*).
-  Leaving the scope without awaiting — early `return`, `?`, `break`,
-  `continue`, or falling off the end — cancels the unfinished child
-  before the parent's own result lands: its armed `defer`s run newest
-  first, then everything its body still held drops, last created first —
-  the order plain locals drop in — and children it started cancel in
-  cascade the same way. The parent never finishes while a child is still
-  running or cleaning.
-- **When children run.** The child is registered the moment the
-  `async let` executes, and its body first runs at the earlier of two
-  points: its own `await`, or the parent's next suspension. Every time a
-  frame is about to report pending — its awaited call parked or still
-  working — it first gives each of its live children one poll, first
-  declared first, and that full pass repeats on every re-poll, so a
-  busy or repeatedly waking child cannot starve its siblings. A child's
-  own suspensions reach its children the same way, so scheduling depth
-  follows the task tree and nothing else. Between suspension points a
-  task runs synchronously and uninterrupted; there is no preemption and
-  no `yield`.
-- **`await` takes a direct call and produces the declared result.** The
-  operand must be a call to an async function: `await f(x)` has type `R`,
-  awaiting anything else is refused (*await needs a direct call to an async
-  function*; a sync call gets *this call is synchronous*). `await` binds
-  tighter than every binary operator and looser than call, field, and
-  index. `?` and `as` are the exception: they apply to the value the await
-  produced — `await f(x)?` unwraps the awaited `Result` — so error
-  propagation reads without parentheses.
-- **`async fn main()` drives itself.** Declare the entry point async — no
-  parameters, no type parameters, no result, same as ever — and a hidden
-  single-threaded executor drives the body to completion. Nothing to
-  import, nothing to call. A synchronous `fn main()` stays exactly as it
-  was; it just cannot call async functions.
-- **Checking uses the declared result.** `return`, `?`, and missing-return
-  analysis in an async body use `R`. Overrides and interface
-  implementations must match asyncness — a sync method never silently
-  satisfies an async declaration or the other way around. `Result`,
-  `Option`, generics, methods, and move-only values all work across
-  suspension points.
-- **Cleanup stays synchronous and exact.** `await` is refused inside
-  `defer` and inside closures; `init` and `deinit` cannot be async. A
-  `defer` armed before a suspension survives any number of them and runs
-  exactly once — on return, on `?` propagation, and on cancellation when
-  a scope's unfinished children are torn down. A completed child's
-  locals drop at its completion; a cancelled child's drop during the
-  cancellation, armed defers first, then values last-created-first. A
-  panic inside an async body stops the program with the original source
-  position, like every other panic; defers do not run on a panic (the
-  base rule). A panic inside a never-awaited child surfaces when the
-  scheduler first polls it — at the parent's next suspension.
-- **What an async fn cannot do:** take `inout` parameters, be
-  `extern "C"` (wrap the C call in an async Beans function instead), be
-  `feature`-gated, or be an instance method on a `unique class` (statics
-  are fine). The `inout` and unique-receiver rules share one honest
-  reason: the body lowers to closures that outlive the call, and a
-  closure cannot capture an `inout` parameter or keep a move-only
-  receiver borrowed past the call that lent it. A **directly awaited**
-  call could hold such a borrow safely — the caller is suspended for the
-  child's whole life — but an `async let` child runs beside its caller
-  and could not, and one lowering serves both call forms, so the
-  declaration is refused rather than the call. Pass the value in and
-  return the new one. `await` cannot sit inside string interpolation —
-  bind the value to a local first — and cannot suspend while a `for`
+- **Contextual syntax.** `async` is special immediately before a function
+  declaration, function type, or closure literal. `await` is special only in
+  an async body. Everywhere else they remain ordinary identifiers. An async
+  closure may itself await; a synchronous closure nested in an async body may
+  not.
+- **First-class async callables.** Named async functions and async closure
+  literals may be stored in fields and collections, passed, returned, and used
+  through generics. `async fn(A) -> T` and `fn(A) -> T` are different types.
+  `send async fn(A) -> T` is the sendable form. Its closure captures follow the
+  normal `Send` and explicit-move rules; a named function captures nothing and
+  can satisfy the sendable form.
+- **Source result, hidden ABI.** `return`, `?`, missing-return checking,
+  overrides, interface matching, reflection metadata, and the type of an
+  awaited call all use the declared `T`. Lowering uses a hidden, move-only,
+  single-use task record with poll, take, and cancel parts. Source cannot name,
+  store, return, poll, or convert that record. There is no public `Task`,
+  `Future`, executor protocol, `detach`, `block_on`, or other sync escape hatch.
+  Async callable types cannot cross the C ABI, including through extern
+  records, `CFunctionPtr`, `StoredCallback`, or `LocalStoredCallback`; wrap a
+  synchronous C call inside an async Beans function instead.
+- **Exact call positions.** In an async body, an async call is legal only as
+  the exact operand of `await`, the initializer of `async let`, or the one call
+  passed to `TaskGroup.start`. The allowance does not cover another async call
+  nested in its arguments or receiver. A sync body cannot call an async
+  callable. `await f(args)` produces `T`; awaiting a sync call or a non-call is
+  an error. `await` binds tighter than binary operators and looser than call,
+  field, and index. `await f()?` and `await f() as U` apply `?` or `as` to the
+  completed value.
+- **Lexical children.** `async let child: T = f(args)` evaluates the arguments
+  now and starts one cold child in the current lexical scope. Only
+  `await child` may read it, exactly once. A scope exit cancels an unfinished
+  child before the parent completes. Armed defers run newest-first, live values
+  drop last-created-first, and nested children cancel in cascade.
+- **Dynamic task groups.** `std.async.TaskGroup<T>` owns any number of children
+  with the same result type without exposing task handles. It is a scope-bound
+  unique value: construct it only in an async callable as a direct
+  `let group = new TaskGroup<T>()`. It cannot be nested in another type, stored
+  in a field, passed, returned, captured, or moved. `group.start(call())` must
+  be a direct expression statement on that local and must contain one exact
+  async call returning `T`. Arguments are evaluated and captured at `start`;
+  the child does not run inline.
+- **Task-group results.** `try_next()` first returns a queued completion; if
+  none is queued, it polls each active member once and returns one completion
+  or `none`. `none` does not mean the group is empty. `await next()` returns the
+  next completion, using spawn order when one pass completes several members,
+  or `none` when the group is empty. `await wait_all()` waits for every current
+  member and returns all unconsumed values in spawn order. Taken rows are
+  reclaimed. `wait_all` and `cancel_all` leave the group empty and reusable.
+  `cancel_all`, scope exit, and drop cancel active members newest-first and
+  drop any queued values.
+- **Cooperative scheduling has three states.** A hidden poll returns blocked,
+  ready, or runnable. Runnable means the driver starts another full task-tree
+  pass without sleeping. Each pass polls live lexical children in declaration
+  order and each task-group member in spawn order, once each. This keeps a busy
+  child from starving its siblings. `await std.async.yield_now()` reports
+  runnable once, gives every runnable task one turn, then completes. Between
+  awaits a task runs synchronously and without preemption on its executor
+  thread; CPU-heavy or blocking work belongs on `std.thread`.
+- **Entry and cleanup.** `async fn main()` has the usual entry-point shape and
+  is driven to completion by a hidden executor. A sync `main` remains valid but
+  cannot enter async code. Cancellation takes effect at a suspension point,
+  never in the middle of a statement. Defers survive suspension and run once on
+  normal completion, `?` propagation, or cancellation. Panics keep Beans'
+  normal no-unwind rule and surface at the poll site with the source position.
+- **Declaration and borrow limits.** `init`, `deinit`, `extern "C"`,
+  feature-gated functions, and functions with `inout` parameters cannot be
+  async. An async instance method on a `unique class` is allowed only when the
+  call is directly awaited on an owned local receiver, or on stable `self`
+  inside its own async method. It cannot be put in `async let` or a task group,
+  called on a borrowed parameter, or called through a field or index. The
+  direct await holds the unique borrow for the whole suspension. `await` also
+  cannot appear in `defer` or string interpolation, or suspend while a `for`
   element or `match` payload borrows a move-only value.
-- **Scheduling is hidden and cooperative.** An async call suspends only at
-  `await` points; between them it runs synchronously on the executor's one
-  thread. Long CPU work therefore blocks every other task — put it on
-  `std.thread`. Cancellation is cooperative: it takes effect at suspension
-  points, never mid-statement.
-- **Readiness awaits.** `await net.readable(handle)` (and
-  `writable`) suspends until the descriptor is ready — a socket's
-  `.poll_handle()`, or any pollable descriptor on POSIX (Windows readiness is
-  socket-handle only). Before the hidden reactor opens, POSIX validates with
-  allocation-free `fcntl(F_GETFD)` and Windows with `getsockopt(SO_TYPE)`.
-  An invalid watched number therefore cannot be reused for the reactor's own
-  poller or wake channel. While one child is parked,
-  its runnable siblings keep running through the scan above; when
-  nothing can move and something is parked, the hidden driver blocks in
-  the platform poller — never a busy spin — and the OS wakes it. When
-  nothing can move and nothing is parked, the program stops with *async
-  deadlock: every task is waiting and none is parked on readiness*.
-  Level-triggered: already-ready completes on the spot. A readiness that
-  can never come does not hang: an await on a closed or invalid
-  descriptor finishes with `false`, including a descriptor closed while
-  the await was parked. Two awaits parked on one descriptor at the same
-  time are refused with a panic — the poller keys registration by
-  descriptor, so the second would silently cancel the first; await the
-  first before starting the second (sequential re-parks on one
-  descriptor are fine). At most 64 awaits can be parked per executor. When
-  `async fn main` finishes, the hidden poller closes and its state
-  resets, so a full run leaves no descriptor behind.
-- **Closing a watched descriptor.** Every close that goes through the
-  runtime — a stream's `close()`, a drop of the owning handle, files,
-  mappings, process streams, signal sources — marks every await parked on
-  that descriptor, even when the close runs on another thread, on every
-  platform including Windows. Park entries live in a locked shared registry,
-  carry a stable token, and point at the owning reactor only through its
-  generation-checked wake handle. The close marks under the registry lock,
-  then wakes after unlocking; reactor shutdown makes any late copied handle
-  stale rather than letting it address a reused descriptor. The marked await
-  finishes `false` on its next turn without touching the descriptor
-  number again, so the number is immediately safe to reuse: a fresh
-  await parked on the reused number watches only the new resource, and
-  the old await can neither wake off it nor block it. A close performed
-  *outside* the runtime (raw extern C code) is caught on POSIX only
-  while the number stays unused, and cannot be told apart from a live
-  descriptor once the number is reused — close through the handle, not
-  behind it. The same borrow rule guards the other direction: a
-  `.poll_handle()` number is borrowed, so closing the handle and reusing the
-  number *before* a child that holds the number first suspends means
-  that child watches whatever the number means by then.
-- **Runtime profiles.** Pure-compute async — `async fn`, `await`,
-  `async let`, cancellation — builds and runs under every runtime
-  profile, `minimal` and `freestanding` included: a program that never
-  imports `std.net` gets an async runtime with no poller in it, and its
-  binary carries no polling or socket code. Readiness awaits ride
-  `std.net`, which needs the full profile; under a smaller profile that
-  import is refused at check time, naming the capability. A pure async
-  program that somehow ends up pending reports the async deadlock above
-  rather than reaching for a poller it does not have.
-- **Not yet in this first version:** dynamic task groups, async closures,
-  `inout` on a directly awaited call. They layer on this
-  model without changing it.
+- **Timers and events.** `await std.async.sleep_millis(ms)` waits without
+  blocking the executor; non-positive durations complete immediately.
+  `sleep_until(deadline)` uses a `std.time.monotonic_nanos()` deadline.
+  `std.async.Event` is a sticky `Send + Sync` signal: `set()` is safe from
+  another thread, repeated sets do nothing, and every current or future
+  `wait()` completes after the first set. Cancelling a timer or event wait
+  removes that wait cleanly; it does not reset an event.
+- **Async channels.** `await channel.send_async(value)` and
+  `await channel.receive_async()` use the same bounded FIFO and close rules as
+  `send` and `receive` without blocking the executor thread. A closed send
+  panics; a closed receive drains buffered values then returns `none`.
+  Cancellation removes only that waiter and does not lose or duplicate a
+  value. The value type must be `Send`.
+- **Async worker threads.** `thread.spawn_async` takes one parameterless
+  `send async fn() -> T` closure and runs a fresh executor on an OS thread; `T`
+  must be `Send`. `await worker.join_async()` returns `Result<T>` and is legal
+  only as a direct await on an owned local `Thread<T>`. It cannot be put in
+  `async let` or a task group. Cancelling the join wait does not cancel the
+  worker. A second join reports a closed error. Dropping an unjoined handle
+  leaves the worker running; the runtime reaps it and drops its late result.
+  There is no detach operation.
+- **Readiness parking.** `await net.readable(handle)` and `writable` are
+  level-triggered and use the hidden platform reactor. An already-ready handle
+  completes immediately. A closed or invalid handle returns `false`. One
+  executor cannot park two readiness waits on the same live descriptor at
+  once. Park entries are dynamic and indexed by executor owner and descriptor,
+  with a separate stable token for each lifetime. A runtime close marks that
+  token dead and wakes its owner, even across threads. The old wait then
+  finishes `false` without touching a reused descriptor number. There is no
+  64-park limit; 64 is only the maximum wake batch taken from the poller in one
+  driver step. When no task is runnable, the driver blocks on its timer,
+  event, channel, thread, or readiness source. Pending with no possible wake is
+  an async deadlock, not a busy spin.
+- **Raw closes and profiles.** A close behind the runtime through raw C cannot
+  be distinguished from descriptor reuse; close through the owning Beans
+  handle. Pure compute async, task groups, events, and `yield_now` have no
+  poller dependency. Timers need at least the `minimal` clock runtime, async
+  channels and worker threads need the `minimal` thread runtime, and readiness
+  waits through `std.net` need `full`. Unsupported profiles fail at check time.
+- **Reflection keeps the effect visible.** Metadata renders `async fn` and
+  `send async fn` types as written. Sync `Function.call`, `Method.call`, and
+  `Method.call_static` never run an async target. The v2 reflection design adds
+  separate async call methods that await the target and return its final
+  `Value`; it never reflects or returns the hidden task ABI. See
+  [`docs/REFLECTION.md`](../docs/REFLECTION.md) for its implementation status.
 
 ## Targets and the build (v0.8, implemented)
 
@@ -3326,17 +3310,14 @@ declares one, so `package` stays usable as an ordinary identifier.
   millisecond clocks moved to `std.time` beside the nanosecond forms, where
   their names name their clock. Internal `beans_*` runtime symbols keep their
   old spellings: they are an ABI, not a public API.
-- async/await v0.9 (first version implemented): contextual words, never
-  keywords, so every existing use of the names keeps parsing; the declared
-  type is the body's, a call gets `std.async.Task` of it, and the split never
-  leaks into `return` or `?`; a task is a cold, single-use, move-only value
-  whose drop cancels it — armed defers newest-first, then every live value
-  exactly once, children in cascade; a task panic stops the program at the
-  poll site because panics never unwind in Beans; the poll/take/cancel
-  closure triple is the public awaitable protocol and the compiler's own
-  lowering target — the expander rewrites an async body into a synchronous
-  maker over ordinary closures, so both executors, the ownership passes, and
-  the verifiers run unchanged
+- async/await v2 contract: `async fn` and `send async fn` are first-class
+  callable types while source calls keep the declared result; the cold
+  poll/take/cancel record is compiler-only, never a public task or future;
+  exact `await`, lexical `async let`, and scope-bound `TaskGroup` are the only
+  ways to run a local async call; runnable passes, yield, timers, events,
+  channels and async worker-thread joins share the cooperative driver; async
+  reflection uses separate call APIs rather than erasing the effect. Completed
+  and remaining implementation work is tracked in `ROADMAP.md`
 - Layout introspection v0.8 (implemented): `size_of(T)`, `align_of(T)` and
   `offset_of(T, field)` as contextual forms taking a type, folded to constants
   of the selected target; class and interface references report one pointer;
