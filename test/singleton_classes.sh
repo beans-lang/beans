@@ -12,6 +12,13 @@ trap 'rm -rf "$tmp"' EXIT
 diff -u test/cases/singleton_ok.out "$tmp/interp"
 diff -u test/cases/singleton_ok.out "$tmp/native.out"
 
+# a singleton cannot be extended, so its methods devirtualize: the module
+# must carry no descriptor loads or dispatch switches for these calls
+if grep -q 'devirt\.' build/singleton_ok.ll; then
+    echo "singleton method calls still dispatch dynamically" >&2
+    exit 1
+fi
+
 if ./build/beansc check test/cases/singleton_new_bad.b \
     >"$tmp/new" 2>&1; then
     echo "singleton_new_bad.b unexpectedly passed" >&2
