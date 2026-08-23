@@ -527,6 +527,7 @@ partial class LlvmTextEmitter {
     fn reset_function_state() {
         self.function_allocas = []
         self.borrowed_local_of = {}
+        self.borrowed_place_of = {}
         self.inout_addresses = {}
         self.field_init_names = {}
         self.defer_sites = []

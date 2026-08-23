@@ -104,11 +104,20 @@ run_ok() {
 
 run_cross() {
     local label=$1; shift
-    if "$@" >"$tmp/cross.out" 2>&1; then
+    local status=0
+    "$@" >"$tmp/cross.out" 2>&1 || status=$?
+    if [[ "$status" -eq 0 ]]; then
         echo "cross-thread call unexpectedly survived ($label)" >&2
         exit 1
     fi
-    grep -q "same-thread stored callback invoked from another thread" "$tmp/cross.out"
+    # both compilers stop the same way: beans_panic wording and exit
+    # code 3 — the interpreter used to abort with 134 here
+    if [[ "$status" -ne 3 ]]; then
+        echo "cross-thread violation exited $status, want 3 ($label)" >&2
+        cat "$tmp/cross.out" >&2
+        exit 1
+    fi
+    grep -q "runtime panic at 0:0: same-thread stored callback invoked from another thread" "$tmp/cross.out"
     echo "ok $label cross abort"
 }
 

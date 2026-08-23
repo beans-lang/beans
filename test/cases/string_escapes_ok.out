@@ -1,0 +1,8 @@
+A: {} n=7
+B: {n} and 8
+C:    7 {pad}
+D: {7}
+E: x{y z
+F: {{ }} done
+G: tab	here "quoted" back\slash
+H: closer } alone

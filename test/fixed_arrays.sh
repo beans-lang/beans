@@ -37,6 +37,23 @@ fi
 diff -u "$tmp/oob.interp" "$tmp/oob.native.out"
 grep -q 'array index 2 out of range (len 2)' "$tmp/oob.interp"
 
+echo "checking fixed array element stores through fields"
+./build/beansc run test/cases/fixed_array_places.b >"$tmp/places.interp"
+./build/beansc build test/cases/fixed_array_places.b \
+    -o "$tmp/places.native" >"$tmp/places.build" 2>&1
+"$tmp/places.native" >"$tmp/places.native.out"
+diff -u test/cases/fixed_array_places.out "$tmp/places.interp"
+diff -u test/cases/fixed_array_places.out "$tmp/places.native.out"
+if ./build/beansc check test/cases/fixed_array_places_bad.b \
+    >"$tmp/places.bad" 2>&1; then
+    echo "fixed_array_places_bad.b unexpectedly passed" >&2
+    exit 1
+fi
+grep -q "'fixed' is a let — its elements can't be reassigned" "$tmp/places.bad"
+grep -q "this fixed array is a temporary copy — store it in a var" "$tmp/places.bad"
+grep -q "array element assignment through a List<main.Pt> element is not supported yet" "$tmp/places.bad"
+grep -q "storing owned references into an array inside a class object is not supported yet" "$tmp/places.bad"
+
 echo "checking fixed array compile failures"
 if ./build/beansc check test/cases/fixed_array_bad.b >"$tmp/bad" 2>&1; then
     echo "fixed_array_bad.b unexpectedly passed" >&2
