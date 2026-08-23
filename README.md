@@ -17,8 +17,8 @@ end in `.b`.
 
 ## Status
 
-The latest release is **v0.1.28**. It carries language contract `1.0` and runtime
-ABI `8` while the project finishes the evidence needed for a production 1.0
+The latest release is **v0.1.29**. It carries language contract `1.0` and runtime
+ABI `9` while the project finishes the evidence needed for a production 1.0
 claim.
 
 | piece | current state |
@@ -85,7 +85,7 @@ The layout inside is stable: `bin/`, `lib/`, `toolchain/` and `VERSION`.
 Pick a version, a location, or a target:
 
 ```bash
-curl -fsSL .../beans-install.sh | sh -s -- --version 0.1.28 --prefix /opt/beans
+curl -fsSL .../beans-install.sh | sh -s -- --version 0.1.29 --prefix /opt/beans
 BEANS_TARGET=x86_64-unknown-linux-musl curl -fsSL .../beans-install.sh | sh
 ```
 

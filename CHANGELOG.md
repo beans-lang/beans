@@ -4,6 +4,8 @@ This file records user-facing changes in each Beans release.
 
 ## Unreleased
 
+## [0.1.29] - 2026-08-23
+
 ### Added
 
 - Named imports: `import {name, other as alias} from path` binds exactly
@@ -40,6 +42,10 @@ This file records user-facing changes in each Beans release.
 
 ### Fixed
 
+- Assigning an oversized struct with owned fields into a class field now
+  releases the old nested references. Pointer-mask overflow no longer makes
+  the compiler mistake that value for a reference-free layout, so repeated
+  replacement does not leak the displaced objects.
 - The shell installer handles Windows packages: a `.zip` asset unpacks
   with `unzip` (GNU tar reads only the tarball, and Git Bash ships GNU
   tar), and the layout and post-install checks accept the

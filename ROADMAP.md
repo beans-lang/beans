@@ -1,6 +1,6 @@
 # Beans roadmap
 
-Last refreshed for **v0.1.28** on 2026-08-22. This file tracks work that is
+Last refreshed for **v0.1.29** on 2026-08-23. This file tracks work that is
 still open. Completed implementation detail belongs in the code, tests and Git
 history rather than in a growing development diary.
 
@@ -15,7 +15,7 @@ Beans stays small and readable:
 
 ## Current implementation
 
-| area | v0.1.18 state |
+| area | v0.1.29 state |
 |---|---|
 | language contract | 1.0 candidate in `spec/SYNTAX.md` |
 | compiler | self-hosted Beans compiler is the default `beansc` |
