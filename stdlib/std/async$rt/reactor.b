@@ -177,28 +177,11 @@ pub fn driver_wait() {
                     packed.get_i64(8 + index * 16))
                 index += 1
             }
-            // Level-triggered: whatever else is already deliverable
-            // re-reports on a zero-timeout wait. Draining before the
-            // tree re-polls keeps completion grouped by poll cycle
-            // instead of by kernel arrival, so two descriptors made
-            // ready together wake together whenever the kernel can
-            // say so.
-            var drained: int = count
-            for drained == 64 {
-                match ready.wait(
-                    poller, ready.task_slot(1), 64, 0) {
-                    ok(more) => {
-                        drained = more.get_i64(0)
-                        var extra: int = 0
-                        for extra < drained {
-                            let also: int = ready.park_mark_ready(
-                                more.get_i64(8 + extra * 16))
-                            extra += 1
-                        }
-                    }
-                    err(_) => { drained = 0 }
-                }
-            }
+            // Level-triggered registration re-reports a still-ready
+            // descriptor on every wait, so a batch that filled is not
+            // worth re-draining here — the same rows would come back
+            // until their tasks consume them. Readiness the batch
+            // missed re-reports on the next driver wait instead.
         }
         err(waited) => {
             panic("async runtime: the reactor wait failed")
