@@ -259,7 +259,7 @@ partial class LlvmTextEmitter {
             instruction.type.args[0]
         let result: string = "%v{instruction.result}"
         values[instruction.result] = result
-        if self.wide_inline_value(element) {
+        if self.list_element_inline(element) {
             let mask: int =
                 self.pointer_mask_at(element, 0)
             if mask < 0 {
@@ -493,7 +493,7 @@ partial class LlvmTextEmitter {
             "  %list.store.len.ptr{id} = getelementptr i8, ptr {list}, i64 8\n  %list.store.len{id} = load i64, ptr %list.store.len.ptr{id}\n  %list.store.ok{id} = icmp ult i64 {index}, %list.store.len{id}\n  br i1 %list.store.ok{id}, label %list.store.have{okay}, label %list.store.bad{bad}\n"
         output =
             "{output}list.store.bad{bad}:\n  call void @beans_panic_index(i64 {index}, i64 %list.store.len{id}, i64 1, i64 {instruction.line}, i64 {instruction.col})\n  unreachable\n"
-        if self.wide_inline_value(element) {
+        if self.list_element_inline(element) {
             let llvm: string = self.type_text(element)
             output =
                 "{output}list.store.have{okay}:\n  %list.store.data{id} = load ptr, ptr {list}\n  %list.store.slot{id} = getelementptr {llvm}, ptr %list.store.data{id}, i64 {index}\n"
@@ -638,16 +638,33 @@ partial class LlvmTextEmitter {
                 "LLVM emitter does not support wide list elements in List.{instruction.text} yet")
             return ""
         }
-        let kind: int =
-            if name == "int" {
-                0
-            } else if name == "float" {
-                1
-            } else if name == "string" {
-                2
-            } else {
-                4
-            }
+        // the runtime's order kinds: 0 signed, 1 double, 2 string,
+        // 5 unsigned, 6 float — the same table emit_list_sort uses.
+        // The old catch-all 4 landed on slot_cmp's comparator row with
+        // no comparator, which answers 0 for every pair, so min and
+        // max of a sized-integer or f32 list returned whichever
+        // element came first.
+        var kind: int = -1
+        if llvm_type_is_integer(element) {
+            kind =
+                if llvm_type_is_unsigned(element) {
+                    5
+                } else {
+                    0
+                }
+        } else if name == "float" {
+            kind = 1
+        } else if name == "f32" {
+            kind = 6
+        } else if name == "string" {
+            kind = 2
+        }
+        if kind < 0 {
+            self.fail(
+                instruction,
+                "LLVM emitter does not support List<{render_hir_type(element)}>.{instruction.text} yet")
+            return ""
+        }
         let option: string =
             self.type_text(instruction.type)
         if option == "" {
@@ -1506,7 +1523,7 @@ partial class LlvmTextEmitter {
                 instruction.operands[1],
                 instruction)
         let element: HirType = list_type.args[0]
-        if self.wide_inline_value(element) {
+        if self.list_element_inline(element) {
             let llvm: string = self.type_text(element)
             let consumed: bool =
                 instruction.consumes.len() == 2 &&
@@ -1567,7 +1584,7 @@ partial class LlvmTextEmitter {
                 instruction)
         let element: HirType =
             list_type.args[0]
-        if self.wide_inline_value(element) {
+        if self.list_element_inline(element) {
             let llvm: string =
                 self.type_text(element)
             let consumed: bool =
@@ -1631,7 +1648,7 @@ partial class LlvmTextEmitter {
         let result: string = "%v{instruction.result}"
         let element: HirType =
             list_type.args[0]
-        if self.wide_inline_value(element) {
+        if self.list_element_inline(element) {
             let llvm: string =
                 self.type_text(element)
             let slot: string =
@@ -1689,7 +1706,7 @@ partial class LlvmTextEmitter {
         let none_block: int = self.fresh()
         let merge_block: int = self.fresh()
         let result: string = "%v{instruction.result}"
-        if self.wide_inline_value(element) {
+        if self.list_element_inline(element) {
             // popping moves the record out — the list forgets it, so
             // its reference fields keep their count with no retain
             let llvm: string = self.type_text(element)
@@ -2261,7 +2278,7 @@ partial class LlvmTextEmitter {
             output =
                 "{output}  {index} = sub i64 %list.edge.len{id}, 1\n"
         }
-        if self.wide_inline_value(element) {
+        if self.list_element_inline(element) {
             let llvm: string =
                 self.type_text(element)
             let option: string =
@@ -2341,7 +2358,7 @@ partial class LlvmTextEmitter {
             "  %list.get.len.ptr{id} = getelementptr i8, ptr {list}, i64 8\n  %list.get.len{id} = load i64, ptr %list.get.len.ptr{id}\n  %list.get.ok{id} = icmp ult i64 {index}, %list.get.len{id}\n  br i1 %list.get.ok{id}, label %list.get.have{have_block}, label %list.get.missing{missing_block}\n"
         output =
             "{output}list.get.have{have_block}:\n  %list.get.data.ptr{id} = getelementptr i8, ptr {list}, i64 0\n  %list.get.data{id} = load ptr, ptr %list.get.data.ptr{id}\n  %list.get.slot{id} = getelementptr i64, ptr %list.get.data{id}, i64 {index}\n  %list.get.raw{id} = load i64, ptr %list.get.slot{id}\n"
-        if self.wide_inline_value(element) {
+        if self.list_element_inline(element) {
             let llvm: string =
                 self.type_text(element)
             let option: string =
@@ -2858,7 +2875,7 @@ partial class LlvmTextEmitter {
             "  %list.index.len.ptr{id} = getelementptr i8, ptr {collection}, i64 8\n  %list.index.len{id} = load i64, ptr %list.index.len.ptr{id}\n  %list.index.ok{id} = icmp ult i64 {index}, %list.index.len{id}\n  br i1 %list.index.ok{id}, label %list.index.have{okay}, label %list.index.bad{bad}\n"
         output =
             "{output}list.index.bad{bad}:\n  call void @beans_panic_index(i64 {index}, i64 %list.index.len{id}, i64 1, i64 {instruction.line}, i64 {instruction.col})\n  unreachable\n"
-        if self.wide_inline_value(element) {
+        if self.list_element_inline(element) {
             let llvm: string = self.type_text(element)
             output =
                 "{output}list.index.have{okay}:\n  %list.data{data} = load ptr, ptr {collection}\n  %list.slot{slot_pointer} = getelementptr {llvm}, ptr %list.data{data}, i64 {index}\n  {result} = load {llvm}, ptr %list.slot{slot_pointer}\n"
@@ -3260,7 +3277,7 @@ partial class LlvmTextEmitter {
             let raw: string = "%iter.raw{id}"
             let advanced: string =
                 "%iter.advance{id}"
-            if self.wide_inline_value(type) {
+            if self.list_element_inline(type) {
                 var output: string =
                     "  {index} = load i64, ptr {self.iterator_current[iterator]}\n  {data} = load ptr, ptr {self.iterator_collection[iterator]}\n  {slot_pointer} = getelementptr {llvm}, ptr {data}, i64 {index}\n  {result} = load {llvm}, ptr {slot_pointer}\n"
                 values[instruction.result] = result

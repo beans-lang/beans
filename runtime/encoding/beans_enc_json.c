@@ -460,7 +460,11 @@ typedef struct {
 
 static int64_t beans_json_typed_storage_stride(uint64_t value_size,
                                                 uint64_t kind) {
-    return kind == BEANS_JSON_TYPED_STRUCT ? (int64_t)value_size : -8;
+    if (kind == BEANS_JSON_TYPED_STRUCT) return (int64_t)value_size;
+    // f32 lists store 4-byte elements, matching the compiler's typed
+    // List<f32> representation; every other scalar keeps i64 slots
+    if (kind == BEANS_JSON_TYPED_F32) return 4;
+    return -8;
 }
 
 static size_t beans_json_typed_list_stride(
