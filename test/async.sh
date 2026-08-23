@@ -1734,7 +1734,50 @@ direct await woke
 middle reader woke
 direct 1 nested 3
 BEANS
-DEADLINE=30 run_matrix "$tmp/sem_nested_ready.b" "$tmp/sem_nested_ready.expected"
+cat > "$tmp/sem_nested_ready.expected2" <<'BEANS'
+grandchild wrote
+middle reader woke
+direct await woke
+direct 1 nested 3
+BEANS
+# Which parked await wakes first depends on when the kernel exposes each
+# descriptor's readiness: two loopback writes land microseconds apart, and
+# a driver wake between them completes one await a cycle before the other.
+# Both groupings honour the scan contract — the pinned facts are that the
+# grandchild ran through its parent's scan and every task completed.
+either_interleaving() { # <got> <a> <b>
+    if diff -q "$2" "$1" >/dev/null 2>&1; then return 0; fi
+    if diff -q "$3" "$1" >/dev/null 2>&1; then return 0; fi
+    echo "async: sem_nested_ready produced an unexpected interleaving" >&2
+    cat "$1" >&2
+    exit 1
+}
+set +e
+DEADLINE=30 run_merged_layout "" "$BEANSC" "$tmp/sem_nested_ready.b" >"$tmp/snr.interp"
+snr_status=$?
+set -e
+if [ "$snr_status" -ne 0 ]; then
+    echo "async: sem_nested_ready exits ($snr_status)" >&2
+    note_hang "$snr_status" "$snr_status"
+    cat "$tmp/snr.interp" >&2
+    exit 1
+fi
+either_interleaving "$tmp/snr.interp" \
+    "$tmp/sem_nested_ready.expected" "$tmp/sem_nested_ready.expected2"
+snr_bin="$native_dir/sem_nested_ready"
+"$BEANSC" build "$tmp/sem_nested_ready.b" -o "$snr_bin" >/dev/null
+set +e
+DEADLINE=30 run_native_layout "" "$snr_bin" >"$tmp/snr.native" 2>&1
+snr_native_status=$?
+set -e
+if [ "$snr_native_status" -ne 0 ]; then
+    echo "async: sem_nested_ready native exit $snr_native_status" >&2
+    cat "$tmp/snr.native" >&2
+    exit 1
+fi
+tr -d '\r' <"$tmp/snr.native" >"$tmp/snr.native.lf"
+either_interleaving "$tmp/snr.native.lf" \
+    "$tmp/sem_nested_ready.expected" "$tmp/sem_nested_ready.expected2"
 
 echo "checking net.readable and net.writable lower to the right reactor park"
 # The two names are compiler-known markers: their declared bodies never run, and
