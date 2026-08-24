@@ -11,8 +11,13 @@ This file records user-facing changes in each Beans release.
   `break main.b:12`, show `main.helper` rather than `.next.fn7` in a
   backtrace, step a statement at a time, and print locals: scalars and
   `bool`s by value, strings as their text, and lists, maps and objects as
-  their Beans type and an address. The metadata is written only by
-  `--debug`; every other build is byte-for-byte what it was.
+  their Beans type and an address. Classes, structs and unions carry their
+  fields, so an object opens in a debugger instead of showing an address:
+  inherited fields included, and a linked `Option<T>` walks. A runtime handle
+  with no Beans declaration behind it — a `List`, a `Map`, a `Channel` — keeps
+  its Beans type and an address, because its fields belong to the C runtime.
+  The metadata is written only by `--debug`; every other build is
+  byte-for-byte what it was.
   `beansc debug-adapter` is unchanged and remains the debugger that knows
   every Beans value exactly.
 - Editors reach it with no debugger of their own: VS Code's Beans launch
@@ -22,6 +27,17 @@ This file records user-facing changes in each Beans release.
 
 ### Fixed
 
+- `examples/poller.b` waited for a signal by counting retries, which on a
+  level-triggered poller is not waiting at all. The sockets it is watching
+  stay readable — the data is left unread on purpose, to show that readable
+  and hangup are separate signals — so every `wait` returns instantly and
+  twenty rounds go by in under a millisecond. The peer's FIN, or a third
+  client's bytes, then had no time to arrive: measured, the loop's whole
+  budget was 0ms rather than the ten seconds its timeouts suggested. Both
+  loops now spend a wall-clock budget and sleep on a round that learned
+  nothing. Seen as `the peer closing is reported false` on a loaded macOS CI
+  runner; the same reasoning is already written out above the one loop in
+  that file that had it right.
 - A `--debug` build kept the frame pointer in the C runtime but not in the
   Beans functions beside it. `-fno-omit-frame-pointer` reaches Clang, and
   Clang applies it to the C it compiles; a function that arrives as LLVM IR
