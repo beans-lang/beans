@@ -1529,10 +1529,27 @@ partial class LlvmTextEmitter {
         return ""
     }
 
+    // A block's exit, and the edge releases that run before it. The second
+    // funnel the line table needs: a terminator carries its own source
+    // position, which is what puts a `ret` on the `return` statement and a
+    // loop's back edge on the `for` that wrote it.
     fn emit_terminator(function: MirFunction,
                        block: MirBlock,
                        values: Map<int, string>,
                        is_main: bool) -> string {
+        return llvm_attach_dbg(
+            self.emit_terminator_text(
+                function, block, values, is_main),
+            self.debug_location(
+                block.terminator.file,
+                block.terminator.line,
+                block.terminator.col))
+    }
+
+    fn emit_terminator_text(function: MirFunction,
+                            block: MirBlock,
+                            values: Map<int, string>,
+                            is_main: bool) -> string {
         let terminator: MirTerminator =
             block.terminator
         let source: MirInstruction =
@@ -1772,6 +1789,11 @@ partial class LlvmTextEmitter {
         }
         let symbol: string =
             self.function_symbols[function.name]
+        // The subprogram opens before the body, because every location the
+        // body mints has to hang off it. A function with no source position
+        // gets -1 here and, with it, a body that carries no `!dbg` at all.
+        let subprogram: int = self.debug_subprogram(function)
+        self.open_debug_scope(function, subprogram)
         // blocks are emitted first so spill slots they request can land as
         // entry allocas — a mid-loop alloca would grow the stack every pass
         var values: Map<int, string> = {}
@@ -1807,13 +1829,22 @@ partial class LlvmTextEmitter {
                 " \"target-features\"=\"+{function.required_feature}\""
             }
         var output: string =
-            "; {display_symbol(function.name)}\ndefine {result_type} {symbol}({parameters.join(", ")}){feature_attribute} \{\nentry:\n"
+            "; {display_symbol(function.name)}\ndefine {result_type} {symbol}({parameters.join(", ")}){feature_attribute}{self.debug_function_attributes(subprogram)} \{\nentry:\n"
         if is_main {
             output =
                 "{output}  call void @beans_os_init(i32 %beans.argc, ptr %beans.argv)\n{self.reflection_initializers()}{self.static_field_initializers()}{self.singleton_initializers()}"
         }
+        // Source position among the parameters, counted before any of the
+        // skips below so an `inout` still takes the slot the source wrote it
+        // in. 0 means the local is not a parameter.
+        var argument_position: int = 0
         for index: int in 0..function.locals.len() {
             let local: MirLocal = function.locals[index]
+            var argument: int = 0
+            if local.parameter {
+                argument_position += 1
+                argument = argument_position
+            }
             let type: string = self.type_text(local.type)
             if type == "" || type == "void" {
                 continue
@@ -1847,7 +1878,7 @@ partial class LlvmTextEmitter {
             }
             if self.cell_local(local) {
                 output =
-                    "{output}  %l{local.id} = alloca ptr\n"
+                    "{output}  %l{local.id} = alloca ptr\n{self.debug_declare(local, argument, true)}"
                 if capture_slot >= 0 &&
                    function.cleanup_id >= 0 {
                     // the parent's cell arrives as the capture
@@ -1892,7 +1923,7 @@ partial class LlvmTextEmitter {
                 continue
             }
             output =
-                "{output}  %l{local.id} = alloca {type}{self.explicit_alloca_alignment(local.type)}\n"
+                "{output}  %l{local.id} = alloca {type}{self.explicit_alloca_alignment(local.type)}\n{self.debug_declare(local, argument, false)}"
             if function.closure_id >= 0 &&
                capture_slot >= 0 &&
                function.captures[
@@ -1924,6 +1955,16 @@ partial class LlvmTextEmitter {
         }
         output =
             "{output}  br label %bb{function.entry}\n"
-        return "{output}{body}\}\n"
+        // The prologue belongs to no MIR instruction, so it takes the
+        // declaration line. `main`'s prologue alone calls `beans_os_init` and
+        // every initializer, and a call with no location inside a function
+        // with a subprogram is a verifier error rather than a missing line.
+        // The `define`, the comment above it and the `entry:` label are not
+        // instructions and llvm_attach_dbg leaves all three alone.
+        let opened: string =
+            llvm_attach_dbg(
+                output, self.debug_function_location())
+        self.close_debug_scope()
+        return "{opened}{body}\}\n"
     }
 }

@@ -81,9 +81,16 @@ unchecked items in this section have evidence attached to a clean commit.
   declarations and their dependants instead of emitting partial bindings.
 - [x] Ship semantic editor queries through LSP and source-level interpreter
   debugging through DAP.
-- [ ] Add Beans source line tables and source breakpoints to native debug builds.
-  This is useful post-1.0 work, not a blocker while the DAP interpreter remains
-  the supported source debugger.
+- [x] Add Beans source line tables and source breakpoints to native debug builds.
+  `--debug` writes a DWARF line table, subprograms named for their Beans
+  functions, locals for every named binding, and structure types for classes,
+  structs and unions. `lldb` and `gdb` stop on a Beans line, name Beans frames,
+  step by statement, print scalars, `bool`s and strings, and walk into an
+  object's fields — inherited ones included — and through a linked
+  `Option<T>`. Runtime handles with no Beans declaration behind them — a
+  `List`, a `Map`, a `Channel` — still reach the debugger as their Beans type
+  and an address, because their fields belong to the C runtime. The DAP
+  interpreter remains the debugger that knows every Beans value.
 
 Beans-to-Beans libraries remain source packages for 1.0. Stable binary exports
 use explicit `pub extern "C"` functions. A stable native Beans object ABI is not

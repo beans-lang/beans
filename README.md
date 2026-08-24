@@ -31,7 +31,7 @@ claim.
 | concurrency | native threads, typed atomics, mutexes, channels, structured async/await and readiness waits |
 | modules | canonical package identity, hashed `beans.lock`, locked/offline builds and a content-addressed Git cache |
 | C interop | imports and exports, C headers, bindgen, C layouts, globals/TLS/errno, typed and stored callbacks |
-| tooling | semantic LSP, interpreter DAP debugger, native debug artifacts and parser recovery for live edits |
+| tooling | semantic LSP, interpreter DAP debugger, native source line tables and parser recovery for live edits |
 | reflection | checked type/member discovery, runtime annotations, dynamic values, field access, calls and construction through `std.reflect` |
 | encoding | strict DOM APIs, generated JSON encode/decode, and generated XML decode for nested structs, lists, options, field annotations and XML namespaces |
 | logging | asynchronous default and named loggers, level filters, structured fields, file rotation, NDJSON and bounded export sinks through `std.log` |
@@ -222,7 +222,7 @@ The subcommands:
 | `beansc build file.b [-o out]` | compile to a native binary via LLVM, unoptimized (`-O0`) for a fast loop |
 | `beansc build --emit static --header api.h file.b` | build a C-facing Beans library |
 | `beansc build --release --lto --cpu native file.b` | optimized native build |
-| `beansc build --debug file.b -o out` | unoptimized native build with platform debug information |
+| `beansc build --debug file.b -o out` | unoptimized native build with a Beans source line table |
 | `beansc build --target <triple> file.b` | compile for another machine |
 | `beansc target <triple>` | print one target's layout and capability facts |
 | `beansc lsp` | language server on stdio |
@@ -413,16 +413,44 @@ call stack, `self`/parameters/locals, paging through large lists, maps and
 objects, watch expressions over variable paths, step over/into/out, continue,
 and a stop on a runtime panic with the stack still standing.
 
-**Native debugging is a different thing and is not available yet.** `beansc
-build --debug` gives an unoptimized binary (`-O0`, frame pointers kept, LTO
-off) carrying the platform's debug information — DWARF on macOS and Linux,
-CodeView where the toolchain targets MSVC — for the Beans C runtime. That makes
-a native backtrace, a crash report or a profiler readable, and it is the
-foundation a native debugger needs. It is not Beans source-level debugging: the
-LLVM emitter writes no line table for Beans statements, so lldb and gdb cannot
-stop on a Beans line. `test/native_debug.sh` asserts that boundary and fails if
-the emitter starts writing debug metadata, so this paragraph cannot go stale
-without someone noticing.
+**Native debugging is a different thing, and it also works.** `beansc build
+--debug` gives an unoptimized binary (`-O0`, frame pointers kept, LTO off) that
+carries a line table for your Beans statements — DWARF on macOS and Linux,
+CodeView where the toolchain targets MSVC:
+
+```bash
+beansc build --debug main.b -o main
+lldb ./main -o 'breakpoint set --file main.b --line 12' -o run -o bt
+gdb -ex 'break main.b:12' -ex run -ex bt ./main
+```
+
+`lldb` and `gdb` stop on a Beans line, name Beans functions in a backtrace
+(`main.helper`, not `.next.fn7`), step a statement at a time, and print locals.
+Classes, structs and unions carry their fields, so an object opens:
+
+```
+(main.Dog) dog = 0x0000000bac800070 {
+  name = "Rex"
+  legs = 4
+  breed = "collie"
+}
+```
+
+Fields inherited from a base class come first and are there too, and a linked
+`Option<T>` walks. A runtime handle
+with no Beans declaration behind it — a `List`, a `Map`, a `Channel` — shows its
+Beans type and an address, because its fields belong to the C runtime rather
+than to any declaration. Editors reach the same thing — see
+[beans-lang/editors](https://github.com/beans-lang/editors) for VS Code's
+`"mode": "native"` and Zed's `.zed/debug.json`.
+
+Reach for the native debugger when the bug is about the compiled program: a
+crash inside the runtime or a C library, threads, timing. Reach for
+`debug-adapter` when the question is about a Beans value, because the
+interpreter knows all of them exactly. `test/native_debug.sh` holds both claims
+to end-to-end evidence: it drives a real debugger to a Beans line and requires
+every field it reads out of an object to match what the program itself
+printed.
 
 ## Developing
 
