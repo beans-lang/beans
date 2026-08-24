@@ -312,12 +312,146 @@ partial class LlvmTextEmitter {
             return self.debug_named(
                 "string", self.debug_pointer(byte))
         }
+        if name == "Option" && type.args.len() == 1 &&
+           self.type_is_reference(type.args[0]) {
+            // `Option<C>` for a reference C is C's own pointer, with null
+            // standing for none — there is no tag beside it. Describing it
+            // as C is therefore true, and it is what lets a debugger walk a
+            // linked structure instead of stopping at the first link.
+            let inner: int = self.debug_type(type.args[0])
+            if inner >= 0 {
+                return self.debug_named(
+                    render_hir_type(type), inner)
+            }
+        }
         if llvm == "ptr" {
+            // A class value is the address of its own layout, and the
+            // emitter already knows that layout exactly — it is the one it
+            // allocates and indexes against. Describing it is what lets a
+            // debugger print an object's fields instead of its address.
+            //
+            // An interface, an enum or a runtime handle reaches here too and
+            // gets no layout: the concrete class behind an interface is not
+            // known until run time, and a handle's fields belong to the C
+            // runtime rather than to any Beans declaration.
+            match self.class_layout(type) {
+                some(layout) => {
+                    let body: int =
+                        self.debug_class_type(type, layout)
+                    if body >= 0 {
+                        return self.debug_named(
+                            render_hir_type(type),
+                            self.debug_pointer(body))
+                    }
+                }
+                none => {}
+            }
             return self.debug_named(
                 render_hir_type(type),
                 self.debug_pointer(-1))
         }
+        // A struct or union is an inline value, so the composite is the
+        // variable's type rather than something behind a pointer.
+        match self.record_layout(type) {
+            some(layout) => {
+                return self.debug_record_type(type, layout)
+            }
+            none => {}
+        }
         return -1
+    }
+
+    // The structure type for one class, made once per instantiation.
+    //
+    // The slot is reserved before the members are built. A class with a
+    // field of its own type — a linked list, a tree, a parent pointer —
+    // would otherwise ask for this node while it is still being made and
+    // never stop asking; with the id already reserved, the field's own
+    // lookup finds it and the recursion ends there.
+    fn debug_class_type(type: HirType,
+                        layout: LlvmClassLayout) -> int {
+        let key: string = "class {render_hir_type(type)}"
+        match self.debug_type_ids.get(key) {
+            some(found) => { return found }
+            none => {}
+        }
+        let id: int = self.debug_distinct_node("!\{\}")
+        self.debug_type_ids[key] = id
+        let file: int =
+            self.debug_file(layout.declaration.file)
+        var members: List<string> = []
+        for field: HirField in layout.ordered_fields {
+            if !layout.field_offsets.contains_key(field.name) {
+                continue
+            }
+            if !layout.field_types.contains_key(field.name) {
+                continue
+            }
+            let member: int =
+                self.debug_member(
+                    field,
+                    layout.field_types[field.name],
+                    layout.field_offsets[field.name],
+                    id, file)
+            if member >= 0 { members.push("!{member}") }
+        }
+        // Offset 0 holds the class descriptor the runtime dispatches and
+        // collects through. It is deliberately not a member: a person
+        // debugging their own object has no use for it, and DWARF is content
+        // with a structure whose members do not cover every byte.
+        self.debug_meta[id] =
+            "distinct !DICompositeType(tag: DW_TAG_structure_type, name: \"{llvm_metadata_text(display_symbol(layout.declaration.qualified))}\", file: !{file}, line: {layout.declaration.line}, size: {layout.size * 8}, align: {layout.alignment * 8}, elements: !{self.debug_node("!\{{members.join(", ")}\}")})"
+        return id
+    }
+
+    // The same for a struct or a union, which differ from a class in having
+    // no descriptor word and, for a union, in every member sitting at zero.
+    fn debug_record_type(type: HirType,
+                         layout: LlvmRecordLayout) -> int {
+        let key: string = "record {render_hir_type(type)}"
+        match self.debug_type_ids.get(key) {
+            some(found) => { return found }
+            none => {}
+        }
+        let id: int = self.debug_distinct_node("!\{\}")
+        self.debug_type_ids[key] = id
+        let file: int =
+            self.debug_file(layout.declaration.file)
+        var members: List<string> = []
+        for field: HirField in layout.declaration.fields {
+            if !layout.field_offsets.contains_key(field.name) {
+                continue
+            }
+            if !layout.field_types.contains_key(field.name) {
+                continue
+            }
+            let member: int =
+                self.debug_member(
+                    field,
+                    layout.field_types[field.name],
+                    layout.field_offsets[field.name],
+                    id, file)
+            if member >= 0 { members.push("!{member}") }
+        }
+        var tag: string = "DW_TAG_structure_type"
+        if layout.is_union { tag = "DW_TAG_union_type" }
+        self.debug_meta[id] =
+            "distinct !DICompositeType(tag: {tag}, name: \"{llvm_metadata_text(display_symbol(layout.declaration.qualified))}\", file: !{file}, line: {layout.declaration.line}, size: {layout.size * 8}, align: {layout.alignment * 8}, elements: !{self.debug_node("!\{{members.join(", ")}\}")})"
+        return id
+    }
+
+    // One field of a composite. -1 for a field whose type the debugger is
+    // not told about, and the composite then simply does not mention it —
+    // a partly described object still prints the fields it knows.
+    fn debug_member(field: HirField, type: HirType,
+                    offset: int, owner: int,
+                    file: int) -> int {
+        let described: int = self.debug_type(type)
+        if described < 0 { return -1 }
+        let size: int = self.type_size(type)
+        if size <= 0 { return -1 }
+        return self.debug_node(
+            "!DIDerivedType(tag: DW_TAG_member, name: \"{llvm_metadata_text(field.name)}\", scope: !{owner}, file: !{file}, line: {field.line}, baseType: !{described}, size: {size * 8}, offset: {offset * 8})")
     }
 
     fn debug_pointer(base: int) -> int {

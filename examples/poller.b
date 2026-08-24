@@ -84,16 +84,26 @@ fn only_the_ready_ones() -> Result<int> {
 
     // Level-triggered, and nothing is being read, so every wait keeps reporting the
     // same three. Collect *distinct* tokens rather than counting events.
+    //
+    // The budget is wall-clock, not a round count, and that is not a detail. The
+    // clients that already spoke stay readable, so `wait` has something to return
+    // the instant it is called and never reaches its timeout — twenty rounds go by
+    // in under a millisecond, which is no time at all for a straggler's bytes to
+    // land. Counting rounds here would mean the loop's patience depends on how
+    // fast the machine is, which is the opposite of what a retry budget is for.
     var found: List<int> = []
-    var rounds: int = 0
-    for found.len() < 3 && rounds < 20 {
-        let batch: List<poll.Event> = watch.wait(32, 500)?
+    let deadline: int = time.monotonic_millis() + 2000
+    for found.len() < 3 && time.monotonic_millis() < deadline {
+        let batch: List<poll.Event> = watch.wait(32, 100)?
+        let before: int = found.len()
         for e: poll.Event in batch {
             if e.readable && !found.contains(e.token) {
                 found.push(e.token)
             }
         }
-        rounds += 1
+        // A round that learned nothing would otherwise spin on the sockets that
+        // are already readable and burn the whole budget on the same answer.
+        if found.len() == before { time.sleep_millis(1) }
     }
     found.sort()
     var sum: int = 0
@@ -117,16 +127,22 @@ fn hangup_is_its_own_signal() -> Result<int> {
     client.write_text("bye")?
     client.shutdown_write()?
 
+    // The same wall-clock rule as above, and for the same reason. `bye` is left
+    // unread on purpose — the point being made is that hangup and readable are
+    // separate signals — so the socket is readable throughout and every `wait`
+    // returns immediately. The peer's FIN is a second thing the kernel has to
+    // notice, and on a busy machine it can arrive after the data it followed; a
+    // round count would give it no time to.
     var readable: bool = false
     var hangup: bool = false
-    var rounds: int = 0
-    for !hangup && rounds < 20 {
-        let batch: List<poll.Event> = watch.wait(8, 500)?
+    let deadline: int = time.monotonic_millis() + 2000
+    for !hangup && time.monotonic_millis() < deadline {
+        let batch: List<poll.Event> = watch.wait(8, 100)?
         for e: poll.Event in batch {
             if e.readable { readable = true }
             if e.hangup { hangup = true }
         }
-        rounds += 1
+        if !hangup { time.sleep_millis(1) }
     }
     io.println("the peer closing is reported {hangup}")
     // And the data it sent before closing is still there to read: a socket can be both
