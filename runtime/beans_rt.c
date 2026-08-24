@@ -1862,6 +1862,14 @@ static void cc_sweep_husks(void) {
     void* local[64];
     CCStack deferred = {local, 0, 64, local};
     CC_LOCK();
+    if (cc_len < cc_threshold) {
+        // nothing due — this attempt came from a walk exit re-arming the
+        // sweep, and a winner already re-armed the threshold. Keeping the
+        // early-out under the lock keeps the O(n) scan off that path.
+        CC_UNLOCK();
+        __atomic_store_n(&cc_sweeping, 0, __ATOMIC_RELEASE);
+        return;
+    }
     long long kept = 0;
     for (long long i = 0; i < cc_len; i++) {
         void* p = cc_roots[i];
@@ -2837,7 +2845,16 @@ static void cc_worker_collect(void) {
         if (deferred.v != dlocal) rt_free(deferred.v);
     }
     cc_worker_collecting = 0;
-    __atomic_sub_fetch(&cc_worker_walkers, 1, __ATOMIC_SEQ_CST);
+    if (__atomic_sub_fetch(&cc_worker_walkers, 1, __ATOMIC_SEQ_CST) == 0) {
+        // The sweep yields to active walks, and under steady multi-worker
+        // load an append-time attempt almost never lands in a walker-free
+        // gap — husks then float in the fallback buffer for seconds and
+        // hundreds of megabytes at a time. The last walker out IS the gap,
+        // so attempt the sweep here; the threshold early-out makes the
+        // no-husks case one lock probe, and a racing new walk just skips
+        // the attempt as always.
+        cc_sweep_husks();
+    }
 }
 #endif
 
