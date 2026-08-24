@@ -116,7 +116,9 @@ makes leaked-goroutine bugs unrepresentable:
 Dynamic fleets — N children where N is a runtime value — use the library
 `TaskGroup<T>` rebuilt on fibers, with the v2 semantics (spawn-order
 delivery, `wait_all`, `cancel_all`, scope-bound uniqueness) re-pinned by the
-ported test suite. Channels, `Event`, timers, and `sleep` stay library types;
+ported test suite. Channels, `Gate` (the plan's `Event`, renamed: `Event`
+is everyday user vocabulary — `std.poll` exports a `poll.Event` — and a
+builtin must not take it away), timers, and `sleep` stay library types;
 their `_async` API variants fold back into the plain names — a channel
 `receive` on a fiber simply parks.
 
@@ -221,7 +223,7 @@ runs to its next park; a fiber made ready goes to the queue tail (FIFO —
 this is the fairness rule, and `yield()` is "park to my own tail"). When the
 queue is empty the worker blocks in kevent/epoll exactly as the sync engine
 does today. A kernel event resumes a fiber instead of marking a task. Wakes
-from another thread (channel send, `Event.set`, cancel, cross-worker join)
+from another thread (channel send, `Gate.open`, cancel, cross-worker join)
 use the existing wake handles: the wake carries the fiber, the owning
 worker's poller wakes, and the worker queues its own fiber — a fiber is only
 ever *run* by its own worker.
@@ -285,7 +287,7 @@ ported test suite pins each one.
 | Unique-receiver await borrow rules | Gone with await; ordinary borrow rules apply — a park holds whatever borrows the frame holds, safely, because the stack doesn't move |
 | No await in `defer`/interpolation | No await; defers and interpolation may call parking functions unless inside a wall |
 | Timers: `sleep_millis`, `sleep_until`, non-positive completes now | Same names, same rules, on the fiber timer wheel; a plain `sleep` that parks the fiber |
-| `Event`: sticky, `Send + Sync`, set from any thread | Unchanged, waiters are fibers |
+| `Event`: sticky, `Send + Sync`, set from any thread | Shipped as `Gate` (`wait`/`open`/`is_open`) — the semantics unchanged, waiters are fibers |
 | Channels: same FIFO + close rules, cancellation loses nothing | Unchanged; `send`/`receive` park fibers; `try_send`/`try_receive` never park; closed-send panics; cancellation removes only that waiter |
 | `spawn_async` worker + `join_async` | Gone; `thread.spawn` + `join` — `join` parks the calling fiber instead of blocking the worker |
 | Readiness: level-triggered, close wakes the parked waiter, no false wake on fd reuse | Same contract, fiber-shaped: park-on-readable/writable in std internals; runtime close marks the token dead and resumes the waiter with `false` |
@@ -330,7 +332,7 @@ main in another form; the re-drain it removes no longer exists), and
 direct-dispatching runtime externs in the interpreter, is already house
 practice).
 
-## Where the implementation stands (F2 core landed)
+## Where the implementation stands (F3 in progress)
 
 What is in the tree: the F1 fiber core with its full gate
 (`test/fiber_core.sh`); `brew` parsed, checked and lowered in both backends;
@@ -341,6 +343,15 @@ report is delivered at the join); escalation at unjoined scope exits;
 scope-bound handle refusals (move, capture, signature, field, nesting, var);
 the interpreter hosting fibers on real fiber stacks — one scheduler, and the
 brew differential outputs are byte-identical with native by construction.
+
+Of F3 itself: std parks fibers instead of blocking workers — channels carry
+FIFO fiber wait lines beside their condvars, `sleep` parks on a per-worker
+deadline min-heap, and `thread.join` parks until the joined thread finishes
+(`test/fiber_std.sh`); `Gate` is in the language — sticky broadcast flag,
+`new Gate()` / `wait` / `open` / `is_open`, opened from any thread, waiters
+are fibers (`test/gate.sh`); and a program whose every fiber is parked with no
+thread able to wake them prints the fiber table and exits 3 instead of
+hanging. Still open in F3: readiness (the netpoller) and `TaskGroup`.
 
 Deliberately not yet here, in dependency order:
 
@@ -363,8 +374,9 @@ Deliberately not yet here, in dependency order:
    fiber entries are the one blessed exception the analysis will need: a
    stored callback that IS a fiber's entry runs on that fiber's stack and
    may park.)
-5. **F3**: channels, `Event`, timers, sleep and readiness parking fibers;
-   the deadlock report; `TaskGroup` on fibers.
+5. **F3, the remainder**: readiness parking fibers (the netpoller) and
+   `TaskGroup` on fibers. Channels, `Gate`, sleep, `thread.join`, and the
+   deadlock report are in.
 
 ## Milestone gates (unchanged from the plan)
 
@@ -373,7 +385,7 @@ Deliberately not yet here, in dependency order:
 - **F2** compiler: `brew` parsed/checked/lowered, may-park inference + walls,
   per-fiber unwinds; ported v2 suite green; differential green; self-host +
   fixpoint green.
-- **F3** std on fibers: channels/Event/timers/sleep, deadlock report,
+- **F3** std on fibers: channels/Gate/timers/sleep, deadlock report,
   containment proven at std level; `make test` + sanitize + soak green,
   including a panic-storm soak.
 - **F4** espresso on one engine: sync/async split deleted; within 5% of sync

@@ -1196,6 +1196,15 @@ partial class LlvmTextEmitter {
                 "ptr @beans_atomic_new(i64)")
             return "  {result} = call ptr @beans_atomic_new(i64 {value})\n"
         }
+        if handle_name == "Gate" {
+            let result: string =
+                "%v{instruction.result}"
+            values[instruction.result] = result
+            self.require_declare(
+                "beans_gate_new",
+                "ptr @beans_gate_new()")
+            return "  {result} = call ptr @beans_gate_new()\n"
+        }
         if instruction.type.args.len() == 1 &&
            instruction.operands.len() == 1 {
             if handle_name == "Mutex" {

@@ -25,6 +25,23 @@ This file records user-facing changes in each Beans release.
 - `Channel.try_send` and `Channel.try_receive` answer immediately — `false`
   or `none` — where the blocking forms would wait. `try_send` needs a
   copyable element: a refused move-only value would be lost.
+- **std parks fibers.** A fiber that must wait — channel send/receive on a
+  full/empty channel, `time.sleep`, `thread.join` — now parks so every
+  other fiber of its worker keeps running, instead of blocking the whole
+  thread. Two fibers of one worker on opposite ends of a full channel used
+  to be an instant deadlock; now they hand values to each other. Thread
+  callers keep the blocking behavior they always had.
+- **`Gate`** — a sticky broadcast flag for fibers and threads.
+  `new Gate()` starts shut; `wait()` parks the calling fiber until the
+  gate opens (immediately returning once open, forever); `open()` wakes
+  every waiter at once and cannot be undone; `is_open()` peeks. A `Gate`
+  is `Send + Sync`: open it from any thread, wait on it from any fiber.
+  (The concurrency plan called this `Event`; it shipped as `Gate` because
+  `Event` is everyday user vocabulary — `std.poll` itself already exports
+  a `poll.Event` — and a builtin must not take that name away.)
+- **Deadlock report.** A program whose every fiber is parked with no other
+  thread able to wake them prints each fiber's name and state and exits
+  with status 3, instead of hanging forever.
 
 ### Removed
 

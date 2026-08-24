@@ -13401,6 +13401,35 @@ void beans_chan_close(BChan* c) {
     pthread_mutex_unlock(&c->m);
 }
 
+// ---- Gate -------------------------------------------------------------------
+// A sticky broadcast flag (spec/CONCURRENCY.md, F3): wait() parks the
+// calling fiber until open() fires, open() wakes every waiter at once and
+// the gate stays open forever after. A Gate IS an empty channel — open is
+// close (sticky, wakes the whole wait line, broadcasts to thread waiters)
+// and wait is the closed-only half of a receive — so the kind-4 tracer
+// and destructor work unchanged: the queue never holds a value.
+BChan* beans_gate_new(void) { return beans_chan_new(1, 0); }
+void beans_gate_open(BChan* c) { beans_chan_close(c); }
+long long beans_gate_is_open(BChan* c) {
+    pthread_mutex_lock(&c->m);
+    long long open = c->closed;
+    pthread_mutex_unlock(&c->m);
+    return open;
+}
+void beans_gate_wait(BChan* c) {
+    pthread_mutex_lock(&c->m);
+    while (!c->closed) {
+#if BEANS_RT_FIBERS
+        if (beans_fiber_current()) {
+            fiber_line_wait(&c->m, &c->recv_head, &c->recv_tail);
+            continue;
+        }
+#endif
+        pthread_cond_wait(&c->can_recv, &c->m);
+    }
+    pthread_mutex_unlock(&c->m);
+}
+
 typedef struct { _Atomic long long v; } BAtomic;
 BAtomic* beans_atomic_new(long long init) {
     BAtomic* a = beans_alloc(sizeof(BAtomic), 0);

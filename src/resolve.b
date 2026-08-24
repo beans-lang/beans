@@ -72,7 +72,8 @@ fn builtin_type(name: string) -> bool {
            name == "Bytes" || name == "File" || name == "Dir" ||
            name == "MMap" || name == "Error" ||
            name == "RawSlice" ||
-           name == "AtomicInt" || name == "MemoryOrder" ||
+           name == "AtomicInt" || name == "Gate" ||
+           name == "MemoryOrder" ||
            name == "RoundingMode" || name == "CpuFeature" ||
            name == "StoredCallback" ||
            name == "LocalStoredCallback" ||

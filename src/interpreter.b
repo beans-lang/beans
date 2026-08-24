@@ -46,6 +46,16 @@ extern "C" fn beans_fiber_join(
 extern "C" fn beans_fiber_cancel(fiber: RawPtr<u8>)
 extern "C" fn beans_stored_callback_close(
     value: RawPtr<u8>)
+// Tree Gates are host Gates: wait must park the walker's own fiber, and
+// open must wake fibers parked inside other interpreter threads — exactly
+// what the host object already does. The handle leaks by design: a gate
+// is a handful of bytes, its copies alias freely across tree threads, and
+// the walker has no last-copy hook to release it from.
+extern "C" fn beans_gate_new() -> RawPtr<u8>
+extern "C" fn beans_gate_wait(gate: RawPtr<u8>)
+extern "C" fn beans_gate_open(gate: RawPtr<u8>)
+extern "C" fn beans_gate_is_open(
+    gate: RawPtr<u8>) -> int
 
 class TreeInterpreter {
     program: HirProgram
@@ -8615,6 +8625,29 @@ class TreeInterpreter {
             self.tree_channel_close(receiver)
             return TreeValue.unit()
         }
+        if receiver.kind == "gate" {
+            var gate: RawPtr<u8> = RawPtr.null()
+            unsafe {
+                gate =
+                    RawPtr.from_address(
+                        receiver.int_data as u64)
+            }
+            if node.value == "wait" {
+                unsafe { beans_gate_wait(gate) }
+                return TreeValue.unit()
+            }
+            if node.value == "open" {
+                unsafe { beans_gate_open(gate) }
+                return TreeValue.unit()
+            }
+            if node.value == "is_open" {
+                var open: int = 0
+                unsafe {
+                    open = beans_gate_is_open(gate)
+                }
+                return TreeValue.boolean(open != 0)
+            }
+        }
         if receiver.kind == "thread" &&
            node.value == "join" {
             if receiver.items.len() == 1 {
@@ -9685,6 +9718,8 @@ class TreeInterpreter {
         } else if name == "Atomic" ||
                   name == "AtomicInt" {
             kind = "atomic"
+        } else if name == "Gate" {
+            kind = "gate"
         } else if name == "Channel" {
             kind = "channel"
         } else if name == "Bytes" {
@@ -9731,6 +9766,11 @@ class TreeInterpreter {
                         new TreeMutexCell(
                             tree_value_copy(
                                 arguments[0]))))
+            }
+        } else if kind == "gate" {
+            unsafe {
+                result.int_data =
+                    beans_gate_new().address() as int
             }
         } else if arguments.len() != 0 {
             result.items.push(

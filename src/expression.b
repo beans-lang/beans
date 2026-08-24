@@ -825,7 +825,8 @@ class ExpressionChecker {
         }
         if type.name == "Mutex" ||
            type.name == "Atomic" ||
-           type.name == "AtomicInt" {
+           type.name == "AtomicInt" ||
+           type.name == "Gate" {
             return trait == "Clone"
         }
         if type.name == "Channel" && type.args.len() == 1 {
@@ -2941,6 +2942,15 @@ class ExpressionChecker {
             if name == "store" {
                 return some(new BuiltinSignature(
                     [integer], unit))
+            }
+        }
+        if receiver.name == "Gate" {
+            if name == "wait" || name == "open" {
+                return some(new BuiltinSignature([], unit))
+            }
+            if name == "is_open" {
+                return some(new BuiltinSignature(
+                    [], new HirType("bool")))
             }
         }
         if receiver.name == "Atomic" &&
@@ -8446,6 +8456,17 @@ class ExpressionChecker {
             let result: HirNode =
                 self.make_node(node, "new", "AtomicInt", type)
             result.resolved = "AtomicInt.init"
+            self.check_builtin_arguments(
+                node, 1, signature, result)
+            self.expect_type(node, type, expected)
+            return result
+        }
+        if type.name == "Gate" {
+            let signature: BuiltinSignature =
+                new BuiltinSignature([], type)
+            let result: HirNode =
+                self.make_node(node, "new", "Gate", type)
+            result.resolved = "Gate.init"
             self.check_builtin_arguments(
                 node, 1, signature, result)
             self.expect_type(node, type, expected)

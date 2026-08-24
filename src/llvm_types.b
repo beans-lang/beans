@@ -28,7 +28,7 @@ fn llvm_type(type: HirType) -> string {
         return "[{type.array_length} x {element}]"
     }
     if name == "Error" || name == "Bytes" ||
-       name == "AtomicInt" ||
+       name == "AtomicInt" || name == "Gate" ||
        name == "File" || name == "MMap" {
         return "ptr"
     }
@@ -135,6 +135,7 @@ fn llvm_type_is_reference(type: HirType) -> bool {
     if name == "string" || name == "List" ||
        name == "Map" || name == "OrderedMap" ||
        name == "Error" || name == "AtomicInt" ||
+       name == "Gate" ||
        name == "Bytes" || name == "File" ||
        name == "MMap" || name == "fn" {
         return true

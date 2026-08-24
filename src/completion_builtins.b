@@ -28,10 +28,11 @@ fn semantic_builtin_member_names() -> List<string> {
             "ge", "get", "get_i64", "get_u16", "get_u32", "get_u64",
             "get_u8", "get_uvarint", "gt", "index_of", "insert",
             "is_empty", "is_expired", "is_nan", "is_none", "is_null", "is_ok",
+            "is_open",
             "is_some", "join", "keys", "lane", "lane_count", "last",
             "le", "len", "lines", "load", "lock", "lt", "max",
             "min", "mul", "ne", "notify_all", "notify_one",
-            "offset", "or", "parse_int_range_or", "pop", "product",
+            "offset", "open", "or", "parse_int_range_or", "pop", "product",
             "push", "put_i64", "put_u16", "put_u32", "put_u64",
             "put_u8", "range_equals", "read", "read_at", "read_text",
             "read_text_at",
@@ -76,7 +77,8 @@ fn semantic_builtin_type_names() -> List<string> {
             "List", "Map", "OrderedMap", "Option", "Result", "Box",
             "Arena", "Shared", "Weak", "Mutex", "Atomic", "Channel",
             "Thread", "Brew", "Bytes", "File", "Dir", "MMap", "Error",
-            "RawSlice", "AtomicInt", "MemoryOrder", "RoundingMode",
+            "RawSlice", "AtomicInt", "Gate",
+            "MemoryOrder", "RoundingMode",
             "CpuFeature", "StoredCallback", "LocalStoredCallback",
             "CFunctionPtr", "Self"]
 }

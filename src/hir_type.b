@@ -184,6 +184,7 @@ fn builtin_class_name(name: string) -> bool {
            name == "Weak" || name == "Mutex" ||
            name == "Atomic" || name == "Channel" ||
            name == "Thread" || name == "AtomicInt" ||
+           name == "Gate" ||
            name == "Brew" ||
            name == "StoredCallback" ||
            name == "LocalStoredCallback" ||
@@ -201,7 +202,7 @@ fn builtin_thread_policy(type: HirType) -> string {
        name == "unit" || name == "RawPtr" ||
        name == "CFunctionPtr" || name == "Slice" ||
        name == "Error" || name == "Atomic" ||
-       name == "AtomicInt" ||
+       name == "AtomicInt" || name == "Gate" ||
        simd_description(name).is_some() {
         return "always"
     }

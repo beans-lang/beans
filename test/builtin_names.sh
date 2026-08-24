@@ -52,6 +52,7 @@ run_lf() {
 RESERVED="unit bool string decimal int i8 i16 i32 i64 uint byte u8 u16 u32
 u64 f32 f64 float List Map OrderedMap Thread Brew Mutex Channel Box Arena
 Shared Weak RawPtr Slice Atomic StoredCallback Option Result Error AtomicInt
+Gate
 Bytes File Dir MMap RawSlice MemoryOrder RoundingMode CpuFeature Clone Eq
 Hash Order Send Sync Self Simd2f64 Simd4f32 Simd4i32 Simd8i16 Simd16u8
 Simd2i64"

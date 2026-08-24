@@ -949,6 +949,43 @@ partial class LlvmTextEmitter {
         return ""
     }
 
+    // Gate (spec/CONCURRENCY.md, F3): wait parks the calling fiber until
+    // open fires; both lower to plain runtime calls on the handle.
+    fn emit_gate_method(
+        function: MirFunction,
+        instruction: MirInstruction,
+        values: Map<int, string>) -> string {
+        let receiver: string =
+            self.value(
+                function, values,
+                instruction.operands[0], instruction)
+        let result: string = "%v{instruction.result}"
+        if instruction.text == "wait" {
+            self.require_declare(
+                "beans_gate_wait",
+                "void @beans_gate_wait(ptr)")
+            return "  call void @beans_gate_wait(ptr {receiver})\n"
+        }
+        if instruction.text == "open" {
+            self.require_declare(
+                "beans_gate_open",
+                "void @beans_gate_open(ptr)")
+            return "  call void @beans_gate_open(ptr {receiver})\n"
+        }
+        if instruction.text == "is_open" {
+            self.require_declare(
+                "beans_gate_is_open",
+                "i64 @beans_gate_is_open(ptr)")
+            values[instruction.result] = result
+            let id: int = instruction.result
+            return "  %gate.open{id} = call i64 @beans_gate_is_open(ptr {receiver})\n  {result} = icmp ne i64 %gate.open{id}, 0\n"
+        }
+        self.fail(
+            instruction,
+            "LLVM emitter does not support builtin method 'Gate.{instruction.text}' yet")
+        return ""
+    }
+
     // registered defers run newest-first at every normal exit; each
     // site's armed flag keeps an exit that sits above the defer
     // statement (a `?` before it) from running an unregistered one

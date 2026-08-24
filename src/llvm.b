@@ -1009,6 +1009,16 @@ partial class LlvmTextEmitter {
                       self.value_type(
                           function,
                           instruction.operands[0]).name) ==
+                      "Gate" {
+            output =
+                self.emit_gate_method(
+                    function, instruction, values)
+        } else if instruction.op == "builtin_method" &&
+                  instruction.operands.len() != 0 &&
+                  canonical_hir_name(
+                      self.value_type(
+                          function,
+                          instruction.operands[0]).name) ==
                       "Atomic" {
             output =
                 self.emit_atomic_method(
