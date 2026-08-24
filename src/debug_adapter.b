@@ -86,7 +86,7 @@ fn dap_event(kind: string, sequence: int, body: string) {
 }
 
 // Build the program the debugger will run: the same pipeline `beansc run`
-// uses, including the async expansion, so what stops is what would execute.
+// uses, so what stops is what would execute.
 class DebugBuild {
     ok: bool
     program: Option<HirProgram>
@@ -130,12 +130,6 @@ fn dap_build(entry: string) -> DebugBuild {
     if !expressions.run() {
         result.message =
             dap_first_error(expressions.errors, entry)
-        return result
-    }
-    let expander: AsyncExpander = new AsyncExpander(signatures)
-    if !expander.run() {
-        result.message =
-            dap_first_error(expander.errors, entry)
         return result
     }
     var has_main: bool = false

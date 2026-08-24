@@ -150,7 +150,6 @@ test-semantics: $(BIN)
 	./test/fixed_arrays.sh
 	bash ./test/closure_captures.sh
 	bash ./test/send_functions.sh
-	bash ./test/async.sh
 	bash ./test/mir.sh
 	bash ./test/devirtualize.sh
 	bash ./test/default_eval_order.sh
@@ -301,7 +300,6 @@ test-core: $(BIN)
 	./test/stored_callbacks.sh
 	bash ./test/same_thread_callbacks.sh
 	bash ./test/closure_captures.sh
-	bash ./test/async.sh
 	./test/stdlib_source.sh
 	bash ./test/api_names.sh
 	bash ./test/encoding.sh

@@ -2,6 +2,25 @@
 
 This file records user-facing changes in each Beans release.
 
+## [Unreleased]
+
+### Removed
+
+- `async` and `await` left the language. They were contextual words, so
+  every program that used them as ordinary identifiers keeps compiling;
+  programs that declared `async fn`, wrote `await`, or started `async let`
+  children no longer parse as before and now get ordinary syntax errors.
+  The state-machine expander, the hidden `std.async$rt` package,
+  `net.readable`/`net.writable`, the reflection `is_async()` accessors, and
+  the runtime's hidden executor entries (`beans_task_slot`,
+  `beans_set_task_slot`, the `beans_reactor_*` parked-readiness registry)
+  are all gone; the runtime ABI is now 10. The lowering was measured at
+  roughly four times the CPU cost of the equivalent sync code, which is why
+  it goes: its replacement — pinned fibers with uncolored functions and a
+  structured `brew` spawn — is tracked as ROADMAP P4. Threads, channels,
+  atomics, mutexes, and `std.poll` readiness waits are unchanged and remain
+  the way Beans does concurrency today.
+
 ## [0.1.30] - 2026-08-24
 
 ### Added

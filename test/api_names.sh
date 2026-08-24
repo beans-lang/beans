@@ -246,16 +246,6 @@ reject bytes_pkg_varint_size "has no function 'varint_size'" \
     'fn main() {' \
     '    let n: int = bytes.varint_size(1)' \
     '}'
-reject net_await_readable "has no function 'await_readable'" \
-    'import std.net' \
-    'async fn main() {' \
-    '    let woke: bool = await net.await_readable(0 - 1)' \
-    '}'
-reject net_await_writable "has no function 'await_writable'" \
-    'import std.net' \
-    'async fn main() {' \
-    '    let woke: bool = await net.await_writable(0 - 1)' \
-    '}'
 reject net_address_text "has no method 'text'" \
     'import std.net' \
     'fn main() {' \

@@ -48,8 +48,6 @@ if ./build/beansc check test/cases/map_iteration_bad.b \
 fi
 grep -q "map iteration needs key and value bindings" "$tmp/iteration.bad"
 grep -q "two loop bindings require Map or OrderedMap" "$tmp/iteration.bad"
-grep -q "direct map iteration is not supported in async functions yet" \
-    "$tmp/iteration.bad"
 
 if ./build/beansc run test/cases/map_iteration_mutation.b \
     >"$tmp/mutation.interp" 2>&1; then

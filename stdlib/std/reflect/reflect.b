@@ -715,11 +715,6 @@ pub class Method {
             self.receiver.qualified, self.method_name) & 2) != 0
     }
 
-    pub fn is_async() -> bool {
-        return (rt.method_flags(
-            self.receiver.qualified, self.method_name) & 4) != 0
-    }
-
     pub fn is_generic() -> bool {
         return (rt.method_flags(
             self.receiver.qualified, self.method_name) & 8) != 0
@@ -784,10 +779,6 @@ pub class Initializer {
 
     pub fn is_public() -> bool {
         return (rt.initializer_flags(self.owner.qualified) & 1) != 0
-    }
-
-    pub fn is_async() -> bool {
-        return (rt.initializer_flags(self.owner.qualified) & 4) != 0
     }
 
     pub fn is_generic() -> bool {
@@ -876,9 +867,6 @@ pub class Function {
     }
     pub fn is_public() -> bool {
         return (rt.function_flags(self.qualified) & 1) != 0
-    }
-    pub fn is_async() -> bool {
-        return (rt.function_flags(self.qualified) & 4) != 0
     }
     pub fn is_generic() -> bool {
         return (rt.function_flags(self.qualified) & 8) != 0

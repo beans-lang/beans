@@ -659,16 +659,3 @@ pub unique class UdpSocket implements Send {
 // is a named static on the class it produces — the same shape as `File.open` and
 // `MMap.open`. So it is `TcpListener.bind(...)`, not `net.listen(...)`.
 
-/// Suspends the calling async function until `handle` has data to read (or a
-/// connection to accept). The handle comes from `.poll_handle()` on a socket —
-/// or is any readable descriptor, a pipe included. Level-triggered: if data is
-/// already there, this completes on the spot.
-///
-/// The body below never runs: the async expander lowers a call to this into a
-/// parked readiness await on the hidden reactor, which the driver blocks on —
-/// no busy spin.
-pub async fn readable(handle: int) -> bool { return true }
-
-/// Suspends the calling async function until `handle` has room to write.
-/// Otherwise exactly `readable`.
-pub async fn writable(handle: int) -> bool { return true }

@@ -56,7 +56,7 @@ for compiler in "${compilers[@]}"; do
         >"$tmp/runtime-hooks-native-out.$(basename "$compiler")"
     diff -u test/cases/runtime_hooks_ok.out \
         "$tmp/runtime-hooks-native-out.$(basename "$compiler")"
-    for runtime_case in runtime_hooks_threads runtime_hooks_async; do
+    for runtime_case in runtime_hooks_threads; do
         "$compiler" check "test/cases/$runtime_case.b" \
             >"$tmp/$runtime_case-check.$(basename "$compiler")"
         perl -e 'alarm 45; exec @ARGV' \
@@ -102,12 +102,6 @@ for compiler in "${compilers[@]}"; do
         "@runtime_start needs a concrete" \
         "a lifecycle function cannot be both @runtime_start and @runtime_stop" \
         "@runtime_hook handler cannot itself use a runtime hook annotation"
-    reject_with "$compiler" \
-        test/cases/runtime_hooks_async_bad.b runtime_hooks_async \
-        "@runtime_hook before handler 'main.rejected_async_handler' must be a concrete, synchronous" \
-        "runtime hook annotation '@active' needs a concrete, synchronous" \
-        "@runtime_start needs a concrete, synchronous" \
-        "@runtime_stop needs a concrete, synchronous"
     reject_with "$compiler" test/cases/encoding_json_typed_bad.b json_typed \
         "JSON name 'same' maps to both 'first' and 'second'" \
         "ignored JSON field 'value' needs a default value" \

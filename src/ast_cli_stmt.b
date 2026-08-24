@@ -30,9 +30,7 @@ fn cli_ast_statement(node: AstNode, depth: int) -> string {
                     " = {cli_ast_expression(child, depth)}"
             }
         }
-        var marker: string = ""
-        if node.note == "async" { marker = "async " }
-        return "{prefix}{marker}{node.kind} {node.value}: {type}{value}\n"
+        return "{prefix}{node.kind} {node.value}: {type}{value}\n"
     }
     if node.kind == "assign" {
         if node.children.len() < 2 {
@@ -140,9 +138,6 @@ fn cli_ast_function(node: AstNode, depth: int) -> string {
     }
     if node.value.contains("abstract ") {
         prefix = "{prefix}abstract "
-    }
-    if value_marks_async(node.value) {
-        prefix = "{prefix}async "
     }
     if node.value.contains("feature ") {
         let parts: List<string> = node.value.split(" ")

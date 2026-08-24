@@ -45,14 +45,6 @@
 #define BEANS_RT_MINIMAL 2
 #define BEANS_RT_FULL 3
 
-#if BEANS_RT_PROFILE >= BEANS_RT_FULL
-// Defined with the readiness reactor far below; every runtime path that
-// closes a descriptor reports it here so a parked await on that number
-// finishes false instead of attaching itself to whatever resource the
-// OS hands the number to next.
-void beans_reactor_note_close(long long fd);
-#endif
-
 // ---- portable decimal ------------------------------------------------------
 //
 // Decimal carries a signed 128-bit coefficient as two u64 limbs. It therefore
@@ -1489,16 +1481,12 @@ static void* cc_free_shell(void* p, long long meta) {
             if (m->p) munmap(m->p, (size_t)m->len);
 #endif
             if (m->fd >= 0) {
-                beans_reactor_note_close(m->fd);
                 close((int)m->fd);
             }
 #endif
         } else {
             BFile* f = p; // net; close() / f.close() is the real API
             if (f->fd >= 0) {
-#if BEANS_RT_PROFILE >= BEANS_RT_FULL
-                beans_reactor_note_close(f->fd);
-#endif
                 close((int)f->fd);
             }
         }
@@ -7709,9 +7697,6 @@ BRes beans_file_close(BFile* f) {
     // cc_free_shell, when no thread can hold it. This mirrors the collector's
     // own "don't touch shared resources while mutators run" gate. Zero cost
     // single-threaded, where cc_threads is 0 and the fd closes now.
-#if BEANS_RT_PROFILE >= BEANS_RT_FULL
-    beans_reactor_note_close(f->fd);
-#endif
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
     if (cc_threads > 0) return (BRes){1, NULL};
 #endif
@@ -8873,9 +8858,6 @@ long long beans_proc_read_to_end_out(long long fd, long long limit, void** e_out
 
 BRes beans_proc_close(long long fd) {
     if (fd < 0) return (BRes){0, mk_error("stream is closed", "closed")};
-#if BEANS_RT_PROFILE >= BEANS_RT_FULL
-    beans_reactor_note_close(fd);
-#endif
     if (close((int)fd) != 0 && errno != EINTR)
         return (BRes){0, op_err_obj("close", errno)};
     return (BRes){1, NULL};
@@ -9157,9 +9139,6 @@ long long beans_mmap_flush_range_out(BMMap* m, long long pos, long long n, void*
 BRes beans_mmap_close(BMMap* m) {
     if (m->closed) return (BRes){0, mk_error("mmap already closed", "closed")};
     m->closed = 1;
-#if BEANS_RT_PROFILE >= BEANS_RT_FULL
-    if (m->fd >= 0) beans_reactor_note_close(m->fd);
-#endif
     // defer munmap+close while workers run (see beans_file_close): a racing op
     // reading through the mapping must not have it pulled out from under it
     if (cc_threads > 0) return (BRes){1, NULL};
@@ -11394,11 +11373,6 @@ long long beans_net_set_nonblocking_out(long long fd, long long on, void** e_out
 BRes beans_net_close(long long fd) {
     net_init();
     if (fd < 0) return (BRes){0, net_closed_err("close")};
-    // A parked await on this number must finish false off its dead flag,
-    // never off whatever resource the number is reused for. Marked before
-    // the close so no window exists where the number is free but the
-    // entry still looks live.
-    beans_reactor_note_close(fd);
     // EINTR from close must not be retried: on Linux the descriptor is already gone,
     // so a retry would close whatever number was handed out next.
     if (net_close(net_fd_of(fd)) != 0 && net_errno() != EINTR)
@@ -12288,253 +12262,6 @@ BRes beans_poll_close(long long poller, long long wake_read, long long handle) {
 }
 long long beans_poll_close_out(long long poller, long long wake_read, long long handle, void** e_out) { BRes r = beans_poll_close(poller, wake_read, handle); *e_out = r.err; return r.val; }
 
-// ---- hidden async executor state --------------------------------------------
-//
-// Four thread-local slots the async runtime package threads its reactor
-// through: [0..2] the shared poller triple from ready.open, [3] the number of
-// parked readiness awaits. State lives here because Beans has no globals and
-// the park tasks, the driver, and cancellation all need the same poller.
-// Thread-local, so each thread that drives async work gets its own executor.
-static _Thread_local long long beans_task_slots[4];
-
-long long beans_task_slot(long long index) {
-    return beans_task_slots[index & 3];
-}
-
-long long beans_set_task_slot(long long index, long long value) {
-    beans_task_slots[index & 3] = value;
-    return 1;
-}
-
-// Parked awaits are shared state. A worker may close a descriptor owned by an
-// executor on another thread, so a thread-local table loses the notification
-// and leaves that executor asleep forever. The registry is protected by one
-// mutex; every lookup and mutation, including cancellation and shutdown, goes
-// through it.
-//
-// The executor itself still stays thread-local. `owner` separates two reactors
-// that happen to watch the same descriptor, while the globally unique token is
-// the await's stable identity after close and descriptor reuse. `wake` is the
-// poller's slot-plus-generation handle, never its raw write descriptor. A close
-// copies those handles under this mutex and wakes them only after unlocking, so
-// no reactor mutex is nested and a concurrent shutdown merely makes the copied
-// handle stale.
-#define BEANS_PARKED_MAX 64
-typedef struct BeansParked {
-    long long fd;
-    long long token;
-    long long owner;
-    long long wake;
-    int dead;
-    struct BeansParked* next;
-} BeansParked;
-static BeansParked* beans_parked;
-static long long beans_parked_token_next;
-static long long beans_parked_owner_next;
-static pthread_mutex_t beans_parked_lock = PTHREAD_MUTEX_INITIALIZER;
-static _Thread_local long long beans_parked_owner;
-
-static long long beans_reactor_owner_locked(void) {
-    if (beans_parked_owner == 0) {
-        beans_parked_owner = ++beans_parked_owner_next;
-        if (beans_parked_owner <= 0) {
-            beans_parked_owner_next = 1;
-            beans_parked_owner = 1;
-        }
-    }
-    return beans_parked_owner;
-}
-
-// Validation is deliberately done here, before std.async opens its shared
-// reactor. POSIX fcntl checks every descriptor kind without allocating one.
-// Windows readiness accepts sockets only, so SO_TYPE is the matching
-// allocation-free handle check (after the process-wide WSA startup latch).
-static int beans_reactor_fd_valid(long long fd) {
-#if defined(_WIN32)
-    if (fd < 0) return 0;
-    net_init();
-    int type = 0;
-    int len = sizeof type;
-    return getsockopt(net_fd_of(fd), SOL_SOCKET, SO_TYPE, (char*)&type, &len) == 0;
-#else
-    if (fd < 0 || fd > INT_MAX) return 0;
-    return fcntl((int)fd, F_GETFD, 0) >= 0;
-#endif
-}
-
-// token (> 0) = noted, 0 = duplicate live park in this executor,
-// -1 = this executor's table is full, -2 = invalid descriptor. These remain
-// separate so the async layer can return false only for the invalid case.
-long long beans_reactor_note_park(long long fd) {
-    pthread_mutex_lock(&beans_parked_lock);
-    if (!beans_reactor_fd_valid(fd)) {
-        pthread_mutex_unlock(&beans_parked_lock);
-        return -2;
-    }
-    long long owner = beans_reactor_owner_locked();
-    long long count = 0;
-    for (BeansParked* p = beans_parked; p; p = p->next) {
-        if (p->owner != owner) continue;
-        count++;
-        if (!p->dead && p->fd == fd) {
-            pthread_mutex_unlock(&beans_parked_lock);
-            return 0;
-        }
-    }
-    if (count == BEANS_PARKED_MAX) {
-        pthread_mutex_unlock(&beans_parked_lock);
-        return -1;
-    }
-    BeansParked* p = malloc(sizeof *p);
-    if (!p) {
-        pthread_mutex_unlock(&beans_parked_lock);
-        return -1;
-    }
-    long long token = ++beans_parked_token_next;
-    if (token <= 0) token = beans_parked_token_next = 1;
-    p->fd = fd;
-    p->token = token;
-    p->owner = owner;
-    p->wake = 0;
-    p->dead = 0;
-    p->next = beans_parked;
-    beans_parked = p;
-    pthread_mutex_unlock(&beans_parked_lock);
-    return token;
-}
-
-// Connects a reserved token to its owning reactor after that reactor opens.
-// 1 = live and bound, 0 = the descriptor closed in between or token unknown.
-long long beans_reactor_bind_park(long long token, long long wake) {
-    pthread_mutex_lock(&beans_parked_lock);
-    long long owner = beans_parked_owner;
-    for (BeansParked* p = beans_parked; p; p = p->next) {
-        if (p->owner != owner || p->token != token) continue;
-        p->wake = wake;
-        long long live = p->dead ? 0 : 1;
-        pthread_mutex_unlock(&beans_parked_lock);
-        return live;
-    }
-    pthread_mutex_unlock(&beans_parked_lock);
-    return 0;
-}
-
-// 1 = removed, 0 = no entry owned by this executor carries that token.
-long long beans_reactor_forget_park(long long token) {
-    pthread_mutex_lock(&beans_parked_lock);
-    BeansParked** at = &beans_parked;
-    while (*at) {
-        BeansParked* p = *at;
-        if (p->owner == beans_parked_owner && p->token == token) {
-            *at = p->next;
-            free(p);
-            pthread_mutex_unlock(&beans_parked_lock);
-            return 1;
-        }
-        at = &p->next;
-    }
-    pthread_mutex_unlock(&beans_parked_lock);
-    return 0;
-}
-
-// 1 = the parked descriptor was closed under the await, 0 = still live,
-// -1 = no entry owned by this executor carries that token.
-long long beans_reactor_park_dead(long long token) {
-    pthread_mutex_lock(&beans_parked_lock);
-    for (BeansParked* p = beans_parked; p; p = p->next) {
-        if (p->owner != beans_parked_owner || p->token != token) continue;
-        long long dead = p->dead ? 1 : 0;
-        pthread_mutex_unlock(&beans_parked_lock);
-        return dead;
-    }
-    pthread_mutex_unlock(&beans_parked_lock);
-    return -1;
-}
-
-// Every runtime path that closes a descriptor reports it here. Mark every
-// matching token across all executors, then wake each distinct owning reactor.
-// Waking outside the registry mutex avoids lock inversion with reactor close.
-void beans_reactor_note_close(long long fd) {
-    int more;
-    do {
-        long long wakes[BEANS_PARKED_MAX];
-        int wake_count = 0;
-        more = 0;
-        pthread_mutex_lock(&beans_parked_lock);
-        for (BeansParked* p = beans_parked; p; p = p->next) {
-            if (p->dead || p->fd != fd) continue;
-            if (p->wake == 0) {
-                p->dead = 1;
-                continue;
-            }
-            int seen = 0;
-            for (int i = 0; i < wake_count; i++)
-                if (wakes[i] == p->wake) seen = 1;
-            if (seen) {
-                p->dead = 1;
-                continue;
-            }
-            if (wake_count == BEANS_PARKED_MAX) {
-                more = 1;
-                continue;
-            }
-            p->dead = 1;
-            wakes[wake_count++] = p->wake;
-        }
-        pthread_mutex_unlock(&beans_parked_lock);
-        for (int i = 0; i < wake_count; i++) {
-            BRes ignored = beans_poll_wake(wakes[i]);
-            if (ignored.err) beans_release(ignored.err);
-        }
-    } while (more);
-}
-
-// 1 when some park owned by this executor can never fire, else -1. The
-// POSIX probe is a fallback for a close that bypassed the runtime. Runtime
-// closes use the dead flag and active wake above, which remains the only
-// reliable path once a descriptor number has already been reused.
-long long beans_reactor_stale_park(void) {
-    pthread_mutex_lock(&beans_parked_lock);
-    for (BeansParked* p = beans_parked; p; p = p->next) {
-        if (p->owner != beans_parked_owner) continue;
-        if (p->dead) {
-            pthread_mutex_unlock(&beans_parked_lock);
-            return 1;
-        }
-#if !defined(_WIN32)
-        if (!beans_reactor_fd_valid(p->fd)) {
-            p->dead = 1;
-            pthread_mutex_unlock(&beans_parked_lock);
-            return 1;
-        }
-#endif
-    }
-    pthread_mutex_unlock(&beans_parked_lock);
-    return -1;
-}
-
-// Interpreter processes can drive several programs in sequence. The end of
-// shutdown drops any leftover entries for this executor and gives the next run
-// a fresh owner identity. If a close copied the old wake handle just before the
-// poller closed, its generation check now reports stale rather than using a
-// recycled descriptor.
-long long beans_reactor_shutdown_parks(void) {
-    pthread_mutex_lock(&beans_parked_lock);
-    BeansParked** at = &beans_parked;
-    while (*at) {
-        BeansParked* p = *at;
-        if (p->owner == beans_parked_owner) {
-            *at = p->next;
-            free(p);
-        } else {
-            at = &p->next;
-        }
-    }
-    beans_parked_owner = 0;
-    pthread_mutex_unlock(&beans_parked_lock);
-    return 1;
-}
-
 #endif // BEANS_RT_PROFILE >= BEANS_RT_FULL — sockets + readiness poller
 
 #if BEANS_RT_PROFILE >= BEANS_RT_FULL && !defined(_WIN32)
@@ -12790,7 +12517,6 @@ BRes beans_signal_close(long long fd, BList* packed) {
     } else if (error) {
         beans_release(error);
     }
-    beans_reactor_note_close(fd);
     if (close((int)fd) != 0 && errno != EINTR)
         return (BRes){0, op_err_obj("signal close", errno)};
     return (BRes){1, NULL};

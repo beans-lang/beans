@@ -33,7 +33,7 @@ fn semantic_import_completion_context(
 // Native packages have no directory, so keep their public names here too.
 fn semantic_std_import_paths() -> List<string> {
     var packages: List<string> = [
-        "std.asm", "std.async", "std.c", "std.cpu", "std.dl",
+        "std.asm", "std.c", "std.cpu", "std.dl",
         "std.intrinsic", "std.io", "std.os", "std.process",
         "std.random", "std.signal", "std.sock", "std.target",
         "std.thread", "std.time"]

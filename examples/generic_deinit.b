@@ -38,9 +38,9 @@ unique class Ticket<T> {
     }
 }
 
-// Tickets come from a factory, the same shape the compiler's async task
-// makers use: the closure captures the factory's locals, the caller's frame
-// only holds the ticket, so nothing keeps the pair alive in a cycle.
+// Tickets come from a factory: the closure captures the factory's locals,
+// the caller's frame only holds the ticket, so nothing keeps the pair
+// alive in a cycle.
 fn numbered_ticket(start: int) -> Ticket<int> {
     var serial: int = start
     return new Ticket<int>(fn() -> int {

@@ -71,7 +71,7 @@ bad argument types, inaccessible members, unsupported signatures, and errors
 reported by the called operation. A reflected call cannot expose `deinit`.
 
 Open generic declarations have metadata but cannot be called. The first
-runtime version also rejects reflected calls to async, `extern`, variadic, and
+runtime version also rejects reflected calls to `extern`, variadic, and
 `inout` signatures. Those forms need a separate execution design; silently
 calling them with the wrong ownership or ABI would be unsafe.
 
@@ -132,7 +132,7 @@ public. Union construction and overlapping field access stay unsupported.
 - [x] Implement checked class/struct construction and enum variant creation.
 - [x] Implement checked public sync calls for functions, static methods,
       instance methods, virtual methods, and initializers.
-- [x] Reject `deinit`, open generic, async, extern, variadic, and `inout` calls
+- [x] Reject `deinit`, open generic, extern, variadic, and `inout` calls
       with stable reflection error kinds.
 - [x] Support all operations in both tree interpreters and both LLVM emitters.
 - [x] Cover ownership, inheritance, overrides, visibility, generics,

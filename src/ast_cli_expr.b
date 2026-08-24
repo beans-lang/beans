@@ -22,10 +22,6 @@ fn cli_ast_expression(node: AstNode, depth: int) -> string {
         if node.children.len() == 0 { return "({node.value}?)" }
         return "({node.value}{cli_ast_expression(node.children[0], depth)})"
     }
-    if node.kind == "await" {
-        if node.children.len() == 0 { return "(await ?)" }
-        return "(await {cli_ast_expression(node.children[0], depth)})"
-    }
     if node.kind == "binary" {
         if node.children.len() < 2 { return "(? {node.value} ?)" }
         let spacing: string =

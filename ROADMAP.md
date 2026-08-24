@@ -23,7 +23,7 @@ Beans stays small and readable:
 | frontend | packages, resolver, generic checker, typed annotations and reflection, generated JSON/XML decoding, typed HIR, checked MIR and ownership verification |
 | execution | reference interpreter plus MIR-to-LLVM native debug/release/LTO builds |
 | memory | ARC, move checking, typed wide storage and cycle collection |
-| concurrency | OS threads, `Send`/`Sync`, atomics, mutexes, channels and structured async/await |
+| concurrency | OS threads, `Send`/`Sync`, atomics, mutexes and channels |
 | modules | canonical package identities, Git dependencies, hashed locks, locked/offline builds |
 | C interop | imports, exports, headers, bindgen, records/unions, globals, TLS, errno and callbacks |
 | tooling | semantic LSP, interpreter DAP debugger and platform native debug artifacts |
@@ -210,17 +210,25 @@ not part of the hosted 1.0 production promise.
   today requests are intentionally processed in order.
 - [ ] Expand editor clients without moving semantic logic out of the compiler.
 
-### P4 — async v2, language design after the 1.0 gate
+### P4 — fibers, language concurrency after the 1.0 gate
 
-Espresso's `respond_later` plus `WorkerPool` covers blocking handlers today;
-async v2 is the language ending that makes that deferral an implementation
-detail behind async handlers. This is a design effort, not a checklist item,
-and nothing in it blocks the 1.0 gate.
+The `async`/`await` effect system was removed from the language (its state
+machine lowering lost to plain sync code on every benchmark), and its
+successor is pinned fibers: stackful green threads that run ordinary
+compiled code and never migrate off the OS worker that started them, so
+non-atomic refcounts, owner-local cycle collection, and raw C-bridge frames
+all stay valid. Espresso's `respond_later` plus `WorkerPool` covers blocking
+handlers until it lands. This is a design-then-build effort, not a checklist
+item, and nothing in it blocks the 1.0 gate.
 
-- [ ] Async closures: async function values that can be stored in fields,
-  passed as parameters and called through variables.
-- [ ] Dynamic task groups beyond lexical `async let` children.
-- [ ] Lift the 64-parked-await-per-executor limit.
+- [ ] Design record: `brew` structured spawn semantics, park-capability
+  inference and its static walls, per-fiber panic containment, and the
+  interpreter differential strategy.
+- [ ] Fiber runtime core: context switch (arm64, x86-64 SysV, Windows x64),
+  per-worker run queue, guarded lazily-committed stacks, reactor wiring.
+- [ ] Compiler: parse/check/lower `brew`, refusals at the walls, panics as
+  per-fiber unwinds.
+- [ ] Std and espresso on one engine, benched against the sync baseline.
 - [ ] A shared-graph cycle design that does not require all workers to drain
   (shares its fate with the P1 shared-boundary item).
 

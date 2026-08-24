@@ -527,9 +527,8 @@ class TreeInterpreter {
     fn declaration(name: string) ->
         Option<HirDeclaration> {
         // Exact qualified matches first: a dependency's class may share its
-        // short name with one from the root package (user Task beside
-        // std.async's Task), and the short-name fallback must not let
-        // whichever loaded first shadow the other.
+        // short name with one from the root package, and the short-name
+        // fallback must not let whichever loaded first shadow the other.
         for declaration: HirDeclaration in
             self.program.declarations {
             if declaration.qualified == name {
@@ -993,7 +992,6 @@ class TreeInterpreter {
         var flags: int = 0
         if function.is_public { flags = flags | 1 }
         if function.is_static { flags = flags | 2 }
-        if function.is_async { flags = flags | 4 }
         if function.generics.len() != 0 { flags = flags | 8 }
         if function.is_extern_c { flags = flags | 16 }
         return flags
@@ -1774,8 +1772,7 @@ class TreeInterpreter {
                                         "reflected member is not public"
                                     return TreeValue.integer(0)
                                 }
-                                if item.callable.is_async ||
-                                   item.callable.generics.len() != 0 ||
+                                if item.callable.generics.len() != 0 ||
                                    item.callable.is_extern_c ||
                                    !item.callable.has_body {
                                     self.reflect_error_code = 5
@@ -1974,8 +1971,7 @@ class TreeInterpreter {
                             "reflected member is not public"
                         return TreeValue.integer(0)
                     }
-                    if function.is_async ||
-                       function.generics.len() != 0 ||
+                    if function.generics.len() != 0 ||
                        function.is_extern_c {
                         self.reflect_error_code = 5
                         self.reflect_error_message =
@@ -4610,44 +4606,6 @@ class TreeInterpreter {
                 host_sock.resolve(
                     arguments[0].text,
                     arguments[1].int_data))
-        }
-        if node.resolved == "std.ready.task_slot" &&
-           arguments.len() == 1 {
-            return TreeValue.integer(host_ready.task_slot(
-                arguments[0].int_data))
-        }
-        if node.resolved == "std.ready.set_task_slot" &&
-           arguments.len() == 2 {
-            return TreeValue.integer(host_ready.set_task_slot(
-                arguments[0].int_data,
-                arguments[1].int_data))
-        }
-        if node.resolved == "std.ready.park_note" &&
-           arguments.len() == 1 {
-            return TreeValue.integer(host_ready.park_note(
-                arguments[0].int_data))
-        }
-        if node.resolved == "std.ready.park_bind" &&
-           arguments.len() == 2 {
-            return TreeValue.integer(host_ready.park_bind(
-                arguments[0].int_data,
-                arguments[1].int_data))
-        }
-        if node.resolved == "std.ready.park_forget" &&
-           arguments.len() == 1 {
-            return TreeValue.integer(host_ready.park_forget(
-                arguments[0].int_data))
-        }
-        if node.resolved == "std.ready.park_stale" {
-            return TreeValue.integer(host_ready.park_stale())
-        }
-        if node.resolved == "std.ready.park_dead" &&
-           arguments.len() == 1 {
-            return TreeValue.integer(host_ready.park_dead(
-                arguments[0].int_data))
-        }
-        if node.resolved == "std.ready.park_shutdown" {
-            return TreeValue.integer(host_ready.park_shutdown())
         }
         if node.resolved == "std.ready.open" {
             return self.host_bytes_result(
@@ -12934,17 +12892,6 @@ class TreeInterpreter {
                     receiver: Option<TreeValue>,
                     move bindings: Map<string, HirType>) -> TreeValue {
         self.generic_type_bindings.push(move bindings)
-        if function.is_async && !function.expanded {
-            // The async expander rewrites every async body into a task
-            // maker before execution; reaching one here is a compiler bug,
-            // not a user error.
-            self.fail_extern(
-                function,
-                "internal: async function '{function.name}' was not expanded before execution")
-            self.generic_type_bindings.remove(
-                self.generic_type_bindings.len() - 1)
-            return TreeValue.unit()
-        }
         if function.is_extern_c && !function.is_c_export {
             let result: TreeValue = self.call_extern(
                 function, arguments)

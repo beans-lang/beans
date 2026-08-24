@@ -46,11 +46,6 @@ class ExpressionChecker {
     bad_send_captures: Map<string, bool>
     bad_sync_captures: Map<string, bool>
     next_binding_id: int
-    // Counts enclosing borrowed bindings of move-only values: a for-in
-    // element or a match payload. An await inside such a scope would have
-    // to keep the borrow alive across a suspension, which the task frame
-    // cannot do, so check_await refuses while this is nonzero.
-    move_only_borrow_depth: int
     // The type_args node of the call being checked, when the source wrote
     // explicit type arguments. A resolution that supports them takes the
     // node with take_call_generics(); check_call fails the call when they
@@ -87,7 +82,6 @@ class ExpressionChecker {
         self.bad_send_captures = {}
         self.bad_sync_captures = {}
         self.next_binding_id = 0
-        self.move_only_borrow_depth = 0
         self.call_generics_syntax = none
         self.call_generics_taken = true
         for function: HirFunction in self.program.functions {
@@ -687,8 +681,7 @@ class ExpressionChecker {
                              generic: string) -> bool {
         if type.name == generic { return true }
         // A function value that returns T owns the recipe, not a T. It can
-        // safely produce a fresh move-only value later (async Task<T> stores
-        // exactly this kind of take closure).
+        // safely produce a fresh move-only value later.
         if type.name == "fn" { return false }
         for argument: HirType in type.args {
             if self.type_mentions_generic(argument, generic) {
@@ -2154,15 +2147,6 @@ class ExpressionChecker {
         for parent: HirFunction in parents {
                 if parent.has_body || parent.is_abstract {
                     needs_override = true
-                }
-                if function.is_async != parent.is_async {
-                    self.fail(
-                        function.syntax,
-                        if parent.is_async {
-                            "'{function.name}' must be async to match the parent declaration"
-                        } else {
-                            "'{function.name}' cannot be async — the parent declaration is synchronous"
-                        })
                 }
                 let shared: int =
                     if function.parameters.len() <
@@ -4056,42 +4040,6 @@ class ExpressionChecker {
                     [integer, integer, integer],
                     hir_result(boolean)))
             }
-            // The hidden async executor's thread-local state: the shared
-            // reactor poller triple, the parked-await count, and the
-            // parked-descriptor table. Internal — only std.async$rt
-            // calls these.
-            if name == "task_slot" {
-                return some(new BuiltinSignature(
-                    [integer], integer))
-            }
-            if name == "set_task_slot" {
-                return some(new BuiltinSignature(
-                    [integer, integer], integer))
-            }
-            if name == "park_note" {
-                return some(new BuiltinSignature(
-                    [integer], integer))
-            }
-            if name == "park_bind" {
-                return some(new BuiltinSignature(
-                    [integer, integer], integer))
-            }
-            if name == "park_forget" {
-                return some(new BuiltinSignature(
-                    [integer], integer))
-            }
-            if name == "park_stale" {
-                return some(new BuiltinSignature(
-                    [], integer))
-            }
-            if name == "park_dead" {
-                return some(new BuiltinSignature(
-                    [integer], integer))
-            }
-            if name == "park_shutdown" {
-                return some(new BuiltinSignature(
-                    [], integer))
-            }
         }
         return none
     }
@@ -4101,8 +4049,8 @@ class ExpressionChecker {
         let result: HirNode = new HirNode(
             kind, value, type, self.current.file,
             node.line, node.col)
-        // The async expander reads types and argument modes from the AST,
-        // so every checked node keeps a handle to its lowering. Later
+        // Editor queries read types and argument modes from the AST, so
+        // every checked node keeps a handle to its lowering. Later
         // make_node calls for the same AST node overwrite earlier ones;
         // the final one is the node's real meaning.
         node.checked = some(result)
@@ -4344,17 +4292,8 @@ class ExpressionChecker {
             }
             let parser: Parser =
                 new Parser(move tokens)
-            // An interpolation piece is parsed with the surrounding body's
-            // async context so the refusal below can name the real
-            // problem instead of reporting a confused parse.
-            parser.in_async = self.current.is_async
             let expression: AstNode =
                 parser.parse_standalone_expression()
-            if ast_contains_await(expression) {
-                self.fail(
-                    node,
-                    "await is not allowed inside string interpolation — bind the awaited value to a local first")
-            }
             for diagnostic: Diagnostic in parser.errors {
                 self.fail(
                     node,
@@ -4566,17 +4505,7 @@ class ExpressionChecker {
         match self.find_local(node.value) {
             some(binding) => {
                 self.check_capture_use(node, binding)
-                if binding.move_state == "async_pending" {
-                    // the hidden handle never escapes: awaiting the
-                    // binding is its only read
-                    self.fail(
-                        node,
-                        "async let binding '{node.value}' must be awaited")
-                } else if binding.move_state == "async_done" {
-                    self.fail(
-                        node,
-                        "async let binding '{node.value}' was already awaited")
-                } else if binding.move_state == "moved" {
+                if binding.move_state == "moved" {
                     self.fail(
                         node,
                         "use of moved value '{node.value}'")
@@ -4660,7 +4589,7 @@ class ExpressionChecker {
     }
 
     // A named function used as a value, from its own package or another:
-    // one set of rules, so the two paths cannot drift. Extern C, async and
+    // one set of rules, so the two paths cannot drift. Extern C and
     // ownership-parameter functions are refused; a send fn expectation is
     // honoured because a named function captures nothing.
     fn function_value_node(node: AstNode,
@@ -4670,11 +4599,6 @@ class ExpressionChecker {
             self.fail(
                 node,
                 "extern C function '{function.name}' cannot be stored as a Beans function value yet")
-        }
-        if function.is_async {
-            self.fail(
-                node,
-                "'{function.name}' is async and cannot be stored as a function value — call it with await or 'async let'")
         }
         self.require_function_feature(
             node, function,
@@ -6419,7 +6343,6 @@ class ExpressionChecker {
                         self.make_node(
                             node, "call", function.name,
                             function.result)
-                    self.validate_async_call(node, function)
                     result.resolved = function.qualified
                     if function.generics.len() != 0 {
                         self.check_generic_arguments(
@@ -6973,33 +6896,6 @@ class ExpressionChecker {
         return some(result)
     }
 
-    // Asyncness is an effect on the callable. A call to an async function
-    // is legal only directly under await (or as an async let initializer);
-    // anywhere else it is a bare call, and a synchronous function has no
-    // way to wait at all.
-    fn validate_async_call(node: AstNode,
-                           function: HirFunction) {
-        if !function.is_async { return }
-        // After expansion the "async" function is really a synchronous
-        // task maker; the re-check of expanded bodies calls it bare.
-        if function.expanded { return }
-        // The allowance lives on the exact call node the await marked, so
-        // calls in receivers or arguments never inherit it.
-        let allowed: bool = node.await_allowed
-        node.await_allowed = false
-        if !self.current.is_async {
-            self.fail(
-                node,
-                "'{function.name}' is async and can only be called from an async function")
-            return
-        }
-        if !allowed {
-            self.fail(
-                node,
-                "async call must be awaited or started with 'async let'")
-        }
-    }
-
     fn take_call_generics() -> Option<AstNode> {
         self.call_generics_taken = true
         return self.call_generics_syntax
@@ -7035,22 +6931,16 @@ class ExpressionChecker {
     fn check_call_resolved(node: AstNode, callee: AstNode,
                            expected: HirType) -> HirNode {
         // Compiler-generated calls pin their callee to a canonical symbol.
-        // Async runtime calls use their private package prefix; runtime hooks
-        // carry an explicit note. Both skip source-scope visibility because
-        // the signature checker already validated the compiler wiring.
+        // Runtime hooks carry an explicit note and skip source-scope
+        // visibility because the signature checker already validated the
+        // compiler wiring.
         if callee.kind == "name" &&
-           (callee.resolved.starts_with("{async_rt_package()}::") ||
-            callee.note == "runtime_hook") {
+           callee.note == "runtime_hook" {
             match self.functions.get(callee.resolved) {
                 some(function) => {
                     let result: HirNode =
                         self.make_node(
-                            node,
-                            if callee.note == "runtime_hook" {
-                                "runtime_hook_call"
-                            } else {
-                                "call"
-                            },
+                            node, "runtime_hook_call",
                             function.name,
                             function.result)
                     result.resolved = function.qualified
@@ -7165,8 +7055,6 @@ class ExpressionChecker {
                             self.make_node(
                                 node, "super_call",
                                 callee.value, result_type)
-                        self.validate_async_call(
-                            node, target.function)
                         result.resolved =
                             target.function.qualified
                         self.check_arguments(
@@ -7254,8 +7142,6 @@ class ExpressionChecker {
                                         node, "static_call",
                                         function.name,
                                         function.result)
-                                self.validate_async_call(
-                                    node, function)
                                 result.resolved =
                                     function.qualified
                                 if function.generics.len() != 0 {
@@ -8094,8 +7980,6 @@ class ExpressionChecker {
                                 self.make_node(
                                     node, "method_call",
                                     function.name, result_type)
-                            self.validate_async_call(
-                                node, function)
                             result.resolved = function.qualified
                             result.dispatch_slot =
                                 hir_method_slot(
@@ -8378,7 +8262,6 @@ class ExpressionChecker {
                     self.make_node(
                         node, "call", function.name,
                         function.result)
-                self.validate_async_call(node, function)
                 result.resolved = function.qualified
                 if function.generics.len() != 0 {
                     self.check_generic_arguments(
@@ -9017,96 +8900,6 @@ class ExpressionChecker {
         self.expect_type(node, result_type, expected)
         let result: HirNode =
             self.make_node(node, "try", "", result_type)
-        result.children.push(operand)
-        return result
-    }
-
-    fn check_await(node: AstNode,
-                   expected: HirType) -> HirNode {
-        if !self.current.is_async {
-            self.fail(
-                node,
-                "await is only valid inside an async function")
-        } else if self.capture_floor_depth >= 0 {
-            self.fail(
-                node,
-                "await cannot be used inside a closure — only directly in the async function body")
-        } else if self.defer_depth > 0 {
-            self.fail(
-                node,
-                "await is not allowed inside defer")
-        } else if self.move_only_borrow_depth > 0 {
-            self.fail(
-                node,
-                "await cannot suspend while a loop or match borrows a move-only value — copy or move what you need first")
-        }
-        // Awaiting an async let binding produces its declared result,
-        // exactly once; the state flip is what rejects a second await.
-        if node.children[0].kind == "name" {
-            match self.find_local(node.children[0].value) {
-                some(binding) => {
-                    if binding.move_state == "async_pending" ||
-                       binding.move_state == "async_done" {
-                        if binding.move_state == "async_done" {
-                            self.fail(
-                                node,
-                                "async let binding '{node.children[0].value}' was already awaited")
-                        }
-                        binding.move_state = "async_done"
-                        let operand: HirNode = self.make_node(
-                            node.children[0], "local",
-                            node.children[0].value, binding.type)
-                        operand.binding_id = binding.id
-                        self.expect_type(
-                            node, binding.type, expected)
-                        let result: HirNode = self.make_node(
-                            node, "await", "child", binding.type)
-                        result.children.push(operand)
-                        return result
-                    }
-                }
-                none => {}
-            }
-        }
-        // The operand must be a direct call to an async function; the
-        // call's own checking consumes the allowance, so if it is still
-        // set afterwards nothing async was called.
-        if node.children[0].kind != "call" {
-            self.fail(
-                node,
-                "await needs a direct call to an async function")
-            let ignored: HirNode =
-                self.check_expression(
-                    node.children[0], no_hir_type())
-            let poisoned: HirNode = self.make_node(
-                node, "error", "await", poison_hir_type())
-            poisoned.children.push(ignored)
-            return poisoned
-        }
-        node.children[0].await_allowed = true
-        let operand: HirNode =
-            self.check_expression(
-                node.children[0], no_hir_type())
-        if node.children[0].await_allowed {
-            node.children[0].await_allowed = false
-            if operand.type.name != "poison" {
-                self.fail(
-                    node,
-                    "await needs a call to an async function — this call is synchronous")
-            }
-            let poisoned: HirNode = self.make_node(
-                node, "error", "await", poison_hir_type())
-            poisoned.children.push(operand)
-            return poisoned
-        }
-        if operand.type.name == "poison" {
-            return self.make_node(
-                node, "error", "await", poison_hir_type())
-        }
-        let result_type: HirType = operand.type
-        self.expect_type(node, result_type, expected)
-        let result: HirNode =
-            self.make_node(node, "await", "", result_type)
         result.children.push(operand)
         return result
     }
@@ -9806,21 +9599,6 @@ class ExpressionChecker {
             lowered.children.push(
                 self.check_pattern(
                     arm.children[0], subject.type))
-            var arm_borrows_move_only: bool = false
-            let arm_scope: LocalScope =
-                self.scopes[self.scopes.len() - 1]
-            for bound_name: string in
-                arm_scope.bindings.keys() {
-                let bound: LocalBinding =
-                    arm_scope.bindings[bound_name]
-                if bound.borrowed &&
-                   self.is_move_only(bound.type) {
-                    arm_borrows_move_only = true
-                }
-            }
-            if arm_borrows_move_only {
-                self.move_only_borrow_depth += 1
-            }
             if !discard && expected.name != "" &&
                expected.name != "unit" &&
                arm.children[1].kind == "block" {
@@ -9847,9 +9625,6 @@ class ExpressionChecker {
                         arm.children[1], arm_type)
                 }
             lowered.children.push(value)
-            if arm_borrows_move_only {
-                self.move_only_borrow_depth -= 1
-            }
             self.pop_scope()
             let arm_returns: bool =
                 arm.children[1].kind == "block" &&
@@ -9949,9 +9724,6 @@ class ExpressionChecker {
         }
         if node.kind == "try" {
             return self.check_try(node, expected)
-        }
-        if node.kind == "await" {
-            return self.check_await(node, expected)
         }
         if node.kind == "cast" {
             return self.check_cast(node, expected)
@@ -10194,35 +9966,10 @@ class ExpressionChecker {
             self.check_hir_annotations(
                 self.lower_ast_annotations(
                     node.annotations, "local"))
-        // `async let` starts a structured child: the initializer must be a
-        // direct async call, and the written type is the eventual result.
-        let starts_child: bool = node.note == "async"
-        if starts_child && !self.current.is_async {
-            self.fail(
-                node,
-                "'async let' is only valid inside an async function")
-        }
         match initializer {
             some(expression) => {
-                if starts_child {
-                    if expression.kind != "call" {
-                        self.fail(
-                            node,
-                            "'async let' needs a direct call to an async function")
-                    } else {
-                        expression.await_allowed = true
-                    }
-                }
                 let value: HirNode =
                     self.check_expression(expression, declared)
-                if starts_child && expression.await_allowed {
-                    expression.await_allowed = false
-                    if value.type.name != "poison" {
-                        self.fail(
-                            node,
-                            "'async let' needs a call to an async function — this call is synchronous")
-                    }
-                }
                 result.children.push(value)
                 if declared.name == "" { actual = value.type }
                 self.require_move_source(
@@ -10230,11 +9977,7 @@ class ExpressionChecker {
                     "binding '{node.value}'")
             }
             none => {
-                if starts_child {
-                    self.fail(
-                        node,
-                        "'async let' needs a call to an async function as its initializer")
-                } else if declared.name == "" {
+                if declared.name == "" {
                     self.fail(
                         node,
                         "local '{node.value}' needs a type or initializer")
@@ -10245,14 +9988,6 @@ class ExpressionChecker {
         result.type = actual
         result.binding_id = self.declare(
             node, actual, node.kind == "var", false, false)
-        if starts_child {
-            match self.find_local(node.value) {
-                some(binding) => {
-                    binding.move_state = "async_pending"
-                }
-                none => {}
-            }
-        }
         return result
     }
 
@@ -10604,11 +10339,6 @@ class ExpressionChecker {
                         binding,
                         "map iteration needs key and value bindings")
                 }
-                if paired && self.current.is_async {
-                    self.fail(
-                        binding,
-                        "direct map iteration is not supported in async functions yet")
-                }
             } else {
                 self.fail(
                     node.children[iterable_index],
@@ -10668,18 +10398,9 @@ class ExpressionChecker {
                 }
                 none => {}
             }
-            let element_borrows_move_only: bool =
-                self.is_move_only(element) ||
-                (paired && self.is_move_only(value_element))
-            if element_borrows_move_only {
-                self.move_only_borrow_depth += 1
-            }
             for statement: AstNode in block.children {
                 body.children.push(
                     self.check_statement(statement))
-            }
-            if element_borrows_move_only {
-                self.move_only_borrow_depth -= 1
             }
             self.pop_scope()
             self.take_floor_depth = saved_floor
@@ -11091,7 +10812,6 @@ class ExpressionChecker {
         return function.owner == "" &&
                function.name != "main" &&
                function.has_body &&
-               !function.is_async &&
                !function.is_extern_c &&
                !function.is_inout &&
                !function.is_abstract &&
@@ -11191,29 +10911,10 @@ class ExpressionChecker {
         self.bad_inout_captures = {}
         self.bad_send_captures = {}
         self.bad_sync_captures = {}
-        self.move_only_borrow_depth = 0
         self.current_constraints = []
         for constraint: HirGeneric in
             function.generic_constraints {
             self.current_constraints.push(constraint)
-        }
-        // Same conservative shape as the inout rule: the body lowers to
-        // closures that live past the maker call, and they cannot keep
-        // the move-only receiver borrowed past it. A direct await could —
-        // the caller waits the whole time — but an async let child runs
-        // beside its caller and cannot, and one lowering serves both.
-        if function.is_async && function.owner != "" &&
-           !function.is_static {
-            match self.declarations.get(function.owner) {
-                some(owner) => {
-                    if owner.is_unique {
-                        self.fail(
-                            function.syntax,
-                            "async instance methods are not available on a unique class — the body becomes closures that outlive the call and they cannot keep the move-only receiver borrowed; use a static async fn that takes the value")
-                    }
-                }
-                none => {}
-            }
         }
         if function.owner != "" {
             match self.declarations.get(function.owner) {

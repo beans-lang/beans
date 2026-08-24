@@ -82,7 +82,7 @@ second construction or destruction system.
 - [x] Carry resolved hook and lifecycle metadata through checked HIR and MIR.
 - [x] Resolve handler names inside the annotation package and check the full
       handler contract with matching diagnostics in both compilers.
-- [x] Reject hook use on async, abstract, extern, generic-template, `init`, and
+- [x] Reject hook use on abstract, extern, generic-template, `init`, and
       `deinit` declarations in version one.
 - [x] Emit before calls in source order and after-return calls in reverse order
       for every normal exit.
@@ -94,8 +94,8 @@ second construction or destruction system.
       mode, and the fixed point.
 - [x] Show active wiring in HIR/MIR output so generated behavior is inspectable.
 - [x] Add positive runtime tests, ordering tests, early-return tests, method
-      tests, lifecycle tests, real thread-local dispatch tests, async-boundary
-      tests, and exact negative diagnostics.
+      tests, lifecycle tests, real thread-local dispatch tests, and exact
+      negative diagnostics.
 - [x] Add valid and invalid runtime-hook cases to the frontend fuzz corpus.
 - [x] Document the public surface in the language spec, annotation guide,
       website, changelog, and examples.
@@ -105,6 +105,6 @@ second construction or destruction system.
 ## Later work
 
 The first version does not provide `around`/`proceed`, argument or result
-mutation, async-completion hooks, local-variable runtime hooks, dependency
-injection scopes, request lifecycle, or a test runner. Each needs its own
+mutation, local-variable runtime hooks, dependency injection scopes, request
+lifecycle, or a test runner. Each needs its own
 ownership and failure rules instead of being hidden in the first ABI.

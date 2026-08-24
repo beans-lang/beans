@@ -202,9 +202,7 @@ fn semantic_builtin_module_names(package_path: string) -> List<string> {
                 "call_f32_i32"]
     }
     if package_path == "std.ready" {
-        return ["open", "add", "remove", "wait", "wait_into", "wake", "close",
-                "task_slot", "set_task_slot", "park_note", "park_bind",
-                "park_forget", "park_stale", "park_dead", "park_shutdown"]
+        return ["open", "add", "remove", "wait", "wait_into", "wake", "close"]
     }
     return []
 }

@@ -223,7 +223,6 @@ class SemanticBuilder {
         }
         if function.is_static { prefix = "{prefix}static " }
         if function.is_override { prefix = "{prefix}override " }
-        if function.is_async { prefix = "{prefix}async " }
         var rendered: string =
             "{prefix}fn {head}({parts.join(", ")})"
         if function.result.name != "unit" {
