@@ -74,6 +74,25 @@ class TreeMutexCell {
     }
 }
 
+// One interpreted channel: the buffered values plus the parked senders and
+// receivers, all behind one Mutex. Waiters park on their own one-slot signal
+// channel, so the try halves can answer without ever joining the queue.
+class TreeChannelState {
+    values: List<TreeValue>
+    capacity: int
+    closed: bool
+    send_waiters: List<Channel<int>>
+    receive_waiters: List<Channel<int>>
+
+    fn init(capacity: int) {
+        self.values = []
+        self.capacity = if capacity > 0 { capacity } else { 1 }
+        self.closed = false
+        self.send_waiters = []
+        self.receive_waiters = []
+    }
+}
+
 class TreeSingletonState {
     values: Map<string, TreeValue>
     static_values: Map<string, TreeValue>

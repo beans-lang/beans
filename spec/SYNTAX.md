@@ -1664,6 +1664,8 @@ ledger.with_lock(fn(l: Ledger) {
 let ch: Channel<string> = new Channel(64)      // buffered
 ch.send("job")
 let job: Option<string> = ch.receive()         // none when closed and empty
+let queued: bool = ch.try_send("job")          // false instead of waiting
+let next: Option<string> = ch.try_receive()    // none instead of waiting
 
 // atomics for plain counters
 let hits: AtomicInt = new AtomicInt(0)

@@ -43,8 +43,8 @@ class TreeValue {
     mmap_value: Option<MMap>
     mutex_cell:
         Option<Mutex<TreeMutexCell>>
-    channel_value:
-        Option<Channel<Mutex<TreeMutexCell>>>
+    channel_cell:
+        Option<Mutex<TreeChannelState>>
     thread_handle: Option<Thread<int>>
     thread_work:
         Option<Mutex<TreeThreadWork>>
@@ -84,7 +84,7 @@ class TreeValue {
         self.file_value = none
         self.mmap_value = none
         self.mutex_cell = none
-        self.channel_value = none
+        self.channel_cell = none
         self.thread_handle = none
         self.thread_work = none
         self.generic_types = {}

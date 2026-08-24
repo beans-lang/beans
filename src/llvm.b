@@ -1387,9 +1387,17 @@ partial class LlvmTextEmitter {
                 output =
                     self.emit_channel_send(
                         function, instruction, values)
+            } else if instruction.text == "try_send" {
+                output =
+                    self.emit_channel_try_send(
+                        function, instruction, values)
             } else if instruction.text == "receive" {
                 output =
                     self.emit_channel_recv(
+                        function, instruction, values)
+            } else if instruction.text == "try_receive" {
+                output =
+                    self.emit_channel_try_recv(
                         function, instruction, values)
             } else if instruction.text == "close" {
                 output =

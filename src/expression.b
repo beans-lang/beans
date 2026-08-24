@@ -2889,6 +2889,20 @@ class ExpressionChecker {
                 return some(new BuiltinSignature(
                     [], hir_option(value)))
             }
+            if name == "try_send" {
+                // a refused move-only value would be silently lost:
+                // the channel did not take it and the call cannot
+                // hand it back
+                if self.is_move_only(value) {
+                    return none
+                }
+                return some(new BuiltinSignature(
+                    [value], new HirType("bool")))
+            }
+            if name == "try_receive" {
+                return some(new BuiltinSignature(
+                    [], hir_option(value)))
+            }
             if name == "close" {
                 return some(new BuiltinSignature([], unit))
             }

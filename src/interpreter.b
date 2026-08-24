@@ -7526,6 +7526,124 @@ class TreeInterpreter {
         return none
     }
 
+    fn tree_channel_send(
+        node: HirNode, receiver: TreeValue,
+        value: TreeValue) -> bool {
+        return self.tree_channel_send_wait(
+            node, receiver, value, true)
+    }
+
+    fn tree_channel_send_wait(
+        node: HirNode, receiver: TreeValue,
+        value: TreeValue, blocking: bool) -> bool {
+        for {
+            var sent: bool = false
+            var closed: bool = false
+            var signal: Option<Channel<int>> = none
+            match receiver.channel_cell {
+                some(cell) => {
+                    cell.with_lock(fn(state: TreeChannelState) {
+                        closed = state.closed
+                        if !closed &&
+                           state.values.len() < state.capacity {
+                            state.values.push(
+                                tree_value_copy(value))
+                            sent = true
+                            if state.receive_waiters.len() != 0 {
+                                let waiter: Channel<int> =
+                                    state.receive_waiters.remove(0)
+                                waiter.send(1)
+                            }
+                        } else if !closed && blocking {
+                            let waiter: Channel<int> =
+                                new Channel<int>(1)
+                            state.send_waiters.push(waiter)
+                            signal = some(waiter)
+                        }
+                    })
+                }
+                none => {
+                    self.fail(node, "channel has no host state")
+                    return false
+                }
+            }
+            if sent { return true }
+            if closed { return false }
+            if !blocking { return false }
+            match signal {
+                some(waiter) => { waiter.receive() }
+                none => {}
+            }
+        }
+    }
+
+    fn tree_channel_receive(
+        node: HirNode, receiver: TreeValue) -> Option<TreeValue> {
+        return self.tree_channel_receive_wait(
+            node, receiver, true)
+    }
+
+    fn tree_channel_receive_wait(
+        node: HirNode, receiver: TreeValue,
+        blocking: bool) -> Option<TreeValue> {
+        for {
+            var value: Option<TreeValue> = none
+            var done: bool = false
+            var signal: Option<Channel<int>> = none
+            match receiver.channel_cell {
+                some(cell) => {
+                    cell.with_lock(fn(state: TreeChannelState) {
+                        if state.values.len() != 0 {
+                            value = some(state.values.remove(0))
+                            done = true
+                            if state.send_waiters.len() != 0 {
+                                let waiter: Channel<int> =
+                                    state.send_waiters.remove(0)
+                                waiter.send(1)
+                            }
+                        } else if state.closed {
+                            done = true
+                        } else if blocking {
+                            let waiter: Channel<int> =
+                                new Channel<int>(1)
+                            state.receive_waiters.push(waiter)
+                            signal = some(waiter)
+                        }
+                    })
+                }
+                none => {
+                    self.fail(node, "channel has no host state")
+                    return none
+                }
+            }
+            if done { return value }
+            if !blocking { return none }
+            match signal {
+                some(waiter) => { waiter.receive() }
+                none => {}
+            }
+        }
+    }
+
+    fn tree_channel_close(receiver: TreeValue) {
+        match receiver.channel_cell {
+            some(cell) => {
+                cell.with_lock(fn(state: TreeChannelState) {
+                    state.closed = true
+                    for waiter: Channel<int> in state.send_waiters {
+                        waiter.send(1)
+                    }
+                    for waiter: Channel<int> in state.receive_waiters {
+                        waiter.send(1)
+                    }
+                    state.send_waiters = []
+                    state.receive_waiters = []
+                })
+            }
+            none => {}
+        }
+    }
+
     fn builtin_method(node: HirNode,
                       arguments: List<TreeValue>) -> TreeValue {
         if arguments.len() == 0 {
@@ -8443,24 +8561,20 @@ class TreeInterpreter {
                 receiver.items[slot])
         }
         if receiver.kind == "channel" &&
+           node.value == "try_send" &&
+           arguments.len() == 2 {
+            return TreeValue.boolean(
+                self.tree_channel_send_wait(
+                    node, receiver, arguments[1], false))
+        }
+        if receiver.kind == "channel" &&
            node.value == "send" &&
            arguments.len() == 2 {
-            if receiver.bool_data {
-                return self.fail(
-                    node, "send on closed channel")
-            }
-            match receiver.channel_value {
-                some(channel) => {
-                    channel.send(
-                        new Mutex(
-                            new TreeMutexCell(
-                                tree_value_copy(
-                                    arguments[1]))))
-                }
-                none => {
+            if !self.tree_channel_send(
+                   node, receiver, arguments[1]) {
+                if !self.failed {
                     return self.fail(
-                        node,
-                        "channel has no host queue")
+                        node, "send on closed channel")
                 }
             }
             return TreeValue.unit()
@@ -8468,42 +8582,18 @@ class TreeInterpreter {
         if receiver.kind == "channel" &&
            (node.value == "receive" ||
             node.value == "try_receive") {
-            match receiver.channel_value {
-                some(channel) => {
-                    match channel.receive() {
-                        some(cell) => {
-                            var value: TreeValue =
-                                TreeValue.unit()
-                            cell.with_lock(
-                                fn(state: TreeMutexCell) {
-                                    value =
-                                        tree_value_copy(
-                                            state.value)
-                                })
-                            return TreeValue.option_some(
-                                value)
-                        }
-                        none => {
-                            return TreeValue.option_none()
-                        }
-                    }
+            match self.tree_channel_receive_wait(
+                node, receiver, node.value == "receive") {
+                some(value) => {
+                    return TreeValue.option_some(value)
                 }
-                none => {
-                    return self.fail(
-                        node,
-                        "channel has no host queue")
-                }
+                none => { return TreeValue.option_none() }
             }
         }
         if receiver.kind == "channel" &&
            node.value == "close" {
             receiver.bool_data = true
-            match receiver.channel_value {
-                some(channel) => {
-                    channel.close()
-                }
-                none => {}
-            }
+            self.tree_channel_close(receiver)
             return TreeValue.unit()
         }
         if receiver.kind == "thread" &&
@@ -9438,10 +9528,10 @@ class TreeInterpreter {
                     arguments[0].int_data
             }
             if kind == "channel" {
-                result.channel_value =
-                    some(new Channel<
-                        Mutex<TreeMutexCell>>(
-                            result.int_data))
+                result.channel_cell =
+                    some(new Mutex(
+                        new TreeChannelState(
+                            result.int_data)))
             }
         } else if kind == "mutex" ||
                   kind == "atomic" {

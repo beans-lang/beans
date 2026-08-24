@@ -308,9 +308,8 @@ because they fix today's runtime:
 1. `4e9eacb` — husk sweeps and worker trial walks exclude each other (CC race).
 2. `8938ed0` — husk sweeps run at the last walk's exit, not only on appends (CC leak timing).
 3. `3939f6c` — collector pauses are bounded slices (CC pause bound + net_concurrency proof).
-4. `2a982bc` — interpreter resolves channel waiter externs on every platform (portability).
-5. `fa664ba` — the applicable halves: wide-closure environment chaining in MIR (plain-language bug, `wide_closure.b` proves it) and worker releases inside the collector window (CC race). Async-lowering hunks dropped.
-6. `f46ad60` — the `Channel.try_send`/`try_receive` surface (checker, both backends, docs); its async$rt reactor half dropped. Tests re-homed from `test/async.sh` (deleted) into the thread/channel suites.
+4. `fa664ba` — the applicable halves: wide-closure environment chaining in MIR (plain-language bug, `wide_closure.b` proves it) and worker releases inside the collector window (CC race). Async-lowering hunks dropped.
+5. `f46ad60` — the `Channel.try_send`/`try_receive` surface (checker, both backends, docs); its async$rt reactor half dropped. Tests re-homed from `test/async.sh` (deleted) into the thread/channel suites.
 
 Reference designs, re-implemented rather than cherry-picked (hosts deleted):
 `b97a529` (lock-free sticky park registry → F1 netpoller), `879d6f9`'s
@@ -319,7 +318,11 @@ test suite (ported to the brew surface in F2 as the gate).
 
 Dropped: every state-machine lowering commit, the `async$rt` package, the
 v2 reflection async-call API, `2b70a3e` (its Makefile pin is already on
-main in another form; the re-drain it removes no longer exists).
+main in another form; the re-drain it removes no longer exists), and
+`2a982bc` (the externs it resolves — `beans_async_*`,
+`beans_chan_async_waiter_*` — left the runtime with async v2; its lesson,
+direct-dispatching runtime externs in the interpreter, is already house
+practice).
 
 ## Milestone gates (unchanged from the plan)
 

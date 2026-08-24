@@ -162,6 +162,7 @@ test-semantics: $(BIN)
 	bash ./test/wide_owners.sh
 	bash ./test/wide_sync.sh
 	bash ./test/wide_concurrency.sh
+	bash ./test/channel_try.sh
 	./test/self_host.sh
 	./test/fixpoint.sh
 
@@ -330,6 +331,7 @@ test-core: $(BIN)
 	bash ./test/wide_owners.sh
 	bash ./test/wide_sync.sh
 	bash ./test/wide_concurrency.sh
+	bash ./test/channel_try.sh
 
 	./test/profiles.sh
 	./test/asm.sh

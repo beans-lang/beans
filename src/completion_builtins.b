@@ -43,6 +43,7 @@ fn semantic_builtin_member_names() -> List<string> {
             "tell", "to_decimal", "to_float", "to_int", "to_lower",
             "to_string", "to_string_until_nul", "to_upper", "trim",
             "trim_end", "trim_start", "truncate", "try_lock",
+            "try_receive", "try_send",
             "unlock", "upgrade", "values", "wait", "wait_timeout",
             "with_lane", "with_lock", "write", "write_at", "write_text",
             "write_text_at",

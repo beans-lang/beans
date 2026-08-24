@@ -12179,15 +12179,20 @@ static BRes beans_poll_wait_into_impl(long long poller, long long wake_read,
             // kqueue reports read and write as separate events for one descriptor.
             // epoll reports one with both bits, so they are merged here — otherwise the
             // same program would see a different number of events per platform.
+            // Merge one registration's pair by (descriptor, token): the token
+            // alone would fold two descriptors that share a caller token into
+            // one event, and the descriptor alone would fold a queued stale
+            // event into a new registration on the reused number.
+            long long ident = (long long)got[i].ident;
             long long at = -1;
             for (long long j = 0; j < found; j++)
-                if (idents[j] == got[i].ident) { at = j; break; }
+                if (idents[j] == ident && tokens[j] == token) { at = j; break; }
             if (at >= 0) {
                 flags[at] |= f;
                 continue;
             }
             if (found >= max_events) continue;
-            idents[found] = got[i].ident;
+            idents[found] = ident;
             tokens[found] = token;
             flags[found] = f;
             found++;
@@ -13112,6 +13117,70 @@ long long beans_chan_recv(BChan* c, long long* ok) {
 long long beans_chan_recv_typed(BChan* c, void* out) {
     pthread_mutex_lock(&c->m);
     while (c->count == 0 && !c->closed) pthread_cond_wait(&c->can_recv, &c->m);
+    if (c->count == 0) {
+        pthread_mutex_unlock(&c->m);
+        return 0;
+    }
+    void* source = (char*)c->q + c->head * c->stride;
+    memcpy(out, source, (size_t)c->stride);
+    memset(source, 0, (size_t)c->stride);
+    c->head = (c->head + 1) % c->cap;
+    c->count -= 1;
+    pthread_cond_signal(&c->can_send);
+    pthread_mutex_unlock(&c->m);
+    return 1;
+}
+// The try twins: a verdict instead of a wait. A refused try_send leaves the
+// value with the caller — the checker limits it to copyable elements, so a
+// refused move-only value can never be lost.
+long long beans_chan_try_send(BChan* c, long long v) {
+    pthread_mutex_lock(&c->m);
+    if (c->closed || c->count == c->cap) {
+        pthread_mutex_unlock(&c->m);
+        return 0; // caller still owns v
+    }
+    // Same publish-once-committed ordering rule as beans_chan_send above.
+    if (cc_is_mt() && c->ptr_mask)
+        cc_mark_shared_graph((void*)(uintptr_t)v);
+    c->q[(c->head + c->count) % c->cap] = v;
+    c->count += 1;
+    pthread_cond_signal(&c->can_recv);
+    pthread_mutex_unlock(&c->m);
+    return 1;
+}
+long long beans_chan_try_send_typed(BChan* c, void* value) {
+    pthread_mutex_lock(&c->m);
+    if (c->closed || c->count == c->cap) {
+        pthread_mutex_unlock(&c->m);
+        return 0;
+    }
+    if (cc_is_mt() && c->ptr_mask)
+        cc_mark_shared_value(value, c->ptr_mask, 0);
+    void* destination =
+        (char*)c->q + ((c->head + c->count) % c->cap) * c->stride;
+    memcpy(destination, value, (size_t)c->stride);
+    c->count += 1;
+    pthread_cond_signal(&c->can_recv);
+    pthread_mutex_unlock(&c->m);
+    return 1;
+}
+long long beans_chan_try_recv(BChan* c, long long* ok) {
+    pthread_mutex_lock(&c->m);
+    if (c->count == 0) {
+        *ok = 0;
+        pthread_mutex_unlock(&c->m);
+        return 0;
+    }
+    long long v = c->q[c->head];
+    c->head = (c->head + 1) % c->cap;
+    c->count -= 1;
+    *ok = 1;
+    pthread_cond_signal(&c->can_send);
+    pthread_mutex_unlock(&c->m);
+    return v;
+}
+long long beans_chan_try_recv_typed(BChan* c, void* out) {
+    pthread_mutex_lock(&c->m);
     if (c->count == 0) {
         pthread_mutex_unlock(&c->m);
         return 0;

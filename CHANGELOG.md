@@ -4,6 +4,12 @@ This file records user-facing changes in each Beans release.
 
 ## [Unreleased]
 
+### Added
+
+- `Channel.try_send` and `Channel.try_receive` answer immediately — `false`
+  or `none` — where the blocking forms would wait. `try_send` needs a
+  copyable element: a refused move-only value would be lost.
+
 ### Removed
 
 - `async` and `await` left the language. They were contextual words, so
