@@ -76,6 +76,19 @@ This file records user-facing changes in each Beans release.
   its scope — an unseen panic escalates there. A fleet nobody can wake
   lands in the deadlock report. Both compilers agree byte-for-byte,
   delivery order included.
+- **Fixed: `read_into` and `write_from` on a fiber.** The offset-aware
+  stream forms went through a raw would-block bridge the netpoller never
+  covered: a fiber's `read_into` between requests answered `timeout` the
+  moment the socket had nothing buffered instead of parking, so a
+  keep-alive server built on them lost every connection after its first
+  response. Both forms now park in the netpoller like every other net
+  wait, and the new `TcpStream.read_into_waiting` waits for readability
+  before its first recv — for a caller that just drained the socket and
+  knows a speculative recv would only say would-block. The stream caches
+  its fiber preparation and configured deadlines so the steady per-request
+  cost is the syscalls that move bytes. `try_read_into` and
+  `try_write_from` keep their immediate would-block answers, on fibers
+  included.
 
 ### Removed
 

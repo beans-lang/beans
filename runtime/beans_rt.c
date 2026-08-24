@@ -11305,6 +11305,73 @@ BRes beans_net_send(long long fd, BList* data, long long from) {
 }
 long long beans_net_send_out(long long fd, BList* data, long long from, void** e_out) { BRes r = beans_net_send(fd, data, from); *e_out = r.err; return r.val; }
 
+// write_from's engine: one send from an offset, parking the calling fiber
+// on backpressure. The caller carries the cached facts the hot path must
+// not re-derive — the fiber-prepared flag and the configured write
+// deadline — exactly like beans_net_recv_into_wait on the read side.
+//   req[0] in: offset; out: bytes written by this call
+//   req[1] out: OS error code when the returned status is not 0
+//   req[2] in: 1 skips the nonblocking flip; out: 1 when fiber-prepared
+//   req[3] in: wait budget in milliseconds, -1 to wait forever
+// Status: 0 ok; sockx codes otherwise.
+long long beans_net_send_from_wait(long long fd, const void* bytes,
+                                   long long len,
+                                   unsigned long long* req) {
+    if (!req || !bytes) return 1; // invalid
+    net_init();
+    if (fd < 0) { req[1] = 0; return 112; } // closed
+    long long from = (long long)req[0];
+    if (from < 0 || from > len) { req[1] = 0; return 1; }
+    long long want = len - from;
+    if (want == 0) { req[0] = 0; req[1] = 0; return 0; }
+#if defined(_WIN32)
+    if (want > 0x7fffffff) want = 0x7fffffff;
+#endif
+    if (req[2]) {
+        req[2] = 1;
+    } else {
+        net_fiber_prepare(fd);
+        req[2] = net_on_fiber() ? 1 : 0;
+    }
+    long long budget = (long long)req[3];
+    for (;;) {
+        rt_ssize_t wrote;
+        do {
+            if (net_fp("send", NET_FP_SEND)) { wrote = -1; continue; }
+            wrote = send(net_fd_of(fd), (const char*)bytes + from,
+                         (size_t)want, NET_NOSIGNAL);
+        } while (wrote < 0 && net_errno() == EINTR);
+        if (wrote >= 0) {
+            req[0] = (unsigned long long)wrote;
+            req[1] = 0;
+            return 0;
+        }
+        int blocked = net_errno();
+        if ((blocked == EAGAIN || blocked == EWOULDBLOCK) &&
+            net_on_fiber()) {
+            int ready = net_wait(net_fd_of(fd), POLLOUT, budget);
+            if (ready > 0) continue;
+            if (ready == 0) { // the socket deadline expired
+                req[1] = (unsigned long long)blocked;
+                return 110; // timeout
+            }
+            blocked = net_errno();
+        }
+        req[1] = (unsigned long long)blocked;
+        if (blocked == EAGAIN || blocked == EWOULDBLOCK ||
+            blocked == ETIMEDOUT)
+            return 110; // timeout
+        if (blocked == ECONNRESET || blocked == ECONNABORTED ||
+            blocked == EPIPE)
+            return 111; // reset
+        if (blocked == EBADF || blocked == ENOTCONN)
+            return 112; // closed
+        if (blocked == EACCES || blocked == EPERM)
+            return 114; // permission
+        return 116; // io
+    }
+}
+
 BRes beans_net_send_text(long long fd, char* text, long long from) {
     net_init();
     if (fd < 0) return (BRes){0, net_closed_err("send")};
@@ -11380,6 +11447,98 @@ BRes beans_net_recv(long long fd, long long max) {
     return (BRes){(long long)buf, NULL};
 }
 long long beans_net_recv_out(long long fd, long long max, void** e_out) { BRes r = beans_net_recv(fd, max); *e_out = r.err; return r.val; }
+
+// read_into's engine: recv straight into caller-owned storage, parking the
+// calling fiber when the socket is not ready. The sockx bridge stays a
+// libc-only library, so the fiber-aware form lives here with the rest of
+// the net waits; the status codes and req words mirror
+// beans_sockx_recv_into exactly, and try_read_into keeps calling the
+// bridge so its would-block answer stays immediate.
+//   req[0] in: destination capacity; out: bytes read (0 is EOF)
+//   req[1] out: OS error code when the returned status is not 0
+//   req[2] in: 1 skips the nonblocking flip (the caller saw it happen
+//          before); out: 1 when the fd is fiber-prepared after this call —
+//          O_NONBLOCK is a property of the descriptor, so once flipped the
+//          caller may cache it for the socket's whole life
+//   req[3] in: wait budget in milliseconds, -1 to wait forever — the
+//          caller tracks its configured deadline so the wait loop never
+//          re-reads SO_RCVTIMEO
+//   req[4] in: 1 waits for readability before the first recv — for a
+//          caller that just drained the socket, this trades the
+//          speculative recv that would only say would-block for one
+//          poller wait; ignored off-fiber, where recv blocks anyway
+long long beans_net_recv_into_wait(long long fd, void* destination,
+                                   unsigned long long* req) {
+    if (!req || !destination || req[0] == 0) return 1; // invalid
+    net_init();
+    if (fd < 0) { req[1] = 0; return 112; } // closed
+    if (req[2]) {
+        req[2] = 1;
+    } else {
+        net_fiber_prepare(fd);
+        req[2] = net_on_fiber() ? 1 : 0;
+    }
+    long long budget = (long long)req[3];
+    int wait_first = req[4] != 0;
+    size_t wanted = (size_t)req[0];
+#if defined(_WIN32)
+    if (wanted > 0x7fffffff) wanted = 0x7fffffff; // Winsock counts in int
+#endif
+    for (;;) {
+        if (wait_first && net_on_fiber()) {
+            wait_first = 0;
+            int early = net_wait(net_fd_of(fd), POLLIN, budget);
+            if (early == 0) { req[1] = 0; return 110; } // timeout
+            if (early < 0) {
+                int woke = net_errno();
+                req[1] = (unsigned long long)woke;
+                if (woke == ECONNRESET || woke == ECONNABORTED ||
+                    woke == EPIPE)
+                    return 111; // reset
+                if (woke == EBADF || woke == ENOTCONN)
+                    return 112; // closed
+                return 116; // io
+            }
+        }
+        rt_ssize_t got;
+        do {
+#if defined(_WIN32)
+            got = recv((SOCKET)net_fd_of(fd), (char*)destination,
+                       (int)wanted, 0);
+#else
+            got = recv(net_fd_of(fd), destination, wanted, 0);
+#endif
+        } while (got < 0 && net_errno() == EINTR);
+        if (got >= 0) {
+            req[0] = (unsigned long long)got;
+            req[1] = 0;
+            return 0;
+        }
+        int blocked = net_errno();
+        if ((blocked == EAGAIN || blocked == EWOULDBLOCK) &&
+            net_on_fiber()) {
+            int ready = net_wait(net_fd_of(fd), POLLIN, budget);
+            if (ready > 0) continue;
+            if (ready == 0) { // the socket deadline expired
+                req[1] = (unsigned long long)blocked;
+                return 110; // timeout
+            }
+            blocked = net_errno();
+        }
+        req[1] = (unsigned long long)blocked;
+        if (blocked == EAGAIN || blocked == EWOULDBLOCK ||
+            blocked == ETIMEDOUT)
+            return 110; // timeout
+        if (blocked == ECONNRESET || blocked == ECONNABORTED ||
+            blocked == EPIPE)
+            return 111; // reset
+        if (blocked == EBADF || blocked == ENOTCONN)
+            return 112; // closed
+        if (blocked == EACCES || blocked == EPERM)
+            return 114; // permission
+        return 116; // io
+    }
+}
 
 static BRes net_recv_many(long long fd, long long limit, int exact) {
     net_init();

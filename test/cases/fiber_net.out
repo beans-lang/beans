@@ -2,4 +2,7 @@ round 0 got echo ping0
 round 1 got echo ping1
 round 2 got echo ping2
 client replies 3
-all served 3
+hold got one
+hold got two!
+hold replies 2
+all served 5
