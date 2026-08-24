@@ -1767,8 +1767,15 @@ static void cc_sweep_husks(void) {
         __atomic_store_n(&cc_sweeping, 0, __ATOMIC_RELEASE);
         return;
     }
-    long long kept = 0;
-    for (long long i = 0; i < cc_len; i++) {
+    // Bounded slice per sweep: every entry scanned here holds the global
+    // lock every worker's release path needs, so an unbounded scan of a
+    // large candidate buffer is a multi-millisecond stall for the whole
+    // fleet — it was the p99 of a loaded server. Scanning from the tail
+    // with swap-removal keeps the pass restartable at any budget; the
+    // re-arm below decides how soon the next slice runs.
+    enum { CC_SWEEP_BUDGET = 8192 };
+    long long budget = CC_SWEEP_BUDGET;
+    for (long long i = cc_len; i-- > 0 && budget-- > 0;) {
         void* p = cc_roots[i];
         BHead* h = head_of(p);
         long long meta = cc_meta(h);
@@ -1781,13 +1788,13 @@ static void cc_sweep_husks(void) {
             rt_w_and(&h->meta, ~CC_BUF);
             void* child = cc_free_shell(p, cc_meta(h));
             if (child) cc_push(&deferred, child);
-        } else {
-            cc_roots[kept++] = p;
+            cc_roots[i] = cc_roots[--cc_len];
         }
     }
-    cc_len = kept;
-    // geometric re-arm, exactly like cc_collect: amortized O(1) per park
-    cc_threshold = cc_len * 2 + 256;
+    // geometric re-arm once the buffer was fully covered; a truncated
+    // pass re-arms almost immediately so the next walk exit or append
+    // continues where this slice stopped
+    cc_threshold = budget > 0 ? cc_len * 2 + 256 : cc_len + 256;
     CC_UNLOCK();
     __atomic_store_n(&cc_sweeping, 0, __ATOMIC_RELEASE);
     // released outside the lock: a release can park new possible roots,
@@ -2660,9 +2667,19 @@ static void cc_worker_collect(void) {
         if (global.v != glocal) rt_free(global.v);
 
         if (cc_worker_root_len >= cc_worker_walk_min) {
+            // Bounded slice per walk: trial deletion is sound on any
+            // subset of the candidate set, and an unbounded walk over a
+            // backed-off set (the adaptive minimum reaches 2^18) was a
+            // tens-of-milliseconds pause — the p99 of a loaded server.
+            // The oldest candidates go first; survivors and leftovers
+            // stay parked for the next allocation-triggered collect.
+            enum { CC_WORKER_WALK_BUDGET = 8192 };
+            long long walked = cc_worker_root_len;
+            if (walked > CC_WORKER_WALK_BUDGET)
+                walked = CC_WORKER_WALK_BUDGET;
             CCStack st = {0, 0, 0}, aux = {0, 0, 0}, dead = {0, 0, 0};
             int saw_shared = 0;
-            for (long long i = 0; i < cc_worker_root_len; i++)
+            for (long long i = 0; i < walked; i++)
                 cc_worker_mark_gray(
                     cc_worker_roots[i], &st, &saw_shared);
             if (saw_shared) {
@@ -2671,12 +2688,12 @@ static void cc_worker_collect(void) {
                 // parked, and let the quiescent global collector handle the
                 // set. A shared candidate can conservatively carry one local
                 // batch with it, but later local-only batches remain local.
-                for (long long i = 0; i < cc_worker_root_len; i++) {
+                for (long long i = 0; i < walked; i++) {
                     BHead* h = head_of(cc_worker_roots[i]);
                     if (cc_color(h) == CC_GRAY)
                         cc_worker_scan_black(cc_worker_roots[i], &aux);
                 }
-                for (long long i = 0; i < cc_worker_root_len; i++)
+                for (long long i = 0; i < walked; i++)
                     rt_w_fetch_or(
                         &head_of(cc_worker_roots[i])->meta, CC_PURPLE);
                 // Hand the batch off before clearing the length, not after:
@@ -2685,9 +2702,16 @@ static void cc_worker_collect(void) {
                 // this same buffer. Clearing afterwards would drop it with
                 // CC_BUF set and no buffer owning it.
                 {
-                    long long published = cc_worker_root_len;
-                    cc_worker_root_len = 0;
-                    cc_append_roots(cc_worker_roots, published);
+                    // the append copies the walked prefix before any of
+                    // its own releases can park fresh roots, and those
+                    // land above the leftovers; the compaction below then
+                    // slides everything over the published prefix
+                    cc_append_roots(cc_worker_roots, walked);
+                    long long now = cc_worker_root_len;
+                    memmove(cc_worker_roots, cc_worker_roots + walked,
+                            (size_t)(now - walked) *
+                                sizeof *cc_worker_roots);
+                    cc_worker_root_len = now - walked;
                 }
                 rt_free(st.v);
                 rt_free(aux.v);
@@ -2696,16 +2720,19 @@ static void cc_worker_collect(void) {
                 // Clear every root owned by this local buffer as one set. A
                 // BUF left after this point belongs elsewhere and
                 // cc_worker_scan treats it as externally reachable.
-                for (long long i = 0; i < cc_worker_root_len; i++)
+                for (long long i = 0; i < walked; i++)
                     rt_w_and(
                         &head_of(cc_worker_roots[i])->meta, ~CC_BUF);
-                for (long long i = 0; i < cc_worker_root_len; i++)
+                for (long long i = 0; i < walked; i++)
                     cc_worker_scan(cc_worker_roots[i], &st, &aux);
-                for (long long i = 0; i < cc_worker_root_len; i++) {
+                for (long long i = 0; i < walked; i++) {
                     cc_worker_collect_white(
                         cc_worker_roots[i], &st, &dead);
                 }
-                cc_worker_root_len = 0;
+                memmove(cc_worker_roots, cc_worker_roots + walked,
+                        (size_t)(cc_worker_root_len - walked) *
+                            sizeof *cc_worker_roots);
+                cc_worker_root_len -= walked;
                 ARC_ADD(arc_cycle_objects, dead.len);
                 if (__atomic_load_n(&weak_live, __ATOMIC_RELAXED))
                     for (long long i = 0; i < dead.len; i++)
