@@ -227,9 +227,25 @@ class TreeStoredCallback {
     }
 }
 
+// One registered defer: the expression and the scope frame it was
+// registered in. The frame reference keeps that scope's locals alive past
+// the block's pop, so a defer inside a nested block (or a brew's
+// synthesized scope join) still sees its bindings at function exit — the
+// same thing native's stack slots give for free. The back-reference makes
+// a frame cycle; the collector owns those.
+class TreeDeferred {
+    expression: HirNode
+    frame: TreeFrame
+
+    fn init(expression: HirNode, frame: TreeFrame) {
+        self.expression = expression
+        self.frame = frame
+    }
+}
+
 class TreeFrame {
     values: Map<int, TreeValue>
-    defers: List<HirNode>
+    defers: List<TreeDeferred>
     parent: Option<TreeFrame>
     defer_owner: Option<TreeFrame>
     self_value: Option<TreeValue>
@@ -266,13 +282,14 @@ class TreeFrame {
         return result
     }
 
-    fn add_defer(expression: HirNode) {
+    fn add_defer(expression: HirNode, at: TreeFrame) {
         match self.defer_owner {
             some(owner) => {
-                owner.add_defer(expression)
+                owner.add_defer(expression, at)
             }
             none => {
-                self.defers.push(expression)
+                self.defers.push(
+                    new TreeDeferred(expression, at))
             }
         }
     }

@@ -10974,11 +10974,72 @@ static net_fd_t net_socket(struct addrinfo* ai) {
     return fd;
 }
 
+static int net_on_fiber(void) {
+#if BEANS_RT_FIBERS
+    return beans_fiber_current() != NULL;
+#else
+    return 0;
+#endif
+}
+
+static void net_errno_set(int e) {
+#if defined(_WIN32)
+    WSASetLastError(e == EAGAIN || e == EWOULDBLOCK ? WSAEWOULDBLOCK : e);
+#else
+    errno = e;
+#endif
+}
+
+// The socket deadline (set_timeouts / SO_RCVTIMEO) still bounds a fiber's
+// wait: a nonblocking fd ignores the kernel timeout, so the retry loops
+// carry it into their wait instead. 0 means no deadline — wait forever.
+static long long net_op_timeout_ms(long long fd, int write) {
+#if defined(_WIN32)
+    (void)fd; (void)write;
+    return -1;
+#else
+    struct timeval tv;
+    socklen_t len = sizeof tv;
+    if (getsockopt(net_fd_of(fd), SOL_SOCKET,
+                   write ? SO_SNDTIMEO : SO_RCVTIMEO, &tv, &len) != 0)
+        return -1;
+    long long ms = (long long)tv.tv_sec * 1000 + tv.tv_usec / 1000;
+    return ms > 0 ? ms : -1;
+#endif
+}
+
+// A fiber about to wait on a socket makes it nonblocking first — for good:
+// the fd never leaves fiber-land (sockets are not Send), every op here
+// carries the EAGAIN retry loop, and a blocking syscall from a fiber would
+// stall its whole worker. Thread-only programs never reach this, so their
+// sockets stay blocking exactly as before fibers.
+static void net_fiber_prepare(long long fd) {
+#if BEANS_RT_FIBERS && !defined(_WIN32)
+    if (!beans_fiber_current() || !beans_fiber_netpoll()) return;
+    int flags = fcntl(net_fd_of(fd), F_GETFL, 0);
+    if (flags >= 0 && !(flags & O_NONBLOCK))
+        fcntl(net_fd_of(fd), F_SETFL, flags | O_NONBLOCK);
+#else
+    (void)fd;
+#endif
+}
+
 // Waits for one readiness event with a deadline that survives EINTR: the budget is
 // recomputed from the monotonic clock, so a stream of signals cannot extend a 100ms
 // wait indefinitely. timeout_ms < 0 waits forever. Returns 1 ready, 0 timed out,
 // -1 error (errno set).
 static int net_wait(net_fd_t fd, short events, long long timeout_ms) {
+#if BEANS_RT_FIBERS
+    // On a fiber the wait parks instead of blocking the worker; every
+    // sibling fiber keeps running. -2 (no poller, or not on a fiber) falls
+    // through to the thread wait below.
+    if (beans_fiber_current()) {
+        long long parked = beans_fiber_wait_io(
+            (long long)fd, (events & POLLOUT) ? 1 : 0, timeout_ms);
+        if (parked == 0) return 1;
+        if (parked == 1) return 0;
+    }
+#endif
     long long deadline = timeout_ms < 0 ? 0 : net_millis() + timeout_ms;
     for (;;) {
 #if defined(_WIN32)
@@ -11172,6 +11233,10 @@ long long beans_net_udp_bind_out(char* host, long long port, void** e_out) { BRe
 BRes beans_net_accept(long long fd, long long timeout_ms) {
     net_init();
     if (fd < 0) return (BRes){0, net_closed_err("accept")};
+    // On a fiber the listener goes nonblocking: net_wait below parks, and
+    // an accept whose connection was snatched away answers EWOULDBLOCK and
+    // waits again instead of blocking the worker until the next peer.
+    net_fiber_prepare(fd);
     long long deadline = timeout_ms < 0 ? 0 : net_millis() + timeout_ms;
     for (;;) {
         long long budget = timeout_ms;
@@ -11218,12 +11283,23 @@ BRes beans_net_send(long long fd, BList* data, long long from) {
     // Winsock counts in int; a short write is already in the contract.
     if (want > 0x7fffffff) want = 0x7fffffff;
 #endif
+    net_fiber_prepare(fd);
     rt_ssize_t wrote;
-    do {
-        if (net_fp("send", NET_FP_SEND)) { wrote = -1; continue; }
-        wrote = send(net_fd_of(fd), (const char*)data->data + from, (size_t)want,
-                     NET_NOSIGNAL);
-    } while (wrote < 0 && net_errno() == EINTR);
+    for (;;) {
+        do {
+            if (net_fp("send", NET_FP_SEND)) { wrote = -1; continue; }
+            wrote = send(net_fd_of(fd), (const char*)data->data + from,
+                         (size_t)want, NET_NOSIGNAL);
+        } while (wrote < 0 && net_errno() == EINTR);
+        int blocked = net_errno();
+        if (wrote >= 0 || (blocked != EAGAIN && blocked != EWOULDBLOCK))
+            break;
+        if (!net_on_fiber()) break;
+        int ready = net_wait(net_fd_of(fd), POLLOUT, net_op_timeout_ms(fd, 1));
+        if (ready > 0) continue;
+        if (ready == 0) net_errno_set(blocked);
+        break;
+    }
     if (wrote < 0) return (BRes){0, net_err_op("send", net_errno())};
     return (BRes){(long long)wrote, NULL};
 }
@@ -11240,11 +11316,23 @@ BRes beans_net_send_text(long long fd, char* text, long long from) {
 #if defined(_WIN32)
     if (want > 0x7fffffff) want = 0x7fffffff;
 #endif
+    net_fiber_prepare(fd);
     rt_ssize_t wrote;
-    do {
-        if (net_fp("send", NET_FP_SEND)) { wrote = -1; continue; }
-        wrote = send(net_fd_of(fd), text + from, (size_t)want, NET_NOSIGNAL);
-    } while (wrote < 0 && net_errno() == EINTR);
+    for (;;) {
+        do {
+            if (net_fp("send", NET_FP_SEND)) { wrote = -1; continue; }
+            wrote = send(net_fd_of(fd), text + from, (size_t)want,
+                         NET_NOSIGNAL);
+        } while (wrote < 0 && net_errno() == EINTR);
+        int blocked = net_errno();
+        if (wrote >= 0 || (blocked != EAGAIN && blocked != EWOULDBLOCK))
+            break;
+        if (!net_on_fiber()) break;
+        int ready = net_wait(net_fd_of(fd), POLLOUT, net_op_timeout_ms(fd, 1));
+        if (ready > 0) continue;
+        if (ready == 0) net_errno_set(blocked);
+        break;
+    }
     if (wrote < 0) return (BRes){0, net_err_op("send", net_errno())};
     return (BRes){(long long)wrote, NULL};
 }
@@ -11259,12 +11347,25 @@ BRes beans_net_recv(long long fd, long long max) {
 #if defined(_WIN32)
     if (max > 0x7fffffff) max = 0x7fffffff; // Winsock counts in int
 #endif
+    net_fiber_prepare(fd);
     BList* buf = bytes_mk(max);
     rt_ssize_t got;
-    do {
-        if (net_fp("recv", NET_FP_RECV)) { got = -1; continue; }
-        got = recv(net_fd_of(fd), (char*)buf->data, (size_t)max, 0);
-    } while (got < 0 && net_errno() == EINTR);
+    for (;;) {
+        do {
+            if (net_fp("recv", NET_FP_RECV)) { got = -1; continue; }
+            got = recv(net_fd_of(fd), (char*)buf->data, (size_t)max, 0);
+        } while (got < 0 && net_errno() == EINTR);
+        // A fiber's socket is nonblocking: not-ready parks here. Thread
+        // callers break out with EAGAIN exactly as before fibers — that
+        // answer is the try_* API's contract on a user-nonblocked socket.
+        int blocked = net_errno();
+        if (got >= 0 || (blocked != EAGAIN && blocked != EWOULDBLOCK)) break;
+        if (!net_on_fiber()) break;
+        int ready = net_wait(net_fd_of(fd), POLLIN, net_op_timeout_ms(fd, 0));
+        if (ready > 0) continue;
+        if (ready == 0) net_errno_set(blocked); // socket deadline expired
+        break;
+    }
 #if defined(_WIN32)
     // A datagram larger than the buffer still fills it; POSIX truncates
     // silently, so the WSAEMSGSIZE dressing is stripped to match.
@@ -11285,17 +11386,29 @@ static BRes net_recv_many(long long fd, long long limit, int exact) {
     if (fd < 0) return (BRes){0, net_closed_err("recv")};
     if (exact && limit <= 0)
         return (BRes){0, mk_error("recv: the byte count must be positive", "invalid")};
+    net_fiber_prepare(fd);
     BList* out = bytes_mk(0);
     while (out->len < limit) {
         long long room = limit - out->len;
         long long chunk = room < 8192 ? room : 8192;
         bytes_grow(out, out->len + chunk);
         rt_ssize_t got;
-        do {
-            if (net_fp("recv", NET_FP_RECV)) { got = -1; continue; }
-            got = recv(net_fd_of(fd), (char*)out->data + out->len,
-                       (size_t)chunk, 0);
-        } while (got < 0 && net_errno() == EINTR);
+        for (;;) {
+            do {
+                if (net_fp("recv", NET_FP_RECV)) { got = -1; continue; }
+                got = recv(net_fd_of(fd), (char*)out->data + out->len,
+                           (size_t)chunk, 0);
+            } while (got < 0 && net_errno() == EINTR);
+            int blocked = net_errno();
+            if (got >= 0 || (blocked != EAGAIN && blocked != EWOULDBLOCK))
+                break;
+            if (!net_on_fiber()) break;
+            int ready =
+                net_wait(net_fd_of(fd), POLLIN, net_op_timeout_ms(fd, 0));
+            if (ready > 0) continue;
+            if (ready == 0) net_errno_set(blocked);
+            break;
+        }
         if (got < 0) {
             int e = net_errno();
             beans_release(out);
@@ -11374,14 +11487,27 @@ BRes beans_net_send_to(long long fd, BList* data, char* host, long long port) {
     if (!list) return (BRes){0, net_gai_err(host, rc)};
     // Only an address of the socket's own family can be sent to, so a resolver that
     // answered with both v4 and v6 is filtered by trying each in turn.
+    net_fiber_prepare(fd);
     int last = 0;
     for (struct addrinfo* ai = list; ai; ai = ai->ai_next) {
         rt_ssize_t wrote;
-        do {
-            if (net_fp("send_to", NET_FP_SEND)) { wrote = -1; continue; }
-            wrote = sendto(net_fd_of(fd), (const char*)data->data, (size_t)data->len,
-                           NET_NOSIGNAL, ai->ai_addr, ai->ai_addrlen);
-        } while (wrote < 0 && net_errno() == EINTR);
+        for (;;) {
+            do {
+                if (net_fp("send_to", NET_FP_SEND)) { wrote = -1; continue; }
+                wrote = sendto(net_fd_of(fd), (const char*)data->data,
+                               (size_t)data->len, NET_NOSIGNAL, ai->ai_addr,
+                               ai->ai_addrlen);
+            } while (wrote < 0 && net_errno() == EINTR);
+            int blocked = net_errno();
+            if (wrote >= 0 || (blocked != EAGAIN && blocked != EWOULDBLOCK))
+                break;
+            if (!net_on_fiber()) break;
+            int ready =
+                net_wait(net_fd_of(fd), POLLOUT, net_op_timeout_ms(fd, 1));
+            if (ready > 0) continue;
+            if (ready == 0) net_errno_set(blocked);
+            break;
+        }
         if (wrote >= 0) {
             freeaddrinfo(list);
             return (BRes){(long long)wrote, NULL};
@@ -11402,16 +11528,26 @@ BRes beans_net_recv_from(long long fd, long long max) {
 #if defined(_WIN32)
     if (max > 0x7fffffff) max = 0x7fffffff; // Winsock counts in int
 #endif
+    net_fiber_prepare(fd);
     BList* payload = bytes_mk(max);
     struct sockaddr_storage sa;
     socklen_t len = sizeof sa;
     rt_ssize_t got;
-    do {
-        len = sizeof sa;
-        if (net_fp("recv_from", NET_FP_RECV)) { got = -1; continue; }
-        got = recvfrom(net_fd_of(fd), (char*)payload->data, (size_t)max, 0,
-                       (struct sockaddr*)&sa, &len);
-    } while (got < 0 && net_errno() == EINTR);
+    for (;;) {
+        do {
+            len = sizeof sa;
+            if (net_fp("recv_from", NET_FP_RECV)) { got = -1; continue; }
+            got = recvfrom(net_fd_of(fd), (char*)payload->data, (size_t)max, 0,
+                           (struct sockaddr*)&sa, &len);
+        } while (got < 0 && net_errno() == EINTR);
+        int blocked = net_errno();
+        if (got >= 0 || (blocked != EAGAIN && blocked != EWOULDBLOCK)) break;
+        if (!net_on_fiber()) break;
+        int ready = net_wait(net_fd_of(fd), POLLIN, net_op_timeout_ms(fd, 0));
+        if (ready > 0) continue;
+        if (ready == 0) net_errno_set(blocked);
+        break;
+    }
 #if defined(_WIN32)
     // Same WSAEMSGSIZE story as recv: the buffer holds the truncated datagram.
     if (got < 0 && WSAGetLastError() == WSAEMSGSIZE) got = (rt_ssize_t)max;

@@ -131,6 +131,21 @@ int beans_fiber_join(BeansFiber* fiber, char* message_out, size_t message_cap);
 // joins, so this exists for the runtime's own roots, not for `brew`.
 void beans_fiber_forget(BeansFiber* fiber);
 
+// ---- the netpoller ---------------------------------------------------------
+
+// Parks the calling fiber until `fd` is ready for reading (write == 0) or
+// writing (write != 0), or until timeout_ms passes; timeout_ms < 0 waits
+// forever. Answers 0 for ready, 1 for the timeout, and -2 when there is no
+// current fiber or no kernel poller on this platform (Windows, wasm) — the
+// caller then waits the thread-blocking way it always has. Readiness is a
+// hint exactly as poll's is: retry the syscall and come back on EAGAIN.
+long long beans_fiber_wait_io(long long fd, long long write,
+                              long long timeout_ms);
+
+// Whether this build has a kernel poller at all — the gate for making a
+// socket nonblocking on a fiber's behalf.
+long long beans_fiber_netpoll(void);
+
 // ---- introspection (tests, deadlock report) --------------------------------
 
 // Fibers this worker still owns (running + ready + parked).

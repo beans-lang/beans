@@ -167,6 +167,7 @@ test-semantics: $(BIN)
 	bash ./test/brew.sh
 	bash ./test/fiber_std.sh
 	bash ./test/gate.sh
+	bash ./test/fiber_net.sh
 	./test/self_host.sh
 	./test/fixpoint.sh
 
@@ -341,6 +342,7 @@ test-core: $(BIN)
 	bash ./test/brew.sh
 	bash ./test/fiber_std.sh
 	bash ./test/gate.sh
+	bash ./test/fiber_net.sh
 
 	./test/profiles.sh
 	./test/asm.sh

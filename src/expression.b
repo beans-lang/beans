@@ -10698,6 +10698,22 @@ class ExpressionChecker {
                 node,
                 "deinit cannot park — it runs during cleanup; a brew's scope join parks at scope exit")
         }
+        // Interim wall (spec/CONCURRENCY.md, "where the implementation
+        // stands"): the synthesized scope join rides function-exit defers,
+        // and a handle brewed in a nested block dies with its block before
+        // those run. Until per-scope joins land with the unwind work, brew
+        // only at the body's own scope — a check error beats the crash.
+        let body_floor: int =
+            if self.capture_floor_depth >= 0 {
+                self.capture_floor_depth + 1
+            } else {
+                1
+            }
+        if self.scopes.len() != body_floor {
+            self.fail(
+                node,
+                "brew inside a nested block is not ready yet — its scope join runs at function exit, after the block's handle is gone. brew at the function's own scope (per-scope joins land with the fiber unwind work)")
+        }
         if node.children.len() != 1 ||
            node.children[0].kind != "call" {
             self.fail(

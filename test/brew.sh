@@ -87,7 +87,12 @@ fn main() {
     let w: Brew<int> = brew h
     let u: Brew<int>
     let l: List<Brew<int>> = []
+    if a_true() {
+        brew work(9)
+    }
 }
+
+fn a_true() -> bool { return true }
 BEANS
 if ./build/beansc check "$tmp/walls.b" >"$tmp/walls.log" 2>&1; then
     echo "the handle walls accepted brew misuse" >&2
@@ -108,6 +113,7 @@ expect_wall "closure cannot capture Brew handle 'h'"
 expect_wall "brew starts a call on a child fiber"
 expect_wall "a Brew local starts with its brew"
 expect_wall "Brew cannot ride inside another type"
+expect_wall "brew inside a nested block is not ready yet"
 
 echo "checking brew stays an ordinary name without a callee"
 cat >"$tmp/name.b" <<'BEANS'

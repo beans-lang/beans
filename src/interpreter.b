@@ -11376,7 +11376,7 @@ class TreeInterpreter {
         }
         if node.kind == "defer" &&
            node.children.len() == 1 {
-            frame.add_defer(node.children[0])
+            frame.add_defer(node.children[0], frame)
             return TreeExec.next()
         }
         self.fail(
@@ -11389,8 +11389,17 @@ class TreeInterpreter {
         var index: int = frame.defers.len()
         for index > 0 {
             index -= 1
-            self.expression(frame.defers[index], frame)
+            let armed: TreeDeferred = frame.defers[index]
+            // in the scope it was registered in: a nested block's defer
+            // must still see that block's bindings, as native slots do
+            self.expression(armed.expression, armed.frame)
         }
+        // Drop the records now: each holds its registration frame, and
+        // that back-reference is a frame cycle — left in place it would
+        // outlive the function and hold every deferred scope's values
+        // past their deinit point ("defers first, then the frame
+        // releases" is a pinned contract).
+        frame.defers = []
     }
 
     fn fail_extern(function: HirFunction,

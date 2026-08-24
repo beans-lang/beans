@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 static int failures = 0;
 
@@ -460,6 +461,127 @@ static void test_sleep(void) {
     beans_worker_free(worker);
 }
 
+// ---- the netpoller ---------------------------------------------------------
+// A fiber that must wait for a descriptor parks in its worker's kernel
+// poller. Pinned here: the park-until-readable handoff between two fibers
+// of one worker, the deadline answering on a silent fd, the deadlock
+// report staying quiet while an io waiter exists (the kernel can wake
+// it), and the inbox kick reaching a worker blocked inside the poller.
+
+static long long np_now(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000000000LL + ts.tv_nsec;
+}
+
+typedef struct {
+    int rfd;
+    int wfd;
+    long long got;
+} NetpollProbe;
+
+static void np_reader(void* arg) {
+    NetpollProbe* probe = (NetpollProbe*)arg;
+    long long verdict = beans_fiber_wait_io(probe->rfd, 0, -1);
+    if (verdict != 0) {
+        probe->got = -100 - verdict;
+        return;
+    }
+    char byte = 0;
+    if (read(probe->rfd, &byte, 1) == 1) probe->got = byte;
+    log_step('r');
+}
+
+static void np_late_writer(void* arg) {
+    NetpollProbe* probe = (NetpollProbe*)arg;
+    beans_fiber_sleep(10000000LL); // the reader parks first
+    char byte = 42;
+    if (write(probe->wfd, &byte, 1) != 1) probe->got = -1;
+    log_step('w');
+}
+
+static void np_timeout_prober(void* arg) {
+    NetpollProbe* probe = (NetpollProbe*)arg;
+    probe->got = beans_fiber_wait_io(probe->rfd, 0, 25);
+}
+
+static void np_kick_helper(void* arg) {
+    NetpollProbe* probe = (NetpollProbe*)arg;
+    beans_fiber_park(); // until the cross-thread resume below
+    char byte = 9;
+    if (write(probe->wfd, &byte, 1) != 1) probe->got = -1;
+    log_step('k');
+}
+
+static void* np_cross_resume(void* arg) {
+    struct timespec pause = { 0, 20000000L };
+    nanosleep(&pause, NULL);
+    beans_fiber_resume((BeansFiber*)arg);
+    return NULL;
+}
+
+static int np_no_wake(void) { return 0; }
+
+static void test_netpoll(void) {
+    if (!beans_fiber_netpoll()) {
+        fprintf(stderr, "netpoll unavailable here; skipped\n");
+        return;
+    }
+    int fds[2];
+    CHECK(pipe(fds) == 0, "pipe");
+    NetpollProbe probe = { fds[0], fds[1], 0 };
+    BeansWorker* worker = beans_worker_new();
+
+    // park-until-readable between two fibers of one worker — with the
+    // hopeless-idle check armed: an io waiter must keep the report quiet
+    memset(order_log, 0, sizeof order_log);
+    beans_fiber_set_may_wake(np_no_wake);
+    BeansFiber* reader =
+        beans_fiber_spawn(worker, np_reader, &probe, "reader", 0);
+    BeansFiber* writer =
+        beans_fiber_spawn(worker, np_late_writer, &probe, "writer", 0);
+    beans_fiber_forget(reader);
+    beans_fiber_forget(writer);
+    beans_worker_run(worker);
+    beans_fiber_set_may_wake(NULL);
+    CHECK(probe.got == 42, "the reader woke with the written byte");
+    CHECK(strcmp(order_log, "wr") == 0, order_log);
+
+    // a deadline on a silent fd answers timeout, promptly and not early
+    probe.got = 0;
+    long long start = np_now();
+    BeansFiber* prober =
+        beans_fiber_spawn(worker, np_timeout_prober, &probe, "prober", 0);
+    beans_fiber_forget(prober);
+    beans_worker_run(worker);
+    long long took = np_now() - start;
+    CHECK(probe.got == 1, "the silent wait answered timeout");
+    CHECK(took >= 20000000LL, "the timeout came no earlier than asked");
+    CHECK(took < 2000000000LL, "the timeout did not hang");
+
+    // the kick: the worker blocks in the poller (an io waiter exists), a
+    // plain thread resumes an ordinarily-parked fiber — the inbox post
+    // must reach through the poller wait
+    memset(order_log, 0, sizeof order_log);
+    probe.got = 0;
+    BeansFiber* io_waiter =
+        beans_fiber_spawn(worker, np_reader, &probe, "io-waiter", 0);
+    BeansFiber* helper =
+        beans_fiber_spawn(worker, np_kick_helper, &probe, "helper", 0);
+    beans_fiber_forget(io_waiter);
+    beans_fiber_forget(helper);
+    pthread_t outsider;
+    pthread_create(&outsider, NULL, np_cross_resume, helper);
+    beans_worker_run(worker);
+    pthread_join(outsider, NULL);
+    CHECK(probe.got == 9, "the kicked worker ran the helper, freeing the reader");
+    CHECK(strcmp(order_log, "kr") == 0, order_log);
+
+    close(fds[0]);
+    close(fds[1]);
+    beans_worker_free(worker);
+}
+
 static void test_bootstrap(void) {
     BeansWorker* worker = beans_worker_bootstrap();
     CHECK(worker != NULL, "bootstrap");
@@ -522,6 +644,7 @@ int main(int argc, char** argv) {
     test_panic_storm();
     test_cross_thread();
     test_sleep();
+    test_netpoll();
     // Last: it permanently promotes this thread, the way a real program is.
     test_bootstrap();
     if (failures == 0) printf("ok fiber core\n");

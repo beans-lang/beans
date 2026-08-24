@@ -42,6 +42,24 @@ This file records user-facing changes in each Beans release.
 - **Deadlock report.** A program whose every fiber is parked with no other
   thread able to wake them prints each fiber's name and state and exits
   with status 3, instead of hanging forever.
+- **The netpoller.** Net waits park the calling fiber in its worker's
+  kernel poller — kqueue on macOS and the BSDs, epoll on Linux — instead
+  of blocking the thread, so both ends of a TCP conversation can run as
+  fibers of one worker. A fiber's socket becomes nonblocking for good at
+  its first fiber operation; thread-only programs keep blocking sockets
+  exactly as before. Socket deadlines (`set_timeouts`, `accept_timeout`,
+  connect timeouts) keep firing for parked fibers, and a fiber waiting on
+  a descriptor never counts toward the deadlock report — the kernel can
+  always wake it.
+- **Fixed: `defer` inside a nested block on `beansc run`.** The tree
+  walker dropped the block's scope before function-exit defers ran and
+  panicked with "unknown name"; native read its stack slot and printed.
+  Deferred records now carry the frame they were registered in, and both
+  engines agree.
+- **Interim wall: `brew` inside a nested block is refused at check time.**
+  The synthesized scope join runs with function-exit defers, after a
+  nested block's handle is gone — natively that was a crash. Brew at the
+  function's own scope until per-scope joins land with the unwind work.
 
 ### Removed
 

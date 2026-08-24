@@ -58,6 +58,19 @@ fn describe(result: Result<int>) -> string {
     }
 }
 
+// A defer registered inside a nested block still sees that block's
+// bindings when it runs at function exit. Native reads the stack slot;
+// the tree walker once dropped the block's scope and panicked with
+// "unknown name" — the deferred record now carries its frame.
+fn nested_scope(deep: bool) {
+    if deep {
+        let keep: int = 12
+        defer io.println("nested defer sees {keep}")
+        io.println("nested body ran")
+    }
+    io.println("after the nested block")
+}
+
 fn main() {
     defer io.println("main: last words")
     plain()
@@ -68,6 +81,7 @@ fn main() {
     io.println(describe(parse_even("12")))
     io.println(describe(parse_even("7")))
     io.println(describe(parse_even("beans")))
+    nested_scope(true)
     match file_roundtrip() {
         ok(text) => { io.println("read back: {text}") }
         err(problem) => { io.println("file failed: {problem.msg}") }

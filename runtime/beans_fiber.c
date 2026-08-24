@@ -34,6 +34,27 @@
 #include <unistd.h>
 #endif
 
+// The netpoller backend: kqueue on the BSD family, epoll (with an eventfd
+// kick) on Linux. Elsewhere — Windows, wasm — there is no poller and
+// beans_fiber_wait_io answers "no poller"; net waits block the worker
+// thread there exactly as they did before fibers.
+#if !defined(_WIN32) && !defined(__wasi__)
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || \
+    defined(__OpenBSD__) || defined(__DragonFly__)
+#define FIBER_NETPOLL_KQUEUE 1
+#include <sys/event.h>
+#elif defined(__linux__)
+#define FIBER_NETPOLL_EPOLL 1
+#include <sys/epoll.h>
+#include <sys/eventfd.h>
+#endif
+#endif
+#if defined(FIBER_NETPOLL_KQUEUE) || defined(FIBER_NETPOLL_EPOLL)
+#define FIBER_NETPOLL 1
+#include <errno.h>
+#include <fcntl.h>
+#endif
+
 // AddressSanitizer needs to be told about every stack switch, or it keeps
 // poisoning the fake frames of whichever stack it believes is current. The
 // scheduler's thread-stack bounds are captured by the first fiber entry —
@@ -108,6 +129,15 @@ struct BeansFiber {
     BeansFiber* all_next;
     BeansFiber* all_prev;
 
+    // io park record (netpoller): armed while this fiber is registered in
+    // its worker's kernel poller, signalled when readiness was delivered.
+    // Touched only by the owner worker's thread — registration, delivery,
+    // and the waiting fiber itself all run there.
+    int io_armed;
+    int io_signalled;
+    long long io_fd;
+    int io_write;
+
 #if defined(FIBER_ASAN)
     void* asan_save;
 #endif
@@ -135,6 +165,16 @@ struct BeansWorker {
     int sleeper_cap;
 
     BeansFiber* all_head; // every live fiber, for the deadlock report
+
+    // The netpoller: one kernel poller per worker, created at the first io
+    // park. io_waiters counts armed fibers; while it is nonzero the idle
+    // wait blocks in the poller (kicked by inbox_post) instead of the
+    // inbox cond, and the deadlock report stays quiet — the kernel can
+    // always wake an io waiter.
+    int poll_fd;
+    int poll_kick_fd; // epoll: eventfd registered in poll_fd; kqueue: unused
+    int io_waiters;
+    _Atomic int in_poll; // worker is inside (or committing to) the poller wait
 
 #if !defined(_WIN32)
     pthread_mutex_t inbox_m;
@@ -430,6 +470,8 @@ BeansWorker* beans_worker_new(void) {
     guard_report_install();
     guard_altstack_install();
 #endif
+    worker->poll_fd = -1;
+    worker->poll_kick_fd = -1;
     tls_worker = worker;
     return worker;
 }
@@ -490,12 +532,21 @@ static void fiber_deadlock_report(BeansWorker* worker) {
             "deadlock: every fiber is parked and nothing can wake them\n");
     for (BeansFiber* fiber = worker->all_head; fiber;
          fiber = fiber->all_next) {
-        fprintf(stderr, "  fiber '%s' parked\n",
-                fiber->name[0] ? fiber->name : "(unnamed)");
+        if (fiber->io_armed)
+            fprintf(stderr, "  fiber '%s' parked waiting on fd %lld\n",
+                    fiber->name[0] ? fiber->name : "(unnamed)",
+                    fiber->io_fd);
+        else
+            fprintf(stderr, "  fiber '%s' parked\n",
+                    fiber->name[0] ? fiber->name : "(unnamed)");
     }
     fflush(stderr);
     _exit(3);
 }
+
+#if defined(FIBER_NETPOLL)
+static void poller_kick(BeansWorker* worker); // defined with the netpoller
+#endif
 
 // Moves cross-thread wakes into the run queue. With `block`, sleeps until
 // one arrives — the caller checked that parked fibers still exist, so a
@@ -540,6 +591,13 @@ static void inbox_post(BeansWorker* worker, BeansFiber* fiber) {
     worker->inbox_tail = fiber;
     pthread_cond_signal(&worker->inbox_c);
     pthread_mutex_unlock(&worker->inbox_m);
+#if defined(FIBER_NETPOLL)
+    // A worker blocked in its kernel poller hears nothing from the cond.
+    // The post above happened before this read; the worker raises in_poll
+    // before its final inbox recheck — so either that recheck sees the
+    // fiber, or this read sees the flag and the kick wakes the poller.
+    if (atomic_load(&worker->in_poll)) poller_kick(worker);
+#endif
 #endif
 }
 
@@ -627,10 +685,278 @@ void beans_fiber_sleep(long long nanos) {
     }
 }
 
+// Removes a fiber's heap entry without firing it — the readiness half of
+// an io wait with a deadline won, and the timer must not resume the fiber
+// later, when it may be parked somewhere unrelated (or gone). Absence is
+// fine: a due entry may already have been popped by sleeper_fire_due.
+static void sleeper_remove(BeansWorker* worker, BeansFiber* fiber) {
+    for (int i = 0; i < worker->sleeper_count; i++) {
+        if (worker->sleepers[i].fiber != fiber) continue;
+        BeansSleeper last = worker->sleepers[--worker->sleeper_count];
+        if (i == worker->sleeper_count) return;
+        // sift the replacement to wherever it belongs, up or down
+        int at = i;
+        while (at > 0) {
+            int parent = (at - 1) / 2;
+            if (worker->sleepers[parent].deadline <= last.deadline) break;
+            worker->sleepers[at] = worker->sleepers[parent];
+            at = parent;
+        }
+        if (at == i) {
+            for (;;) {
+                int child = 2 * at + 1;
+                if (child >= worker->sleeper_count) break;
+                if (child + 1 < worker->sleeper_count &&
+                    worker->sleepers[child + 1].deadline <
+                        worker->sleepers[child].deadline)
+                    child += 1;
+                if (worker->sleepers[child].deadline >= last.deadline) break;
+                worker->sleepers[at] = worker->sleepers[child];
+                at = child;
+            }
+        }
+        worker->sleepers[at] = last;
+        return;
+    }
+}
+
+// ---- the netpoller ---------------------------------------------------------
+// One kernel poller per worker, created at the first io park. A fiber that
+// must wait for a descriptor arms a one-shot registration carrying the
+// fiber pointer and parks; the worker's idle wait pulls kernel events and
+// resumes the fibers they name. Cross-thread resumes keep using the inbox
+// — inbox_post kicks the poller (a user event on kqueue, an eventfd on
+// epoll) when the worker is blocked inside it. Everything except the kick
+// runs on the owner worker's thread, which is what keeps the arm/deliver/
+// disarm bookkeeping lock-free.
+
+#if defined(FIBER_NETPOLL)
+
+static int poller_init(BeansWorker* worker) {
+#if defined(FIBER_NETPOLL_KQUEUE)
+    worker->poll_fd = kqueue();
+    if (worker->poll_fd < 0) return 0;
+    fcntl(worker->poll_fd, F_SETFD, FD_CLOEXEC);
+    struct kevent kick;
+    EV_SET(&kick, 0, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, NULL);
+    if (kevent(worker->poll_fd, &kick, 1, NULL, 0, NULL) < 0) {
+        close(worker->poll_fd);
+        worker->poll_fd = -1;
+        return 0;
+    }
+#else
+    worker->poll_fd = epoll_create1(EPOLL_CLOEXEC);
+    if (worker->poll_fd < 0) return 0;
+    worker->poll_kick_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    struct epoll_event kick = { .events = EPOLLIN, .data = { .ptr = NULL } };
+    if (worker->poll_kick_fd < 0 ||
+        epoll_ctl(worker->poll_fd, EPOLL_CTL_ADD, worker->poll_kick_fd,
+                  &kick) < 0) {
+        if (worker->poll_kick_fd >= 0) close(worker->poll_kick_fd);
+        close(worker->poll_fd);
+        worker->poll_fd = -1;
+        worker->poll_kick_fd = -1;
+        return 0;
+    }
+#endif
+    return 1;
+}
+
+static int poller_arm(BeansWorker* worker, BeansFiber* fiber, long long fd,
+                      int write) {
+    if (worker->poll_fd < 0 && !poller_init(worker)) return 0;
+#if defined(FIBER_NETPOLL_KQUEUE)
+    struct kevent ev;
+    EV_SET(&ev, (uintptr_t)fd, write ? EVFILT_WRITE : EVFILT_READ,
+           EV_ADD | EV_ONESHOT, 0, 0, fiber);
+    if (kevent(worker->poll_fd, &ev, 1, NULL, 0, NULL) < 0) return 0;
+#else
+    struct epoll_event ev = {
+        .events = (write ? EPOLLOUT : EPOLLIN) | EPOLLONESHOT,
+        .data = { .ptr = fiber },
+    };
+    if (epoll_ctl(worker->poll_fd, EPOLL_CTL_ADD, (int)fd, &ev) < 0) {
+        // a one-shot that already fired leaves a disabled registration
+        if (errno != EEXIST ||
+            epoll_ctl(worker->poll_fd, EPOLL_CTL_MOD, (int)fd, &ev) < 0)
+            return 0;
+    }
+#endif
+    return 1;
+}
+
+// Drops the armed registration without a delivery — the deadline won.
+// Removing the event also removes anything pending for it in the kernel
+// queue, so no stale delivery can name this fiber afterwards.
+static void poller_disarm(BeansWorker* worker, BeansFiber* fiber) {
+#if defined(FIBER_NETPOLL_KQUEUE)
+    struct kevent ev;
+    EV_SET(&ev, (uintptr_t)fiber->io_fd,
+           fiber->io_write ? EVFILT_WRITE : EVFILT_READ, EV_DELETE, 0, 0,
+           NULL);
+    kevent(worker->poll_fd, &ev, 1, NULL, 0, NULL); // ENOENT: already fired
+#else
+    epoll_ctl(worker->poll_fd, EPOLL_CTL_DEL, (int)fiber->io_fd, NULL);
+#endif
+    fiber->io_armed = 0;
+    worker->io_waiters -= 1;
+}
+
+// Pulls delivered events and resumes the fibers they name. timeout_ns < 0
+// blocks until something arrives (the kick included); 0 just polls.
+static void poller_drain(BeansWorker* worker, long long timeout_ns) {
+#if defined(FIBER_NETPOLL_KQUEUE)
+    struct kevent events[64];
+    struct timespec ts, *tp = NULL;
+    if (timeout_ns >= 0) {
+        ts.tv_sec = timeout_ns / 1000000000LL;
+        ts.tv_nsec = timeout_ns % 1000000000LL;
+        tp = &ts;
+    }
+    int n = kevent(worker->poll_fd, NULL, 0, events, 64, tp);
+    for (int i = 0; i < n; i++) {
+        if (events[i].filter == EVFILT_USER) continue; // the kick itself
+        BeansFiber* fiber = (BeansFiber*)events[i].udata;
+        fiber->io_signalled = 1;
+        fiber->io_armed = 0;
+        worker->io_waiters -= 1;
+        beans_fiber_resume(fiber);
+    }
+#else
+    struct epoll_event events[64];
+    int ms = -1;
+    if (timeout_ns >= 0) {
+        long long clamp = (timeout_ns + 999999LL) / 1000000LL;
+        ms = clamp > 0x7fffffffLL ? 0x7fffffff : (int)clamp;
+    }
+    int n = epoll_wait(worker->poll_fd, events, 64, ms);
+    for (int i = 0; i < n; i++) {
+        if (!events[i].data.ptr) { // the kick: drain the eventfd
+            unsigned long long word;
+            while (read(worker->poll_kick_fd, &word, sizeof word) > 0) {}
+            continue;
+        }
+        BeansFiber* fiber = (BeansFiber*)events[i].data.ptr;
+        fiber->io_signalled = 1;
+        fiber->io_armed = 0;
+        worker->io_waiters -= 1;
+        beans_fiber_resume(fiber);
+    }
+#endif
+}
+
+// Wakes a worker blocked inside poller_drain from another thread.
+static void poller_kick(BeansWorker* worker) {
+#if defined(FIBER_NETPOLL_KQUEUE)
+    struct kevent ev;
+    EV_SET(&ev, 0, EVFILT_USER, 0, NOTE_TRIGGER, 0, NULL);
+    kevent(worker->poll_fd, &ev, 1, NULL, 0, NULL);
+#else
+    unsigned long long one = 1;
+    ssize_t ignored = write(worker->poll_kick_fd, &one, sizeof one);
+    (void)ignored;
+#endif
+}
+
+// The idle wait while io waiters exist: block in the kernel poller with
+// the nearest sleeper deadline as the timeout. The in_poll flag and the
+// one extra inbox check before blocking are the handshake with
+// inbox_post's kick — a poster either sees the flag and kicks, or posted
+// before it was raised and the recheck finds the fiber.
+static void io_idle_wait(BeansWorker* worker) {
+    long long timeout_ns = -1;
+    if (worker->sleeper_count) {
+        long long now = fiber_now();
+        sleeper_fire_due(worker, now);
+        if (worker->ready_head) return;
+        if (worker->sleeper_count) {
+            timeout_ns = worker->sleepers[0].deadline - now;
+            if (timeout_ns < 0) timeout_ns = 0;
+        }
+    }
+    atomic_store(&worker->in_poll, 1);
+    pthread_mutex_lock(&worker->inbox_m);
+    int posted = worker->inbox_head != NULL;
+    pthread_mutex_unlock(&worker->inbox_m);
+    if (posted) {
+        atomic_store(&worker->in_poll, 0);
+        inbox_drain(worker, 0);
+        return;
+    }
+    poller_drain(worker, timeout_ns);
+    atomic_store(&worker->in_poll, 0);
+    inbox_drain(worker, 0);
+    if (worker->sleeper_count) sleeper_fire_due(worker, fiber_now());
+}
+
+#endif // FIBER_NETPOLL
+
+// Whether this build has a kernel poller — the gate for making a socket
+// nonblocking on a fiber's behalf. Without one, sockets stay blocking and
+// net waits block the worker thread exactly as they did before fibers.
+long long beans_fiber_netpoll(void) {
+#if defined(FIBER_NETPOLL)
+    return 1;
+#else
+    return 0;
+#endif
+}
+
+// Parks the calling fiber until `fd` is ready for reading (write == 0) or
+// writing, or until timeout_ms passes (timeout_ms < 0 waits forever).
+// Answers 0 for ready, 1 for timeout, -2 when there is no poller here or
+// no current fiber — the caller then waits the thread-blocking way.
+long long beans_fiber_wait_io(long long fd, long long write,
+                              long long timeout_ms) {
+#if !defined(FIBER_NETPOLL)
+    (void)fd; (void)write; (void)timeout_ms;
+    return -2;
+#else
+    BeansWorker* worker = tls_worker;
+    BeansFiber* fiber = worker ? worker->current : NULL;
+    if (!fiber) return -2;
+    if (!poller_arm(worker, fiber, fd, write ? 1 : 0)) return -2;
+    if (!fiber->io_armed) {
+        fiber->io_armed = 1;
+        worker->io_waiters += 1;
+    }
+    fiber->io_signalled = 0;
+    fiber->io_fd = fd;
+    fiber->io_write = write ? 1 : 0;
+    long long deadline =
+        timeout_ms >= 0 ? fiber_now() + timeout_ms * 1000000LL : -1;
+    if (deadline >= 0) sleeper_push(worker, deadline, fiber);
+    long long result = 0;
+    for (;;) {
+        if (fiber->io_signalled) break;
+        if (deadline >= 0 && fiber_now() >= deadline) {
+            poller_disarm(worker, fiber);
+            result = 1;
+            break;
+        }
+        // Cancellation is interim-invisible at io parks, the same rule as
+        // channels and sleep: observing it lands with the unwind work.
+        beans_fiber_park();
+    }
+    if (deadline >= 0) sleeper_remove(worker, fiber);
+    return result;
+#endif
+}
+
 // The idle wait, deadline-aware: drains the inbox, blocking until either a
 // cross-thread resume arrives or the nearest sleeper is due. With no
 // sleepers this is the plain blocking inbox wait.
 static void idle_wait(BeansWorker* worker) {
+#if defined(FIBER_NETPOLL)
+    // io waiters change the wait entirely: block in the kernel poller
+    // (kicked by inbox_post) so fd readiness, timers, and cross-thread
+    // resumes all land. The kernel can always wake an io waiter, so this
+    // path never reports a deadlock.
+    if (worker->io_waiters > 0) {
+        io_idle_wait(worker);
+        return;
+    }
+#endif
     if (!worker->sleeper_count) {
         if (fiber_may_wake && !fiber_may_wake()) {
             // No timers and no other thread: drain the inbox once for a
@@ -1065,6 +1391,10 @@ void beans_worker_free(BeansWorker* worker) {
         fiber_record_free(fiber);
     }
     free(worker->sleepers);
+#if defined(FIBER_NETPOLL)
+    if (worker->poll_fd >= 0) close(worker->poll_fd);
+    if (worker->poll_kick_fd >= 0) close(worker->poll_kick_fd);
+#endif
 #if defined(_WIN32)
     DeleteCriticalSection(&worker->inbox_m);
 #else

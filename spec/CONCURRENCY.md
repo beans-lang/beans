@@ -349,9 +349,16 @@ FIFO fiber wait lines beside their condvars, `sleep` parks on a per-worker
 deadline min-heap, and `thread.join` parks until the joined thread finishes
 (`test/fiber_std.sh`); `Gate` is in the language — sticky broadcast flag,
 `new Gate()` / `wait` / `open` / `is_open`, opened from any thread, waiters
-are fibers (`test/gate.sh`); and a program whose every fiber is parked with no
-thread able to wake them prints the fiber table and exits 3 instead of
-hanging. Still open in F3: readiness (the netpoller) and `TaskGroup`.
+are fibers (`test/gate.sh`); the netpoller is in — one kernel poller per
+worker (kqueue on the BSD family, epoll + an eventfd kick on Linux), fused
+into the idle wait beside the sleeper heap: a fiber's net wait parks with
+`beans_fiber_wait_io`, its socket goes nonblocking for good at the first
+fiber op (thread-only programs keep blocking sockets untouched), socket
+deadlines ride into the parked wait, and both TCP ends run as fibers of one
+worker (`test/fiber_net.sh`, `test/fiber_core.sh`); and a program whose
+every fiber is parked with no thread able to wake them prints the fiber
+table and exits 3 instead of hanging — unless an io waiter exists, whom the
+kernel can always wake. Still open in F3: `TaskGroup`.
 
 Deliberately not yet here, in dependency order:
 
@@ -374,9 +381,16 @@ Deliberately not yet here, in dependency order:
    fiber entries are the one blessed exception the analysis will need: a
    stored callback that IS a fiber's entry runs on that fiber's stack and
    may park.)
-5. **F3, the remainder**: readiness parking fibers (the netpoller) and
-   `TaskGroup` on fibers. Channels, `Gate`, sleep, `thread.join`, and the
-   deadlock report are in.
+5. **F3, the remainder**: `TaskGroup` on fibers. Channels, `Gate`, sleep,
+   `thread.join`, the netpoller, and the deadlock report are in.
+6. **Nested-scope brews.** The synthesized scope join rides function-exit
+   defers, so a handle brewed inside a nested block would die with its
+   block before the join runs — natively that was a use-after-free at
+   function exit. Until per-scope joins land with the unwind work, `brew`
+   inside a nested block is refused at check time; brew at the function's
+   own scope. (Chasing this also fixed a real pre-fiber bug: an interpreted
+   `defer` inside a nested block panicked with "unknown name" where native
+   read its slot — deferred records now carry their registration frame.)
 
 ## Milestone gates (unchanged from the plan)
 
