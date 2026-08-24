@@ -345,7 +345,11 @@ fn main() {
   `{x:-8}` left-aligns, `{pi:.2}` fixes decimals (float/decimal only), `{pi:8.2}` both.
   Width pads anything printable — `{xs:12}` pads a whole list. Same rendering as `std.fmt`.
 - **There is no `+` for strings.** Building strings happens through interpolation, `std.fmt` (sprintf-style: padding, precision, alignment), or `list.join(sep)`. One way to do it, and it's the readable one.
-- Escapes: `\n \t \r \0 \\ \" \{ \}`.
+- Escapes: `\n \t \r \0 \\ \" \{ \}`. The backslash forms are the *only* brace
+  escapes: `{{` is not one. A `{` right after another `{` begins an
+  interpolation whose expression starts with a map literal, so `"{{}}"` is an
+  (illegal) empty-map piece, not a literal `{}`. Both compilers render every
+  escape identically, in and out of interpolated strings.
 
 **Methods (v0.5, implemented, byte-based — unicode arrives later as explicit `chars()`, `len` stays bytes forever):**
 `len`, `is_empty`, `first(n)`, `last(n)`, `slice(from, to)` (half-open, panics out of range),
@@ -871,6 +875,22 @@ let point: Point = Point { x: 3, y: 4 }
 let values: List<int> = [1, 2, 3]
 let counts: Map<string, int> = {"beans": 2}
 ```
+
+Struct fields may declare defaults exactly like class fields, and a field
+literal only needs the fields without one. A struct whose fields all carry
+defaults builds from the empty literal:
+
+```
+struct Style {
+    size: int = 12
+    name: string = "plain"
+}
+
+let plain: Style = Style {}                  // size 12, name "plain"
+let big: Style = Style { size: 20 }          // name still "plain"
+```
+
+Omitting a field that has no default is an error naming the missing field.
 
 Classes never use field literals or short `{}` initialization. Build them with
 `new Class(...)` or target-typed `new(...)` so every construction path goes
@@ -1591,6 +1611,13 @@ Direction: **OS threads, not green threads.** Reason: green threads make every
 C/C++ call expensive (Go's cgo problem — stack switching at the boundary).
 Beans lives on C++ interop and wants to write databases, so real threads it is.
 Closures plus `std.thread` do the whole job.
+
+**`main()` runs on the real process main thread — guaranteed.** A built binary
+starts `main()` on the thread the OS handed the process, and `beansc run`
+executes `main()` on its own process main thread (`pthread_main_np()` answers 1
+there on macOS). Frameworks that insist on the first thread — AppKit, the
+dispatch main queue, most GUI event loops — can be driven from `main()` under
+either compiler. Spawned threads make no such promise.
 
 ```
 import std.thread

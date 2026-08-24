@@ -1,0 +1,6 @@
+i16 min=-3 max=9
+u8 min=3 max=200
+u64 min=7 max=18446744073709551615
+float min=-2.5 max=1.5
+string min=apple max=plum
+i32 contains=true index=some(2)

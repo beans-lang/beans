@@ -562,6 +562,29 @@ fn tree_value_less(left: TreeValue,
     return false
 }
 
+// floor written with truncation only, because the bootstrap compiler that
+// builds this interpreter has no floor of its own to lean on. NaN, both
+// zeros, infinities, and everything at or past 2^53 are already integral
+// (or must keep their payload/sign), so only the truncatable middle does
+// arithmetic.
+fn tree_float_floor(value: float) -> float {
+    if value != value { return value }
+    if value == 0.0 { return value }
+    if value >= 9007199254740992.0 ||
+       value <= -9007199254740992.0 {
+        return value
+    }
+    let truncated: float = (value as int) as float
+    if truncated > value { return truncated - 1.0 }
+    return truncated
+}
+
+// the overflow product is the IEEE infinity both backends print the same
+fn tree_float_infinity() -> float {
+    var big: float = 1.0e308
+    return big * 1.0e308
+}
+
 // TreeValue is a host class so reference-shaped values can alias. Beans
 // records, fixed arrays and inline enums are values, however, and must receive
 // an independent wrapper whenever source semantics copy them.

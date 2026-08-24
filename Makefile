@@ -107,6 +107,7 @@ test-frontend: $(BIN)
 	./test/version.sh
 	bash ./test/syntax_v07.sh
 	bash ./test/language_gaps.sh
+	bash ./test/crema_findings.sh
 	bash ./test/generic_calls.sh
 	bash ./test/named_imports.sh
 	bash ./test/private_fields.sh
@@ -260,6 +261,7 @@ test-core: $(BIN)
 	./test/traits.sh
 	bash ./test/syntax_v07.sh
 	bash ./test/language_gaps.sh
+	bash ./test/crema_findings.sh
 	bash ./test/generic_calls.sh
 	bash ./test/named_imports.sh
 	bash ./test/private_fields.sh

@@ -2609,6 +2609,14 @@ class ExpressionChecker {
                 return some(new BuiltinSignature(
                     [], receiver))
             }
+            if name == "floor" || name == "ceil" {
+                return some(new BuiltinSignature(
+                    [], receiver))
+            }
+            if name == "is_nan" {
+                return some(new BuiltinSignature(
+                    [], boolean))
+            }
             if name == "round" {
                 return some(new BuiltinSignature(
                     [], integer))
@@ -3385,6 +3393,11 @@ class ExpressionChecker {
         let integer: HirType = new HirType("int")
         let boolean: HirType = new HirType("bool")
         let string: HirType = new HirType("string")
+        if (type_name == "float" || type_name == "f32") &&
+           name == "infinity" {
+            return some(new BuiltinSignature(
+                [], new HirType(type_name)))
+        }
         if type_name == "Bytes" && name == "filled" {
             return some(new BuiltinSignature(
                 [integer, integer], new HirType("Bytes")))
@@ -4405,6 +4418,12 @@ class ExpressionChecker {
                     "empty \{\} in string")
                 continue
             }
+            // "{{}}" reads like doubled-brace escaping, but a '{' right
+            // after the opener is an expression that starts with a map
+            // literal. When such a piece fails, name the real fix.
+            let brace_opened: bool =
+                segment.byte_at(0) == 123
+            let errors_before: int = self.errors.len()
             let expression_source: string =
                 interpolation_expression_source(segment)
             let lexer: Lexer =
@@ -4460,6 +4479,12 @@ class ExpressionChecker {
                         "can't put a {render_hir_type(piece.type)} inside a string yet — give it a string form first")
                 }
                 lowered.push(piece)
+            }
+            if brace_opened &&
+               self.errors.len() > errors_before {
+                self.fail(
+                    node,
+                    "'\{\{' is not an escape — it starts an interpolation whose expression begins with '\{'; for a literal brace write \\\{ or \\\}")
             }
         }
         return move lowered
@@ -7667,6 +7692,33 @@ class ExpressionChecker {
                         }
                     }
                 }
+                // scalar type names carry a few statics of their own —
+                // f32.infinity() — without joining builtin_class_name,
+                // whose members are reserved as declaration names
+                if receiver_syntax.value == "float" ||
+                   receiver_syntax.value == "f32" {
+                    match self.builtin_static(
+                        receiver_syntax.value,
+                        callee.value) {
+                        some(signature) => {
+                            let result: HirNode =
+                                self.make_node(
+                                    node, "static_call",
+                                    callee.value,
+                                    signature.result)
+                            result.resolved =
+                                "{receiver_syntax.value}.{callee.value}"
+                            self.check_builtin_arguments(
+                                node, 1,
+                                signature, result)
+                            self.expect_type(
+                                node, signature.result,
+                                expected)
+                            return result
+                        }
+                        none => {}
+                    }
+                }
                 if builtin_class_name(receiver_syntax.value) {
                     if receiver_syntax.value == "CFunctionPtr" &&
                        callee.value == "null" {
@@ -10733,6 +10785,109 @@ class ExpressionChecker {
         return result
     }
 
+    // The base chain of a fixed-array element assignment, validated the
+    // way the backends store it: struct fields and array elements walk
+    // back to a mutable local, and a class field makes the heap object
+    // the root. Anything else has no storage behind the SSA copy — the
+    // write would land in a temporary and vanish silently.
+    fn check_array_place(target: AstNode,
+                         base: HirNode,
+                         element: HirType) {
+        var current: HirNode = base
+        for true {
+            if current.kind == "local" {
+                match self.find_local(current.value) {
+                    some(binding) => {
+                        if !binding.mutable {
+                            self.fail(
+                                target,
+                                "'{current.value}' is a let — its elements can't be reassigned. use var")
+                        }
+                    }
+                    none => {}
+                }
+                return
+            }
+            if current.kind == "field" &&
+               current.children.len() == 1 {
+                let receiver: HirNode =
+                    current.children[0]
+                match self.declaration_for(
+                    receiver.type) {
+                    some(declaration) => {
+                        if declaration.kind == "class" {
+                            if !self.array_element_stores_inline(
+                                   element) {
+                                self.fail(
+                                    target,
+                                    "storing owned references into an array inside a class object is not supported yet — copy the array to a local, update it, and assign it back")
+                            }
+                            return
+                        }
+                        if declaration.kind == "struct" {
+                            current = receiver
+                            continue
+                        }
+                    }
+                    none => {}
+                }
+                self.fail(
+                    target,
+                    "array element assignment through a {render_hir_type(receiver.type)} receiver is not supported yet — copy the array to a var, update it, and assign it back")
+                return
+            }
+            if current.kind == "index" &&
+               current.children.len() == 2 {
+                let receiver: HirNode =
+                    current.children[0]
+                if receiver.type.name == "array" {
+                    current = receiver
+                    continue
+                }
+                self.fail(
+                    target,
+                    "array element assignment through a {render_hir_type(receiver.type)} element is not supported yet — copy the element to a var, update it, and assign it back")
+                return
+            }
+            self.fail(
+                target,
+                "this fixed array is a temporary copy — store it in a var before assigning elements")
+            return
+        }
+    }
+
+    // Conservatively, the element types every backend can store into a
+    // class-held array without reference bookkeeping. Anything that may
+    // own references answers false and keeps the write-barrier question
+    // out of reach until elements get one.
+    fn array_element_stores_inline(
+        type: HirType) -> bool {
+        if mir_type_is_trivial(type) { return true }
+        let name: string =
+            canonical_hir_name(type.name)
+        if name == "array" && type.args.len() == 1 {
+            return self.array_element_stores_inline(
+                type.args[0])
+        }
+        match self.declaration_for(type) {
+            some(declaration) => {
+                if declaration.kind != "struct" {
+                    return false
+                }
+                for field: HirField in
+                    declaration.fields {
+                    if !self.array_element_stores_inline(
+                           field.type) {
+                        return false
+                    }
+                }
+                return true
+            }
+            none => {}
+        }
+        return false
+    }
+
     fn check_assignment(node: AstNode) -> HirNode {
         let target: AstNode = node.children[0]
         let result: HirNode =
@@ -10789,19 +10944,10 @@ class ExpressionChecker {
             }
             if target.kind == "index" &&
                place.children.len() != 0 &&
-               place.children[0].type.name == "array" &&
-               target.children[0].kind == "name" {
-                match self.find_local(
-                    target.children[0].value) {
-                    some(binding) => {
-                        if !binding.mutable {
-                            self.fail(
-                                target,
-                                "'{binding.name}' is a let — its elements can't be reassigned. use var")
-                        }
-                    }
-                    none => {}
-                }
+               place.children[0].type.name == "array" {
+                self.check_array_place(
+                    target, place.children[0],
+                    place.type)
             }
             if node.value == "=" {
                 self.require_move_source(

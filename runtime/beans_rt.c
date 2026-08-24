@@ -5875,34 +5875,49 @@ static unsigned long long slot_hash(long long v, long long kind,
     if (kind == 6) return (unsigned long long)beans_f32_hash(v);
     return beans_mix64((unsigned long long)v); // raw, and never-equal keys
 }
+// A typed scalar list stores elements at their real width — List<f32>
+// keeps 4-byte elements — while every slot-oriented reader below speaks
+// eight-byte slots. Widening through here keeps the kind codes working
+// for both representations (an f32 slot is its bits zero-extended,
+// exactly what the emitter's to_slot produces).
+static long long list_slot_at(BList* l, long long i) {
+    if (l->stride == 4) {
+        unsigned int raw;
+        memcpy(&raw, (char*)l->data + i * 4, 4);
+        return (long long)raw;
+    }
+    return l->data[i];
+}
 long long beans_list_max(BList* l, long long kind, long long* ok) {
     *ok = l->len > 0;
     if (!*ok) return 0;
-    long long best = l->data[0];
+    long long best = list_slot_at(l, 0);
     for (long long i = 1; i < l->len; i++) {
-        if (slot_cmp(l->data[i], best, kind) > 0) best = l->data[i];
+        long long v = list_slot_at(l, i);
+        if (slot_cmp(v, best, kind) > 0) best = v;
     }
     return best;
 }
 long long beans_list_contains(BList* l, long long v, long long kind, void* eq) {
     for (long long i = 0; i < l->len; i++) {
-        if (slot_eq(l->data[i], v, kind, (long long (*)(long long, long long))eq)) return 1;
+        if (slot_eq(list_slot_at(l, i), v, kind, (long long (*)(long long, long long))eq)) return 1;
     }
     return 0;
 }
 long long beans_list_min(BList* l, long long kind, long long* ok) {
     *ok = l->len > 0;
     if (!*ok) return 0;
-    long long best = l->data[0];
+    long long best = list_slot_at(l, 0);
     for (long long i = 1; i < l->len; i++) {
-        if (slot_cmp(l->data[i], best, kind) < 0) best = l->data[i];
+        long long v = list_slot_at(l, i);
+        if (slot_cmp(v, best, kind) < 0) best = v;
     }
     return best;
 }
 long long beans_list_index(BList* l, long long v, long long kind, long long* ok,
                            void* eq) {
     for (long long i = 0; i < l->len; i++) {
-        if (slot_eq(l->data[i], v, kind, (long long (*)(long long, long long))eq)) {
+        if (slot_eq(list_slot_at(l, i), v, kind, (long long (*)(long long, long long))eq)) {
             *ok = 1;
             return i;
         }
@@ -6112,14 +6127,55 @@ static void list_radix_sort_int(long long* a, long long n) {
     rt_free(at);
     rt_free(buf);
 }
+// Sorting speaks eight-byte slots. A 4-byte typed list widens into a
+// temporary slot array, sorts there, and narrows back — the permutation
+// is what matters, and n*8 scratch is what sort_by_key already pays.
+static long long* list_widen_slots(BList* l) {
+    long long n = l->len;
+    long long* wide = rt_alloc((size_t)(n > 0 ? n : 1) * 8);
+    if (!wide) beans_panic("out of memory", 0, 0);
+    for (long long i = 0; i < n; i++) wide[i] = list_slot_at(l, i);
+    return wide;
+}
+static void list_narrow_slots(BList* l, long long* wide) {
+    for (long long i = 0; i < l->len; i++) {
+        unsigned int raw = (unsigned int)wide[i];
+        memcpy((char*)l->data + i * 4, &raw, 4);
+    }
+    rt_free(wide);
+}
 void beans_list_sort(BList* l, long long kind) {
+    if (l->stride == 4) {
+        long long* wide = list_widen_slots(l);
+        if (kind == 0) list_radix_sort_int(wide, l->len);
+        else list_merge_sort(wide, l->len, kind, NULL, NULL);
+        list_narrow_slots(l, wide);
+        return;
+    }
     if (kind == 0) list_radix_sort_int(l->data, l->len);
     else list_merge_sort(l->data, l->len, kind, NULL, NULL);
 }
 void beans_list_sort_by(BList* l, void* thunk, void* box) {
+    if (l->stride == 4) {
+        long long* wide = list_widen_slots(l);
+        list_merge_sort(wide, l->len, 0, thunk, box);
+        list_narrow_slots(l, wide);
+        return;
+    }
     list_merge_sort(l->data, l->len, 0, thunk, box);
 }
 void beans_list_sort_by_key(BList* l, void* thunk, void* box) {
+    if (l->stride == 4) {
+        long long saved_len = l->len;
+        long long* wide = list_widen_slots(l);
+        BList slots = *l;
+        slots.data = wide;
+        slots.stride = -8;
+        beans_list_sort_by_key(&slots, thunk, box);
+        l->len = saved_len;
+        list_narrow_slots(l, wide);
+        return;
+    }
     long long n = l->len;
     if (n < 2) return;
     long long* keys = rt_alloc((size_t)n * 8);
@@ -6857,7 +6913,7 @@ char* beans_list_join(BList* l, char* sep, long long kind) {
     char** parts = rt_alloc((size_t)(l->len ? l->len : 1) * sizeof(char*));
     long long total = 0;
     for (long long i = 0; i < l->len; i++) {
-        long long v = l->data[i];
+        long long v = list_slot_at(l, i);
         char* s;
         if (kind == 2) {
             s = (char*)v;
@@ -6962,7 +7018,7 @@ static char* show_join(BList* l, const char* sep, long long sl,
     char* buf = rt_alloc((size_t)cap);
     if (brackets) buf[len++] = '[';
     for (long long i = 0; i < l->len; i++) {
-        char* s = show(l->data[i]);
+        char* s = show(list_slot_at(l, i));
         long long n = beans_slen(s);
         long long need = len + n + sl + 2;
         if (need > cap) {
@@ -7027,10 +7083,10 @@ void beans_show_list_iter(BShowCtx* c, BList* l, void* elem_step) {
     show_out(c, "[", 1);
     show_push(c, NULL, 0, "]", 1);
     for (long long i = l->len; i-- > 1;) {
-        show_push(c, elem_step, l->data[i], NULL, 0);
+        show_push(c, elem_step, list_slot_at(l, i), NULL, 0);
         show_push(c, NULL, 0, ", ", 2);
     }
-    if (l->len > 0) show_push(c, elem_step, l->data[0], NULL, 0);
+    if (l->len > 0) show_push(c, elem_step, list_slot_at(l, 0), NULL, 0);
 }
 char* beans_show_run(void* fn, long long v) {
     BShowCtx c = {0, 0, 0, 0, 0, 0};

@@ -2121,9 +2121,41 @@ class MirLowerer {
                 if exact != "" {
                     instruction.devirtualized_receiver =
                         exact
+                    continue
+                }
+                // a singleton class cannot be extended, so the static
+                // type of the receiver already names the exact runtime
+                // class: every call devirtualizes with no data flow
+                let receiver: int =
+                    instruction.operands[0]
+                if receiver >= 0 &&
+                   receiver <
+                       function.value_types.len() {
+                    let singleton: string =
+                        self.singleton_class_name(
+                            function.value_types[
+                                receiver])
+                    if singleton != "" {
+                        instruction.devirtualized_receiver =
+                            singleton
+                    }
                 }
             }
         }
+    }
+
+    fn singleton_class_name(type: HirType) -> string {
+        for declaration: HirDeclaration in
+            self.source.declarations {
+            if (declaration.qualified == type.name ||
+                declaration.name == type.name) &&
+               declaration.kind == "class" &&
+               declaration.is_singleton &&
+               declaration.generics.len() == 0 {
+                return declaration.qualified
+            }
+        }
+        return ""
     }
 
     fn analyze_borrow_aliases(function: MirFunction) {

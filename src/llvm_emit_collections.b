@@ -259,7 +259,7 @@ partial class LlvmTextEmitter {
             instruction.type.args[0]
         let result: string = "%v{instruction.result}"
         values[instruction.result] = result
-        if self.wide_inline_value(element) {
+        if self.list_element_inline(element) {
             let mask: int =
                 self.pointer_mask_at(element, 0)
             if mask < 0 {
@@ -493,7 +493,7 @@ partial class LlvmTextEmitter {
             "  %list.store.len.ptr{id} = getelementptr i8, ptr {list}, i64 8\n  %list.store.len{id} = load i64, ptr %list.store.len.ptr{id}\n  %list.store.ok{id} = icmp ult i64 {index}, %list.store.len{id}\n  br i1 %list.store.ok{id}, label %list.store.have{okay}, label %list.store.bad{bad}\n"
         output =
             "{output}list.store.bad{bad}:\n  call void @beans_panic_index(i64 {index}, i64 %list.store.len{id}, i64 1, i64 {instruction.line}, i64 {instruction.col})\n  unreachable\n"
-        if self.wide_inline_value(element) {
+        if self.list_element_inline(element) {
             let llvm: string = self.type_text(element)
             output =
                 "{output}list.store.have{okay}:\n  %list.store.data{id} = load ptr, ptr {list}\n  %list.store.slot{id} = getelementptr {llvm}, ptr %list.store.data{id}, i64 {index}\n"
@@ -638,16 +638,33 @@ partial class LlvmTextEmitter {
                 "LLVM emitter does not support wide list elements in List.{instruction.text} yet")
             return ""
         }
-        let kind: int =
-            if name == "int" {
-                0
-            } else if name == "float" {
-                1
-            } else if name == "string" {
-                2
-            } else {
-                4
-            }
+        // the runtime's order kinds: 0 signed, 1 double, 2 string,
+        // 5 unsigned, 6 float — the same table emit_list_sort uses.
+        // The old catch-all 4 landed on slot_cmp's comparator row with
+        // no comparator, which answers 0 for every pair, so min and
+        // max of a sized-integer or f32 list returned whichever
+        // element came first.
+        var kind: int = -1
+        if llvm_type_is_integer(element) {
+            kind =
+                if llvm_type_is_unsigned(element) {
+                    5
+                } else {
+                    0
+                }
+        } else if name == "float" {
+            kind = 1
+        } else if name == "f32" {
+            kind = 6
+        } else if name == "string" {
+            kind = 2
+        }
+        if kind < 0 {
+            self.fail(
+                instruction,
+                "LLVM emitter does not support List<{render_hir_type(element)}>.{instruction.text} yet")
+            return ""
+        }
         let option: string =
             self.type_text(instruction.type)
         if option == "" {
@@ -1506,7 +1523,7 @@ partial class LlvmTextEmitter {
                 instruction.operands[1],
                 instruction)
         let element: HirType = list_type.args[0]
-        if self.wide_inline_value(element) {
+        if self.list_element_inline(element) {
             let llvm: string = self.type_text(element)
             let consumed: bool =
                 instruction.consumes.len() == 2 &&
@@ -1567,7 +1584,7 @@ partial class LlvmTextEmitter {
                 instruction)
         let element: HirType =
             list_type.args[0]
-        if self.wide_inline_value(element) {
+        if self.list_element_inline(element) {
             let llvm: string =
                 self.type_text(element)
             let consumed: bool =
@@ -1631,7 +1648,7 @@ partial class LlvmTextEmitter {
         let result: string = "%v{instruction.result}"
         let element: HirType =
             list_type.args[0]
-        if self.wide_inline_value(element) {
+        if self.list_element_inline(element) {
             let llvm: string =
                 self.type_text(element)
             let slot: string =
@@ -1689,7 +1706,7 @@ partial class LlvmTextEmitter {
         let none_block: int = self.fresh()
         let merge_block: int = self.fresh()
         let result: string = "%v{instruction.result}"
-        if self.wide_inline_value(element) {
+        if self.list_element_inline(element) {
             // popping moves the record out — the list forgets it, so
             // its reference fields keep their count with no retain
             let llvm: string = self.type_text(element)
@@ -2261,7 +2278,7 @@ partial class LlvmTextEmitter {
             output =
                 "{output}  {index} = sub i64 %list.edge.len{id}, 1\n"
         }
-        if self.wide_inline_value(element) {
+        if self.list_element_inline(element) {
             let llvm: string =
                 self.type_text(element)
             let option: string =
@@ -2341,7 +2358,7 @@ partial class LlvmTextEmitter {
             "  %list.get.len.ptr{id} = getelementptr i8, ptr {list}, i64 8\n  %list.get.len{id} = load i64, ptr %list.get.len.ptr{id}\n  %list.get.ok{id} = icmp ult i64 {index}, %list.get.len{id}\n  br i1 %list.get.ok{id}, label %list.get.have{have_block}, label %list.get.missing{missing_block}\n"
         output =
             "{output}list.get.have{have_block}:\n  %list.get.data.ptr{id} = getelementptr i8, ptr {list}, i64 0\n  %list.get.data{id} = load ptr, ptr %list.get.data.ptr{id}\n  %list.get.slot{id} = getelementptr i64, ptr %list.get.data{id}, i64 {index}\n  %list.get.raw{id} = load i64, ptr %list.get.slot{id}\n"
-        if self.wide_inline_value(element) {
+        if self.list_element_inline(element) {
             let llvm: string =
                 self.type_text(element)
             let option: string =
@@ -2536,10 +2553,39 @@ partial class LlvmTextEmitter {
         return "{output}  %map.index.message{id} = call ptr @beans_concat(ptr {missing_prefix}, ptr {rendered_key})\n  call void @beans_panic(ptr %map.index.message{id}, i64 {instruction.line}, i64 {instruction.col})\n  unreachable\n"
     }
 
-    // writing an array element goes through the owning local's
-    // alloca — a borrowed SSA copy would discard the store. The
-    // gep register borrows the field-assign naming so compound
-    // operators reuse emit_field_compound unchanged.
+    // The storage behind an SSA aggregate copy, as a fresh chain a caller
+    // may extend: a borrowed local read, or a place recorded by a field or
+    // element read. none means no live storage backs the copy.
+    fn place_for(id: int) -> Option<LlvmBorrowedPlace> {
+        match self.borrowed_place_of.get(id) {
+            some(place) => {
+                let extended: LlvmBorrowedPlace =
+                    new LlvmBorrowedPlace(
+                        place.root_local,
+                        place.root_register)
+                for step: LlvmPlaceStep in place.steps {
+                    extended.steps.push(step)
+                }
+                return some(move extended)
+            }
+            none => {}
+        }
+        match self.borrowed_local_of.get(id) {
+            some(local_id) => {
+                return some(
+                    new LlvmBorrowedPlace(local_id, ""))
+            }
+            none => {}
+        }
+        return none
+    }
+
+    // writing an array element goes through the storage the array was
+    // read out of — a store into the borrowed SSA copy would be
+    // discarded. The place chain walks locals, struct fields, class
+    // fields, and outer array elements back to that storage. The gep
+    // register borrows the field-assign naming so compound operators
+    // reuse emit_field_compound unchanged.
     fn emit_array_assignment(
         function: MirFunction,
         instruction: MirInstruction,
@@ -2561,14 +2607,60 @@ partial class LlvmTextEmitter {
                 "LLVM emitter does not support this index assignment yet")
             return ""
         }
-        if !self.borrowed_local_of.contains_key(array_id) {
-            self.fail(
-                instruction,
-                "LLVM emitter needs a plain local behind this array assignment")
-            return ""
+        var address_setup: string = ""
+        var base_pointer: string = ""
+        match self.place_for(array_id) {
+            some(place) => {
+                if place.root_register != "" &&
+                   self.type_has_owned_refs(element) {
+                    // an owned reference stored inside a heap object
+                    // needs the cycle-collector write barrier that
+                    // field stores emit; until elements get it too,
+                    // refuse rather than un-track the edge
+                    self.fail(
+                        instruction,
+                        "LLVM emitter cannot store owned references into an array inside a class object yet — copy the array to a local, update it, and assign it back")
+                    return ""
+                }
+                if place.root_local >= 0 {
+                    if place.root_local <
+                           function.locals.len() {
+                        let root: MirLocal =
+                            function.locals[
+                                place.root_local]
+                        let slot: LlvmSlotConversion =
+                            self.local_value_address(root)
+                        address_setup = slot.setup
+                        base_pointer = slot.value
+                    } else {
+                        base_pointer =
+                            "%l{place.root_local}"
+                    }
+                } else {
+                    base_pointer = place.root_register
+                }
+                for step: LlvmPlaceStep in place.steps {
+                    let next: int = self.fresh()
+                    if step.kind == "struct" {
+                        address_setup =
+                            "{address_setup}  %place.step{next} = getelementptr {step.aggregate}, ptr {base_pointer}, i64 0, i32 {step.index}\n"
+                    } else if step.kind == "class" {
+                        address_setup =
+                            "{address_setup}  %place.step{next} = getelementptr i8, ptr {base_pointer}, i64 {step.index}\n"
+                    } else {
+                        address_setup =
+                            "{address_setup}  %place.step{next} = getelementptr {step.aggregate}, ptr {base_pointer}, i64 0, i64 {step.register}\n"
+                    }
+                    base_pointer = "%place.step{next}"
+                }
+            }
+            none => {
+                self.fail(
+                    instruction,
+                    "LLVM emitter needs a plain local behind this array assignment")
+                return ""
+            }
         }
-        let target: int =
-            self.borrowed_local_of[array_id]
         let index: string =
             self.value(
                 function, values,
@@ -2585,11 +2677,11 @@ partial class LlvmTextEmitter {
             "beans_panic_array_index",
             "void @beans_panic_array_index(i64, i64, i64, i64)")
         var output: string =
-            "  %array.assign.ok{id} = icmp ult i64 {index}, {array_type.array_length}\n  br i1 %array.assign.ok{id}, label %array.assign.have{okay}, label %array.assign.bad{bad}\n"
+            "{address_setup}  %array.assign.ok{id} = icmp ult i64 {index}, {array_type.array_length}\n  br i1 %array.assign.ok{id}, label %array.assign.have{okay}, label %array.assign.bad{bad}\n"
         output =
             "{output}array.assign.bad{bad}:\n  call void @beans_panic_array_index(i64 {index}, i64 {array_type.array_length}, i64 {instruction.line}, i64 {instruction.col})\n  unreachable\n"
         output =
-            "{output}array.assign.have{okay}:\n  %field.assign.ptr{address} = getelementptr {llvm}, ptr %l{target}, i64 0, i64 {index}\n"
+            "{output}array.assign.have{okay}:\n  %field.assign.ptr{address} = getelementptr {llvm}, ptr {base_pointer}, i64 0, i64 {index}\n"
         if operation != "=" {
             return "{output}{self.emit_field_compound(instruction, element, address, stored, operation, "")}"
         }
@@ -2646,6 +2738,20 @@ partial class LlvmTextEmitter {
         self.require_declare(
             "beans_panic_array_index",
             "void @beans_panic_array_index(i64, i64, i64, i64)")
+        // an element copied out of a placed array keeps the route back
+        // to its storage, so a nested element store can write through.
+        // The index register was bounds-checked right here, so reusing
+        // it in the place is safe.
+        match self.place_for(instruction.operands[0]) {
+            some(place) => {
+                place.steps.push(
+                    new LlvmPlaceStep(
+                        "array", llvm, 0, index))
+                self.borrowed_place_of[
+                    instruction.result] = place
+            }
+            none => {}
+        }
         var output: string =
             "  %array.index.ok{id} = icmp ult i64 {index}, {array_type.array_length}\n  br i1 %array.index.ok{id}, label %array.index.have{okay}, label %array.index.bad{bad}\n"
         output =
@@ -2769,7 +2875,7 @@ partial class LlvmTextEmitter {
             "  %list.index.len.ptr{id} = getelementptr i8, ptr {collection}, i64 8\n  %list.index.len{id} = load i64, ptr %list.index.len.ptr{id}\n  %list.index.ok{id} = icmp ult i64 {index}, %list.index.len{id}\n  br i1 %list.index.ok{id}, label %list.index.have{okay}, label %list.index.bad{bad}\n"
         output =
             "{output}list.index.bad{bad}:\n  call void @beans_panic_index(i64 {index}, i64 %list.index.len{id}, i64 1, i64 {instruction.line}, i64 {instruction.col})\n  unreachable\n"
-        if self.wide_inline_value(element) {
+        if self.list_element_inline(element) {
             let llvm: string = self.type_text(element)
             output =
                 "{output}list.index.have{okay}:\n  %list.data{data} = load ptr, ptr {collection}\n  %list.slot{slot_pointer} = getelementptr {llvm}, ptr %list.data{data}, i64 {index}\n  {result} = load {llvm}, ptr %list.slot{slot_pointer}\n"
@@ -3171,7 +3277,7 @@ partial class LlvmTextEmitter {
             let raw: string = "%iter.raw{id}"
             let advanced: string =
                 "%iter.advance{id}"
-            if self.wide_inline_value(type) {
+            if self.list_element_inline(type) {
                 var output: string =
                     "  {index} = load i64, ptr {self.iterator_current[iterator]}\n  {data} = load ptr, ptr {self.iterator_collection[iterator]}\n  {slot_pointer} = getelementptr {llvm}, ptr {data}, i64 {index}\n  {result} = load {llvm}, ptr {slot_pointer}\n"
                 values[instruction.result] = result

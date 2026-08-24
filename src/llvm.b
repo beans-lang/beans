@@ -51,6 +51,7 @@ partial class LlvmTextEmitter {
     used_builtin_symbols: Map<string, bool>
     ordered_builtin_declares: List<string>
     borrowed_local_of: Map<int, int>
+    borrowed_place_of: Map<int, LlvmBorrowedPlace>
     inout_addresses: Map<int, bool>
     field_init_names: Map<int, string>
     cleanup_functions: Map<int, MirFunction>
@@ -172,6 +173,7 @@ partial class LlvmTextEmitter {
         self.used_builtin_symbols = {}
         self.ordered_builtin_declares = []
         self.borrowed_local_of = {}
+        self.borrowed_place_of = {}
         self.inout_addresses = {}
         self.field_init_names = {}
         self.cleanup_functions = {}
@@ -489,6 +491,13 @@ partial class LlvmTextEmitter {
                           "CFunctionPtr.null" {
                 values[instruction.result] = "null"
                 output = ""
+            } else if instruction.resolved ==
+                          "float.infinity" ||
+                      instruction.resolved ==
+                          "f32.infinity" {
+                values[instruction.result] =
+                    "0x7FF0000000000000"
+                output = ""
             } else if instruction.resolved.starts_with(
                           "RawPtr.") {
                 output =
@@ -637,9 +646,30 @@ partial class LlvmTextEmitter {
                    instruction.resolved ==
                        "float.abs" ||
                    instruction.resolved ==
+                       "f32.abs" ||
+                   instruction.resolved ==
                        "float.round" ||
                    instruction.resolved ==
-                       "f32.round") {
+                       "f32.round" ||
+                   instruction.resolved ==
+                       "float.floor" ||
+                   instruction.resolved ==
+                       "f32.floor" ||
+                   instruction.resolved ==
+                       "float.ceil" ||
+                   instruction.resolved ==
+                       "f32.ceil" ||
+                   instruction.resolved ==
+                       "float.is_nan" ||
+                   instruction.resolved ==
+                       "f32.is_nan" ||
+                   (instruction.resolved.ends_with(
+                        ".abs") &&
+                    instruction.operands.len() != 0 &&
+                    hir_is_integer(
+                        self.value_type(
+                            function,
+                            instruction.operands[0])))) {
             output =
                 self.emit_scalar_method(
                     function, instruction, values)

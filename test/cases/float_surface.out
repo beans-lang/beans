@@ -1,0 +1,9 @@
+abs: 2.5 3.75 7
+iabs: 3 9 200
+minabs: -32768 -128
+floor: 2 -3 2 -1
+ceil: 3 -2 2 1
+f32: 5 6 false
+inf: inf inf false
+nan: true false
+negzero: -0 -0

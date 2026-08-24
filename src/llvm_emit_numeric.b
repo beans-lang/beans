@@ -197,6 +197,61 @@ partial class LlvmTextEmitter {
             values[instruction.result] = result
             return "  %round.f32{id} = call float @llvm.round.f32(float {receiver})\n  {result} = fptosi float %round.f32{id} to i64\n"
         }
+        if instruction.resolved == "f32.abs" {
+            self.require_declare(
+                "llvm.fabs.f32",
+                "float @llvm.fabs.f32(float)")
+            values[instruction.result] = result
+            return "  {result} = call float @llvm.fabs.f32(float {receiver})\n"
+        }
+        if instruction.resolved == "float.floor" ||
+           instruction.resolved == "f32.floor" ||
+           instruction.resolved == "float.ceil" ||
+           instruction.resolved == "f32.ceil" {
+            let wide: bool =
+                instruction.resolved.starts_with("float.")
+            let llvm: string =
+                if wide { "double" } else { "float" }
+            let suffix: string =
+                if wide { "f64" } else { "f32" }
+            let operation: string =
+                if instruction.resolved.ends_with(".floor") {
+                    "floor"
+                } else {
+                    "ceil"
+                }
+            self.require_declare(
+                "llvm.{operation}.{suffix}",
+                "{llvm} @llvm.{operation}.{suffix}({llvm})")
+            values[instruction.result] = result
+            return "  {result} = call {llvm} @llvm.{operation}.{suffix}({llvm} {receiver})\n"
+        }
+        if instruction.resolved == "float.is_nan" ||
+           instruction.resolved == "f32.is_nan" {
+            let llvm: string =
+                if instruction.resolved ==
+                       "float.is_nan" {
+                    "double"
+                } else {
+                    "float"
+                }
+            values[instruction.result] = result
+            return "  {result} = fcmp uno {llvm} {receiver}, {receiver}\n"
+        }
+        let receiver_type: HirType =
+            self.value_type(
+                function, instruction.operands[0])
+        if instruction.resolved.ends_with(".abs") &&
+           hir_is_integer(receiver_type) {
+            let llvm: string =
+                self.type_text(receiver_type)
+            values[instruction.result] = result
+            if llvm_type_is_unsigned(receiver_type) {
+                // unsigned magnitudes are their own absolute value
+                return "  {result} = add {llvm} {receiver}, 0\n"
+            }
+            return "  %abs.neg{id} = sub {llvm} 0, {receiver}\n  %abs.sign{id} = icmp slt {llvm} {receiver}, 0\n  {result} = select i1 %abs.sign{id}, {llvm} %abs.neg{id}, {llvm} {receiver}\n"
+        }
         self.fail(
             instruction,
             "LLVM emitter does not support builtin method '{instruction.resolved}' yet")

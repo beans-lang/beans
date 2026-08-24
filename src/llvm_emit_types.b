@@ -534,6 +534,7 @@ partial class LlvmTextEmitter {
     fn reset_function_state() {
         self.function_allocas = []
         self.borrowed_local_of = {}
+        self.borrowed_place_of = {}
         self.inout_addresses = {}
         self.field_init_names = {}
         self.defer_sites = []
@@ -629,6 +630,17 @@ partial class LlvmTextEmitter {
             some(found) => { return false }
             none => { return true }
         }
+    }
+
+    // List elements store at their real width when the type carries
+    // one: every wide inline value, and f32, whose elements used to
+    // widen into the generic eight-byte slot and pay double the memory
+    // per column. Maps and the other slot carriers keep slots.
+    fn list_element_inline(type: HirType) -> bool {
+        if canonical_hir_name(type.name) == "f32" {
+            return true
+        }
+        return self.wide_inline_value(type)
     }
 
     fn wide_inline_value(type: HirType) -> bool {
