@@ -979,6 +979,20 @@ class AsyncExpander {
         // std.net is a source package, so its functions carry canonical
         // symbols; matching the short spelling here would silently stop
         // parking awaits.
+        if target == package_symbol("std.net", "readable_deadline") ||
+           target == package_symbol("std.net", "writable_deadline") {
+            let park: AstNode = self.node("call", "", operand)
+            let callee: AstNode = self.node(
+                "name", "reactor_park_deadline", operand)
+            callee.resolved = async_rt_symbol("reactor_park_deadline")
+            park.add(callee)
+            park.add(operand.children[1])
+            park.add(self.bool_literal(
+                target == package_symbol("std.net", "writable_deadline"),
+                operand))
+            park.add(operand.children[2])
+            return park
+        }
         if target != package_symbol("std.net", "readable") &&
            target != package_symbol("std.net", "writable") {
             return operand

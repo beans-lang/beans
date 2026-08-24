@@ -39,6 +39,7 @@ extern "C" fn beans_reactor_arm_park(
     token: int, poller: int, wake: int, write: int) -> int
 extern "C" fn beans_reactor_park_state(token: int) -> int
 extern "C" fn beans_reactor_finish_park(token: int) -> int
+extern "C" fn beans_reactor_release_park(token: int) -> int
 extern "C" fn beans_reactor_mark_ready(token: int) -> int
 extern "C" fn beans_async_event_new() -> int
 extern "C" fn beans_async_event_is_set(handle: int) -> int
@@ -47,6 +48,7 @@ extern "C" fn beans_async_event_free(handle: int) -> int
 extern "C" fn beans_async_external_notify() -> int
 extern "C" fn beans_chan_async_waiter_new() -> int
 extern "C" fn beans_chan_async_waiter_free(waiter: int) -> int
+extern "C" fn beans_thread_parallelism() -> int
 
 class TreeInterpreter {
     program: HirProgram
@@ -4909,6 +4911,14 @@ class TreeInterpreter {
                 finished = beans_reactor_finish_park(arguments[0].int_data)
             }
             return TreeValue.integer(finished)
+        }
+        if node.resolved == "std.ready.park_release" &&
+           arguments.len() == 1 {
+            var released: int = 0
+            unsafe {
+                released = beans_reactor_release_park(arguments[0].int_data)
+            }
+            return TreeValue.integer(released)
         }
         if node.resolved == "std.ready.park_mark_ready" &&
            arguments.len() == 1 {
@@ -13319,6 +13329,8 @@ class TreeInterpreter {
                           "beans_chan_async_waiter_free" {
                 async_runtime_result = beans_chan_async_waiter_free(
                     arguments[0].int_data)
+            } else if function.extern_name == "beans_thread_parallelism" {
+                async_runtime_result = beans_thread_parallelism()
             } else {
                 async_runtime_call = false
             }

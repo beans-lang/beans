@@ -1259,6 +1259,11 @@ pub fn runtime_builtin_fn(key: string) -> Option<RuntimeBuiltin> {
             ["i64"],
             "i64", "beans_reactor_finish_park", false))
     }
+    if key == "std.ready.park_release" {
+        return some(new RuntimeBuiltin(
+            ["i64"],
+            "i64", "beans_reactor_release_park", false))
+    }
     if key == "std.ready.park_mark_ready" {
         return some(new RuntimeBuiltin(
             ["i64"],

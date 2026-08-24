@@ -4161,6 +4161,7 @@ class ExpressionChecker {
             }
             if name == "park_state" ||
                name == "park_finish" ||
+               name == "park_release" ||
                name == "park_mark_ready" {
                 return some(new BuiltinSignature(
                     [integer], integer))

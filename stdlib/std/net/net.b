@@ -672,3 +672,17 @@ pub async fn readable(handle: int) -> bool { return true }
 /// Suspends the calling async function until `handle` has room to write.
 /// Otherwise exactly `readable`.
 pub async fn writable(handle: int) -> bool { return true }
+
+/// `readable` with a monotonic-clock cutoff: completes true when the handle
+/// becomes readable, false at `deadline_nanos` (or when the handle cannot be
+/// watched — closed descriptors finish false either way). A server holding
+/// thousands of idle keep-alive connections wants exactly one parked await
+/// per connection, not a race between a readiness task and a timer task;
+/// this is that await. Compiler-known like `readable`: the body never runs.
+pub async fn readable_deadline(
+        handle: int, deadline_nanos: int) -> bool { return true }
+
+/// `writable` with a monotonic-clock cutoff. Otherwise exactly
+/// `readable_deadline`.
+pub async fn writable_deadline(
+        handle: int, deadline_nanos: int) -> bool { return true }

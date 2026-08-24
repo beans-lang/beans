@@ -141,13 +141,17 @@ int main(void) {
         oom_tokens[i] = beans_reactor_note_park(oom_fds[i][0]);
         if (oom_tokens[i] <= 0) return 61;
     }
+    // Chunked row storage reserves 1024 rows at the first park, so the
+    // 17th park needs no row allocation at all: an armed failure must NOT
+    // fire here. Growth-point containment is proven at the index rehash
+    // below and by the whole-binary BEANS_TEST_PARK_ALLOC_FAIL_AT runs.
     beans_reactor_test_fail_allocation(1);
-    if (beans_reactor_note_park(oom_fds[16][0]) != -1) return 62;
+    oom_tokens[16] = beans_reactor_note_park(oom_fds[16][0]);
+    if (oom_tokens[16] <= 0) return 62;
     for (int i = 0; i < 16; i++)
         if (beans_reactor_park_state(oom_tokens[i]) != 0) return 63;
     beans_reactor_test_fail_allocation(0);
-    oom_tokens[16] = beans_reactor_note_park(oom_fds[16][0]);
-    if (oom_tokens[16] <= 0) return 64;
+    if (beans_reactor_park_state(oom_tokens[16]) != 0) return 64;
     for (int i = 17; i < 23; i++) {
         oom_tokens[i] = beans_reactor_note_park(oom_fds[i][0]);
         if (oom_tokens[i] <= 0) return 65;

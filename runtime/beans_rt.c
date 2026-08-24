@@ -12403,7 +12403,14 @@ static BRes beans_poll_wait_into_impl(long long poller, long long wake_read,
             }
             return (BRes){0, mk_error("poller wait: out of memory", "io")};
         }
-        int n = epoll_wait((int)poller, got, (int)room, budget);
+        // Ask for exactly what fits: a oneshot registration's event is
+        // consumed by the dequeue, so anything dequeued past max_events
+        // would be lost, not re-reported. epoll keeps undelivered ready
+        // descriptors queued, so asking for less loses nothing.
+        int want = (int)(max_events - found);
+        if (want < 1) want = 1;
+        if (want > (int)room) want = (int)room;
+        int n = epoll_wait((int)poller, got, want, budget);
         if (n < 0) {
             int e = net_errno();
             if (!scratch) free(got);
@@ -12562,7 +12569,20 @@ static BRes beans_poll_wait_into_impl(long long poller, long long wake_read,
                 flags[at] |= f;
                 continue;
             }
-            if (found >= max_events) continue;
+            if (found >= max_events) {
+                // A dispatch-mode knote was disabled by this very dequeue,
+                // so dropping the event would lose it forever. Re-enable
+                // it: the condition is still true, so the kernel queues it
+                // again for the next wait — the "overflow re-reports"
+                // contract the level-triggered design already promised.
+                struct kevent back;
+                EV_SET(&back, got[i].ident, got[i].filter,
+                       EV_ENABLE | EV_DISPATCH | EV_RECEIPT, 0, 0,
+                       got[i].udata);
+                struct kevent receipt;
+                (void)kevent((int)poller, &back, 1, &receipt, 1, NULL);
+                continue;
+            }
             tokens[found] = token;
             idents[found] = ident;
             flags[found] = f;
@@ -12740,6 +12760,11 @@ long long beans_set_task_slot(long long index, long long value) {
 #define BEANS_PARK_READY 2
 #define BEANS_PARK_DEAD 3
 #define BEANS_PARK_RETIRED 4
+// A sticky row between awaits: the kernel registration is kept, no task is
+// waiting. The next await on the same descriptor adopts the row without the
+// registry lock or a kernel add — the win that makes a keep-alive request
+// cost zero registry work in steady state.
+#define BEANS_PARK_IDLE 5
 
 typedef struct BeansParkOwner BeansParkOwner;
 typedef struct {
@@ -12750,6 +12775,13 @@ typedef struct {
     uint32_t generation;
     unsigned char state;
     unsigned char armed;
+    // The armed kernel interest: 1 = write, 0 = read. An adopt that wants
+    // the other interest takes the slow re-arm path.
+    unsigned char interest_write;
+    // 1 while the row has no awaiter (set by release, cleared by adopt).
+    // Distinguishes an idle row a close killed — reaped by its owner on
+    // the next park — from a DEAD row whose awaiter will finish it.
+    unsigned char idle;
     size_t next_free;
     size_t exact_prev;
     size_t exact_next;
@@ -12763,9 +12795,17 @@ struct BeansParkOwner {
     size_t rows;
     size_t row_count;
     size_t dead_count;
+    size_t idle_dead;
     long long wake;
     int wake_pending;
     int shutting_down;
+    // fd -> slot for this owner's rows, touched only by the owner thread:
+    // the lock-free adopt fast path reads it, note/finish maintain it.
+    // Open addressing, power-of-two, fd -1 empty / -2 tombstone.
+    long long* map_fds;
+    size_t* map_slots;
+    size_t map_cap;
+    size_t map_used;
     BeansParkOwner* prev;
     BeansParkOwner* next;
 };
@@ -12776,10 +12816,213 @@ typedef struct BeansParkClosing {
     struct BeansParkClosing* next;
 } BeansParkClosing;
 
-static BeansParked* beans_parked;
+// Rows live in fixed chunks that are never freed or moved, so a lock-free
+// reader holding a token can always dereference its slot: the worst a stale
+// token sees is a FREE row with a different generation. A flat realloc'd
+// array cannot give that guarantee — growth would pull the storage out from
+// under a concurrent owner-thread read.
+#define BEANS_PARK_CHUNK_BITS 10
+#define BEANS_PARK_CHUNK_ROWS ((size_t)1 << BEANS_PARK_CHUNK_BITS)
+#define BEANS_PARK_MAX_CHUNKS 4096
+static BeansParked* beans_park_chunks[BEANS_PARK_MAX_CHUNKS];
 static size_t beans_parked_cap;
 static size_t beans_parked_free = BEANS_PARK_NONE;
 static size_t beans_parked_rows;
+
+static inline BeansParked* beans_park_row(size_t slot) {
+    BeansParked* chunk = __atomic_load_n(
+        &beans_park_chunks[slot >> BEANS_PARK_CHUNK_BITS],
+        __ATOMIC_ACQUIRE);
+    return chunk + (slot & (BEANS_PARK_CHUNK_ROWS - 1));
+}
+
+// state, generation, and owner are read by the owner thread without the
+// registry lock (park_state and mark_ready are the poll-path hot spots), so
+// every access anywhere goes through these accessors to stay a data-race-free
+// program. The release/acquire pairing publishes a row's identity before its
+// state is believed.
+static inline unsigned char park_state_of(const BeansParked* row) {
+    return __atomic_load_n(&row->state, __ATOMIC_ACQUIRE);
+}
+static inline void park_state_set(BeansParked* row, unsigned char state) {
+    __atomic_store_n(&row->state, state, __ATOMIC_RELEASE);
+}
+static inline uint32_t park_generation_of(const BeansParked* row) {
+    return __atomic_load_n(&row->generation, __ATOMIC_ACQUIRE);
+}
+static inline void park_generation_set(BeansParked* row, uint32_t value) {
+    __atomic_store_n(&row->generation, value, __ATOMIC_RELEASE);
+}
+static inline BeansParkOwner* park_owner_of(const BeansParked* row) {
+    return __atomic_load_n(&row->owner, __ATOMIC_ACQUIRE);
+}
+static inline void park_owner_set(BeansParked* row, BeansParkOwner* owner) {
+    __atomic_store_n(&row->owner, owner, __ATOMIC_RELEASE);
+}
+static inline size_t park_cap(void) {
+    return __atomic_load_n(&beans_parked_cap, __ATOMIC_ACQUIRE);
+}
+static inline unsigned char park_idle_of(const BeansParked* row) {
+    return __atomic_load_n(&row->idle, __ATOMIC_ACQUIRE);
+}
+static inline void park_idle_set(BeansParked* row, unsigned char idle) {
+    __atomic_store_n(&row->idle, idle, __ATOMIC_RELEASE);
+}
+
+// ---- the owner-thread fd -> slot map behind the lock-free adopt path ----
+
+static size_t beans_park_hash(unsigned long long value);
+
+static size_t beans_park_map_bucket(long long fd, size_t cap) {
+    return beans_park_hash((unsigned long long)fd) & (cap - 1);
+}
+
+static void beans_park_map_insert_raw(long long* fds, size_t* slots,
+                                      size_t cap, long long fd,
+                                      size_t slot) {
+    size_t at = beans_park_map_bucket(fd, cap);
+    while (fds[at] != -1 && fds[at] != -2) at = (at + 1) & (cap - 1);
+    fds[at] = fd;
+    slots[at] = slot;
+}
+
+static void beans_park_map_insert(BeansParkOwner* owner, long long fd,
+                                  size_t slot) {
+    if (owner->map_used + 1 >= owner->map_cap * 3 / 4) {
+        size_t cap = owner->map_cap ? owner->map_cap * 2 : 64;
+        long long* fds = malloc(cap * sizeof *fds);
+        size_t* slots = malloc(cap * sizeof *slots);
+        if (!fds || !slots) {
+            // adoption is an optimization: a missing map entry only means
+            // the next park takes the locked path
+            free(fds);
+            free(slots);
+            return;
+        }
+        for (size_t i = 0; i < cap; i++) fds[i] = -1;
+        size_t used = 0;
+        for (size_t i = 0; i < owner->map_cap; i++) {
+            if (owner->map_fds[i] == -1 || owner->map_fds[i] == -2)
+                continue;
+            beans_park_map_insert_raw(
+                fds, slots, cap, owner->map_fds[i], owner->map_slots[i]);
+            used++;
+        }
+        free(owner->map_fds);
+        free(owner->map_slots);
+        owner->map_fds = fds;
+        owner->map_slots = slots;
+        owner->map_cap = cap;
+        owner->map_used = used;
+    }
+    beans_park_map_insert_raw(
+        owner->map_fds, owner->map_slots, owner->map_cap, fd, slot);
+    owner->map_used++;
+}
+
+static size_t beans_park_map_find(BeansParkOwner* owner, long long fd) {
+    if (!owner || !owner->map_cap) return BEANS_PARK_NONE;
+    size_t at = beans_park_map_bucket(fd, owner->map_cap);
+    for (;;) {
+        long long have = owner->map_fds[at];
+        if (have == -1) return BEANS_PARK_NONE;
+        if (have == fd) return owner->map_slots[at];
+        at = (at + 1) & (owner->map_cap - 1);
+    }
+}
+
+static void beans_park_map_remove(BeansParkOwner* owner, long long fd) {
+    if (!owner || !owner->map_cap) return;
+    size_t at = beans_park_map_bucket(fd, owner->map_cap);
+    for (;;) {
+        long long have = owner->map_fds[at];
+        if (have == -1) return;
+        if (have == fd) {
+            owner->map_fds[at] = -2;
+            return;
+        }
+        at = (at + 1) & (owner->map_cap - 1);
+    }
+}
+
+// ---- dispatch-mode kernel arming for sticky rows ----
+//
+// A sticky registration must not be level-triggered: a consumed-but-idle
+// descriptor would re-report on every driver wait and spin the executor.
+// Dispatch/oneshot delivers one event and disables itself; the next adopt
+// re-enables. Re-enable NEVER creates a registration, which is what makes
+// the lock-free arm fast path safe against descriptor reuse: on a closed
+// (and even reused) number it fails instead of registering a stale token.
+
+static int poll_arm_dispatch(int poller, net_fd_t fd, long long token,
+                             int write) {
+#if defined(__linux__)
+    struct epoll_event ev;
+    memset(&ev, 0, sizeof ev);
+    ev.events = (write ? EPOLLOUT : EPOLLIN) | EPOLLRDHUP | EPOLLONESHOT;
+    ev.data.u64 = (unsigned long long)token;
+    if (epoll_ctl(poller, EPOLL_CTL_ADD, fd, &ev) == 0) return 0;
+    if (net_errno() == EEXIST)
+        return epoll_ctl(poller, EPOLL_CTL_MOD, fd, &ev);
+    return -1;
+#elif defined(_WIN32)
+    // The registry backend stays level-triggered and sticky rows never
+    // exist on Windows (release finishes instead), so this is plain apply.
+    return poll_apply(poller, fd, token, !write, write, 1);
+#else
+    struct kevent changes[2];
+    int n = 0;
+    EV_SET(&changes[n++], (uintptr_t)fd,
+           write ? EVFILT_WRITE : EVFILT_READ,
+           EV_ADD | EV_ENABLE | EV_DISPATCH, 0, 0,
+           (void*)(intptr_t)token);
+    EV_SET(&changes[n++], (uintptr_t)fd,
+           write ? EVFILT_READ : EVFILT_WRITE,
+           EV_DELETE, 0, 0, (void*)(intptr_t)token);
+    for (int i = 0; i < n; i++) changes[i].flags |= EV_RECEIPT;
+    struct kevent results[2];
+    int got = kevent(poller, changes, n, results, n, NULL);
+    if (got < 0) return -1;
+    for (int i = 0; i < got; i++) {
+        if (!(results[i].flags & EV_ERROR)) continue;
+        int e = (int)results[i].data;
+        if (e == 0 || e == ENOENT) continue;
+        errno = e;
+        return -1;
+    }
+    return 0;
+#endif
+}
+
+static int poll_reenable(int poller, net_fd_t fd, long long token,
+                         int write) {
+#if defined(__linux__)
+    struct epoll_event ev;
+    memset(&ev, 0, sizeof ev);
+    ev.events = (write ? EPOLLOUT : EPOLLIN) | EPOLLRDHUP | EPOLLONESHOT;
+    ev.data.u64 = (unsigned long long)token;
+    return epoll_ctl(poller, EPOLL_CTL_MOD, fd, &ev);
+#elif defined(_WIN32)
+    (void)poller;
+    (void)fd;
+    (void)token;
+    (void)write;
+    return -1;
+#else
+    struct kevent change;
+    EV_SET(&change, (uintptr_t)fd, write ? EVFILT_WRITE : EVFILT_READ,
+           EV_ENABLE | EV_DISPATCH | EV_RECEIPT, 0, 0,
+           (void*)(intptr_t)token);
+    struct kevent result;
+    int got = kevent(poller, &change, 1, &result, 1, NULL);
+    if (got < 0) return -1;
+    if ((result.flags & EV_ERROR) && result.data != 0) {
+        errno = (int)result.data;
+        return -1;
+    }
+    return 0;
+#endif
+}
 static size_t* beans_park_exact;
 static size_t* beans_park_fd;
 static size_t beans_park_index_cap;
@@ -12858,21 +13101,21 @@ static int beans_park_rehash(size_t wanted) {
     beans_park_exact = exact;
     beans_park_fd = by_fd;
     for (size_t i = 0; i < beans_parked_cap; i++) {
-        BeansParked* row = &beans_parked[i];
-        if (row->state != BEANS_PARK_LIVE &&
-            row->state != BEANS_PARK_READY)
+        BeansParked* row = beans_park_row(i);
+        unsigned char state = park_state_of(row);
+        if (state != BEANS_PARK_LIVE && state != BEANS_PARK_READY)
             continue;
-        size_t eb = beans_park_exact_bucket(row->owner, row->fd);
+        size_t eb = beans_park_exact_bucket(park_owner_of(row), row->fd);
         row->exact_prev = BEANS_PARK_NONE;
         row->exact_next = exact[eb];
         if (row->exact_next != BEANS_PARK_NONE)
-            beans_parked[row->exact_next].exact_prev = i;
+            beans_park_row(row->exact_next)->exact_prev = i;
         exact[eb] = i;
         size_t fb = beans_park_fd_bucket(row->fd);
         row->fd_prev = BEANS_PARK_NONE;
         row->fd_next = by_fd[fb];
         if (row->fd_next != BEANS_PARK_NONE)
-            beans_parked[row->fd_next].fd_prev = i;
+            beans_park_row(row->fd_next)->fd_prev = i;
         by_fd[fb] = i;
     }
     free(old_exact);
@@ -12891,20 +13134,27 @@ static int beans_park_ensure_indexes(void) {
 static int beans_park_ensure_slot(void) {
     if (beans_parked_free != BEANS_PARK_NONE) return 1;
     size_t old_cap = beans_parked_cap;
-    size_t cap = old_cap ? old_cap * 2 : 16;
-    if (cap <= old_cap || cap > (size_t)INT32_MAX) return 0;
-    BeansParked* rows = beans_park_realloc(
-        beans_parked, cap * sizeof *beans_parked);
-    if (!rows) return 0;
-    beans_parked = rows;
-    beans_parked_cap = cap;
+    size_t chunk_index = old_cap >> BEANS_PARK_CHUNK_BITS;
+    if (chunk_index >= BEANS_PARK_MAX_CHUNKS) return 0;
+    BeansParked* chunk = beans_park_calloc(
+        BEANS_PARK_CHUNK_ROWS, sizeof *chunk);
+    if (!chunk) return 0;
+    size_t cap = old_cap + BEANS_PARK_CHUNK_ROWS;
+    for (size_t i = 0; i < BEANS_PARK_CHUNK_ROWS; i++) {
+        chunk[i].generation = 1;
+        chunk[i].state = BEANS_PARK_FREE;
+    }
+    // The chunk's rows chain into the freelist newest-first, exactly like
+    // the old growth loop. Publish the chunk before the capacity that
+    // makes its slots addressable, so a lock-free token check that passes
+    // the capacity gate always finds the storage behind it.
+    __atomic_store_n(&beans_park_chunks[chunk_index], chunk,
+                     __ATOMIC_RELEASE);
     for (size_t i = cap; i-- > old_cap;) {
-        memset(&beans_parked[i], 0, sizeof beans_parked[i]);
-        beans_parked[i].generation = 1;
-        beans_parked[i].state = BEANS_PARK_FREE;
-        beans_parked[i].next_free = beans_parked_free;
+        chunk[i - old_cap].next_free = beans_parked_free;
         beans_parked_free = i;
     }
+    __atomic_store_n(&beans_parked_cap, cap, __ATOMIC_RELEASE);
     return 1;
 }
 
@@ -12929,13 +13179,13 @@ static size_t beans_park_token_slot(long long token) {
     if (token <= 0) return BEANS_PARK_NONE;
     unsigned long long bits = (unsigned long long)token;
     unsigned long long encoded = bits >> 32;
-    if (encoded == 0 || encoded - 1 >= beans_parked_cap)
+    if (encoded == 0 || encoded - 1 >= park_cap())
         return BEANS_PARK_NONE;
     size_t slot = (size_t)(encoded - 1);
-    BeansParked* row = &beans_parked[slot];
-    if (row->state == BEANS_PARK_FREE ||
-        row->state == BEANS_PARK_RETIRED ||
-        row->generation != (uint32_t)bits)
+    BeansParked* row = beans_park_row(slot);
+    unsigned char state = park_state_of(row);
+    if (state == BEANS_PARK_FREE || state == BEANS_PARK_RETIRED ||
+        park_generation_of(row) != (uint32_t)bits)
         return BEANS_PARK_NONE;
     return slot;
 }
@@ -12951,58 +13201,67 @@ static size_t beans_park_find_exact_locked(BeansParkOwner* owner,
     if (!beans_park_index_cap) return BEANS_PARK_NONE;
     size_t at = beans_park_exact[beans_park_exact_bucket(owner, fd)];
     while (at != BEANS_PARK_NONE) {
-        BeansParked* row = &beans_parked[at];
-        if (row->owner == owner && row->fd == fd) return at;
+        BeansParked* row = beans_park_row(at);
+        if (park_owner_of(row) == owner && row->fd == fd) return at;
         at = row->exact_next;
     }
     return BEANS_PARK_NONE;
 }
 
 static void beans_park_link_active_locked(size_t slot) {
-    BeansParked* row = &beans_parked[slot];
-    size_t eb = beans_park_exact_bucket(row->owner, row->fd);
+    BeansParked* row = beans_park_row(slot);
+    size_t eb = beans_park_exact_bucket(park_owner_of(row), row->fd);
     row->exact_prev = BEANS_PARK_NONE;
     row->exact_next = beans_park_exact[eb];
     if (row->exact_next != BEANS_PARK_NONE)
-        beans_parked[row->exact_next].exact_prev = slot;
+        beans_park_row(row->exact_next)->exact_prev = slot;
     beans_park_exact[eb] = slot;
     size_t fb = beans_park_fd_bucket(row->fd);
     row->fd_prev = BEANS_PARK_NONE;
     row->fd_next = beans_park_fd[fb];
     if (row->fd_next != BEANS_PARK_NONE)
-        beans_parked[row->fd_next].fd_prev = slot;
+        beans_park_row(row->fd_next)->fd_prev = slot;
     beans_park_fd[fb] = slot;
 }
 
 static void beans_park_unlink_active_locked(size_t slot) {
-    BeansParked* row = &beans_parked[slot];
-    size_t eb = beans_park_exact_bucket(row->owner, row->fd);
+    BeansParked* row = beans_park_row(slot);
+    size_t eb = beans_park_exact_bucket(park_owner_of(row), row->fd);
     if (row->exact_prev == BEANS_PARK_NONE)
         beans_park_exact[eb] = row->exact_next;
     else
-        beans_parked[row->exact_prev].exact_next = row->exact_next;
+        beans_park_row(row->exact_prev)->exact_next = row->exact_next;
     if (row->exact_next != BEANS_PARK_NONE)
-        beans_parked[row->exact_next].exact_prev = row->exact_prev;
+        beans_park_row(row->exact_next)->exact_prev = row->exact_prev;
     size_t fb = beans_park_fd_bucket(row->fd);
     if (row->fd_prev == BEANS_PARK_NONE)
         beans_park_fd[fb] = row->fd_next;
     else
-        beans_parked[row->fd_prev].fd_next = row->fd_next;
+        beans_park_row(row->fd_prev)->fd_next = row->fd_next;
     if (row->fd_next != BEANS_PARK_NONE)
-        beans_parked[row->fd_next].fd_prev = row->fd_prev;
+        beans_park_row(row->fd_next)->fd_prev = row->fd_prev;
     row->exact_prev = row->exact_next = BEANS_PARK_NONE;
     row->fd_prev = row->fd_next = BEANS_PARK_NONE;
 }
 
 static void beans_park_mark_dead_locked(size_t slot) {
-    BeansParked* row = &beans_parked[slot];
-    if (row->state != BEANS_PARK_LIVE &&
-        row->state != BEANS_PARK_READY)
+    BeansParked* row = beans_park_row(slot);
+    unsigned char state = park_state_of(row);
+    if (state != BEANS_PARK_LIVE && state != BEANS_PARK_READY &&
+        state != BEANS_PARK_IDLE)
         return;
     beans_park_unlink_active_locked(slot);
-    row->state = BEANS_PARK_DEAD;
-    row->owner->dead_count++;
-    if (row->owner && row->wake) row->owner->wake_pending = 1;
+    park_state_set(row, BEANS_PARK_DEAD);
+    BeansParkOwner* owner = park_owner_of(row);
+    if (state == BEANS_PARK_IDLE) {
+        // no awaiter will ever finish this row; its owner reaps it on the
+        // next park. It must not count as a stale parked await either —
+        // the driver's stale check gates re-polling awaiters.
+        owner->idle_dead++;
+        return;
+    }
+    owner->dead_count++;
+    if (owner && row->wake) owner->wake_pending = 1;
 }
 
 static void beans_park_flush_wakes(void) {
@@ -13042,9 +13301,64 @@ static int beans_reactor_fd_valid(long long fd) {
 
 // token (> 0) = reserved, 0 = duplicate live park in this executor,
 // -1 = out of memory, -2 = invalid or closing descriptor.
+static void beans_park_finish_slot_locked(size_t slot);
+
+// Reclaims this owner's idle rows that a close made DEAD: they have no
+// awaiter to finish them. Runs under the registry lock on the owner thread,
+// so touching the owner map here is in-contract.
+static void beans_park_reap_idle_dead_locked(BeansParkOwner* owner) {
+    size_t at = owner->rows;
+    while (at != BEANS_PARK_NONE && owner->idle_dead) {
+        BeansParked* row = beans_park_row(at);
+        size_t next = row->owner_next;
+        if (park_state_of(row) == BEANS_PARK_DEAD && park_idle_of(row)) {
+            owner->idle_dead--;
+            beans_park_finish_slot_locked(at);
+        }
+        at = next;
+    }
+}
+
 long long beans_reactor_note_park(long long fd) {
+#if !defined(_WIN32)
+    // Adopt fast path: a sticky row this owner already holds for the same
+    // descriptor. Owner-thread state only — no registry lock, no syscall.
+    // A close racing this flips the row DEAD under the lock; the CAS then
+    // fails and the slow path reaps it.
+    BeansParkOwner* self_owner = beans_parked_owner;
+    if (self_owner && !self_owner->shutting_down) {
+        size_t slot = beans_park_map_find(self_owner, fd);
+        if (slot != BEANS_PARK_NONE) {
+            BeansParked* row = beans_park_row(slot);
+            if (park_owner_of(row) == self_owner && row->fd == fd) {
+                unsigned char state = park_state_of(row);
+                if (state == BEANS_PARK_LIVE ||
+                    state == BEANS_PARK_READY)
+                    return 0; // a second await on one live descriptor
+                if (state == BEANS_PARK_IDLE) {
+                    uint32_t generation = park_generation_of(row);
+                    unsigned char expected = BEANS_PARK_IDLE;
+                    if (__atomic_compare_exchange_n(
+                            &row->state, &expected, BEANS_PARK_LIVE, 0,
+                            __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+                        park_idle_set(row, 0);
+                        return (long long)beans_park_token(
+                            slot, generation);
+                    }
+                }
+            }
+        }
+    }
+#endif
+    // The descriptor probe is a syscall; keeping it outside the registry
+    // lock keeps that lock's hold time at nanoseconds. The probe is only a
+    // pre-filter — the closing tombstone under the lock is what actually
+    // excludes a descriptor being closed, exactly as before.
+    if (!beans_reactor_fd_valid(fd)) return -2;
     pthread_mutex_lock(&beans_parked_lock);
-    if (beans_park_is_closing_locked(fd) || !beans_reactor_fd_valid(fd)) {
+    if (beans_parked_owner && beans_parked_owner->idle_dead)
+        beans_park_reap_idle_dead_locked(beans_parked_owner);
+    if (beans_park_is_closing_locked(fd)) {
         pthread_mutex_unlock(&beans_parked_lock);
         return -2;
     }
@@ -13058,28 +13372,46 @@ long long beans_reactor_note_park(long long fd) {
         pthread_mutex_unlock(&beans_parked_lock);
         return -1;
     }
-    if (beans_park_find_exact_locked(owner, fd) != BEANS_PARK_NONE) {
+    size_t existing = beans_park_find_exact_locked(owner, fd);
+    if (existing != BEANS_PARK_NONE) {
+        BeansParked* held = beans_park_row(existing);
+        if (park_state_of(held) == BEANS_PARK_IDLE) {
+            // backstop for a sticky row the fast path missed (a failed
+            // map insert): adopt it here under the lock
+            park_state_set(held, BEANS_PARK_LIVE);
+            park_idle_set(held, 0);
+            long long adopted = (long long)beans_park_token(
+                existing, park_generation_of(held));
+            pthread_mutex_unlock(&beans_parked_lock);
+            return adopted;
+        }
         pthread_mutex_unlock(&beans_parked_lock);
         return 0;
     }
     size_t slot = beans_parked_free;
-    BeansParked* row = &beans_parked[slot];
+    BeansParked* row = beans_park_row(slot);
     beans_parked_free = row->next_free;
     row->fd = fd;
     row->poller = -1;
     row->wake = 0;
-    row->owner = owner;
-    row->state = BEANS_PARK_LIVE;
+    park_owner_set(row, owner);
+    park_state_set(row, BEANS_PARK_LIVE);
     row->armed = 0;
+    row->interest_write = 0;
+    park_idle_set(row, 0);
     row->owner_prev = BEANS_PARK_NONE;
     row->owner_next = owner->rows;
     if (row->owner_next != BEANS_PARK_NONE)
-        beans_parked[row->owner_next].owner_prev = slot;
+        beans_park_row(row->owner_next)->owner_prev = slot;
     owner->rows = slot;
     owner->row_count++;
     beans_park_link_active_locked(slot);
     beans_parked_rows++;
-    long long token = (long long)beans_park_token(slot, row->generation);
+#if !defined(_WIN32)
+    beans_park_map_insert(owner, fd, slot);
+#endif
+    long long token = (long long)beans_park_token(
+        slot, park_generation_of(row));
     pthread_mutex_unlock(&beans_parked_lock);
     return token;
 }
@@ -13088,15 +13420,44 @@ long long beans_reactor_note_park(long long fd) {
 // the poller while close is excluded by the same registry mutex.
 long long beans_reactor_arm_park(long long token, long long poller,
                                  long long wake, long long write) {
+#if !defined(_WIN32)
+    // Sticky fast path: an adopted row whose kernel registration is still
+    // installed with the same poller and interest only needs a re-enable
+    // of its dispatch-disabled filter. Owner-thread state, no lock. The
+    // re-enable can never CREATE a registration, so a close (even with fd
+    // reuse) racing this fails the syscall instead of arming a stale
+    // token; the row is then DEAD and the await finishes false.
+    {
+        size_t fast = beans_park_token_slot(token);
+        if (fast != BEANS_PARK_NONE) {
+            BeansParked* row = beans_park_row(fast);
+            if (park_owner_of(row) == beans_parked_owner &&
+                park_state_of(row) == BEANS_PARK_LIVE && row->armed &&
+                row->poller == poller && row->wake == wake &&
+                row->interest_write == (write != 0 ? 1 : 0)) {
+                if (beans_park_test_arm_hook)
+                    beans_park_test_arm_hook(row->fd);
+                if (poll_reenable((int)poller, net_fd_of(row->fd), token,
+                                  write != 0) == 0)
+                    return 1;
+                if (park_state_of(row) == BEANS_PARK_READY) return 1;
+                // the registration is gone (a close raced, or the kernel
+                // dropped it): fall through to the locked path, which
+                // revalidates and either re-registers or reports dead
+            }
+        }
+    }
+#endif
     pthread_mutex_lock(&beans_parked_lock);
     size_t slot = beans_park_token_slot(token);
     if (slot == BEANS_PARK_NONE ||
-        beans_parked[slot].owner != beans_parked_owner) {
+        park_owner_of(beans_park_row(slot)) != beans_parked_owner) {
         pthread_mutex_unlock(&beans_parked_lock);
         return 0;
     }
-    BeansParked* row = &beans_parked[slot];
-    if (row->state != BEANS_PARK_LIVE ||
+    BeansParked* row = beans_park_row(slot);
+    unsigned char state = park_state_of(row);
+    if ((state != BEANS_PARK_LIVE && state != BEANS_PARK_READY) ||
         beans_park_is_closing_locked(row->fd) ||
         !beans_reactor_fd_valid(row->fd)) {
         beans_park_mark_dead_locked(slot);
@@ -13106,8 +13467,14 @@ long long beans_reactor_arm_park(long long token, long long poller,
     }
     if (beans_park_test_arm_hook)
         beans_park_test_arm_hook(row->fd);
-    if (poll_apply((int)poller, net_fd_of(row->fd), token,
-                   !write, write != 0, 1) != 0) {
+#if defined(_WIN32)
+    int registered = poll_apply((int)poller, net_fd_of(row->fd), token,
+                                !write, write != 0, 1);
+#else
+    int registered = poll_arm_dispatch((int)poller, net_fd_of(row->fd),
+                                       token, write != 0);
+#endif
+    if (registered != 0) {
         int e = net_errno();
         beans_park_mark_dead_locked(slot);
         pthread_mutex_unlock(&beans_parked_lock);
@@ -13121,75 +13488,145 @@ long long beans_reactor_arm_park(long long token, long long poller,
     row->poller = poller;
     row->wake = wake;
     row->armed = 1;
-    row->owner->wake = wake;
+    row->interest_write = write != 0 ? 1 : 0;
+    park_owner_of(row)->wake = wake;
     pthread_mutex_unlock(&beans_parked_lock);
     return 1;
 }
 
-// LIVE=0, READY=1, DEAD=2, unknown/stale=-1.
+// LIVE=0, READY=1, DEAD=2, unknown/stale=-1. Lock-free: this runs once per
+// parked task per tree poll, so with the registry mutex it was the single
+// hottest lock in a server — and its traffic grows with the number of
+// parked connections each wake re-polls. The read is safe without the lock
+// because only the owner thread asks about its own tokens, and only the
+// owner thread can finish (free or reuse) its rows: a row this thread
+// still holds a token for cannot be reused under this read. The only
+// cross-thread writer is a close marking the row DEAD, published by the
+// atomic state store; reading LIVE a moment late just reports pending
+// once more, and the close's owner wake re-polls the tree right after.
 long long beans_reactor_park_state(long long token) {
-    pthread_mutex_lock(&beans_parked_lock);
-    size_t slot = beans_park_token_slot(token);
-    long long state = -1;
-    if (slot != BEANS_PARK_NONE &&
-        beans_parked[slot].owner == beans_parked_owner) {
-        state = beans_parked[slot].state == BEANS_PARK_LIVE ? 0 :
-                beans_parked[slot].state == BEANS_PARK_READY ? 1 : 2;
+    if (token <= 0) return -1;
+    unsigned long long bits = (unsigned long long)token;
+    unsigned long long encoded = bits >> 32;
+    if (encoded == 0 || encoded - 1 >= park_cap()) return -1;
+    BeansParked* row = beans_park_row((size_t)(encoded - 1));
+    if (park_owner_of(row) != beans_parked_owner ||
+        park_generation_of(row) != (uint32_t)bits)
+        return -1;
+    unsigned char state = park_state_of(row);
+    if (state == BEANS_PARK_FREE || state == BEANS_PARK_RETIRED ||
+        state == BEANS_PARK_IDLE)
+        return -1;
+    return state == BEANS_PARK_LIVE ? 0 :
+           state == BEANS_PARK_READY ? 1 : 2;
+}
+
+long long beans_reactor_finish_park(long long token);
+
+// The awaiter detaches but the row and its kernel registration stay for
+// the next await on the same descriptor — the sticky half of the park
+// lifecycle. A DEAD row has nothing to stay for and is finished exactly
+// like park_finish would. Returns 1 when a parked await was released (the
+// caller's parked-await count drops), 0 for a stale token. On Windows the
+// poll backend is a level-triggered registry, so sticky rows would spin
+// the driver; release simply finishes there.
+long long beans_reactor_release_park(long long token) {
+#if defined(_WIN32)
+    return beans_reactor_finish_park(token);
+#else
+    if (token <= 0) return 0;
+    unsigned long long bits = (unsigned long long)token;
+    unsigned long long encoded = bits >> 32;
+    if (encoded == 0 || encoded - 1 >= park_cap()) return 0;
+    BeansParked* row = beans_park_row((size_t)(encoded - 1));
+    if (park_owner_of(row) != beans_parked_owner ||
+        park_generation_of(row) != (uint32_t)bits)
+        return 0;
+    for (;;) {
+        unsigned char state = park_state_of(row);
+        if (state == BEANS_PARK_LIVE || state == BEANS_PARK_READY) {
+            // idle is set before the state flip: anything that observes
+            // IDLE (a close, a reap) must already see the idle mark
+            park_idle_set(row, 1);
+            unsigned char expected = state;
+            if (__atomic_compare_exchange_n(
+                    &row->state, &expected, BEANS_PARK_IDLE, 0,
+                    __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+                return 1;
+            park_idle_set(row, 0);
+            continue; // a close or the driver moved it; re-read
+        }
+        if (state == BEANS_PARK_DEAD)
+            return beans_reactor_finish_park(token);
+        return 0;
     }
-    pthread_mutex_unlock(&beans_parked_lock);
-    return state;
+#endif
 }
 
 // Consumes one exact kernel token. Stale tokens and tokens already made DEAD
-// by close are ignored, including after descriptor and slot reuse.
+// by close are ignored, including after descriptor and slot reuse. Lock-free
+// by the same owner argument as park_state: the driver delivering kernel
+// events IS the owner thread of every token its poller carries, so the row
+// cannot be finished under it, and the LIVE -> READY edge is a single
+// compare-and-swap that a concurrent close's DEAD store simply wins.
 long long beans_reactor_mark_ready(long long token) {
-    pthread_mutex_lock(&beans_parked_lock);
-    size_t slot = beans_park_token_slot(token);
-    long long marked = 0;
-    if (slot != BEANS_PARK_NONE &&
-        beans_parked[slot].owner == beans_parked_owner &&
-        beans_parked[slot].state == BEANS_PARK_LIVE) {
-        beans_parked[slot].state = BEANS_PARK_READY;
-        marked = 1;
-    }
-    pthread_mutex_unlock(&beans_parked_lock);
-    return marked;
+    if (token <= 0) return 0;
+    unsigned long long bits = (unsigned long long)token;
+    unsigned long long encoded = bits >> 32;
+    if (encoded == 0 || encoded - 1 >= park_cap()) return 0;
+    BeansParked* row = beans_park_row((size_t)(encoded - 1));
+    if (park_owner_of(row) != beans_parked_owner ||
+        park_generation_of(row) != (uint32_t)bits)
+        return 0;
+    unsigned char expected = BEANS_PARK_LIVE;
+    return __atomic_compare_exchange_n(
+               &row->state, &expected, BEANS_PARK_READY, 0,
+               __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)
+               ? 1 : 0;
 }
 
 static void beans_park_finish_slot_locked(size_t slot) {
-    BeansParked* row = &beans_parked[slot];
-    BeansParkOwner* owner = row->owner;
-    if (row->state == BEANS_PARK_LIVE ||
-        row->state == BEANS_PARK_READY) {
+    BeansParked* row = beans_park_row(slot);
+    BeansParkOwner* owner = park_owner_of(row);
+    unsigned char state = park_state_of(row);
+    if (state == BEANS_PARK_LIVE || state == BEANS_PARK_READY ||
+        state == BEANS_PARK_IDLE) {
         if (row->armed)
             (void)poll_apply((int)row->poller, net_fd_of(row->fd),
                              0, 0, 0, 0);
         beans_park_unlink_active_locked(slot);
     }
+#if !defined(_WIN32)
+    beans_park_map_remove(owner, row->fd);
+#endif
     if (row->owner_prev == BEANS_PARK_NONE)
         owner->rows = row->owner_next;
     else
-        beans_parked[row->owner_prev].owner_next = row->owner_next;
+        beans_park_row(row->owner_prev)->owner_next = row->owner_next;
     if (row->owner_next != BEANS_PARK_NONE)
-        beans_parked[row->owner_next].owner_prev = row->owner_prev;
-    if (row->state == BEANS_PARK_DEAD) owner->dead_count--;
+        beans_park_row(row->owner_next)->owner_prev = row->owner_prev;
+    if (state == BEANS_PARK_DEAD && !park_idle_of(row))
+        owner->dead_count--;
     owner->row_count--;
     if (owner->row_count == 0) {
         owner->wake = 0;
         owner->wake_pending = 0;
     }
-    row->owner = NULL;
+    park_owner_set(row, NULL);
     row->armed = 0;
+    row->interest_write = 0;
+    park_idle_set(row, 0);
     row->wake = 0;
     row->poller = -1;
     row->owner_prev = row->owner_next = BEANS_PARK_NONE;
     beans_parked_rows--;
-    if (row->generation == UINT32_MAX) {
-        row->state = BEANS_PARK_RETIRED;
+    uint32_t generation = park_generation_of(row);
+    if (generation == UINT32_MAX) {
+        park_state_set(row, BEANS_PARK_RETIRED);
         row->next_free = BEANS_PARK_NONE;
     } else {
-        row->generation++;
-        row->state = BEANS_PARK_FREE;
+        park_generation_set(row, generation + 1);
+        park_state_set(row, BEANS_PARK_FREE);
         row->next_free = beans_parked_free;
         beans_parked_free = slot;
     }
@@ -13199,7 +13636,7 @@ long long beans_reactor_finish_park(long long token) {
     pthread_mutex_lock(&beans_parked_lock);
     size_t slot = beans_park_token_slot(token);
     if (slot == BEANS_PARK_NONE ||
-        beans_parked[slot].owner != beans_parked_owner) {
+        park_owner_of(beans_park_row(slot)) != beans_parked_owner) {
         pthread_mutex_unlock(&beans_parked_lock);
         return 0;
     }
@@ -13231,7 +13668,7 @@ void beans_reactor_close_begin(long long fd) {
     if (beans_park_index_cap) {
         size_t at = beans_park_fd[beans_park_fd_bucket(fd)];
         while (at != BEANS_PARK_NONE) {
-            BeansParked* row = &beans_parked[at];
+            BeansParked* row = beans_park_row(at);
             size_t next = row->fd_next;
             if (row->fd == fd) beans_park_mark_dead_locked(at);
             at = next;
@@ -13287,6 +13724,8 @@ long long beans_reactor_shutdown_parks(void) {
     if (owner->next) owner->next->prev = owner->prev;
     beans_parked_owner = NULL;
     pthread_mutex_unlock(&beans_parked_lock);
+    free(owner->map_fds);
+    free(owner->map_slots);
     free(owner);
     return 1;
 }
@@ -13297,10 +13736,10 @@ long long beans_reactor_test_set_generation(long long slot,
                                             long long generation) {
     pthread_mutex_lock(&beans_parked_lock);
     long long changed = 0;
-    if (slot >= 0 && (size_t)slot < beans_parked_cap &&
+    if (slot >= 0 && (size_t)slot < park_cap() &&
         generation > 0 && (unsigned long long)generation <= UINT32_MAX &&
-        beans_parked[slot].state == BEANS_PARK_FREE) {
-        beans_parked[slot].generation = (uint32_t)generation;
+        park_state_of(beans_park_row(slot)) == BEANS_PARK_FREE) {
+        park_generation_set(beans_park_row(slot), (uint32_t)generation);
         changed = 1;
     }
     pthread_mutex_unlock(&beans_parked_lock);
@@ -14229,6 +14668,22 @@ BThread* beans_thread_spawn_typed(void* thunk, void* env, long long size,
         beans_panic("thread spawn failed", 0, 0);
     }
     return t;
+}
+// How many hardware threads the machine offers a program right now. A
+// server sizing its worker fleet is the caller; 1 is the floor so a
+// failing probe never zeroes a fleet.
+long long beans_thread_parallelism(void) {
+#if defined(_WIN32)
+    SYSTEM_INFO info;
+    GetSystemInfo(&info);
+    long long count = (long long)info.dwNumberOfProcessors;
+    return count > 0 ? count : 1;
+#elif defined(_SC_NPROCESSORS_ONLN)
+    long long count = (long long)sysconf(_SC_NPROCESSORS_ONLN);
+    return count > 0 ? count : 1;
+#else
+    return 1;
+#endif
 }
 long long beans_thread_join(BThread* t) {
     if (__atomic_exchange_n((int*)&t->joined, 1, __ATOMIC_ACQ_REL))

@@ -14,6 +14,8 @@ import std.ready
 extern "C" fn beans_async_wait_timeout() -> int
 extern "C" fn beans_async_reactor_register(wake: int) -> int
 extern "C" fn beans_async_reactor_unregister(wake: int) -> int
+// beans_async_now_nanos and beans_async_note_timer are declared in
+// task.b; extern declarations are package-scoped.
 
 // Thread-local state lives in the runtime's task slots because Beans has no
 // globals: [0..2] the shared poller triple from ready.open, [3] how many
@@ -56,12 +58,14 @@ fn reactor_poller() -> int {
     return ready.task_slot(0) - 1
 }
 
-// Deregisters a park exactly once: the poller registration, the parked
-// table, and the parked count move together, and the count can only
-// fall when the table really held the token. The runtime's central finish
-// removes kernel interest only for LIVE/READY. DEAD never touches a reused fd.
+// Detaches a park exactly once: the parked count falls only when the
+// table really held the token. The runtime keeps the row and its kernel
+// registration for the next await on the same descriptor (release), so a
+// keep-alive server re-parks without registry or kernel work; a row a
+// close already killed is finished for real inside release. DEAD never
+// touches a reused fd.
 fn unpark(token: int) {
-    if ready.park_finish(token) == 1 {
+    if ready.park_release(token) == 1 {
         let count: int = ready.task_slot(3)
         if count <= 0 {
             panic("async runtime: the parked count went negative")
@@ -135,6 +139,82 @@ pub fn reactor_park(fd: int, write: bool) -> Task<bool> {
             // was — through the same dead distinction, so cancelling an
             // await whose descriptor was closed cannot disturb a reused
             // number either
+            if token_cell.len() != 0 {
+                unpark(token_cell[0])
+                token_cell.clear()
+            }
+        })
+}
+
+/// `reactor_park` with a monotonic cutoff, fused into one task: pending
+/// notes the deadline for the driver's timed wait, so the tree wakes at
+/// the cutoff and the next poll finishes the await with `false`. This is
+/// what keeps an idle keep-alive connection at exactly one parked await —
+/// racing a separate timer task against a readiness task costs a task
+/// group and two state machines per wait, per request, on every server.
+/// Readiness observed before the expiry check still wins the poll. Only
+/// the async expander calls this, for net.readable_deadline /
+/// net.writable_deadline.
+pub fn reactor_park_deadline(
+        fd: int, write: bool, deadline_nanos: int) -> Task<bool> {
+    var token_cell: List<int> = []
+    var fired_cell: List<bool> = []
+    return new Task<bool>(
+        fn() -> int {
+            if token_cell.len() == 0 {
+                let noted: int = ready.park_note(fd)
+                if noted == 0 - 2 {
+                    fired_cell.push(false)
+                    return 1
+                }
+                if noted == 0 {
+                    panic("async runtime: two awaits are parked on one descriptor — await the first before starting the second")
+                }
+                if noted == 0 - 1 {
+                    panic("async runtime: out of memory reserving a parked await")
+                }
+                let poller: int = reactor_poller()
+                let armed: int = ready.park_arm(
+                    noted, poller, ready.task_slot(2), write)
+                if armed != 1 {
+                    let finished: int = ready.park_finish(noted)
+                    if armed < 0 {
+                        panic("async runtime: cannot arm a parked await")
+                    }
+                    fired_cell.push(false)
+                    return 1
+                }
+                let count: int = ready.task_slot(3)
+                let bumped: int = ready.set_task_slot(3, count + 1)
+                token_cell.push(noted)
+            }
+            let state: int = ready.park_state(token_cell[0])
+            if state == 0 {
+                var now: int = 0
+                unsafe { now = beans_async_now_nanos() }
+                if now >= deadline_nanos {
+                    unpark(token_cell[0])
+                    token_cell.clear()
+                    fired_cell.push(false)
+                    return 1
+                }
+                var noted_timer: int = 0
+                unsafe {
+                    noted_timer = beans_async_note_timer(deadline_nanos)
+                }
+                return 0
+            }
+            unpark(token_cell[0])
+            token_cell.clear()
+            fired_cell.push(state == 1)
+            return 1
+        },
+        fn() -> bool {
+            return fired_cell.len() != 0 && fired_cell[0]
+        },
+        fn() {
+            // cancelled while parked: same dead distinction as
+            // reactor_park, so a reused descriptor number is never touched
             if token_cell.len() != 0 {
                 unpark(token_cell[0])
                 token_cell.clear()
