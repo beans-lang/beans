@@ -12,8 +12,9 @@ RUNTIME_SRC := runtime/beans_rt.c
 RUNTIME_COPY := build/beans_rt.c
 .DEFAULT_GOAL := $(BIN)
 
-$(RUNTIME_COPY): $(RUNTIME_SRC)
+$(RUNTIME_COPY): $(RUNTIME_SRC) runtime/beans_fiber.c runtime/beans_fiber.h
 	@mkdir -p build
+	cp runtime/beans_fiber.c runtime/beans_fiber.h build/
 	cp $(RUNTIME_SRC) $(RUNTIME_COPY)
 
 # The compiler cannot read VERSION while compiling itself, so it reads the same
@@ -167,6 +168,7 @@ test-semantics: $(BIN)
 	./test/fixpoint.sh
 
 test-runtime: $(BIN)
+	bash ./test/fiber_core.sh
 	bash ./test/thread_cleanup.sh
 	./test/resources.sh
 	./test/shm.sh
@@ -277,6 +279,7 @@ test-core: $(BIN)
 	./test/fixed_arrays.sh
 	bash ./test/send_functions.sh
 	./test/packed_layout.sh
+	bash ./test/fiber_core.sh
 	bash ./test/thread_cleanup.sh
 	./test/simd.sh
 	./test/intrinsics.sh

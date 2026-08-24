@@ -14619,3 +14619,14 @@ char* beans_decv_fmt(BDec* value, long long p) {
     return beans_fmt_dec(value, p);
 }
 #endif // BEANS_RT_DECIMAL
+
+// ---------------------------------------------------------------------------
+// The fiber runtime core (spec/CONCURRENCY.md, F1). One include keeps the
+// runtime a single entry file for BEANS_RUNTIME resolution; the fiber core
+// stays its own translation-unit-shaped file so test/fiber_core.c can test
+// it without the rest of the runtime. Fibers need real threads and mmap, so
+// restricted profiles compile without them — the checker refuses `brew` and
+// parking there before this gate is ever reached.
+#if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL && !BEANS_RT_WASI
+#include "beans_fiber.c"
+#endif
