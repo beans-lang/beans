@@ -1,0 +1,8 @@
+fields: 10 20
+grid: 1 7 30 40
+readback: 40
+copies: 1 500
+class: 1 0 7 0
+inout: 1 2 99
+captured: 10 10
+names: root zed

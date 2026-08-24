@@ -38,6 +38,39 @@ class LlvmSlotConversion {
     }
 }
 
+// One step from an enclosing aggregate to the storage the value was read
+// out of: a struct field (gep index into `aggregate`), a class field (byte
+// offset into the object), or a fixed-array element (index register).
+class LlvmPlaceStep {
+    kind: string
+    aggregate: string
+    index: int
+    register: string
+
+    fn init(kind: string, aggregate: string,
+            index: int, register: string) {
+        self.kind = kind
+        self.aggregate = aggregate
+        self.index = index
+        self.register = register
+    }
+}
+
+// Where an SSA aggregate copy was loaded from, so a store through it can
+// reach the original storage instead of the copy: a chain of steps below
+// a local's slot (root_local) or below a class object (root_register).
+class LlvmBorrowedPlace {
+    root_local: int
+    root_register: string
+    steps: List<LlvmPlaceStep>
+
+    fn init(root_local: int, root_register: string) {
+        self.root_local = root_local
+        self.root_register = root_register
+        self.steps = []
+    }
+}
+
 class LlvmClassLayout {
     declaration: HirDeclaration
     id: int

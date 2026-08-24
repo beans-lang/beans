@@ -1544,6 +1544,22 @@ partial class LlvmTextEmitter {
                                     }
                                 return "  store {llvm} {receiver}, ptr {slot}\n  {result} = load {self.type_text(layout.field_types[instruction.text])}, ptr {slot}{access}\n"
                             }
+                            // the copy this extractvalue makes has live
+                            // storage behind it; remember where, so an
+                            // element store through the copy can reach it
+                            match self.place_for(receiver_id) {
+                                some(place) => {
+                                    place.steps.push(
+                                        new LlvmPlaceStep(
+                                            "struct",
+                                            self.type_text(receiver_type),
+                                            layout.field_indices[instruction.text],
+                                            ""))
+                                    self.borrowed_place_of[
+                                        instruction.result] = place
+                                }
+                                none => {}
+                            }
                             return "  {result} = extractvalue {self.type_text(receiver_type)} {receiver}, {layout.field_indices[instruction.text]}\n"
                         }
                         none => {}
@@ -1590,6 +1606,17 @@ partial class LlvmTextEmitter {
                 let result: string =
                     "%v{instruction.result}"
                 values[instruction.result] = result
+                // the object pointer is the storage: an element store
+                // through this loaded copy can write back at the offset
+                let place: LlvmBorrowedPlace =
+                    new LlvmBorrowedPlace(-1, receiver)
+                place.steps.push(
+                    new LlvmPlaceStep(
+                        "class", "",
+                        layout.field_offsets[instruction.text],
+                        ""))
+                self.borrowed_place_of[
+                    instruction.result] = place
                 return "  %field.ptr{address} = getelementptr i8, ptr {receiver}, i64 {layout.field_offsets[instruction.text]}\n  {result} = load {type}, ptr %field.ptr{address}\n"
             }
             none => {

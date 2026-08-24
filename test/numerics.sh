@@ -11,6 +11,13 @@ trap 'rm -rf "$tmp"' EXIT
 diff -u test/cases/numeric_ok.out "$tmp/interp"
 diff -u test/cases/numeric_ok.out "$tmp/native.out"
 
+./build/beansc run test/cases/float_surface.b >"$tmp/surface.interp"
+./build/beansc build test/cases/float_surface.b \
+    -o "$tmp/surface.native" >"$tmp/surface.build" 2>&1
+"$tmp/surface.native" >"$tmp/surface.native.out"
+diff -u test/cases/float_surface.out "$tmp/surface.interp"
+diff -u test/cases/float_surface.out "$tmp/surface.native.out"
+
 ./build/beansc run test/cases/decimal_rounding.b >"$tmp/round.interp"
 ./build/beansc build test/cases/decimal_rounding.b \
     -o "$tmp/round.native" >"$tmp/round.build" 2>&1

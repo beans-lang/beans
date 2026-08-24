@@ -1,0 +1,10 @@
+len=3 picked=3.75 removed=1.5 popped=0.5 total=17.75
+contains=true index=some(1)
+first=4.5 last=3.75
+min=-2.25 max=3.75
+sorted=-2.25 -0.5 1.5 3.75
+clone=3 4.5
+show=[4.5, 9.5, 3.75]
+slice=2 4.5 9.5
+reversed=3.75 -2.25
+column: 7.5 8.5

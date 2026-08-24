@@ -1,0 +1,3 @@
+all: 12 1.5 plain false
+some: 20 1.5 plain true
+mixed: 7 4

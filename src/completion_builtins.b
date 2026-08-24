@@ -12,7 +12,8 @@ fn semantic_builtin_member_names() -> List<string> {
             "append_string", "append_uvarint", "as_ptr", "at",
             "atomic_compare_exchange", "atomic_fetch_add",
             "atomic_load", "atomic_store", "bit_and", "bit_not",
-            "bit_or", "bit_xor", "byte_at", "call", "chars",
+            "bit_or", "bit_xor", "byte_at", "call", "ceil",
+            "chars",
             "clear", "detach",
             "clone", "close", "compare_exchange", "contains",
             "contains_key", "context", "copy_from", "count_chars",
@@ -20,11 +21,12 @@ fn semantic_builtin_member_names() -> List<string> {
             "element_size", "ends_with", "eq", "exchange", "expect",
             "fetch_add", "fetch_and", "fetch_or", "fetch_sub",
             "fetch_xor", "fill", "fill_zero", "find", "find_byte",
+            "floor",
             "first", "flush", "flush_range", "free", "function",
             "function_pointer",
             "ge", "get", "get_i64", "get_u16", "get_u32", "get_u64",
             "get_u8", "get_uvarint", "gt", "index_of", "insert",
-            "is_empty", "is_expired", "is_none", "is_null", "is_ok",
+            "is_empty", "is_expired", "is_nan", "is_none", "is_null", "is_ok",
             "is_some", "join", "keys", "lane", "lane_count", "last",
             "le", "len", "lines", "load", "lock", "lt", "max",
             "min", "mul", "ne", "notify_all", "notify_one",
@@ -124,7 +126,7 @@ fn semantic_builtin_static_names() -> List<string> {
             "rename", "copy",
             "list", "walk", "create", "create_all", "remove_all",
             "sync", "temp_path", "uvarint_size", "open_shared_memory",
-            "unlink_shared_memory", "fence"]
+            "unlink_shared_memory", "fence", "infinity"]
 }
 
 fn semantic_builtin_selector_names(

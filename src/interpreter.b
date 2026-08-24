@@ -3526,82 +3526,118 @@ class TreeInterpreter {
 
     fn interpolation(node: HirNode,
                      frame: TreeFrame) -> string {
-        let source: string = tree_unquote(node.value)
         var values: List<TreeValue> = []
         for child: HirNode in node.children {
             values.push(self.expression(child, frame))
             if self.failed { return "" }
         }
+        // Walk the raw literal with the escapes still visible, the same
+        // way the checker and the LLVM emitter find the pieces. Decoding
+        // first would turn \{ into a bare { that looks like a slot.
+        let raw: string = node.value
+        var start: int = 0
+        var end: int = raw.len()
+        if raw.len() >= 2 &&
+           raw.starts_with("\"") &&
+           raw.ends_with("\"") {
+            start = 1
+            end -= 1
+        }
         var result: string = ""
-        var index: int = 0
+        var index: int = start
         var value_index: int = 0
-        for index < source.len() {
-            if source.byte_at(index) == 123 {
-                if index + 1 < source.len() &&
-                   source.byte_at(index + 1) == 123 {
-                    result = "{result}\{"
-                    index += 2
-                    continue
+        for index < end {
+            let byte: int = raw.byte_at(index)
+            if byte == 92 && index + 1 < end {
+                let escaped: int = raw.byte_at(index + 1)
+                if escaped == 110 {
+                    result = "{result}\n"
+                } else if escaped == 114 {
+                    result = "{result}\r"
+                } else if escaped == 116 {
+                    result = "{result}\t"
+                } else if escaped == 48 {
+                    result = "{result}\0"
+                } else {
+                    result =
+                        "{result}{raw.slice(index + 1, index + 2)}"
                 }
-                var depth: int = 1
-                var close: int = index + 1
-                for close < source.len() && depth > 0 {
-                    if source.byte_at(close) == 123 {
-                        depth += 1
-                    } else if source.byte_at(close) == 125 {
-                        depth -= 1
-                    }
-                    close += 1
-                }
-                if value_index < values.len() {
-                    let value: TreeValue =
-                        values[value_index]
-                    let segment: string =
-                        source.slice(index + 1, close - 1)
-                    let format: TreeFormatSpec =
-                        tree_format_spec(segment)
-                    var piece: string =
-                        tree_value_text(value)
-                    if format.has &&
-                       format.places >= 0 {
-                        if value.kind == "float" {
-                            piece = host_fmt.float(
-                                value.float_data,
-                                format.places)
-                        } else if value.kind ==
-                                      "decimal" {
-                            piece = host_fmt.decimal(
-                                value.decimal_data,
-                                format.places)
-                        }
-                    }
-                    if format.has &&
-                       format.width > 0 {
-                        piece =
-                            if format.left {
-                                host_fmt.pad_right(
-                                    piece, format.width)
-                            } else {
-                                host_fmt.pad_left(
-                                    piece, format.width)
-                            }
-                    }
-                    result = "{result}{piece}"
-                    value_index += 1
-                }
-                index = close
-                continue
-            }
-            if source.byte_at(index) == 125 &&
-               index + 1 < source.len() &&
-               source.byte_at(index + 1) == 125 {
-                result = "{result}\}"
                 index += 2
                 continue
             }
-            result =
-                "{result}{source.slice(index, index + 1)}"
-            index += 1
+            if byte != 123 {
+                result =
+                    "{result}{raw.slice(index, index + 1)}"
+                index += 1
+                continue
+            }
+            var depth: int = 1
+            var in_string: bool = false
+            var cursor: int = index + 1
+            for cursor < end && depth > 0 {
+                let current: int = raw.byte_at(cursor)
+                if current == 92 && cursor + 1 < end {
+                    cursor += 2
+                    continue
+                }
+                if in_string {
+                    if current == 34 {
+                        in_string = false
+                    }
+                } else if current == 34 {
+                    in_string = true
+                } else if current == 123 {
+                    depth += 1
+                } else if current == 125 {
+                    depth -= 1
+                }
+                cursor += 1
+            }
+            if depth != 0 {
+                // The checker stops splitting at an unterminated {,
+                // so from here on everything is literal text.
+                result =
+                    "{result}{tree_unquote(raw.slice(index, end))}"
+                index = end
+                continue
+            }
+            if value_index < values.len() {
+                let value: TreeValue =
+                    values[value_index]
+                let segment: string =
+                    raw.slice(index + 1, cursor - 1)
+                let format: TreeFormatSpec =
+                    tree_format_spec(segment)
+                var piece: string =
+                    tree_value_text(value)
+                if format.has &&
+                   format.places >= 0 {
+                    if value.kind == "float" {
+                        piece = host_fmt.float(
+                            value.float_data,
+                            format.places)
+                    } else if value.kind ==
+                                  "decimal" {
+                        piece = host_fmt.decimal(
+                            value.decimal_data,
+                            format.places)
+                    }
+                }
+                if format.has &&
+                   format.width > 0 {
+                    piece =
+                        if format.left {
+                            host_fmt.pad_right(
+                                piece, format.width)
+                        } else {
+                            host_fmt.pad_left(
+                                piece, format.width)
+                        }
+                }
+                result = "{result}{piece}"
+                value_index += 1
+            }
+            index = cursor
         }
         return result
     }
@@ -6310,8 +6346,15 @@ class TreeInterpreter {
         source =
             "{source}{c_result} beans_stored_entry({parameters}) \{\n  void* context = (void*)value{context_index};\n  void* arguments[{slots}] = \{{address_text}\};\n"
         if same_thread {
+            // the same words and the same exit code the native runtime's
+            // beans_panic produces, so one program means one thing:
+            // aborting here gave the interpreter 134 where a built binary
+            // exits 3. On this pthread-only path the host buffers stdout
+            // through stdio, so fflush orders the panic like beans_panic
+            // does without importing a host symbol the dynamic loader
+            // may not export on every platform.
             source =
-                "{source}  if (stored_owner_set && !pthread_equal(stored_owner, pthread_self())) \{\n    fprintf(stderr, \"runtime panic: same-thread stored callback invoked from another thread\\n\");\n    abort();\n  \}\n"
+                "{source}  if (stored_owner_set && !pthread_equal(stored_owner, pthread_self())) \{\n    fflush(stdout);\n    fprintf(stderr, \"runtime panic at 0:0: same-thread stored callback invoked from another thread\\n\");\n    exit(3);\n  \}\n"
         }
         if c_result == "void" {
             source =
@@ -7575,13 +7618,41 @@ class TreeInterpreter {
         }
         if receiver.kind == "int" &&
            node.value == "abs" {
-            return TreeValue.integer(
-                receiver.int_data.abs())
+            if receiver.int_unsigned {
+                return receiver
+            }
+            // narrow to the receiver's width: the wrap at each width's
+            // minimum is the wrap the native sub/select produces
+            let bits: int =
+                tree_integer_bits(
+                    canonical_hir_name(node.type.name))
+            return TreeValue.signed_integer(
+                tree_signed_from_bits(
+                    receiver.int_data.abs() as u64,
+                    bits),
+                bits)
         }
         if receiver.kind == "float" &&
            node.value == "abs" {
             return TreeValue.floating(
                 receiver.float_data.abs())
+        }
+        if receiver.kind == "float" &&
+           node.value == "floor" {
+            return TreeValue.floating(
+                tree_float_floor(receiver.float_data))
+        }
+        if receiver.kind == "float" &&
+           node.value == "ceil" {
+            return TreeValue.floating(
+                -tree_float_floor(
+                    -receiver.float_data))
+        }
+        if receiver.kind == "float" &&
+           node.value == "is_nan" {
+            return TreeValue.boolean(
+                receiver.float_data !=
+                    receiver.float_data)
         }
         if receiver.kind == "float" &&
            node.value == "round" {
@@ -9143,6 +9214,12 @@ class TreeInterpreter {
             }
         }
         if node.kind == "static_call" &&
+           (node.resolved == "float.infinity" ||
+            node.resolved == "f32.infinity") {
+            return TreeValue.floating(
+                tree_float_infinity())
+        }
+        if node.kind == "static_call" &&
            node.resolved == "Bytes.filled" &&
            arguments.len() == 2 {
             let size: int = arguments[0].int_data
@@ -9696,6 +9773,17 @@ class TreeInterpreter {
         let key: TreeValue =
             self.expression(node.children[1], frame)
         if key.kind == "propagate" { return key }
+        return self.index_value(
+            node, receiver, key, false)
+    }
+
+    // One element read used by both the copying read path and the
+    // borrowed place walk behind an element assignment: `borrowed`
+    // skips the value-semantics copy so a caller can write through.
+    fn index_value(node: HirNode,
+                   receiver: TreeValue,
+                   key: TreeValue,
+                   borrowed: bool) -> TreeValue {
         if (receiver.kind == "list" ||
             receiver.kind == "array") &&
            key.kind == "int" {
@@ -9705,14 +9793,23 @@ class TreeInterpreter {
                     node,
                     "{if receiver.kind == "array" { "array" } else { "list" }} index {key.int_data} out of range (len {receiver.items.len()})")
             }
-            return tree_value_copy(
-                receiver.items[key.int_data])
+            let element: TreeValue =
+                receiver.items[key.int_data]
+            return if borrowed {
+                element
+            } else {
+                tree_value_copy(element)
+            }
         }
         if receiver.kind == "map" {
             match receiver.map_values.get(
                 self.map_key(receiver, key)) {
                 some(value) => {
-                    return tree_value_copy(value)
+                    return if borrowed {
+                        value
+                    } else {
+                        tree_value_copy(value)
+                    }
                 }
                 none => {
                     return self.fail_at(
@@ -10403,6 +10500,46 @@ class TreeInterpreter {
             "expression '{node.kind}' is not in the Beans interpreter yet")
     }
 
+    // The storage behind an index-assignment base, without the copy a
+    // plain field or element read makes: a chain of struct/class fields
+    // and array elements rooted at a local. A plain expression read
+    // would hand back an independent record or array wrapper and the
+    // element store would land in that copy and vanish.
+    fn place_receiver(node: HirNode,
+                      frame: TreeFrame) -> TreeValue {
+        if node.kind == "field" &&
+           node.children.len() == 1 {
+            let base: TreeValue =
+                self.place_receiver(
+                    node.children[0], frame)
+            if base.kind == "propagate" { return base }
+            if self.failed { return base }
+            match base.fields.entries.get(node.value) {
+                some(value) => { return value }
+                none => {
+                    return self.fail(
+                        node,
+                        "{base.text} has no initialized field '{node.value}'")
+                }
+            }
+        }
+        if node.kind == "index" &&
+           node.children.len() == 2 {
+            let base: TreeValue =
+                self.place_receiver(
+                    node.children[0], frame)
+            if base.kind == "propagate" { return base }
+            if self.failed { return base }
+            let key: TreeValue =
+                self.expression(
+                    node.children[1], frame)
+            if key.kind == "propagate" { return key }
+            return self.index_value(
+                node, base, key, true)
+        }
+        return self.expression(node, frame)
+    }
+
     fn assign(node: HirNode,
               frame: TreeFrame) -> TreeExec {
         if node.children.len() != 2 {
@@ -10564,7 +10701,7 @@ class TreeInterpreter {
         if target.kind == "index" &&
            target.children.len() == 2 {
             let receiver: TreeValue =
-                self.expression(
+                self.place_receiver(
                     target.children[0], frame)
             let key: TreeValue =
                 self.expression(
