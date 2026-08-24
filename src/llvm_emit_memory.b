@@ -97,7 +97,8 @@ partial class LlvmTextEmitter {
                 return declaration.kind == "class" ||
                        declaration.kind ==
                            "interface" ||
-                       declaration.kind == "enum"
+                       (declaration.kind == "enum" &&
+                        declaration.repr == "")
             }
             none => { return false }
         }

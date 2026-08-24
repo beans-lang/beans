@@ -174,6 +174,9 @@ class LayoutEngine {
                     declaration.line, declaration.col,
                     "'{declaration.name}'")
             }
+            if declaration.repr != "" {
+                self.validate_repr(declaration)
+            }
             for field: HirField in declaration.fields {
                 if field.declared_align == 0 { continue }
                 if declaration.is_packed {
@@ -186,6 +189,36 @@ class LayoutEngine {
                         field.line, field.col,
                         "field '{field.name}'")
                 }
+            }
+        }
+    }
+
+    // The enum(u8) rules. The parser only accepts the marker on enum
+    // declarations, so kind is not re-checked here.
+    fn validate_repr(declaration: HirDeclaration) {
+        if declaration.repr != "u8" {
+            self.fail(
+                declaration,
+                "enum({declaration.repr}) is not a supported representation — only enum(u8) exists")
+            return
+        }
+        if declaration.generics.len() != 0 {
+            self.fail(
+                declaration,
+                "enum(u8) does not apply to generic enum '{declaration.name}'")
+            return
+        }
+        if declaration.variants.len() > 256 {
+            self.fail(
+                declaration,
+                "enum(u8) fits at most 256 variants; '{declaration.name}' declares {declaration.variants.len()}")
+            return
+        }
+        for variant: HirField in declaration.variants {
+            if variant.type.args.len() != 0 {
+                self.fail_field(
+                    variant,
+                    "enum(u8) needs every variant payload-free — variant '{variant.name}' carries a payload")
             }
         }
     }
@@ -400,6 +433,12 @@ class LayoutEngine {
                     return self.pointer()
                 }
                 if declaration.kind == "enum" {
+                    // enum(u8): one byte, byte-aligned. Everything else
+                    // about the declaration is validated by validate_repr,
+                    // so an enum that carries a repr here is payload-free.
+                    if declaration.repr == "u8" {
+                        return layout_ok(1, 1)
+                    }
                     return layout_error(
                         "{render_hir_type(type)} has no single fixed layout yet")
                 }

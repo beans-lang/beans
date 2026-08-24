@@ -236,6 +236,7 @@ partial class LlvmTextEmitter {
                self.type_is_raw_pointer(type) ||
                canonical_hir_name(type.name) ==
                    "decimal" ||
+               self.enum_has_fixed_repr(type) ||
                llvm_type_is_integer(type) ||
                llvm_type_is_float(type)
     }
@@ -835,7 +836,8 @@ partial class LlvmTextEmitter {
                 "  %inline.eq{tag}{id} = icmp eq ptr {left}, {right}\n",
                 "%inline.eq{tag}{id}")
         }
-        if llvm_type_is_integer(type) {
+        if llvm_type_is_integer(type) ||
+           self.enum_has_fixed_repr(type) {
             return new LlvmSlotConversion(
                 "  %inline.eq{tag}{id} = icmp eq {llvm} {left}, {right}\n",
                 "%inline.eq{tag}{id}")

@@ -1445,6 +1445,30 @@ fn describe(p: Payment) -> string {
 Enums are objects too — they can carry methods (`fn label() -> string { ... }`
 inside the enum body, with implicit `self`).
 
+### Fixed representation: `enum(u8)`
+
+A payload-free enum can opt into a committed one-byte layout on the
+declaration:
+
+```
+enum(u8) Display { flex, grid, none }
+```
+
+The value is then the bare `u8` tag, variants numbered in declaration order —
+the same numbering an ordinary enum's tags use, so behaviour is unchanged.
+What changes is layout: `size_of` answers 1, `align_of` answers 1, a struct
+holding one keeps a fixed inline layout with no pointer bits or ARC
+bookkeeping, and a `[Display; N]` array stores one byte per element. Matching,
+equality, printing, methods, map keys, and reflection all work the same as
+without the marker, and the two compilers agree on every observable behaviour.
+
+The checker refuses the marker, naming the rule, on enums with payload
+variants, on generic enums, on more than 256 variants, and on any
+representation other than `u8` (wider ones can follow the same path). An
+`enum(u8)` stays a distinct nominal type — there is no implicit conversion to
+or from integers — and it is still not a C ABI type: an `extern "C"` record
+field or typed JSON keeps its existing refusal.
+
 ## Option and Result
 
 Core rule: **a function that can fail says so in its return type.**
@@ -1518,6 +1542,8 @@ enum box. List and Map values can store them inline, including nested ARC fields
 Box, Arena, Shared, Mutex, Channel, and thread results can store them inline too.
 User enums remain ARC values, but wide payloads use their real aligned layout
 inside the enum object and participate in matching, equality, hashing, and ARC.
+The exception is `enum(u8)`: a payload-free enum that declares the fixed
+representation is a bare one-byte tag with no ARC object at all.
 
 ## Control flow
 
@@ -2075,14 +2101,17 @@ let at: int = offset_of(Packet, count)
   the two backends read the same folded number so they cannot disagree.
 - Supported: integers, floats, `bool`, `decimal`, `string`, `RawPtr<T>`,
   `Slice<T>`, SIMD values, fixed arrays (nested included), `struct` and
-  `extern "C" struct`/`union`, and class or interface references.
+  `extern "C" struct`/`union`, class or interface references, and `enum(u8)`
+  declarations (one byte, byte-aligned).
 - **A class or interface reference reports one pointer.** The object behind it is
   a heap allocation carrying a 16-byte ARC header; what a *reference* costs and
   what the object costs are different questions, and this answers the first.
 - Rejected, with a specific message: a type parameter (`size_of(T)` inside a
-  generic body), `Option`/`Result`/user enums — they choose between a null
-  niche, an inline aggregate and a boxed form depending on payload, so there is
-  no single number to report — and a size that would overflow.
+  generic body), `Option`/`Result`/user enums without a declared
+  representation — they choose between a null niche, an inline aggregate and a
+  boxed form depending on payload, so there is no single number to report —
+  and a size that would overflow. A payload-free enum opts out of that
+  rejection by declaring `enum(u8)`.
 - `offset_of` needs a `struct` or `union` and an actual field name; both
   failures name what was wrong and list the fields that do exist.
 - `extern "C"` records follow the target's C rules, so these numbers match
@@ -3370,7 +3399,14 @@ declares one, so `package` stays usable as an ordinary identifier.
 - Layout introspection v0.8 (implemented): `size_of(T)`, `align_of(T)` and
   `offset_of(T, field)` as contextual forms taking a type, folded to constants
   of the selected target; class and interface references report one pointer;
-  enums and type parameters are rejected rather than given a wrong number
+  enums without a declared representation and type parameters are rejected
+  rather than given a wrong number
+- Fixed enum representation v1.0 (implemented): `enum(u8)` on a payload-free
+  enum commits the value to a bare one-byte tag — `size_of` answers 1, structs
+  holding one keep a fixed pointer-free inline layout, and construction,
+  match, equality, printing, and storage agree between both compilers; the
+  checker refuses payload variants, generic enums, more than 256 variants,
+  and any representation other than `u8`, each with a message naming the rule
 - Signals v0.8 (implemented): **no handler exists** — a watched signal is blocked and read
   from a descriptor, which keeps Beans code, the reference counting and the cycle collector
   entirely out of async-signal context; the descriptor is registerable with the poller so

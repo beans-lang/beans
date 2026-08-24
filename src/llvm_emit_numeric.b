@@ -724,6 +724,19 @@ partial class LlvmTextEmitter {
                 if declaration.kind == "enum" &&
                    (instruction.text == "==" ||
                     instruction.text == "!=") {
+                    if declaration.repr != "" {
+                        // enum(u8): the values are the bare tags
+                        let predicate: string =
+                            if instruction.text ==
+                               "==" {
+                                "eq"
+                            } else {
+                                "ne"
+                            }
+                        values[instruction.result] =
+                            result
+                        return "  {result} = icmp {predicate} i8 {left}, {right}\n"
+                    }
                     if self.enum_is_fieldless(
                            declaration) {
                         // payload-free enums keep the plain tag compare —

@@ -335,6 +335,9 @@ class HirDeclaration {
     is_opaque: bool
     is_packed: bool
     declared_align: int
+    // enum(u8): the declared fixed representation for a payload-free enum,
+    // "" when the declaration did not opt in.
+    repr: string
     file: string
     line: int
     col: int
@@ -360,6 +363,7 @@ class HirDeclaration {
         self.is_opaque = false
         self.is_packed = false
         self.declared_align = 0
+        self.repr = ""
         self.file = file
         self.line = line
         self.col = col
@@ -458,6 +462,18 @@ fn layout_modifier_align(value: string) -> int {
         }
     }
     return 0
+}
+
+// The representation word out of `enum(u8) Name`, carried through the AST
+// value as `repr(u8)`. "" when the declaration did not opt in.
+fn layout_modifier_repr(value: string) -> string {
+    for word: string in module_words(value) {
+        if word.starts_with("repr(") && word.ends_with(")") &&
+           word.len() > 6 {
+            return word.slice(5, word.len() - 1)
+        }
+    }
+    return ""
 }
 
 // True when `async` appears among the declaration's modifier words. The
@@ -1515,6 +1531,8 @@ class SignatureChecker {
             module_words(node.value).contains("packed")
         declaration.declared_align =
             layout_modifier_align(node.value)
+        declaration.repr =
+            layout_modifier_repr(node.value)
         var member_names: Map<string, bool> = {}
         self.lower_members(declaration, node, node, file, member_names)
         // The rest of a partial class, if this is one. Each part is walked
@@ -2364,6 +2382,10 @@ fn render_hir(program: HirProgram) -> string {
             }
             lines.push(
                 "layout {declaration.qualified} {layout}")
+        }
+        if declaration.repr != "" {
+            lines.push(
+                "layout {declaration.qualified} repr({declaration.repr})")
         }
         for relation: HirType in declaration.relations {
             lines.push(

@@ -89,6 +89,8 @@ run_asan examples/inline_results.b inline_results
 run_asan examples/wide_lists.b wide_lists
 run_asan examples/wide_maps.b wide_maps
 run_asan examples/wide_enums.b wide_enums
+run_asan examples/enum_repr.b enum_repr
+run_asan test/cases/enum_repr_reflect.b enum_repr_reflect
 run_asan examples/wide_owners.b wide_owners
 run_asan examples/wide_sync.b wide_sync
 run_asan examples/wide_concurrency.b wide_concurrency
@@ -328,7 +330,8 @@ BEANS_SANITIZE_CALLBACKS=1 bash ./test/stored_callbacks.sh
 if [[ "$(uname -s)" == Darwin ]] && command -v leaks >/dev/null 2>&1; then
     for file in bench/trees.b examples/box.b examples/arena.b examples/fmt.b \
                 examples/shared_weak.b examples/inline_results.b examples/wide_lists.b \
-                examples/wide_maps.b examples/wide_enums.b examples/wide_owners.b \
+                examples/wide_maps.b examples/wide_enums.b examples/enum_repr.b \
+                examples/wide_owners.b \
                 examples/wide_sync.b examples/wide_concurrency.b \
                 examples/stdlib_beans.b examples/packed.b examples/atomics.b \
                 examples/simd_families.b examples/resources.b \

@@ -716,8 +716,15 @@ partial class LlvmTextEmitter {
                             cases.push(
                                 "i64 {index}, label %show.variant{id}.{index}")
                         }
-                        body =
-                            "  %show.enum{id} = inttoptr i64 %v to ptr\n  %show.tag{id} = load i64, ptr %show.enum{id}\n  switch i64 %show.tag{id}, label %show.variant{id}.bad [ {cases.join(" ")} ]\n"
+                        if declaration.repr != "" {
+                            // enum(u8): the slot already holds the
+                            // zero-extended tag
+                            body =
+                                "  switch i64 %v, label %show.variant{id}.bad [ {cases.join(" ")} ]\n"
+                        } else {
+                            body =
+                                "  %show.enum{id} = inttoptr i64 %v to ptr\n  %show.tag{id} = load i64, ptr %show.enum{id}\n  switch i64 %show.tag{id}, label %show.variant{id}.bad [ {cases.join(" ")} ]\n"
+                        }
                         for index: int in
                             0..declaration.variants.len() {
                             let variant: HirField =
