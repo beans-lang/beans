@@ -221,9 +221,9 @@ all stay valid. Espresso's `respond_later` plus `WorkerPool` covers blocking
 handlers until it lands. This is a design-then-build effort, not a checklist
 item, and nothing in it blocks the 1.0 gate.
 
-- [ ] Design record: `brew` structured spawn semantics, park-capability
+- [x] Design record: `brew` structured spawn semantics, park-capability
   inference and its static walls, per-fiber panic containment, and the
-  interpreter differential strategy.
+  interpreter differential strategy — [`spec/CONCURRENCY.md`](spec/CONCURRENCY.md).
 - [ ] Fiber runtime core: context switch (arm64, x86-64 SysV, Windows x64),
   per-worker run queue, guarded lazily-committed stacks, reactor wiring.
 - [ ] Compiler: parse/check/lower `brew`, refusals at the walls, panics as
