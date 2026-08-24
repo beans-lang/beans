@@ -44,8 +44,8 @@ fn pick(d: Display) -> Display {
 fn main() {
     // the layout is committed: one byte, byte-aligned
     io.println("Display {size_of(Display)}/{align_of(Display)}")
-    io.println("Style {size_of(Style)} gap@{offset_of(Style, gap)}")
-    io.println("Pair {size_of(Pair)} array {size_of([Display; 4])}")
+    io.println("Style inline@{offset_of(Style, display)} grows {size_of(Style) > size_of(int)}")
+    io.println("Pair {size_of(Pair)} b@{offset_of(Pair, b)} array {size_of([Display; 4])}")
 
     // fixed arrays store one byte per element
     let cells: [Display; 4] = [

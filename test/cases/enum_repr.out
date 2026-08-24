@@ -1,6 +1,6 @@
 Display 1/1
-Style 16 gap@8
-Pair 2 array 4
+Style inline@0 grows true
+Pair 2 b@1 array 4
 array grids = 2
 list = [none_, flex, grid]
 contains flex = true, grid at = some(2)
