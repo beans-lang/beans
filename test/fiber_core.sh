@@ -40,6 +40,20 @@ grep -q "fiber stack overflow: deep" "$tmp/overflow.log" || {
     exit 1
 }
 
+echo "checking a hopeless idle reports a deadlock"
+set +e
+timeout 20 "$tmp/fiber_core" deadlock >"$tmp/deadlock.log" 2>&1
+status=$?
+set -e
+if [[ "$status" -ne 3 ]]; then
+    echo "the deadlock report should exit 3, got $status" >&2
+    cat "$tmp/deadlock.log" >&2
+    exit 1
+fi
+grep -q "deadlock: every fiber is parked and nothing can wake them" \
+    "$tmp/deadlock.log"
+grep -q "fiber 'hopeless' parked" "$tmp/deadlock.log"
+
 echo "checking under AddressSanitizer"
 if clang -O1 -g -std=c11 -fsanitize=address \
     runtime/beans_fiber.c test/fiber_core.c -o "$tmp/fiber_asan" -lpthread; then

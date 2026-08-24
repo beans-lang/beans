@@ -83,6 +83,11 @@ int beans_fiber_park(void);
 // the yielder runs again. Returns a park verdict, like beans_fiber_park.
 int beans_fiber_yield(void);
 
+// Parks the calling fiber for at least `nanos` on the worker's timer heap;
+// other fibers run meanwhile, and the worker's idle wait wakes for the
+// nearest deadline. Non-positive completes immediately (the timer rule).
+void beans_fiber_sleep(long long nanos);
+
 // Makes a parked fiber ready. Safe from any thread; from the owning worker
 // it is a plain queue push. A resume that arrives while the fiber is still
 // running is remembered, so a resume/park race never loses the wake.
@@ -130,6 +135,15 @@ void beans_fiber_forget(BeansFiber* fiber);
 
 // Fibers this worker still owns (running + ready + parked).
 long long beans_worker_live(BeansWorker* worker);
+
+// Installs the hosting runtime's answer to "could anything outside this
+// worker still resume a parked fiber?" — in practice, whether other live
+// threads exist. When the check is installed and answers no while every
+// fiber is parked with no timer armed, the worker prints the fiber table
+// and ends the process: pending with no possible wake is a deadlock, not a
+// wait. Without a check (the standalone default) the idle wait blocks
+// forever, as a library should.
+void beans_fiber_set_may_wake(int (*may_wake)(void));
 
 #ifdef __cplusplus
 }

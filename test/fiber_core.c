@@ -403,6 +403,63 @@ static void boot_child(void* arg) {
     *(int*)arg += 1;
 }
 
+// ---- sleep: deadline order and the timed idle wait -------------------------
+
+static void nap_fiber(void* arg) {
+    // arg packs {mark, nanos}: low byte the log mark, the rest the nap
+    size_t packed = (size_t)arg;
+    beans_fiber_sleep((long long)(packed >> 8));
+    log_step((char)(packed & 0xff));
+}
+
+static void early_woken_sleeper(void* arg) {
+    long long deadline_ns = *(long long*)arg;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    long long before = (long long)ts.tv_sec * 1000000000LL + ts.tv_nsec;
+    beans_fiber_sleep(deadline_ns);
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    long long after = (long long)ts.tv_sec * 1000000000LL + ts.tv_nsec;
+    // a stray resume must not cut the sleep short
+    CHECK(after - before >= deadline_ns, "sleep held through a stray wake");
+    log_step('e');
+}
+
+static void stray_waker(void* arg) {
+    beans_fiber_resume((BeansFiber*)arg); // sleeper re-parks: spurious
+    log_step('k');
+}
+
+static void test_sleep(void) {
+    memset(order_log, 0, sizeof order_log);
+    BeansWorker* worker = beans_worker_new();
+    // spawn slow first: completion must follow deadlines, not spawn order
+    BeansFiber* slow = beans_fiber_spawn(
+        worker, nap_fiber, (void*)(size_t)(('s') | (30000000ULL << 8)),
+        "slow", 0);
+    BeansFiber* fast = beans_fiber_spawn(
+        worker, nap_fiber, (void*)(size_t)(('f') | (10000000ULL << 8)),
+        "fast", 0);
+    beans_fiber_forget(slow);
+    beans_fiber_forget(fast);
+    beans_worker_run(worker);
+    CHECK(strcmp(order_log, "fs") == 0, order_log);
+
+    // a resume landing mid-sleep is spurious: the fiber re-parks and the
+    // full duration still holds
+    memset(order_log, 0, sizeof order_log);
+    long long nap = 15000000LL;
+    BeansFiber* sleeper = beans_fiber_spawn(
+        worker, early_woken_sleeper, &nap, "sleeper", 0);
+    BeansFiber* stray = beans_fiber_spawn(
+        worker, stray_waker, sleeper, "stray", 0);
+    beans_fiber_forget(sleeper);
+    beans_fiber_forget(stray);
+    beans_worker_run(worker);
+    CHECK(strcmp(order_log, "ke") == 0, order_log);
+    beans_worker_free(worker);
+}
+
 static void test_bootstrap(void) {
     BeansWorker* worker = beans_worker_bootstrap();
     CHECK(worker != NULL, "bootstrap");
@@ -424,6 +481,25 @@ static void test_bootstrap(void) {
     CHECK(hits == 4, "forgotten child still ran to completion");
 }
 
+// ---- deadlock report (subprocess mode) -------------------------------------
+
+static void forever_parker(void* arg) {
+    (void)arg;
+    beans_fiber_park(); // nobody will ever resume this
+}
+
+static int hopeless(void) { return 0; }
+
+static void run_deadlock(void) {
+    beans_fiber_set_may_wake(hopeless);
+    BeansWorker* worker = beans_worker_new();
+    BeansFiber* fiber =
+        beans_fiber_spawn(worker, forever_parker, NULL, "hopeless", 0);
+    beans_fiber_forget(fiber);
+    beans_worker_run(worker); // must report and _exit(3), never return
+    fprintf(stderr, "worker returned from a hopeless park\n");
+}
+
 int main(int argc, char** argv) {
     if (argc > 1 && strcmp(argv[1], "bench") == 0) {
         run_bench();
@@ -433,6 +509,10 @@ int main(int argc, char** argv) {
         run_overflow();
         return 0;
     }
+    if (argc > 1 && strcmp(argv[1], "deadlock") == 0) {
+        run_deadlock();
+        return 1;
+    }
     test_fifo();
     test_park_resume();
     test_pending_wake();
@@ -441,6 +521,7 @@ int main(int argc, char** argv) {
     test_churn();
     test_panic_storm();
     test_cross_thread();
+    test_sleep();
     // Last: it permanently promotes this thread, the way a real program is.
     test_bootstrap();
     if (failures == 0) printf("ok fiber core\n");

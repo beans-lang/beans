@@ -142,9 +142,11 @@ unique class TreeThreadWork implements Send {
 // fiber core only schedules the stack; every outcome fact lives here at
 // tree level: run() contains an interpreted panic before the walker's
 // failed flag could cross a park, and join or the scope join read the
-// answer back out. The lock is never held across a park — the fiber's own
-// entry locks this same state from the child stack.
-unique class TreeBrewState implements Send {
+// answer back out. A plain aliased class on purpose — every touch is on
+// the one worker thread (the entry rides a LocalStoredCallback), and a
+// lock here would be held across the child's parks: the first parked
+// child would deadlock its own join.
+class TreeBrewState {
     owner: TreeInterpreter
     closure: TreeValue
     node: HirNode

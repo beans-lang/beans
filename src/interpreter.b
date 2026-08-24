@@ -8676,18 +8676,11 @@ class TreeInterpreter {
         if receiver.kind == "brew" &&
            node.value == "cancel" {
             match receiver.brew_work {
-                some(state) => {
-                    var address: u64 = 0
-                    state.with_lock(
-                        fn(work: TreeBrewState) {
-                            if !work.reaped {
-                                address = work.fiber
-                            }
-                        })
-                    if address != 0 {
+                some(work) => {
+                    if !work.reaped && work.fiber != 0 {
                         unsafe {
                             beans_fiber_cancel(
-                                RawPtr.from_address(address))
+                                RawPtr.from_address(work.fiber))
                         }
                     }
                     return TreeValue.unit()
@@ -8701,40 +8694,30 @@ class TreeInterpreter {
         if receiver.kind == "brew" &&
            node.value == "join" {
             match receiver.brew_work {
-                some(state) => {
-                    var closed: bool = false
-                    state.with_lock(
-                        fn(work: TreeBrewState) {
-                            closed = work.joined
-                        })
-                    if closed {
+                some(work) => {
+                    if work.joined {
                         return TreeValue.result_err(
                             TreeValue.error(
                                 "brew handle already joined",
                                 "closed"))
                     }
-                    self.tree_brew_reap(state)
-                    var panicked: bool = false
-                    var message: string = ""
-                    var value: TreeValue = TreeValue.unit()
-                    state.with_lock(
-                        fn(work: TreeBrewState) {
-                            work.joined = true
-                            panicked = work.panicked
-                            message = work.panic_message
-                            match work.result {
-                                some(delivered) => {
-                                    value = tree_value_copy(
-                                        delivered)
-                                }
-                                none => {}
-                            }
-                        })
-                    if panicked {
+                    self.tree_brew_reap(work)
+                    work.joined = true
+                    if work.panicked {
                         return TreeValue.result_err(
-                            TreeValue.error(message, "panic"))
+                            TreeValue.error(
+                                work.panic_message, "panic"))
                     }
-                    return TreeValue.result_ok(value)
+                    match work.result {
+                        some(delivered) => {
+                            return TreeValue.result_ok(
+                                tree_value_copy(delivered))
+                        }
+                        none => {
+                            return TreeValue.result_ok(
+                                TreeValue.unit())
+                        }
+                    }
                 }
                 none => {
                     return self.fail(
@@ -8745,26 +8728,14 @@ class TreeInterpreter {
         if receiver.kind == "brew" &&
            node.value == "brew_scope_join" {
             match receiver.brew_work {
-                some(state) => {
-                    var seen: bool = false
-                    state.with_lock(
-                        fn(work: TreeBrewState) {
-                            seen = work.joined
-                        })
-                    if seen { return TreeValue.unit() }
-                    self.tree_brew_reap(state)
-                    var panicked: bool = false
-                    var message: string = ""
-                    state.with_lock(
-                        fn(work: TreeBrewState) {
-                            work.joined = true
-                            panicked = work.panicked
-                            message = work.panic_message
-                        })
-                    if panicked {
+                some(work) => {
+                    if work.joined { return TreeValue.unit() }
+                    self.tree_brew_reap(work)
+                    work.joined = true
+                    if work.panicked {
                         return self.fail(
                             node,
-                            "a brewed fiber panicked with no join to catch it: {message}")
+                            "a brewed fiber panicked with no join to catch it: {work.panic_message}")
                     }
                     return TreeValue.unit()
                 }
@@ -9081,19 +9052,26 @@ class TreeInterpreter {
             return self.fail(
                 node, "brew has no closure to start")
         }
-        let state: Mutex<TreeBrewState> =
-            new Mutex(new TreeBrewState(
-                self, closure_value, node))
+        // A plain class, aliased by the handle and the entry closure: the
+        // fiber is pinned to this thread, so the entry rides the
+        // same-thread LocalStoredCallback and nothing needs a lock. (A
+        // Mutex here would be held across the child's parks — the first
+        // parked child would deadlock its own join.)
+        let work: TreeBrewState =
+            new TreeBrewState(self, closure_value, node)
         let entry:
-            StoredCallback<fn(RawPtr<u8>)> =
-            StoredCallback.create(
+            LocalStoredCallback<fn(RawPtr<u8>)> =
+            LocalStoredCallback.create(
                 0,
                 fn() {
-                    state.with_lock(
-                        fn(work: TreeBrewState) {
-                            work.run()
-                        })
+                    work.run()
                 })
+        // The fiber core copies the report name at spawn, so a transient
+        // NUL-terminated buffer is enough to match native's fiber names.
+        var name_bytes: Bytes = new Bytes(0)
+        name_bytes.append_string(
+            if node.value != "" { node.value } else { "brew" })
+        name_bytes.append(new Bytes(1))
         var address: u64 = 0
         var context: u64 = 0
         unsafe {
@@ -9104,7 +9082,7 @@ class TreeInterpreter {
                     beans_worker_current(),
                     entry.function(),
                     entry.context(),
-                    RawPtr.null(),
+                    name_bytes.as_ptr(),
                     8388608)
             address = fiber.address()
         }
@@ -9113,46 +9091,28 @@ class TreeInterpreter {
                 node,
                 "brew could not reserve a fiber stack")
         }
-        state.with_lock(
-            fn(work: TreeBrewState) {
-                work.fiber = address
-                work.entry_context = context
-            })
+        work.fiber = address
+        work.entry_context = context
         let result: TreeValue = new TreeValue("brew")
-        result.brew_work = some(state)
+        result.brew_work = some(work)
         return result
     }
 
     // Parks until the fiber finishes, then retires the C record and closes
-    // the entry callback — exactly once. The state lock is read and
-    // released around the park: the child's entry locks this same state.
-    fn tree_brew_reap(state: Mutex<TreeBrewState>) {
-        var address: u64 = 0
-        var context: u64 = 0
-        var pending: bool = false
-        state.with_lock(
-            fn(work: TreeBrewState) {
-                if !work.reaped {
-                    address = work.fiber
-                    context = work.entry_context
-                    pending = true
-                }
-            })
-        if !pending { return }
+    // the entry callback — exactly once.
+    fn tree_brew_reap(work: TreeBrewState) {
+        if work.reaped { return }
         unsafe {
             beans_fiber_join(
-                RawPtr.from_address(address),
+                RawPtr.from_address(work.fiber),
                 RawPtr.null(), 0)
-            if context != 0 {
+            if work.entry_context != 0 {
                 beans_stored_callback_close(
-                    RawPtr.from_address(context))
+                    RawPtr.from_address(work.entry_context))
             }
         }
-        state.with_lock(
-            fn(work: TreeBrewState) {
-                work.reaped = true
-                work.entry_context = 0
-            })
+        work.reaped = true
+        work.entry_context = 0
     }
 
     fn invoke_closure(node: HirNode,

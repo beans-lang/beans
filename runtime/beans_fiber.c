@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -103,10 +104,22 @@ struct BeansFiber {
 
     BeansFiber* queue_next; // run-queue / inbox / pool link
 
+    // every live fiber of the worker, for the deadlock report
+    BeansFiber* all_next;
+    BeansFiber* all_prev;
+
 #if defined(FIBER_ASAN)
     void* asan_save;
 #endif
 };
+
+// One sleeping fiber: resumed when the monotonic clock passes its
+// deadline. Entries live in a per-worker binary min-heap, touched only by
+// the worker's own thread — no lock.
+typedef struct {
+    long long deadline;
+    BeansFiber* fiber;
+} BeansSleeper;
 
 struct BeansWorker {
     BeansFiberCtx sched_ctx;
@@ -116,6 +129,12 @@ struct BeansWorker {
     BeansFiber* ready_tail;
 
     long long live; // running + ready + parked fibers this worker owns
+
+    BeansSleeper* sleepers; // min-heap by deadline
+    int sleeper_count;
+    int sleeper_cap;
+
+    BeansFiber* all_head; // every live fiber, for the deadlock report
 
 #if !defined(_WIN32)
     pthread_mutex_t inbox_m;
@@ -393,7 +412,20 @@ BeansWorker* beans_worker_new(void) {
     ConvertThreadToFiber(NULL);
 #else
     pthread_mutex_init(&worker->inbox_m, NULL);
+#if defined(__APPLE__)
+    // macOS has no condattr clock; timed idle waits use the relative wait.
     pthread_cond_init(&worker->inbox_c, NULL);
+#else
+    // Timed idle waits (sleeping fibers) measure against CLOCK_MONOTONIC,
+    // so the cond must too — a realtime-clock wait would drift with ntp.
+    {
+        pthread_condattr_t attr;
+        pthread_condattr_init(&attr);
+        pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+        pthread_cond_init(&worker->inbox_c, &attr);
+        pthread_condattr_destroy(&attr);
+    }
+#endif
     worker->page = (size_t)sysconf(_SC_PAGESIZE);
     guard_report_install();
     guard_altstack_install();
@@ -424,6 +456,45 @@ static BeansFiber* ready_pop(BeansWorker* worker) {
     if (!worker->ready_head) worker->ready_tail = NULL;
     fiber->queue_next = NULL;
     return fiber;
+}
+
+static void all_add(BeansWorker* worker, BeansFiber* fiber) {
+    fiber->all_prev = NULL;
+    fiber->all_next = worker->all_head;
+    if (worker->all_head) worker->all_head->all_prev = fiber;
+    worker->all_head = fiber;
+}
+
+static void all_remove(BeansWorker* worker, BeansFiber* fiber) {
+    if (fiber->all_prev) fiber->all_prev->all_next = fiber->all_next;
+    else worker->all_head = fiber->all_next;
+    if (fiber->all_next) fiber->all_next->all_prev = fiber->all_prev;
+    fiber->all_next = fiber->all_prev = NULL;
+}
+
+// Installed by the hosting runtime: answers whether anything outside this
+// worker — another live thread — could still resume a parked fiber. NULL
+// (the standalone default) means "assume yes" and the idle wait blocks as
+// before; the compiled runtime installs a check over its thread count.
+static int (*fiber_may_wake)(void) = NULL;
+
+void beans_fiber_set_may_wake(int (*may_wake)(void)) {
+    fiber_may_wake = may_wake;
+}
+
+// Every fiber is parked, no timer is armed, and no other thread exists to
+// resume anyone: pending with no possible wake is a deadlock, not a wait.
+// Report the fiber table and end the process the way a panic would.
+static void fiber_deadlock_report(BeansWorker* worker) {
+    fprintf(stderr,
+            "deadlock: every fiber is parked and nothing can wake them\n");
+    for (BeansFiber* fiber = worker->all_head; fiber;
+         fiber = fiber->all_next) {
+        fprintf(stderr, "  fiber '%s' parked\n",
+                fiber->name[0] ? fiber->name : "(unnamed)");
+    }
+    fflush(stderr);
+    _exit(3);
 }
 
 // Moves cross-thread wakes into the run queue. With `block`, sleeps until
@@ -470,6 +541,146 @@ static void inbox_post(BeansWorker* worker, BeansFiber* fiber) {
     pthread_cond_signal(&worker->inbox_c);
     pthread_mutex_unlock(&worker->inbox_m);
 #endif
+}
+
+// ---- sleep -----------------------------------------------------------------
+// A sleeping fiber parks with a deadline in its worker's min-heap. The
+// heap is worker-local and only its own thread touches it, so no lock; the
+// idle wait below turns the nearest deadline into a timed inbox wait.
+
+static long long fiber_now(void) {
+#if defined(_WIN32)
+    return (long long)GetTickCount64() * 1000000LL;
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000000000LL + ts.tv_nsec;
+#endif
+}
+
+static void sleeper_push(BeansWorker* worker, long long deadline,
+                         BeansFiber* fiber) {
+    if (worker->sleeper_count == worker->sleeper_cap) {
+        int cap = worker->sleeper_cap ? worker->sleeper_cap * 2 : 16;
+        BeansSleeper* grown = (BeansSleeper*)realloc(
+            worker->sleepers, (size_t)cap * sizeof(BeansSleeper));
+        if (!grown) {
+            fprintf(stderr, "beans_fiber_sleep: out of memory\n");
+            abort();
+        }
+        worker->sleepers = grown;
+        worker->sleeper_cap = cap;
+    }
+    int at = worker->sleeper_count++;
+    while (at > 0) {
+        int parent = (at - 1) / 2;
+        if (worker->sleepers[parent].deadline <= deadline) break;
+        worker->sleepers[at] = worker->sleepers[parent];
+        at = parent;
+    }
+    worker->sleepers[at].deadline = deadline;
+    worker->sleepers[at].fiber = fiber;
+}
+
+static void sleeper_pop_min(BeansWorker* worker) {
+    BeansSleeper last = worker->sleepers[--worker->sleeper_count];
+    int at = 0;
+    for (;;) {
+        int child = 2 * at + 1;
+        if (child >= worker->sleeper_count) break;
+        if (child + 1 < worker->sleeper_count &&
+            worker->sleepers[child + 1].deadline <
+                worker->sleepers[child].deadline)
+            child += 1;
+        if (worker->sleepers[child].deadline >= last.deadline) break;
+        worker->sleepers[at] = worker->sleepers[child];
+        at = child;
+    }
+    if (worker->sleeper_count) worker->sleepers[at] = last;
+}
+
+// Resumes every sleeper whose deadline has passed. A fiber that stopped
+// sleeping early (some other resume) may get one extra wake out of this —
+// park sites loop, so a stale fire is just a spurious wake.
+static void sleeper_fire_due(BeansWorker* worker, long long now) {
+    while (worker->sleeper_count &&
+           worker->sleepers[0].deadline <= now) {
+        BeansFiber* fiber = worker->sleepers[0].fiber;
+        sleeper_pop_min(worker);
+        beans_fiber_resume(fiber);
+    }
+}
+
+void beans_fiber_sleep(long long nanos) {
+    BeansWorker* worker = tls_worker;
+    if (nanos <= 0) return; // non-positive completes now (the timer rule)
+    long long deadline = fiber_now() + nanos;
+    sleeper_push(worker, deadline, worker->current);
+    // The heap entry fires exactly once; every earlier wake is spurious
+    // and re-parks with the entry still armed.
+    while (fiber_now() < deadline) {
+        if (beans_fiber_park() == BEANS_FIBER_PARK_CANCELLED) {
+            // Interim: cancellation unwinds land with the F2 unwind work;
+            // until then a cancelled sleeper just finishes its sleep.
+            continue;
+        }
+    }
+}
+
+// The idle wait, deadline-aware: drains the inbox, blocking until either a
+// cross-thread resume arrives or the nearest sleeper is due. With no
+// sleepers this is the plain blocking inbox wait.
+static void idle_wait(BeansWorker* worker) {
+    if (!worker->sleeper_count) {
+        if (fiber_may_wake && !fiber_may_wake()) {
+            // No timers and no other thread: drain the inbox once for a
+            // wake a since-finished thread left behind, then report.
+            inbox_drain(worker, 0);
+            if (worker->ready_head) return;
+            fiber_deadlock_report(worker);
+        }
+        inbox_drain(worker, 1);
+        return;
+    }
+    long long now = fiber_now();
+    sleeper_fire_due(worker, now);
+    if (worker->ready_head || !worker->sleeper_count) return;
+    long long nearest = worker->sleepers[0].deadline;
+    long long remaining = nearest - now;
+    if (remaining < 0) remaining = 0;
+#if defined(_WIN32)
+    EnterCriticalSection(&worker->inbox_m);
+    if (!worker->inbox_head)
+        SleepConditionVariableCS(&worker->inbox_c, &worker->inbox_m,
+                                 (DWORD)(remaining / 1000000LL + 1));
+    BeansFiber* head = worker->inbox_head;
+    worker->inbox_head = worker->inbox_tail = NULL;
+    LeaveCriticalSection(&worker->inbox_m);
+#else
+    pthread_mutex_lock(&worker->inbox_m);
+    if (!worker->inbox_head) {
+#if defined(__APPLE__)
+        struct timespec rel = { remaining / 1000000000LL,
+                                remaining % 1000000000LL };
+        pthread_cond_timedwait_relative_np(&worker->inbox_c,
+                                           &worker->inbox_m, &rel);
+#else
+        // the inbox cond runs on CLOCK_MONOTONIC (see beans_worker_new)
+        struct timespec until = { nearest / 1000000000LL,
+                                  nearest % 1000000000LL };
+        pthread_cond_timedwait(&worker->inbox_c, &worker->inbox_m, &until);
+#endif
+    }
+    BeansFiber* head = worker->inbox_head;
+    worker->inbox_head = worker->inbox_tail = NULL;
+    pthread_mutex_unlock(&worker->inbox_m);
+#endif
+    while (head) {
+        BeansFiber* next = head->queue_next;
+        ready_push(worker, head);
+        head = next;
+    }
+    sleeper_fire_due(worker, fiber_now());
 }
 
 // ---- fiber lifecycle -------------------------------------------------------
@@ -569,6 +780,7 @@ BeansFiber* beans_fiber_spawn(BeansWorker* worker, void (*fn)(void*),
 #endif
 
     worker->live += 1;
+    all_add(worker, fiber);
     ready_push(worker, fiber);
     return fiber;
 }
@@ -729,6 +941,7 @@ static void settle(BeansWorker* worker, BeansFiber* fiber) {
     case DISPOSE_FINISH: {
         atomic_store(&fiber->state, FIBER_DONE);
         worker->live -= 1;
+        all_remove(worker, fiber);
         BeansFiber* joiner = fiber->joiner;
         if (joiner) beans_fiber_resume(joiner);
         else if (fiber->forgotten) fiber_retire(worker, fiber);
@@ -772,14 +985,13 @@ static void run_one(BeansWorker* worker, BeansFiber* fiber) {
 void beans_worker_run(BeansWorker* worker) {
     while (worker->live > 0) {
         inbox_drain(worker, 0);
+        if (worker->sleeper_count) sleeper_fire_due(worker, fiber_now());
         BeansFiber* fiber = ready_pop(worker);
         if (!fiber) {
             if (worker->live == 0) break;
-            // Every live fiber is parked; only a cross-thread resume can
-            // move the program. (The compiled runtime replaces this wait
-            // with the reactor in F3 and reports a deadlock when no wake
-            // source exists at all.)
-            inbox_drain(worker, 1);
+            // Every live fiber is parked: wait for a cross-thread resume
+            // or the nearest sleeper's deadline, whichever lands first.
+            idle_wait(worker);
             continue;
         }
         run_one(worker, fiber);
@@ -802,9 +1014,10 @@ static void sched_main(void* raw) {
     }
     for (;;) {
         inbox_drain(worker, 0);
+        if (worker->sleeper_count) sleeper_fire_due(worker, fiber_now());
         BeansFiber* fiber = ready_pop(worker);
         if (!fiber) {
-            inbox_drain(worker, 1);
+            idle_wait(worker);
             continue;
         }
         run_one(worker, fiber);
@@ -825,6 +1038,7 @@ BeansWorker* beans_worker_bootstrap(void) {
     worker->root_fiber = root;
     worker->current = root;
     worker->live = 1;
+    all_add(worker, root);
 
     BeansFiber* sched = (BeansFiber*)calloc(1, sizeof *sched);
     if (!sched) return NULL;
@@ -850,6 +1064,7 @@ void beans_worker_free(BeansWorker* worker) {
         worker->pool = fiber->queue_next;
         fiber_record_free(fiber);
     }
+    free(worker->sleepers);
 #if defined(_WIN32)
     DeleteCriticalSection(&worker->inbox_m);
 #else

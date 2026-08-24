@@ -1307,6 +1307,16 @@ typedef struct {
     long long version;
 } BMap;
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
+#if BEANS_RT_FIBERS
+// One parked fiber in a FIFO wait line (channels now, Event next). The
+// record lives on the waiting fiber's own stack — alive exactly as long
+// as the park — so a wait line costs no allocation.
+typedef struct BFiberWaiter {
+    BeansFiber* fiber;
+    struct BFiberWaiter* next;
+    int signalled;
+} BFiberWaiter;
+#endif
 typedef struct {
     pthread_mutex_t m;
     pthread_cond_t can_send, can_recv;
@@ -1314,6 +1324,10 @@ typedef struct {
     long long head, count, cap;
     int closed;
     long long stride, ptr_mask;
+#if BEANS_RT_FIBERS
+    // fibers waiting to send / receive; thread waiters stay on the conds
+    BFiberWaiter *send_head, *send_tail, *recv_head, *recv_tail;
+#endif
 } BChan;
 typedef struct {
     pthread_mutex_t m;
@@ -2891,6 +2905,15 @@ static void cc_at_exit(void) {
 }
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
 __attribute__((constructor)) static void cc_setup(void) { atexit(cc_at_exit); }
+#if BEANS_RT_FIBERS
+// The deadlock check the fiber core asks at a hopeless idle: with no other
+// live thread, nothing can resume a parked fiber. Threads the runtime did
+// not spawn never hold fiber handles, so cc_threads is the whole answer.
+static int rt_fibers_may_wake(void) { return cc_threads > 0; }
+__attribute__((constructor)) static void rt_fibers_setup(void) {
+    beans_fiber_set_may_wake(rt_fibers_may_wake);
+}
+#endif
 #else
 // No atexit, so a freestanding program that wants the final cycle sweep calls
 // beans_collect_cycles() before it stops. Documented rather than silently skipped:
@@ -10210,6 +10233,14 @@ static void beans_wall_timespec(struct timespec* out) {
 // the OS call.
 void beans_time_sleep_nanos(long long nanos) {
     if (nanos <= 0) return;
+#if BEANS_RT_FIBERS
+    // On a fiber the sleep parks and other fibers run meanwhile; a thread
+    // that never bootstrapped a worker keeps the blocking sleep below.
+    if (beans_fiber_current()) {
+        beans_fiber_sleep(nanos);
+        return;
+    }
+#endif
     long long deadline = beans_time_monotonic_nanos() + nanos;
     for (;;) {
         long long left = deadline - beans_time_monotonic_nanos();
@@ -10222,6 +10253,14 @@ void beans_time_sleep_nanos(long long nanos) {
 #else
 void beans_time_sleep_nanos(long long nanos) {
     if (nanos <= 0) return;
+#if BEANS_RT_FIBERS
+    // On a fiber the sleep parks and other fibers run meanwhile; a thread
+    // that never bootstrapped a worker keeps the blocking sleep below.
+    if (beans_fiber_current()) {
+        beans_fiber_sleep(nanos);
+        return;
+    }
+#endif
     struct timespec want;
     want.tv_sec = (time_t)(nanos / 1000000000LL);
     want.tv_nsec = (long)(nanos % 1000000000LL);
@@ -12946,6 +12985,10 @@ typedef struct {
     void* env;
     long long result_size;
     int joined;
+    // fiber-aware join: the finishing thread flips done and resumes the
+    // parked joiner (both __atomic; join_waiter holds a BeansFiber*)
+    int done;
+    void* join_waiter;
 } BThread;
 void beans_thread_release_env(void* env);
 static void* thread_main(void* arg) {
@@ -12964,6 +13007,16 @@ static void* thread_main(void* arg) {
             RT_I64_SLOT_MASK_AT(offsetof(BThread, result)))
             cc_mark_shared_graph((void*)(uintptr_t)t->result);
     }
+#if BEANS_RT_FIBERS
+    // Before the handle ref drops: wake a fiber parked in join. The wake
+    // latch absorbs every interleaving with the joiner registering itself.
+    __atomic_store_n(&t->done, 1, __ATOMIC_SEQ_CST);
+    {
+        void* waiter = __atomic_exchange_n(&t->join_waiter, (void*)0,
+                                           __ATOMIC_SEQ_CST);
+        if (waiter) beans_fiber_resume((BeansFiber*)waiter);
+    }
+#endif
     beans_release(t->env);
     beans_release(t); // the running thread's own ref on the handle
     cc_worker_roots_end();
@@ -13005,9 +13058,26 @@ BThread* beans_thread_spawn_typed(void* thunk, void* env, long long size,
     pthread_create(&t->th, NULL, thread_main, t);
     return t;
 }
+// A joiner on a fiber parks instead of blocking its worker — other fibers
+// keep running while the thread works. The finishing thread resumes it,
+// and the pthread_join that follows reaps an already-finished thread.
+static void thread_join_park(BThread* t) {
+#if BEANS_RT_FIBERS
+    if (!beans_fiber_current()) return;
+    __atomic_store_n(&t->join_waiter, (void*)beans_fiber_current(),
+                     __ATOMIC_SEQ_CST);
+    while (!__atomic_load_n(&t->done, __ATOMIC_SEQ_CST))
+        beans_fiber_park();
+    __atomic_store_n(&t->join_waiter, (void*)0, __ATOMIC_SEQ_CST);
+#else
+    (void)t;
+#endif
+}
+
 long long beans_thread_join(BThread* t) {
     if (t->joined) beans_panic("thread already joined", 0, 0);
     t->joined = 1;
+    thread_join_park(t);
     pthread_join(t->th, NULL);
     long long result = t->result;
     t->result = 0; // ownership of a pointer result moves to the caller
@@ -13016,6 +13086,7 @@ long long beans_thread_join(BThread* t) {
 void beans_thread_join_typed(BThread* t, void* out, long long size) {
     if (t->joined) beans_panic("thread already joined", 0, 0);
     t->joined = 1;
+    thread_join_park(t);
     pthread_join(t->th, NULL);
     if (size != t->result_size) beans_panic("thread result size mismatch", 0, 0);
     void* payload = t->payload;
@@ -13083,9 +13154,106 @@ BChan* beans_chan_new_typed(long long cap, long long stride, long long ptr_mask)
     pthread_cond_init(&c->can_recv, NULL);
     return c;
 }
+#if BEANS_RT_FIBERS
+// ---- fiber wait lines ------------------------------------------------------
+// A fiber that must wait on a channel parks instead of blocking its worker
+// — blocking would starve every other fiber, and two fibers of one worker
+// on opposite ends of a full channel would deadlock the thread outright.
+// Thread callers keep the condvar path unchanged.
+
+static void fiber_line_push(BFiberWaiter** head, BFiberWaiter** tail,
+                            BFiberWaiter* waiter) {
+    waiter->next = NULL;
+    if (*tail) (*tail)->next = waiter;
+    else *head = waiter;
+    *tail = waiter;
+}
+
+// Pops the first waiter, marks it signalled, and hands back its fiber.
+// The resume happens outside: beans_fiber_resume is safe under the lock
+// (same-worker wakes are a queue push, cross-thread wakes take only the
+// inbox lock), but keeping it at the call site keeps that reasoning local.
+static BeansFiber* fiber_line_pop(BFiberWaiter** head, BFiberWaiter** tail) {
+    BFiberWaiter* waiter = *head;
+    if (!waiter) return NULL;
+    *head = waiter->next;
+    if (!*head) *tail = NULL;
+    waiter->next = NULL;
+    waiter->signalled = 1;
+    return waiter->fiber;
+}
+
+// Parks the calling fiber in the line until a sender, receiver, or closer
+// marks it signalled. Enters and leaves with `m` held; the lock is
+// released around each park. Wakes can be spurious — a stale timer or a
+// second resume — and the waiter keeps its place in line across them.
+// Cancellation is interim-invisible here: a cancelled fiber keeps waiting,
+// and observing the cancel at this park lands with the unwind work.
+static void fiber_line_wait(pthread_mutex_t* m, BFiberWaiter** head,
+                            BFiberWaiter** tail) {
+    BFiberWaiter waiter = { beans_fiber_current(), NULL, 0 };
+    fiber_line_push(head, tail, &waiter);
+    while (!waiter.signalled) {
+        pthread_mutex_unlock(m);
+        beans_fiber_park();
+        pthread_mutex_lock(m);
+    }
+}
+#endif // BEANS_RT_FIBERS — fiber wait lines
+
+// One value entered the channel: hand it to the first waiting fiber, or
+// signal a waiting thread. One freed slot mirrors it for senders.
+static void chan_wake_receiver(BChan* c) {
+#if BEANS_RT_FIBERS
+    BeansFiber* fiber = fiber_line_pop(&c->recv_head, &c->recv_tail);
+    if (fiber) {
+        beans_fiber_resume(fiber);
+        return;
+    }
+#endif
+    pthread_cond_signal(&c->can_recv);
+}
+static void chan_wake_sender(BChan* c) {
+#if BEANS_RT_FIBERS
+    BeansFiber* fiber = fiber_line_pop(&c->send_head, &c->send_tail);
+    if (fiber) {
+        beans_fiber_resume(fiber);
+        return;
+    }
+#endif
+    pthread_cond_signal(&c->can_send);
+}
+
+// Waits until the channel can accept a send (or is closed), fiber-aware.
+// Called with the lock held; returns with it held.
+static void chan_send_wait(BChan* c) {
+    for (;;) {
+        if (c->count < c->cap || c->closed) return;
+#if BEANS_RT_FIBERS
+        if (beans_fiber_current()) {
+            fiber_line_wait(&c->m, &c->send_head, &c->send_tail);
+            continue;
+        }
+#endif
+        pthread_cond_wait(&c->can_send, &c->m);
+    }
+}
+static void chan_recv_wait(BChan* c) {
+    for (;;) {
+        if (c->count != 0 || c->closed) return;
+#if BEANS_RT_FIBERS
+        if (beans_fiber_current()) {
+            fiber_line_wait(&c->m, &c->recv_head, &c->recv_tail);
+            continue;
+        }
+#endif
+        pthread_cond_wait(&c->can_recv, &c->m);
+    }
+}
+
 long long beans_chan_send(BChan* c, long long v) {
     pthread_mutex_lock(&c->m);
-    while (c->count == c->cap && !c->closed) pthread_cond_wait(&c->can_send, &c->m);
+    chan_send_wait(c);
     if (c->closed) {
         pthread_mutex_unlock(&c->m);
         return 0; // caller panics; caller also still owns v
@@ -13098,13 +13266,13 @@ long long beans_chan_send(BChan* c, long long v) {
         cc_mark_shared_graph((void*)(uintptr_t)v);
     c->q[(c->head + c->count) % c->cap] = v;
     c->count += 1;
-    pthread_cond_signal(&c->can_recv);
+    chan_wake_receiver(c);
     pthread_mutex_unlock(&c->m);
     return 1;
 }
 long long beans_chan_send_typed(BChan* c, void* value) {
     pthread_mutex_lock(&c->m);
-    while (c->count == c->cap && !c->closed) pthread_cond_wait(&c->can_send, &c->m);
+    chan_send_wait(c);
     if (c->closed) {
         pthread_mutex_unlock(&c->m);
         return 0;
@@ -13116,13 +13284,13 @@ long long beans_chan_send_typed(BChan* c, void* value) {
         (char*)c->q + ((c->head + c->count) % c->cap) * c->stride;
     memcpy(destination, value, (size_t)c->stride);
     c->count += 1;
-    pthread_cond_signal(&c->can_recv);
+    chan_wake_receiver(c);
     pthread_mutex_unlock(&c->m);
     return 1;
 }
 long long beans_chan_recv(BChan* c, long long* ok) {
     pthread_mutex_lock(&c->m);
-    while (c->count == 0 && !c->closed) pthread_cond_wait(&c->can_recv, &c->m);
+    chan_recv_wait(c);
     if (c->count == 0) {
         *ok = 0;
         pthread_mutex_unlock(&c->m);
@@ -13132,13 +13300,13 @@ long long beans_chan_recv(BChan* c, long long* ok) {
     c->head = (c->head + 1) % c->cap;
     c->count -= 1;
     *ok = 1;
-    pthread_cond_signal(&c->can_send);
+    chan_wake_sender(c);
     pthread_mutex_unlock(&c->m);
     return v;
 }
 long long beans_chan_recv_typed(BChan* c, void* out) {
     pthread_mutex_lock(&c->m);
-    while (c->count == 0 && !c->closed) pthread_cond_wait(&c->can_recv, &c->m);
+    chan_recv_wait(c);
     if (c->count == 0) {
         pthread_mutex_unlock(&c->m);
         return 0;
@@ -13148,7 +13316,7 @@ long long beans_chan_recv_typed(BChan* c, void* out) {
     memset(source, 0, (size_t)c->stride);
     c->head = (c->head + 1) % c->cap;
     c->count -= 1;
-    pthread_cond_signal(&c->can_send);
+    chan_wake_sender(c);
     pthread_mutex_unlock(&c->m);
     return 1;
 }
@@ -13166,7 +13334,7 @@ long long beans_chan_try_send(BChan* c, long long v) {
         cc_mark_shared_graph((void*)(uintptr_t)v);
     c->q[(c->head + c->count) % c->cap] = v;
     c->count += 1;
-    pthread_cond_signal(&c->can_recv);
+    chan_wake_receiver(c);
     pthread_mutex_unlock(&c->m);
     return 1;
 }
@@ -13182,7 +13350,7 @@ long long beans_chan_try_send_typed(BChan* c, void* value) {
         (char*)c->q + ((c->head + c->count) % c->cap) * c->stride;
     memcpy(destination, value, (size_t)c->stride);
     c->count += 1;
-    pthread_cond_signal(&c->can_recv);
+    chan_wake_receiver(c);
     pthread_mutex_unlock(&c->m);
     return 1;
 }
@@ -13197,7 +13365,7 @@ long long beans_chan_try_recv(BChan* c, long long* ok) {
     c->head = (c->head + 1) % c->cap;
     c->count -= 1;
     *ok = 1;
-    pthread_cond_signal(&c->can_send);
+    chan_wake_sender(c);
     pthread_mutex_unlock(&c->m);
     return v;
 }
@@ -13212,13 +13380,22 @@ long long beans_chan_try_recv_typed(BChan* c, void* out) {
     memset(source, 0, (size_t)c->stride);
     c->head = (c->head + 1) % c->cap;
     c->count -= 1;
-    pthread_cond_signal(&c->can_send);
+    chan_wake_sender(c);
     pthread_mutex_unlock(&c->m);
     return 1;
 }
 void beans_chan_close(BChan* c) {
     pthread_mutex_lock(&c->m);
     c->closed = 1;
+#if BEANS_RT_FIBERS
+    // every parked fiber wakes and re-reads closed: senders answer 0 (the
+    // caller panics), receivers drain what is buffered and then answer none
+    BeansFiber* fiber;
+    while ((fiber = fiber_line_pop(&c->send_head, &c->send_tail)))
+        beans_fiber_resume(fiber);
+    while ((fiber = fiber_line_pop(&c->recv_head, &c->recv_tail)))
+        beans_fiber_resume(fiber);
+#endif
     pthread_cond_broadcast(&c->can_send);
     pthread_cond_broadcast(&c->can_recv);
     pthread_mutex_unlock(&c->m);
