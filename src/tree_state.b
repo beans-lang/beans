@@ -161,6 +161,11 @@ class TreeBrewState {
     result: Option<TreeValue>
     joined: bool
     reaped: bool
+    // TaskGroup rows only: the group clock's completion order, 0 while
+    // the child still runs. Stamped by the group entry's tail — an
+    // interpreted panic still returns through run(), so a panicked child
+    // gets its stamp too, exactly like native's fiber done hook.
+    done_stamp: int
 
     fn init(owner: TreeInterpreter,
             closure: TreeValue, node: HirNode) {
@@ -175,6 +180,7 @@ class TreeBrewState {
         self.result = none
         self.joined = false
         self.reaped = false
+        self.done_stamp = 0
     }
 
     fn run() {
@@ -190,6 +196,25 @@ class TreeBrewState {
             self.result = some(value)
         }
         self.done = true
+    }
+}
+
+// One fleet's interpreter-side record (spec/CONCURRENCY.md, F3). The
+// children reuse TreeBrewState rows; delivery order is their done_stamp
+// under this clock, and a joined row counts as delivered. A plain aliased
+// class for the same reason TreeBrewState is: everything runs on the one
+// worker thread, and a lock would be held across the waiter's parks.
+class TreeTaskGroupState {
+    children: List<TreeBrewState>
+    delivered: int
+    clock: int
+    waiter: u64 // parked next()/wait_all fiber address, or 0
+
+    fn init() {
+        self.children = []
+        self.delivered = 0
+        self.clock = 0
+        self.waiter = 0
     }
 }
 

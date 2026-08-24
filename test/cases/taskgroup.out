@@ -1,0 +1,10 @@
+first ok 20
+second ok 30
+third ok 100
+drained none
+waited 400
+waited 50
+fleet failed panic: runtime panic at 20:22: moody child 2
+early none
+cancelled none
+done

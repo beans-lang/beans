@@ -49,7 +49,7 @@ fn llvm_type(type: HirType) -> string {
         name == "Thread" || name == "Shared" ||
         name == "Weak" || name == "Atomic" ||
         name == "Arena" || name == "Box" ||
-        name == "Brew") &&
+        name == "Brew" || name == "TaskGroup") &&
        type.args.len() == 1 {
         return "ptr"
     }
@@ -144,7 +144,7 @@ fn llvm_type_is_reference(type: HirType) -> bool {
         name == "Thread" || name == "Shared" ||
         name == "Weak" || name == "Atomic" ||
         name == "Arena" || name == "Box" ||
-        name == "Brew") &&
+        name == "Brew" || name == "TaskGroup") &&
        type.args.len() == 1 {
         return true
     }

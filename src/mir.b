@@ -775,6 +775,38 @@ class MirLowerer {
         return result
     }
 
+    // group.brew — the fleet flavor: the group reference rides as a first
+    // operand ahead of the closure, and the hoisted temps lower as
+    // ordinary lets exactly as a lone brew's do. The group operand is a
+    // borrow; only the closure is consumed.
+    fn lower_group_brew(node: HirNode) -> int {
+        var group: int = -1
+        var closure: int = -1
+        for child: HirNode in node.children {
+            if child.kind == "closure" {
+                closure = self.lower_expression(child)
+            } else if child.kind == "let" {
+                self.lower_statement(child)
+            } else if group < 0 {
+                group = self.lower_expression(child)
+            }
+        }
+        if group < 0 || closure < 0 {
+            self.fail(
+                node.file, node.line, node.col,
+                "group.brew has no group or closure to start")
+            return -1
+        }
+        let result: int =
+            self.emit(node, "group_brew", node.type, node.value,
+                      [group, closure])
+        if result >= 0 &&
+           self.current.value_ownership[closure] == "owned" {
+            self.consume_operand(self.last_instruction(), 1)
+        }
+        return result
+    }
+
     fn lower_defer(node: HirNode) {
         if node.children.len() != 1 {
             self.fail(
@@ -1057,6 +1089,9 @@ class MirLowerer {
         }
         if node.kind == "brew" {
             return self.lower_brew(node)
+        }
+        if node.kind == "group_brew" {
+            return self.lower_group_brew(node)
         }
         if node.kind == "try" {
             return self.lower_try(node)

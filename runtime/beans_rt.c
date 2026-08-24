@@ -15009,6 +15009,11 @@ typedef struct {
     long long result_size;
     long long status; // -1 running, else the join's BEANS_FIBER_* answer
     long long joined;
+    // TaskGroup rows only; never masked — the group owns its rows, never
+    // the other way round. done_stamp is the group clock's completion
+    // order, 0 while the child still runs.
+    void* group;
+    long long done_stamp;
     char message[512]; // the child's panic report, copied at the join
 } BBrew;
 
@@ -15102,6 +15107,22 @@ void beans_brew_cancel(BBrew* h) {
     if (h->fiber) beans_fiber_cancel(h->fiber); // joined/retired: a no-op
 }
 
+// Releases a joined row's unclaimed ok result. Panic and cancel carry
+// nothing to release here — the F2 note on abandoned frames covers what
+// the child itself still held.
+static void brew_drop_result(BBrew* h) {
+    if (h->status != BEANS_FIBER_OK) return;
+    if (h->payload) {
+        beans_release(h->payload);
+        h->payload = NULL;
+    } else {
+        long long mask = (cc_meta(head_of(h)) & CC_SHAPE) >> 3;
+        if (mask & RT_I64_SLOT_MASK_AT(offsetof(BBrew, value)))
+            beans_release((void*)(uintptr_t)h->value);
+        h->value = 0;
+    }
+}
+
 // The synthesized scope-exit join behind every brew. An explicit join()
 // already consumed the outcome and made this a no-op; otherwise a panic the
 // scope never looked at escalates here (contained again if the parent is
@@ -15117,17 +15138,255 @@ void beans_brew_scope_join(BBrew* h, long long line, long long col) {
                   h->message);
         beans_panic(text, line, col);
     }
-    if (status == BEANS_FIBER_OK) {
-        if (h->payload) {
-            beans_release(h->payload);
-            h->payload = NULL;
-        } else {
-            long long mask = (cc_meta(head_of(h)) & CC_SHAPE) >> 3;
-            if (mask & RT_I64_SLOT_MASK_AT(offsetof(BBrew, value)))
-                beans_release((void*)(uintptr_t)h->value);
-            h->value = 0;
+    brew_drop_result(h);
+}
+
+// ---------------------------------------------------------------------------
+// TaskGroup — a scope-bound fleet of brewed fibers (spec/CONCURRENCY.md,
+// F3), for when the fiber count is a runtime value. group.brew(f(x))
+// starts a child exactly as `brew` does; next() delivers outcomes in
+// completion order with spawn order breaking ties; wait_all() joins the
+// rest in spawn order; cancel_all() discards a fleet. The group and every
+// child live on one worker — the handle is scope-bound and not Send — so
+// every field here is worker-local and lock-free. The children list is a
+// beans list so the group's shell traces the rows it still owns.
+
+typedef struct {
+    BList* children;     // slot 0, masked: BBrew* rows the group owns
+    long long delivered; // rows already detached by next/try_next
+    long long clock;     // completion stamps handed out by the done hook
+    BeansFiber* waiter;  // one parked next()/wait_all caller, or NULL
+} BTaskGroup;
+
+// The fiber core's done hook: settle() runs it for every ending — return,
+// panic, cancel — so a panicked child is deliverable too. brew_main's
+// return path could never see the panics (beans_fiber_panic does not
+// return through it).
+static void taskgroup_child_done(void* arg) {
+    BBrew* h = arg;
+    BTaskGroup* g = h->group;
+    h->done_stamp = ++g->clock;
+    if (g->waiter) {
+        BeansFiber* waiter = g->waiter;
+        g->waiter = NULL;
+        beans_fiber_resume(waiter);
+    }
+}
+
+BTaskGroup* beans_taskgroup_new(void) {
+    long long mask = RT_I64_SLOT_MASK_AT(offsetof(BTaskGroup, children));
+    BTaskGroup* g = beans_alloc(sizeof(BTaskGroup), 1 | (mask << 3));
+    g->children = beans_list_new(1); // rows are beans references
+    return g;
+}
+
+static void taskgroup_adopt(BTaskGroup* g, BBrew* h) {
+    h->group = g;
+    beans_list_push(g->children, (long long)(uintptr_t)h); // list takes the +1
+    // Safe this late: spawning never yields, the child has not run.
+    beans_fiber_set_done_hook(h->fiber, taskgroup_child_done, h);
+}
+
+// group.brew(f(x)) — the same two flavors as beans_brew(_typed), minus
+// the returned handle: the group keeps the row.
+void beans_taskgroup_brew(BTaskGroup* g, void* thunk, void* env,
+                          long long result_ptr, void* name,
+                          long long stack_reserve) {
+    taskgroup_adopt(g, beans_brew(thunk, env, result_ptr, name,
+                                  stack_reserve));
+}
+void beans_taskgroup_brew_typed(BTaskGroup* g, void* thunk, void* env,
+                                long long size, long long ptr_mask,
+                                void* name, long long stack_reserve) {
+    taskgroup_adopt(g, beans_brew_typed(thunk, env, size, ptr_mask, name,
+                                        stack_reserve));
+}
+
+// The undelivered row with the smallest completion stamp — the clock is
+// strictly increasing, so spawn order can only break the tie of "not
+// finished yet", never of two stamps. -1 when nothing deliverable is done.
+static long long taskgroup_pick_done(BTaskGroup* g) {
+    long long best = -1;
+    long long best_stamp = 0;
+    for (long long i = 0; i < g->children->len; i++) {
+        BBrew* row = (BBrew*)(uintptr_t)g->children->data[i];
+        if (!row || !row->done_stamp) continue;
+        if (best < 0 || row->done_stamp < best_stamp) {
+            best = i;
+            best_stamp = row->done_stamp;
         }
     }
+    return best;
+}
+
+static long long taskgroup_live(BTaskGroup* g) {
+    for (long long i = 0; i < g->children->len; i++)
+        if (g->children->data[i]) return 1;
+    return 0;
+}
+
+// Detaches one row: ownership of the reference moves to the caller. The
+// list resets once everything was handed out, so a drained group is
+// reusable.
+static BBrew* taskgroup_detach(BTaskGroup* g, long long index) {
+    BBrew* row = (BBrew*)(uintptr_t)g->children->data[index];
+    g->children->data[index] = 0;
+    g->delivered += 1;
+    if (g->delivered == g->children->len) {
+        g->children->len = 0;
+        g->delivered = 0;
+    }
+    return row;
+}
+
+// Parks until an undelivered child finishes; answers a joined row the
+// caller owns — read value or message, then release — or NULL when the
+// group has nothing left. The park loops on its condition (wakes can be
+// spurious), and cancellation stays interim-invisible here, the same
+// contract every std park holds to.
+BBrew* beans_taskgroup_next(BTaskGroup* g) {
+    for (;;) {
+        long long index = taskgroup_pick_done(g);
+        if (index >= 0) {
+            BBrew* row = taskgroup_detach(g, index);
+            beans_brew_join(row); // finished: answers without parking
+            return row;
+        }
+        if (!taskgroup_live(g)) return NULL;
+        g->waiter = beans_fiber_current();
+        beans_fiber_park();
+        g->waiter = NULL;
+    }
+}
+
+// Never parks: a finished row right now, or NULL.
+BBrew* beans_taskgroup_try_next(BTaskGroup* g) {
+    long long index = taskgroup_pick_done(g);
+    if (index < 0) return NULL;
+    BBrew* row = taskgroup_detach(g, index);
+    beans_brew_join(row);
+    return row;
+}
+
+// The emitted Result construction reads a delivered row's ending here —
+// the join already ran inside next(), whose answer had to be the row.
+long long beans_brew_status(BBrew* h) { return h->status; }
+
+// Parks until every remaining child has finished, then joins them all in
+// spawn order. All ok: answers NULL with every row joined and still held
+// for beans_taskgroup_collect. Any failure: answers the first failing row
+// in spawn order — caller-owned, for the err arm — and releases everyone
+// else, dropping their unclaimed results. One failure is the fleet's
+// answer; the rest is discarded, joined first.
+BBrew* beans_taskgroup_wait_all_join(BTaskGroup* g) {
+    for (;;) {
+        long long pending = 0;
+        for (long long i = 0; i < g->children->len; i++) {
+            BBrew* row = (BBrew*)(uintptr_t)g->children->data[i];
+            if (row && !row->done_stamp) {
+                pending = 1;
+                break;
+            }
+        }
+        if (!pending) break;
+        g->waiter = beans_fiber_current();
+        beans_fiber_park();
+        g->waiter = NULL;
+    }
+    long long bad = -1;
+    for (long long i = 0; i < g->children->len; i++) {
+        BBrew* row = (BBrew*)(uintptr_t)g->children->data[i];
+        if (!row) continue;
+        beans_brew_join(row); // finished: answers without parking
+        if (bad < 0 && row->status != BEANS_FIBER_OK) bad = i;
+    }
+    if (bad < 0) return NULL;
+    BBrew* first = (BBrew*)(uintptr_t)g->children->data[bad];
+    for (long long i = 0; i < g->children->len; i++) {
+        BBrew* row = (BBrew*)(uintptr_t)g->children->data[i];
+        if (!row || i == bad) continue;
+        brew_drop_result(row);
+        beans_release(row);
+    }
+    g->children->len = 0;
+    g->delivered = 0;
+    return first;
+}
+
+// After a NULL wait_all_join: the values in spawn order as a fresh list,
+// rows released, group emptied and reusable. The narrow flavor mirrors
+// beans_brew_value — ownership of a reference element just moves into the
+// list; the typed flavor mirrors beans_brew_value_typed with the list
+// slot as `out`.
+BList* beans_taskgroup_collect(BTaskGroup* g, long long elem_ref) {
+    BList* out = beans_list_new(elem_ref);
+    for (long long i = 0; i < g->children->len; i++) {
+        BBrew* row = (BBrew*)(uintptr_t)g->children->data[i];
+        if (!row) continue;
+        beans_list_push(out, beans_brew_value(row));
+        g->children->data[i] = 0;
+        beans_release(row);
+    }
+    g->children->len = 0;
+    g->delivered = 0;
+    return out;
+}
+BList* beans_taskgroup_collect_typed(BTaskGroup* g, long long stride,
+                                     long long ptr_mask) {
+    BList* out = beans_list_new_typed(stride, ptr_mask);
+    for (long long i = 0; i < g->children->len; i++) {
+        BBrew* row = (BBrew*)(uintptr_t)g->children->data[i];
+        if (!row) continue;
+        if (stride != row->result_size)
+            beans_panic("brew result size mismatch", 0, 0);
+        void* payload = row->payload;
+        beans_list_push_typed(out, payload);
+        memset(payload, 0, (size_t)stride); // nested refs moved into the list
+        row->payload = NULL;
+        beans_release(payload);
+        g->children->data[i] = 0;
+        beans_release(row);
+    }
+    g->children->len = 0;
+    g->delivered = 0;
+    return out;
+}
+
+// Cancels newest-first — later children often feed earlier ones — then
+// joins everyone and drops every outcome: cancel_all is handling by
+// discard, recorded in the spec. A child that finished before the cancel
+// reached it is dropped the same way.
+void beans_taskgroup_cancel_all(BTaskGroup* g) {
+    for (long long i = g->children->len; i > 0; i--) {
+        BBrew* row = (BBrew*)(uintptr_t)g->children->data[i - 1];
+        if (row) beans_brew_cancel(row);
+    }
+    for (long long i = 0; i < g->children->len; i++) {
+        BBrew* row = (BBrew*)(uintptr_t)g->children->data[i];
+        if (!row) continue;
+        beans_brew_join(row);
+        brew_drop_result(row);
+        g->children->data[i] = 0;
+        beans_release(row);
+    }
+    g->children->len = 0;
+    g->delivered = 0;
+}
+
+// The synthesized scope-exit join behind every group, the same contract a
+// lone brew holds to: join what is left in spawn order, escalate the
+// first panic nobody looked at, drop unclaimed ok results quietly.
+void beans_taskgroup_scope_join(BTaskGroup* g, long long line,
+                                long long col) {
+    for (long long i = 0; i < g->children->len; i++) {
+        BBrew* row = (BBrew*)(uintptr_t)g->children->data[i];
+        if (!row) continue;
+        g->children->data[i] = 0;
+        beans_brew_scope_join(row, line, col); // a panic escalates here
+        beans_release(row);
+    }
+    g->children->len = 0;
+    g->delivered = 0;
 }
 
 #endif // BEANS_RT_FIBERS — brew

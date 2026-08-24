@@ -49,6 +49,7 @@ class TreeValue {
     thread_work:
         Option<Mutex<TreeThreadWork>>
     brew_work: Option<TreeBrewState>
+    group_work: Option<TreeTaskGroupState>
     // Concrete type arguments captured by generic objects and closures.
     // The tree interpreter is type-erased at runtime, so reflective code
     // needs this small side channel for operations such as type_of(T).
@@ -89,6 +90,7 @@ class TreeValue {
         self.thread_handle = none
         self.thread_work = none
         self.brew_work = none
+        self.group_work = none
         self.generic_types = {}
     }
 

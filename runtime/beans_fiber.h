@@ -131,6 +131,14 @@ int beans_fiber_join(BeansFiber* fiber, char* message_out, size_t message_cap);
 // joins, so this exists for the runtime's own roots, not for `brew`.
 void beans_fiber_forget(BeansFiber* fiber);
 
+// Registers a hook that fires on the owner worker when `fiber` ends —
+// return, panic, or cancel alike — before any joiner is woken. TaskGroup
+// stamps completion order with it; a panicking fiber never returns
+// through its entry function, so this is the only reliable place. Call it
+// only right after the spawn, before the child could have run.
+void beans_fiber_set_done_hook(BeansFiber* fiber, void (*hook)(void*),
+                               void* arg);
+
 // ---- the netpoller ---------------------------------------------------------
 
 // Parks the calling fiber until `fd` is ready for reading (write == 0) or

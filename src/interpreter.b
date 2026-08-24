@@ -44,6 +44,12 @@ extern "C" fn beans_fiber_join(
     message_out: RawPtr<u8>,
     message_cap: int) -> i32
 extern "C" fn beans_fiber_cancel(fiber: RawPtr<u8>)
+// TaskGroup delivery: next()/wait_all park the walker's fiber directly,
+// and each finishing child's entry tail wakes it — the tree mirror of
+// the native group's done hook and waiter field.
+extern "C" fn beans_fiber_current() -> RawPtr<u8>
+extern "C" fn beans_fiber_park() -> i32
+extern "C" fn beans_fiber_resume(fiber: RawPtr<u8>)
 extern "C" fn beans_stored_callback_close(
     value: RawPtr<u8>)
 // Tree Gates are host Gates: wait must park the walker's own fiber, and
@@ -8778,6 +8784,168 @@ class TreeInterpreter {
                 }
             }
         }
+        if receiver.kind == "taskgroup" &&
+           (node.value == "next" ||
+            node.value == "try_next") {
+            match receiver.group_work {
+                some(state) => {
+                    for true {
+                        let found: int =
+                            self.tree_group_pick(state)
+                        if found >= 0 {
+                            return TreeValue.option_some(
+                                self.tree_group_claim(
+                                    state, found))
+                        }
+                        var live: bool = false
+                        for work: TreeBrewState in
+                            state.children {
+                            if !work.joined { live = true }
+                        }
+                        if !live || node.value == "try_next" {
+                            return TreeValue.option_none()
+                        }
+                        self.tree_group_park(state)
+                    }
+                    return TreeValue.option_none()
+                }
+                none => {
+                    return self.fail(
+                        node, "group has no state")
+                }
+            }
+        }
+        if receiver.kind == "taskgroup" &&
+           node.value == "wait_all" {
+            match receiver.group_work {
+                some(state) => {
+                    for true {
+                        var pending: bool = false
+                        for work: TreeBrewState in
+                            state.children {
+                            if !work.joined &&
+                               work.done_stamp == 0 {
+                                pending = true
+                            }
+                        }
+                        if !pending { break }
+                        self.tree_group_park(state)
+                    }
+                    // Join in spawn order: the first failure is the
+                    // fleet's answer, and every other outcome is
+                    // dropped once everyone was joined.
+                    var failure: Option<TreeValue> = none
+                    var collected: List<TreeValue> = []
+                    for work: TreeBrewState in
+                        state.children {
+                        if !work.joined {
+                            self.tree_brew_reap(work)
+                            work.joined = true
+                            if work.panicked {
+                                if failure.is_none() {
+                                    failure = some(
+                                        TreeValue.error(
+                                            work.panic_message,
+                                            "panic"))
+                                }
+                            } else {
+                                match work.result {
+                                    some(value) => {
+                                        collected.push(
+                                            tree_value_copy(
+                                                value))
+                                    }
+                                    none => {
+                                        collected.push(
+                                            TreeValue.unit())
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    state.children = []
+                    state.delivered = 0
+                    match failure {
+                        some(error) => {
+                            return TreeValue.result_err(
+                                error)
+                        }
+                        none => {
+                            return TreeValue.result_ok(
+                                TreeValue.sequence(
+                                    "list", move collected))
+                        }
+                    }
+                }
+                none => {
+                    return self.fail(
+                        node, "group has no state")
+                }
+            }
+        }
+        if receiver.kind == "taskgroup" &&
+           node.value == "cancel_all" {
+            match receiver.group_work {
+                some(state) => {
+                    // Newest-first cancels, then join everyone and drop
+                    // every outcome — handling by discard, the spec's
+                    // cancel_all contract.
+                    var index: int = state.children.len()
+                    for index > 0 {
+                        index -= 1
+                        let work: TreeBrewState =
+                            state.children[index]
+                        if !work.reaped && work.fiber != 0 {
+                            unsafe {
+                                beans_fiber_cancel(
+                                    RawPtr.from_address(
+                                        work.fiber))
+                            }
+                        }
+                    }
+                    for work: TreeBrewState in
+                        state.children {
+                        if !work.joined {
+                            self.tree_brew_reap(work)
+                            work.joined = true
+                        }
+                    }
+                    state.children = []
+                    state.delivered = 0
+                    return TreeValue.unit()
+                }
+                none => {
+                    return self.fail(
+                        node, "group has no state")
+                }
+            }
+        }
+        if receiver.kind == "taskgroup" &&
+           node.value == "taskgroup_scope_join" {
+            match receiver.group_work {
+                some(state) => {
+                    for work: TreeBrewState in
+                        state.children {
+                        if !work.joined {
+                            self.tree_brew_reap(work)
+                            work.joined = true
+                            if work.panicked {
+                                return self.fail(
+                                    node,
+                                    "a brewed fiber panicked with no join to catch it: {work.panic_message}")
+                            }
+                        }
+                    }
+                    state.children = []
+                    state.delivered = 0
+                    return TreeValue.unit()
+                }
+                none => {
+                    return self.fail(
+                        node, "group has no state")
+                }
+            }
+        }
         if receiver.kind == "mutex" &&
            node.value == "with_lock" &&
            arguments.len() == 2 &&
@@ -9146,6 +9314,173 @@ class TreeInterpreter {
         }
         work.reaped = true
         work.entry_context = 0
+    }
+
+    // group.brew — the fleet flavor of tree_brew (spec/CONCURRENCY.md,
+    // F3): the same hoist-and-spawn, but the group keeps the row and the
+    // entry's tail stamps completion order and wakes the group's parked
+    // waiter. Panics included: an interpreted panic still returns through
+    // run(), so a panicked child gets its stamp exactly as native's fiber
+    // done hook gives one.
+    fn tree_group_brew(node: HirNode,
+                       frame: TreeFrame) -> TreeValue {
+        if node.children.len() < 2 {
+            return self.fail(
+                node, "group.brew has no group or closure")
+        }
+        let receiver: TreeValue =
+            self.expression(node.children[0], frame)
+        if receiver.kind == "propagate" { return receiver }
+        match receiver.group_work {
+            some(state) => {
+                return self.tree_group_brew_start(
+                    node, frame, state)
+            }
+            none => {
+                return self.fail(
+                    node,
+                    "group.brew needs a TaskGroup receiver")
+            }
+        }
+    }
+
+    fn tree_group_brew_start(
+        node: HirNode, frame: TreeFrame,
+        state: TreeTaskGroupState) -> TreeValue {
+        var closure_value: TreeValue = TreeValue.unit()
+        var seen_closure: bool = false
+        for index: int in 1..node.children.len() {
+            let child: HirNode = node.children[index]
+            if child.kind == "closure" {
+                closure_value =
+                    self.expression(child, frame)
+                seen_closure = true
+            } else {
+                let value: TreeValue =
+                    if child.children.len() == 0 {
+                        TreeValue.unit()
+                    } else {
+                        self.expression(
+                            child.children[0], frame)
+                    }
+                if value.kind == "propagate" {
+                    return value
+                }
+                frame.set(
+                    child.binding_id,
+                    tree_value_copy(value))
+            }
+        }
+        if self.failed { return TreeValue.unit() }
+        if !seen_closure {
+            return self.fail(
+                node, "group.brew has no closure to start")
+        }
+        let work: TreeBrewState =
+            new TreeBrewState(self, closure_value, node)
+        let entry:
+            LocalStoredCallback<fn(RawPtr<u8>)> =
+            LocalStoredCallback.create(
+                0,
+                fn() {
+                    work.run()
+                    state.clock = state.clock + 1
+                    work.done_stamp = state.clock
+                    if state.waiter != 0 {
+                        let parked: u64 = state.waiter
+                        state.waiter = 0
+                        unsafe {
+                            beans_fiber_resume(
+                                RawPtr.from_address(parked))
+                        }
+                    }
+                })
+        var name_bytes: Bytes = new Bytes(0)
+        name_bytes.append_string(
+            if node.value != "" { node.value } else { "brew" })
+        name_bytes.append(new Bytes(1))
+        var address: u64 = 0
+        var context: u64 = 0
+        unsafe {
+            beans_worker_bootstrap()
+            context = entry.context().address()
+            let fiber: RawPtr<u8> =
+                beans_fiber_spawn(
+                    beans_worker_current(),
+                    entry.function(),
+                    entry.context(),
+                    name_bytes.as_ptr(),
+                    8388608)
+            address = fiber.address()
+        }
+        if address == 0 {
+            return self.fail(
+                node,
+                "brew could not reserve a fiber stack")
+        }
+        work.fiber = address
+        work.entry_context = context
+        state.children.push(work)
+        return TreeValue.unit()
+    }
+
+    // The undelivered row with the smallest completion stamp, or -1. A
+    // joined row counts as delivered; the clock is strictly increasing,
+    // so spawn order only ever breaks the tie of "not finished yet".
+    fn tree_group_pick(state: TreeTaskGroupState) -> int {
+        var best: int = -1
+        var best_stamp: int = 0
+        var index: int = 0
+        for work: TreeBrewState in state.children {
+            if !work.joined && work.done_stamp != 0 &&
+               (best < 0 || work.done_stamp < best_stamp) {
+                best = index
+                best_stamp = work.done_stamp
+            }
+            index += 1
+        }
+        return best
+    }
+
+    // Joins one finished row and dresses its outcome as Result<T> — the
+    // tree mirror of the boxed join arm the native next() builds.
+    fn tree_group_claim(state: TreeTaskGroupState,
+                        found: int) -> TreeValue {
+        let work: TreeBrewState = state.children[found]
+        self.tree_brew_reap(work)
+        work.joined = true
+        state.delivered += 1
+        if state.delivered == state.children.len() {
+            state.children = []
+            state.delivered = 0
+        }
+        if work.panicked {
+            return TreeValue.result_err(
+                TreeValue.error(
+                    work.panic_message, "panic"))
+        }
+        match work.result {
+            some(delivered) => {
+                return TreeValue.result_ok(
+                    tree_value_copy(delivered))
+            }
+            none => {
+                return TreeValue.result_ok(
+                    TreeValue.unit())
+            }
+        }
+    }
+
+    // Parks the walker's own fiber as the group's one waiter. Wakes can
+    // be spurious, and cancellation stays interim-invisible — the caller
+    // loops on its condition, the contract every std park holds to.
+    fn tree_group_park(state: TreeTaskGroupState) {
+        unsafe {
+            state.waiter =
+                beans_fiber_current().address()
+            beans_fiber_park()
+            state.waiter = 0
+        }
     }
 
     fn invoke_closure(node: HirNode,
@@ -9720,6 +10055,8 @@ class TreeInterpreter {
             kind = "atomic"
         } else if name == "Gate" {
             kind = "gate"
+        } else if name == "TaskGroup" {
+            kind = "taskgroup"
         } else if name == "Channel" {
             kind = "channel"
         } else if name == "Bytes" {
@@ -9772,6 +10109,9 @@ class TreeInterpreter {
                 result.int_data =
                     beans_gate_new().address() as int
             }
+        } else if kind == "taskgroup" {
+            result.group_work =
+                some(new TreeTaskGroupState())
         } else if arguments.len() != 0 {
             result.items.push(
                 tree_value_copy(arguments[0]))
@@ -10353,6 +10693,9 @@ class TreeInterpreter {
         }
         if node.kind == "brew" {
             return self.tree_brew(node, frame)
+        }
+        if node.kind == "group_brew" {
+            return self.tree_group_brew(node, frame)
         }
         if node.kind == "function" {
             let result: TreeValue =

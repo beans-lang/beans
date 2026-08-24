@@ -778,6 +778,11 @@ class SignatureChecker {
                 file, node,
                 "Brew cannot appear in a signature or field — a handle lives and dies a local of the scope that brewed it; pass the joined result instead")
         }
+        if name == "TaskGroup" {
+            self.fail(
+                file, node,
+                "TaskGroup cannot appear in a signature or field — a fleet lives and dies a local of the scope that made it; pass the delivered results instead")
+        }
         if name == "Atomic" &&
            result.args.len() == 1 {
             let bits: int =

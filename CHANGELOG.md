@@ -60,6 +60,22 @@ This file records user-facing changes in each Beans release.
   The synthesized scope join runs with function-exit defers, after a
   nested block's handle is gone — natively that was a crash. Brew at the
   function's own scope until per-scope joins land with the unwind work.
+- **`TaskGroup<T>`** — a scope-bound fleet of brewed fibers, for when the
+  fiber count is a runtime value. `let group: TaskGroup<int> = new
+  TaskGroup<int>()`; `group.brew(f(x))` starts a child exactly as `brew`
+  does (and is legal at any block depth — the group binding itself is
+  pinned to the function's own scope); `next()` parks for the earliest
+  unclaimed completion and answers `Option<Result<T>>` in completion
+  order, spawn order breaking ties; `try_next()` answers immediately;
+  `wait_all()` answers `Result<List<T>>` in spawn order, joining every
+  child even on failure with the first failure as the fleet's answer;
+  `cancel_all()` cancels newest-first, joins, and discards every outcome.
+  A drained group is reusable, a panicked child arrives as an `err` at
+  delivery instead of ending the program, and the same scope walls and
+  synthesized scope join a `Brew` handle has keep a fleet from outliving
+  its scope — an unseen panic escalates there. A fleet nobody can wake
+  lands in the deadlock report. Both compilers agree byte-for-byte,
+  delivery order included.
 
 ### Removed
 

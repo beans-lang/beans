@@ -113,14 +113,27 @@ makes leaked-goroutine bugs unrepresentable:
   a local of the scope that brewed it. (Same rule and same reasons as the v2
   `TaskGroup`: the structure is the point.)
 
-Dynamic fleets — N children where N is a runtime value — use the library
-`TaskGroup<T>` rebuilt on fibers, with the v2 semantics (spawn-order
-delivery, `wait_all`, `cancel_all`, scope-bound uniqueness) re-pinned by the
-ported test suite. Channels, `Gate` (the plan's `Event`, renamed: `Event`
-is everyday user vocabulary — `std.poll` exports a `poll.Event` — and a
-builtin must not take it away), timers, and `sleep` stay library types;
-their `_async` API variants fold back into the plain names — a channel
-`receive` on a fiber simply parks.
+Dynamic fleets — N children where N is a runtime value — use `TaskGroup<T>`,
+rebuilt on fibers as a builtin: `new TaskGroup<T>()`, then
+`group.brew(f(x))` (the v2 `start`, renamed to match `brew`) starts a child
+exactly as a lone brew does, `next()` / `try_next()` answer
+`Option<Result<T>>`, `wait_all()` answers `Result<List<T>>` in spawn order —
+every child is joined even on failure, and the first failure in spawn order
+is the fleet's answer — `cancel_all()` cancels newest-first, joins, and
+discards every outcome (handling by discard, the v2 contract), and a
+drained group is reusable. One v2 semantic is deliberately changed:
+`next()` delivers in **completion order**, spawn order breaking ties — a
+fleet exists to take answers as they land; `wait_all` keeps spawn order.
+The group carries the same scope-bound walls as a `Brew` handle (move,
+capture, signature, field, nesting, var) plus the same synthesized scope
+join, which escalates the first unseen panic; `group.brew` itself is legal
+at any block depth, unlike a lone brew, because the join references the
+group binding and the nested-block wall on `new TaskGroup` pins that
+binding to the function's own scope. Channels, `Gate` (the plan's `Event`,
+renamed: `Event` is everyday user vocabulary — `std.poll` exports a
+`poll.Event` — and a builtin must not take it away), timers, and `sleep`
+stay library types; their `_async` API variants fold back into the plain
+names — a channel `receive` on a fiber simply parks.
 
 ### Cancellation
 
@@ -355,10 +368,17 @@ into the idle wait beside the sleeper heap: a fiber's net wait parks with
 `beans_fiber_wait_io`, its socket goes nonblocking for good at the first
 fiber op (thread-only programs keep blocking sockets untouched), socket
 deadlines ride into the parked wait, and both TCP ends run as fibers of one
-worker (`test/fiber_net.sh`, `test/fiber_core.sh`); and a program whose
+worker (`test/fiber_net.sh`, `test/fiber_core.sh`); a program whose
 every fiber is parked with no thread able to wake them prints the fiber
 table and exits 3 instead of hanging — unless an io waiter exists, whom the
-kernel can always wake. Still open in F3: `TaskGroup`.
+kernel can always wake; and `TaskGroup<T>` closes F3 — the children reuse
+the Brew row machinery wholesale, completion stamps ride a per-fiber done
+hook on the scheduler's settle path (a panicking fiber never returns
+through its entry function, so the entry itself was not a place a
+completion could be observed — the hook fires for return, panic, and
+cancel alike, which is what makes a panicked child deliverable), the one
+parked `next()`/`wait_all` waiter is woken by that same hook, and delivery
+order is byte-identical across both engines (`test/taskgroup.sh`).
 
 Deliberately not yet here, in dependency order:
 
@@ -381,9 +401,7 @@ Deliberately not yet here, in dependency order:
    fiber entries are the one blessed exception the analysis will need: a
    stored callback that IS a fiber's entry runs on that fiber's stack and
    may park.)
-5. **F3, the remainder**: `TaskGroup` on fibers. Channels, `Gate`, sleep,
-   `thread.join`, the netpoller, and the deadlock report are in.
-6. **Nested-scope brews.** The synthesized scope join rides function-exit
+5. **Nested-scope brews.** The synthesized scope join rides function-exit
    defers, so a handle brewed inside a nested block would die with its
    block before the join runs — natively that was a use-after-free at
    function exit. Until per-scope joins land with the unwind work, `brew`

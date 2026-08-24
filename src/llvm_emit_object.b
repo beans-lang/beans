@@ -1205,6 +1205,15 @@ partial class LlvmTextEmitter {
                 "ptr @beans_gate_new()")
             return "  {result} = call ptr @beans_gate_new()\n"
         }
+        if handle_name == "TaskGroup" {
+            let result: string =
+                "%v{instruction.result}"
+            values[instruction.result] = result
+            self.require_declare(
+                "beans_taskgroup_new",
+                "ptr @beans_taskgroup_new()")
+            return "  {result} = call ptr @beans_taskgroup_new()\n"
+        }
         if instruction.type.args.len() == 1 &&
            instruction.operands.len() == 1 {
             if handle_name == "Mutex" {

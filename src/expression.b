@@ -2895,6 +2895,23 @@ class ExpressionChecker {
                 return some(new BuiltinSignature([], unit))
             }
         }
+        if receiver.name == "TaskGroup" &&
+           receiver.args.len() == 1 {
+            // group.brew is not here: it starts a call, not a value, so
+            // the method checker intercepts it before this table.
+            let value: HirType = receiver.args[0]
+            if name == "next" || name == "try_next" {
+                return some(new BuiltinSignature(
+                    [], hir_option(hir_result(value))))
+            }
+            if name == "wait_all" {
+                return some(new BuiltinSignature(
+                    [], hir_result(hir_named("List", [value]))))
+            }
+            if name == "cancel_all" {
+                return some(new BuiltinSignature([], unit))
+            }
+        }
         if receiver.name == "Mutex" &&
            receiver.args.len() == 1 {
             if name == "with_lock" {
@@ -4517,6 +4534,13 @@ class ExpressionChecker {
                 node,
                 "closure cannot capture Brew handle '{binding.name}' — a handle lives and dies a local of the scope that brewed it")
         }
+        if hir_type_contains_task_group(binding.type) &&
+           !self.bad_brew_captures.contains_key(capture_key) {
+            self.bad_brew_captures[capture_key] = true
+            self.fail(
+                node,
+                "closure cannot capture TaskGroup '{binding.name}' — a fleet lives and dies a local of the scope that made it")
+        }
         if self.require_send_captures &&
            !self.bad_send_captures.contains_key(capture_key) {
             if !self.trait_satisfied(binding.type, "Send") {
@@ -4705,6 +4729,14 @@ class ExpressionChecker {
             self.fail(
                 node,
                 "{where} cannot take a Brew handle — it lives and dies a local of the scope that brewed it")
+            return
+        }
+        // The same story for a whole fleet: the one binding that may hold
+        // a TaskGroup is the let of its own `new`.
+        if hir_type_contains_task_group(type) && node.kind != "new" {
+            self.fail(
+                node,
+                "{where} cannot take a TaskGroup — it lives and dies a local of the scope that made it")
             return
         }
         if !self.is_move_only(type) { return }
@@ -7836,6 +7868,17 @@ class ExpressionChecker {
                     node, result.type, expected)
                 return result
             }
+            // group.brew starts a call, not a value — it needs the raw
+            // argument syntax, so it is intercepted before the builtin
+            // table (which only sees checked argument values).
+            if receiver.type.name == "TaskGroup" &&
+               receiver.type.args.len() == 1 &&
+               callee.value == "brew" {
+                let result: HirNode =
+                    self.check_group_brew(node, receiver)
+                self.expect_type(node, result.type, expected)
+                return result
+            }
             match self.check_higher_order_method(
                 node, callee, receiver, expected) {
                 some(result) => { return result }
@@ -8467,6 +8510,39 @@ class ExpressionChecker {
             let result: HirNode =
                 self.make_node(node, "new", "Gate", type)
             result.resolved = "Gate.init"
+            self.check_builtin_arguments(
+                node, 1, signature, result)
+            self.expect_type(node, type, expected)
+            return result
+        }
+        if type.name == "TaskGroup" {
+            self.require_fibers(node, "TaskGroup")
+            if self.current.name == "deinit" {
+                self.fail(
+                    node,
+                    "deinit cannot park — it runs during cleanup; a group's scope join parks at scope exit")
+            }
+            // The same interim wall a lone brew has (see check_brew_value):
+            // the synthesized scope join rides function-exit defers, and a
+            // group made in a nested block dies with its block before those
+            // run. group.brew itself is then legal at any depth — the join
+            // references this binding, pinned to the body's own scope.
+            if !self.at_body_floor() {
+                self.fail(
+                    node,
+                    "new TaskGroup inside a nested block is not ready yet — its scope join runs at function exit, after the block's group is gone. make the group at the function's own scope (per-scope joins land with the fiber unwind work)")
+            }
+            if type.args.len() != 1 {
+                self.fail(
+                    node,
+                    "new TaskGroup needs one type argument or a declared result type")
+                type.args.push(poison_hir_type())
+            }
+            let signature: BuiltinSignature =
+                new BuiltinSignature([], type)
+            let result: HirNode =
+                self.make_node(node, "new", "TaskGroup", type)
+            result.resolved = "TaskGroup.init"
             self.check_builtin_arguments(
                 node, 1, signature, result)
             self.expect_type(node, type, expected)
@@ -10066,6 +10142,20 @@ class ExpressionChecker {
                 declared = poison_hir_type()
             }
         }
+        if declared.name != "" &&
+           hir_type_contains_task_group(declared) {
+            if canonical_hir_name(declared.name) != "TaskGroup" {
+                self.fail(
+                    node,
+                    "TaskGroup cannot ride inside another type — a fleet lives and dies a plain local of the scope that made it")
+                declared = poison_hir_type()
+            } else if initializer.is_none() {
+                self.fail(
+                    node,
+                    "a TaskGroup local starts with its group — write let {node.value} = new TaskGroup<T>()")
+                declared = poison_hir_type()
+            }
+        }
         var actual: HirType = declared
         var result: HirNode =
             self.make_node(node, node.kind, node.value, actual)
@@ -10074,6 +10164,7 @@ class ExpressionChecker {
                 self.lower_ast_annotations(
                     node.annotations, "local"))
         var brewed: bool = false
+        var grouped: bool = false
         match initializer {
             some(expression) => {
                 if expression.kind == "brew" {
@@ -10100,6 +10191,15 @@ class ExpressionChecker {
                     self.require_move_source(
                         expression, value.type,
                         "binding '{node.value}'")
+                    if canonical_hir_name(value.type.name) ==
+                       "TaskGroup" {
+                        grouped = true
+                        if node.kind == "var" {
+                            self.fail(
+                                node,
+                                "a TaskGroup binds with let — a var could be rebound and lose the fleet it must join")
+                        }
+                    }
                 }
             }
             none => {
@@ -10116,6 +10216,10 @@ class ExpressionChecker {
             node, actual, node.kind == "var", false, false)
         if brewed {
             self.queue_brew_scope_join(
+                node, actual, result.binding_id, node.value)
+        }
+        if grouped {
+            self.queue_taskgroup_scope_join(
                 node, actual, result.binding_id, node.value)
         }
         return result
@@ -10680,19 +10784,7 @@ class ExpressionChecker {
     // synthesized `defer handle.brew_scope_join()` so no fiber can outlive
     // its scope unjoined.
     fn check_brew_value(node: AstNode) -> HirNode {
-        if self.signature.runtime_profile == "freestanding" &&
-           !self.signature.refused_capabilities.contains_key("fibers") {
-            self.signature.refused_capabilities["fibers"] = true
-            self.fail(
-                node,
-                "brew needs fibers, which the freestanding runtime does not have — it needs at least the minimal runtime")
-        } else if self.program.target.os == "wasi" &&
-                  !self.signature.refused_capabilities.contains_key("fibers") {
-            self.signature.refused_capabilities["fibers"] = true
-            self.fail(
-                node,
-                "brew needs fibers, which target {self.program.target.triple} does not have")
-        }
+        self.require_fibers(node, "brew")
         if self.current.name == "deinit" {
             self.fail(
                 node,
@@ -10703,13 +10795,7 @@ class ExpressionChecker {
         // and a handle brewed in a nested block dies with its block before
         // those run. Until per-scope joins land with the unwind work, brew
         // only at the body's own scope — a check error beats the crash.
-        let body_floor: int =
-            if self.capture_floor_depth >= 0 {
-                self.capture_floor_depth + 1
-            } else {
-                1
-            }
-        if self.scopes.len() != body_floor {
+        if !self.at_body_floor() {
             self.fail(
                 node,
                 "brew inside a nested block is not ready yet — its scope join runs at function exit, after the block's handle is gone. brew at the function's own scope (per-scope joins land with the fiber unwind work)")
@@ -10728,12 +10814,59 @@ class ExpressionChecker {
             return self.make_node(
                 node, "error", "brew", poison_hir_type())
         }
+        if !self.check_brewable_call(node, "brew", call) {
+            return self.make_node(
+                node, "error", "brew", poison_hir_type())
+        }
+        let brew_node: HirNode =
+            self.make_node(
+                node, "brew",
+                if call.value != "" { call.value } else { call.resolved },
+                hir_named("Brew", [call.type]))
+        self.build_brew_transform(node, brew_node, call)
+        return brew_node
+    }
+
+    // One capability refusal per function for anything fiber-backed —
+    // brew, and the group flavor's `new TaskGroup`.
+    fn require_fibers(node: AstNode, what: string) {
+        if self.signature.runtime_profile == "freestanding" &&
+           !self.signature.refused_capabilities.contains_key("fibers") {
+            self.signature.refused_capabilities["fibers"] = true
+            self.fail(
+                node,
+                "{what} needs fibers, which the freestanding runtime does not have — it needs at least the minimal runtime")
+        } else if self.program.target.os == "wasi" &&
+                  !self.signature.refused_capabilities.contains_key("fibers") {
+            self.signature.refused_capabilities["fibers"] = true
+            self.fail(
+                node,
+                "{what} needs fibers, which target {self.program.target.triple} does not have")
+        }
+    }
+
+    // Whether checking sits at the function body's own scope — the only
+    // place the interim function-exit scope-join story covers.
+    fn at_body_floor() -> bool {
+        let body_floor: int =
+            if self.capture_floor_depth >= 0 {
+                self.capture_floor_depth + 1
+            } else {
+                1
+            }
+        return self.scopes.len() == body_floor
+    }
+
+    // Shared by brew and group.brew: the checked expression must be a real
+    // user call, through a class receiver if a method, with no inout
+    // crossing to the child fiber.
+    fn check_brewable_call(node: AstNode, verb: string,
+                           call: HirNode) -> bool {
         if call.kind != "call" && call.kind != "method_call" {
             self.fail(
                 node,
-                "brew starts a user function or method on a child fiber — this call cannot be brewed")
-            return self.make_node(
-                node, "error", "brew", poison_hir_type())
+                "{verb} starts a user function or method on a child fiber — this call cannot be brewed")
+            return false
         }
         if call.kind == "method_call" && call.children.len() >= 1 {
             var class_receiver: bool = false
@@ -10746,29 +10879,29 @@ class ExpressionChecker {
             if !class_receiver {
                 self.fail(
                     node,
-                    "brew a method through a class receiver — a value receiver would run on the fiber's own copy")
+                    "{verb} a method through a class receiver — a value receiver would run on the fiber's own copy")
             }
         }
         for passing: string in call.argument_passing {
             if passing == "inout" {
                 self.fail(
                     node,
-                    "brew arguments are moved or copied onto the child fiber — inout cannot cross to it")
+                    "{verb} arguments are moved or copied onto the child fiber — inout cannot cross to it")
             }
         }
+        return true
+    }
+
+    // The shared brew transform. Hoist every evaluated child of the call —
+    // receiver and arguments — into an invisible let of the enclosing
+    // scope, in evaluation order, and point the call at those bindings
+    // instead. The fabricated closure then captures them, which is exactly
+    // the thread-spawn shape both backends already lower. The hoisted lets
+    // and the closure are appended to whatever `owner` already carries.
+    fn build_brew_transform(node: AstNode, owner: HirNode, call: HirNode) {
         let result_type: HirType = call.type
         let id: int = self.brew_counter
         self.brew_counter += 1
-        let brew_node: HirNode =
-            self.make_node(
-                node, "brew",
-                if call.value != "" { call.value } else { call.resolved },
-                hir_named("Brew", [result_type]))
-        // Hoist every evaluated child — receiver and arguments — into an
-        // invisible let of the enclosing scope, in evaluation order, and
-        // point the call at those bindings instead. The fabricated closure
-        // then captures them, which is exactly the thread-spawn shape both
-        // backends already lower.
         var references: List<HirNode> = []
         var index: int = 0
         for child: HirNode in call.children {
@@ -10780,7 +10913,7 @@ class ExpressionChecker {
             hoisted.children.push(child)
             hoisted.binding_id =
                 self.declare(synthetic, child.type, false, false, false)
-            brew_node.children.push(hoisted)
+            owner.children.push(hoisted)
             let reference: HirNode =
                 self.make_node(node, "local", name, child.type)
             reference.binding_id = hoisted.binding_id
@@ -10808,8 +10941,49 @@ class ExpressionChecker {
                 node, "closure", "",
                 hir_function([], result_type))
         closure.children.push(body)
-        brew_node.children.push(closure)
-        return brew_node
+        owner.children.push(closure)
+    }
+
+    // group.brew(f(x)) — the fleet flavor of brew (spec/CONCURRENCY.md):
+    // the same call walls and hoist-closure transform, minus the handle —
+    // the group keeps the row. Legal at any block depth, unlike a lone
+    // brew: the synthesized scope join references the group binding, and
+    // the nested-block wall on `new TaskGroup` pins that binding to the
+    // body's own scope. The checked shape is one "group_brew" node whose
+    // children are the group reference, the hoisted argument bindings,
+    // and the fabricated closure.
+    fn check_group_brew(node: AstNode, receiver: HirNode) -> HirNode {
+        let element: HirType = receiver.type.args[0]
+        if node.children.len() != 2 {
+            self.fail(
+                node,
+                "group.brew starts one call on a child fiber — write group.brew(f(arguments))")
+            for index: int in 1..node.children.len() {
+                self.check_expression(
+                    node.children[index], no_hir_type())
+            }
+            return self.make_node(
+                node, "error", "brew", poison_hir_type())
+        }
+        let call: HirNode =
+            self.check_expression(node.children[1], no_hir_type())
+        if call.type.name == "poison" {
+            return self.make_node(
+                node, "error", "brew", poison_hir_type())
+        }
+        if !self.check_brewable_call(node, "group.brew", call) {
+            return self.make_node(
+                node, "error", "brew", poison_hir_type())
+        }
+        self.expect_type(node.children[1], call.type, element)
+        let result: HirNode =
+            self.make_node(
+                node, "group_brew",
+                if call.value != "" { call.value } else { call.resolved },
+                new HirType("unit"))
+        result.children.push(receiver)
+        self.build_brew_transform(node, result, call)
+        return result
     }
 
     // The synthesized scope-exit join for one handle. It rides the ordinary
@@ -10825,6 +10999,26 @@ class ExpressionChecker {
         let join: HirNode =
             self.make_node(
                 node, "builtin_method", "brew_scope_join",
+                new HirType("unit"))
+        join.children.push(reference)
+        let armed: HirNode =
+            self.make_node(node, "defer", "", new HirType("unit"))
+        armed.children.push(join)
+        self.brew_deferred.push(armed)
+    }
+
+    // The same synthesized scope-exit join for a whole fleet: joins every
+    // row still in the group, escalates the first panic nobody looked at,
+    // and drops unclaimed ok results quietly.
+    fn queue_taskgroup_scope_join(node: AstNode, type: HirType,
+                                  binding_id: int, name: string) {
+        if binding_id < 0 { return }
+        let reference: HirNode =
+            self.make_node(node, "local", name, type)
+        reference.binding_id = binding_id
+        let join: HirNode =
+            self.make_node(
+                node, "builtin_method", "taskgroup_scope_join",
                 new HirType("unit"))
         join.children.push(reference)
         let armed: HirNode =

@@ -123,6 +123,14 @@ struct BeansFiber {
     int joined;            // join already delivered (a second join aborts)
     int is_root;           // the promoted thread itself; never finishes
 
+    // Completion hook: fires in settle() when the fiber ends — return,
+    // panic, or cancel alike — on the owner worker, before any joiner is
+    // woken. TaskGroup uses it to stamp completion order; a panicking
+    // fiber never returns through its entry function, so the entry
+    // function is not a place a completion can be observed.
+    void (*done_hook)(void*);
+    void* done_arg;
+
     BeansFiber* queue_next; // run-queue / inbox / pool link
 
     // every live fiber of the worker, for the deadlock report
@@ -1213,6 +1221,15 @@ int beans_fiber_is_root(BeansFiber* fiber) { return fiber->is_root; }
 
 void beans_fiber_forget(BeansFiber* fiber) { fiber->forgotten = 1; }
 
+// Owner-worker only, and only before the fiber could have finished — in
+// practice right after the spawn, while the child still sits in the ready
+// queue (spawning never yields, so the child has not run).
+void beans_fiber_set_done_hook(BeansFiber* fiber, void (*hook)(void*),
+                               void* arg) {
+    fiber->done_hook = hook;
+    fiber->done_arg = arg;
+}
+
 int beans_fiber_join(BeansFiber* fiber, char* message_out,
                      size_t message_cap) {
     BeansWorker* worker = tls_worker;
@@ -1268,6 +1285,9 @@ static void settle(BeansWorker* worker, BeansFiber* fiber) {
         atomic_store(&fiber->state, FIBER_DONE);
         worker->live -= 1;
         all_remove(worker, fiber);
+        // Completion hook before the joiner: a group waiter woken here must
+        // find the stamp already written when it runs.
+        if (fiber->done_hook) fiber->done_hook(fiber->done_arg);
         BeansFiber* joiner = fiber->joiner;
         if (joiner) beans_fiber_resume(joiner);
         else if (fiber->forgotten) fiber_retire(worker, fiber);
