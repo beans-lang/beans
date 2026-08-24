@@ -45,6 +45,8 @@ extern "C" fn beans_async_event_is_set(handle: int) -> int
 extern "C" fn beans_async_event_set(handle: int) -> int
 extern "C" fn beans_async_event_free(handle: int) -> int
 extern "C" fn beans_async_external_notify() -> int
+extern "C" fn beans_chan_async_waiter_new() -> int
+extern "C" fn beans_chan_async_waiter_free(waiter: int) -> int
 
 class TreeInterpreter {
     program: HirProgram
@@ -13309,6 +13311,13 @@ class TreeInterpreter {
                     arguments[0].int_data)
             } else if function.extern_name == "beans_async_event_free" {
                 async_runtime_result = beans_async_event_free(
+                    arguments[0].int_data)
+            } else if function.extern_name ==
+                          "beans_chan_async_waiter_new" {
+                async_runtime_result = beans_chan_async_waiter_new()
+            } else if function.extern_name ==
+                          "beans_chan_async_waiter_free" {
+                async_runtime_result = beans_chan_async_waiter_free(
                     arguments[0].int_data)
             } else {
                 async_runtime_call = false

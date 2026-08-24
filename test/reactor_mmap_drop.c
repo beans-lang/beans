@@ -167,12 +167,32 @@ int main(void) {
         close(oom_fds[i][1]);
     }
 
-    enum { SCALE = 10000 };
+    // Each scale row costs two pipe ends, so 10k rows want ~20k descriptors
+    // plus headroom. A kernel is free to grant less than that no matter what
+    // setrlimit asks for — macOS clamps every process at OPEN_MAX (10240)
+    // and refuses a soft limit above it — so the row count follows the limit
+    // the process really got. The registry growth doublings past the removed
+    // 64-row cap are crossed either way; only the very top index moves.
+    enum { SCALE_MAX = 10000 };
     struct rlimit limit;
-    if (getrlimit(RLIMIT_NOFILE, &limit) == 0 && limit.rlim_cur < 25000) {
-        rlim_t wanted = limit.rlim_max < 25000 ? limit.rlim_max : 25000;
+    if (getrlimit(RLIMIT_NOFILE, &limit) == 0 &&
+        limit.rlim_cur < 2 * SCALE_MAX + 64) {
+        rlim_t wanted = 2 * SCALE_MAX + 64;
+        if (limit.rlim_max != RLIM_INFINITY && wanted > limit.rlim_max)
+            wanted = limit.rlim_max;
+#ifdef OPEN_MAX
+        if (wanted > OPEN_MAX) wanted = OPEN_MAX;
+#endif
         limit.rlim_cur = wanted;
         (void)setrlimit(RLIMIT_NOFILE, &limit);
+    }
+    int scale = SCALE_MAX;
+    if (getrlimit(RLIMIT_NOFILE, &limit) == 0 &&
+        limit.rlim_cur != RLIM_INFINITY &&
+        limit.rlim_cur < (rlim_t)(2 * SCALE_MAX + 64)) {
+        long long allowed = ((long long)limit.rlim_cur - 64) / 2;
+        if (allowed < 1500) return 9;
+        scale = (int)allowed;
     }
     BRes opened = beans_poll_open();
     if (opened.err) return 7;
@@ -182,28 +202,28 @@ int main(void) {
         (long long)rt_load_le((char*)triple->data + 8, 8);
     long long wake =
         (long long)rt_load_le((char*)triple->data + 16, 8);
-    int* fds = calloc(SCALE * 2, sizeof *fds);
-    long long* tokens = calloc(SCALE, sizeof *tokens);
+    int* fds = calloc((size_t)scale * 2, sizeof *fds);
+    long long* tokens = calloc((size_t)scale, sizeof *tokens);
     if (!fds || !tokens) return 8;
-    for (int i = 0; i < SCALE; i++) {
+    for (int i = 0; i < scale; i++) {
         if (pipe(&fds[i * 2]) != 0) return 9;
         tokens[i] = beans_reactor_note_park(fds[i * 2]);
         if (tokens[i] <= 0 ||
             beans_reactor_arm_park(tokens[i], poller, wake, 0) != 1)
             return 10;
     }
-    // Cross every requested scale point while all 10k rows are armed in the
+    // Cross every requested scale point while all rows are armed in the
     // real kernel poller, then make all of them ready together.
     if (beans_reactor_park_state(tokens[64]) != 0 ||
         beans_reactor_park_state(tokens[255]) != 0 ||
         beans_reactor_park_state(tokens[1023]) != 0 ||
-        beans_reactor_park_state(tokens[9999]) != 0)
+        beans_reactor_park_state(tokens[scale - 1]) != 0)
         return 11;
-    for (int i = 0; i < SCALE; i++) {
+    for (int i = 0; i < scale; i++) {
         if (write(fds[i * 2 + 1], "x", 1) != 1) return 12;
     }
     int drained = 0;
-    while (drained < SCALE) {
+    while (drained < scale) {
         BRes waited = beans_poll_wait(poller, wake_read, 64, 1000);
         if (waited.err) return 13;
         BList* events = (BList*)waited.val;
@@ -221,8 +241,8 @@ int main(void) {
         }
         beans_release(events);
     }
-    if (drained != SCALE) return 16;
-    for (int i = 0; i < SCALE; i++) {
+    if (drained != scale) return 16;
+    for (int i = 0; i < scale; i++) {
         close(fds[i * 2]);
         close(fds[i * 2 + 1]);
     }
