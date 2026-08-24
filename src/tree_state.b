@@ -138,6 +138,59 @@ unique class TreeThreadWork implements Send {
     }
 }
 
+// One brewed fiber's interpreter-side record (spec/CONCURRENCY.md). The C
+// fiber core only schedules the stack; every outcome fact lives here at
+// tree level: run() contains an interpreted panic before the walker's
+// failed flag could cross a park, and join or the scope join read the
+// answer back out. The lock is never held across a park — the fiber's own
+// entry locks this same state from the child stack.
+unique class TreeBrewState implements Send {
+    owner: TreeInterpreter
+    closure: TreeValue
+    node: HirNode
+    fiber: u64
+    // The BStoredCallback record behind the fiber's entry, closed by
+    // address at the reap — the Beans-level handle is trivial and cannot
+    // be closed through a borrowed field.
+    entry_context: u64
+    done: bool
+    panicked: bool
+    panic_message: string
+    result: Option<TreeValue>
+    joined: bool
+    reaped: bool
+
+    fn init(owner: TreeInterpreter,
+            closure: TreeValue, node: HirNode) {
+        self.owner = owner
+        self.closure = closure
+        self.node = node
+        self.fiber = 0
+        self.entry_context = 0
+        self.done = false
+        self.panicked = false
+        self.panic_message = ""
+        self.result = none
+        self.joined = false
+        self.reaped = false
+    }
+
+    fn run() {
+        let value: TreeValue =
+            self.owner.invoke_closure(
+                self.node, self.closure, [])
+        if self.owner.failed {
+            self.panicked = true
+            self.panic_message = self.owner.panic_text
+            self.owner.failed = false
+            self.owner.panic_text = ""
+        } else {
+            self.result = some(value)
+        }
+        self.done = true
+    }
+}
+
 unique class TreeStoredState implements Send {
     owner: TreeInterpreter
     function: HirFunction

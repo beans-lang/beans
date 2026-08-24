@@ -1208,6 +1208,19 @@ class Parser {
         if self.check("match") {
             return self.parse_match_expression()
         }
+        // `brew` is contextual, the same discipline as `unique` and `packed`:
+        // it starts a child fiber only when a callee follows. Before any
+        // other token — `(`, `.`, `=`, an operator — it stays an ordinary
+        // name, so locals called brew keep working.
+        if self.check("ident") && self.current().text == "brew" {
+            let after: Token = self.tokens[self.pos + 1]
+            if after.kind == "ident" || after.kind == "self" {
+                let start: Token = self.advance()
+                let result: AstNode = self.node("brew", "", start)
+                result.add(self.parse_postfix(self.parse_primary()))
+                return result
+            }
+        }
         return self.parse_postfix(self.parse_primary())
     }
 

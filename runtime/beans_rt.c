@@ -63,6 +63,15 @@
 #define BEANS_RT_WASI 0
 #endif
 
+// Fibers need real threads, mmap guard pages, and a scheduler to run on;
+// restricted profiles and WASI build without them. The checker refuses
+// `brew` and every parking operation there, so checked code never reaches
+// this gate — it exists so those builds stay honest at link time.
+#define BEANS_RT_FIBERS (BEANS_RT_PROFILE >= BEANS_RT_MINIMAL && !BEANS_RT_WASI)
+#if BEANS_RT_FIBERS
+#include "beans_fiber.h"
+#endif
+
 // Windows is grouped with wasm here on purpose: preserve_most interacts with
 // Win64 SEH unwind tables, and nothing has proven that pairing yet. Deinit
 // call sites pay a few register saves until it is. Generated IR never names
@@ -2898,6 +2907,19 @@ void beans_panic(const char* msg, long long line, long long col) {
     long long n = rt_format(text, sizeof text, "runtime panic at %lld:%lld: %s\n",
                             line, col, msg);
     if (n > (long long)sizeof text - 1) n = (long long)sizeof text - 1;
+#if BEANS_RT_FIBERS
+    // Containment (spec/CONCURRENCY.md): a panic terminates only the fiber it
+    // happened on. Off the root fiber nothing prints here — the message is
+    // delivered at the join. The root fiber (and a program that never brewed,
+    // where there is no fiber at all) keeps today's report and exit.
+    {
+        BeansFiber* fiber = beans_fiber_current();
+        if (fiber && !beans_fiber_is_root(fiber)) {
+            text[n - 1] = '\0'; // the stored message carries no newline
+            beans_fiber_panic(text);
+        }
+    }
+#endif
     rt_write(2, text, (unsigned long long)n);
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
     exit(3);
@@ -14621,12 +14643,160 @@ char* beans_decv_fmt(BDec* value, long long p) {
 #endif // BEANS_RT_DECIMAL
 
 // ---------------------------------------------------------------------------
+// brew — the compiler's layer over the fiber core (spec/CONCURRENCY.md, F2).
+//
+// Mirrors the BThread layer, minus every cross-thread cost: a brewed fiber
+// runs on the worker that brewed it, shares its non-atomic refcounts and its
+// cycle collector, and needs no shared-graph marking. The Brew handle also
+// carries no reference for the child: the checker's scope contract joins
+// every brew before its handle can drop, so the handle always outlives the
+// fiber writing into it.
+//
+// Interim, closed by the F2 unwind work: a contained panic (and a cancelled
+// park) abandons the fiber's frames — defers do not run yet and the child's
+// unclaimed closure box is not released on that path.
+#if BEANS_RT_FIBERS
+
+typedef struct {
+    void* payload;   // slot 0: typed-result box, masked
+    long long value; // slot 1: i64 result, masked when it is a pointer
+    void* env;       // slot 2: closure box, owned here until the child runs
+    BeansFiber* fiber; // never masked: fiber records are not beans heap
+    long long (*thunk)(void*);
+    void (*typed_thunk)(void*, void*);
+    long long result_size;
+    long long status; // -1 running, else the join's BEANS_FIBER_* answer
+    long long joined;
+    char message[512]; // the child's panic report, copied at the join
+} BBrew;
+
+// Join answers, as the compiler's emitted Result construction reads them.
+// 0..2 are the BEANS_FIBER_* statuses; 3 is the dynamic second join.
+enum { BEANS_BREW_JOINED_ALREADY = 3 };
+
+static void brew_main(void* arg) {
+    BBrew* h = arg;
+    if (h->typed_thunk) h->typed_thunk(h->env, h->payload);
+    else h->value = h->thunk(h->env);
+    beans_release(h->env);
+    h->env = NULL;
+}
+
+static BBrew* brew_start(BBrew* h, void* name, long long stack_reserve) {
+    h->status = -1;
+    beans_worker_bootstrap(); // idempotent; first brew promotes the thread
+    h->fiber = beans_fiber_spawn(beans_worker_current(), brew_main, h,
+                                 (const char*)name, (size_t)stack_reserve);
+    if (!h->fiber) beans_panic("brew could not reserve a fiber stack", 0, 0);
+    return h;
+}
+
+// `name` is borrowed for the life of the fiber (reports, overflow): the
+// emitter passes the callee's name as a private constant.
+BBrew* beans_brew(void* thunk, void* env, long long result_ptr, void* name,
+                  long long stack_reserve) {
+    long long mask =
+        RT_I64_SLOT_MASK_AT(offsetof(BBrew, env)) |
+        (result_ptr ? RT_I64_SLOT_MASK_AT(offsetof(BBrew, value)) : 0);
+    BBrew* h = beans_alloc(sizeof(BBrew), 1 | (mask << 3));
+    h->thunk = (long long (*)(void*))thunk;
+    h->env = env;
+    return brew_start(h, name, stack_reserve);
+}
+BBrew* beans_brew_typed(void* thunk, void* env, long long size,
+                        long long ptr_mask, void* name,
+                        long long stack_reserve) {
+    if (size <= 0 || size > (1LL << 30))
+        beans_panic("invalid brew result size", 0, 0);
+    long long mask = RT_I64_SLOT_MASK_AT(offsetof(BBrew, payload)) |
+                     RT_I64_SLOT_MASK_AT(offsetof(BBrew, env));
+    BBrew* h = beans_alloc(sizeof(BBrew), 1 | (mask << 3));
+    h->payload = beans_alloc(size, 1 | (ptr_mask << 3));
+    h->result_size = size;
+    h->typed_thunk = (void (*)(void*, void*))thunk;
+    h->env = env;
+    return brew_start(h, name, stack_reserve);
+}
+
+// Parks until the child finishes; answers how it ended. The joiner's own
+// cancellation is not consumed here — the scope contract says a join waits
+// for the child to actually finish, and the joiner observes its cancel at
+// its next park.
+long long beans_brew_join(BBrew* h) {
+    if (h->joined) {
+        strncpy(h->message, "brew handle already joined",
+                sizeof h->message - 1);
+        return BEANS_BREW_JOINED_ALREADY;
+    }
+    h->joined = 1;
+    h->status = beans_fiber_join(h->fiber, h->message, sizeof h->message);
+    h->fiber = NULL; // the join retired the record
+    return h->status;
+}
+
+// Ownership of the result moves to the caller; emitted only on the ok arm.
+long long beans_brew_value(BBrew* h) {
+    long long v = h->value;
+    h->value = 0;
+    return v;
+}
+void beans_brew_value_typed(BBrew* h, void* out, long long size) {
+    if (size != h->result_size)
+        beans_panic("brew result size mismatch", 0, 0);
+    void* payload = h->payload;
+    memcpy(out, payload, (size_t)size);
+    memset(payload, 0, (size_t)size); // nested refs move out with the value
+    h->payload = NULL;
+    beans_release(payload);
+}
+
+// A fresh Beans string with the child's panic report ("" when it did not
+// panic); emitted only on the err arm.
+char* beans_brew_message(BBrew* h) {
+    return str_make(h->message, (long long)strlen(h->message));
+}
+
+void beans_brew_cancel(BBrew* h) {
+    if (h->fiber) beans_fiber_cancel(h->fiber); // joined/retired: a no-op
+}
+
+// The synthesized scope-exit join behind every brew. An explicit join()
+// already consumed the outcome and made this a no-op; otherwise a panic the
+// scope never looked at escalates here (contained again if the parent is
+// itself a brewed fiber), a cancelled child is the scope's own doing and
+// stays quiet, and an unclaimed ok result is released.
+void beans_brew_scope_join(BBrew* h, long long line, long long col) {
+    if (h->joined) return;
+    long long status = beans_brew_join(h);
+    if (status == BEANS_FIBER_PANICKED) {
+        char text[600];
+        rt_format(text, sizeof text,
+                  "a brewed fiber panicked with no join to catch it: %s",
+                  h->message);
+        beans_panic(text, line, col);
+    }
+    if (status == BEANS_FIBER_OK) {
+        if (h->payload) {
+            beans_release(h->payload);
+            h->payload = NULL;
+        } else {
+            long long mask = (cc_meta(head_of(h)) & CC_SHAPE) >> 3;
+            if (mask & RT_I64_SLOT_MASK_AT(offsetof(BBrew, value)))
+                beans_release((void*)(uintptr_t)h->value);
+            h->value = 0;
+        }
+    }
+}
+
+#endif // BEANS_RT_FIBERS — brew
+
+// ---------------------------------------------------------------------------
 // The fiber runtime core (spec/CONCURRENCY.md, F1). One include keeps the
 // runtime a single entry file for BEANS_RUNTIME resolution; the fiber core
 // stays its own translation-unit-shaped file so test/fiber_core.c can test
 // it without the rest of the runtime. Fibers need real threads and mmap, so
 // restricted profiles compile without them — the checker refuses `brew` and
 // parking there before this gate is ever reached.
-#if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL && !BEANS_RT_WASI
+#if BEANS_RT_FIBERS
 #include "beans_fiber.c"
 #endif

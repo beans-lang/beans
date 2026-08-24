@@ -1,11 +1,14 @@
 # Fibers — the Beans concurrency contract (async v3 design record)
 
-Status: **design record, F0 of the fiber plan.** Nothing here is implemented
-yet; `spec/SYNTAX.md` stays the contract for what ships today. This file is
-the record the implementation is built against, and it becomes part of the
-language contract when F2 lands. The async v2 state-machine branch is
-archived, unmerged, at the tag `archive/async-v2-statemachine`; its measured
-failure is the reason this document exists.
+Status: **F1 and the F2 core are implemented.** The fiber runtime
+(`runtime/beans_fiber.{h,c}`, `test/fiber_core.sh`) and the `brew` surface —
+parse, check, both lowerings, `Brew<T>` with join/cancel, the synthesized
+scope join, panic containment and escalation — are in the tree; see the
+"where the implementation stands" section at the end for what deliberately
+remains (unwinds, may-park inference, std park sites). The async v2
+state-machine branch is archived, unmerged, at the tag
+`archive/async-v2-statemachine`; its measured failure is the reason this
+document exists.
 
 ## The reversal, owned
 
@@ -74,9 +77,12 @@ h.cancel()                          // request cancellation; returns nothing
 - `join()` parks the caller until the child finishes and returns
   `Result<T>`: `ok(value)` on normal completion, an `err` when the child
   panicked (kind `panic`, message and source position of the panic) or was
-  cancelled (kind `cancelled`). `join` consumes the handle's result; a second
-  `join` is a checked error at compile time where visible (moved value) and a
-  kind `closed` error through any dynamic path.
+  cancelled (kind `cancelled`). `join` **borrows** the handle and consumes
+  the outcome: the handle's joined flag is the single source of truth, and a
+  second `join` answers an `err` of kind `closed`. (A change from the F0
+  sketch, which had join move the handle — a moved handle fought the
+  synthesized scope join, which must still see the flag on every exit path;
+  one flag beats two owners.)
 - `cancel()` requests cancellation and returns immediately. It never
   cancels work that already completed, and cancelling twice is a no-op.
 - A `Brew<T>` cannot be sent to another thread (`Brew<T>` is not `Send`).
@@ -323,6 +329,42 @@ main in another form; the re-drain it removes no longer exists), and
 `beans_chan_async_waiter_*` — left the runtime with async v2; its lesson,
 direct-dispatching runtime externs in the interpreter, is already house
 practice).
+
+## Where the implementation stands (F2 core landed)
+
+What is in the tree: the F1 fiber core with its full gate
+(`test/fiber_core.sh`); `brew` parsed, checked and lowered in both backends;
+`Brew<T>` with borrow-join and cancel; every brew paired with a synthesized
+`defer handle.brew_scope_join()` riding the ordinary defer machinery; panic
+containment routed through `beans_panic` (only the faulting fiber ends, the
+report is delivered at the join); escalation at unjoined scope exits;
+scope-bound handle refusals (move, capture, signature, field, nesting, var);
+the interpreter hosting fibers on real fiber stacks — one scheduler, and the
+brew differential outputs are byte-identical with native by construction.
+
+Deliberately not yet here, in dependency order:
+
+1. **Per-fiber unwinds.** A contained panic (and a cancelled park) abandons
+   the fiber's frames: defers do not run and owned values are not dropped on
+   that path yet. The interpreter, whose walker unwinds at tree level, does
+   run interpreted defers — so differential tests avoid defer-under-panic
+   until the native unwind lands. The child's closure box is also not
+   released on the abandon path.
+2. **Cancellation observation.** Cancelled parks exist in the fiber core,
+   but compiled code's only park site today is join, and a join waits for
+   the child by contract. Until std park sites land (F3), a cancelled child
+   that never parks simply completes — which is the cooperative contract,
+   just with few places to observe a cancel.
+3. **Error-exit cancels-then-joins.** Scope exits currently join on every
+   path; the error path does not yet cancel first.
+4. **May-park inference and its walls.** `deinit` refuses `brew` directly;
+   the transitive may-park analysis, the sync-C-callback wall, and the
+   conservative indirect-call rule land with it. (The interpreter's own
+   fiber entries are the one blessed exception the analysis will need: a
+   stored callback that IS a fiber's entry runs on that fiber's stack and
+   may park.)
+5. **F3**: channels, `Event`, timers, sleep and readiness parking fibers;
+   the deadlock report; `TaskGroup` on fibers.
 
 ## Milestone gates (unchanged from the plan)
 

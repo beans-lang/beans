@@ -164,6 +164,7 @@ test-semantics: $(BIN)
 	bash ./test/wide_sync.sh
 	bash ./test/wide_concurrency.sh
 	bash ./test/channel_try.sh
+	bash ./test/brew.sh
 	./test/self_host.sh
 	./test/fixpoint.sh
 
@@ -335,6 +336,7 @@ test-core: $(BIN)
 	bash ./test/wide_sync.sh
 	bash ./test/wide_concurrency.sh
 	bash ./test/channel_try.sh
+	bash ./test/brew.sh
 
 	./test/profiles.sh
 	./test/asm.sh

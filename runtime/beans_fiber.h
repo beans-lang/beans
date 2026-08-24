@@ -97,6 +97,12 @@ void beans_fiber_cancel(BeansFiber* fiber);
 // the park verdict instead; this is for tests and cooperative checks.
 int beans_fiber_cancelled(BeansFiber* fiber);
 
+// True for a worker's root fiber — the promoted thread itself. The runtime's
+// panic path asks this to decide between containment (a brewed fiber ends
+// alone, failure delivered at its join) and the process-ending report a
+// plain program keeps.
+int beans_fiber_is_root(BeansFiber* fiber);
+
 // Ends the running fiber with a contained failure. The message is copied.
 // Control never returns; the failure is delivered at the join. In F1 the
 // fiber's C frames are abandoned, not unwound — running defers on the way

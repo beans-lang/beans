@@ -1691,14 +1691,50 @@ hits.add(1)
 - `Thread<T>.detach()` discards the result without waiting. The running thread
   keeps its work alive and the OS thread resource is released when it finishes.
 
+### brew — child fibers (spec/CONCURRENCY.md)
+
+`brew f(args)` starts the call on a **child fiber of the current scope**, on
+the current worker, pinned there for life. Arguments are evaluated at the
+brew; the callee runs when the current fiber parks or reaches the scope's
+end. There are no colored functions — any function may park, and its caller
+neither knows nor cares.
+
+```
+fn handle(order: Order) -> Result<Receipt> {
+    brew audit(order)                     // keep no handle; scope exit joins
+    let h: Brew<int> = brew price(order)  // keep the handle
+    let value: Result<int> = h.join()     // park until the child finishes
+    h.cancel()                            // request cancellation; no wait
+    return ok(receipt(value?))
+}                                         // every child joined before return
+```
+
+- `brew` is contextual, like `unique` and `packed`: it starts a fiber only
+  before a call to a user function or method; a local named `brew` stays an
+  ordinary name. It appears as its own statement or as a `let` initializer,
+  nowhere else.
+- `Brew<T>` is scope-bound: it cannot be rebound (`let` only), moved,
+  returned, passed, captured, stored in a field, or nested in another type.
+  It lives and dies a local of the scope that brewed it.
+- `join()` borrows the handle and answers `Result<T>`: `ok(value)`, or an
+  `err` whose kind is `panic` (the child panicked — message and position
+  carried), `cancelled`, or `closed` (a second join). The joined flag, not a
+  move, is what makes a second join answer `closed`.
+- **A panic ends only the fiber it happened on.** An outcome nobody joined
+  escalates at the scope exit: the parent panics at the brew's position with
+  the child's report. A cancelled child stays quiet.
+- Method calls brew through class receivers only — a value receiver would
+  run on the fiber's own copy. `inout` arguments cannot cross to a fiber.
+- Fibers need the thread runtime: `--runtime freestanding` and wasm targets
+  refuse `brew` at check time.
+
 ### async and await (removed)
 
 Earlier versions carried an `async`/`await` effect system (v0.9). It was
 removed: `async` and `await` are ordinary identifiers with no grammar rule
-behind them, and no function is a different color from any other. Concurrency
-today is threads, channels, atomics, mutexes, and readiness polling
-(`std.poll`); a fiber-based model — uncolored functions that may park on one
-pinned worker — is the planned replacement (ROADMAP P4).
+behind them, and no function is a different color from any other. The
+replacement is the fiber model above — uncolored functions that may park on
+one pinned worker — whose contract lives in spec/CONCURRENCY.md.
 
 ## Targets and the build (v0.8, implemented)
 

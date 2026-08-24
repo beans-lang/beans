@@ -745,6 +745,36 @@ class MirLowerer {
         return result
     }
 
+    // brew — the checked node carries the hoisted argument bindings and a
+    // fabricated zero-parameter closure (spec/CONCURRENCY.md). The temps
+    // lower as ordinary lets of the enclosing scope, the closure lowers
+    // exactly as a thread-spawn closure would, and the instruction takes
+    // ownership of the closure value: the fiber's entry releases the env
+    // after the call, the same contract thread spawn keeps.
+    fn lower_brew(node: HirNode) -> int {
+        var closure: int = -1
+        for child: HirNode in node.children {
+            if child.kind == "closure" {
+                closure = self.lower_expression(child)
+            } else {
+                self.lower_statement(child)
+            }
+        }
+        if closure < 0 {
+            self.fail(
+                node.file, node.line, node.col,
+                "brew has no closure to start")
+            return -1
+        }
+        let result: int =
+            self.emit(node, "brew", node.type, node.value, [closure])
+        if result >= 0 &&
+           self.current.value_ownership[closure] == "owned" {
+            self.consume_operand(self.last_instruction(), 0)
+        }
+        return result
+    }
+
     fn lower_defer(node: HirNode) {
         if node.children.len() != 1 {
             self.fail(
@@ -1024,6 +1054,9 @@ class MirLowerer {
     fn lower_expression(node: HirNode) -> int {
         if node.kind == "closure" {
             return self.lower_closure(node)
+        }
+        if node.kind == "brew" {
+            return self.lower_brew(node)
         }
         if node.kind == "try" {
             return self.lower_try(node)

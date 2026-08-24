@@ -48,7 +48,8 @@ fn llvm_type(type: HirType) -> string {
     if (name == "Mutex" || name == "Channel" ||
         name == "Thread" || name == "Shared" ||
         name == "Weak" || name == "Atomic" ||
-        name == "Arena" || name == "Box") &&
+        name == "Arena" || name == "Box" ||
+        name == "Brew") &&
        type.args.len() == 1 {
         return "ptr"
     }
@@ -141,7 +142,8 @@ fn llvm_type_is_reference(type: HirType) -> bool {
     if (name == "Mutex" || name == "Channel" ||
         name == "Thread" || name == "Shared" ||
         name == "Weak" || name == "Atomic" ||
-        name == "Arena" || name == "Box") &&
+        name == "Arena" || name == "Box" ||
+        name == "Brew") &&
        type.args.len() == 1 {
         return true
     }

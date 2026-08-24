@@ -6,6 +6,22 @@ This file records user-facing changes in each Beans release.
 
 ### Added
 
+- **`brew` — child fibers** (spec/CONCURRENCY.md). `brew f(args)` starts the
+  call on a child fiber of the current scope, pinned to the current worker:
+  arguments evaluate at the brew, the callee runs when the current fiber
+  parks or the scope ends, and scope exit joins every child — a fiber cannot
+  leak. `let h: Brew<int> = brew price(order)` keeps the scope-bound handle;
+  `h.join()` parks and answers `Result<int>` (`ok`, or `err` of kind
+  `panic`, `cancelled`, or `closed` on a second join); `h.cancel()` requests
+  cancellation, observed at the child's parks. **A panic ends only the fiber
+  it happened on** — the report is delivered at the join, and an outcome
+  nobody joined escalates at the scope exit with both positions. `brew` is
+  contextual (a local named `brew` keeps working), refused on freestanding
+  and wasm targets, and `beansc run` hosts the same fibers on the same
+  scheduler, so both compilers agree byte-for-byte, scheduling order
+  included. The fiber core underneath (`beans_fiber_*`, arm64 + x86-64
+  context switch, guard-page stacks, FIFO scheduler, cross-thread resume)
+  ships in the runtime with its own C gate; the runtime ABI is now 11.
 - `Channel.try_send` and `Channel.try_receive` answer immediately — `false`
   or `none` — where the blocking forms would wait. `try_send` needs a
   copyable element: a refused move-only value would be lost.

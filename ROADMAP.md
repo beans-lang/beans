@@ -224,10 +224,16 @@ item, and nothing in it blocks the 1.0 gate.
 - [x] Design record: `brew` structured spawn semantics, park-capability
   inference and its static walls, per-fiber panic containment, and the
   interpreter differential strategy — [`spec/CONCURRENCY.md`](spec/CONCURRENCY.md).
-- [ ] Fiber runtime core: context switch (arm64, x86-64 SysV, Windows x64),
-  per-worker run queue, guarded lazily-committed stacks, reactor wiring.
-- [ ] Compiler: parse/check/lower `brew`, refusals at the walls, panics as
-  per-fiber unwinds.
+- [x] Fiber runtime core: context switch (arm64, x86-64 SysV, Windows x64
+  via native fibers), per-worker run queue, guarded lazily-committed stacks,
+  cross-thread resume inbox — `runtime/beans_fiber.{h,c}`,
+  gated by `test/fiber_core.sh`. Reactor wiring rides with F3.
+- [x] Compiler: parse/check/lower `brew` in both backends, `Brew<T>` with
+  borrow-join and cancel, the synthesized scope join, containment and
+  escalation, refusals at the handle walls (`test/brew.sh`). Still open
+  here: per-fiber unwinds (defers on the contained-panic path), may-park
+  inference, error-exit cancel-then-join — the list in
+  `spec/CONCURRENCY.md` "where the implementation stands".
 - [ ] Std and espresso on one engine, benched against the sync baseline.
 - [ ] A shared-graph cycle design that does not require all workers to drain
   (shares its fate with the P1 shared-boundary item).

@@ -671,6 +671,8 @@ int beans_fiber_cancelled(BeansFiber* fiber) {
     return atomic_load(&fiber->cancel_flag);
 }
 
+int beans_fiber_is_root(BeansFiber* fiber) { return fiber->is_root; }
+
 void beans_fiber_forget(BeansFiber* fiber) { fiber->forgotten = 1; }
 
 int beans_fiber_join(BeansFiber* fiber, char* message_out,

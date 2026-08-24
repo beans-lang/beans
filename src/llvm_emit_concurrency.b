@@ -433,6 +433,187 @@ partial class LlvmTextEmitter {
         return symbol
     }
 
+    // brew — start the fabricated closure on a child fiber of this worker
+    // (spec/CONCURRENCY.md). The closure rides the exact thread-spawn thunk
+    // convention, so spawn_thunk is reused as is; what changes is the
+    // runtime entry, the borrowed report name, and that nothing here marks
+    // shared graphs — the fiber shares this worker's heap view.
+    fn emit_brew(
+        function: MirFunction,
+        instruction: MirInstruction,
+        values: Map<int, string>) -> string {
+        if instruction.operands.len() != 1 ||
+           instruction.type.args.len() != 1 {
+            self.fail(
+                instruction,
+                "LLVM emitter needs one brew closure")
+            return ""
+        }
+        let payload: HirType = instruction.type.args[0]
+        if canonical_hir_name(payload.name) !=
+               "unit" &&
+           !self.handle_inner_supported(
+               instruction, payload, false) {
+            return ""
+        }
+        let closure: string =
+            self.value(
+                function, values,
+                instruction.operands[0], instruction)
+        let result: string = "%v{instruction.result}"
+        values[instruction.result] = result
+        let thunk: string = self.spawn_thunk(payload)
+        let name: string =
+            self.string_pointer(
+                if instruction.text != "" {
+                    instruction.text
+                } else {
+                    "brew"
+                })
+        if self.wide_inline_value(payload) {
+            self.require_declare(
+                "beans_brew_typed",
+                "ptr @beans_brew_typed(ptr, ptr, i64, i64, ptr, i64)")
+            return "  {result} = call ptr @beans_brew_typed(ptr @{thunk}, ptr {closure}, i64 {self.type_size(payload)}, i64 {self.pointer_mask_at(payload, 0)}, ptr {name}, i64 0)\n"
+        }
+        self.require_declare(
+            "beans_brew",
+            "ptr @beans_brew(ptr, ptr, i64, ptr, i64)")
+        return "  {result} = call ptr @beans_brew(ptr @{thunk}, ptr {closure}, i64 {self.slot_rc_flag(payload)}, ptr {name}, i64 0)\n"
+    }
+
+    // The err arm shared by both join layouts: the fresh message string
+    // moves into a fresh Error, and the kind names how the fiber ended.
+    fn brew_error_build(
+        instruction: MirInstruction,
+        receiver: string,
+        status: string,
+        id: int,
+        target: string) -> string {
+        self.require_declare(
+            "beans_brew_message",
+            "ptr @beans_brew_message(ptr)")
+        var output: string =
+            "  %brew.msg{id} = call ptr @beans_brew_message(ptr {receiver})\n"
+        output =
+            "{output}  %brew.kind.panic{id} = icmp eq i64 {status}, 1\n  %brew.kind.a{id} = select i1 %brew.kind.panic{id}, ptr {self.string_pointer("panic")}, ptr {self.string_pointer("cancelled")}\n  %brew.kind.closed{id} = icmp eq i64 {status}, 3\n  %brew.kind{id} = select i1 %brew.kind.closed{id}, ptr {self.string_pointer("closed")}, ptr %brew.kind.a{id}\n"
+        output =
+            "{output}{self.emit_make_error(instruction, "%brew.msg{id}", true, "%brew.kind{id}", true, target)}"
+        return output
+    }
+
+    // join parks until the child finishes and answers Result<T>: the ok arm
+    // moves the child's result out of the handle, the err arm carries kind
+    // panic, cancelled, or closed with the child's report as the message.
+    // Both Result layouts are built arm-by-arm because the tag is only
+    // known at run time.
+    fn emit_brew_join(
+        function: MirFunction,
+        instruction: MirInstruction,
+        values: Map<int, string>) -> string {
+        if instruction.operands.len() != 1 ||
+           instruction.type.args.len() < 1 {
+            self.fail(
+                instruction,
+                "LLVM emitter needs one brew join receiver")
+            return ""
+        }
+        let receiver: string =
+            self.value(
+                function, values,
+                instruction.operands[0], instruction)
+        let result_type: HirType = instruction.type
+        let payload: HirType = result_type.args[0]
+        let id: int = self.fresh()
+        self.require_declare(
+            "beans_brew_join",
+            "i64 @beans_brew_join(ptr)")
+        var output: string =
+            "  %brew.status{id} = call i64 @beans_brew_join(ptr {receiver})\n  %brew.isok{id} = icmp eq i64 %brew.status{id}, 0\n  br i1 %brew.isok{id}, label %brew.ok{id}, label %brew.err{id}\nbrew.ok{id}:\n"
+        if self.result_is_inline(result_type) {
+            // wide payload: Result is the inline {i1, T, Error} struct
+            let rtype: string = self.type_text(result_type)
+            let llvm: string = self.type_text(payload)
+            let slot: string =
+                self.spill_slot(llvm, "brew.result")
+            self.require_declare(
+                "beans_brew_value_typed",
+                "void @beans_brew_value_typed(ptr, ptr, i64)")
+            output =
+                "{output}  call void @beans_brew_value_typed(ptr {receiver}, ptr {slot}, i64 {self.type_size(payload)})\n  %brew.okv{id} = load {llvm}, ptr {slot}\n  %brew.oktag{id} = insertvalue {rtype} zeroinitializer, i1 false, 0\n  %brew.okr{id} = insertvalue {rtype} %brew.oktag{id}, {llvm} %brew.okv{id}, 1\n  br label %brew.done{id}\nbrew.err{id}:\n"
+            output =
+                "{output}{self.brew_error_build(instruction, receiver, "%brew.status{id}", id, "%brew.errobj{id}")}"
+            output =
+                "{output}  %brew.errtag{id} = insertvalue {rtype} zeroinitializer, i1 true, 0\n  %brew.errr{id} = insertvalue {rtype} %brew.errtag{id}, ptr %brew.errobj{id}, 2\n  br label %brew.done{id}\nbrew.done{id}:\n  %brew.res{id} = phi {rtype} [ %brew.okr{id}, %brew.ok{id} ], [ %brew.errr{id}, %brew.err{id} ]\n"
+            values[instruction.result] = "%brew.res{id}"
+            return output
+        }
+        if self.type_text(result_type) != "ptr" {
+            self.fail(
+                instruction,
+                "LLVM emitter does not support brewing '{render_hir_type(payload)}' yet")
+            return ""
+        }
+        // boxed Result: {i64 tag, i64 slot} with the arm's own meta
+        if canonical_hir_name(payload.name) == "unit" {
+            output =
+                "{output}  %brew.okr{id} = call ptr @beans_alloc(i64 16, i64 1)\n  store i64 0, ptr %brew.okr{id}\n  %brew.okslot{id} = getelementptr i8, ptr %brew.okr{id}, i64 8\n  store i64 0, ptr %brew.okslot{id}\n  br label %brew.done{id}\nbrew.err{id}:\n"
+        } else {
+            let mask: int =
+                if self.type_is_reference(payload) ||
+                   canonical_hir_name(payload.name) ==
+                       "decimal" {
+                    self.result_slot_mask()
+                } else {
+                    0
+                }
+            self.require_declare(
+                "beans_brew_value",
+                "i64 @beans_brew_value(ptr)")
+            output =
+                "{output}  %brew.okv{id} = call i64 @beans_brew_value(ptr {receiver})\n  %brew.okr{id} = call ptr @beans_alloc(i64 16, i64 {1 | (mask << 3)})\n  store i64 0, ptr %brew.okr{id}\n  %brew.okslot{id} = getelementptr i8, ptr %brew.okr{id}, i64 8\n  store i64 %brew.okv{id}, ptr %brew.okslot{id}\n  br label %brew.done{id}\nbrew.err{id}:\n"
+        }
+        output =
+            "{output}  %brew.errr{id} = call ptr @beans_alloc(i64 16, i64 {self.result_ref_meta()})\n  store i64 1, ptr %brew.errr{id}\n"
+        output =
+            "{output}{self.brew_error_build(instruction, receiver, "%brew.status{id}", id, "%brew.errobj{id}")}"
+        output =
+            "{output}  %brew.errslot{id} = getelementptr i8, ptr %brew.errr{id}, i64 8\n  %brew.erri{id} = ptrtoint ptr %brew.errobj{id} to i64\n  store i64 %brew.erri{id}, ptr %brew.errslot{id}\n  br label %brew.done{id}\nbrew.done{id}:\n  %brew.res{id} = phi ptr [ %brew.okr{id}, %brew.ok{id} ], [ %brew.errr{id}, %brew.err{id} ]\n"
+        values[instruction.result] = "%brew.res{id}"
+        return output
+    }
+
+    fn emit_brew_cancel(
+        function: MirFunction,
+        instruction: MirInstruction,
+        values: Map<int, string>) -> string {
+        let receiver: string =
+            self.value(
+                function, values,
+                instruction.operands[0], instruction)
+        self.require_declare(
+            "beans_brew_cancel",
+            "void @beans_brew_cancel(ptr)")
+        return "  call void @beans_brew_cancel(ptr {receiver})\n"
+    }
+
+    // The synthesized scope-exit join. The runtime no-ops when an explicit
+    // join saw the outcome, escalates a panic nobody caught, swallows a
+    // cancellation, and releases an unclaimed ok result.
+    fn emit_brew_scope_join(
+        function: MirFunction,
+        instruction: MirInstruction,
+        values: Map<int, string>) -> string {
+        let receiver: string =
+            self.value(
+                function, values,
+                instruction.operands[0], instruction)
+        self.require_declare(
+            "beans_brew_scope_join",
+            "void @beans_brew_scope_join(ptr, i64, i64)")
+        return "  call void @beans_brew_scope_join(ptr {receiver}, i64 {instruction.line}, i64 {instruction.col})\n"
+    }
+
     // join moves the thread's result reference to the caller
     fn emit_thread_join(
         function: MirFunction,

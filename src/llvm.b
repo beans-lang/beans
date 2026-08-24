@@ -588,6 +588,10 @@ partial class LlvmTextEmitter {
             output =
                 self.emit_thread_spawn(
                     function, instruction, values)
+        } else if instruction.op == "brew" {
+            output =
+                self.emit_brew(
+                    function, instruction, values)
         } else if instruction.op == "selector" &&
                   canonical_hir_name(
                       instruction.type.name) ==
@@ -1426,6 +1430,32 @@ partial class LlvmTextEmitter {
                 output =
                     self.emit_thread_detach(
                         function, instruction, values)
+            }
+        } else if instruction.op ==
+                      "builtin_method" &&
+                  instruction.operands.len() != 0 &&
+                  canonical_hir_name(
+                      self.value_type(
+                          function,
+                          instruction.operands[0]).name) ==
+                      "Brew" {
+            if instruction.text == "join" {
+                output =
+                    self.emit_brew_join(
+                        function, instruction, values)
+            } else if instruction.text == "cancel" {
+                output =
+                    self.emit_brew_cancel(
+                        function, instruction, values)
+            } else if instruction.text ==
+                          "brew_scope_join" {
+                output =
+                    self.emit_brew_scope_join(
+                        function, instruction, values)
+            } else {
+                self.fail(
+                    instruction,
+                    "LLVM emitter does not support Brew.{instruction.text} yet")
             }
         } else if instruction.op ==
                       "builtin_method" &&

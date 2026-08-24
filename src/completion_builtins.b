@@ -12,7 +12,8 @@ fn semantic_builtin_member_names() -> List<string> {
             "append_string", "append_uvarint", "as_ptr", "at",
             "atomic_compare_exchange", "atomic_fetch_add",
             "atomic_load", "atomic_store", "bit_and", "bit_not",
-            "bit_or", "bit_xor", "byte_at", "call", "ceil",
+            "bit_or", "bit_xor", "byte_at", "call", "cancel",
+            "ceil",
             "chars",
             "clear", "detach",
             "clone", "close", "compare_exchange", "contains",
@@ -74,7 +75,7 @@ fn semantic_builtin_type_names() -> List<string> {
             "Hash", "Order", "Send", "Sync", "RawPtr", "Slice",
             "List", "Map", "OrderedMap", "Option", "Result", "Box",
             "Arena", "Shared", "Weak", "Mutex", "Atomic", "Channel",
-            "Thread", "Bytes", "File", "Dir", "MMap", "Error",
+            "Thread", "Brew", "Bytes", "File", "Dir", "MMap", "Error",
             "RawSlice", "AtomicInt", "MemoryOrder", "RoundingMode",
             "CpuFeature", "StoredCallback", "LocalStoredCallback",
             "CFunctionPtr", "Self"]

@@ -68,6 +68,7 @@ fn builtin_type(name: string) -> bool {
            name == "Arena" || name == "Shared" || name == "Weak" ||
            name == "Mutex" || name == "Atomic" ||
            name == "Channel" || name == "Thread" ||
+           name == "Brew" ||
            name == "Bytes" || name == "File" || name == "Dir" ||
            name == "MMap" || name == "Error" ||
            name == "RawSlice" ||

@@ -27,6 +27,25 @@ extern "C" fn beans_tree_ffi_invoke_bridge(
     contexts: RawPtr<RawPtr<u8> >)
 extern "C" fn beans_tree_stored_close(
     value: RawPtr<u8>)
+// The fiber core (spec/CONCURRENCY.md): the interpreter hosts each brewed
+// fiber on a real fiber stack and re-enters the tree walker inside it —
+// one scheduler, the same queues as native. The join parks the walker's
+// own fiber, which is what lets the child run.
+extern "C" fn beans_worker_bootstrap() -> RawPtr<u8>
+extern "C" fn beans_worker_current() -> RawPtr<u8>
+extern "C" fn beans_fiber_spawn(
+    worker: RawPtr<u8>,
+    entry: fn(RawPtr<u8>),
+    argument: RawPtr<u8>,
+    name: RawPtr<u8>,
+    stack_reserve: int) -> RawPtr<u8>
+extern "C" fn beans_fiber_join(
+    fiber: RawPtr<u8>,
+    message_out: RawPtr<u8>,
+    message_cap: int) -> i32
+extern "C" fn beans_fiber_cancel(fiber: RawPtr<u8>)
+extern "C" fn beans_stored_callback_close(
+    value: RawPtr<u8>)
 
 class TreeInterpreter {
     program: HirProgram
@@ -8654,6 +8673,107 @@ class TreeInterpreter {
                 }
             }
         }
+        if receiver.kind == "brew" &&
+           node.value == "cancel" {
+            match receiver.brew_work {
+                some(state) => {
+                    var address: u64 = 0
+                    state.with_lock(
+                        fn(work: TreeBrewState) {
+                            if !work.reaped {
+                                address = work.fiber
+                            }
+                        })
+                    if address != 0 {
+                        unsafe {
+                            beans_fiber_cancel(
+                                RawPtr.from_address(address))
+                        }
+                    }
+                    return TreeValue.unit()
+                }
+                none => {
+                    return self.fail(
+                        node, "brew handle has no fiber")
+                }
+            }
+        }
+        if receiver.kind == "brew" &&
+           node.value == "join" {
+            match receiver.brew_work {
+                some(state) => {
+                    var closed: bool = false
+                    state.with_lock(
+                        fn(work: TreeBrewState) {
+                            closed = work.joined
+                        })
+                    if closed {
+                        return TreeValue.result_err(
+                            TreeValue.error(
+                                "brew handle already joined",
+                                "closed"))
+                    }
+                    self.tree_brew_reap(state)
+                    var panicked: bool = false
+                    var message: string = ""
+                    var value: TreeValue = TreeValue.unit()
+                    state.with_lock(
+                        fn(work: TreeBrewState) {
+                            work.joined = true
+                            panicked = work.panicked
+                            message = work.panic_message
+                            match work.result {
+                                some(delivered) => {
+                                    value = tree_value_copy(
+                                        delivered)
+                                }
+                                none => {}
+                            }
+                        })
+                    if panicked {
+                        return TreeValue.result_err(
+                            TreeValue.error(message, "panic"))
+                    }
+                    return TreeValue.result_ok(value)
+                }
+                none => {
+                    return self.fail(
+                        node, "brew handle has no fiber")
+                }
+            }
+        }
+        if receiver.kind == "brew" &&
+           node.value == "brew_scope_join" {
+            match receiver.brew_work {
+                some(state) => {
+                    var seen: bool = false
+                    state.with_lock(
+                        fn(work: TreeBrewState) {
+                            seen = work.joined
+                        })
+                    if seen { return TreeValue.unit() }
+                    self.tree_brew_reap(state)
+                    var panicked: bool = false
+                    var message: string = ""
+                    state.with_lock(
+                        fn(work: TreeBrewState) {
+                            work.joined = true
+                            panicked = work.panicked
+                            message = work.panic_message
+                        })
+                    if panicked {
+                        return self.fail(
+                            node,
+                            "a brewed fiber panicked with no join to catch it: {message}")
+                    }
+                    return TreeValue.unit()
+                }
+                none => {
+                    return self.fail(
+                        node, "brew handle has no fiber")
+                }
+            }
+        }
         if receiver.kind == "mutex" &&
            node.value == "with_lock" &&
            arguments.len() == 2 &&
@@ -8923,6 +9043,116 @@ class TreeInterpreter {
             }
             none => { return none }
         }
+    }
+
+    // brew — evaluate the hoisted argument bindings, wrap the fabricated
+    // closure in a stored callback, and start it on a child fiber of this
+    // worker. The tree walker re-enters on the fiber's own stack when the
+    // walker's current fiber parks.
+    fn tree_brew(node: HirNode,
+                 frame: TreeFrame) -> TreeValue {
+        var closure_value: TreeValue = TreeValue.unit()
+        var seen_closure: bool = false
+        for child: HirNode in node.children {
+            if child.kind == "closure" {
+                closure_value =
+                    self.expression(child, frame)
+                seen_closure = true
+            } else {
+                // a hoisted argument let; `?` in an argument propagates
+                // from the enclosing function, so the value bubbles out
+                let value: TreeValue =
+                    if child.children.len() == 0 {
+                        TreeValue.unit()
+                    } else {
+                        self.expression(
+                            child.children[0], frame)
+                    }
+                if value.kind == "propagate" {
+                    return value
+                }
+                frame.set(
+                    child.binding_id,
+                    tree_value_copy(value))
+            }
+        }
+        if self.failed { return TreeValue.unit() }
+        if !seen_closure {
+            return self.fail(
+                node, "brew has no closure to start")
+        }
+        let state: Mutex<TreeBrewState> =
+            new Mutex(new TreeBrewState(
+                self, closure_value, node))
+        let entry:
+            StoredCallback<fn(RawPtr<u8>)> =
+            StoredCallback.create(
+                0,
+                fn() {
+                    state.with_lock(
+                        fn(work: TreeBrewState) {
+                            work.run()
+                        })
+                })
+        var address: u64 = 0
+        var context: u64 = 0
+        unsafe {
+            beans_worker_bootstrap()
+            context = entry.context().address()
+            let fiber: RawPtr<u8> =
+                beans_fiber_spawn(
+                    beans_worker_current(),
+                    entry.function(),
+                    entry.context(),
+                    RawPtr.null(),
+                    8388608)
+            address = fiber.address()
+        }
+        if address == 0 {
+            return self.fail(
+                node,
+                "brew could not reserve a fiber stack")
+        }
+        state.with_lock(
+            fn(work: TreeBrewState) {
+                work.fiber = address
+                work.entry_context = context
+            })
+        let result: TreeValue = new TreeValue("brew")
+        result.brew_work = some(state)
+        return result
+    }
+
+    // Parks until the fiber finishes, then retires the C record and closes
+    // the entry callback — exactly once. The state lock is read and
+    // released around the park: the child's entry locks this same state.
+    fn tree_brew_reap(state: Mutex<TreeBrewState>) {
+        var address: u64 = 0
+        var context: u64 = 0
+        var pending: bool = false
+        state.with_lock(
+            fn(work: TreeBrewState) {
+                if !work.reaped {
+                    address = work.fiber
+                    context = work.entry_context
+                    pending = true
+                }
+            })
+        if !pending { return }
+        unsafe {
+            beans_fiber_join(
+                RawPtr.from_address(address),
+                RawPtr.null(), 0)
+            if context != 0 {
+                beans_stored_callback_close(
+                    RawPtr.from_address(context))
+            }
+        }
+        state.with_lock(
+            fn(work: TreeBrewState) {
+                work.reaped = true
+                work.entry_context = 0
+            })
     }
 
     fn invoke_closure(node: HirNode,
@@ -10120,6 +10350,9 @@ class TreeInterpreter {
         }
         if node.kind == "closure" {
             return self.closure(node, frame)
+        }
+        if node.kind == "brew" {
+            return self.tree_brew(node, frame)
         }
         if node.kind == "function" {
             let result: TreeValue =

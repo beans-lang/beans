@@ -657,6 +657,7 @@ class SignatureChecker {
            name == "Channel" || name == "Box" || name == "Arena" ||
            name == "Shared" || name == "Weak" || name == "RawPtr" ||
            name == "Slice" || name == "Atomic" || name == "Option" ||
+           name == "Brew" ||
            name == "StoredCallback" ||
            name == "LocalStoredCallback" ||
            name == "CFunctionPtr" {
@@ -771,6 +772,11 @@ class SignatureChecker {
             self.fail(
                 file, node,
                 "MemoryOrder is not a type you can declare — an order is written at the atomic call site, like a.load(MemoryOrder.acquire)")
+        }
+        if name == "Brew" {
+            self.fail(
+                file, node,
+                "Brew cannot appear in a signature or field — a handle lives and dies a local of the scope that brewed it; pass the joined result instead")
         }
         if name == "Atomic" &&
            result.args.len() == 1 {

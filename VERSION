@@ -16,8 +16,15 @@
 compiler=0.1.30
 language=1.0
 
-# 10: async/await left the language, and the hidden executor entries left
-# the runtime with it — beans_task_slot, beans_set_task_slot and the
+# 11: the fiber runtime landed (spec/CONCURRENCY.md) — the beans_fiber_*
+# core (spawn, park, yield, resume, cancel, join, worker bootstrap) and the
+# brew layer the compiler lowers onto: beans_brew, beans_brew_typed,
+# beans_brew_join, beans_brew_value, beans_brew_value_typed,
+# beans_brew_message, beans_brew_cancel, beans_brew_scope_join. Channels
+# gained the non-blocking twins beans_chan_try_send, beans_chan_try_send_typed,
+# beans_chan_try_recv and beans_chan_try_recv_typed.
+# Version 10: async/await left the language, and the hidden executor entries
+# left the runtime with it — beans_task_slot, beans_set_task_slot and the
 # parked-readiness registry (beans_reactor_note_park, beans_reactor_bind_park,
 # beans_reactor_forget_park, beans_reactor_stale_park, beans_reactor_park_dead,
 # beans_reactor_note_close, beans_reactor_shutdown_parks) are gone.
@@ -30,4 +37,4 @@ language=1.0
 # caller-owned event buffer instead of returning a fresh one.
 # Version 7 added Bytes.filled, Bytes.append_int_text, and Thread.detach.
 # Version 6 added per-thread runtime-hook guard entry points.
-runtime_abi=10
+runtime_abi=11

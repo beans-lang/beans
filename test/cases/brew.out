@@ -1,0 +1,12 @@
+value 42
+caught kind=panic msg=runtime panic at 9:14: boom at 5
+second kind=closed msg=brew handle already joined
+s=hi beans
+pair 3 30
+sum 10
+bump 15
+counter now 15
+nested total 35
+spin finished 5
+end of main
+side 9

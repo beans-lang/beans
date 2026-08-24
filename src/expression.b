@@ -45,6 +45,13 @@ class ExpressionChecker {
     bad_inout_captures: Map<string, bool>
     bad_send_captures: Map<string, bool>
     bad_sync_captures: Map<string, bool>
+    bad_brew_captures: Map<string, bool>
+    // Statements a brew queues behind the one being checked: the handle's
+    // synthesized scope-join defer. Every statement-list loop drains this
+    // right after pushing the checked statement, which is what arms the
+    // defer at the brew, in scope order, like a defer the user wrote there.
+    brew_deferred: List<HirNode>
+    brew_counter: int
     next_binding_id: int
     // The type_args node of the call being checked, when the source wrote
     // explicit type arguments. A resolution that supports them takes the
@@ -81,6 +88,9 @@ class ExpressionChecker {
         self.bad_inout_captures = {}
         self.bad_send_captures = {}
         self.bad_sync_captures = {}
+        self.bad_brew_captures = {}
+        self.brew_deferred = []
+        self.brew_counter = 0
         self.next_binding_id = 0
         self.call_generics_syntax = none
         self.call_generics_taken = true
@@ -2871,6 +2881,19 @@ class ExpressionChecker {
                 return some(new BuiltinSignature([], unit))
             }
         }
+        if receiver.name == "Brew" &&
+           receiver.args.len() == 1 {
+            // join borrows the handle: the joined flag, not a move, is what
+            // makes a second join answer err kind closed. The handle stays
+            // for the synthesized scope join to see the flag.
+            if name == "join" {
+                return some(new BuiltinSignature(
+                    [], hir_result(receiver.args[0])))
+            }
+            if name == "cancel" {
+                return some(new BuiltinSignature([], unit))
+            }
+        }
         if receiver.name == "Mutex" &&
            receiver.args.len() == 1 {
             if name == "with_lock" {
@@ -4477,6 +4500,13 @@ class ExpressionChecker {
                 node,
                 "closure cannot capture inout parameter '{binding.name}'")
         }
+        if hir_type_contains_brew(binding.type) &&
+           !self.bad_brew_captures.contains_key(capture_key) {
+            self.bad_brew_captures[capture_key] = true
+            self.fail(
+                node,
+                "closure cannot capture Brew handle '{binding.name}' — a handle lives and dies a local of the scope that brewed it")
+        }
         if self.require_send_captures &&
            !self.bad_send_captures.contains_key(capture_key) {
             if !self.trait_satisfied(binding.type, "Send") {
@@ -4657,6 +4687,16 @@ class ExpressionChecker {
     fn require_move_source(node: AstNode,
                            type: HirType,
                            where: string) {
+        // A Brew is beyond move-only: it is scope-bound. The one binding
+        // that may hold one is the brew's own let; every other sink —
+        // rebinding, returning, arguments, containers — is refused, moved
+        // or not. This is what makes the synthesized scope join total.
+        if hir_type_contains_brew(type) && node.kind != "brew" {
+            self.fail(
+                node,
+                "{where} cannot take a Brew handle — it lives and dies a local of the scope that brewed it")
+            return
+        }
         if !self.is_move_only(type) { return }
         if node.kind == "if_expression" ||
            node.kind == "if" {
@@ -9120,6 +9160,12 @@ class ExpressionChecker {
                 for statement: AstNode in block.children {
                     body.children.push(
                         self.check_statement(statement))
+                    if self.brew_deferred.len() != 0 {
+                        for armed: HirNode in self.brew_deferred {
+                            body.children.push(armed)
+                        }
+                        self.brew_deferred = []
+                    }
                 }
                 result.children.push(body)
                 if result_type.name != "unit" &&
@@ -9229,6 +9275,12 @@ class ExpressionChecker {
             } else {
                 result.children.push(
                     self.check_statement(statement))
+                if self.brew_deferred.len() != 0 {
+                    for armed: HirNode in self.brew_deferred {
+                        result.children.push(armed)
+                    }
+                    self.brew_deferred = []
+                }
             }
         }
         self.pop_scope()
@@ -9751,6 +9803,13 @@ class ExpressionChecker {
         if node.kind == "match" {
             return self.check_match(node, expected)
         }
+        if node.kind == "brew" {
+            self.fail(
+                node,
+                "brew starts a statement or a let initializer — a Brew handle is scope-bound, so it cannot ride inside a larger expression")
+            return self.make_node(
+                node, "error", "brew", poison_hir_type())
+        }
         self.fail(
             node,
             "expression '{node.kind}' is not in the Beans checker yet")
@@ -9973,6 +10032,19 @@ class ExpressionChecker {
             none => {}
         }
         var initializer: Option<AstNode> = self.expression_child(node)
+        if declared.name != "" && hir_type_contains_brew(declared) {
+            if canonical_hir_name(declared.name) != "Brew" {
+                self.fail(
+                    node,
+                    "Brew cannot ride inside another type — a handle lives and dies a plain local of the scope that brewed it")
+                declared = poison_hir_type()
+            } else if initializer.is_none() {
+                self.fail(
+                    node,
+                    "a Brew local starts with its brew — write let {node.value} = brew f(arguments)")
+                declared = poison_hir_type()
+            }
+        }
         var actual: HirType = declared
         var result: HirNode =
             self.make_node(node, node.kind, node.value, actual)
@@ -9980,15 +10052,34 @@ class ExpressionChecker {
             self.check_hir_annotations(
                 self.lower_ast_annotations(
                     node.annotations, "local"))
+        var brewed: bool = false
         match initializer {
             some(expression) => {
-                let value: HirNode =
-                    self.check_expression(expression, declared)
-                result.children.push(value)
-                if declared.name == "" { actual = value.type }
-                self.require_move_source(
-                    expression, value.type,
-                    "binding '{node.value}'")
+                if expression.kind == "brew" {
+                    if node.kind == "var" {
+                        self.fail(
+                            node,
+                            "a Brew handle binds with let — a var could be rebound and lose the fiber it must join")
+                    }
+                    let value: HirNode =
+                        self.check_brew_value(expression)
+                    brewed = value.type.name != "poison"
+                    result.children.push(value)
+                    if declared.name == "" {
+                        actual = value.type
+                    } else {
+                        self.expect_type(
+                            expression, value.type, declared)
+                    }
+                } else {
+                    let value: HirNode =
+                        self.check_expression(expression, declared)
+                    result.children.push(value)
+                    if declared.name == "" { actual = value.type }
+                    self.require_move_source(
+                        expression, value.type,
+                        "binding '{node.value}'")
+                }
             }
             none => {
                 if declared.name == "" {
@@ -10002,6 +10093,10 @@ class ExpressionChecker {
         result.type = actual
         result.binding_id = self.declare(
             node, actual, node.kind == "var", false, false)
+        if brewed {
+            self.queue_brew_scope_join(
+                node, actual, result.binding_id, node.value)
+        }
         return result
     }
 
@@ -10415,6 +10510,12 @@ class ExpressionChecker {
             for statement: AstNode in block.children {
                 body.children.push(
                     self.check_statement(statement))
+                if self.brew_deferred.len() != 0 {
+                    for armed: HirNode in self.brew_deferred {
+                        body.children.push(armed)
+                    }
+                    self.brew_deferred = []
+                }
             }
             self.pop_scope()
             self.take_floor_depth = saved_floor
@@ -10549,6 +10650,171 @@ class ExpressionChecker {
         return false
     }
 
+    // brew <call> — start the call on a child fiber of this scope
+    // (spec/CONCURRENCY.md). The checked shape is one HIR "brew" node whose
+    // children are the hoisted argument bindings followed by a fabricated
+    // zero-parameter closure that runs the call; the backends lower the
+    // closure exactly as they lower a thread-spawn closure. The handle is
+    // scope-bound: whichever statement form brewed it also queues a
+    // synthesized `defer handle.brew_scope_join()` so no fiber can outlive
+    // its scope unjoined.
+    fn check_brew_value(node: AstNode) -> HirNode {
+        if self.signature.runtime_profile == "freestanding" &&
+           !self.signature.refused_capabilities.contains_key("fibers") {
+            self.signature.refused_capabilities["fibers"] = true
+            self.fail(
+                node,
+                "brew needs fibers, which the freestanding runtime does not have — it needs at least the minimal runtime")
+        } else if self.program.target.os == "wasi" &&
+                  !self.signature.refused_capabilities.contains_key("fibers") {
+            self.signature.refused_capabilities["fibers"] = true
+            self.fail(
+                node,
+                "brew needs fibers, which target {self.program.target.triple} does not have")
+        }
+        if self.current.name == "deinit" {
+            self.fail(
+                node,
+                "deinit cannot park — it runs during cleanup; a brew's scope join parks at scope exit")
+        }
+        if node.children.len() != 1 ||
+           node.children[0].kind != "call" {
+            self.fail(
+                node,
+                "brew starts a call on a child fiber — write brew f(arguments)")
+            return self.make_node(
+                node, "error", "brew", poison_hir_type())
+        }
+        let call: HirNode =
+            self.check_expression(node.children[0], no_hir_type())
+        if call.type.name == "poison" {
+            return self.make_node(
+                node, "error", "brew", poison_hir_type())
+        }
+        if call.kind != "call" && call.kind != "method_call" {
+            self.fail(
+                node,
+                "brew starts a user function or method on a child fiber — this call cannot be brewed")
+            return self.make_node(
+                node, "error", "brew", poison_hir_type())
+        }
+        if call.kind == "method_call" && call.children.len() >= 1 {
+            var class_receiver: bool = false
+            match self.declaration_for(call.children[0].type) {
+                some(declaration) => {
+                    class_receiver = declaration.kind == "class"
+                }
+                none => {}
+            }
+            if !class_receiver {
+                self.fail(
+                    node,
+                    "brew a method through a class receiver — a value receiver would run on the fiber's own copy")
+            }
+        }
+        for passing: string in call.argument_passing {
+            if passing == "inout" {
+                self.fail(
+                    node,
+                    "brew arguments are moved or copied onto the child fiber — inout cannot cross to it")
+            }
+        }
+        let result_type: HirType = call.type
+        let id: int = self.brew_counter
+        self.brew_counter += 1
+        let brew_node: HirNode =
+            self.make_node(
+                node, "brew",
+                if call.value != "" { call.value } else { call.resolved },
+                hir_named("Brew", [result_type]))
+        // Hoist every evaluated child — receiver and arguments — into an
+        // invisible let of the enclosing scope, in evaluation order, and
+        // point the call at those bindings instead. The fabricated closure
+        // then captures them, which is exactly the thread-spawn shape both
+        // backends already lower.
+        var references: List<HirNode> = []
+        var index: int = 0
+        for child: HirNode in call.children {
+            let name: string = "brew{id}$a{index}"
+            let synthetic: AstNode =
+                new AstNode("name", name, node.line, node.col)
+            let hoisted: HirNode =
+                self.make_node(node, "let", name, child.type)
+            hoisted.children.push(child)
+            hoisted.binding_id =
+                self.declare(synthetic, child.type, false, false, false)
+            brew_node.children.push(hoisted)
+            let reference: HirNode =
+                self.make_node(node, "local", name, child.type)
+            reference.binding_id = hoisted.binding_id
+            references.push(reference)
+            index += 1
+        }
+        call.children = move references
+        let body: HirNode =
+            self.make_node(node, "block", "", new HirType("unit"))
+        if result_type.name == "unit" {
+            let statement: HirNode =
+                self.make_node(
+                    node, "expression", "", new HirType("unit"))
+            statement.children.push(call)
+            body.children.push(statement)
+        } else {
+            let statement: HirNode =
+                self.make_node(
+                    node, "return", "", new HirType("unit"))
+            statement.children.push(call)
+            body.children.push(statement)
+        }
+        let closure: HirNode =
+            self.make_node(
+                node, "closure", "",
+                hir_function([], result_type))
+        closure.children.push(body)
+        brew_node.children.push(closure)
+        return brew_node
+    }
+
+    // The synthesized scope-exit join for one handle. It rides the ordinary
+    // defer machinery, so it interleaves with user defers in arm order and
+    // runs on every exit path, and the joined flag on the handle makes it a
+    // no-op when an explicit join() already saw the outcome.
+    fn queue_brew_scope_join(node: AstNode, type: HirType,
+                             binding_id: int, name: string) {
+        if binding_id < 0 { return }
+        let reference: HirNode =
+            self.make_node(node, "local", name, type)
+        reference.binding_id = binding_id
+        let join: HirNode =
+            self.make_node(
+                node, "builtin_method", "brew_scope_join",
+                new HirType("unit"))
+        join.children.push(reference)
+        let armed: HirNode =
+            self.make_node(node, "defer", "", new HirType("unit"))
+        armed.children.push(join)
+        self.brew_deferred.push(armed)
+    }
+
+    // brew as its own statement: an anonymous handle nobody can name, held
+    // by an invisible let so the scope join has something to run against.
+    fn check_brew_statement(node: AstNode) -> HirNode {
+        let value: HirNode = self.check_brew_value(node)
+        if value.type.name == "poison" { return value }
+        let name: string = "brew{self.brew_counter}$h"
+        self.brew_counter += 1
+        let synthetic: AstNode =
+            new AstNode("name", name, node.line, node.col)
+        let binding: HirNode =
+            self.make_node(node, "let", name, value.type)
+        binding.children.push(value)
+        binding.binding_id =
+            self.declare(synthetic, value.type, false, false, false)
+        self.queue_brew_scope_join(
+            node, value.type, binding.binding_id, name)
+        return binding
+    }
+
     fn check_statement(node: AstNode) -> HirNode {
         if node.kind == "let" || node.kind == "var" {
             return self.check_local(node)
@@ -10594,6 +10860,10 @@ class ExpressionChecker {
             return result
         }
         if node.kind == "expression" {
+            if node.children[0].kind == "brew" {
+                return self.check_brew_statement(
+                    node.children[0])
+            }
             let result: HirNode =
                 self.make_node(
                     node, "expression", "", new HirType("unit"))
@@ -10708,6 +10978,12 @@ class ExpressionChecker {
         self.push_scope()
         for statement: AstNode in block.children {
             result.children.push(self.check_statement(statement))
+            if self.brew_deferred.len() != 0 {
+                for armed: HirNode in self.brew_deferred {
+                    result.children.push(armed)
+                }
+                self.brew_deferred = []
+            }
         }
         self.pop_scope()
         return result
@@ -10925,6 +11201,8 @@ class ExpressionChecker {
         self.bad_inout_captures = {}
         self.bad_send_captures = {}
         self.bad_sync_captures = {}
+        self.bad_brew_captures = {}
+        self.brew_deferred = []
         self.current_constraints = []
         for constraint: HirGeneric in
             function.generic_constraints {
@@ -10987,6 +11265,12 @@ class ExpressionChecker {
             if child.kind != "block" { continue }
             for statement: AstNode in child.children {
                 function.body.push(self.check_statement(statement))
+                if self.brew_deferred.len() != 0 {
+                    for armed: HirNode in self.brew_deferred {
+                        function.body.push(armed)
+                    }
+                    self.brew_deferred = []
+                }
             }
             if function.result.name != "unit" &&
                function.result.name != "poison" &&
