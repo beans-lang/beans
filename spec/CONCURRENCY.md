@@ -379,6 +379,12 @@ completion could be observed — the hook fires for return, panic, and
 cancel alike, which is what makes a panicked child deliverable), the one
 parked `next()`/`wait_all` waiter is woken by that same hook, and delivery
 order is byte-identical across both engines (`test/taskgroup.sh`).
+Containment is proven at storm scale, not just for one moody child: ~2600
+fibers and ~900 contained panics per run — fleets with a third of their
+children panicking, lone handles joined one by one, sixty gate waiters
+woken into panics, senders panicking on a closed channel, and four
+threads running fleets of their own — every failure a value, both
+engines byte-identical (`test/fiber_soak.sh`).
 
 Deliberately not yet here, in dependency order:
 
