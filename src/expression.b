@@ -208,7 +208,9 @@ class ExpressionChecker {
         }
         match self.declarations.get(type.name) {
             some(declaration) => {
-                return declaration.kind == "struct"
+                return declaration.kind == "struct" ||
+                       (declaration.kind == "enum" &&
+                        declaration.repr != "")
             }
             none => { return false }
         }

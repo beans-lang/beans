@@ -1,6 +1,19 @@
 package main
 
 partial class LlvmTextEmitter {
+    // enum(u8): a payload-free enum that declared a fixed representation is
+    // a bare i8 tag, not a pointer to a tag object. Everything downstream —
+    // ARC, pointer masks, slots, matching — branches on this one predicate.
+    fn enum_has_fixed_repr(type: HirType) -> bool {
+        match self.declaration_for(type) {
+            some(declaration) => {
+                return declaration.kind == "enum" &&
+                       declaration.repr != ""
+            }
+            none => { return false }
+        }
+    }
+
     fn type_is_reference(type: HirType) -> bool {
         if canonical_hir_name(type.name) == "Option" &&
            type.args.len() == 1 {
@@ -17,7 +30,8 @@ partial class LlvmTextEmitter {
             some(declaration) => {
                 return declaration.kind == "class" ||
                        declaration.kind == "interface" ||
-                       declaration.kind == "enum"
+                       (declaration.kind == "enum" &&
+                        declaration.repr == "")
             }
             none => { return false }
         }
@@ -109,6 +123,10 @@ partial class LlvmTextEmitter {
         }
         match self.declaration_for(type) {
             some(declaration) => {
+                if declaration.kind == "enum" &&
+                   declaration.repr != "" {
+                    return "i8"
+                }
                 if declaration.kind == "class" ||
                    declaration.kind == "interface" ||
                    declaration.kind == "enum" {
@@ -723,6 +741,10 @@ partial class LlvmTextEmitter {
     fn build_enum_eq_body(type: HirType) -> string {
         match self.declaration_for(type) {
             some(declaration) => {
+                if declaration.repr != "" {
+                    // enum(u8): the slots hold the zero-extended tags
+                    return "  %same = icmp eq i64 %a, %b\n  %bit = zext i1 %same to i64\n  ret i64 %bit\n"
+                }
                 for variant: HirField in
                     declaration.variants {
                     let payloads: List<HirType> =
@@ -827,6 +849,10 @@ partial class LlvmTextEmitter {
     fn build_enum_hash_body(type: HirType) -> string {
         match self.declaration_for(type) {
             some(declaration) => {
+                if declaration.repr != "" {
+                    // enum(u8): the slot holds the zero-extended tag
+                    return "  %mixed = call i64 @beans_slot_mix(i64 %a)\n  ret i64 %mixed\n"
+                }
                 var body: string =
                     "  %enum = inttoptr i64 %a to ptr\n  %tag = load i64, ptr %enum\n  %seed = call i64 @beans_slot_mix(i64 %tag)\n  switch i64 %tag, label %done [\n"
                 for tag: int in
@@ -1031,6 +1057,13 @@ partial class LlvmTextEmitter {
                 "  store {llvm} {value}, ptr {slot}\n  %slot.{tag}.box{id} = call ptr @beans_decv_box(ptr {slot})\n  %slot.{tag}{id} = ptrtoint ptr %slot.{tag}.box{id} to i64\n",
                 "%slot.{tag}{id}")
         }
+        if self.enum_has_fixed_repr(type) {
+            // an enum(u8) tag is unsigned
+            let id: int = self.fresh()
+            return new LlvmSlotConversion(
+                "  %slot.{tag}{id} = zext i8 {value} to i64\n",
+                "%slot.{tag}{id}")
+        }
         if llvm_type_is_integer(type) {
             if llvm == "i64" {
                 return new LlvmSlotConversion("", value)
@@ -1083,6 +1116,11 @@ partial class LlvmTextEmitter {
             let id: int = self.fresh()
             return new LlvmSlotConversion(
                 "  %slot.{tag}.box{id} = inttoptr i64 {value} to ptr\n  {result} = load {llvm}, ptr %slot.{tag}.box{id}\n",
+                result)
+        }
+        if self.enum_has_fixed_repr(type) {
+            return new LlvmSlotConversion(
+                "  {result} = trunc i64 {value} to i8\n",
                 result)
         }
         if llvm_type_is_integer(type) {

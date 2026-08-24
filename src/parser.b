@@ -734,9 +734,20 @@ class Parser {
 
     fn parse_type_declaration() -> AstNode {
         let start: Token = self.advance()
+        var repr_modifier: string = ""
+        if start.kind == "enum" && self.check("(") {
+            self.advance()
+            let repr: Token =
+                self.expect("ident", "expected a representation like u8")
+            self.expect(")", "expected ')'")
+            repr_modifier = "repr({repr.text}) "
+        }
         let name: Token = self.expect("ident", "expected type name")
         let declaration: AstNode =
             self.named(self.node(start.kind, name.text, start), name)
+        if repr_modifier != "" {
+            declaration.value = "{repr_modifier}{declaration.value}"
+        }
         self.parse_generic_parameters(declaration)
         if self.check(":") {
             self.advance()

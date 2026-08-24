@@ -1281,6 +1281,11 @@ partial class LlvmTextEmitter {
         if canonical_hir_name(type.name) == "bool" {
             return "  %show.value.{tag}{id} = load i1, ptr {pointer}\n  %show.slot.{tag}{id} = zext i1 %show.value.{tag}{id} to i64\n  call void @beans_show_push_val(ptr %c, ptr @{step}, i64 %show.slot.{tag}{id})\n"
         }
+        if self.enum_has_fixed_repr(type) {
+            // enum(u8): a one-byte tag stored inline; its show step
+            // takes the zero-extended tag as the slot
+            return "  %show.value.{tag}{id} = load i8, ptr {pointer}\n  %show.slot.{tag}{id} = zext i8 %show.value.{tag}{id} to i64\n  call void @beans_show_push_val(ptr %c, ptr @{step}, i64 %show.slot.{tag}{id})\n"
+        }
         if llvm_type_is_integer(type) {
             if llvm == "i64" {
                 return "  %show.slot.{tag}{id} = load i64, ptr {pointer}\n  call void @beans_show_push_val(ptr %c, ptr @{step}, i64 %show.slot.{tag}{id})\n"

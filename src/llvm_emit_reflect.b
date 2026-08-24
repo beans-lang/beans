@@ -952,15 +952,23 @@ partial class LlvmTextEmitter {
         let enum_type: HirType =
             new HirType(declaration.qualified)
         let id: int = self.fresh()
-        let result: string = "%reflect.variant{id}"
+        var result: string = "%reflect.variant{id}"
+        // enum(u8): the constructed value is the bare i8 tag, boxed by
+        // value below instead of by pointer
+        var value_text: string = "ptr"
         var body: string =
             "define internal i64 {symbol}(ptr %receiver, ptr %arguments) \{\nentry:\n"
         if payloads.len() == 0 {
-            if tag > self.maximum_enum_tag {
-                self.maximum_enum_tag = tag
+            if declaration.repr != "" {
+                value_text = "i8"
+                result = "{tag}"
+            } else {
+                if tag > self.maximum_enum_tag {
+                    self.maximum_enum_tag = tag
+                }
+                body =
+                    "{body}  {result} = getelementptr i8, ptr @.next.enumtag{tag}, i64 16\n"
             }
-            body =
-                "{body}  {result} = getelementptr i8, ptr @.next.enumtag{tag}, i64 16\n"
         } else {
             let offsets: List<int> =
                 self.enum_payload_offsets(payloads)
@@ -1020,7 +1028,7 @@ partial class LlvmTextEmitter {
         let drop: string =
             self.reflection_value_action(enum_type, false)
         body =
-            "{body}  {slot} = alloca ptr\n  store ptr {result}, ptr {slot}\n  %reflect.variant.box{id} = call i64 @beans_reflect_value_new(ptr {self.string_pointer(display_symbol(declaration.qualified))}, ptr {slot}, i64 {self.type_size(enum_type)}, ptr {retain}, ptr {drop})\n  ret i64 %reflect.variant.box{id}\n\}\n"
+            "{body}  {slot} = alloca {value_text}\n  store {value_text} {result}, ptr {slot}\n  %reflect.variant.box{id} = call i64 @beans_reflect_value_new(ptr {self.string_pointer(display_symbol(declaration.qualified))}, ptr {slot}, i64 {self.type_size(enum_type)}, ptr {retain}, ptr {drop})\n  ret i64 %reflect.variant.box{id}\n\}\n"
         self.value_eq_functions.push(body)
         return symbol
     }

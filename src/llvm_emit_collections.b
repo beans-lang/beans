@@ -118,6 +118,10 @@ partial class LlvmTextEmitter {
         match self.declaration_for(type) {
             some(declaration) => {
                 if declaration.kind == "enum" {
+                    // enum(u8) keys are their integer tags
+                    if declaration.repr != "" {
+                        return 0
+                    }
                     return 4
                 }
                 if declaration.kind == "class" ||
@@ -1819,7 +1823,8 @@ partial class LlvmTextEmitter {
         var kind: int = -1
         var thunk: string = "null"
         if llvm_type_is_integer(element) ||
-           self.type_is_raw_pointer(element) {
+           self.type_is_raw_pointer(element) ||
+           self.enum_has_fixed_repr(element) {
             kind = 0
         } else if element_name == "float" {
             kind = 1
@@ -2072,7 +2077,8 @@ partial class LlvmTextEmitter {
         // integers and bools, 1 double, 2 string, 6 f32
         var kind: int = -1
         var thunk: string = "null"
-        if llvm_type_is_integer(element) {
+        if llvm_type_is_integer(element) ||
+           self.enum_has_fixed_repr(element) {
             kind = 0
         } else if element_name == "float" {
             kind = 1

@@ -1,0 +1,15 @@
+Display 1/1
+Style 16 gap@8
+Pair 2 array 4
+array grids = 2
+list = [none_, flex, grid]
+contains flex = true, grid at = some(2)
+counts 1 2 3 len 3
+reverse[7] = grid
+style flex/8 pair grid+grid eq true
+some none_
+corners BL TR
+picked grid none_
+closure true false
+wrapped none_
+shown = of(none_) bare = flex grid none_

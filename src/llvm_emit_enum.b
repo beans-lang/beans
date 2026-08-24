@@ -54,7 +54,8 @@ partial class LlvmTextEmitter {
             return self.type_size(type) > 0
         }
         if self.type_is_reference(type) ||
-           self.type_is_raw_pointer(type) {
+           self.type_is_raw_pointer(type) ||
+           self.enum_has_fixed_repr(type) {
             return true
         }
         return llvm_type_is_integer(type) ||
@@ -160,6 +161,12 @@ partial class LlvmTextEmitter {
                         self.fail(
                             instruction,
                             "LLVM emitter found payload values for fieldless enum variant '{instruction.text}'")
+                        return ""
+                    }
+                    if declaration.repr != "" {
+                        // enum(u8): the value is the bare tag, like
+                        // MemoryOrder above — no tag object exists
+                        values[instruction.result] = "{tag}"
                         return ""
                     }
                     if tag > self.maximum_enum_tag {
@@ -368,6 +375,12 @@ partial class LlvmTextEmitter {
                 "  store i1 true, ptr %l{local.id}.live\n"
         }
         if instruction.resolved == "" {
+            if declaration.repr != "" {
+                // enum(u8): the subject is a bare i8 tag, nothing to
+                // retain
+                return self.emit_local_bind_store(
+                    instruction, local, "i8", subject, live)
+            }
             // a bare-name arm binds the subject box itself
             return "  call void @beans_retain(ptr {subject})\n{self.emit_local_bind_store(instruction, local, "ptr", subject, live)}"
         }
@@ -497,6 +510,18 @@ partial class LlvmTextEmitter {
                 variant_targets[0]
             }
         let id: int = self.fresh()
+        if declaration.repr != "" {
+            // enum(u8): the subject is the bare i8 tag
+            var direct: string =
+                "  switch i8 {subject}, label {self.edge_target(function, block, fallback)} [\n"
+            for tag: int in
+                0..variant_targets.len() {
+                direct =
+                    "{direct}    i8 {tag}, label {self.edge_target(function, block, variant_targets[tag])}\n"
+            }
+            direct = "{direct}  ]\n"
+            return "{direct}{self.emit_edge_blocks(function, block, values, source)}"
+        }
         var output: string =
             "  %enum.match{id} = load i64, ptr {subject}\n"
         output =

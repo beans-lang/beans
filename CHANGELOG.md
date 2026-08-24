@@ -6,6 +6,18 @@ This file records user-facing changes in each Beans release.
 
 ### Added
 
+- `enum(u8)`: a payload-free enum can opt into a committed one-byte layout
+  on the declaration — `enum(u8) Display { flex, grid, none }`. The value
+  is the bare tag in declaration order, so behaviour is unchanged, but the
+  layout is now fixed: `size_of(Display)` answers 1, a struct holding one
+  keeps a fixed inline layout with no pointer bits or ARC bookkeeping, and
+  a `[Display; N]` array stores one byte per element. Construction, match,
+  equality, printing, struct embedding, map keys, channels, threads, and
+  reflection agree byte-for-byte between `beansc run` and a built binary.
+  The checker refuses the marker on payload variants, generic enums, more
+  than 256 variants, and any representation other than `u8`, each with a
+  message naming the rule; `extern "C"` fields and typed JSON keep their
+  existing refusals.
 - `beansc build --debug` writes a Beans source line table, so a native
   debugger can stop inside the binary that ships. `lldb` and `gdb` resolve
   `break main.b:12`, show `main.helper` rather than `.next.fn7` in a

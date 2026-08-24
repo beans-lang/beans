@@ -1,0 +1,10 @@
+widget blinker is go
+widget now stop
+channel first stop
+channel second go
+thread said go
+board green red len 2
+reflect kind enum = true
+variants = [go, wait, stop]
+made stop, equal = true
+latest some(wait) none
