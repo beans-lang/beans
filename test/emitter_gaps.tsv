@@ -39,11 +39,11 @@ src/llvm_emit_collections.b	1369	LLVM emitter does not support collection method
 src/llvm_emit_collections.b	1444	LLVM emitter does not support joining List<X> yet	unknown
 src/llvm_emit_collections.b	1452	LLVM emitter does not support joining List<X> yet	unknown
 src/llvm_emit_collections.b	1722	LLVM emitter does not support List.pop on 'X' yet	unknown
-src/llvm_emit_collections.b	1818	LLVM emitter does not support wide list elements in List.contains yet	unknown
+src/llvm_emit_collections.b	1818	LLVM emitter does not support wide list elements in List.contains yet	interpreter-ok
 src/llvm_emit_collections.b	1870	LLVM emitter does not support List<X>.contains yet	unknown
 src/llvm_emit_collections.b	1948	LLVM emitter does not support List<X>.sort yet	unknown
 src/llvm_emit_collections.b	1995	LLVM emitter does not support sorting 'X' yet	unknown
-src/llvm_emit_collections.b	2121	LLVM emitter does not support List<X>.index_of yet	unknown
+src/llvm_emit_collections.b	2121	LLVM emitter does not support List<X>.index_of yet	interpreter-ok
 src/llvm_emit_collections.b	2623	LLVM emitter does not support this index assignment yet	unknown
 src/llvm_emit_collections.b	2638	LLVM emitter cannot store owned references into an array inside a class object yet — copy the array to a local, update it, and assign it back	unknown
 src/llvm_emit_collections.b	2736	LLVM emitter does not support indexing 'X' yet	unknown
