@@ -11540,6 +11540,21 @@ long long beans_net_recv_into_wait(long long fd, void* destination,
     }
 }
 
+// The tree walker resolves `extern "C"` calls through the dynamic loader,
+// which cannot see this executable's own symbols everywhere: an ELF
+// executable exports nothing without --export-dynamic, a PE one nothing at
+// all. The runtime-side socket calls the stdlib declares are answered from
+// inside the process instead — the interpreter asks here before it builds
+// any loader shim.
+void* beans_rt_host_symbol(const char* name) {
+    if (!name) return (void*)0;
+    if (strcmp(name, "beans_net_recv_into_wait") == 0)
+        return (void*)&beans_net_recv_into_wait;
+    if (strcmp(name, "beans_net_send_from_wait") == 0)
+        return (void*)&beans_net_send_from_wait;
+    return (void*)0;
+}
+
 static BRes net_recv_many(long long fd, long long limit, int exact) {
     net_init();
     if (fd < 0) return (BRes){0, net_closed_err("recv")};

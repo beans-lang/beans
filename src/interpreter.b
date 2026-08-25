@@ -33,6 +33,11 @@ extern "C" fn beans_tree_stored_close(
 // own fiber, which is what lets the child run.
 extern "C" fn beans_worker_bootstrap() -> RawPtr<u8>
 extern "C" fn beans_worker_current() -> RawPtr<u8>
+// Runtime-side externs (the fiber-parking socket calls) live inside this
+// very process, where the dynamic loader cannot always see them — an ELF
+// executable exports nothing without --export-dynamic, a PE one nothing at
+// all. The runtime answers their addresses itself.
+extern "C" fn beans_rt_host_symbol(name: RawPtr<u8>) -> RawPtr<u8>
 extern "C" fn beans_fiber_spawn(
     worker: RawPtr<u8>,
     entry: fn(RawPtr<u8>),
@@ -13243,6 +13248,19 @@ class TreeInterpreter {
 
     fn extern_symbol_address(
         function: HirFunction) -> int {
+        // Runtime-side externs are answered by this very process first:
+        // the same address on every platform, where the loader lookups
+        // below depend on what the executable happens to export.
+        var host_name: Bytes = new Bytes(0)
+        host_name.append_string(function.extern_name)
+        host_name.append(new Bytes(1))
+        unsafe {
+            let hosted: RawPtr<u8> =
+                beans_rt_host_symbol(host_name.as_ptr())
+            if hosted.address() != 0 {
+                return hosted.address() as int
+            }
+        }
         match host_dl.global_symbol(
                   function.extern_name) {
             ok(address) => { return address }
