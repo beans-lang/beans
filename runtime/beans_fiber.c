@@ -1099,16 +1099,16 @@ static void fiber_retire(BeansWorker* worker, BeansFiber* fiber) {
     fiber_record_free(fiber);
 }
 
-#if defined(_WIN32)
-static void CALLBACK fiber_entry_win(void* raw) { fiber_entry((BeansFiber*)raw); }
-#endif
-
 static void fiber_finish(int status) __attribute__((noreturn));
 
 static void fiber_entry(BeansFiber* fiber) {
     fiber->fn(fiber->arg);
     fiber_finish(BEANS_FIBER_OK);
 }
+
+#if defined(_WIN32)
+static void CALLBACK fiber_entry_win(void* raw) { fiber_entry((BeansFiber*)raw); }
+#endif
 
 BeansFiber* beans_fiber_spawn(BeansWorker* worker, void (*fn)(void*),
                               void* arg, const char* name,
