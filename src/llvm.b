@@ -68,6 +68,7 @@ partial class LlvmTextEmitter {
     show_step_functions: Map<string, string>
     show_wide_step_functions: Map<string, string>
     sort_cmp_thunks: Map<string, string>
+    record_eq_thunks: Map<string, string>
     sort_key_thunks: Map<string, string>
     selector_indices: Map<string, int>
     selector_order: List<string>
@@ -190,6 +191,7 @@ partial class LlvmTextEmitter {
         self.show_step_functions = {}
         self.show_wide_step_functions = {}
         self.sort_cmp_thunks = {}
+        self.record_eq_thunks = {}
         self.sort_key_thunks = {}
         self.selector_indices = {}
         self.selector_order = []
@@ -1222,6 +1224,20 @@ partial class LlvmTextEmitter {
                       "List" {
             output =
                 self.emit_list_contains(
+                    function, instruction, values)
+        } else if instruction.op == "builtin_method" &&
+                  instruction.text == "is_empty" &&
+                  instruction.operands.len() != 0 &&
+                  canonical_hir_name(
+                      self.value_type(
+                          function,
+                          instruction.operands[0]).name) ==
+                      "List" {
+            // List only. `string.is_empty` already had a handler of its own,
+            // and routing it through the length path answered an i64 where
+            // the branch wanted an i1.
+            output =
+                self.emit_list_length(
                     function, instruction, values)
         } else if instruction.op == "builtin_method" &&
                   instruction.text == "len" &&

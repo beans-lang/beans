@@ -1360,10 +1360,16 @@ partial class LlvmTextEmitter {
             self.value_type(function, receiver_id)
         let receiver_name: string =
             canonical_hir_name(receiver_type.name)
+        // `is_empty` is `len() == 0` and nothing more; it read as a gap
+        // only because the length path answered to one name. Lists only —
+        // string carries its own handler.
+        let empty_check: bool =
+            instruction.text == "is_empty" &&
+            receiver_name == "List"
         if (receiver_name != "List" &&
             receiver_name != "Map" &&
             receiver_name != "OrderedMap") ||
-           instruction.text != "len" {
+           (instruction.text != "len" && !empty_check) {
             self.fail(
                 instruction,
                 "LLVM emitter does not support collection method '{instruction.resolved}' yet")
@@ -1376,7 +1382,12 @@ partial class LlvmTextEmitter {
         let pointer: int = self.fresh()
         let result: string = "%v{instruction.result}"
         values[instruction.result] = result
-        return "  %list.len.ptr{pointer} = getelementptr i8, ptr {receiver}, i64 8\n  {result} = load i64, ptr %list.len.ptr{pointer}\n"
+        let load: string =
+            "  %list.len.ptr{pointer} = getelementptr i8, ptr {receiver}, i64 8\n"
+        if empty_check {
+            return "{load}  %list.len.raw{pointer} = load i64, ptr %list.len.ptr{pointer}\n  {result} = icmp eq i64 %list.len.raw{pointer}, 0\n"
+        }
+        return "{load}  {result} = load i64, ptr %list.len.ptr{pointer}\n"
     }
 
     fn emit_list_join(
@@ -1818,51 +1829,17 @@ partial class LlvmTextEmitter {
                 "LLVM emitter does not support wide list elements in List.contains yet")
             return ""
         }
-        // the runtime's slot_eq kinds: 0 identity, 1 double, 2 string,
-        // 4 custom comparator, 6 float — same table as production's eq_kind
-        var kind: int = -1
-        var thunk: string = "null"
-        if llvm_type_is_integer(element) ||
-           self.type_is_raw_pointer(element) ||
-           self.enum_has_fixed_repr(element) {
-            kind = 0
-        } else if element_name == "float" {
-            kind = 1
-        } else if element_name == "f32" {
-            kind = 6
-        } else if element_name == "string" {
-            kind = 2
-        } else if self.type_is_reference(element) {
-            match self.declaration_for(element) {
-                some(declaration) => {
-                    if declaration.kind == "enum" {
-                        let symbol: string =
-                            self.request_value_eq(
-                                element)
-                        if symbol != "" {
-                            kind = 4
-                            thunk = symbol
-                        }
-                    } else {
-                        kind = 0
-                    }
-                }
-                none => {
-                    if element_name == "Bytes" {
-                        let symbol: string =
-                            self.request_value_eq(
-                                element)
-                        if symbol != "" {
-                            kind = 4
-                            thunk = symbol
-                        }
-                    } else if element_name == "List" ||
-                       element_name == "Map" ||
-                       element_name == "OrderedMap" {
-                        kind = 0
-                    }
-                }
-            }
+        // The runtime's slot_eq kinds, chosen so an element compares the way
+        // the interpreter compares it. A nested List used to take the
+        // identity kind here, which answered a different question in
+        // silence: `[[1,2]].contains([1,2])` was true under `beansc run` and
+        // false in a native build. Those now refuse instead.
+        let chosen: LlvmEqualityKind =
+            self.slot_equality_kind(element)
+        var kind: int = chosen.kind
+        var thunk: string = chosen.thunk
+        if thunk != "null" && thunk.starts_with("@") {
+            thunk = thunk.slice(1, thunk.len())
         }
         if kind < 0 {
             self.fail(

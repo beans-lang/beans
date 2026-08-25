@@ -433,6 +433,40 @@ partial class LlvmTextEmitter {
     // sign-extended in, so they truncate back — production's
     // thunk skips that and would feed a comparator raw slots),
     // and asks the closure. Decimals arrive by address instead.
+    // Structural equality for an inline record, as a standalone function the
+    // runtime can call with two addresses. The comparison is the same field
+    // walk `==` emits inline; capturing it into a function is what lets a
+    // list of records be compared element by element.
+    fn request_record_eq(type: HirType) -> string {
+        let key: string = render_hir_type(type)
+        match self.record_eq_thunks.get(key) {
+            some(symbol) => { return symbol }
+            none => {}
+        }
+        let llvm: string = self.type_text(type)
+        if llvm == "" { return "" }
+        // emit_inline_equal spills a decimal field through the enclosing
+        // function's alloca list, which a standalone thunk cannot borrow.
+        // Watch for that and leave those records refused rather than emit a
+        // function whose allocas landed somewhere else.
+        let before: int = self.function_allocas.len()
+        let compared: LlvmSlotConversion =
+            self.emit_inline_equal(
+                type, "%ta", "%tb", "recordeq")
+        if compared.value == "" ||
+           self.function_allocas.len() != before {
+            return ""
+        }
+        let symbol: string =
+            ".next.recordeq{self.record_eq_thunks.len()}"
+        self.record_eq_thunks[key] = symbol
+        let body: string =
+            "  %ta = load {llvm}, ptr %a\n  %tb = load {llvm}, ptr %b\n{compared.setup}  %z = zext i1 {compared.value} to i64\n  ret i64 %z\n"
+        self.ffi_functions.push(
+            "define internal i64 @{symbol}(ptr %a, ptr %b) \{\n{body}\}\n")
+        return symbol
+    }
+
     // An element the runtime cannot fit in one eight-byte slot reaches a
     // sort thunk by address instead of by value: decimal, and any inline
     // record. The thunk loads it whole and hands it to the closure the way

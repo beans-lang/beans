@@ -951,7 +951,14 @@ class Parser {
             name = "{name}.{part.text}"
         }
         let result: AstNode = self.node("type", name, start)
-        if self.match_token("<") {
+        // A scalar name can never take type arguments, so a `<` after one is
+        // a comparison and not the start of a list: `x as int < y` used to
+        // parse `int<y ...` and then demand a closing `>`. The other
+        // direction, `x as int > y`, never had the problem, which is what
+        // made it read as a string-interpolation quirk rather than a parse
+        // one. A user-written name is still ambiguous here and still commits.
+        if !parser_scalar_type_name(name) &&
+           self.match_token("<") {
             self.skip_newlines()
             for !self.at_type_close() && !self.at_end() {
                 result.add(self.parse_type())
@@ -1730,4 +1737,16 @@ class Parser {
         }
         return result
     }
+}
+
+// Type names that can never carry type arguments. Both spellings are listed
+// because the parser sees the source form, before i64/byte/f64 are folded on
+// to their canonical names.
+fn parser_scalar_type_name(name: string) -> bool {
+    return name == "int" || name == "i8" || name == "i16" ||
+           name == "i32" || name == "i64" || name == "u8" ||
+           name == "u16" || name == "u32" || name == "u64" ||
+           name == "byte" || name == "float" || name == "f32" ||
+           name == "f64" || name == "decimal" ||
+           name == "bool" || name == "string" || name == "unit"
 }

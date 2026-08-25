@@ -16,6 +16,10 @@
 #     either called through a null pointer or never called at all
 #   * sorting a list of inline records, which the native backend refused
 #     because sort only ever handled slot-wide elements
+#   * `List<T> ==` and `List<T>.is_empty()`, refused natively while the
+#     interpreter answered both
+#   * `Option<T> ==` where T is a reference, which the native backend
+#     answered by address — a wrong answer rather than a refusal
 #
 # Each case runs on the interpreter, a debug build and a release build, and
 # all three have to match. There is no golden output on purpose: the claim is
@@ -115,10 +119,13 @@ agree test/cases/parity/default_effects.b 5
 agree test/cases/parity/interface_upcast.b 6
 agree test/cases/parity/generic_base_deinit.b 4
 agree test/cases/parity/struct_sort.b 3
+agree test/cases/parity/list_equality.b
+agree test/cases/parity/option_equality.b
+agree test/cases/parity/cast_compare.b
 
 # Every case in the directory has to be listed above with its own expected
 # count; a file added and forgotten would otherwise be silently unchecked.
-listed=6
+listed=9
 present=$(find test/cases/parity -name '*.b' | wc -l | tr -d ' ')
 if [ "$present" != "$listed" ]; then
     echo "test/cases/parity holds $present cases but $listed are run" >&2

@@ -983,7 +983,14 @@ partial class LlvmTextEmitter {
                 "  %inline.raw{tag}{id} = call i64 @beans_bytes_eq(ptr {left}, ptr {right})\n  %inline.eq{tag}{id} = icmp ne i64 %inline.raw{tag}{id}, 0\n",
                 "%inline.eq{tag}{id}")
         }
-        if self.type_is_reference(type) {
+        // Not Option. A niche-encoded `Option<T>` — one whose payload is a
+        // reference — is a bare pointer, so type_is_reference answers true
+        // for it and this branch used to swallow it and compare the two
+        // payloads by address. `Option<string>` then said false for equal
+        // strings held at different addresses, silently and with no
+        // diagnostic, and so did every struct carrying one. The Option
+        // branch below already handles the niche shape; let it.
+        if self.type_is_reference(type) && name != "Option" {
             return new LlvmSlotConversion(
                 "  %inline.eq{tag}{id} = icmp eq ptr {left}, {right}\n",
                 "%inline.eq{tag}{id}")

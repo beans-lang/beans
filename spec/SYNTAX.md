@@ -552,7 +552,10 @@ match root.get("a") {
 }
 let text: string = json.stringify(root)?
 
-struct User { pub id: u64  pub name: string }
+struct User {
+    pub id: u64
+    pub name: string
+}
 let user: User = User { id: 7, name: "Ada" }
 io.println(json.encode(user)?)
 ```
@@ -2044,9 +2047,16 @@ Two contextual layout modifiers, in the same modifier chain as `extern "C"`.
 record's — or a single field's — alignment:
 
 ```beans
-pub extern "C" packed struct Header { kind: u8  length: u32  checksum: u32 }
+pub extern "C" packed struct Header {
+    kind: u8
+    length: u32
+    checksum: u32
+}
 extern "C" align(64) struct Counter { hits: u32 }
-extern "C" struct Slot { tag: u8  align(16) payload: u64 }
+extern "C" struct Slot {
+    tag: u8
+    align(16) payload: u64
+}
 ```
 
 - Both names are contextual: `packed` only means this before `struct`/`union`,

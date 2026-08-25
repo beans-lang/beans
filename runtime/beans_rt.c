@@ -5620,6 +5620,41 @@ long long beans_list_contains(BList* l, long long v, long long kind, void* eq) {
     }
     return 0;
 }
+// Two lists are equal when they hold the same elements in the same order,
+// which is what the interpreter has always answered. Element equality is the
+// same slot_eq table `contains` scans with, so a list of classes compares by
+// identity and a list of strings by content — matching element-by-element
+// `==` exactly.
+long long beans_list_equal(BList* a, BList* b, long long kind, void* eq) {
+    if (a == b) return 1;
+    if (!a || !b) return 0;
+    if (a->len != b->len) return 0;
+    for (long long i = 0; i < a->len; i++) {
+        if (!slot_eq(list_slot_at(a, i), list_slot_at(b, i), kind,
+                     (long long (*)(long long, long long))eq))
+            return 0;
+    }
+    return 1;
+}
+// The same, for elements too wide to travel in a slot. The comparator is
+// handed two addresses, as the wide sort comparator is, and elements are
+// stepped by the list's own stride.
+long long beans_list_val_equal(BList* a, BList* b, void* eq) {
+    if (a == b) return 1;
+    if (!a || !b) return 0;
+    if (a->len != b->len) return 0;
+    long long stride = list_stride(a);
+    if (list_stride(b) != stride) return 0;
+    long long (*same)(void*, void*) = (long long (*)(void*, void*))eq;
+    char* x = (char*)a->data;
+    char* y = (char*)b->data;
+    for (long long i = 0; i < a->len; i++) {
+        if (!same(x + (size_t)i * (size_t)stride,
+                  y + (size_t)i * (size_t)stride))
+            return 0;
+    }
+    return 1;
+}
 long long beans_list_min(BList* l, long long kind, long long* ok) {
     *ok = l->len > 0;
     if (!*ok) return 0;

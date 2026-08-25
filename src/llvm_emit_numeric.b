@@ -861,10 +861,126 @@ partial class LlvmTextEmitter {
                 return "  {result} = {opcode} {type} {left}, {right}\n"
             }
         }
+        if canonical_hir_name(operand_type.name) ==
+               "List" &&
+           operand_type.args.len() == 1 &&
+           (instruction.text == "==" ||
+            instruction.text == "!=") {
+            let compared: string =
+                self.emit_list_equal(
+                    function, instruction, values,
+                    operand_type, left, right, result)
+            if compared != "" { return compared }
+        }
         self.fail(
             instruction,
             "LLVM emitter does not support binary '{instruction.text}' for {render_hir_type(operand_type)} yet")
         return ""
+    }
+
+    // The runtime's slot_eq kind for an element, with the comparator thunk
+    // when the kind is a custom one. Only kinds whose meaning matches the
+    // interpreter are answered: a nested List compares structurally there, so
+    // handing the runtime an identity kind would quietly answer a different
+    // question, and refusing is the honest result.
+    fn slot_equality_kind(
+        element: HirType) -> LlvmEqualityKind {
+        let name: string =
+            canonical_hir_name(element.name)
+        if llvm_type_is_integer(element) ||
+           self.type_is_raw_pointer(element) ||
+           self.enum_has_fixed_repr(element) {
+            return new LlvmEqualityKind(0, "null")
+        }
+        if name == "float" {
+            return new LlvmEqualityKind(1, "null")
+        }
+        if name == "f32" {
+            return new LlvmEqualityKind(6, "null")
+        }
+        if name == "string" {
+            return new LlvmEqualityKind(2, "null")
+        }
+        if name == "Bytes" {
+            let symbol: string =
+                self.request_value_eq(element)
+            if symbol == "" {
+                return new LlvmEqualityKind(-1, "null")
+            }
+            return new LlvmEqualityKind(4, "@{symbol}")
+        }
+        if self.type_is_reference(element) {
+            match self.declaration_for(element) {
+                some(declaration) => {
+                    if declaration.kind == "enum" {
+                        let symbol: string =
+                            self.request_value_eq(
+                                element)
+                        if symbol == "" {
+                            return new LlvmEqualityKind(
+                                -1, "null")
+                        }
+                        return new LlvmEqualityKind(
+                            4, "@{symbol}")
+                    }
+                    if declaration.kind == "class" ||
+                       declaration.kind ==
+                           "interface" {
+                        // the interpreter compares these by
+                        // object identity too
+                        return new LlvmEqualityKind(
+                            0, "null")
+                    }
+                }
+                none => {}
+            }
+        }
+        return new LlvmEqualityKind(-1, "null")
+    }
+
+    // Two lists are equal when they hold the same elements in the same order,
+    // which is what the interpreter has always answered. Elements compare the
+    // way `contains` scans for them — by identity for a class, by content for
+    // a string — with one extra route for an inline record, whose structural
+    // equality is captured into a thunk the runtime calls by address.
+    fn emit_list_equal(
+        function: MirFunction,
+        instruction: MirInstruction,
+        values: Map<int, string>,
+        operand_type: HirType,
+        left: string,
+        right: string,
+        result: string) -> string {
+        let element: HirType = operand_type.args[0]
+        let id: int = self.fresh()
+        let raw: string = "%list.eq.raw{id}"
+        var call: string = ""
+        if self.sort_element_by_address(element) &&
+           canonical_hir_name(element.name) !=
+               "decimal" {
+            let thunk: string =
+                self.request_record_eq(element)
+            if thunk == "" { return "" }
+            self.require_declare(
+                "beans_list_val_equal",
+                "i64 @beans_list_val_equal(ptr, ptr, ptr)")
+            call =
+                "  {raw} = call i64 @beans_list_val_equal(ptr {left}, ptr {right}, ptr @{thunk})\n"
+        } else {
+            let kind: LlvmEqualityKind =
+                self.slot_equality_kind(element)
+            if kind.kind < 0 { return "" }
+            self.require_declare(
+                "beans_list_equal",
+                "i64 @beans_list_equal(ptr, ptr, i64, ptr)")
+            call =
+                "  {raw} = call i64 @beans_list_equal(ptr {left}, ptr {right}, i64 {kind.kind}, ptr {kind.thunk})\n"
+        }
+        values[instruction.result] = result
+        if instruction.text == "!=" {
+            return "{call}  {result} = icmp eq i64 {raw}, 0\n"
+        }
+        return "{call}  {result} = icmp ne i64 {raw}, 0\n"
     }
 
     fn emit_unary(function: MirFunction,
@@ -1352,5 +1468,18 @@ partial class LlvmTextEmitter {
             output = "{output}  unreachable\n"
         }
         return "{output}{self.emit_edge_blocks(function, block, values, source)}"
+    }
+}
+
+// The runtime's equality kind for one element type, and the comparator symbol
+// that goes with it when the kind is the custom one. A negative kind means no
+// equality this backend can answer with the same meaning the interpreter does.
+class LlvmEqualityKind {
+    kind: int
+    thunk: string
+
+    fn init(kind: int, thunk: string) {
+        self.kind = kind
+        self.thunk = thunk
     }
 }
