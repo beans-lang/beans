@@ -1859,16 +1859,129 @@ class ExpressionChecker {
             match self.declaration_for(current) {
                 some(declaration) => {
                     for relation: HirType in declaration.relations {
-                        if hir_types_equal(relation, parent) {
+                        // The relation is written in the declaration's own
+                        // type parameters, so bind them to this use before
+                        // comparing: `BoxOf<int>` implements `Producer<int>`,
+                        // not the unbound `Producer<T>` the source spells.
+                        let bound: HirType =
+                            self.substitute_owner_type(
+                                relation, declaration, current)
+                        if hir_types_equal(bound, parent) {
                             return true
                         }
-                        pending.push(relation)
+                        pending.push(bound)
                     }
                 }
                 none => {}
             }
         }
         return false
+    }
+
+    // The identity use of a declaration: `BoxOf<T>` for `class BoxOf<T>`,
+    // plain `IntBox` for one with no parameters. Substituting through it
+    // changes nothing, which is what a still-generic owner wants.
+    fn declaration_self_type(
+        declaration: HirDeclaration) -> HirType {
+        let result: HirType =
+            new HirType(declaration.qualified)
+        for generic: string in declaration.generics {
+            result.args.push(new HirType(generic))
+        }
+        return move result
+    }
+
+    // The parent type as `receiver` names it, with `receiver`'s own
+    // arguments already bound. Chains compose: an interface that extends
+    // another passes its bindings down, so a class two links away still
+    // reads the arguments the first relation pinned.
+    fn bound_parent(receiver: HirType,
+                    parent_owner: string) -> HirType {
+        var pending: List<HirType> = [receiver]
+        var seen: Map<string, bool> = {}
+        for pending.len() != 0 {
+            let current: HirType = pending.remove(0)
+            let key: string = hir_type_key(current)
+            if seen.contains_key(key) { continue }
+            seen[key] = true
+            match self.declaration_for(current) {
+                some(declaration) => {
+                    if declaration.qualified == parent_owner {
+                        return current
+                    }
+                    for relation: HirType in declaration.relations {
+                        pending.push(
+                            self.substitute_owner_type(
+                                relation, declaration, current))
+                    }
+                }
+                none => {}
+            }
+        }
+        return no_hir_type()
+    }
+
+    // The receiver to substitute an inherited method's types through. A
+    // method declared on the receiver's own type substitutes through the
+    // receiver, as always; one reached through a relation substitutes
+    // through that relation instead, so `IntProducer extends
+    // Producer<int>` reads the inherited `T` as `int`.
+    fn method_receiver(function: HirFunction,
+                       declaration: HirDeclaration,
+                       receiver: HirType) -> HirType {
+        if function.owner == "" ||
+           function.owner == declaration.qualified {
+            return receiver
+        }
+        let bound: HirType =
+            self.bound_parent(receiver, function.owner)
+        if bound.name == "" || bound.args.len() == 0 {
+            return receiver
+        }
+        return bound
+    }
+
+    // One type out of an inherited method's signature, substituted through
+    // whichever type actually binds it: the method's own owner when a
+    // relation reached it, the receiver's declaration otherwise.
+    fn substitute_method_type(
+        type: HirType, function: HirFunction,
+        declaration: HirDeclaration,
+        receiver: HirType) -> HirType {
+        if function.owner != "" &&
+           function.owner != declaration.qualified {
+            let bound: HirType =
+                self.bound_parent(receiver, function.owner)
+            if bound.name != "" && bound.args.len() != 0 {
+                match self.declarations.get(function.owner) {
+                    some(owner) => {
+                        return self.substitute_owner_type(
+                            type, owner, bound)
+                    }
+                    none => {}
+                }
+            }
+        }
+        return self.substitute_owner_type(
+            type, declaration, receiver)
+    }
+
+    // One type out of a parent method's signature, read through the
+    // relation that named the parent. An empty receiver means there is no
+    // relation to read through, so the type stands as declared.
+    fn bound_method_type(type: HirType,
+                         parent: HirFunction,
+                         receiver: HirType) -> HirType {
+        if receiver.name == "" || receiver.args.len() == 0 {
+            return type
+        }
+        match self.declarations.get(parent.owner) {
+            some(declaration) => {
+                return self.substitute_owner_type(
+                    type, declaration, receiver)
+            }
+            none => { return type }
+        }
     }
 
     fn is_plain_class(type: HirType) -> bool {
@@ -1988,14 +2101,18 @@ class ExpressionChecker {
     }
 
     fn inherited_methods(
-        owner: string, name: string) -> List<HirFunction> {
+        owner: string, name: string) -> List<InheritedMethod> {
         var pending: List<HirType> = []
-        var result: List<HirFunction> = []
+        var result: List<InheritedMethod> = []
         match self.declarations.get(owner) {
             some(declaration) => {
+                let receiver: HirType =
+                    self.declaration_self_type(declaration)
                 for relation: HirType in
                     declaration.relations {
-                    pending.push(relation)
+                    pending.push(
+                        self.substitute_owner_type(
+                            relation, declaration, receiver))
                 }
             }
             none => {}
@@ -2021,14 +2138,21 @@ class ExpressionChecker {
                                !function.is_private &&
                                (function.is_public ||
                                 caller_package == owner_package) {
-                                result.push(function)
+                                result.push(
+                                    new InheritedMethod(
+                                        function, relation))
                             }
                         }
                         none => {}
                     }
+                    // Keep the bindings this relation pinned as the walk
+                    // climbs: `IntBox implements Producer<int>` must still
+                    // read `int` in anything Producer itself extends.
                     for parent: HirType in
                         declaration.relations {
-                        pending.push(parent)
+                        pending.push(
+                            self.substitute_owner_type(
+                                parent, declaration, relation))
                     }
                 }
                 none => {}
@@ -2084,39 +2208,36 @@ class ExpressionChecker {
         return false
     }
 
+    // `right_receiver` is the parent type as the child names it, with the
+    // child's arguments already bound: `implements Producer<int>` passes
+    // `Producer<int>`, so the parent's `T` compares as `int`. Pass
+    // `no_hir_type()` when there is no relation to read through.
     fn same_method_signature(left: HirFunction,
-                             right: HirFunction) -> bool {
-        // Self results match only each other: the stored result type is
-        // each owner's own, so comparing those would wrongly reject an
-        // inherited `-> Self` and wrongly accept a concrete override.
-        if left.returns_self != right.returns_self {
-            return false
-        }
-        if left.parameters.len() != right.parameters.len() ||
-           (!left.returns_self &&
-            !hir_types_equal(left.result, right.result)) {
-            return false
-        }
-        for index: int in 0..left.parameters.len() {
-            if !hir_types_equal(
-                   left.parameters[index].type,
-                   right.parameters[index].type) {
-                return false
-            }
-        }
-        return true
+                             right: HirFunction,
+                             right_receiver: HirType) -> bool {
+        // The left side is the implementing method: its types are already
+        // written in its own owner's concrete terms, so it has no relation
+        // to read through.
+        return self.same_bound_signature(
+            left, no_hir_type(), right, right_receiver)
     }
 
-    fn method_signature(function: HirFunction) -> string {
+    fn method_signature(function: HirFunction,
+                        receiver: HirType) -> string {
         var parameters: List<string> = []
         for parameter: HirParameter in function.parameters {
-            parameters.push(render_hir_type(parameter.type))
+            parameters.push(
+                render_hir_type(
+                    self.bound_method_type(
+                        parameter.type, function, receiver)))
         }
         let shown: string =
             if function.returns_self {
                 "Self"
             } else {
-                render_hir_type(function.result)
+                render_hir_type(
+                    self.bound_method_type(
+                        function.result, function, receiver))
             }
         return "fn({parameters.join(", ")}) -> {shown}"
     }
@@ -2143,7 +2264,7 @@ class ExpressionChecker {
         if function.is_private && function.is_override {
             return
         }
-        let parents: List<HirFunction> =
+        let parents: List<InheritedMethod> =
             self.inherited_methods(
                 function.owner, function.name)
         if parents.len() == 0 {
@@ -2155,7 +2276,9 @@ class ExpressionChecker {
             return
         }
         var needs_override: bool = false
-        for parent: HirFunction in parents {
+        for inherited: InheritedMethod in parents {
+                let parent: HirFunction = inherited.function
+                let receiver: HirType = inherited.parent
                 if parent.has_body || parent.is_abstract {
                     needs_override = true
                 }
@@ -2176,7 +2299,7 @@ class ExpressionChecker {
                 }
                 self.add_dispatch_slots(function, parent)
                 if !self.same_method_signature(
-                       function, parent) {
+                       function, parent, receiver) {
                     var parent_kind: string = "method"
                     match self.declarations.get(parent.owner) {
                         some(owner) => {
@@ -2190,7 +2313,7 @@ class ExpressionChecker {
                     }
                     self.fail(
                         function.syntax,
-                        "'{function.name}' doesn't match the {parent_kind}: expected {self.method_signature(parent)}, this is {self.method_signature(function)}")
+                        "'{function.name}' doesn't match the {parent_kind}: expected {self.method_signature(parent, receiver)}, this is {self.method_signature(function, no_hir_type())}")
                 }
         }
         if needs_override && !function.is_override {
@@ -2244,10 +2367,15 @@ class ExpressionChecker {
 
     fn interface_default_satisfies(
         declaration: HirDeclaration,
-        requirement: HirFunction) -> bool {
+        requirement: HirFunction,
+        requirement_receiver: HirType) -> bool {
         var pending: List<HirType> = []
+        let receiver: HirType =
+            self.declaration_self_type(declaration)
         for relation: HirType in declaration.relations {
-            pending.push(relation)
+            pending.push(
+                self.substitute_owner_type(
+                    relation, declaration, receiver))
         }
         var seen: Map<string, bool> = {}
         for pending.len() != 0 {
@@ -2261,9 +2389,15 @@ class ExpressionChecker {
                         match self.methods.get(
                             "{owner.qualified}.{requirement.name}") {
                             some(candidate) => {
+                                // Both sides are read through the relation
+                                // that named them, so a default body
+                                // written in `T` still answers a
+                                // requirement pinned to `int`.
                                 if candidate.has_body &&
-                                   self.same_method_signature(
-                                       candidate, requirement) &&
+                                   self.same_bound_signature(
+                                       candidate, relation,
+                                       requirement,
+                                       requirement_receiver) &&
                                    self.shares_dispatch_slot(
                                        candidate, requirement) {
                                     return true
@@ -2273,13 +2407,52 @@ class ExpressionChecker {
                         }
                     }
                     for parent: HirType in owner.relations {
-                        pending.push(parent)
+                        pending.push(
+                            self.substitute_owner_type(
+                                parent, owner, relation))
                     }
                 }
                 none => {}
             }
         }
         return false
+    }
+
+    // Both signatures read through the relation that named them before
+    // comparing, so `implements Producer<int>` measures the parent's `T`
+    // as `int`. An empty receiver means that side stands as declared.
+    fn same_bound_signature(
+        left: HirFunction, left_receiver: HirType,
+        right: HirFunction, right_receiver: HirType) -> bool {
+        // Self results match only each other: the stored result type is
+        // each owner's own, so comparing those would wrongly reject an
+        // inherited `-> Self` and wrongly accept a concrete override.
+        if left.returns_self != right.returns_self {
+            return false
+        }
+        if left.parameters.len() != right.parameters.len() {
+            return false
+        }
+        if !left.returns_self &&
+           !hir_types_equal(
+               self.bound_method_type(
+                   left.result, left, left_receiver),
+               self.bound_method_type(
+                   right.result, right, right_receiver)) {
+            return false
+        }
+        for index: int in 0..left.parameters.len() {
+            if !hir_types_equal(
+                   self.bound_method_type(
+                       left.parameters[index].type,
+                       left, left_receiver),
+                   self.bound_method_type(
+                       right.parameters[index].type,
+                       right, right_receiver)) {
+                return false
+            }
+        }
+        return true
     }
 
     fn abstract_requirements(
@@ -2337,13 +2510,21 @@ class ExpressionChecker {
             for requirement: HirFunction in
                 self.abstract_requirements(declaration) {
                 var satisfied: bool = false
+                // The requirement's own type parameters mean whatever the
+                // relation that reached it pinned them to, so a class that
+                // wrote `implements Producer<int>` is asked for `int`.
+                let receiver: HirType =
+                    self.bound_parent(
+                        self.declaration_self_type(declaration),
+                        requirement.owner)
                 match self.nearest_class_method(
                     declaration, requirement.name) {
                     some(candidate) => {
                         satisfied =
                             candidate.has_body &&
                             self.same_method_signature(
-                                candidate, requirement) &&
+                                candidate, requirement,
+                                receiver) &&
                             self.shares_dispatch_slot(
                                 candidate, requirement)
                     }
@@ -2355,7 +2536,8 @@ class ExpressionChecker {
                                     satisfied =
                                         self.interface_default_satisfies(
                                             declaration,
-                                            requirement)
+                                            requirement,
+                                            receiver)
                                 }
                             }
                             none => {}
@@ -8075,13 +8257,18 @@ class ExpressionChecker {
                             // type: the body provably returns its
                             // receiver, so a chain keeps the type the
                             // caller started with.
+                            let call_receiver: HirType =
+                                self.method_receiver(
+                                    function, declaration,
+                                    receiver.type)
                             let result_type: HirType =
                                 if function.returns_self {
                                     receiver.type
                                 } else {
-                                    self.substitute_owner_type(
+                                    self.substitute_method_type(
                                         function.result,
-                                        declaration, receiver.type)
+                                        function, declaration,
+                                        receiver.type)
                                 }
                             let result: HirNode =
                                 self.make_node(
@@ -8139,7 +8326,7 @@ class ExpressionChecker {
                                 self.check_generic_arguments(
                                     node, 1, function,
                                     expected,
-                                    receiver.type,
+                                    call_receiver,
                                     self.take_call_generics(),
                                     "{display_symbol(declaration.qualified)}.{function.name}",
                                     result)
@@ -8149,7 +8336,7 @@ class ExpressionChecker {
                             } else {
                                 self.check_arguments(
                                     node, 1, function,
-                                    receiver.type,
+                                    call_receiver,
                                     "{display_symbol(declaration.qualified)}.{function.name}",
                                     result)
                             }

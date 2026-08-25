@@ -94,6 +94,20 @@ class ResolvedField {
     }
 }
 
+// A method a class inherits, paired with the parent type the class named
+// to reach it. `implements Producer<int>` records `Producer<int>`, so the
+// parent's own type parameters can be read as the arguments the relation
+// pinned instead of as the bare names the interface declared.
+class InheritedMethod {
+    function: HirFunction
+    parent: HirType
+
+    fn init(function: HirFunction, parent: HirType) {
+        self.function = function
+        self.parent = parent
+    }
+}
+
 class ResolvedSuperMethod {
     owner: HirType
     function: HirFunction
