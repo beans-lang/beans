@@ -507,14 +507,24 @@ static void guard_report_install(void) {
     sigaction(SIGBUS, &action, NULL);
 }
 
-// The handler must not run on the overflowed fiber stack itself.
+// The handler must not run on the overflowed fiber stack itself. One
+// alternate stack per thread, installed at the thread's first worker and
+// kept for the thread's life — a replaced stack could still be under a
+// live signal frame, so it is never swapped or freed, and the
+// thread-local keeps the one allocation reachable for leak checkers.
+static _Thread_local void* guard_altstack = NULL;
 static void guard_altstack_install(void) {
+    if (guard_altstack) return;
     stack_t alt;
     memset(&alt, 0, sizeof alt);
     alt.ss_size = SIGSTKSZ < 64 * 1024 ? 64 * 1024 : (size_t)SIGSTKSZ;
     alt.ss_sp = malloc(alt.ss_size);
     if (!alt.ss_sp) return;
-    if (sigaltstack(&alt, NULL) != 0) free(alt.ss_sp);
+    if (sigaltstack(&alt, NULL) != 0) {
+        free(alt.ss_sp);
+        return;
+    }
+    guard_altstack = alt.ss_sp;
 }
 #endif // !_WIN32
 
