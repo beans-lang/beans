@@ -10,6 +10,25 @@
 # lock; byte-identical output here is the regression gate for it.
 set -euo pipefail
 
+# macOS runners ship no GNU timeout; stand in for it when absent. The
+# stand-in reports 137 (SIGKILL) where GNU prints 124 — every use here
+# only cares that a hang cannot pass, and neither code ever matches an
+# expected exit.
+if ! command -v timeout >/dev/null 2>&1; then
+timeout() {
+    local secs="$1"; shift
+    "$@" &
+    local pid=$!
+    ( sleep "$secs"; kill -9 "$pid" 2>/dev/null ) &
+    local dog=$!
+    local status=0
+    wait "$pid" || status=$?
+    kill "$dog" 2>/dev/null
+    wait "$dog" 2>/dev/null || true
+    return "$status"
+}
+fi
+
 cd "$(dirname "$0")/.."
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/beans-fiber-std.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
