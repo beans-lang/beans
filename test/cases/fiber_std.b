@@ -46,14 +46,19 @@ fn closed_sender(ch: Channel<int>) -> int {
     return 0
 }
 
-fn worker_result() -> int {
-    time.sleep_millis(15)
+// The thread cannot answer until the sibling fiber has run: the gate is
+// what orders these two, not a sleep race. A margin wide enough on one
+// machine is not wide enough on a loaded runner, and the interpreter pays
+// for a fiber's stack before the ticker's first tick.
+fn worker_result(ready: Gate) -> int {
+    ready.wait()
     return 99
 }
 
-fn ticker() {
+fn ticker(ready: Gate) {
     time.sleep_millis(4)
     io.println("tick while joining")
+    ready.open()
 }
 
 fn main() {
@@ -97,11 +102,15 @@ fn main() {
         err(error) => { io.println("closed send kind={error.kind}") }
     }
 
-    // a fiber joining an OS thread parks; a sibling fiber runs meanwhile
+    // a fiber joining an OS thread parks; a sibling fiber runs meanwhile.
+    // The thread waits on the gate the ticker opens, so the sibling has to
+    // have run for the join to answer at all — the order is a fact here,
+    // not a race the faster sleeper happens to win.
+    let ready: Gate = new Gate()
     let t: Thread<int> = thread.spawn(fn() -> int {
-        return worker_result()
+        return worker_result(ready)
     })
-    brew ticker()
+    brew ticker(ready)
     let joined: int = t.join()
     io.println("thread said {joined}")
 }

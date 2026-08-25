@@ -24,6 +24,11 @@ This file records user-facing changes in each Beans release.
   included. The fiber core underneath (`beans_fiber_*`, arm64 + x86-64
   context switch, guard-page stacks, FIFO scheduler, cross-thread resume)
   ships in the runtime with its own C gate; the runtime ABI is now 11.
+  Every other architecture switches stacks with the POSIX `ucontext`
+  family instead, which glibc already provides. musl declares those
+  functions without shipping them, so a musl host that is not x86-64 or
+  arm64 — PowerPC64, RISC-V 64, LoongArch64 — links **libucontext**
+  (`apk add libucontext-dev`) for a native build. See docs/INSTALL.md.
 - `Channel.try_send` and `Channel.try_receive` answer immediately — `false`
   or `none` — where the blocking forms would wait. `try_send` needs a
   copyable element: a refused move-only value would be lost.

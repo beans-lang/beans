@@ -34,9 +34,9 @@ tmp=$(mktemp -d "${TMPDIR:-/tmp}/beans-fiber-std.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 
 echo "checking std parks fibers: channels, sleep, thread join"
-./build/beansc run test/cases/fiber_std.b >"$tmp/interp"
+timeout 60 ./build/beansc run test/cases/fiber_std.b >"$tmp/interp"
 ./build/beansc build test/cases/fiber_std.b -o "$tmp/native" >"$tmp/build" 2>&1
-"$tmp/native" >"$tmp/native.out"
+timeout 60 "$tmp/native" >"$tmp/native.out"
 diff -u test/cases/fiber_std.out "$tmp/interp"
 diff -u test/cases/fiber_std.out "$tmp/native.out"
 

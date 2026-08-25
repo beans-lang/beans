@@ -50,6 +50,22 @@ libraries=(-lm)
 case "$(uname -m)" in
     arm*) libraries+=(-latomic) ;;
 esac
+# The fiber core uses hand-written asm on arm64 and x86-64 and the POSIX
+# ucontext family everywhere else. musl declares those functions without
+# shipping them, so those hosts link Alpine's libucontext — the `_posix`
+# archive carries the plain names and stands on the base library, so it
+# comes first. Same rule the compiler's own linker step applies.
+case "$(uname -m)" in
+    aarch64 | arm64 | x86_64) ;;
+    *)
+        # Keyed on the archive itself: a glibc host has no libucontext and
+        # needs none, and a musl host missing it fails at the link with the
+        # undefined getcontext it actually has.
+        if [ -e /usr/lib/libucontext_posix.a ]; then
+            libraries+=(-lucontext_posix -lucontext)
+        fi
+        ;;
+esac
 
 "$cc" "${common[@]}" -Wno-override-module \
     "$ir" "$ffi" "$work/runtime.o" "$work/json.o" "$work/xml.o" \

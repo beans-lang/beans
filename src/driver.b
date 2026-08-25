@@ -2446,6 +2446,21 @@ class NativeBuildDriver {
            self.target.pointer_bits == 32 {
             command.arg("-latomic")
         }
+        // The fiber core switches stacks with hand-written asm on arm64 and
+        // x86-64 and with the POSIX ucontext family everywhere else. musl
+        // ships the <ucontext.h> declarations but none of the functions, so
+        // those targets link Alpine's libucontext: the `_posix` archive
+        // carries the plain getcontext/swapcontext names and stands on the
+        // base library, so it has to come first. An arch leaves this list by
+        // growing its own asm in runtime/beans_fiber.c.
+        if self.target.os == "linux" &&
+           self.target.env == "musl" &&
+           self.runtime_profile != "freestanding" &&
+           self.target.arch != "arm64" &&
+           self.target.arch != "x86_64" {
+            command.arg("-lucontext_posix")
+            command.arg("-lucontext")
+        }
         // The runtime's socket section rides Winsock. This has to come *after*
         // the objects that reference it: GNU ld resolves an archive left to
         // right and only pulls members that satisfy already-undefined symbols,

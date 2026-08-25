@@ -261,17 +261,17 @@ jobs:
             target: riscv64-unknown-linux-musl
             platform: linux/riscv64
             image: alpine:3.22
-            packages: clang lld llvm
+            packages: clang lld llvm libucontext-dev
           - arch: ppc64le
             target: powerpc64le-unknown-linux-musl
             platform: linux/ppc64le
             image: alpine:3.22
-            packages: clang lld llvm
+            packages: clang lld llvm libucontext-dev
           - arch: loongarch64
             target: loongarch64-unknown-linux-musl
             platform: linux/loong64
             image: loongarch64/alpine@sha256:ba4698dc340db5079eea01b7ea3488452a9a1c3cb8aad11033ea2cc978f49ffc
-            packages: clang19 lld llvm19
+            packages: clang19 lld llvm19 libucontext-dev
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:

@@ -165,6 +165,13 @@ letting you reach a Clang or linker error.
 Beans emits LLVM IR, so the C compiler must be Clang. GCC cannot compile that
 IR, and is not a supported substitute.
 
+On **musl** hosts other than x86-64 and arm64 — PowerPC64, RISC-V 64 and
+LoongArch64 — a native `beansc build` also needs **libucontext** (`apk add
+libucontext-dev`). The fiber runtime switches stacks with its own assembly on
+x86-64 and arm64 and with the POSIX `ucontext` family everywhere else, and
+musl declares those functions without shipping them. glibc hosts need nothing
+extra.
+
 Override the tools Beans uses with `BEANS_CC`, `BEANS_AR`, `BEANS_RUNTIME`,
 `BEANS_WASM_HOST` and `BEANS_STDLIB`, or per build with `--cc`, `--ar`,
 `--linker` and `--sysroot`.
