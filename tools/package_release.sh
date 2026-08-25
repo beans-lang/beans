@@ -114,6 +114,8 @@ mkdir -p "$root/bin" "$root/lib" "$root/libexec"
 cp "$beansc_bin" "$root/bin/beansc.real"
 chmod 0755 "$root/bin/beansc.real"
 cp "$repo/runtime/beans_rt.c" "$root/bin/"
+# the fiber core rides beside the runtime: beans_rt.c includes both
+cp "$repo/runtime/beans_fiber.c" "$repo/runtime/beans_fiber.h" "$root/bin/"
 cp "$repo/runtime/wasm_host.c" "$root/bin/"
 cp -R "$repo/stdlib/std" "$root/lib/std"
 # std.encoding bridge and pinned vendored sources (yyjson, pugixml, simdutf)
