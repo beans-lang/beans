@@ -7,6 +7,12 @@
 //   fiber_core overflow   recurse off the stack (the script expects the
 //                         guard report and exit 134)
 
+// glibc hides clock_gettime and CLOCK_MONOTONIC under a strict -std; this
+// gate compiles with -std=c11, so ask for the full surface first.
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE
+#endif
+
 #include "../runtime/beans_fiber.h"
 
 #include <pthread.h>
