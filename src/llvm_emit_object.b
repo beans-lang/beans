@@ -170,6 +170,182 @@ partial class LlvmTextEmitter {
         return false
     }
 
+    // Every method an instance can be reached through dynamically has to
+    // exist before its descriptor names it. A direct call raises the
+    // instantiation itself, but an interface call resolves through the
+    // vtable, so nothing else would raise a method that is only ever
+    // called that way — and the row would emit as null.
+    fn instantiate_dispatch_methods(
+        instruction: MirInstruction,
+        layout: LlvmClassLayout,
+        bindings: Map<string, HirType>) -> bool {
+        let prefix: string =
+            "{layout.declaration.qualified}."
+        for function: MirFunction in
+            self.program.functions {
+            if function.declaration ||
+               function.external ||
+               function.cleanup_id >= 0 ||
+               function.closure_id >= 0 ||
+               function.dispatch_slots.len() == 0 ||
+               !function.name.starts_with(prefix) {
+                continue
+            }
+            // A method with generics of its own binds them at the call
+            // site, not here — the class's arguments alone would leave
+            // them open. Such a method never fills a vtable row anyway.
+            if function.generics.len() != 0 { continue }
+            let method: string =
+                function.name.slice(
+                    prefix.len(), function.name.len())
+            // a lifted closure or defer body carries its parent's name
+            // with another segment on the end; the family follows the
+            // method itself, not this loop
+            if method.contains(".") { continue }
+            if self.instantiate_generic(
+                   instruction, function.name,
+                   "{layout.instance}.{method}",
+                   bindings) == "" {
+                return false
+            }
+        }
+        return true
+    }
+
+    // An interface default the class never replaces still needs a symbol
+    // of its own. A generic interface compiles its default as a template
+    // like any other owner-generic method, so a class that keeps it has
+    // nothing to call until the relation's arguments are bound. Raise the
+    // instance under the class's own name and register its selectors, so
+    // the vtable row and any devirtualized call both resolve the way they
+    // would for a method the class wrote itself.
+    fn instantiate_interface_defaults(
+        instruction: MirInstruction,
+        declaration: HirDeclaration,
+        instance: string,
+        root: HirType,
+        relation_owner: HirType,
+        depth: int) -> bool {
+        if depth > 32 { return true }
+        var found: Option<HirDeclaration> =
+            self.declaration_for(relation_owner)
+        match found {
+            some(owner) => {
+                for index: int in
+                    0..owner.relations.len() {
+                    let relation: HirType =
+                        self.substitute_class_type(
+                            owner.relations[index],
+                            owner, relation_owner)
+                    if !self.instantiate_interface_default(
+                           instruction, declaration, instance,
+                           root, relation) {
+                        return false
+                    }
+                    if !self.instantiate_interface_defaults(
+                           instruction, declaration, instance,
+                           root, relation, depth + 1) {
+                        return false
+                    }
+                }
+            }
+            none => {}
+        }
+        return true
+    }
+
+    fn instantiate_interface_default(
+        instruction: MirInstruction,
+        declaration: HirDeclaration,
+        instance: string,
+        root: HirType,
+        relation: HirType) -> bool {
+        var found: Option<HirDeclaration> =
+            self.declaration_for(relation)
+        match found {
+            some(owner) => {
+                // a non-generic interface already has a symbol for its
+                // default; only an owner-generic one is a template
+                if owner.kind != "interface" ||
+                   owner.generics.len() == 0 {
+                    return true
+                }
+                let prefix: string = "{owner.qualified}."
+                for function: MirFunction in
+                    self.program.functions {
+                    if function.declaration ||
+                       function.external ||
+                       function.cleanup_id >= 0 ||
+                       function.closure_id >= 0 ||
+                       function.dispatch_slots.len() == 0 ||
+                       function.generics.len() != 0 ||
+                       !function.name.starts_with(prefix) {
+                        continue
+                    }
+                    let method: string =
+                        function.name.slice(
+                            prefix.len(),
+                            function.name.len())
+                    if method.contains(".") { continue }
+                    // the class's own body wins, whether it was already
+                    // raised or is still waiting as a template
+                    let key: string = "{instance}.{method}"
+                    if self.function_symbols.contains_key(
+                           key) ||
+                       self.class_defines_method(
+                           declaration, method) {
+                        continue
+                    }
+                    var bindings:
+                        Map<string, HirType> = {}
+                    for index: int in
+                        0..owner.generics.len() {
+                        if index >= relation.args.len() {
+                            continue
+                        }
+                        bindings[owner.generics[index]] =
+                            relation.args[index]
+                    }
+                    bindings[owner.qualified] = root
+                    bindings[owner.name] = root
+                    if self.instantiate_generic(
+                           instruction, function.name,
+                           key, bindings) == "" {
+                        return false
+                    }
+                    // the descriptor and the devirtualized path both ask
+                    // for the class's key, not the interface's
+                    for slot: string in
+                        function.dispatch_slots {
+                        self.method_dispatch_slots[
+                            "{key}|{slot}"] = true
+                    }
+                }
+            }
+            none => {}
+        }
+        return true
+    }
+
+    fn class_defines_method(
+        declaration: HirDeclaration,
+        method: string) -> bool {
+        for link: HirDeclaration in
+            self.class_chain(declaration) {
+            let name: string =
+                "{link.qualified}.{method}"
+            for function: MirFunction in
+                self.program.functions {
+                if function.name == name &&
+                   !function.declaration &&
+                   !function.external {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
     // the base-first declaration chain; empty while a relation shape
     // (interfaces, generics, a missing base) is still unsupported —
     // a real chain always holds at least the class itself
@@ -704,20 +880,36 @@ partial class LlvmTextEmitter {
                     id = self.class_ids[
                         declaration.qualified]
                 } else {
-                    // an instantiation mints its own class id; no
-                    // bases or dispatching interfaces on generic classes
-                    // yet. Marker-only Send/Sync relations need no layout
-                    // or vtable entry, so they are safe here.
+                    // an instantiation mints its own class id. A base
+                    // class stays unsupported: its fields would have to
+                    // be laid out through the instantiation. An
+                    // implemented interface contributes no fields, only
+                    // vtable rows, and emit_class_records fills those per
+                    // instantiation. Marker-only Send/Sync relations need
+                    // neither.
                     for index: int in
                         0..declaration.relations.len() {
                         if index >=
                                declaration.relation_kinds.len() ||
                            declaration.relation_kinds[index] !=
-                               "implements" ||
-                           (declaration.relations[index].name != "Send" &&
-                            declaration.relations[index].name != "Sync") {
+                               "implements" {
                             return none
                         }
+                        let relation: HirType =
+                            declaration.relations[index]
+                        if relation.name == "Send" ||
+                           relation.name == "Sync" {
+                            continue
+                        }
+                        var is_interface: bool = false
+                        match self.declaration_for(relation) {
+                            some(parent) => {
+                                is_interface =
+                                    parent.kind == "interface"
+                            }
+                            none => {}
+                        }
+                        if !is_interface { return none }
                     }
                     if self.class_ids.contains_key(key) {
                         id = self.class_ids[key]
@@ -1388,6 +1580,34 @@ partial class LlvmTextEmitter {
                            deinit_bindings) == "" {
                         return ""
                     }
+                }
+                if layout.declaration.generics.len() != 0 {
+                    var dispatch_bindings:
+                        Map<string, HirType> = {}
+                    for index: int in
+                        0..layout.declaration.generics.len() {
+                        dispatch_bindings[
+                            layout.declaration.generics[
+                                index]] =
+                            instruction.type.args[index]
+                    }
+                    dispatch_bindings[
+                        layout.declaration.qualified] =
+                        instruction.type
+                    dispatch_bindings[
+                        layout.declaration.name] =
+                        instruction.type
+                    if !self.instantiate_dispatch_methods(
+                           instruction, layout,
+                           dispatch_bindings) {
+                        return ""
+                    }
+                }
+                if !self.instantiate_interface_defaults(
+                       instruction, layout.declaration,
+                       layout.instance, instruction.type,
+                       instruction.type, 0) {
+                    return ""
                 }
                 let result: string =
                     "%v{instruction.result}"
@@ -2367,14 +2587,29 @@ partial class LlvmTextEmitter {
                             method_template,
                             bindings)
                     }
-                    let symbol: string =
+                    let slot: string =
+                        if instruction.dispatch_slot != "" {
+                            instruction.dispatch_slot
+                        } else {
+                            "pub:{instruction.text}"
+                        }
+                    var symbol: string =
                         self.method_slot_symbol(
-                            declaration,
-                            if instruction.dispatch_slot != "" {
-                                instruction.dispatch_slot
-                            } else {
-                                "pub:{instruction.text}"
-                            })
+                            declaration, slot)
+                    if symbol == "null" {
+                        // a kept default from a generic interface has no
+                        // symbol until its arguments are bound, and the
+                        // receiver's `new` may not have been emitted yet
+                        if !self.instantiate_interface_defaults(
+                               instruction, declaration,
+                               declaration.qualified,
+                               receiver_type, receiver_type, 0) {
+                            return ""
+                        }
+                        symbol =
+                            self.method_slot_symbol(
+                                declaration, slot)
+                    }
                     if symbol == "null" {
                         self.fail(
                             instruction,

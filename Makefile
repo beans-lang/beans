@@ -121,6 +121,7 @@ test-frontend: $(BIN)
 	bash ./test/private_fields.sh
 	bash ./test/private_methods.sh
 	bash ./test/abstract_classes.sh
+	bash ./test/generic_interfaces.sh
 	bash ./test/singleton_classes.sh
 	bash ./test/partial_classes.sh
 	bash ./test/static_fields.sh
@@ -283,6 +284,7 @@ test-core: $(BIN)
 	bash ./test/private_fields.sh
 	bash ./test/private_methods.sh
 	bash ./test/abstract_classes.sh
+	bash ./test/generic_interfaces.sh
 	bash ./test/singleton_classes.sh
 	bash ./test/partial_classes.sh
 	bash ./test/static_fields.sh

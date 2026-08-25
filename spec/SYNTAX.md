@@ -1382,6 +1382,41 @@ Private methods are not inherited and never satisfy or replace class or
 interface contracts, so they cannot be `abstract` or `override`. Interfaces
 cannot declare private methods. Beans has no `final` yet.
 
+**Generic interfaces.** An interface may take type parameters, and an
+implementor binds them at the `implements` site: `class IntBox implements
+Producer<int>` requires `fn make() -> int`, not the interface's own `T`. A
+generic class may pass its own parameter through instead — `class BoxOf<T>
+implements Producer<T>` — and each instantiation binds the interface at that
+instantiation's argument. Either way the interface stands as a type of its
+own: `Producer<int>` is a variable, parameter and element type that
+dispatches dynamically, and `Producer<int>` and `Producer<string>` are two
+unrelated types. A chain pins arguments the same way, so `interface
+IntProducer extends Producer<int>` answers `int`. A method that declares
+generics of its own binds them at the call site and so cannot be reached
+through an interface. A generic class may implement interfaces but still
+may not extend a base class.
+
+```
+interface Producer<T> {
+    fn make() -> T
+    fn twice() -> List<T> { return [self.make(), self.make()] }
+}
+
+class IntBox implements Producer<int> {
+    fn make() -> int { return 7 }
+}
+
+class BoxOf<T> implements Producer<T> {
+    value: T
+    fn init(value: T) { self.value = value }
+    fn make() -> T { return self.value }
+}
+
+let a: Producer<int> = new IntBox()
+let b: Producer<int> = new BoxOf<int>(3)
+let c: Producer<string> = new BoxOf<string>("box")
+```
+
 **`Self` return type.** A class or interface instance method may declare
 `-> Self`: at every call site the result has the receiver expression's own
 static type, so a fluent chain inherited from a base class keeps the
