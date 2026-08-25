@@ -1982,7 +1982,13 @@ partial class LlvmTextEmitter {
         let is_decimal: bool =
             canonical_hir_name(element.name) ==
                 "decimal"
-        if !is_decimal &&
+        // An inline record is wider than a slot, so it takes the same
+        // by-address path decimal takes — the runtime moves whole elements
+        // by the list's own stride and hands the thunk two addresses.
+        let is_record: bool =
+            !is_decimal &&
+            self.sort_element_by_address(element)
+        if !is_decimal && !is_record &&
            !self.slot_compatible(element) {
             self.fail(
                 instruction,
@@ -2008,6 +2014,8 @@ partial class LlvmTextEmitter {
             symbol =
                 if is_decimal {
                     "beans_list_decv_sort_by_key"
+                } else if is_record {
+                    "beans_list_val_sort_by_key"
                 } else {
                     "beans_list_sort_by_key"
                 }
@@ -2015,6 +2023,8 @@ partial class LlvmTextEmitter {
             symbol =
                 if is_decimal {
                     "beans_list_decv_sort_by"
+                } else if is_record {
+                    "beans_list_val_sort_by"
                 } else {
                     "beans_list_sort_by"
                 }

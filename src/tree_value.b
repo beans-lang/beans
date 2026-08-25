@@ -578,6 +578,52 @@ fn tree_float_floor(value: float) -> float {
     return truncated
 }
 
+fn tree_float_truncate(value: float) -> float {
+    if value != value { return value }
+    if value == 0.0 { return value }
+    if value >= 9007199254740992.0 ||
+       value <= -9007199254740992.0 {
+        return value
+    }
+    return (value as int) as float
+}
+
+// The truncated remainder LLVM's frem and C's fmod both produce: the sign
+// follows the dividend, so -7.5 % 2.0 is -1.5 and 7.5 % -2.0 is 1.5. The
+// floored substitute `a - (a / b).floor() * b` disagrees on exactly those
+// operands, which is why it is not used here — the two backends have to
+// print the same bytes.
+fn tree_float_remainder(left: float,
+                        right: float) -> float {
+    // NaN in, NaN out, and x % 0 is NaN as well
+    if left != left || right != right ||
+       right == 0.0 {
+        return tree_float_nan()
+    }
+    // an infinite dividend has no remainder; an infinite divisor leaves
+    // the dividend untouched
+    let huge: float = tree_float_infinity()
+    if left == huge || left == -huge {
+        return tree_float_nan()
+    }
+    if right == huge || right == -huge {
+        return left
+    }
+    let quotient: float =
+        tree_float_truncate(left / right)
+    let scaled: float = quotient * right
+    if scaled != scaled ||
+       scaled == huge || scaled == -huge {
+        return left
+    }
+    return left - scaled
+}
+
+fn tree_float_nan() -> float {
+    let zero: float = 0.0
+    return zero / zero
+}
+
 // the overflow product is the IEEE infinity both backends print the same
 fn tree_float_infinity() -> float {
     var big: float = 1.0e308

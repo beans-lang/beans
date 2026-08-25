@@ -15066,6 +15066,113 @@ void beans_list_decv_sort_by_key(BList* list, void* thunk, void* box) {
     rt_free(key_buffer);
     rt_free(value_buffer);
 }
+// A stable merge sort over inline elements of any width. The decimal pair
+// above is this same algorithm pinned to BDec; this one reads the list's own
+// stride, so a list of structs sorts without a per-type runtime entry. The
+// comparator is handed two addresses rather than two values, exactly as the
+// decimal thunk is, because an element wider than a slot cannot travel in a
+// register pair. Elements move by memcpy: a sort is a permutation, so no
+// owned pointer inside an element gains or loses a reference.
+void beans_list_val_sort_by(BList* list, void* thunk, void* box) {
+    long long n = list->len;
+    if (n < 2) return;
+    long long stride = list_stride(list);
+    long long (*less)(void*, void*, void*) =
+        (long long (*)(void*, void*, void*))thunk;
+    char* values = (char*)list->data;
+    char* buffer = rt_alloc((size_t)n * (size_t)stride);
+    if (!buffer) beans_panic("out of memory", 0, 0);
+    for (long long width = 1; width < n; width *= 2) {
+        for (long long lo = 0; lo < n; lo += 2 * width) {
+            long long mid = lo + width < n ? lo + width : n;
+            long long hi = lo + 2 * width < n ? lo + 2 * width : n;
+            long long left = lo, right = mid, out = lo;
+            while (left < mid && right < hi) {
+                // taking left unless right is strictly less keeps it stable
+                long long take =
+                    less(box, values + (size_t)right * (size_t)stride,
+                         values + (size_t)left * (size_t)stride)
+                        ? right++
+                        : left++;
+                memcpy(buffer + (size_t)out * (size_t)stride,
+                       values + (size_t)take * (size_t)stride,
+                       (size_t)stride);
+                out++;
+            }
+            while (left < mid) {
+                memcpy(buffer + (size_t)out * (size_t)stride,
+                       values + (size_t)left * (size_t)stride,
+                       (size_t)stride);
+                out++;
+                left++;
+            }
+            while (right < hi) {
+                memcpy(buffer + (size_t)out * (size_t)stride,
+                       values + (size_t)right * (size_t)stride,
+                       (size_t)stride);
+                out++;
+                right++;
+            }
+            memcpy(values + (size_t)lo * (size_t)stride,
+                   buffer + (size_t)lo * (size_t)stride,
+                   (size_t)(hi - lo) * (size_t)stride);
+        }
+    }
+    rt_free(buffer);
+}
+void beans_list_val_sort_by_key(BList* list, void* thunk, void* box) {
+    long long n = list->len;
+    if (n < 2) return;
+    long long stride = list_stride(list);
+    char* values = (char*)list->data;
+    long long (*key_fn)(void*, void*) = (long long (*)(void*, void*))thunk;
+    long long* keys = rt_alloc((size_t)n * sizeof(long long));
+    long long* key_buffer = rt_alloc((size_t)n * sizeof(long long));
+    char* value_buffer = rt_alloc((size_t)n * (size_t)stride);
+    if (!keys || !key_buffer || !value_buffer)
+        beans_panic("out of memory", 0, 0);
+    for (long long i = 0; i < n; i++)
+        keys[i] = key_fn(box, values + (size_t)i * (size_t)stride);
+    for (long long width = 1; width < n; width *= 2) {
+        for (long long lo = 0; lo < n; lo += 2 * width) {
+            long long mid = lo + width < n ? lo + width : n;
+            long long hi = lo + 2 * width < n ? lo + 2 * width : n;
+            long long left = lo, right = mid, out = lo;
+            while (left < mid && right < hi) {
+                long long take = keys[right] < keys[left] ? right++ : left++;
+                key_buffer[out] = keys[take];
+                memcpy(value_buffer + (size_t)out * (size_t)stride,
+                       values + (size_t)take * (size_t)stride,
+                       (size_t)stride);
+                out++;
+            }
+            while (left < mid) {
+                key_buffer[out] = keys[left];
+                memcpy(value_buffer + (size_t)out * (size_t)stride,
+                       values + (size_t)left * (size_t)stride,
+                       (size_t)stride);
+                out++;
+                left++;
+            }
+            while (right < hi) {
+                key_buffer[out] = keys[right];
+                memcpy(value_buffer + (size_t)out * (size_t)stride,
+                       values + (size_t)right * (size_t)stride,
+                       (size_t)stride);
+                out++;
+                right++;
+            }
+            memcpy(keys + lo, key_buffer + lo,
+                   (size_t)(hi - lo) * sizeof(long long));
+            memcpy(values + (size_t)lo * (size_t)stride,
+                   value_buffer + (size_t)lo * (size_t)stride,
+                   (size_t)(hi - lo) * (size_t)stride);
+        }
+    }
+    rt_free(keys);
+    rt_free(key_buffer);
+    rt_free(value_buffer);
+}
 char* beans_list_decv_join(BList* list, char* separator) {
     long long separator_len = beans_slen(separator);
     char** parts = rt_alloc((size_t)(list->len ? list->len : 1) * sizeof(char*));

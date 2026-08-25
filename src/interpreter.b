@@ -4040,6 +4040,15 @@ class TreeInterpreter {
                     node.type,
                     left.float_data / right.float_data)
             }
+            // the native lowering has had frem all along; without this row
+            // the two backends disagreed on a program the checker accepts
+            if node.value == "%" {
+                return self.floating_value(
+                    node.type,
+                    tree_float_remainder(
+                        left.float_data,
+                        right.float_data))
+            }
             if node.value == "==" {
                 return TreeValue.boolean(
                     left.float_data == right.float_data)

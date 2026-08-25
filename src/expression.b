@@ -31,6 +31,12 @@ class ExpressionChecker {
     scopes: List<LocalScope>
     current: HirFunction
     current_constraints: List<HirGeneric>
+    // check_field_defaults resolves each declaration's
+    // dependencies before itself; these say what is done and
+    // what is on the stack, so a self-referential default
+    // stops instead of recursing forever.
+    defaults_checked: Map<string, bool>
+    defaults_visiting: Map<string, bool>
     loop_depth: int
     literal_sign: int
     unsafe_depth: int
@@ -74,6 +80,8 @@ class ExpressionChecker {
         self.current = new HirFunction(
             "", "", "", false, false, "", 0, 0)
         self.current_constraints = []
+        self.defaults_checked = {}
+        self.defaults_visiting = {}
         self.loop_depth = 0
         self.literal_sign = 1
         self.unsafe_depth = 0
@@ -2988,8 +2996,10 @@ class ExpressionChecker {
            receiver.args.len() == 2 {
             let key: HirType = receiver.args[0]
             let value: HirType = receiver.args[1]
-            if name == "get" &&
-               !self.is_move_only(value) {
+            // `get` answers Option<V> whatever V is. A move-only value
+            // is handed back as the map's own — the index forms stay
+            // refused precisely because they would have to copy it.
+            if name == "get" {
                 return some(new BuiltinSignature(
                     [key], hir_option(value)))
             }
@@ -8995,6 +9005,8 @@ class ExpressionChecker {
                         node, "initializer",
                         declaration.name, type)
                 result.resolved = declaration.qualified
+                self.ensure_declaration_defaults(
+                    declaration)
                 if declaration.kind != "union" {
                     for field: HirField in declaration.fields {
                         match field.default_value {
@@ -9209,7 +9221,7 @@ class ExpressionChecker {
             if self.is_move_only(result_type) {
                 self.fail(
                     node,
-                    "can't copy a move-only map value by index — a consuming map read is not available yet")
+                    "can't copy a move-only map value by index — read it with get(key), which answers Option<{render_hir_type(result_type)}>")
                 result_type = poison_hir_type()
             }
         } else if receiver.type.name == "Bytes" {
@@ -11746,8 +11758,62 @@ class ExpressionChecker {
     }
 
     fn check_field_defaults() {
+        self.defaults_checked = {}
+        self.defaults_visiting = {}
         for declaration: HirDeclaration in
             self.program.declarations {
+            self.check_one_declaration_defaults(
+                declaration)
+        }
+    }
+
+    // A field default that builds another struct expands against that
+    // struct's own defaults, so those have to be checked first. Files of
+    // one package create no edges between each other (spec/SYNTAX.md), so
+    // the order self.program.declarations happens to hold — which follows
+    // the filename — must not decide what `Hsla {}` means. The literal
+    // expansion asks for this by name the moment it resolves one, and the
+    // checking state around it is saved and put back, because the ask
+    // arrives from the middle of another declaration's own pass.
+    fn ensure_declaration_defaults(
+        declaration: HirDeclaration) {
+        if self.defaults_checked.contains_key(
+               declaration.qualified) ||
+           self.defaults_visiting.contains_key(
+               declaration.qualified) {
+            return
+        }
+        let saved_current: HirFunction = self.current
+        var saved_constraints: List<HirGeneric> = []
+        for constraint: HirGeneric in
+            self.current_constraints {
+            saved_constraints.push(constraint)
+        }
+        var saved_scopes: List<LocalScope> = []
+        for scope: LocalScope in self.scopes {
+            saved_scopes.push(scope)
+        }
+        self.check_one_declaration_defaults(
+            declaration)
+        self.current = saved_current
+        self.current_constraints =
+            move saved_constraints
+        self.scopes = move saved_scopes
+    }
+
+    fn check_one_declaration_defaults(
+        declaration: HirDeclaration) {
+            // A default that builds its own type is already an infinite
+            // value and the size check reports it; stop here so this pass
+            // terminates rather than recursing forever.
+            if self.defaults_checked.contains_key(
+                   declaration.qualified) ||
+               self.defaults_visiting.contains_key(
+                   declaration.qualified) {
+                return
+            }
+            self.defaults_visiting[
+                declaration.qualified] = true
             self.current = new HirFunction(
                 "$defaults",
                 "{declaration.qualified}.$defaults",
@@ -11836,7 +11902,10 @@ class ExpressionChecker {
                 }
             }
             self.pop_scope()
-        }
+            self.defaults_visiting.remove(
+                declaration.qualified)
+            self.defaults_checked[
+                declaration.qualified] = true
     }
 
     fn check_annotation_declarations() {

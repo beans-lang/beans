@@ -5027,52 +5027,100 @@ class MirLowerer {
         return result
     }
 
-    // Returning a subclass where the declared result is its base class
-    // is an ordinary upcast; walk the extends chain the same way the
-    // stage-0 verifier does.
-    fn class_return_upcast(got: HirType, want: HirType) -> bool {
-        if got.args.len() != 0 || want.args.len() != 0 {
-            return false
+    // The short tail of a possibly qualified name.
+    fn upcast_short_name(name: string) -> string {
+        match name.rfind(".") {
+            some(dot) => {
+                return name.slice(dot + 1, name.len())
+            }
+            none => { return name }
         }
-        var walk: string = got.name
+    }
+
+    // A type key that ignores package qualification, so a relation
+    // written `Producer<int>` matches a result the checker resolved to
+    // `main.Producer<int>`. Relations reach here in either form.
+    fn upcast_key(type: HirType) -> string {
+        if type.name == "array" || type.name == "fn" {
+            return hir_type_key(type)
+        }
+        let name: string =
+            self.upcast_short_name(
+                canonical_hir_name(type.name))
+        if type.args.len() == 0 { return name }
+        var arguments: List<string> = []
+        for argument: HirType in type.args {
+            arguments.push(self.upcast_key(argument))
+        }
+        return "{name}<{arguments.join(",")}>"
+    }
+
+    // A relation is written in the declaration's own generic names, so
+    // read it through the type that reached us: `Box<int>` implements
+    // `Producer<int>`, not the `Producer<T>` the source spells.
+    fn upcast_relation(type: HirType,
+                       declaration: HirDeclaration,
+                       receiver: HirType) -> HirType {
+        for index: int in 0..declaration.generics.len() {
+            if type.name == declaration.generics[index] &&
+               index < receiver.args.len() {
+                return receiver.args[index]
+            }
+        }
+        let result: HirType =
+            new HirType(canonical_hir_name(type.name))
+        result.array_length = type.array_length
+        result.fn_parameter_count = type.fn_parameter_count
+        result.fn_sendable = type.fn_sendable
+        for argument: HirType in type.args {
+            result.args.push(self.upcast_relation(
+                argument, declaration, receiver))
+        }
+        return result
+    }
+
+    // Returning a subclass where the declared result is its base class
+    // is an ordinary upcast, and so is returning a class where the
+    // result is an interface it implements. Walk every relation, both
+    // kinds: a class reaches an interface through `implements`, an
+    // interface reaches its parents through `extends`, and a subclass
+    // inherits both chains. Every other position — argument, list
+    // element, `some(...)` — already lowered these; `return` was the
+    // one that did not.
+    fn class_return_upcast(got: HirType, want: HirType) -> bool {
+        let target: string = self.upcast_key(want)
+        var pending: List<HirType> = [got]
+        var seen: Map<string, bool> = {}
         var guard: int = 0
-        for guard < 64 {
+        for pending.len() != 0 {
             guard += 1
-            var parent: string = ""
+            if guard > 512 { return false }
+            let current: HirType =
+                pending.pop().expect("upcast relation")
+            let key: string = self.upcast_key(current)
+            if seen.contains_key(key) { continue }
+            seen[key] = true
             for declaration: HirDeclaration in
                 self.source.declarations {
-                if declaration.qualified != walk &&
-                   declaration.name != walk {
+                if declaration.qualified != current.name &&
+                   declaration.name != current.name {
                     continue
                 }
-                if declaration.kind != "class" {
-                    return false
+                if declaration.kind != "class" &&
+                   declaration.kind != "interface" {
+                    break
                 }
-                for index: int in
-                    0..declaration.relations.len() {
-                    if index <
-                           declaration.relation_kinds.len() &&
-                       declaration.relation_kinds[index] ==
-                           "extends" &&
-                       parent == "" {
-                        parent =
-                            declaration.relations[index].name
+                for relation: HirType in
+                    declaration.relations {
+                    let bound: HirType = self.upcast_relation(
+                        relation, declaration, current)
+                    if self.upcast_key(bound) == target {
+                        return true
                     }
+                    pending.push(bound)
                 }
                 break
             }
-            if parent == "" { return false }
-            if parent == want.name { return true }
-            match parent.rfind(".") {
-                some(dot) => {
-                    if parent.slice(dot + 1, parent.len()) ==
-                           want.name {
-                        return true
-                    }
-                }
-                none => {}
-            }
-            walk = parent
         }
         return false
     }

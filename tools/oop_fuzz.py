@@ -529,11 +529,153 @@ fn main() {{
     return Program("package-graph", files, "main.b", expected)
 
 
+def generic_interface_program(rng):
+    """Generic types crossed with interface relations, counting the work.
+
+    Two gaps met here. The generators before this one kept the axes apart:
+    interfaces were never generic, and generic types never implemented or
+    extended anything — which is exactly where every bug in the 0.1.32 batch
+    lived, and where the null-deinit segfault after it lived too.
+
+    The second gap is what the oracle looks at. A fix for struct defaults was
+    once applied in two places and every default ran twice; the values printed
+    were identical, so an oracle over answers alone saw nothing at all. So this
+    program tallies constructions and releases and prints the totals, and the
+    expected output pins them. Totals rather than an interleaving on purpose —
+    drop order is not what this asserts, and a total cannot go stale the way a
+    hand-written trace does.
+    """
+    unit = rng.randint(2, 30)
+    boxed = rng.randint(2, 30)
+    held = rng.randint(2, 30)
+    bump = rng.randint(1, 12)
+    label_extra = rng.randint(1, 12)
+    copies = rng.randint(2, 5)
+
+    source = f'''import std.io
+
+class Tally {{
+    static built: int = 0
+    static released: int = 0
+}}
+
+// a generic interface with a default written in its own parameter
+interface Producer<T> {{
+    fn make() -> T
+    fn pair() -> List<T> {{ return [self.make(), self.make()] }}
+    fn label() -> int {{ return {label_extra} }}
+}}
+
+// the concrete binding at the implements site
+class Unit implements Producer<int> {{
+    priv amount: int
+
+    fn init(amount: int) {{
+        self.amount = amount
+        Tally.built += 1
+    }}
+
+    fn deinit() {{ Tally.released += 1 }}
+
+    pub fn make() -> int {{ return self.amount }}
+}}
+
+// the parameter forwarded through the implements site, and a kept default
+// overridden at the instance
+class Boxed<T> implements Producer<T> {{
+    priv value: T
+
+    fn init(value: T) {{
+        self.value = value
+        Tally.built += 1
+    }}
+
+    fn deinit() {{ Tally.released += 1 }}
+
+    pub fn make() -> T {{ return self.value }}
+
+    pub override fn label() -> int {{ return {label_extra} + {bump} }}
+}}
+
+// a generic base with a release of its own, pinned at a concrete argument
+class Holder<T> {{
+    pub held: T
+
+    fn init(held: T) {{
+        self.held = held
+        Tally.built += 1
+    }}
+
+    fn deinit() {{ Tally.released += 1 }}
+
+    pub fn get() -> T {{ return self.held }}
+}}
+
+class IntHolder extends Holder<int> {{
+    fn init() {{ super.init({held}) }}
+}}
+
+// a bound that pins the interface's argument
+fn through_bound<P implements Producer<int>>(p: P) -> int {{
+    return p.make()
+}}
+
+// the return-position upcast: a class where an interface is declared
+fn as_producer() -> Producer<int> {{ return new Unit({unit}) }}
+
+fn as_boxed() -> Producer<int> {{ return new Boxed<int>({boxed}) }}
+
+fn work() -> int {{
+    var total: int = 0
+    total += as_producer().make()
+    total += as_boxed().make()
+    total += through_bound<Unit>(new Unit({unit}))
+    total += through_bound<Boxed<int>>(new Boxed<int>({boxed}))
+
+    let holder: IntHolder = new IntHolder()
+    total += holder.get()
+
+    var many: List<Producer<int>> = []
+    var index: int = 0
+    for index < {copies} {{
+        many.push(new Unit({unit}))
+        index += 1
+    }}
+    for p: Producer<int> in many {{
+        total += p.make() + p.pair().len()
+    }}
+    return total
+}}
+
+fn main() {{
+    let total: int = work()
+    io.println("{{total}}")
+    // everything work() built is out of scope by now, so the two must match
+    io.println("{{Tally.built}} {{Tally.released}}")
+    let live: Producer<int> = new Boxed<int>({boxed})
+    io.println("{{live.label()}} {{live.pair()[1]}}")
+}}
+'''
+    # five in work() before the loop — two returned through an interface, two
+    # passed through a bound, one holder — then one Unit per copy
+    lifetimes = 5 + copies
+    total = 2 * unit + 2 * boxed + held + copies * (unit + 2)
+    expected = (
+        f"{total}\n"
+        f"{lifetimes} {lifetimes}\n"
+        f"{label_extra + bump} {boxed}\n"
+    )
+    return Program(
+        "generic-interfaces", {"main.b": source}, "main.b", expected
+    )
+
+
 VALID_GENERATORS = (
     class_graph_program,
     singleton_static_program,
     generic_struct_program,
     package_graph_program,
+    generic_interface_program,
 )
 
 

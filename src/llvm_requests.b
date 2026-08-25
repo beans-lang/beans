@@ -433,6 +433,23 @@ partial class LlvmTextEmitter {
     // sign-extended in, so they truncate back — production's
     // thunk skips that and would feed a comparator raw slots),
     // and asks the closure. Decimals arrive by address instead.
+    // An element the runtime cannot fit in one eight-byte slot reaches a
+    // sort thunk by address instead of by value: decimal, and any inline
+    // record. The thunk loads it whole and hands it to the closure the way
+    // every other call passes a struct.
+    fn sort_element_by_address(element: HirType) -> bool {
+        if canonical_hir_name(element.name) == "decimal" {
+            return true
+        }
+        match self.declaration_for(element) {
+            some(declaration) => {
+                return declaration.kind == "struct" ||
+                       declaration.kind == "union"
+            }
+            none => { return false }
+        }
+    }
+
     fn request_sort_cmp(element: HirType) -> string {
         let key: string = render_hir_type(element)
         match self.sort_cmp_thunks.get(key) {
@@ -447,8 +464,7 @@ partial class LlvmTextEmitter {
         var left: string = ""
         var right: string = ""
         var argument: string = "i64"
-        if canonical_hir_name(element.name) ==
-               "decimal" {
+        if self.sort_element_by_address(element) {
             argument = "ptr"
             body =
                 "  %ta = load {llvm}, ptr %a\n  %tb = load {llvm}, ptr %b\n"
@@ -493,8 +509,7 @@ partial class LlvmTextEmitter {
         var body: string = ""
         var value: string = ""
         var argument: string = "i64"
-        if canonical_hir_name(element.name) ==
-               "decimal" {
+        if self.sort_element_by_address(element) {
             argument = "ptr"
             body = "  %ta = load {llvm}, ptr %a\n"
             value = "%ta"

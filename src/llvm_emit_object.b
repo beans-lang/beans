@@ -374,11 +374,26 @@ partial class LlvmTextEmitter {
                         prefix.len(),
                         candidate.name.len())
                 if method.contains(".") { continue }
-                // init and deinit are chained explicitly, not inherited
-                if method == "init" || method == "deinit" {
-                    continue
+                // `init` is chained explicitly through super.init, which
+                // raises its own instantiation on the way.
+                if method == "init" { continue }
+                var key: string = "{instance}.{method}"
+                // `deinit` needs care either way. A descriptor names one
+                // release symbol per class, found by walking the chain for
+                // `{owner}.deinit`, and a generic base is a template with
+                // nothing at that name — the row emitted null and dropping
+                // the subclass jumped to address zero.
+                //
+                // When the class writes no deinit of its own, the raised
+                // base body *is* its release and takes the plain name. When
+                // it writes one, that body is what its own deinit chains
+                // into on the way out, so the raised base keeps a name of
+                // its own and deinit_parent_call looks for it there.
+                if method == "deinit" &&
+                   self.class_has_deinit(declaration) {
+                    key =
+                        "{instance}@{link.qualified}.deinit"
                 }
-                let key: string = "{instance}.{method}"
                 if self.function_symbols.contains_key(key) {
                     continue
                 }
@@ -529,6 +544,56 @@ partial class LlvmTextEmitter {
             chain.push(upward[index])
         }
         return move chain
+    }
+
+    // A generic base's deinit is a template, so it has a body only once
+    // some site raises it for concrete arguments. When the deriving class
+    // writes its own deinit, that body is emitted before any `new` site has
+    // done so, and the chain call had no symbol to name — it was dropped,
+    // and the base's release silently stopped running on every instance.
+    //
+    // Raising it from the chain call itself fixes the order: the symbol is
+    // handed back straight away and the body follows off the generic queue.
+    fn raise_generic_parent_deinit(
+        owner: HirDeclaration,
+        owner_name: string,
+        chain: List<HirDeclaration>) -> string {
+        let root: HirType = new HirType(owner.qualified)
+        let chain_types: List<HirType> =
+            self.class_chain_types(owner, root)
+        if chain_types.len() != chain.len() { return "" }
+        var index: int = chain.len() - 1
+        for index > 0 {
+            index -= 1
+            let link: HirDeclaration = chain[index]
+            if link.generics.len() == 0 { continue }
+            let link_type: HirType = chain_types[index]
+            if link.generics.len() != link_type.args.len() {
+                continue
+            }
+            let template: string =
+                "{link.qualified}.deinit"
+            if !self.generic_templates.contains_key(
+                   template) {
+                continue
+            }
+            var bindings: Map<string, HirType> = {}
+            for slot: int in 0..link.generics.len() {
+                bindings[link.generics[slot]] =
+                    link_type.args[slot]
+            }
+            bindings[link.qualified] = root
+            bindings[link.name] = root
+            let site: MirInstruction =
+                new MirInstruction(
+                    "deinit_chain", -1, root, "", "",
+                    owner.file, owner.line, owner.col)
+            return self.instantiate_generic(
+                site, template,
+                "{owner_name}@{link.qualified}.deinit",
+                bindings)
+        }
+        return ""
     }
 
     fn class_descends_from(

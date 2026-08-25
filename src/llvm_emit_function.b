@@ -1498,6 +1498,17 @@ partial class LlvmTextEmitter {
         var index: int = chain.len() - 1
         for index > 0 {
             index -= 1
+            // A generic base is a template, so its body exists only as an
+            // instance raised for this class's arguments; that is kept
+            // under the owner's name so it cannot collide with the
+            // owner's own deinit. Ask for it before the plain name.
+            let raised: string =
+                "{owner_name}@{chain[index].qualified}.deinit"
+            if self.function_symbols.contains_key(raised) {
+                parent_symbol =
+                    self.function_symbols[raised]
+                break
+            }
             let candidate: string =
                 "{chain[index].qualified}.deinit"
             if self.function_symbols.contains_key(candidate) {
@@ -1505,6 +1516,16 @@ partial class LlvmTextEmitter {
                     self.function_symbols[candidate]
                 break
             }
+        }
+        // Only a class that writes its own deinit chains into a raised
+        // base. Without that guard the raised base body — which is
+        // registered under the deriving class's own name when the class
+        // writes none — would find itself as its parent and release twice.
+        if parent_symbol == "" &&
+           self.class_has_deinit(owner) {
+            parent_symbol =
+                self.raise_generic_parent_deinit(
+                    owner, owner_name, chain)
         }
         if parent_symbol == "" { return "" }
         for local: MirLocal in function.locals {
