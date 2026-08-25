@@ -50,7 +50,10 @@ This file records user-facing changes in each Beans release.
   exactly as before. Socket deadlines (`set_timeouts`, `accept_timeout`,
   connect timeouts) keep firing for parked fibers, and a fiber waiting on
   a descriptor never counts toward the deadlock report — the kernel can
-  always wake it.
+  always wake it. On kqueue, a park costs no syscall of its own: interest
+  registrations queue in the worker and the poller's next wait submits
+  the whole batch as the changelist of that one `kevent` call (a wait
+  that its deadline cancels first is dequeued in place, also for free).
 - **Fixed: `defer` inside a nested block on `beansc run`.** The tree
   walker dropped the block's scope before function-exit defers ran and
   panicked with "unknown name"; native read its stack slot and printed.

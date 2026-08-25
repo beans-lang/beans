@@ -145,6 +145,9 @@ struct BeansFiber {
     int io_signalled;
     long long io_fd;
     int io_write;
+    // kqueue: 1-based slot in the worker's queued changelist while this
+    // registration has not reached the kernel yet; 0 once submitted.
+    int io_queued;
 
 #if defined(FIBER_ASAN)
     void* asan_save;
@@ -183,6 +186,15 @@ struct BeansWorker {
     int poll_kick_fd; // epoll: eventfd registered in poll_fd; kqueue: unused
     int io_waiters;
     _Atomic int in_poll; // worker is inside (or committing to) the poller wait
+#if defined(FIBER_NETPOLL_KQUEUE)
+    // Registrations queued since the last poller wait. The next
+    // poller_drain kevent call submits the whole batch as its changelist —
+    // one syscall carries every re-arm plus the wait, so a park costs no
+    // syscall of its own. Owner-thread only, like the rest of the poller.
+    struct kevent* poll_queue;
+    int poll_queue_len;
+    int poll_queue_cap;
+#endif
 
 #if !defined(_WIN32)
     pthread_mutex_t inbox_m;
@@ -774,10 +786,23 @@ static int poller_arm(BeansWorker* worker, BeansFiber* fiber, long long fd,
                       int write) {
     if (worker->poll_fd < 0 && !poller_init(worker)) return 0;
 #if defined(FIBER_NETPOLL_KQUEUE)
-    struct kevent ev;
-    EV_SET(&ev, (uintptr_t)fd, write ? EVFILT_WRITE : EVFILT_READ,
-           EV_ADD | EV_ONESHOT, 0, 0, fiber);
-    if (kevent(worker->poll_fd, &ev, 1, NULL, 0, NULL) < 0) return 0;
+    // Queued, not submitted: the batch rides the next poller wait's
+    // changelist. Registering late is safe — kqueue evaluates readiness
+    // when it scans, so an fd that became ready in the meantime is
+    // reported by the very call that registers it.
+    if (worker->poll_queue_len == worker->poll_queue_cap) {
+        int cap = worker->poll_queue_cap ? worker->poll_queue_cap * 2 : 64;
+        struct kevent* grown = (struct kevent*)realloc(
+            worker->poll_queue, (size_t)cap * sizeof *grown);
+        if (!grown) return 0;
+        worker->poll_queue = grown;
+        worker->poll_queue_cap = cap;
+    }
+    EV_SET(&worker->poll_queue[worker->poll_queue_len], (uintptr_t)fd,
+           write ? EVFILT_WRITE : EVFILT_READ, EV_ADD | EV_ONESHOT, 0, 0,
+           fiber);
+    worker->poll_queue_len += 1;
+    fiber->io_queued = worker->poll_queue_len; // 1-based slot
 #else
     struct epoll_event ev = {
         .events = (write ? EPOLLOUT : EPOLLIN) | EPOLLONESHOT,
@@ -798,11 +823,25 @@ static int poller_arm(BeansWorker* worker, BeansFiber* fiber, long long fd,
 // queue, so no stale delivery can name this fiber afterwards.
 static void poller_disarm(BeansWorker* worker, BeansFiber* fiber) {
 #if defined(FIBER_NETPOLL_KQUEUE)
-    struct kevent ev;
-    EV_SET(&ev, (uintptr_t)fiber->io_fd,
-           fiber->io_write ? EVFILT_WRITE : EVFILT_READ, EV_DELETE, 0, 0,
-           NULL);
-    kevent(worker->poll_fd, &ev, 1, NULL, 0, NULL); // ENOENT: already fired
+    if (fiber->io_queued) {
+        // Never reached the kernel: drop the queued slot (tail swapped
+        // down) so the batch cannot register a fiber that gave up waiting.
+        int slot = fiber->io_queued - 1;
+        int last = worker->poll_queue_len - 1;
+        if (slot != last) {
+            worker->poll_queue[slot] = worker->poll_queue[last];
+            BeansFiber* moved = (BeansFiber*)worker->poll_queue[slot].udata;
+            moved->io_queued = slot + 1;
+        }
+        worker->poll_queue_len = last;
+        fiber->io_queued = 0;
+    } else {
+        struct kevent ev;
+        EV_SET(&ev, (uintptr_t)fiber->io_fd,
+               fiber->io_write ? EVFILT_WRITE : EVFILT_READ, EV_DELETE, 0, 0,
+               NULL);
+        kevent(worker->poll_fd, &ev, 1, NULL, 0, NULL); // ENOENT: already fired
+    }
 #else
     epoll_ctl(worker->poll_fd, EPOLL_CTL_DEL, (int)fiber->io_fd, NULL);
 #endif
@@ -821,10 +860,26 @@ static void poller_drain(BeansWorker* worker, long long timeout_ns) {
         ts.tv_nsec = timeout_ns % 1000000000LL;
         tp = &ts;
     }
-    int n = kevent(worker->poll_fd, NULL, 0, events, 64, tp);
+    // Submit everything queued since the last wait in the same call. The
+    // slots are released before the syscall: fibers this call resumes may
+    // park again, and their fresh registrations must land in a clean queue.
+    int nchanges = worker->poll_queue_len;
+    for (int i = 0; i < nchanges; i++) {
+        BeansFiber* queued = (BeansFiber*)worker->poll_queue[i].udata;
+        queued->io_queued = 0;
+    }
+    worker->poll_queue_len = 0;
+    int n = kevent(worker->poll_fd, worker->poll_queue, nchanges, events, 64,
+                   tp);
     for (int i = 0; i < n; i++) {
         if (events[i].filter == EVFILT_USER) continue; // the kick itself
         BeansFiber* fiber = (BeansFiber*)events[i].udata;
+        // EV_ERROR names a batched registration the kernel refused (the fd
+        // died between park and submit, say). The fiber still wakes: its
+        // retried io call reports the real error, where staying parked
+        // would hang it to the deadline. The io_armed check drops errors
+        // for a fiber that already gave up the wait.
+        if (!fiber || !fiber->io_armed) continue;
         fiber->io_signalled = 1;
         fiber->io_armed = 0;
         worker->io_waiters -= 1;
@@ -1414,6 +1469,9 @@ void beans_worker_free(BeansWorker* worker) {
 #if defined(FIBER_NETPOLL)
     if (worker->poll_fd >= 0) close(worker->poll_fd);
     if (worker->poll_kick_fd >= 0) close(worker->poll_kick_fd);
+#endif
+#if defined(FIBER_NETPOLL_KQUEUE)
+    free(worker->poll_queue);
 #endif
 #if defined(_WIN32)
     DeleteCriticalSection(&worker->inbox_m);
