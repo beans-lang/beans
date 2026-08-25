@@ -61,6 +61,14 @@ $(BIN): $(SELF_HOST_SRC) $(RUNTIME_COPY)
 	  echo ""; \
 	  exit 1; \
 	}
+# The released launcher exports its package's BEANS_* paths, so an installed
+# bootstrap would compile THIS tree's sources against LAST release's runtime
+# and stdlib — and the link breaks the first time src needs a runtime symbol
+# the release does not have. The launcher honours preset values, so the
+# bootstrap pins every source root to the tree it is building.
+	BEANS_RUNTIME=runtime/beans_rt.c BEANS_STDLIB=stdlib/std \
+	BEANS_ENCODING=runtime/encoding BEANS_NET=runtime/net \
+	BEANS_LOG=runtime/log \
 	$(BEANSC_BOOT) build --release src/main.b -o $(BIN).new
 	rm -f $(BIN) && mv $(BIN).new $(BIN)
 

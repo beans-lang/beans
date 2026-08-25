@@ -79,6 +79,12 @@ This file records user-facing changes in each Beans release.
   its scope — an unseen panic escalates there. A fleet nobody can wake
   lands in the deadlock report. Both compilers agree byte-for-byte,
   delivery order included.
+- **Fixed: bootstrapping with an installed release.** The released
+  launcher exports its package's `BEANS_*` source roots, so `make`
+  compiled this tree's compiler against last release's runtime and
+  stdlib — and the link broke the first time `src/` needed a runtime
+  symbol the release does not ship. The bootstrap recipe now pins every
+  source root to the tree it is building.
 - **Fixed: `read_into` and `write_from` on a fiber.** The offset-aware
   stream forms went through a raw would-block bridge the netpoller never
   covered: a fiber's `read_into` between requests answered `timeout` the
