@@ -4,6 +4,42 @@ This file records user-facing changes in each Beans release.
 
 ## [Unreleased]
 
+## [0.1.32] - 2026-08-25
+
+### Added
+
+- **Generic interfaces are usable types** (spec/SYNTAX.md). An interface with
+  type parameters can now be implemented at a concrete argument —
+  `class IntBox implements Producer<int>` requires `fn make() -> int` — and
+  the interface itself stands as a type: `Producer<int>` is a variable,
+  parameter and element type that dispatches dynamically, and
+  `Producer<int>` and `Producer<string>` are unrelated. Chains pin the same
+  way, so `interface IntProducer extends Producer<int>` answers `int`.
+  Previously the arguments a relation named were stored and then ignored:
+  every read of an interface method used the interface's own type parameter,
+  so a concrete implementation was refused as a mismatch
+  (`expected fn() -> T, this is fn() -> int`), and no class ever satisfied
+  `Producer<int>`. Mismatches are still refused, now reported in the
+  caller's terms rather than in a type parameter the caller never wrote. A
+  method that declares generics of its own binds them at the call site and
+  so cannot be reached through an interface.
+
+### Fixed
+
+- **A generic class can implement an interface in native code.** The LLVM
+  backend refused to lay out any generic class carrying a relation other
+  than the `Send`/`Sync` markers, so `class BoxOf<T> implements Producer<T>`
+  — which the checker had always accepted — ran under `beansc run` and
+  failed to build with *cannot form class layout*. Each instantiation now
+  mints its own descriptor: a method reachable only through the interface is
+  raised with that instantiation's bindings instead of leaving a null row,
+  and a default body kept from a generic interface is instantiated under the
+  implementing class's own name so the table and a devirtualized call both
+  resolve it. A base class on a generic class is still refused — its fields
+  would have to be laid out through the instantiation. Interpreted and
+  compiled output are gated against each other in
+  `test/generic_interfaces.sh`.
+
 ## [0.1.31] - 2026-08-25
 
 ### Added
