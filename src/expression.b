@@ -732,6 +732,28 @@ class ExpressionChecker {
         }
     }
 
+    // A bound that names type arguments is a concrete interface instance,
+    // and `trait_satisfied` only ever sees a bare name. Ask the subtype
+    // walk instead: it binds a relation through the type that names it, so
+    // `BoxOf<int>` answers `Producer<int>` and never `Producer<string>`.
+    fn bound_satisfied(actual: HirType,
+                       bound: HirType) -> bool {
+        if bound.args.len() == 0 {
+            return self.trait_satisfied(actual, bound.name)
+        }
+        if actual.name == "poison" { return true }
+        if self.is_subtype(actual, bound) { return true }
+        for constraint: HirGeneric in
+            self.current_constraints {
+            if constraint.name != actual.name { continue }
+            for own: HirType in constraint.bounds {
+                if self.is_subtype(own, bound) { return true }
+            }
+            return false
+        }
+        return false
+    }
+
     fn trait_satisfied(type: HirType, trait: string) -> bool {
         if type.name == "poison" { return true }
         for constraint: HirGeneric in
@@ -1898,6 +1920,17 @@ class ExpressionChecker {
     fn bound_parent(receiver: HirType,
                     parent_owner: string) -> HirType {
         var pending: List<HirType> = [receiver]
+        // A type parameter has no declaration of its own — what it
+        // promises is whatever its bounds name — so the walk starts at
+        // those too, and `T implements Producer<int>` reaches Producer
+        // through the argument the bound pinned.
+        for constraint: HirGeneric in
+            self.current_constraints {
+            if constraint.name != receiver.name { continue }
+            for bound: HirType in constraint.bounds {
+                pending.push(bound)
+            }
+        }
         var seen: Map<string, bool> = {}
         for pending.len() != 0 {
             let current: HirType = pending.remove(0)
@@ -1929,8 +1962,14 @@ class ExpressionChecker {
     fn method_receiver(function: HirFunction,
                        declaration: HirDeclaration,
                        receiver: HirType) -> HirType {
-        if function.owner == "" ||
-           function.owner == declaration.qualified {
+        if function.owner == "" {
+            return receiver
+        }
+        // The owners match only because a receiver naming a type
+        // parameter has no declaration to fall back from, so the method's
+        // own owner was used as one. Read through its bounds instead.
+        if function.owner == declaration.qualified &&
+           self.declaration_for(receiver).is_some() {
             return receiver
         }
         let bound: HirType =
@@ -1948,18 +1987,16 @@ class ExpressionChecker {
         type: HirType, function: HirFunction,
         declaration: HirDeclaration,
         receiver: HirType) -> HirType {
-        if function.owner != "" &&
-           function.owner != declaration.qualified {
-            let bound: HirType =
-                self.bound_parent(receiver, function.owner)
-            if bound.name != "" && bound.args.len() != 0 {
-                match self.declarations.get(function.owner) {
-                    some(owner) => {
-                        return self.substitute_owner_type(
-                            type, owner, bound)
-                    }
-                    none => {}
+        let bound: HirType =
+            self.method_receiver(
+                function, declaration, receiver)
+        if !hir_types_equal(bound, receiver) {
+            match self.declarations.get(function.owner) {
+                some(owner) => {
+                    return self.substitute_owner_type(
+                        type, owner, bound)
                 }
+                none => {}
             }
         }
         return self.substitute_owner_type(
@@ -6060,11 +6097,18 @@ class ExpressionChecker {
             match inference.get(constraint.name) {
                 some(actual) => {
                     for bound: HirType in constraint.bounds {
-                        if !self.trait_satisfied(
-                            actual, bound.name) {
+                        // A bound may name the call's other type
+                        // parameters — `T implements Producer<U>` — so it
+                        // is measured after inference, not before.
+                        let wanted: HirType =
+                            self.substitute_generic_type(
+                                bound, function.generics,
+                                inference)
+                        if !self.bound_satisfied(
+                            actual, wanted) {
                             self.fail(
                                 node,
-                                "'{function.name}' needs {constraint.name} implements {render_hir_type(bound)}, got {render_hir_type(actual)}")
+                                "'{function.name}' needs {constraint.name} implements {render_hir_type(wanted)}, got {render_hir_type(actual)}")
                         }
                     }
                 }
