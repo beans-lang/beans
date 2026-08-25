@@ -1,3 +1,11 @@
+// glibc hides siginfo_t, sigaction, sigaltstack and the ucontext family
+// behind feature macros under a strict -std. The full runtime includes this
+// file after its own headers, but the fiber core gate compiles it alone
+// with -std=c11 — so ask for the whole surface here, before any header.
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE
+#endif
+
 // The fiber runtime core — see beans_fiber.h and spec/CONCURRENCY.md.
 //
 // A fiber is a fixed, never-moving stack reservation plus a saved register
@@ -244,7 +252,7 @@ void beans_fiber_ctx_switch(BeansFiberCtx* from, BeansFiberCtx* to);
 void beans_fiber_trampoline(void);
 static void fiber_entry(BeansFiber* fiber);
 
-#if defined(__aarch64__)
+#if defined(__aarch64__) && !defined(FIBER_FORCE_UCONTEXT)
 __asm__(
     ".text\n"
     ".align 4\n"
@@ -294,7 +302,7 @@ __asm__(
     "  brk #0\n");
 #define CTX_FRAME_BYTES 0xa0
 
-#elif defined(__x86_64__)
+#elif defined(__x86_64__) && !defined(FIBER_FORCE_UCONTEXT)
 __asm__(
     ".text\n"
     ".align 16\n"
@@ -329,7 +337,14 @@ __asm__(
 #define CTX_FRAME_BYTES (7 * 8) // return address + six saved registers
 
 #else
-#error "beans_fiber: no context switch for this architecture yet"
+// No hand-written switch for this architecture yet: ride the POSIX
+// ucontext family instead. A swapcontext also saves the signal mask (a
+// syscall on most libcs), so this tier is slower — correctness first;
+// an arch earns its asm when someone needs it fast. glibc keeps these
+// functions on every hosted tier CI runs (musl lacks them, but the musl
+// lane is x86-64 and takes the asm above).
+#define FIBER_CTX_UCONTEXT 1
+#include <ucontext.h>
 #endif
 
 // The trampoline calls this by asm name. Never returns.
@@ -351,6 +366,49 @@ __attribute__((used, noreturn)) void fiber_entry_shim(BeansFiber* fiber) {
     __builtin_unreachable();
 }
 
+#if defined(FIBER_CTX_UCONTEXT)
+// ctx->sp holds a heap ucontext_t for this variant. Both sides of a swap
+// need storage, and the very first switch away from a plain thread has
+// nowhere prepared — so storage appears on first touch and lives as long
+// as the record that owns the ctx.
+static ucontext_t* ctx_storage(BeansFiberCtx* ctx) {
+    if (!ctx->sp) {
+        ctx->sp = calloc(1, sizeof(ucontext_t));
+        if (!ctx->sp) {
+            fprintf(stderr, "beans_fiber: out of memory for a context\n");
+            abort();
+        }
+    }
+    return (ucontext_t*)ctx->sp;
+}
+
+void beans_fiber_ctx_switch(BeansFiberCtx* from, BeansFiberCtx* to) {
+    swapcontext(ctx_storage(from), ctx_storage(to));
+}
+
+// makecontext passes ints, so the carrier pointer rides as two halves —
+// the double shift keeps the high half defined on 32-bit pointers.
+static void ctx_ucontext_entry(unsigned int hi, unsigned int lo) {
+    uintptr_t bits = ((uintptr_t)hi << 16 << 16) | (uintptr_t)lo;
+    fiber_entry_shim((BeansFiber*)bits);
+}
+
+// Seeds the context so the first switch into `ctx` enters the trampoline
+// with `carrier`. The usable stack sits above the guard page.
+static void ctx_seed_into(BeansFiberCtx* ctx, BeansFiber* carrier, void* top) {
+    ucontext_t* uc = ctx_storage(ctx);
+    getcontext(uc);
+    uc->uc_link = NULL;
+    unsigned char* usable =
+        (unsigned char*)carrier->stack_base + carrier->worker->page;
+    uc->uc_stack.ss_sp = usable;
+    uc->uc_stack.ss_size = (size_t)((unsigned char*)top - usable);
+    uintptr_t bits = (uintptr_t)carrier;
+    makecontext(uc, (void (*)(void))ctx_ucontext_entry, 2,
+                (unsigned int)(bits >> 16 >> 16),
+                (unsigned int)(bits & 0xffffffffu));
+}
+#else
 // Seeds a stack so the first switch into `ctx` lands in the trampoline
 // with `carrier` in the seeded callee-saved register. `top` is 16-aligned.
 static void ctx_seed_into(BeansFiberCtx* ctx, BeansFiber* carrier, void* top) {
@@ -368,6 +426,7 @@ static void ctx_seed_into(BeansFiberCtx* ctx, BeansFiber* carrier, void* top) {
 #endif
     ctx->sp = sp;
 }
+#endif // FIBER_CTX_UCONTEXT
 
 static void ctx_seed(BeansFiber* fiber, void* top) {
     ctx_seed_into(&fiber->ctx, fiber, top);
@@ -1079,6 +1138,10 @@ static void fiber_record_free(BeansFiber* fiber) {
     if (fiber->ctx.sp) DeleteFiber(fiber->ctx.sp);
 #else
     stack_release(fiber);
+#if defined(FIBER_CTX_UCONTEXT)
+    free(fiber->ctx.sp);
+    fiber->ctx.sp = NULL;
+#endif
 #endif
     free(fiber);
 }
@@ -1140,9 +1203,15 @@ BeansFiber* beans_fiber_spawn(BeansWorker* worker, void (*fn)(void*),
     } else {
         void* base = fiber->stack_base;
         size_t reserve = fiber->stack_reserve;
+#if defined(FIBER_CTX_UCONTEXT)
+        void* ctx_keep = fiber->ctx.sp; // heap ucontext_t, reused by reseed
+#endif
         memset(fiber, 0, sizeof *fiber);
         fiber->stack_base = base;
         fiber->stack_reserve = reserve;
+#if defined(FIBER_CTX_UCONTEXT)
+        fiber->ctx.sp = ctx_keep;
+#endif
     }
 
     fiber->worker = worker;
@@ -1399,7 +1468,6 @@ void beans_worker_run(BeansWorker* worker) {
     }
 }
 
-#if !defined(_WIN32)
 // The bootstrap scheduler: same loop, no exit — the root fiber ending the
 // program is the only way out, and it ends the process, not this loop.
 static void sched_main(void* raw) {
@@ -1425,6 +1493,7 @@ static void sched_main(void* raw) {
     }
 }
 
+#if !defined(_WIN32)
 BeansWorker* beans_worker_bootstrap(void) {
     if (tls_worker) return tls_worker;
     BeansWorker* worker = beans_worker_new();
@@ -1457,6 +1526,42 @@ BeansWorker* beans_worker_bootstrap(void) {
 #endif
     return worker;
 }
+#else // _WIN32
+// The Windows bootstrap: beans_worker_new converted the calling thread to
+// an OS fiber, and that fiber is the root; the scheduler loop runs on an
+// OS fiber of its own — the CreateFiber mirror of the POSIX build's
+// carved-stack scheduler.
+static void CALLBACK sched_main_win(void* raw) { sched_main(raw); }
+
+BeansWorker* beans_worker_bootstrap(void) {
+    if (tls_worker) return tls_worker;
+    BeansWorker* worker = beans_worker_new();
+    if (!worker) return NULL;
+
+    BeansFiber* root = (BeansFiber*)calloc(1, sizeof *root);
+    if (!root) return NULL;
+    root->worker = worker;
+    root->is_root = 1;
+    strncpy(root->name, "main", sizeof root->name - 1);
+    atomic_store(&root->state, FIBER_RUNNING);
+    root->ctx.sp = GetCurrentFiber();
+    worker->root_fiber = root;
+    worker->current = root;
+    worker->live = 1;
+    all_add(worker, root);
+
+    BeansFiber* sched = (BeansFiber*)calloc(1, sizeof *sched);
+    if (!sched) return NULL;
+    sched->worker = worker;
+    sched->fn = sched_main;
+    sched->arg = worker;
+    strncpy(sched->name, "scheduler", sizeof sched->name - 1);
+    worker->sched_ctx.sp = CreateFiberEx(worker->page * 4, 256 * 1024, 0,
+                                         sched_main_win, worker);
+    if (!worker->sched_ctx.sp) return NULL;
+    worker->sched_fiber = sched; // its context lives in sched_ctx
+    return worker;
+}
 #endif // !_WIN32
 
 void beans_worker_free(BeansWorker* worker) {
@@ -1472,6 +1577,9 @@ void beans_worker_free(BeansWorker* worker) {
 #endif
 #if defined(FIBER_NETPOLL_KQUEUE)
     free(worker->poll_queue);
+#endif
+#if defined(FIBER_CTX_UCONTEXT)
+    free(worker->sched_ctx.sp); // the thread's own swap target, if it ever parked
 #endif
 #if defined(_WIN32)
     DeleteCriticalSection(&worker->inbox_m);
