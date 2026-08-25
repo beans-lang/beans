@@ -118,37 +118,6 @@ diff -u "$tmp/interp.out" "$tmp/free.out"
 "$tmp/hosted" >"$tmp/hosted.out"
 diff -u "$tmp/hosted.out" "$tmp/free.out"
 
-echo "checking a pure async program links and runs on hooks alone"
-# The async core (tasks, awaits, structured children) must not smuggle
-# in a poller reference: the freestanding runtime has no OS to poll.
-cat >"$tmp/free_async.b" <<'BEANS'
-import std.io
-
-async fn tick(a: int) -> int { return a }
-
-async fn pair(a: int) -> int {
-    async let left: int = tick(a)
-    async let right: int = tick(a + 1)
-    return await left + await right
-}
-
-async fn main() {
-    let total: int = await pair(20)
-    io.println("total {total}")
-}
-BEANS
-./build/beansc build --runtime freestanding "$tmp/free_async.b" --emit ir \
-    -o "$tmp/free_async.ll" >/dev/null
-clang -O2 -Wno-override-module "$tmp/free_async.ll" "$tmp/rt.o" "$tmp/host.o" \
-    -o "$tmp/prog_async" 2>"$tmp/link_async.log" || {
-    echo "the freestanding async program did not link" >&2
-    cat "$tmp/link_async.log" >&2
-    exit 1
-}
-"$tmp/prog_async" >"$tmp/free_async.out" 2>/dev/null
-printf 'total 41\n' >"$tmp/free_async.expected"
-diff -u "$tmp/free_async.expected" "$tmp/free_async.out"
-
 echo "checking the memory really came through the hook"
 # If the runtime had kept a path to libc's allocator, this would be zero.
 grep -q 'host: allocations=' "$tmp/free.err" || {

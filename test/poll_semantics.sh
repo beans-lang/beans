@@ -2,9 +2,8 @@
 # Event-loop semantics, ported in spirit from libuv and mio: modify visible
 # to the very next wait, removal honored by the next batch, cross-thread
 # wake in both loop states, hangup delivered with its buffered bytes,
-# timeout floors, the fd-reuse ABA, quiet-crowd fairness, and async
-# cancellation deregistering its readiness interest. All pinned as derived
-# facts in test/cases/poll_semantics.out, identical in both backends.
+# timeout floors, the fd-reuse ABA, and quiet-crowd fairness. All pinned as
+# derived facts in test/cases/poll_semantics.out, identical in both backends.
 #
 # The ordinary interpreter/native checks stay small. A separate native gate
 # below proves the required 10,000 idle plus 100 active sockets.

@@ -75,6 +75,8 @@ mkdir -p "$root/bin" "$root/lib" "$root/libexec"
 
 cp "$beansc" "$root/bin/beansc.real.exe"
 cp "$repo/runtime/beans_rt.c" "$root/bin/"
+# the fiber core rides beside the runtime: beans_rt.c includes both
+cp "$repo/runtime/beans_fiber.c" "$repo/runtime/beans_fiber.h" "$root/bin/"
 cp "$repo/runtime/wasm_host.c" "$root/bin/"
 cp -R "$repo/stdlib/std" "$root/lib/std"
 cp -R "$repo/runtime/encoding" "$root/lib/encoding"

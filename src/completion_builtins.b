@@ -12,7 +12,9 @@ fn semantic_builtin_member_names() -> List<string> {
             "append_string", "append_uvarint", "as_ptr", "at",
             "atomic_compare_exchange", "atomic_fetch_add",
             "atomic_load", "atomic_store", "bit_and", "bit_not",
-            "bit_or", "bit_xor", "byte_at", "call", "ceil",
+            "bit_or", "bit_xor", "byte_at", "call", "cancel",
+            "cancel_all",
+            "ceil",
             "chars",
             "clear", "detach",
             "clone", "close", "compare_exchange", "contains",
@@ -27,10 +29,11 @@ fn semantic_builtin_member_names() -> List<string> {
             "ge", "get", "get_i64", "get_u16", "get_u32", "get_u64",
             "get_u8", "get_uvarint", "gt", "index_of", "insert",
             "is_empty", "is_expired", "is_nan", "is_none", "is_null", "is_ok",
+            "is_open",
             "is_some", "join", "keys", "lane", "lane_count", "last",
             "le", "len", "lines", "load", "lock", "lt", "max",
-            "min", "mul", "ne", "notify_all", "notify_one",
-            "offset", "or", "parse_int_range_or", "pop", "product",
+            "min", "mul", "ne", "next", "notify_all", "notify_one",
+            "offset", "open", "or", "parse_int_range_or", "pop", "product",
             "push", "put_i64", "put_u16", "put_u32", "put_u64",
             "put_u8", "range_equals", "read", "read_at", "read_text",
             "read_text_at",
@@ -43,7 +46,9 @@ fn semantic_builtin_member_names() -> List<string> {
             "tell", "to_decimal", "to_float", "to_int", "to_lower",
             "to_string", "to_string_until_nul", "to_upper", "trim",
             "trim_end", "trim_start", "truncate", "try_lock",
-            "unlock", "upgrade", "values", "wait", "wait_timeout",
+            "try_next", "try_receive", "try_send",
+            "unlock", "upgrade", "values", "wait", "wait_all",
+            "wait_timeout",
             "with_lane", "with_lock", "write", "write_at", "write_text",
             "write_text_at",
             "write_volatile"]
@@ -73,8 +78,10 @@ fn semantic_builtin_type_names() -> List<string> {
             "Hash", "Order", "Send", "Sync", "RawPtr", "Slice",
             "List", "Map", "OrderedMap", "Option", "Result", "Box",
             "Arena", "Shared", "Weak", "Mutex", "Atomic", "Channel",
-            "Thread", "Bytes", "File", "Dir", "MMap", "Error",
-            "RawSlice", "AtomicInt", "MemoryOrder", "RoundingMode",
+            "Thread", "Brew", "TaskGroup",
+            "Bytes", "File", "Dir", "MMap", "Error",
+            "RawSlice", "AtomicInt", "Gate",
+            "MemoryOrder", "RoundingMode",
             "CpuFeature", "StoredCallback", "LocalStoredCallback",
             "CFunctionPtr", "Self"]
 }
@@ -202,9 +209,7 @@ fn semantic_builtin_module_names(package_path: string) -> List<string> {
                 "call_f32_i32"]
     }
     if package_path == "std.ready" {
-        return ["open", "add", "remove", "wait", "wait_into", "wake", "close",
-                "task_slot", "set_task_slot", "park_note", "park_bind",
-                "park_forget", "park_stale", "park_dead", "park_shutdown"]
+        return ["open", "add", "remove", "wait", "wait_into", "wake", "close"]
     }
     return []
 }

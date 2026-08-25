@@ -97,7 +97,6 @@ run_asan examples/wide_concurrency.b wide_concurrency
 run_asan test/cases/thread_deinit.b thread_deinit
 run_asan test/cases/thread_cycles.b thread_cycles
 run_asan test/cases/shared_publication.b shared_publication
-run_asan test/cases/async_cross_thread_close.b async_cross_thread_close
 run_asan examples/stdlib_beans.b stdlib_beans
 run_asan examples/ffi.b ffi
 run_asan test/cases/move_ok.b move_ok
@@ -115,7 +114,6 @@ run_asan test/cases/reflect_construct.b reflect_construct
 run_asan test/cases/reflect_annotations.b reflect_annotations
 run_asan test/cases/runtime_hooks_ok.b runtime_hooks_ok
 run_asan test/cases/runtime_hooks_threads.b runtime_hooks_threads
-run_asan test/cases/runtime_hooks_async.b runtime_hooks_async
 
 # Build through the real driver with instrumentation enabled on every input:
 # generated IR, runtime, native shim, and every vendored C/C++ translation
@@ -226,7 +224,7 @@ fi
 
 for file in examples/threads.b examples/shared_weak.b examples/wide_sync.b \
             examples/wide_concurrency.b test/cases/thread_deinit.b \
-            test/cases/thread_cycles.b test/cases/async_cross_thread_close.b \
+            test/cases/thread_cycles.b \
             examples/unsafe_raw.b examples/atomics.b \
             test/cases/runtime_hooks_threads.b \
             test/cases/shared_publication.b \
@@ -247,14 +245,8 @@ for file in examples/threads.b examples/shared_weak.b examples/wide_sync.b \
         # reporting rather than aborting the whole sweep on, and the real signal
         # is the warning text plus the status compared to the expectation.
         set +e
-        if [[ "$name" == async_cross_thread_close ]]; then
-            BEANS_NO_POOL=1 perl -e 'alarm 120; exec @ARGV' \
-                "$out/${name}_tsan" >"$out/${name}.stdout" \
-                2>"$out/${name}.stderr"
-        else
-            BEANS_NO_POOL=1 "$out/${name}_tsan" >"$out/${name}.stdout" \
-                2>"$out/${name}.stderr"
-        fi
+        BEANS_NO_POOL=1 "$out/${name}_tsan" >"$out/${name}.stdout" \
+            2>"$out/${name}.stderr"
         status=$?
         set -e
         if grep -q 'WARNING: ThreadSanitizer' "$out/${name}.stderr"; then

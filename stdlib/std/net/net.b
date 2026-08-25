@@ -33,6 +33,8 @@ import std.sock
 // above 100.
 extern "C" fn beans_sockx_multicast(fd: int, group: RawPtr<u8>, req: RawPtr<u64>) -> int
 extern "C" fn beans_sockx_recv_into(fd: int, destination: RawPtr<u8>, req: RawPtr<u64>) -> int
+extern "C" fn beans_net_recv_into_wait(fd: int, destination: RawPtr<u8>, req: RawPtr<u64>) -> int
+extern "C" fn beans_net_send_from_wait(fd: int, bytes: RawPtr<u8>, len: int, req: RawPtr<u64>) -> int
 extern "C" fn beans_sockx_listen_reuse_port(host: RawPtr<u8>, req: RawPtr<u64>) -> int
 extern "C" fn beans_sockx_try_accept(fd: int, req: RawPtr<u64>) -> int
 extern "C" fn beans_sockx_set_nodelay(fd: int, on: int, req: RawPtr<u64>) -> int
@@ -178,8 +180,14 @@ pub unique class TcpStream implements ByteStream, Send {
     fd: int
     live: bool = true
     nonblocking: bool = false
-    // One reusable request/result word pair for the recv bridge, so a read
-    // costs no allocation. Owned for the stream's whole life.
+    // Cached facts for the waiting recv bridge: whether the descriptor is
+    // already fiber-prepared (O_NONBLOCK is per-fd, so once is forever),
+    // and the configured read deadline, so the hot path re-reads neither.
+    fiber_prepared: bool = false
+    read_timeout_ms: int = 0
+    write_timeout_ms: int = 0
+    // Reusable request/result words for the recv bridge, so a read costs
+    // no allocation. Owned for the stream's whole life.
     scratch: RawPtr<u64> = RawPtr.null()
 
     // Private: wrapping an arbitrary integer as a socket is not something callers get
@@ -187,7 +195,7 @@ pub unique class TcpStream implements ByteStream, Send {
     fn init(fd: int) {
         self.fd = fd
         unsafe {
-            self.scratch = RawPtr.alloc(2)
+            self.scratch = RawPtr.alloc(5)
         }
     }
 
@@ -226,7 +234,32 @@ pub unique class TcpStream implements ByteStream, Send {
     /// normal. This is the offset-aware form needed by output queues.
     pub fn write_from(data: Bytes, offset: int) -> Result<int> {
         if !self.live { return err("send: socket is closed", "closed") }
-        return sock.send(self.fd, data, offset)
+        if offset < 0 || offset > data.len() {
+            return err("send: offset is outside the data", "invalid")
+        }
+        if data.len() == offset { return ok(0) }
+        var status: int = 0
+        var count: int = 0
+        var os_error: int = 0
+        unsafe {
+            self.scratch.write(offset as u64)
+            self.scratch.offset(1).write(0)
+            self.scratch.offset(2).write(
+                (if self.fiber_prepared { 1 } else { 0 }) as u64)
+            self.scratch.offset(3).write(
+                (if self.write_timeout_ms > 0 {
+                    self.write_timeout_ms
+                } else { -1 }) as u64)
+            status = beans_net_send_from_wait(
+                self.fd, data.as_ptr(), data.len(), self.scratch)
+            count = self.scratch.read() as int
+            os_error = self.scratch.offset(1).read() as int
+            if self.scratch.offset(2).read() != 0 {
+                self.fiber_prepared = true
+            }
+        }
+        if status == 0 { return ok(count) }
+        return sockx_error("send_from", status, os_error)
     }
 
     /// Tries one write on a nonblocking stream. `ok(none)` means the socket
@@ -296,10 +329,57 @@ pub unique class TcpStream implements ByteStream, Send {
         unsafe {
             self.scratch.write(buffer.len() as u64)
             self.scratch.offset(1).write(0)
-            status = beans_sockx_recv_into(
+            self.scratch.offset(2).write(
+                (if self.fiber_prepared { 1 } else { 0 }) as u64)
+            self.scratch.offset(3).write(
+                (if self.read_timeout_ms > 0 {
+                    self.read_timeout_ms
+                } else { -1 }) as u64)
+            self.scratch.offset(4).write(0)
+            // The waiting form: on a fiber, not-ready parks in the
+            // netpoller instead of answering timeout straight away.
+            status = beans_net_recv_into_wait(
                 self.fd, buffer.as_ptr(), self.scratch)
             count = self.scratch.read() as int
             os_error = self.scratch.offset(1).read() as int
+            if self.scratch.offset(2).read() != 0 {
+                self.fiber_prepared = true
+            }
+        }
+        if status == 0 { return ok(count) }
+        return sockx_error("recv_into", status, os_error)
+    }
+
+    /// Reads like `read_into`, but waits for readability before the first
+    /// recv. A caller that just drained the socket knows the next recv
+    /// would only say would-block; this form spends one poller wait
+    /// instead of that wasted syscall. Off a fiber it reads exactly like
+    /// `read_into`.
+    pub fn read_into_waiting(buffer: Bytes) -> Result<int> {
+        if !self.live { return err("recv: socket is closed", "closed") }
+        if buffer.len() <= 0 {
+            return err("recv_into: the buffer must not be empty", "invalid")
+        }
+        var status: int = 0
+        var count: int = 0
+        var os_error: int = 0
+        unsafe {
+            self.scratch.write(buffer.len() as u64)
+            self.scratch.offset(1).write(0)
+            self.scratch.offset(2).write(
+                (if self.fiber_prepared { 1 } else { 0 }) as u64)
+            self.scratch.offset(3).write(
+                (if self.read_timeout_ms > 0 {
+                    self.read_timeout_ms
+                } else { -1 }) as u64)
+            self.scratch.offset(4).write(1)
+            status = beans_net_recv_into_wait(
+                self.fd, buffer.as_ptr(), self.scratch)
+            count = self.scratch.read() as int
+            os_error = self.scratch.offset(1).read() as int
+            if self.scratch.offset(2).read() != 0 {
+                self.fiber_prepared = true
+            }
         }
         if status == 0 { return ok(count) }
         return sockx_error("recv_into", status, os_error)
@@ -307,18 +387,29 @@ pub unique class TcpStream implements ByteStream, Send {
 
     /// Tries one read into caller-owned storage on a nonblocking stream.
     /// `ok(none)` means the socket would block. `ok(some(0))` is EOF, so a
-    /// quiet socket and a closed peer remain different facts.
+    /// quiet socket and a closed peer remain different facts. This form
+    /// never parks — would-block is its immediate answer even on a fiber.
     pub fn try_read_into(buffer: Bytes) -> Result<Option<int>> {
         if !self.live { return err("recv: socket is closed", "closed") }
         if !self.nonblocking {
             return err("try_read_into: the socket is blocking", "invalid")
         }
-        match self.read_into(buffer) {
-            ok(count) => { return ok(some(count)) }
-            err(e) => {
-                if e.kind == "timeout" { return ok(none) }
-                return err(e.msg, e.kind)
-            }
+        var status: int = 0
+        var count: int = 0
+        var os_error: int = 0
+        unsafe {
+            self.scratch.write(buffer.len() as u64)
+            self.scratch.offset(1).write(0)
+            status = beans_sockx_recv_into(
+                self.fd, buffer.as_ptr(), self.scratch)
+            count = self.scratch.read() as int
+            os_error = self.scratch.offset(1).read() as int
+        }
+        if status == 0 { return ok(some(count)) }
+        if status == 110 { return ok(none) }
+        match sockx_error("recv_into", status, os_error) {
+            ok(_) => { return ok(none) }
+            err(e) => { return err(e.msg, e.kind) }
         }
     }
 
@@ -353,6 +444,8 @@ pub unique class TcpStream implements ByteStream, Send {
     /// runs out is an `err` with kind `timeout`, never a hang.
     pub fn set_timeouts(read_ms: int, write_ms: int) -> Result<bool> {
         if !self.live { return err("set_timeouts: socket is closed", "closed") }
+        self.read_timeout_ms = read_ms
+        self.write_timeout_ms = write_ms
         return sock.set_timeouts(self.fd, read_ms, write_ms)
     }
 
@@ -659,16 +752,3 @@ pub unique class UdpSocket implements Send {
 // is a named static on the class it produces — the same shape as `File.open` and
 // `MMap.open`. So it is `TcpListener.bind(...)`, not `net.listen(...)`.
 
-/// Suspends the calling async function until `handle` has data to read (or a
-/// connection to accept). The handle comes from `.poll_handle()` on a socket —
-/// or is any readable descriptor, a pipe included. Level-triggered: if data is
-/// already there, this completes on the spot.
-///
-/// The body below never runs: the async expander lowers a call to this into a
-/// parked readiness await on the hidden reactor, which the driver blocks on —
-/// no busy spin.
-pub async fn readable(handle: int) -> bool { return true }
-
-/// Suspends the calling async function until `handle` has room to write.
-/// Otherwise exactly `readable`.
-pub async fn writable(handle: int) -> bool { return true }

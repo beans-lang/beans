@@ -681,16 +681,22 @@ class MirLowerer {
         }
         self.pop_scope()
         let closure: MirFunction = self.current
+        var by_value_index: int = 0
         for capture: MirCapture in closure.captures {
             if capture.source < 0 ||
                capture.source >= parent.locals.len() {
+                by_value_index += 1
                 continue
             }
             let source: MirLocal =
                 parent.locals[capture.source]
+            // the per-instruction value mask is one machine word, so a
+            // capture past bit 62 always rides a cell instead
             capture.by_value =
+                by_value_index < 63 &&
                 mir_capture_by_value_type(capture.type) &&
                 !source.mutable
+            by_value_index += 1
             if capture.by_value &&
                capture.target >= 0 &&
                capture.target < closure.locals.len() {
@@ -735,6 +741,68 @@ class MirLowerer {
                     capture.source)
                 capture_index += 1
             }
+        }
+        return result
+    }
+
+    // brew — the checked node carries the hoisted argument bindings and a
+    // fabricated zero-parameter closure (spec/CONCURRENCY.md). The temps
+    // lower as ordinary lets of the enclosing scope, the closure lowers
+    // exactly as a thread-spawn closure would, and the instruction takes
+    // ownership of the closure value: the fiber's entry releases the env
+    // after the call, the same contract thread spawn keeps.
+    fn lower_brew(node: HirNode) -> int {
+        var closure: int = -1
+        for child: HirNode in node.children {
+            if child.kind == "closure" {
+                closure = self.lower_expression(child)
+            } else {
+                self.lower_statement(child)
+            }
+        }
+        if closure < 0 {
+            self.fail(
+                node.file, node.line, node.col,
+                "brew has no closure to start")
+            return -1
+        }
+        let result: int =
+            self.emit(node, "brew", node.type, node.value, [closure])
+        if result >= 0 &&
+           self.current.value_ownership[closure] == "owned" {
+            self.consume_operand(self.last_instruction(), 0)
+        }
+        return result
+    }
+
+    // group.brew — the fleet flavor: the group reference rides as a first
+    // operand ahead of the closure, and the hoisted temps lower as
+    // ordinary lets exactly as a lone brew's do. The group operand is a
+    // borrow; only the closure is consumed.
+    fn lower_group_brew(node: HirNode) -> int {
+        var group: int = -1
+        var closure: int = -1
+        for child: HirNode in node.children {
+            if child.kind == "closure" {
+                closure = self.lower_expression(child)
+            } else if child.kind == "let" {
+                self.lower_statement(child)
+            } else if group < 0 {
+                group = self.lower_expression(child)
+            }
+        }
+        if group < 0 || closure < 0 {
+            self.fail(
+                node.file, node.line, node.col,
+                "group.brew has no group or closure to start")
+            return -1
+        }
+        let result: int =
+            self.emit(node, "group_brew", node.type, node.value,
+                      [group, closure])
+        if result >= 0 &&
+           self.current.value_ownership[closure] == "owned" {
+            self.consume_operand(self.last_instruction(), 1)
         }
         return result
     }
@@ -1018,6 +1086,12 @@ class MirLowerer {
     fn lower_expression(node: HirNode) -> int {
         if node.kind == "closure" {
             return self.lower_closure(node)
+        }
+        if node.kind == "brew" {
+            return self.lower_brew(node)
+        }
+        if node.kind == "group_brew" {
+            return self.lower_group_brew(node)
         }
         if node.kind == "try" {
             return self.lower_try(node)
@@ -1690,15 +1764,6 @@ class MirLowerer {
     }
 
     fn lower_function(function: HirFunction) {
-        if function.is_async && !function.expanded {
-            // The async expander runs before MIR lowering and rewrites
-            // every async body into a task maker; an async function here
-            // means that step was skipped.
-            self.fail(
-                function.file, function.line, function.col,
-                "internal: async function '{function.qualified}' was not expanded before MIR lowering")
-            return
-        }
         self.current = new MirFunction(
             function.qualified, function.result,
             function.file, function.line, function.col)
@@ -1897,13 +1962,20 @@ class MirLowerer {
                 if closure.removed ||
                    closure.op != "closure" ||
                    closure.result < 0 ||
-                   closure.capture_locals.len() == 0 {
+                   closure.capture_locals.len() == 0 ||
+                   closure.capture_locals.len() > 27 {
+                    // past 27 captures the heap layout chunks into annex
+                    // boxes (the ILP32 walker mask covers 29 slots); the
+                    // stack frame stays flat, so wide closures keep the
+                    // heap path and both layouts stay decidable from the
+                    // capture count alone
                     continue
                 }
                 var safe: bool = true
                 for index: int in
                     0..closure.capture_locals.len() {
-                    if (closure.capture_value_mask &
+                    if index >= 63 ||
+                       (closure.capture_value_mask &
                         (1 << index)) == 0 {
                         safe = false
                     }

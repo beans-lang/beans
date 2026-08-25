@@ -2,6 +2,120 @@
 
 This file records user-facing changes in each Beans release.
 
+## [Unreleased]
+
+### Added
+
+- **`brew` — child fibers** (spec/CONCURRENCY.md). `brew f(args)` starts the
+  call on a child fiber of the current scope, pinned to the current worker:
+  arguments evaluate at the brew, the callee runs when the current fiber
+  parks or the scope ends, and scope exit joins every child — a fiber cannot
+  leak. `let h: Brew<int> = brew price(order)` keeps the scope-bound handle;
+  `h.join()` parks and answers `Result<int>` (`ok`, or `err` of kind
+  `panic`, `cancelled`, or `closed` on a second join); `h.cancel()` requests
+  cancellation, observed at the child's parks. **A panic ends only the fiber
+  it happened on** — the report is delivered at the join, and an outcome
+  nobody joined escalates at the scope exit with both positions. `brew` is
+  contextual (a local named `brew` keeps working), refused on freestanding
+  and wasm targets, and `beansc run` hosts the same fibers on the same
+  scheduler, so both compilers agree byte-for-byte, scheduling order
+  included. The fiber core underneath (`beans_fiber_*`, arm64 + x86-64
+  context switch, guard-page stacks, FIFO scheduler, cross-thread resume)
+  ships in the runtime with its own C gate; the runtime ABI is now 11.
+- `Channel.try_send` and `Channel.try_receive` answer immediately — `false`
+  or `none` — where the blocking forms would wait. `try_send` needs a
+  copyable element: a refused move-only value would be lost.
+- **std parks fibers.** A fiber that must wait — channel send/receive on a
+  full/empty channel, `time.sleep`, `thread.join` — now parks so every
+  other fiber of its worker keeps running, instead of blocking the whole
+  thread. Two fibers of one worker on opposite ends of a full channel used
+  to be an instant deadlock; now they hand values to each other. Thread
+  callers keep the blocking behavior they always had.
+- **`Gate`** — a sticky broadcast flag for fibers and threads.
+  `new Gate()` starts shut; `wait()` parks the calling fiber until the
+  gate opens (immediately returning once open, forever); `open()` wakes
+  every waiter at once and cannot be undone; `is_open()` peeks. A `Gate`
+  is `Send + Sync`: open it from any thread, wait on it from any fiber.
+  (The concurrency plan called this `Event`; it shipped as `Gate` because
+  `Event` is everyday user vocabulary — `std.poll` itself already exports
+  a `poll.Event` — and a builtin must not take that name away.)
+- **Deadlock report.** A program whose every fiber is parked with no other
+  thread able to wake them prints each fiber's name and state and exits
+  with status 3, instead of hanging forever.
+- **The netpoller.** Net waits park the calling fiber in its worker's
+  kernel poller — kqueue on macOS and the BSDs, epoll on Linux — instead
+  of blocking the thread, so both ends of a TCP conversation can run as
+  fibers of one worker. A fiber's socket becomes nonblocking for good at
+  its first fiber operation; thread-only programs keep blocking sockets
+  exactly as before. Socket deadlines (`set_timeouts`, `accept_timeout`,
+  connect timeouts) keep firing for parked fibers, and a fiber waiting on
+  a descriptor never counts toward the deadlock report — the kernel can
+  always wake it. On kqueue, a park costs no syscall of its own: interest
+  registrations queue in the worker and the poller's next wait submits
+  the whole batch as the changelist of that one `kevent` call (a wait
+  that its deadline cancels first is dequeued in place, also for free).
+- **Fixed: `defer` inside a nested block on `beansc run`.** The tree
+  walker dropped the block's scope before function-exit defers ran and
+  panicked with "unknown name"; native read its stack slot and printed.
+  Deferred records now carry the frame they were registered in, and both
+  engines agree.
+- **Interim wall: `brew` inside a nested block is refused at check time.**
+  The synthesized scope join runs with function-exit defers, after a
+  nested block's handle is gone — natively that was a crash. Brew at the
+  function's own scope until per-scope joins land with the unwind work.
+- **`TaskGroup<T>`** — a scope-bound fleet of brewed fibers, for when the
+  fiber count is a runtime value. `let group: TaskGroup<int> = new
+  TaskGroup<int>()`; `group.brew(f(x))` starts a child exactly as `brew`
+  does (and is legal at any block depth — the group binding itself is
+  pinned to the function's own scope); `next()` parks for the earliest
+  unclaimed completion and answers `Option<Result<T>>` in completion
+  order, spawn order breaking ties; `try_next()` answers immediately;
+  `wait_all()` answers `Result<List<T>>` in spawn order, joining every
+  child even on failure with the first failure as the fleet's answer;
+  `cancel_all()` cancels newest-first, joins, and discards every outcome.
+  A drained group is reusable, a panicked child arrives as an `err` at
+  delivery instead of ending the program, and the same scope walls and
+  synthesized scope join a `Brew` handle has keep a fleet from outliving
+  its scope — an unseen panic escalates there. A fleet nobody can wake
+  lands in the deadlock report. Both compilers agree byte-for-byte,
+  delivery order included.
+- **Fixed: bootstrapping with an installed release.** The released
+  launcher exports its package's `BEANS_*` source roots, so `make`
+  compiled this tree's compiler against last release's runtime and
+  stdlib — and the link broke the first time `src/` needed a runtime
+  symbol the release does not ship. The bootstrap recipe now pins every
+  source root to the tree it is building.
+- **Fixed: `read_into` and `write_from` on a fiber.** The offset-aware
+  stream forms went through a raw would-block bridge the netpoller never
+  covered: a fiber's `read_into` between requests answered `timeout` the
+  moment the socket had nothing buffered instead of parking, so a
+  keep-alive server built on them lost every connection after its first
+  response. Both forms now park in the netpoller like every other net
+  wait, and the new `TcpStream.read_into_waiting` waits for readability
+  before its first recv — for a caller that just drained the socket and
+  knows a speculative recv would only say would-block. The stream caches
+  its fiber preparation and configured deadlines so the steady per-request
+  cost is the syscalls that move bytes. `try_read_into` and
+  `try_write_from` keep their immediate would-block answers, on fibers
+  included.
+
+### Removed
+
+- `async` and `await` left the language. They were contextual words, so
+  every program that used them as ordinary identifiers keeps compiling;
+  programs that declared `async fn`, wrote `await`, or started `async let`
+  children no longer parse as before and now get ordinary syntax errors.
+  The state-machine expander, the hidden `std.async$rt` package,
+  `net.readable`/`net.writable`, the reflection `is_async()` accessors, and
+  the runtime's hidden executor entries (`beans_task_slot`,
+  `beans_set_task_slot`, the `beans_reactor_*` parked-readiness registry)
+  are all gone; the runtime ABI is now 10. The lowering was measured at
+  roughly four times the CPU cost of the equivalent sync code, which is why
+  it goes: its replacement — pinned fibers with uncolored functions and a
+  structured `brew` spawn — is tracked as ROADMAP P4. Threads, channels,
+  atomics, mutexes, and `std.poll` readiness waits are unchanged and remain
+  the way Beans does concurrency today.
+
 ## [0.1.30] - 2026-08-24
 
 ### Added

@@ -39,7 +39,8 @@ fn mir_effects_for(kind: string, resolved: string) -> string {
        kind == "method_call" ||
        kind == "static_call" || kind == "builtin_call" ||
        kind == "builtin_method" || kind == "closure_call" ||
-       kind == "super_init" || kind == "super_call" {
+       kind == "super_init" || kind == "super_call" ||
+       kind == "brew" || kind == "group_brew" {
         if resolved.starts_with("std.atomic.") {
             return "mutate"
         }

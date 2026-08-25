@@ -28,7 +28,7 @@ fn llvm_type(type: HirType) -> string {
         return "[{type.array_length} x {element}]"
     }
     if name == "Error" || name == "Bytes" ||
-       name == "AtomicInt" ||
+       name == "AtomicInt" || name == "Gate" ||
        name == "File" || name == "MMap" {
         return "ptr"
     }
@@ -48,7 +48,8 @@ fn llvm_type(type: HirType) -> string {
     if (name == "Mutex" || name == "Channel" ||
         name == "Thread" || name == "Shared" ||
         name == "Weak" || name == "Atomic" ||
-        name == "Arena" || name == "Box") &&
+        name == "Arena" || name == "Box" ||
+        name == "Brew" || name == "TaskGroup") &&
        type.args.len() == 1 {
         return "ptr"
     }
@@ -134,6 +135,7 @@ fn llvm_type_is_reference(type: HirType) -> bool {
     if name == "string" || name == "List" ||
        name == "Map" || name == "OrderedMap" ||
        name == "Error" || name == "AtomicInt" ||
+       name == "Gate" ||
        name == "Bytes" || name == "File" ||
        name == "MMap" || name == "fn" {
         return true
@@ -141,7 +143,8 @@ fn llvm_type_is_reference(type: HirType) -> bool {
     if (name == "Mutex" || name == "Channel" ||
         name == "Thread" || name == "Shared" ||
         name == "Weak" || name == "Atomic" ||
-        name == "Arena" || name == "Box") &&
+        name == "Arena" || name == "Box" ||
+        name == "Brew" || name == "TaskGroup") &&
        type.args.len() == 1 {
         return true
     }

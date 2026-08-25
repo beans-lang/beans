@@ -45,12 +45,14 @@ class ExpressionChecker {
     bad_inout_captures: Map<string, bool>
     bad_send_captures: Map<string, bool>
     bad_sync_captures: Map<string, bool>
+    bad_brew_captures: Map<string, bool>
+    // Statements a brew queues behind the one being checked: the handle's
+    // synthesized scope-join defer. Every statement-list loop drains this
+    // right after pushing the checked statement, which is what arms the
+    // defer at the brew, in scope order, like a defer the user wrote there.
+    brew_deferred: List<HirNode>
+    brew_counter: int
     next_binding_id: int
-    // Counts enclosing borrowed bindings of move-only values: a for-in
-    // element or a match payload. An await inside such a scope would have
-    // to keep the borrow alive across a suspension, which the task frame
-    // cannot do, so check_await refuses while this is nonzero.
-    move_only_borrow_depth: int
     // The type_args node of the call being checked, when the source wrote
     // explicit type arguments. A resolution that supports them takes the
     // node with take_call_generics(); check_call fails the call when they
@@ -86,8 +88,10 @@ class ExpressionChecker {
         self.bad_inout_captures = {}
         self.bad_send_captures = {}
         self.bad_sync_captures = {}
+        self.bad_brew_captures = {}
+        self.brew_deferred = []
+        self.brew_counter = 0
         self.next_binding_id = 0
-        self.move_only_borrow_depth = 0
         self.call_generics_syntax = none
         self.call_generics_taken = true
         for function: HirFunction in self.program.functions {
@@ -687,8 +691,7 @@ class ExpressionChecker {
                              generic: string) -> bool {
         if type.name == generic { return true }
         // A function value that returns T owns the recipe, not a T. It can
-        // safely produce a fresh move-only value later (async Task<T> stores
-        // exactly this kind of take closure).
+        // safely produce a fresh move-only value later.
         if type.name == "fn" { return false }
         for argument: HirType in type.args {
             if self.type_mentions_generic(argument, generic) {
@@ -822,7 +825,8 @@ class ExpressionChecker {
         }
         if type.name == "Mutex" ||
            type.name == "Atomic" ||
-           type.name == "AtomicInt" {
+           type.name == "AtomicInt" ||
+           type.name == "Gate" {
             return trait == "Clone"
         }
         if type.name == "Channel" && type.args.len() == 1 {
@@ -2155,15 +2159,6 @@ class ExpressionChecker {
                 if parent.has_body || parent.is_abstract {
                     needs_override = true
                 }
-                if function.is_async != parent.is_async {
-                    self.fail(
-                        function.syntax,
-                        if parent.is_async {
-                            "'{function.name}' must be async to match the parent declaration"
-                        } else {
-                            "'{function.name}' cannot be async — the parent declaration is synchronous"
-                        })
-                }
                 let shared: int =
                     if function.parameters.len() <
                        parent.parameters.len() {
@@ -2887,6 +2882,36 @@ class ExpressionChecker {
                 return some(new BuiltinSignature([], unit))
             }
         }
+        if receiver.name == "Brew" &&
+           receiver.args.len() == 1 {
+            // join borrows the handle: the joined flag, not a move, is what
+            // makes a second join answer err kind closed. The handle stays
+            // for the synthesized scope join to see the flag.
+            if name == "join" {
+                return some(new BuiltinSignature(
+                    [], hir_result(receiver.args[0])))
+            }
+            if name == "cancel" {
+                return some(new BuiltinSignature([], unit))
+            }
+        }
+        if receiver.name == "TaskGroup" &&
+           receiver.args.len() == 1 {
+            // group.brew is not here: it starts a call, not a value, so
+            // the method checker intercepts it before this table.
+            let value: HirType = receiver.args[0]
+            if name == "next" || name == "try_next" {
+                return some(new BuiltinSignature(
+                    [], hir_option(hir_result(value))))
+            }
+            if name == "wait_all" {
+                return some(new BuiltinSignature(
+                    [], hir_result(hir_named("List", [value]))))
+            }
+            if name == "cancel_all" {
+                return some(new BuiltinSignature([], unit))
+            }
+        }
         if receiver.name == "Mutex" &&
            receiver.args.len() == 1 {
             if name == "with_lock" {
@@ -2905,6 +2930,20 @@ class ExpressionChecker {
                 return some(new BuiltinSignature(
                     [], hir_option(value)))
             }
+            if name == "try_send" {
+                // a refused move-only value would be silently lost:
+                // the channel did not take it and the call cannot
+                // hand it back
+                if self.is_move_only(value) {
+                    return none
+                }
+                return some(new BuiltinSignature(
+                    [value], new HirType("bool")))
+            }
+            if name == "try_receive" {
+                return some(new BuiltinSignature(
+                    [], hir_option(value)))
+            }
             if name == "close" {
                 return some(new BuiltinSignature([], unit))
             }
@@ -2920,6 +2959,15 @@ class ExpressionChecker {
             if name == "store" {
                 return some(new BuiltinSignature(
                     [integer], unit))
+            }
+        }
+        if receiver.name == "Gate" {
+            if name == "wait" || name == "open" {
+                return some(new BuiltinSignature([], unit))
+            }
+            if name == "is_open" {
+                return some(new BuiltinSignature(
+                    [], new HirType("bool")))
             }
         }
         if receiver.name == "Atomic" &&
@@ -4056,42 +4104,6 @@ class ExpressionChecker {
                     [integer, integer, integer],
                     hir_result(boolean)))
             }
-            // The hidden async executor's thread-local state: the shared
-            // reactor poller triple, the parked-await count, and the
-            // parked-descriptor table. Internal — only std.async$rt
-            // calls these.
-            if name == "task_slot" {
-                return some(new BuiltinSignature(
-                    [integer], integer))
-            }
-            if name == "set_task_slot" {
-                return some(new BuiltinSignature(
-                    [integer, integer], integer))
-            }
-            if name == "park_note" {
-                return some(new BuiltinSignature(
-                    [integer], integer))
-            }
-            if name == "park_bind" {
-                return some(new BuiltinSignature(
-                    [integer, integer], integer))
-            }
-            if name == "park_forget" {
-                return some(new BuiltinSignature(
-                    [integer], integer))
-            }
-            if name == "park_stale" {
-                return some(new BuiltinSignature(
-                    [], integer))
-            }
-            if name == "park_dead" {
-                return some(new BuiltinSignature(
-                    [integer], integer))
-            }
-            if name == "park_shutdown" {
-                return some(new BuiltinSignature(
-                    [], integer))
-            }
         }
         return none
     }
@@ -4101,8 +4113,8 @@ class ExpressionChecker {
         let result: HirNode = new HirNode(
             kind, value, type, self.current.file,
             node.line, node.col)
-        // The async expander reads types and argument modes from the AST,
-        // so every checked node keeps a handle to its lowering. Later
+        // Editor queries read types and argument modes from the AST, so
+        // every checked node keeps a handle to its lowering. Later
         // make_node calls for the same AST node overwrite earlier ones;
         // the final one is the node's real meaning.
         node.checked = some(result)
@@ -4344,17 +4356,8 @@ class ExpressionChecker {
             }
             let parser: Parser =
                 new Parser(move tokens)
-            // An interpolation piece is parsed with the surrounding body's
-            // async context so the refusal below can name the real
-            // problem instead of reporting a confused parse.
-            parser.in_async = self.current.is_async
             let expression: AstNode =
                 parser.parse_standalone_expression()
-            if ast_contains_await(expression) {
-                self.fail(
-                    node,
-                    "await is not allowed inside string interpolation — bind the awaited value to a local first")
-            }
             for diagnostic: Diagnostic in parser.errors {
                 self.fail(
                     node,
@@ -4524,6 +4527,20 @@ class ExpressionChecker {
                 node,
                 "closure cannot capture inout parameter '{binding.name}'")
         }
+        if hir_type_contains_brew(binding.type) &&
+           !self.bad_brew_captures.contains_key(capture_key) {
+            self.bad_brew_captures[capture_key] = true
+            self.fail(
+                node,
+                "closure cannot capture Brew handle '{binding.name}' — a handle lives and dies a local of the scope that brewed it")
+        }
+        if hir_type_contains_task_group(binding.type) &&
+           !self.bad_brew_captures.contains_key(capture_key) {
+            self.bad_brew_captures[capture_key] = true
+            self.fail(
+                node,
+                "closure cannot capture TaskGroup '{binding.name}' — a fleet lives and dies a local of the scope that made it")
+        }
         if self.require_send_captures &&
            !self.bad_send_captures.contains_key(capture_key) {
             if !self.trait_satisfied(binding.type, "Send") {
@@ -4566,17 +4583,7 @@ class ExpressionChecker {
         match self.find_local(node.value) {
             some(binding) => {
                 self.check_capture_use(node, binding)
-                if binding.move_state == "async_pending" {
-                    // the hidden handle never escapes: awaiting the
-                    // binding is its only read
-                    self.fail(
-                        node,
-                        "async let binding '{node.value}' must be awaited")
-                } else if binding.move_state == "async_done" {
-                    self.fail(
-                        node,
-                        "async let binding '{node.value}' was already awaited")
-                } else if binding.move_state == "moved" {
+                if binding.move_state == "moved" {
                     self.fail(
                         node,
                         "use of moved value '{node.value}'")
@@ -4660,7 +4667,7 @@ class ExpressionChecker {
     }
 
     // A named function used as a value, from its own package or another:
-    // one set of rules, so the two paths cannot drift. Extern C, async and
+    // one set of rules, so the two paths cannot drift. Extern C and
     // ownership-parameter functions are refused; a send fn expectation is
     // honoured because a named function captures nothing.
     fn function_value_node(node: AstNode,
@@ -4670,11 +4677,6 @@ class ExpressionChecker {
             self.fail(
                 node,
                 "extern C function '{function.name}' cannot be stored as a Beans function value yet")
-        }
-        if function.is_async {
-            self.fail(
-                node,
-                "'{function.name}' is async and cannot be stored as a function value — call it with await or 'async let'")
         }
         self.require_function_feature(
             node, function,
@@ -4719,6 +4721,24 @@ class ExpressionChecker {
     fn require_move_source(node: AstNode,
                            type: HirType,
                            where: string) {
+        // A Brew is beyond move-only: it is scope-bound. The one binding
+        // that may hold one is the brew's own let; every other sink —
+        // rebinding, returning, arguments, containers — is refused, moved
+        // or not. This is what makes the synthesized scope join total.
+        if hir_type_contains_brew(type) && node.kind != "brew" {
+            self.fail(
+                node,
+                "{where} cannot take a Brew handle — it lives and dies a local of the scope that brewed it")
+            return
+        }
+        // The same story for a whole fleet: the one binding that may hold
+        // a TaskGroup is the let of its own `new`.
+        if hir_type_contains_task_group(type) && node.kind != "new" {
+            self.fail(
+                node,
+                "{where} cannot take a TaskGroup — it lives and dies a local of the scope that made it")
+            return
+        }
         if !self.is_move_only(type) { return }
         if node.kind == "if_expression" ||
            node.kind == "if" {
@@ -6419,7 +6439,6 @@ class ExpressionChecker {
                         self.make_node(
                             node, "call", function.name,
                             function.result)
-                    self.validate_async_call(node, function)
                     result.resolved = function.qualified
                     if function.generics.len() != 0 {
                         self.check_generic_arguments(
@@ -6973,33 +6992,6 @@ class ExpressionChecker {
         return some(result)
     }
 
-    // Asyncness is an effect on the callable. A call to an async function
-    // is legal only directly under await (or as an async let initializer);
-    // anywhere else it is a bare call, and a synchronous function has no
-    // way to wait at all.
-    fn validate_async_call(node: AstNode,
-                           function: HirFunction) {
-        if !function.is_async { return }
-        // After expansion the "async" function is really a synchronous
-        // task maker; the re-check of expanded bodies calls it bare.
-        if function.expanded { return }
-        // The allowance lives on the exact call node the await marked, so
-        // calls in receivers or arguments never inherit it.
-        let allowed: bool = node.await_allowed
-        node.await_allowed = false
-        if !self.current.is_async {
-            self.fail(
-                node,
-                "'{function.name}' is async and can only be called from an async function")
-            return
-        }
-        if !allowed {
-            self.fail(
-                node,
-                "async call must be awaited or started with 'async let'")
-        }
-    }
-
     fn take_call_generics() -> Option<AstNode> {
         self.call_generics_taken = true
         return self.call_generics_syntax
@@ -7035,22 +7027,16 @@ class ExpressionChecker {
     fn check_call_resolved(node: AstNode, callee: AstNode,
                            expected: HirType) -> HirNode {
         // Compiler-generated calls pin their callee to a canonical symbol.
-        // Async runtime calls use their private package prefix; runtime hooks
-        // carry an explicit note. Both skip source-scope visibility because
-        // the signature checker already validated the compiler wiring.
+        // Runtime hooks carry an explicit note and skip source-scope
+        // visibility because the signature checker already validated the
+        // compiler wiring.
         if callee.kind == "name" &&
-           (callee.resolved.starts_with("{async_rt_package()}::") ||
-            callee.note == "runtime_hook") {
+           callee.note == "runtime_hook" {
             match self.functions.get(callee.resolved) {
                 some(function) => {
                     let result: HirNode =
                         self.make_node(
-                            node,
-                            if callee.note == "runtime_hook" {
-                                "runtime_hook_call"
-                            } else {
-                                "call"
-                            },
+                            node, "runtime_hook_call",
                             function.name,
                             function.result)
                     result.resolved = function.qualified
@@ -7165,8 +7151,6 @@ class ExpressionChecker {
                             self.make_node(
                                 node, "super_call",
                                 callee.value, result_type)
-                        self.validate_async_call(
-                            node, target.function)
                         result.resolved =
                             target.function.qualified
                         self.check_arguments(
@@ -7254,8 +7238,6 @@ class ExpressionChecker {
                                         node, "static_call",
                                         function.name,
                                         function.result)
-                                self.validate_async_call(
-                                    node, function)
                                 result.resolved =
                                     function.qualified
                                 if function.generics.len() != 0 {
@@ -7886,6 +7868,17 @@ class ExpressionChecker {
                     node, result.type, expected)
                 return result
             }
+            // group.brew starts a call, not a value — it needs the raw
+            // argument syntax, so it is intercepted before the builtin
+            // table (which only sees checked argument values).
+            if receiver.type.name == "TaskGroup" &&
+               receiver.type.args.len() == 1 &&
+               callee.value == "brew" {
+                let result: HirNode =
+                    self.check_group_brew(node, receiver)
+                self.expect_type(node, result.type, expected)
+                return result
+            }
             match self.check_higher_order_method(
                 node, callee, receiver, expected) {
                 some(result) => { return result }
@@ -8094,8 +8087,6 @@ class ExpressionChecker {
                                 self.make_node(
                                     node, "method_call",
                                     function.name, result_type)
-                            self.validate_async_call(
-                                node, function)
                             result.resolved = function.qualified
                             result.dispatch_slot =
                                 hir_method_slot(
@@ -8378,7 +8369,6 @@ class ExpressionChecker {
                     self.make_node(
                         node, "call", function.name,
                         function.result)
-                self.validate_async_call(node, function)
                 result.resolved = function.qualified
                 if function.generics.len() != 0 {
                     self.check_generic_arguments(
@@ -8509,6 +8499,50 @@ class ExpressionChecker {
             let result: HirNode =
                 self.make_node(node, "new", "AtomicInt", type)
             result.resolved = "AtomicInt.init"
+            self.check_builtin_arguments(
+                node, 1, signature, result)
+            self.expect_type(node, type, expected)
+            return result
+        }
+        if type.name == "Gate" {
+            let signature: BuiltinSignature =
+                new BuiltinSignature([], type)
+            let result: HirNode =
+                self.make_node(node, "new", "Gate", type)
+            result.resolved = "Gate.init"
+            self.check_builtin_arguments(
+                node, 1, signature, result)
+            self.expect_type(node, type, expected)
+            return result
+        }
+        if type.name == "TaskGroup" {
+            self.require_fibers(node, "TaskGroup")
+            if self.current.name == "deinit" {
+                self.fail(
+                    node,
+                    "deinit cannot park — it runs during cleanup; a group's scope join parks at scope exit")
+            }
+            // The same interim wall a lone brew has (see check_brew_value):
+            // the synthesized scope join rides function-exit defers, and a
+            // group made in a nested block dies with its block before those
+            // run. group.brew itself is then legal at any depth — the join
+            // references this binding, pinned to the body's own scope.
+            if !self.at_body_floor() {
+                self.fail(
+                    node,
+                    "new TaskGroup inside a nested block is not ready yet — its scope join runs at function exit, after the block's group is gone. make the group at the function's own scope (per-scope joins land with the fiber unwind work)")
+            }
+            if type.args.len() != 1 {
+                self.fail(
+                    node,
+                    "new TaskGroup needs one type argument or a declared result type")
+                type.args.push(poison_hir_type())
+            }
+            let signature: BuiltinSignature =
+                new BuiltinSignature([], type)
+            let result: HirNode =
+                self.make_node(node, "new", "TaskGroup", type)
+            result.resolved = "TaskGroup.init"
             self.check_builtin_arguments(
                 node, 1, signature, result)
             self.expect_type(node, type, expected)
@@ -9021,96 +9055,6 @@ class ExpressionChecker {
         return result
     }
 
-    fn check_await(node: AstNode,
-                   expected: HirType) -> HirNode {
-        if !self.current.is_async {
-            self.fail(
-                node,
-                "await is only valid inside an async function")
-        } else if self.capture_floor_depth >= 0 {
-            self.fail(
-                node,
-                "await cannot be used inside a closure — only directly in the async function body")
-        } else if self.defer_depth > 0 {
-            self.fail(
-                node,
-                "await is not allowed inside defer")
-        } else if self.move_only_borrow_depth > 0 {
-            self.fail(
-                node,
-                "await cannot suspend while a loop or match borrows a move-only value — copy or move what you need first")
-        }
-        // Awaiting an async let binding produces its declared result,
-        // exactly once; the state flip is what rejects a second await.
-        if node.children[0].kind == "name" {
-            match self.find_local(node.children[0].value) {
-                some(binding) => {
-                    if binding.move_state == "async_pending" ||
-                       binding.move_state == "async_done" {
-                        if binding.move_state == "async_done" {
-                            self.fail(
-                                node,
-                                "async let binding '{node.children[0].value}' was already awaited")
-                        }
-                        binding.move_state = "async_done"
-                        let operand: HirNode = self.make_node(
-                            node.children[0], "local",
-                            node.children[0].value, binding.type)
-                        operand.binding_id = binding.id
-                        self.expect_type(
-                            node, binding.type, expected)
-                        let result: HirNode = self.make_node(
-                            node, "await", "child", binding.type)
-                        result.children.push(operand)
-                        return result
-                    }
-                }
-                none => {}
-            }
-        }
-        // The operand must be a direct call to an async function; the
-        // call's own checking consumes the allowance, so if it is still
-        // set afterwards nothing async was called.
-        if node.children[0].kind != "call" {
-            self.fail(
-                node,
-                "await needs a direct call to an async function")
-            let ignored: HirNode =
-                self.check_expression(
-                    node.children[0], no_hir_type())
-            let poisoned: HirNode = self.make_node(
-                node, "error", "await", poison_hir_type())
-            poisoned.children.push(ignored)
-            return poisoned
-        }
-        node.children[0].await_allowed = true
-        let operand: HirNode =
-            self.check_expression(
-                node.children[0], no_hir_type())
-        if node.children[0].await_allowed {
-            node.children[0].await_allowed = false
-            if operand.type.name != "poison" {
-                self.fail(
-                    node,
-                    "await needs a call to an async function — this call is synchronous")
-            }
-            let poisoned: HirNode = self.make_node(
-                node, "error", "await", poison_hir_type())
-            poisoned.children.push(operand)
-            return poisoned
-        }
-        if operand.type.name == "poison" {
-            return self.make_node(
-                node, "error", "await", poison_hir_type())
-        }
-        let result_type: HirType = operand.type
-        self.expect_type(node, result_type, expected)
-        let result: HirNode =
-            self.make_node(node, "await", "", result_type)
-        result.children.push(operand)
-        return result
-    }
-
     fn check_cast(node: AstNode,
                   expected: HirType) -> HirNode {
         let value: HirNode =
@@ -9313,6 +9257,12 @@ class ExpressionChecker {
                 for statement: AstNode in block.children {
                     body.children.push(
                         self.check_statement(statement))
+                    if self.brew_deferred.len() != 0 {
+                        for armed: HirNode in self.brew_deferred {
+                            body.children.push(armed)
+                        }
+                        self.brew_deferred = []
+                    }
                 }
                 result.children.push(body)
                 if result_type.name != "unit" &&
@@ -9422,6 +9372,12 @@ class ExpressionChecker {
             } else {
                 result.children.push(
                     self.check_statement(statement))
+                if self.brew_deferred.len() != 0 {
+                    for armed: HirNode in self.brew_deferred {
+                        result.children.push(armed)
+                    }
+                    self.brew_deferred = []
+                }
             }
         }
         self.pop_scope()
@@ -9806,21 +9762,6 @@ class ExpressionChecker {
             lowered.children.push(
                 self.check_pattern(
                     arm.children[0], subject.type))
-            var arm_borrows_move_only: bool = false
-            let arm_scope: LocalScope =
-                self.scopes[self.scopes.len() - 1]
-            for bound_name: string in
-                arm_scope.bindings.keys() {
-                let bound: LocalBinding =
-                    arm_scope.bindings[bound_name]
-                if bound.borrowed &&
-                   self.is_move_only(bound.type) {
-                    arm_borrows_move_only = true
-                }
-            }
-            if arm_borrows_move_only {
-                self.move_only_borrow_depth += 1
-            }
             if !discard && expected.name != "" &&
                expected.name != "unit" &&
                arm.children[1].kind == "block" {
@@ -9847,9 +9788,6 @@ class ExpressionChecker {
                         arm.children[1], arm_type)
                 }
             lowered.children.push(value)
-            if arm_borrows_move_only {
-                self.move_only_borrow_depth -= 1
-            }
             self.pop_scope()
             let arm_returns: bool =
                 arm.children[1].kind == "block" &&
@@ -9950,9 +9888,6 @@ class ExpressionChecker {
         if node.kind == "try" {
             return self.check_try(node, expected)
         }
-        if node.kind == "await" {
-            return self.check_await(node, expected)
-        }
         if node.kind == "cast" {
             return self.check_cast(node, expected)
         }
@@ -9964,6 +9899,13 @@ class ExpressionChecker {
         }
         if node.kind == "match" {
             return self.check_match(node, expected)
+        }
+        if node.kind == "brew" {
+            self.fail(
+                node,
+                "brew starts a statement or a let initializer — a Brew handle is scope-bound, so it cannot ride inside a larger expression")
+            return self.make_node(
+                node, "error", "brew", poison_hir_type())
         }
         self.fail(
             node,
@@ -10187,6 +10129,33 @@ class ExpressionChecker {
             none => {}
         }
         var initializer: Option<AstNode> = self.expression_child(node)
+        if declared.name != "" && hir_type_contains_brew(declared) {
+            if canonical_hir_name(declared.name) != "Brew" {
+                self.fail(
+                    node,
+                    "Brew cannot ride inside another type — a handle lives and dies a plain local of the scope that brewed it")
+                declared = poison_hir_type()
+            } else if initializer.is_none() {
+                self.fail(
+                    node,
+                    "a Brew local starts with its brew — write let {node.value} = brew f(arguments)")
+                declared = poison_hir_type()
+            }
+        }
+        if declared.name != "" &&
+           hir_type_contains_task_group(declared) {
+            if canonical_hir_name(declared.name) != "TaskGroup" {
+                self.fail(
+                    node,
+                    "TaskGroup cannot ride inside another type — a fleet lives and dies a plain local of the scope that made it")
+                declared = poison_hir_type()
+            } else if initializer.is_none() {
+                self.fail(
+                    node,
+                    "a TaskGroup local starts with its group — write let {node.value} = new TaskGroup<T>()")
+                declared = poison_hir_type()
+            }
+        }
         var actual: HirType = declared
         var result: HirNode =
             self.make_node(node, node.kind, node.value, actual)
@@ -10194,47 +10163,47 @@ class ExpressionChecker {
             self.check_hir_annotations(
                 self.lower_ast_annotations(
                     node.annotations, "local"))
-        // `async let` starts a structured child: the initializer must be a
-        // direct async call, and the written type is the eventual result.
-        let starts_child: bool = node.note == "async"
-        if starts_child && !self.current.is_async {
-            self.fail(
-                node,
-                "'async let' is only valid inside an async function")
-        }
+        var brewed: bool = false
+        var grouped: bool = false
         match initializer {
             some(expression) => {
-                if starts_child {
-                    if expression.kind != "call" {
+                if expression.kind == "brew" {
+                    if node.kind == "var" {
                         self.fail(
                             node,
-                            "'async let' needs a direct call to an async function")
+                            "a Brew handle binds with let — a var could be rebound and lose the fiber it must join")
+                    }
+                    let value: HirNode =
+                        self.check_brew_value(expression)
+                    brewed = value.type.name != "poison"
+                    result.children.push(value)
+                    if declared.name == "" {
+                        actual = value.type
                     } else {
-                        expression.await_allowed = true
+                        self.expect_type(
+                            expression, value.type, declared)
+                    }
+                } else {
+                    let value: HirNode =
+                        self.check_expression(expression, declared)
+                    result.children.push(value)
+                    if declared.name == "" { actual = value.type }
+                    self.require_move_source(
+                        expression, value.type,
+                        "binding '{node.value}'")
+                    if canonical_hir_name(value.type.name) ==
+                       "TaskGroup" {
+                        grouped = true
+                        if node.kind == "var" {
+                            self.fail(
+                                node,
+                                "a TaskGroup binds with let — a var could be rebound and lose the fleet it must join")
+                        }
                     }
                 }
-                let value: HirNode =
-                    self.check_expression(expression, declared)
-                if starts_child && expression.await_allowed {
-                    expression.await_allowed = false
-                    if value.type.name != "poison" {
-                        self.fail(
-                            node,
-                            "'async let' needs a call to an async function — this call is synchronous")
-                    }
-                }
-                result.children.push(value)
-                if declared.name == "" { actual = value.type }
-                self.require_move_source(
-                    expression, value.type,
-                    "binding '{node.value}'")
             }
             none => {
-                if starts_child {
-                    self.fail(
-                        node,
-                        "'async let' needs a call to an async function as its initializer")
-                } else if declared.name == "" {
+                if declared.name == "" {
                     self.fail(
                         node,
                         "local '{node.value}' needs a type or initializer")
@@ -10245,13 +10214,13 @@ class ExpressionChecker {
         result.type = actual
         result.binding_id = self.declare(
             node, actual, node.kind == "var", false, false)
-        if starts_child {
-            match self.find_local(node.value) {
-                some(binding) => {
-                    binding.move_state = "async_pending"
-                }
-                none => {}
-            }
+        if brewed {
+            self.queue_brew_scope_join(
+                node, actual, result.binding_id, node.value)
+        }
+        if grouped {
+            self.queue_taskgroup_scope_join(
+                node, actual, result.binding_id, node.value)
         }
         return result
     }
@@ -10604,11 +10573,6 @@ class ExpressionChecker {
                         binding,
                         "map iteration needs key and value bindings")
                 }
-                if paired && self.current.is_async {
-                    self.fail(
-                        binding,
-                        "direct map iteration is not supported in async functions yet")
-                }
             } else {
                 self.fail(
                     node.children[iterable_index],
@@ -10668,18 +10632,15 @@ class ExpressionChecker {
                 }
                 none => {}
             }
-            let element_borrows_move_only: bool =
-                self.is_move_only(element) ||
-                (paired && self.is_move_only(value_element))
-            if element_borrows_move_only {
-                self.move_only_borrow_depth += 1
-            }
             for statement: AstNode in block.children {
                 body.children.push(
                     self.check_statement(statement))
-            }
-            if element_borrows_move_only {
-                self.move_only_borrow_depth -= 1
+                if self.brew_deferred.len() != 0 {
+                    for armed: HirNode in self.brew_deferred {
+                        body.children.push(armed)
+                    }
+                    self.brew_deferred = []
+                }
             }
             self.pop_scope()
             self.take_floor_depth = saved_floor
@@ -10814,6 +10775,277 @@ class ExpressionChecker {
         return false
     }
 
+    // brew <call> — start the call on a child fiber of this scope
+    // (spec/CONCURRENCY.md). The checked shape is one HIR "brew" node whose
+    // children are the hoisted argument bindings followed by a fabricated
+    // zero-parameter closure that runs the call; the backends lower the
+    // closure exactly as they lower a thread-spawn closure. The handle is
+    // scope-bound: whichever statement form brewed it also queues a
+    // synthesized `defer handle.brew_scope_join()` so no fiber can outlive
+    // its scope unjoined.
+    fn check_brew_value(node: AstNode) -> HirNode {
+        self.require_fibers(node, "brew")
+        if self.current.name == "deinit" {
+            self.fail(
+                node,
+                "deinit cannot park — it runs during cleanup; a brew's scope join parks at scope exit")
+        }
+        // Interim wall (spec/CONCURRENCY.md, "where the implementation
+        // stands"): the synthesized scope join rides function-exit defers,
+        // and a handle brewed in a nested block dies with its block before
+        // those run. Until per-scope joins land with the unwind work, brew
+        // only at the body's own scope — a check error beats the crash.
+        if !self.at_body_floor() {
+            self.fail(
+                node,
+                "brew inside a nested block is not ready yet — its scope join runs at function exit, after the block's handle is gone. brew at the function's own scope (per-scope joins land with the fiber unwind work)")
+        }
+        if node.children.len() != 1 ||
+           node.children[0].kind != "call" {
+            self.fail(
+                node,
+                "brew starts a call on a child fiber — write brew f(arguments)")
+            return self.make_node(
+                node, "error", "brew", poison_hir_type())
+        }
+        let call: HirNode =
+            self.check_expression(node.children[0], no_hir_type())
+        if call.type.name == "poison" {
+            return self.make_node(
+                node, "error", "brew", poison_hir_type())
+        }
+        if !self.check_brewable_call(node, "brew", call) {
+            return self.make_node(
+                node, "error", "brew", poison_hir_type())
+        }
+        let brew_node: HirNode =
+            self.make_node(
+                node, "brew",
+                if call.value != "" { call.value } else { call.resolved },
+                hir_named("Brew", [call.type]))
+        self.build_brew_transform(node, brew_node, call)
+        return brew_node
+    }
+
+    // One capability refusal per function for anything fiber-backed —
+    // brew, and the group flavor's `new TaskGroup`.
+    fn require_fibers(node: AstNode, what: string) {
+        if self.signature.runtime_profile == "freestanding" &&
+           !self.signature.refused_capabilities.contains_key("fibers") {
+            self.signature.refused_capabilities["fibers"] = true
+            self.fail(
+                node,
+                "{what} needs fibers, which the freestanding runtime does not have — it needs at least the minimal runtime")
+        } else if self.program.target.os == "wasi" &&
+                  !self.signature.refused_capabilities.contains_key("fibers") {
+            self.signature.refused_capabilities["fibers"] = true
+            self.fail(
+                node,
+                "{what} needs fibers, which target {self.program.target.triple} does not have")
+        }
+    }
+
+    // Whether checking sits at the function body's own scope — the only
+    // place the interim function-exit scope-join story covers.
+    fn at_body_floor() -> bool {
+        let body_floor: int =
+            if self.capture_floor_depth >= 0 {
+                self.capture_floor_depth + 1
+            } else {
+                1
+            }
+        return self.scopes.len() == body_floor
+    }
+
+    // Shared by brew and group.brew: the checked expression must be a real
+    // user call, through a class receiver if a method, with no inout
+    // crossing to the child fiber.
+    fn check_brewable_call(node: AstNode, verb: string,
+                           call: HirNode) -> bool {
+        if call.kind != "call" && call.kind != "method_call" {
+            self.fail(
+                node,
+                "{verb} starts a user function or method on a child fiber — this call cannot be brewed")
+            return false
+        }
+        if call.kind == "method_call" && call.children.len() >= 1 {
+            var class_receiver: bool = false
+            match self.declaration_for(call.children[0].type) {
+                some(declaration) => {
+                    class_receiver = declaration.kind == "class"
+                }
+                none => {}
+            }
+            if !class_receiver {
+                self.fail(
+                    node,
+                    "{verb} a method through a class receiver — a value receiver would run on the fiber's own copy")
+            }
+        }
+        for passing: string in call.argument_passing {
+            if passing == "inout" {
+                self.fail(
+                    node,
+                    "{verb} arguments are moved or copied onto the child fiber — inout cannot cross to it")
+            }
+        }
+        return true
+    }
+
+    // The shared brew transform. Hoist every evaluated child of the call —
+    // receiver and arguments — into an invisible let of the enclosing
+    // scope, in evaluation order, and point the call at those bindings
+    // instead. The fabricated closure then captures them, which is exactly
+    // the thread-spawn shape both backends already lower. The hoisted lets
+    // and the closure are appended to whatever `owner` already carries.
+    fn build_brew_transform(node: AstNode, owner: HirNode, call: HirNode) {
+        let result_type: HirType = call.type
+        let id: int = self.brew_counter
+        self.brew_counter += 1
+        var references: List<HirNode> = []
+        var index: int = 0
+        for child: HirNode in call.children {
+            let name: string = "brew{id}$a{index}"
+            let synthetic: AstNode =
+                new AstNode("name", name, node.line, node.col)
+            let hoisted: HirNode =
+                self.make_node(node, "let", name, child.type)
+            hoisted.children.push(child)
+            hoisted.binding_id =
+                self.declare(synthetic, child.type, false, false, false)
+            owner.children.push(hoisted)
+            let reference: HirNode =
+                self.make_node(node, "local", name, child.type)
+            reference.binding_id = hoisted.binding_id
+            references.push(reference)
+            index += 1
+        }
+        call.children = move references
+        let body: HirNode =
+            self.make_node(node, "block", "", new HirType("unit"))
+        if result_type.name == "unit" {
+            let statement: HirNode =
+                self.make_node(
+                    node, "expression", "", new HirType("unit"))
+            statement.children.push(call)
+            body.children.push(statement)
+        } else {
+            let statement: HirNode =
+                self.make_node(
+                    node, "return", "", new HirType("unit"))
+            statement.children.push(call)
+            body.children.push(statement)
+        }
+        let closure: HirNode =
+            self.make_node(
+                node, "closure", "",
+                hir_function([], result_type))
+        closure.children.push(body)
+        owner.children.push(closure)
+    }
+
+    // group.brew(f(x)) — the fleet flavor of brew (spec/CONCURRENCY.md):
+    // the same call walls and hoist-closure transform, minus the handle —
+    // the group keeps the row. Legal at any block depth, unlike a lone
+    // brew: the synthesized scope join references the group binding, and
+    // the nested-block wall on `new TaskGroup` pins that binding to the
+    // body's own scope. The checked shape is one "group_brew" node whose
+    // children are the group reference, the hoisted argument bindings,
+    // and the fabricated closure.
+    fn check_group_brew(node: AstNode, receiver: HirNode) -> HirNode {
+        let element: HirType = receiver.type.args[0]
+        if node.children.len() != 2 {
+            self.fail(
+                node,
+                "group.brew starts one call on a child fiber — write group.brew(f(arguments))")
+            for index: int in 1..node.children.len() {
+                self.check_expression(
+                    node.children[index], no_hir_type())
+            }
+            return self.make_node(
+                node, "error", "brew", poison_hir_type())
+        }
+        let call: HirNode =
+            self.check_expression(node.children[1], no_hir_type())
+        if call.type.name == "poison" {
+            return self.make_node(
+                node, "error", "brew", poison_hir_type())
+        }
+        if !self.check_brewable_call(node, "group.brew", call) {
+            return self.make_node(
+                node, "error", "brew", poison_hir_type())
+        }
+        self.expect_type(node.children[1], call.type, element)
+        let result: HirNode =
+            self.make_node(
+                node, "group_brew",
+                if call.value != "" { call.value } else { call.resolved },
+                new HirType("unit"))
+        result.children.push(receiver)
+        self.build_brew_transform(node, result, call)
+        return result
+    }
+
+    // The synthesized scope-exit join for one handle. It rides the ordinary
+    // defer machinery, so it interleaves with user defers in arm order and
+    // runs on every exit path, and the joined flag on the handle makes it a
+    // no-op when an explicit join() already saw the outcome.
+    fn queue_brew_scope_join(node: AstNode, type: HirType,
+                             binding_id: int, name: string) {
+        if binding_id < 0 { return }
+        let reference: HirNode =
+            self.make_node(node, "local", name, type)
+        reference.binding_id = binding_id
+        let join: HirNode =
+            self.make_node(
+                node, "builtin_method", "brew_scope_join",
+                new HirType("unit"))
+        join.children.push(reference)
+        let armed: HirNode =
+            self.make_node(node, "defer", "", new HirType("unit"))
+        armed.children.push(join)
+        self.brew_deferred.push(armed)
+    }
+
+    // The same synthesized scope-exit join for a whole fleet: joins every
+    // row still in the group, escalates the first panic nobody looked at,
+    // and drops unclaimed ok results quietly.
+    fn queue_taskgroup_scope_join(node: AstNode, type: HirType,
+                                  binding_id: int, name: string) {
+        if binding_id < 0 { return }
+        let reference: HirNode =
+            self.make_node(node, "local", name, type)
+        reference.binding_id = binding_id
+        let join: HirNode =
+            self.make_node(
+                node, "builtin_method", "taskgroup_scope_join",
+                new HirType("unit"))
+        join.children.push(reference)
+        let armed: HirNode =
+            self.make_node(node, "defer", "", new HirType("unit"))
+        armed.children.push(join)
+        self.brew_deferred.push(armed)
+    }
+
+    // brew as its own statement: an anonymous handle nobody can name, held
+    // by an invisible let so the scope join has something to run against.
+    fn check_brew_statement(node: AstNode) -> HirNode {
+        let value: HirNode = self.check_brew_value(node)
+        if value.type.name == "poison" { return value }
+        let name: string = "brew{self.brew_counter}$h"
+        self.brew_counter += 1
+        let synthetic: AstNode =
+            new AstNode("name", name, node.line, node.col)
+        let binding: HirNode =
+            self.make_node(node, "let", name, value.type)
+        binding.children.push(value)
+        binding.binding_id =
+            self.declare(synthetic, value.type, false, false, false)
+        self.queue_brew_scope_join(
+            node, value.type, binding.binding_id, name)
+        return binding
+    }
+
     fn check_statement(node: AstNode) -> HirNode {
         if node.kind == "let" || node.kind == "var" {
             return self.check_local(node)
@@ -10859,6 +11091,10 @@ class ExpressionChecker {
             return result
         }
         if node.kind == "expression" {
+            if node.children[0].kind == "brew" {
+                return self.check_brew_statement(
+                    node.children[0])
+            }
             let result: HirNode =
                 self.make_node(
                     node, "expression", "", new HirType("unit"))
@@ -10973,6 +11209,12 @@ class ExpressionChecker {
         self.push_scope()
         for statement: AstNode in block.children {
             result.children.push(self.check_statement(statement))
+            if self.brew_deferred.len() != 0 {
+                for armed: HirNode in self.brew_deferred {
+                    result.children.push(armed)
+                }
+                self.brew_deferred = []
+            }
         }
         self.pop_scope()
         return result
@@ -11091,7 +11333,6 @@ class ExpressionChecker {
         return function.owner == "" &&
                function.name != "main" &&
                function.has_body &&
-               !function.is_async &&
                !function.is_extern_c &&
                !function.is_inout &&
                !function.is_abstract &&
@@ -11191,29 +11432,12 @@ class ExpressionChecker {
         self.bad_inout_captures = {}
         self.bad_send_captures = {}
         self.bad_sync_captures = {}
-        self.move_only_borrow_depth = 0
+        self.bad_brew_captures = {}
+        self.brew_deferred = []
         self.current_constraints = []
         for constraint: HirGeneric in
             function.generic_constraints {
             self.current_constraints.push(constraint)
-        }
-        // Same conservative shape as the inout rule: the body lowers to
-        // closures that live past the maker call, and they cannot keep
-        // the move-only receiver borrowed past it. A direct await could —
-        // the caller waits the whole time — but an async let child runs
-        // beside its caller and cannot, and one lowering serves both.
-        if function.is_async && function.owner != "" &&
-           !function.is_static {
-            match self.declarations.get(function.owner) {
-                some(owner) => {
-                    if owner.is_unique {
-                        self.fail(
-                            function.syntax,
-                            "async instance methods are not available on a unique class — the body becomes closures that outlive the call and they cannot keep the move-only receiver borrowed; use a static async fn that takes the value")
-                    }
-                }
-                none => {}
-            }
         }
         if function.owner != "" {
             match self.declarations.get(function.owner) {
@@ -11272,6 +11496,12 @@ class ExpressionChecker {
             if child.kind != "block" { continue }
             for statement: AstNode in child.children {
                 function.body.push(self.check_statement(statement))
+                if self.brew_deferred.len() != 0 {
+                    for armed: HirNode in self.brew_deferred {
+                        function.body.push(armed)
+                    }
+                    self.brew_deferred = []
+                }
             }
             if function.result.name != "unit" &&
                function.result.name != "poison" &&

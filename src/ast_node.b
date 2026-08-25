@@ -35,13 +35,9 @@ class AstNode {
     // resolve names people write inside strings.
     interpolations: List<AstNode>
     // The HirNode the expression checker produced for this node, attached
-    // during checking. The async expander reads types, argument passing,
-    // and binding ids from here without re-deriving them.
+    // during checking. Editor queries (completion, signatures) read types,
+    // argument passing, and binding ids from here without re-deriving them.
     checked: Option<HirNode>
-    // Set by check_await (and async let) on its operand call node only:
-    // this exact call may be an async call. The callee's own checking
-    // consumes it, so calls in receivers or arguments never inherit it.
-    await_allowed: bool
 
     fn init(kind: string, value: string, line: int, col: int) {
         self.kind = kind
@@ -59,7 +55,6 @@ class AstNode {
         self.children = []
         self.interpolations = []
         self.checked = none
-        self.await_allowed = false
     }
 
     fn add(value: AstNode) {

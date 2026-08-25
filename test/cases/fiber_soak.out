@@ -1,0 +1,12 @@
+wave 0: 80 ok, 40 contained, sum 9600
+wave 1: 80 ok, 40 contained, sum 28800
+wave 2: 80 ok, 40 contained, sum 48000
+wave 3: 80 ok, 40 contained, sum 67200
+wave 4: 80 ok, 40 contained, sum 86400
+wave 5: 80 ok, 40 contained, sum 105600
+wave 6: 80 ok, 40 contained, sum 124800
+wave 7: 80 ok, 40 contained, sum 144000
+joins: 50 contained, sum 15000
+gate storm: panic contained
+channel storm: 4 landed, 16 contained
+storm stood

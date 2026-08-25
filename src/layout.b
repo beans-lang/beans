@@ -84,7 +84,7 @@ fn is_reference_builtin(name: string) -> bool {
            name == "Poller" || name == "SignalSet" ||
            name == "Library" || name == "Child" ||
            name == "Resource" || name == "Error" ||
-           name == "AtomicInt"
+           name == "AtomicInt" || name == "Gate"
 }
 
 class LayoutEngine {

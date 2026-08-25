@@ -201,9 +201,6 @@ partial class LlvmTextEmitter {
                         if function.is_static {
                             initializer_flags = initializer_flags | 2
                         }
-                        if function.is_async {
-                            initializer_flags = initializer_flags | 4
-                        }
                         if function.generics.len() != 0 {
                             initializer_flags = initializer_flags | 8
                         }
@@ -285,7 +282,6 @@ partial class LlvmTextEmitter {
             var flags: int = 0
             if function.is_public { flags = flags | 1 }
             if function.is_static { flags = flags | 2 }
-            if function.is_async { flags = flags | 4 }
             if function.generics.len() != 0 {
                 flags = flags | 8
             }
@@ -837,7 +833,7 @@ partial class LlvmTextEmitter {
 
     fn reflection_callable_action(
         function: HirFunction) -> string {
-        if !function.has_body || function.is_async ||
+        if !function.has_body ||
            function.is_extern_c ||
            function.is_inout ||
            function.generics.len() != 0 ||
@@ -1065,7 +1061,7 @@ partial class LlvmTextEmitter {
         var target_name: string = ""
         match initializer {
             some(function) => {
-                if !function.has_body || function.is_async ||
+                if !function.has_body ||
                    function.is_extern_c ||
                    function.generics.len() != 0 ||
                    !self.function_symbols.contains_key(

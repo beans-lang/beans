@@ -235,6 +235,127 @@ partial class LlvmTextEmitter {
         return "{output}  %recv.found{id} = load i64, ptr {ok_slot}\n  %recv.has{id} = icmp ne i64 %recv.found{id}, 0\n{conversion.setup}  %recv.payload{id} = insertvalue {option} poison, {self.type_text(element)} {conversion.value}, 1\n  {result} = insertvalue {option} %recv.payload{id}, i1 %recv.has{id}, 0\n"
     }
 
+    // The try twins share the blocking shapes but land a verdict
+    // instead of waiting: try_send answers false where send would wait
+    // or panic, try_receive answers none where receive would wait. A
+    // refused try_send hands the element's count back (or drops a
+    // moved-in count), so ownership is exact on both verdicts.
+    fn emit_channel_try_send(
+        function: MirFunction,
+        instruction: MirInstruction,
+        values: Map<int, string>) -> string {
+        let receiver_type: HirType =
+            self.value_type(
+                function, instruction.operands[0])
+        if receiver_type.args.len() != 1 {
+            self.fail(
+                instruction,
+                "LLVM emitter needs the element type")
+            return ""
+        }
+        let element: HirType = receiver_type.args[0]
+        if !self.handle_inner_supported(
+             instruction, element, false) {
+            return ""
+        }
+        let receiver: string =
+            self.value(
+                function, values,
+                instruction.operands[0], instruction)
+        let value: string =
+            self.value(
+                function, values,
+                instruction.operands[1], instruction)
+        let result: string = "%v{instruction.result}"
+        values[instruction.result] = result
+        let id: int = self.fresh()
+        let consumed: bool =
+            instruction.consumes.len() >= 2 &&
+            instruction.consumes[1]
+        let retains: string =
+            if consumed {
+                ""
+            } else {
+                self.emit_arc_value(
+                    element, value, true)
+            }
+        if self.wide_inline_value(element) {
+            let llvm: string = self.type_text(element)
+            let slot: string =
+                self.spill_slot(llvm, "channel.trysend")
+            self.require_declare(
+                "beans_chan_try_send_typed",
+                "i64 @beans_chan_try_send_typed(ptr, ptr)")
+            return "{retains}  store {llvm} {value}, ptr {slot}\n  %trysend.ok{id} = call i64 @beans_chan_try_send_typed(ptr {receiver}, ptr {slot})\n  %trysend.kept{id} = icmp eq i64 %trysend.ok{id}, 0\n  br i1 %trysend.kept{id}, label %trysend.back{id}, label %trysend.done{id}\ntrysend.back{id}:\n{self.emit_arc_value(element, value, false)}  br label %trysend.done{id}\ntrysend.done{id}:\n  {result} = icmp ne i64 %trysend.ok{id}, 0\n"
+        }
+        let conversion: LlvmSlotConversion =
+            self.to_slot(element, value, "trysend")
+        self.require_declare(
+            "beans_chan_try_send",
+            "i64 @beans_chan_try_send(ptr, i64)")
+        return "{retains}{conversion.setup}  %trysend.ok{id} = call i64 @beans_chan_try_send(ptr {receiver}, i64 {conversion.value})\n  %trysend.kept{id} = icmp eq i64 %trysend.ok{id}, 0\n  br i1 %trysend.kept{id}, label %trysend.back{id}, label %trysend.done{id}\ntrysend.back{id}:\n{self.emit_arc_value(element, value, false)}  br label %trysend.done{id}\ntrysend.done{id}:\n  {result} = icmp ne i64 %trysend.ok{id}, 0\n"
+    }
+
+    fn emit_channel_try_recv(
+        function: MirFunction,
+        instruction: MirInstruction,
+        values: Map<int, string>) -> string {
+        let receiver_type: HirType =
+            self.value_type(
+                function, instruction.operands[0])
+        if receiver_type.args.len() != 1 {
+            self.fail(
+                instruction,
+                "LLVM emitter needs the element type")
+            return ""
+        }
+        let element: HirType = receiver_type.args[0]
+        if !self.handle_inner_supported(
+             instruction, element, false) {
+            return ""
+        }
+        let option: string =
+            self.type_text(instruction.type)
+        if option == "" {
+            self.fail(
+                instruction,
+                "LLVM emitter does not support receiving '{render_hir_type(element)}' yet")
+            return ""
+        }
+        let receiver: string =
+            self.value(
+                function, values,
+                instruction.operands[0], instruction)
+        let result: string = "%v{instruction.result}"
+        values[instruction.result] = result
+        let id: int = self.fresh()
+        if self.wide_inline_value(element) {
+            let llvm: string = self.type_text(element)
+            let value_slot: string =
+                self.spill_slot(
+                    llvm, "channel.tryrecv")
+            self.require_declare(
+                "beans_chan_try_recv_typed",
+                "i64 @beans_chan_try_recv_typed(ptr, ptr)")
+            return "  store {llvm} zeroinitializer, ptr {value_slot}\n  %tryrecv.found{id} = call i64 @beans_chan_try_recv_typed(ptr {receiver}, ptr {value_slot})\n  %tryrecv.has{id} = icmp ne i64 %tryrecv.found{id}, 0\n  %tryrecv.value{id} = load {llvm}, ptr {value_slot}\n  %tryrecv.payload{id} = insertvalue {option} poison, {llvm} %tryrecv.value{id}, 1\n  {result} = insertvalue {option} %tryrecv.payload{id}, i1 %tryrecv.has{id}, 0\n"
+        }
+        let ok_slot: string =
+            self.spill_slot("i64", "tryrecv.ok")
+        var output: string =
+            "  %tryrecv.raw{id} = call i64 @beans_chan_try_recv(ptr {receiver}, ptr {ok_slot})\n"
+        self.require_declare(
+            "beans_chan_try_recv",
+            "i64 @beans_chan_try_recv(ptr, ptr)")
+        if option == "ptr" {
+            return "{output}  {result} = inttoptr i64 %tryrecv.raw{id} to ptr\n"
+        }
+        let conversion: LlvmSlotConversion =
+            self.from_slot(
+                element, "%tryrecv.raw{id}",
+                "%tryrecv.value{id}", "tryrecv")
+        return "{output}  %tryrecv.found{id} = load i64, ptr {ok_slot}\n  %tryrecv.has{id} = icmp ne i64 %tryrecv.found{id}, 0\n{conversion.setup}  %tryrecv.payload{id} = insertvalue {option} poison, {self.type_text(element)} {conversion.value}, 1\n  {result} = insertvalue {option} %tryrecv.payload{id}, i1 %tryrecv.has{id}, 0\n"
+    }
+
     fn emit_channel_close(
         function: MirFunction,
         instruction: MirInstruction,
@@ -310,6 +431,404 @@ partial class LlvmTextEmitter {
         self.ffi_functions.push(
             "define i64 @{symbol}(ptr %env) \{\n  %fn = load ptr, ptr %env\n  %spawn.ret = call {llvm} %fn(ptr %env)\n{conversion.setup}  ret i64 {conversion.value}\n\}\n")
         return symbol
+    }
+
+    // brew — start the fabricated closure on a child fiber of this worker
+    // (spec/CONCURRENCY.md). The closure rides the exact thread-spawn thunk
+    // convention, so spawn_thunk is reused as is; what changes is the
+    // runtime entry, the borrowed report name, and that nothing here marks
+    // shared graphs — the fiber shares this worker's heap view.
+    fn emit_brew(
+        function: MirFunction,
+        instruction: MirInstruction,
+        values: Map<int, string>) -> string {
+        if instruction.operands.len() != 1 ||
+           instruction.type.args.len() != 1 {
+            self.fail(
+                instruction,
+                "LLVM emitter needs one brew closure")
+            return ""
+        }
+        let payload: HirType = instruction.type.args[0]
+        if canonical_hir_name(payload.name) !=
+               "unit" &&
+           !self.handle_inner_supported(
+               instruction, payload, false) {
+            return ""
+        }
+        let closure: string =
+            self.value(
+                function, values,
+                instruction.operands[0], instruction)
+        let result: string = "%v{instruction.result}"
+        values[instruction.result] = result
+        let thunk: string = self.spawn_thunk(payload)
+        let name: string =
+            self.string_pointer(
+                if instruction.text != "" {
+                    instruction.text
+                } else {
+                    "brew"
+                })
+        if self.wide_inline_value(payload) {
+            self.require_declare(
+                "beans_brew_typed",
+                "ptr @beans_brew_typed(ptr, ptr, i64, i64, ptr, i64)")
+            return "  {result} = call ptr @beans_brew_typed(ptr @{thunk}, ptr {closure}, i64 {self.type_size(payload)}, i64 {self.pointer_mask_at(payload, 0)}, ptr {name}, i64 0)\n"
+        }
+        self.require_declare(
+            "beans_brew",
+            "ptr @beans_brew(ptr, ptr, i64, ptr, i64)")
+        return "  {result} = call ptr @beans_brew(ptr @{thunk}, ptr {closure}, i64 {self.slot_rc_flag(payload)}, ptr {name}, i64 0)\n"
+    }
+
+    // The err arm shared by both join layouts: the fresh message string
+    // moves into a fresh Error, and the kind names how the fiber ended.
+    fn brew_error_build(
+        instruction: MirInstruction,
+        receiver: string,
+        status: string,
+        id: int,
+        target: string) -> string {
+        self.require_declare(
+            "beans_brew_message",
+            "ptr @beans_brew_message(ptr)")
+        var output: string =
+            "  %brew.msg{id} = call ptr @beans_brew_message(ptr {receiver})\n"
+        output =
+            "{output}  %brew.kind.panic{id} = icmp eq i64 {status}, 1\n  %brew.kind.a{id} = select i1 %brew.kind.panic{id}, ptr {self.string_pointer("panic")}, ptr {self.string_pointer("cancelled")}\n  %brew.kind.closed{id} = icmp eq i64 {status}, 3\n  %brew.kind{id} = select i1 %brew.kind.closed{id}, ptr {self.string_pointer("closed")}, ptr %brew.kind.a{id}\n"
+        output =
+            "{output}{self.emit_make_error(instruction, "%brew.msg{id}", true, "%brew.kind{id}", true, target)}"
+        return output
+    }
+
+    // join parks until the child finishes and answers Result<T>: the ok arm
+    // moves the child's result out of the handle, the err arm carries kind
+    // panic, cancelled, or closed with the child's report as the message.
+    // Both Result layouts are built arm-by-arm because the tag is only
+    // known at run time.
+    fn emit_brew_join(
+        function: MirFunction,
+        instruction: MirInstruction,
+        values: Map<int, string>) -> string {
+        if instruction.operands.len() != 1 ||
+           instruction.type.args.len() < 1 {
+            self.fail(
+                instruction,
+                "LLVM emitter needs one brew join receiver")
+            return ""
+        }
+        let receiver: string =
+            self.value(
+                function, values,
+                instruction.operands[0], instruction)
+        let result_type: HirType = instruction.type
+        let payload: HirType = result_type.args[0]
+        let id: int = self.fresh()
+        self.require_declare(
+            "beans_brew_join",
+            "i64 @beans_brew_join(ptr)")
+        var output: string =
+            "  %brew.status{id} = call i64 @beans_brew_join(ptr {receiver})\n  %brew.isok{id} = icmp eq i64 %brew.status{id}, 0\n  br i1 %brew.isok{id}, label %brew.ok{id}, label %brew.err{id}\nbrew.ok{id}:\n"
+        if self.result_is_inline(result_type) {
+            // wide payload: Result is the inline {i1, T, Error} struct
+            let rtype: string = self.type_text(result_type)
+            let llvm: string = self.type_text(payload)
+            let slot: string =
+                self.spill_slot(llvm, "brew.result")
+            self.require_declare(
+                "beans_brew_value_typed",
+                "void @beans_brew_value_typed(ptr, ptr, i64)")
+            output =
+                "{output}  call void @beans_brew_value_typed(ptr {receiver}, ptr {slot}, i64 {self.type_size(payload)})\n  %brew.okv{id} = load {llvm}, ptr {slot}\n  %brew.oktag{id} = insertvalue {rtype} zeroinitializer, i1 false, 0\n  %brew.okr{id} = insertvalue {rtype} %brew.oktag{id}, {llvm} %brew.okv{id}, 1\n  br label %brew.done{id}\nbrew.err{id}:\n"
+            output =
+                "{output}{self.brew_error_build(instruction, receiver, "%brew.status{id}", id, "%brew.errobj{id}")}"
+            output =
+                "{output}  %brew.errtag{id} = insertvalue {rtype} zeroinitializer, i1 true, 0\n  %brew.errr{id} = insertvalue {rtype} %brew.errtag{id}, ptr %brew.errobj{id}, 2\n  br label %brew.done{id}\nbrew.done{id}:\n  %brew.res{id} = phi {rtype} [ %brew.okr{id}, %brew.ok{id} ], [ %brew.errr{id}, %brew.err{id} ]\n"
+            values[instruction.result] = "%brew.res{id}"
+            return output
+        }
+        if self.type_text(result_type) != "ptr" {
+            self.fail(
+                instruction,
+                "LLVM emitter does not support brewing '{render_hir_type(payload)}' yet")
+            return ""
+        }
+        // boxed Result: {i64 tag, i64 slot} with the arm's own meta
+        if canonical_hir_name(payload.name) == "unit" {
+            output =
+                "{output}  %brew.okr{id} = call ptr @beans_alloc(i64 16, i64 1)\n  store i64 0, ptr %brew.okr{id}\n  %brew.okslot{id} = getelementptr i8, ptr %brew.okr{id}, i64 8\n  store i64 0, ptr %brew.okslot{id}\n  br label %brew.done{id}\nbrew.err{id}:\n"
+        } else {
+            let mask: int =
+                if self.type_is_reference(payload) ||
+                   canonical_hir_name(payload.name) ==
+                       "decimal" {
+                    self.result_slot_mask()
+                } else {
+                    0
+                }
+            self.require_declare(
+                "beans_brew_value",
+                "i64 @beans_brew_value(ptr)")
+            output =
+                "{output}  %brew.okv{id} = call i64 @beans_brew_value(ptr {receiver})\n  %brew.okr{id} = call ptr @beans_alloc(i64 16, i64 {1 | (mask << 3)})\n  store i64 0, ptr %brew.okr{id}\n  %brew.okslot{id} = getelementptr i8, ptr %brew.okr{id}, i64 8\n  store i64 %brew.okv{id}, ptr %brew.okslot{id}\n  br label %brew.done{id}\nbrew.err{id}:\n"
+        }
+        output =
+            "{output}  %brew.errr{id} = call ptr @beans_alloc(i64 16, i64 {self.result_ref_meta()})\n  store i64 1, ptr %brew.errr{id}\n"
+        output =
+            "{output}{self.brew_error_build(instruction, receiver, "%brew.status{id}", id, "%brew.errobj{id}")}"
+        output =
+            "{output}  %brew.errslot{id} = getelementptr i8, ptr %brew.errr{id}, i64 8\n  %brew.erri{id} = ptrtoint ptr %brew.errobj{id} to i64\n  store i64 %brew.erri{id}, ptr %brew.errslot{id}\n  br label %brew.done{id}\nbrew.done{id}:\n  %brew.res{id} = phi ptr [ %brew.okr{id}, %brew.ok{id} ], [ %brew.errr{id}, %brew.err{id} ]\n"
+        values[instruction.result] = "%brew.res{id}"
+        return output
+    }
+
+    fn emit_brew_cancel(
+        function: MirFunction,
+        instruction: MirInstruction,
+        values: Map<int, string>) -> string {
+        let receiver: string =
+            self.value(
+                function, values,
+                instruction.operands[0], instruction)
+        self.require_declare(
+            "beans_brew_cancel",
+            "void @beans_brew_cancel(ptr)")
+        return "  call void @beans_brew_cancel(ptr {receiver})\n"
+    }
+
+    // group.brew — the fleet flavor of emit_brew: the group rides first,
+    // the runtime keeps the row, nothing comes back.
+    fn emit_group_brew(
+        function: MirFunction,
+        instruction: MirInstruction,
+        values: Map<int, string>) -> string {
+        if instruction.operands.len() != 2 {
+            self.fail(
+                instruction,
+                "LLVM emitter needs a group and a brew closure")
+            return ""
+        }
+        let group_type: HirType =
+            self.value_type(
+                function, instruction.operands[0])
+        if group_type.args.len() != 1 {
+            self.fail(
+                instruction,
+                "LLVM emitter needs the group's element type")
+            return ""
+        }
+        let payload: HirType = group_type.args[0]
+        if canonical_hir_name(payload.name) !=
+               "unit" &&
+           !self.handle_inner_supported(
+               instruction, payload, false) {
+            return ""
+        }
+        let group: string =
+            self.value(
+                function, values,
+                instruction.operands[0], instruction)
+        let closure: string =
+            self.value(
+                function, values,
+                instruction.operands[1], instruction)
+        let thunk: string = self.spawn_thunk(payload)
+        let name: string =
+            self.string_pointer(
+                if instruction.text != "" {
+                    instruction.text
+                } else {
+                    "brew"
+                })
+        if self.wide_inline_value(payload) {
+            self.require_declare(
+                "beans_taskgroup_brew_typed",
+                "void @beans_taskgroup_brew_typed(ptr, ptr, ptr, i64, i64, ptr, i64)")
+            return "  call void @beans_taskgroup_brew_typed(ptr {group}, ptr @{thunk}, ptr {closure}, i64 {self.type_size(payload)}, i64 {self.pointer_mask_at(payload, 0)}, ptr {name}, i64 0)\n"
+        }
+        self.require_declare(
+            "beans_taskgroup_brew",
+            "void @beans_taskgroup_brew(ptr, ptr, ptr, i64, ptr, i64)")
+        return "  call void @beans_taskgroup_brew(ptr {group}, ptr @{thunk}, ptr {closure}, i64 {self.slot_rc_flag(payload)}, ptr {name}, i64 0)\n"
+    }
+
+    // next / try_next: a delivered row arrives already joined — NULL is
+    // none, anything else becomes some(Result<T>) built exactly as the
+    // boxed join arm builds it, and the row is released once read. The
+    // Option rides as a nullable pointer because Result is a reference.
+    fn emit_taskgroup_next(
+        function: MirFunction,
+        instruction: MirInstruction,
+        values: Map<int, string>) -> string {
+        let receiver_type: HirType =
+            self.value_type(
+                function, instruction.operands[0])
+        if receiver_type.args.len() != 1 {
+            self.fail(
+                instruction,
+                "LLVM emitter needs the group's element type")
+            return ""
+        }
+        let payload: HirType = receiver_type.args[0]
+        if self.type_text(instruction.type) != "ptr" ||
+           self.wide_inline_value(payload) {
+            self.fail(
+                instruction,
+                "LLVM emitter does not support delivering '{render_hir_type(payload)}' from a TaskGroup yet")
+            return ""
+        }
+        let receiver: string =
+            self.value(
+                function, values,
+                instruction.operands[0], instruction)
+        let entry: string =
+            if instruction.text == "next" {
+                "beans_taskgroup_next"
+            } else {
+                "beans_taskgroup_try_next"
+            }
+        self.require_declare(entry, "ptr @{entry}(ptr)")
+        self.require_declare(
+            "beans_brew_status",
+            "i64 @beans_brew_status(ptr)")
+        let id: int = self.fresh()
+        var output: string =
+            "  %tg.row{id} = call ptr @{entry}(ptr {receiver})\n  %tg.has{id} = icmp ne ptr %tg.row{id}, null\n  br i1 %tg.has{id}, label %tg.some{id}, label %tg.none{id}\ntg.none{id}:\n  br label %tg.out{id}\ntg.some{id}:\n  %tg.status{id} = call i64 @beans_brew_status(ptr %tg.row{id})\n  %tg.isok{id} = icmp eq i64 %tg.status{id}, 0\n  br i1 %tg.isok{id}, label %tg.ok{id}, label %tg.err{id}\ntg.ok{id}:\n"
+        if canonical_hir_name(payload.name) == "unit" {
+            output =
+                "{output}  %tg.okr{id} = call ptr @beans_alloc(i64 16, i64 1)\n  store i64 0, ptr %tg.okr{id}\n  %tg.okslot{id} = getelementptr i8, ptr %tg.okr{id}, i64 8\n  store i64 0, ptr %tg.okslot{id}\n  br label %tg.claimed{id}\ntg.err{id}:\n"
+        } else {
+            let mask: int =
+                if self.type_is_reference(payload) ||
+                   canonical_hir_name(payload.name) ==
+                       "decimal" {
+                    self.result_slot_mask()
+                } else {
+                    0
+                }
+            self.require_declare(
+                "beans_brew_value",
+                "i64 @beans_brew_value(ptr)")
+            output =
+                "{output}  %tg.okv{id} = call i64 @beans_brew_value(ptr %tg.row{id})\n  %tg.okr{id} = call ptr @beans_alloc(i64 16, i64 {1 | (mask << 3)})\n  store i64 0, ptr %tg.okr{id}\n  %tg.okslot{id} = getelementptr i8, ptr %tg.okr{id}, i64 8\n  store i64 %tg.okv{id}, ptr %tg.okslot{id}\n  br label %tg.claimed{id}\ntg.err{id}:\n"
+        }
+        output =
+            "{output}  %tg.errr{id} = call ptr @beans_alloc(i64 16, i64 {self.result_ref_meta()})\n  store i64 1, ptr %tg.errr{id}\n"
+        output =
+            "{output}{self.brew_error_build(instruction, "%tg.row{id}", "%tg.status{id}", id, "%tg.errobj{id}")}"
+        output =
+            "{output}  %tg.errslot{id} = getelementptr i8, ptr %tg.errr{id}, i64 8\n  %tg.erri{id} = ptrtoint ptr %tg.errobj{id} to i64\n  store i64 %tg.erri{id}, ptr %tg.errslot{id}\n  br label %tg.claimed{id}\ntg.claimed{id}:\n  %tg.res{id} = phi ptr [ %tg.okr{id}, %tg.ok{id} ], [ %tg.errr{id}, %tg.err{id} ]\n  call void @beans_release(ptr %tg.row{id})\n  br label %tg.out{id}\ntg.out{id}:\n  %tg.opt{id} = phi ptr [ null, %tg.none{id} ], [ %tg.res{id}, %tg.claimed{id} ]\n"
+        values[instruction.result] = "%tg.opt{id}"
+        return output
+    }
+
+    // wait_all: the runtime joins the rest in spawn order. NULL back
+    // means everyone was ok — collect builds the List<T> and the ok arm
+    // boxes it; a row back is the first failure, dressed exactly as a
+    // join's err arm and released once read.
+    fn emit_taskgroup_wait_all(
+        function: MirFunction,
+        instruction: MirInstruction,
+        values: Map<int, string>) -> string {
+        let receiver_type: HirType =
+            self.value_type(
+                function, instruction.operands[0])
+        if receiver_type.args.len() != 1 {
+            self.fail(
+                instruction,
+                "LLVM emitter needs the group's element type")
+            return ""
+        }
+        let payload: HirType = receiver_type.args[0]
+        // A decimal rides a brew row as a boxed slot, but List<decimal>
+        // stores 32-byte elements — the two cannot meet here yet.
+        if self.type_text(instruction.type) != "ptr" ||
+           canonical_hir_name(payload.name) ==
+               "decimal" {
+            self.fail(
+                instruction,
+                "LLVM emitter does not support collecting '{render_hir_type(payload)}' from a TaskGroup yet")
+            return ""
+        }
+        let receiver: string =
+            self.value(
+                function, values,
+                instruction.operands[0], instruction)
+        self.require_declare(
+            "beans_taskgroup_wait_all_join",
+            "ptr @beans_taskgroup_wait_all_join(ptr)")
+        self.require_declare(
+            "beans_brew_status",
+            "i64 @beans_brew_status(ptr)")
+        let id: int = self.fresh()
+        let collect: string =
+            if self.wide_inline_value(payload) {
+                self.require_declare(
+                    "beans_taskgroup_collect_typed",
+                    "ptr @beans_taskgroup_collect_typed(ptr, i64, i64)")
+                "  %tg.list{id} = call ptr @beans_taskgroup_collect_typed(ptr {receiver}, i64 {self.type_size(payload)}, i64 {self.pointer_mask_at(payload, 0)})\n"
+            } else {
+                self.require_declare(
+                    "beans_taskgroup_collect",
+                    "ptr @beans_taskgroup_collect(ptr, i64)")
+                "  %tg.list{id} = call ptr @beans_taskgroup_collect(ptr {receiver}, i64 {self.slot_rc_flag(payload)})\n"
+            }
+        var output: string =
+            "  %tg.bad{id} = call ptr @beans_taskgroup_wait_all_join(ptr {receiver})\n  %tg.isok{id} = icmp eq ptr %tg.bad{id}, null\n  br i1 %tg.isok{id}, label %tg.ok{id}, label %tg.err{id}\ntg.ok{id}:\n{collect}  %tg.okr{id} = call ptr @beans_alloc(i64 16, i64 {1 | (self.result_slot_mask() << 3)})\n  store i64 0, ptr %tg.okr{id}\n  %tg.okslot{id} = getelementptr i8, ptr %tg.okr{id}, i64 8\n  %tg.listi{id} = ptrtoint ptr %tg.list{id} to i64\n  store i64 %tg.listi{id}, ptr %tg.okslot{id}\n  br label %tg.done{id}\ntg.err{id}:\n  %tg.status{id} = call i64 @beans_brew_status(ptr %tg.bad{id})\n  %tg.errr{id} = call ptr @beans_alloc(i64 16, i64 {self.result_ref_meta()})\n  store i64 1, ptr %tg.errr{id}\n"
+        output =
+            "{output}{self.brew_error_build(instruction, "%tg.bad{id}", "%tg.status{id}", id, "%tg.errobj{id}")}"
+        output =
+            "{output}  %tg.errslot{id} = getelementptr i8, ptr %tg.errr{id}, i64 8\n  %tg.erri{id} = ptrtoint ptr %tg.errobj{id} to i64\n  store i64 %tg.erri{id}, ptr %tg.errslot{id}\n  call void @beans_release(ptr %tg.bad{id})\n  br label %tg.done{id}\ntg.done{id}:\n  %tg.res{id} = phi ptr [ %tg.okr{id}, %tg.ok{id} ], [ %tg.errr{id}, %tg.err{id} ]\n"
+        values[instruction.result] = "%tg.res{id}"
+        return output
+    }
+
+    fn emit_taskgroup_cancel_all(
+        function: MirFunction,
+        instruction: MirInstruction,
+        values: Map<int, string>) -> string {
+        let receiver: string =
+            self.value(
+                function, values,
+                instruction.operands[0], instruction)
+        self.require_declare(
+            "beans_taskgroup_cancel_all",
+            "void @beans_taskgroup_cancel_all(ptr)")
+        return "  call void @beans_taskgroup_cancel_all(ptr {receiver})\n"
+    }
+
+    // The synthesized scope-exit join behind every group binding, the
+    // same contract emit_brew_scope_join keeps for one handle.
+    fn emit_taskgroup_scope_join(
+        function: MirFunction,
+        instruction: MirInstruction,
+        values: Map<int, string>) -> string {
+        let receiver: string =
+            self.value(
+                function, values,
+                instruction.operands[0], instruction)
+        self.require_declare(
+            "beans_taskgroup_scope_join",
+            "void @beans_taskgroup_scope_join(ptr, i64, i64)")
+        return "  call void @beans_taskgroup_scope_join(ptr {receiver}, i64 {instruction.line}, i64 {instruction.col})\n"
+    }
+
+    // The synthesized scope-exit join. The runtime no-ops when an explicit
+    // join saw the outcome, escalates a panic nobody caught, swallows a
+    // cancellation, and releases an unclaimed ok result.
+    fn emit_brew_scope_join(
+        function: MirFunction,
+        instruction: MirInstruction,
+        values: Map<int, string>) -> string {
+        let receiver: string =
+            self.value(
+                function, values,
+                instruction.operands[0], instruction)
+        self.require_declare(
+            "beans_brew_scope_join",
+            "void @beans_brew_scope_join(ptr, i64, i64)")
+        return "  call void @beans_brew_scope_join(ptr {receiver}, i64 {instruction.line}, i64 {instruction.col})\n"
     }
 
     // join moves the thread's result reference to the caller
@@ -644,6 +1163,43 @@ partial class LlvmTextEmitter {
         self.fail(
             instruction,
             "LLVM emitter does not support builtin method 'AtomicInt.{instruction.text}' yet")
+        return ""
+    }
+
+    // Gate (spec/CONCURRENCY.md, F3): wait parks the calling fiber until
+    // open fires; both lower to plain runtime calls on the handle.
+    fn emit_gate_method(
+        function: MirFunction,
+        instruction: MirInstruction,
+        values: Map<int, string>) -> string {
+        let receiver: string =
+            self.value(
+                function, values,
+                instruction.operands[0], instruction)
+        let result: string = "%v{instruction.result}"
+        if instruction.text == "wait" {
+            self.require_declare(
+                "beans_gate_wait",
+                "void @beans_gate_wait(ptr)")
+            return "  call void @beans_gate_wait(ptr {receiver})\n"
+        }
+        if instruction.text == "open" {
+            self.require_declare(
+                "beans_gate_open",
+                "void @beans_gate_open(ptr)")
+            return "  call void @beans_gate_open(ptr {receiver})\n"
+        }
+        if instruction.text == "is_open" {
+            self.require_declare(
+                "beans_gate_is_open",
+                "i64 @beans_gate_is_open(ptr)")
+            values[instruction.result] = result
+            let id: int = instruction.result
+            return "  %gate.open{id} = call i64 @beans_gate_is_open(ptr {receiver})\n  {result} = icmp ne i64 %gate.open{id}, 0\n"
+        }
+        self.fail(
+            instruction,
+            "LLVM emitter does not support builtin method 'Gate.{instruction.text}' yet")
         return ""
     }
 

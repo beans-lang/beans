@@ -1212,46 +1212,6 @@ pub fn runtime_builtin_fn(key: string) -> Option<RuntimeBuiltin> {
             ["i64", "i64", "i64"],
             "res_bool", "beans_poll_close", false))
     }
-    if key == "std.ready.task_slot" {
-        return some(new RuntimeBuiltin(
-            ["i64"],
-            "i64", "beans_task_slot", false))
-    }
-    if key == "std.ready.set_task_slot" {
-        return some(new RuntimeBuiltin(
-            ["i64", "i64"],
-            "i64", "beans_set_task_slot", false))
-    }
-    if key == "std.ready.park_note" {
-        return some(new RuntimeBuiltin(
-            ["i64"],
-            "i64", "beans_reactor_note_park", false))
-    }
-    if key == "std.ready.park_bind" {
-        return some(new RuntimeBuiltin(
-            ["i64", "i64"],
-            "i64", "beans_reactor_bind_park", false))
-    }
-    if key == "std.ready.park_forget" {
-        return some(new RuntimeBuiltin(
-            ["i64"],
-            "i64", "beans_reactor_forget_park", false))
-    }
-    if key == "std.ready.park_stale" {
-        return some(new RuntimeBuiltin(
-            [],
-            "i64", "beans_reactor_stale_park", false))
-    }
-    if key == "std.ready.park_dead" {
-        return some(new RuntimeBuiltin(
-            ["i64"],
-            "i64", "beans_reactor_park_dead", false))
-    }
-    if key == "std.ready.park_shutdown" {
-        return some(new RuntimeBuiltin(
-            [],
-            "i64", "beans_reactor_shutdown_parks", false))
-    }
     if key == "std.time.monotonic_nanos" {
         return some(new RuntimeBuiltin(
             [],

@@ -28,7 +28,7 @@ claim.
 | frontend | whole-program loader, resolver, generic type checker, typed annotations, runtime hooks and reflection, typed JSON/XML lowering, HIR, checked MIR and ownership verification |
 | native backend | MIR-to-textual-LLVM emitter, debug/release/LTO builds, ARC plus cycle collection |
 | interpreter | reference executor with the same checked program and runtime behaviour as native builds |
-| concurrency | native threads, typed atomics, mutexes, channels, structured async/await and readiness waits |
+| concurrency | native threads, typed atomics, mutexes, channels and readiness waits |
 | modules | canonical package identity, hashed `beans.lock`, locked/offline builds and a content-addressed Git cache |
 | C interop | imports and exports, C headers, bindgen, C layouts, globals/TLS/errno, typed and stored callbacks |
 | tooling | semantic LSP, interpreter DAP debugger, native source line tables and parser recovery for live edits |

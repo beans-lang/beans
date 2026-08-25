@@ -86,16 +86,6 @@ fn symbol_text(key: string) -> string {
     }
 }
 
-// The compiler-owned async runtime. '$' keeps the path unspellable by an
-// import, so the compiler is its only importer and names it directly.
-fn async_rt_package() -> string {
-    return "std.async$rt"
-}
-
-fn async_rt_symbol(name: string) -> string {
-    return package_symbol(async_rt_package(), name)
-}
-
 // One name selected in `import {…} from path`: the symbol `name` of the
 // import's target, bound in its own file as `binding` — the `as` alias
 // when one was written, the name itself otherwise.
@@ -503,7 +493,6 @@ class ModuleLoader {
     links: List<ModuleLink>
     csrc_rows: List<ModuleLink>
     overlays: Map<string, string>
-    want_reactor: bool
     has_local_dependencies: bool
     // The depth-first stack of packages being loaded, and the import edge
     // that pushed each one (stack_edges[i] led to stack[i]).
@@ -536,7 +525,6 @@ class ModuleLoader {
         self.links = []
         self.csrc_rows = []
         self.overlays = {}
-        self.want_reactor = false
         self.has_local_dependencies = false
         self.stack = []
         self.stack_edges = []
@@ -1651,13 +1639,6 @@ class ModuleLoader {
         names.sort()
         for name: string in names {
             if !name.ends_with(".b") { continue }
-            // The async runtime's readiness half only loads when the
-            // program can reach it (see load_async_runtime): a pure
-            // async program must not emit or link poller symbols.
-            if import_path == async_rt_package() &&
-               name == "reactor.b" && !self.want_reactor {
-                continue
-            }
             let file_path: string = path.join(dir, name)
             let parsed: ParsedModuleFile = self.parse_file(file_path)
             self.record_file(package, parsed)
@@ -1674,58 +1655,6 @@ class ModuleLoader {
         self.packages.push(package)
         self.state[import_path] = 2
         self.pop_stack()
-    }
-
-    // Any program that declares an async function needs the internal task
-    // package. Its directory name cannot be spelled in source — the
-    // compiler is the only importer.
-    fn load_async_runtime() {
-        var wanted: bool = false
-        for package: LoadedPackage in self.packages {
-            for file: ParsedModuleFile in package.files {
-                for declaration: AstNode in file.ast.children {
-                    if declaration.kind == "fn" &&
-                       value_marks_async(declaration.value) {
-                        wanted = true
-                    }
-                    if declaration.kind == "class" ||
-                       declaration.kind == "interface" ||
-                       declaration.kind == "enum" {
-                        for member: AstNode in declaration.children {
-                            if member.kind == "fn" &&
-                               value_marks_async(member.value) {
-                                wanted = true
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        if !wanted { return }
-        let standard_root: string =
-            if self.module_name == "std" && self.root != "" {
-                self.root
-            } else {
-                stdlib_root()
-            }
-        let dir: string = path.join(standard_root, "async$rt")
-        if !Dir.exists(dir) {
-            // 1:1, not 0:0: both compilers render a real position the same
-            // way, so this installation error stays byte-identical too.
-            self.fail(dir, 1, 1,
-                      "the async runtime package is missing from the standard library")
-            return
-        }
-        // The readiness half (reactor.b) rides along only when std.net is
-        // loaded — net.readable / net.writable are the only
-        // operations that can park an await, and they cannot be named
-        // without that import. Everything the loader loads is emitted, so
-        // this is what keeps poller symbols out of pure async programs and
-        // lets them link under the minimal and freestanding profiles.
-        self.want_reactor =
-            self.state.get("std.net").or(0) == 2
-        self.load_package(async_rt_package(), dir,
-                          "std", standard_root, "", "", 1, 1)
     }
 
     // The root package: the same directory walk as an imported one, but its
@@ -1829,7 +1758,6 @@ class ModuleLoader {
                 self.load_package(
                     standard_package, package_dir,
                     "std", self.root, "", entry, 1, 1)
-                self.load_async_runtime()
                 self.bind_imports()
                 return self.errors.len() == 0
             }
@@ -1847,7 +1775,6 @@ class ModuleLoader {
             self.pop_stack()
             self.packages.push(package)
             self.state["main"] = 2
-            self.load_async_runtime()
             self.bind_imports()
             return self.errors.len() == 0
         }
@@ -1866,7 +1793,6 @@ class ModuleLoader {
         }
         self.load_root_package()
         if library_entry { self.load_library_entry(entry) }
-        self.load_async_runtime()
         self.bind_imports()
         if self.locked || self.offline {
             for locked_path: string in self.lock_entries.keys() {

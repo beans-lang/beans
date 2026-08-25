@@ -5,7 +5,3 @@ fn main() {
     let list: List<int> = [1]
     for index: int, value: int in list { index + value }
 }
-
-async fn direct_async(values: Map<int, int>) {
-    for key: int, value: int in values { key + value }
-}

@@ -45,14 +45,6 @@
 #define BEANS_RT_MINIMAL 2
 #define BEANS_RT_FULL 3
 
-#if BEANS_RT_PROFILE >= BEANS_RT_FULL
-// Defined with the readiness reactor far below; every runtime path that
-// closes a descriptor reports it here so a parked await on that number
-// finishes false instead of attaching itself to whatever resource the
-// OS hands the number to next.
-void beans_reactor_note_close(long long fd);
-#endif
-
 // ---- portable decimal ------------------------------------------------------
 //
 // Decimal carries a signed 128-bit coefficient as two u64 limbs. It therefore
@@ -69,6 +61,15 @@ void beans_reactor_note_close(long long fd);
 
 #ifndef BEANS_RT_WASI
 #define BEANS_RT_WASI 0
+#endif
+
+// Fibers need real threads, mmap guard pages, and a scheduler to run on;
+// restricted profiles and WASI build without them. The checker refuses
+// `brew` and every parking operation there, so checked code never reaches
+// this gate — it exists so those builds stay honest at link time.
+#define BEANS_RT_FIBERS (BEANS_RT_PROFILE >= BEANS_RT_MINIMAL && !BEANS_RT_WASI)
+#if BEANS_RT_FIBERS
+#include "beans_fiber.h"
 #endif
 
 // Windows is grouped with wasm here on purpose: preserve_most interacts with
@@ -1026,6 +1027,12 @@ static int cc_collecting;
 // Plain int on purpose: the __atomic_* builtins below want an unqualified
 // object, the way beans_in_deinit is accessed.
 static int cc_sweeping;
+// Workers walking their local candidate graphs right now. A parked
+// candidate keeps its fields for the re-trace, so it may still carry an
+// edge to a shared husk another thread is about to free — the sweeper
+// and the walkers exclude each other (seq-cst on both sides, so the
+// store-buffer interleaving where each misses the other cannot happen).
+static int cc_worker_walkers;
 static void cc_collect(int force);
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
 static void cc_worker_collect(void);
@@ -1300,6 +1307,16 @@ typedef struct {
     long long version;
 } BMap;
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
+#if BEANS_RT_FIBERS
+// One parked fiber in a FIFO wait line (channels now, Event next). The
+// record lives on the waiting fiber's own stack — alive exactly as long
+// as the park — so a wait line costs no allocation.
+typedef struct BFiberWaiter {
+    BeansFiber* fiber;
+    struct BFiberWaiter* next;
+    int signalled;
+} BFiberWaiter;
+#endif
 typedef struct {
     pthread_mutex_t m;
     pthread_cond_t can_send, can_recv;
@@ -1307,6 +1324,10 @@ typedef struct {
     long long head, count, cap;
     int closed;
     long long stride, ptr_mask;
+#if BEANS_RT_FIBERS
+    // fibers waiting to send / receive; thread waiters stay on the conds
+    BFiberWaiter *send_head, *send_tail, *recv_head, *recv_tail;
+#endif
 } BChan;
 typedef struct {
     pthread_mutex_t m;
@@ -1489,16 +1510,12 @@ static void* cc_free_shell(void* p, long long meta) {
             if (m->p) munmap(m->p, (size_t)m->len);
 #endif
             if (m->fd >= 0) {
-                beans_reactor_note_close(m->fd);
                 close((int)m->fd);
             }
 #endif
         } else {
             BFile* f = p; // net; close() / f.close() is the real API
             if (f->fd >= 0) {
-#if BEANS_RT_PROFILE >= BEANS_RT_FULL
-                beans_reactor_note_close(f->fd);
-#endif
                 close((int)f->fd);
             }
         }
@@ -1755,12 +1772,33 @@ static int cc_shared_boundary(BHead* h) {
 // keeps worker threads alive — every threaded server — could never reclaim
 // husks, because cc_collect waits for cc_threads to reach zero.
 static void cc_sweep_husks(void) {
-    if (__atomic_exchange_n(&cc_sweeping, 1, __ATOMIC_ACQ_REL)) return;
+    if (__atomic_exchange_n(&cc_sweeping, 1, __ATOMIC_SEQ_CST)) return;
+    if (__atomic_load_n(&cc_worker_walkers, __ATOMIC_SEQ_CST) != 0) {
+        // a worker's trial walk may hold stale edges into the husk set;
+        // skip this sweep, the next root append re-arms it
+        __atomic_store_n(&cc_sweeping, 0, __ATOMIC_RELEASE);
+        return;
+    }
     void* local[64];
     CCStack deferred = {local, 0, 64, local};
     CC_LOCK();
-    long long kept = 0;
-    for (long long i = 0; i < cc_len; i++) {
+    if (cc_len < cc_threshold) {
+        // nothing due — this attempt came from a walk exit re-arming the
+        // sweep, and a winner already re-armed the threshold. Keeping the
+        // early-out under the lock keeps the O(n) scan off that path.
+        CC_UNLOCK();
+        __atomic_store_n(&cc_sweeping, 0, __ATOMIC_RELEASE);
+        return;
+    }
+    // Bounded slice per sweep: every entry scanned here holds the global
+    // lock every worker's release path needs, so an unbounded scan of a
+    // large candidate buffer is a multi-millisecond stall for the whole
+    // fleet — it was the p99 of a loaded server. Scanning from the tail
+    // with swap-removal keeps the pass restartable at any budget; the
+    // re-arm below decides how soon the next slice runs.
+    enum { CC_SWEEP_BUDGET = 8192 };
+    long long budget = CC_SWEEP_BUDGET;
+    for (long long i = cc_len; i-- > 0 && budget-- > 0;) {
         void* p = cc_roots[i];
         BHead* h = head_of(p);
         long long meta = cc_meta(h);
@@ -1773,13 +1811,13 @@ static void cc_sweep_husks(void) {
             rt_w_and(&h->meta, ~CC_BUF);
             void* child = cc_free_shell(p, cc_meta(h));
             if (child) cc_push(&deferred, child);
-        } else {
-            cc_roots[kept++] = p;
+            cc_roots[i] = cc_roots[--cc_len];
         }
     }
-    cc_len = kept;
-    // geometric re-arm, exactly like cc_collect: amortized O(1) per park
-    cc_threshold = cc_len * 2 + 256;
+    // geometric re-arm once the buffer was fully covered; a truncated
+    // pass re-arms almost immediately so the next walk exit or append
+    // continues where this slice stopped
+    cc_threshold = budget > 0 ? cc_len * 2 + 256 : cc_len + 256;
     CC_UNLOCK();
     __atomic_store_n(&cc_sweeping, 0, __ATOMIC_RELEASE);
     // released outside the lock: a release can park new possible roots,
@@ -2612,6 +2650,12 @@ static long long cc_walk_min = 256; // adaptive gate for trial deletion
 static void cc_worker_collect(void) {
     if (!cc_worker_root_batching || cc_worker_collecting) return;
     if (beans_local_in_deinit) return;
+    __atomic_add_fetch(&cc_worker_walkers, 1, __ATOMIC_SEQ_CST);
+    if (__atomic_load_n(&cc_sweeping, __ATOMIC_SEQ_CST)) {
+        // the sweeper is mid-free; try again at the next allocation
+        __atomic_sub_fetch(&cc_worker_walkers, 1, __ATOMIC_SEQ_CST);
+        return;
+    }
     cc_worker_collecting = 1;
     {
         ARC_ADD(arc_collections, 1);
@@ -2646,9 +2690,19 @@ static void cc_worker_collect(void) {
         if (global.v != glocal) rt_free(global.v);
 
         if (cc_worker_root_len >= cc_worker_walk_min) {
+            // Bounded slice per walk: trial deletion is sound on any
+            // subset of the candidate set, and an unbounded walk over a
+            // backed-off set (the adaptive minimum reaches 2^18) was a
+            // tens-of-milliseconds pause — the p99 of a loaded server.
+            // The oldest candidates go first; survivors and leftovers
+            // stay parked for the next allocation-triggered collect.
+            enum { CC_WORKER_WALK_BUDGET = 8192 };
+            long long walked = cc_worker_root_len;
+            if (walked > CC_WORKER_WALK_BUDGET)
+                walked = CC_WORKER_WALK_BUDGET;
             CCStack st = {0, 0, 0}, aux = {0, 0, 0}, dead = {0, 0, 0};
             int saw_shared = 0;
-            for (long long i = 0; i < cc_worker_root_len; i++)
+            for (long long i = 0; i < walked; i++)
                 cc_worker_mark_gray(
                     cc_worker_roots[i], &st, &saw_shared);
             if (saw_shared) {
@@ -2657,12 +2711,12 @@ static void cc_worker_collect(void) {
                 // parked, and let the quiescent global collector handle the
                 // set. A shared candidate can conservatively carry one local
                 // batch with it, but later local-only batches remain local.
-                for (long long i = 0; i < cc_worker_root_len; i++) {
+                for (long long i = 0; i < walked; i++) {
                     BHead* h = head_of(cc_worker_roots[i]);
                     if (cc_color(h) == CC_GRAY)
                         cc_worker_scan_black(cc_worker_roots[i], &aux);
                 }
-                for (long long i = 0; i < cc_worker_root_len; i++)
+                for (long long i = 0; i < walked; i++)
                     rt_w_fetch_or(
                         &head_of(cc_worker_roots[i])->meta, CC_PURPLE);
                 // Hand the batch off before clearing the length, not after:
@@ -2671,9 +2725,19 @@ static void cc_worker_collect(void) {
                 // this same buffer. Clearing afterwards would drop it with
                 // CC_BUF set and no buffer owning it.
                 {
-                    long long published = cc_worker_root_len;
-                    cc_worker_root_len = 0;
-                    cc_append_roots(cc_worker_roots, published);
+                    // the append copies the walked prefix before any of
+                    // its own releases can park fresh roots, and those
+                    // land above the leftovers; the compaction below then
+                    // slides everything over the published prefix
+                    cc_append_roots(cc_worker_roots, walked);
+                    long long now = cc_worker_root_len;
+                    // walked == 0 leaves the buffer alone — it may still be
+                    // NULL, and NULL + 0 is undefined pointer arithmetic.
+                    if (walked > 0)
+                        memmove(cc_worker_roots, cc_worker_roots + walked,
+                                (size_t)(now - walked) *
+                                    sizeof *cc_worker_roots);
+                    cc_worker_root_len = now - walked;
                 }
                 rt_free(st.v);
                 rt_free(aux.v);
@@ -2682,16 +2746,22 @@ static void cc_worker_collect(void) {
                 // Clear every root owned by this local buffer as one set. A
                 // BUF left after this point belongs elsewhere and
                 // cc_worker_scan treats it as externally reachable.
-                for (long long i = 0; i < cc_worker_root_len; i++)
+                for (long long i = 0; i < walked; i++)
                     rt_w_and(
                         &head_of(cc_worker_roots[i])->meta, ~CC_BUF);
-                for (long long i = 0; i < cc_worker_root_len; i++)
+                for (long long i = 0; i < walked; i++)
                     cc_worker_scan(cc_worker_roots[i], &st, &aux);
-                for (long long i = 0; i < cc_worker_root_len; i++) {
+                for (long long i = 0; i < walked; i++) {
                     cc_worker_collect_white(
                         cc_worker_roots[i], &st, &dead);
                 }
-                cc_worker_root_len = 0;
+                // walked == 0 leaves the buffer alone — it may still be
+                // NULL, and NULL + 0 is undefined pointer arithmetic.
+                if (walked > 0)
+                    memmove(cc_worker_roots, cc_worker_roots + walked,
+                            (size_t)(cc_worker_root_len - walked) *
+                                sizeof *cc_worker_roots);
+                cc_worker_root_len -= walked;
                 ARC_ADD(arc_cycle_objects, dead.len);
                 if (__atomic_load_n(&weak_live, __ATOMIC_RELAXED))
                     for (long long i = 0; i < dead.len; i++)
@@ -2728,6 +2798,16 @@ static void cc_worker_collect(void) {
         if (deferred.v != dlocal) rt_free(deferred.v);
     }
     cc_worker_collecting = 0;
+    if (__atomic_sub_fetch(&cc_worker_walkers, 1, __ATOMIC_SEQ_CST) == 0) {
+        // The sweep yields to active walks, and under steady multi-worker
+        // load an append-time attempt almost never lands in a walker-free
+        // gap — husks then float in the fallback buffer for seconds and
+        // hundreds of megabytes at a time. The last walker out IS the gap,
+        // so attempt the sweep here; the threshold early-out makes the
+        // no-husks case one lock probe, and a racing new walk just skips
+        // the attempt as always.
+        cc_sweep_husks();
+    }
 }
 #endif
 
@@ -2831,6 +2911,15 @@ static void cc_at_exit(void) {
 }
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
 __attribute__((constructor)) static void cc_setup(void) { atexit(cc_at_exit); }
+#if BEANS_RT_FIBERS
+// The deadlock check the fiber core asks at a hopeless idle: with no other
+// live thread, nothing can resume a parked fiber. Threads the runtime did
+// not spawn never hold fiber handles, so cc_threads is the whole answer.
+static int rt_fibers_may_wake(void) { return cc_threads > 0; }
+__attribute__((constructor)) static void rt_fibers_setup(void) {
+    beans_fiber_set_may_wake(rt_fibers_may_wake);
+}
+#endif
 #else
 // No atexit, so a freestanding program that wants the final cycle sweep calls
 // beans_collect_cycles() before it stops. Documented rather than silently skipped:
@@ -2847,6 +2936,19 @@ void beans_panic(const char* msg, long long line, long long col) {
     long long n = rt_format(text, sizeof text, "runtime panic at %lld:%lld: %s\n",
                             line, col, msg);
     if (n > (long long)sizeof text - 1) n = (long long)sizeof text - 1;
+#if BEANS_RT_FIBERS
+    // Containment (spec/CONCURRENCY.md): a panic terminates only the fiber it
+    // happened on. Off the root fiber nothing prints here — the message is
+    // delivered at the join. The root fiber (and a program that never brewed,
+    // where there is no fiber at all) keeps today's report and exit.
+    {
+        BeansFiber* fiber = beans_fiber_current();
+        if (fiber && !beans_fiber_is_root(fiber)) {
+            text[n - 1] = '\0'; // the stored message carries no newline
+            beans_fiber_panic(text);
+        }
+    }
+#endif
     rt_write(2, text, (unsigned long long)n);
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
     exit(3);
@@ -7709,9 +7811,6 @@ BRes beans_file_close(BFile* f) {
     // cc_free_shell, when no thread can hold it. This mirrors the collector's
     // own "don't touch shared resources while mutators run" gate. Zero cost
     // single-threaded, where cc_threads is 0 and the fd closes now.
-#if BEANS_RT_PROFILE >= BEANS_RT_FULL
-    beans_reactor_note_close(f->fd);
-#endif
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
     if (cc_threads > 0) return (BRes){1, NULL};
 #endif
@@ -8873,9 +8972,6 @@ long long beans_proc_read_to_end_out(long long fd, long long limit, void** e_out
 
 BRes beans_proc_close(long long fd) {
     if (fd < 0) return (BRes){0, mk_error("stream is closed", "closed")};
-#if BEANS_RT_PROFILE >= BEANS_RT_FULL
-    beans_reactor_note_close(fd);
-#endif
     if (close((int)fd) != 0 && errno != EINTR)
         return (BRes){0, op_err_obj("close", errno)};
     return (BRes){1, NULL};
@@ -9157,9 +9253,6 @@ long long beans_mmap_flush_range_out(BMMap* m, long long pos, long long n, void*
 BRes beans_mmap_close(BMMap* m) {
     if (m->closed) return (BRes){0, mk_error("mmap already closed", "closed")};
     m->closed = 1;
-#if BEANS_RT_PROFILE >= BEANS_RT_FULL
-    if (m->fd >= 0) beans_reactor_note_close(m->fd);
-#endif
     // defer munmap+close while workers run (see beans_file_close): a racing op
     // reading through the mapping must not have it pulled out from under it
     if (cc_threads > 0) return (BRes){1, NULL};
@@ -10146,6 +10239,14 @@ static void beans_wall_timespec(struct timespec* out) {
 // the OS call.
 void beans_time_sleep_nanos(long long nanos) {
     if (nanos <= 0) return;
+#if BEANS_RT_FIBERS
+    // On a fiber the sleep parks and other fibers run meanwhile; a thread
+    // that never bootstrapped a worker keeps the blocking sleep below.
+    if (beans_fiber_current()) {
+        beans_fiber_sleep(nanos);
+        return;
+    }
+#endif
     long long deadline = beans_time_monotonic_nanos() + nanos;
     for (;;) {
         long long left = deadline - beans_time_monotonic_nanos();
@@ -10158,6 +10259,14 @@ void beans_time_sleep_nanos(long long nanos) {
 #else
 void beans_time_sleep_nanos(long long nanos) {
     if (nanos <= 0) return;
+#if BEANS_RT_FIBERS
+    // On a fiber the sleep parks and other fibers run meanwhile; a thread
+    // that never bootstrapped a worker keeps the blocking sleep below.
+    if (beans_fiber_current()) {
+        beans_fiber_sleep(nanos);
+        return;
+    }
+#endif
     struct timespec want;
     want.tv_sec = (time_t)(nanos / 1000000000LL);
     want.tv_nsec = (long)(nanos % 1000000000LL);
@@ -10871,11 +10980,72 @@ static net_fd_t net_socket(struct addrinfo* ai) {
     return fd;
 }
 
+static int net_on_fiber(void) {
+#if BEANS_RT_FIBERS
+    return beans_fiber_current() != NULL;
+#else
+    return 0;
+#endif
+}
+
+static void net_errno_set(int e) {
+#if defined(_WIN32)
+    WSASetLastError(e == EAGAIN || e == EWOULDBLOCK ? WSAEWOULDBLOCK : e);
+#else
+    errno = e;
+#endif
+}
+
+// The socket deadline (set_timeouts / SO_RCVTIMEO) still bounds a fiber's
+// wait: a nonblocking fd ignores the kernel timeout, so the retry loops
+// carry it into their wait instead. 0 means no deadline — wait forever.
+static long long net_op_timeout_ms(long long fd, int write) {
+#if defined(_WIN32)
+    (void)fd; (void)write;
+    return -1;
+#else
+    struct timeval tv;
+    socklen_t len = sizeof tv;
+    if (getsockopt(net_fd_of(fd), SOL_SOCKET,
+                   write ? SO_SNDTIMEO : SO_RCVTIMEO, &tv, &len) != 0)
+        return -1;
+    long long ms = (long long)tv.tv_sec * 1000 + tv.tv_usec / 1000;
+    return ms > 0 ? ms : -1;
+#endif
+}
+
+// A fiber about to wait on a socket makes it nonblocking first — for good:
+// the fd never leaves fiber-land (sockets are not Send), every op here
+// carries the EAGAIN retry loop, and a blocking syscall from a fiber would
+// stall its whole worker. Thread-only programs never reach this, so their
+// sockets stay blocking exactly as before fibers.
+static void net_fiber_prepare(long long fd) {
+#if BEANS_RT_FIBERS && !defined(_WIN32)
+    if (!beans_fiber_current() || !beans_fiber_netpoll()) return;
+    int flags = fcntl(net_fd_of(fd), F_GETFL, 0);
+    if (flags >= 0 && !(flags & O_NONBLOCK))
+        fcntl(net_fd_of(fd), F_SETFL, flags | O_NONBLOCK);
+#else
+    (void)fd;
+#endif
+}
+
 // Waits for one readiness event with a deadline that survives EINTR: the budget is
 // recomputed from the monotonic clock, so a stream of signals cannot extend a 100ms
 // wait indefinitely. timeout_ms < 0 waits forever. Returns 1 ready, 0 timed out,
 // -1 error (errno set).
 static int net_wait(net_fd_t fd, short events, long long timeout_ms) {
+#if BEANS_RT_FIBERS
+    // On a fiber the wait parks instead of blocking the worker; every
+    // sibling fiber keeps running. -2 (no poller, or not on a fiber) falls
+    // through to the thread wait below.
+    if (beans_fiber_current()) {
+        long long parked = beans_fiber_wait_io(
+            (long long)fd, (events & POLLOUT) ? 1 : 0, timeout_ms);
+        if (parked == 0) return 1;
+        if (parked == 1) return 0;
+    }
+#endif
     long long deadline = timeout_ms < 0 ? 0 : net_millis() + timeout_ms;
     for (;;) {
 #if defined(_WIN32)
@@ -11069,6 +11239,10 @@ long long beans_net_udp_bind_out(char* host, long long port, void** e_out) { BRe
 BRes beans_net_accept(long long fd, long long timeout_ms) {
     net_init();
     if (fd < 0) return (BRes){0, net_closed_err("accept")};
+    // On a fiber the listener goes nonblocking: net_wait below parks, and
+    // an accept whose connection was snatched away answers EWOULDBLOCK and
+    // waits again instead of blocking the worker until the next peer.
+    net_fiber_prepare(fd);
     long long deadline = timeout_ms < 0 ? 0 : net_millis() + timeout_ms;
     for (;;) {
         long long budget = timeout_ms;
@@ -11115,16 +11289,94 @@ BRes beans_net_send(long long fd, BList* data, long long from) {
     // Winsock counts in int; a short write is already in the contract.
     if (want > 0x7fffffff) want = 0x7fffffff;
 #endif
+    net_fiber_prepare(fd);
     rt_ssize_t wrote;
-    do {
-        if (net_fp("send", NET_FP_SEND)) { wrote = -1; continue; }
-        wrote = send(net_fd_of(fd), (const char*)data->data + from, (size_t)want,
-                     NET_NOSIGNAL);
-    } while (wrote < 0 && net_errno() == EINTR);
+    for (;;) {
+        do {
+            if (net_fp("send", NET_FP_SEND)) { wrote = -1; continue; }
+            wrote = send(net_fd_of(fd), (const char*)data->data + from,
+                         (size_t)want, NET_NOSIGNAL);
+        } while (wrote < 0 && net_errno() == EINTR);
+        int blocked = net_errno();
+        if (wrote >= 0 || (blocked != EAGAIN && blocked != EWOULDBLOCK))
+            break;
+        if (!net_on_fiber()) break;
+        int ready = net_wait(net_fd_of(fd), POLLOUT, net_op_timeout_ms(fd, 1));
+        if (ready > 0) continue;
+        if (ready == 0) net_errno_set(blocked);
+        break;
+    }
     if (wrote < 0) return (BRes){0, net_err_op("send", net_errno())};
     return (BRes){(long long)wrote, NULL};
 }
 long long beans_net_send_out(long long fd, BList* data, long long from, void** e_out) { BRes r = beans_net_send(fd, data, from); *e_out = r.err; return r.val; }
+
+// write_from's engine: one send from an offset, parking the calling fiber
+// on backpressure. The caller carries the cached facts the hot path must
+// not re-derive — the fiber-prepared flag and the configured write
+// deadline — exactly like beans_net_recv_into_wait on the read side.
+//   req[0] in: offset; out: bytes written by this call
+//   req[1] out: OS error code when the returned status is not 0
+//   req[2] in: 1 skips the nonblocking flip; out: 1 when fiber-prepared
+//   req[3] in: wait budget in milliseconds, -1 to wait forever
+// Status: 0 ok; sockx codes otherwise.
+long long beans_net_send_from_wait(long long fd, const void* bytes,
+                                   long long len,
+                                   unsigned long long* req) {
+    if (!req || !bytes) return 1; // invalid
+    net_init();
+    if (fd < 0) { req[1] = 0; return 112; } // closed
+    long long from = (long long)req[0];
+    if (from < 0 || from > len) { req[1] = 0; return 1; }
+    long long want = len - from;
+    if (want == 0) { req[0] = 0; req[1] = 0; return 0; }
+#if defined(_WIN32)
+    if (want > 0x7fffffff) want = 0x7fffffff;
+#endif
+    if (req[2]) {
+        req[2] = 1;
+    } else {
+        net_fiber_prepare(fd);
+        req[2] = net_on_fiber() ? 1 : 0;
+    }
+    long long budget = (long long)req[3];
+    for (;;) {
+        rt_ssize_t wrote;
+        do {
+            if (net_fp("send", NET_FP_SEND)) { wrote = -1; continue; }
+            wrote = send(net_fd_of(fd), (const char*)bytes + from,
+                         (size_t)want, NET_NOSIGNAL);
+        } while (wrote < 0 && net_errno() == EINTR);
+        if (wrote >= 0) {
+            req[0] = (unsigned long long)wrote;
+            req[1] = 0;
+            return 0;
+        }
+        int blocked = net_errno();
+        if ((blocked == EAGAIN || blocked == EWOULDBLOCK) &&
+            net_on_fiber()) {
+            int ready = net_wait(net_fd_of(fd), POLLOUT, budget);
+            if (ready > 0) continue;
+            if (ready == 0) { // the socket deadline expired
+                req[1] = (unsigned long long)blocked;
+                return 110; // timeout
+            }
+            blocked = net_errno();
+        }
+        req[1] = (unsigned long long)blocked;
+        if (blocked == EAGAIN || blocked == EWOULDBLOCK ||
+            blocked == ETIMEDOUT)
+            return 110; // timeout
+        if (blocked == ECONNRESET || blocked == ECONNABORTED ||
+            blocked == EPIPE)
+            return 111; // reset
+        if (blocked == EBADF || blocked == ENOTCONN)
+            return 112; // closed
+        if (blocked == EACCES || blocked == EPERM)
+            return 114; // permission
+        return 116; // io
+    }
+}
 
 BRes beans_net_send_text(long long fd, char* text, long long from) {
     net_init();
@@ -11137,11 +11389,23 @@ BRes beans_net_send_text(long long fd, char* text, long long from) {
 #if defined(_WIN32)
     if (want > 0x7fffffff) want = 0x7fffffff;
 #endif
+    net_fiber_prepare(fd);
     rt_ssize_t wrote;
-    do {
-        if (net_fp("send", NET_FP_SEND)) { wrote = -1; continue; }
-        wrote = send(net_fd_of(fd), text + from, (size_t)want, NET_NOSIGNAL);
-    } while (wrote < 0 && net_errno() == EINTR);
+    for (;;) {
+        do {
+            if (net_fp("send", NET_FP_SEND)) { wrote = -1; continue; }
+            wrote = send(net_fd_of(fd), text + from, (size_t)want,
+                         NET_NOSIGNAL);
+        } while (wrote < 0 && net_errno() == EINTR);
+        int blocked = net_errno();
+        if (wrote >= 0 || (blocked != EAGAIN && blocked != EWOULDBLOCK))
+            break;
+        if (!net_on_fiber()) break;
+        int ready = net_wait(net_fd_of(fd), POLLOUT, net_op_timeout_ms(fd, 1));
+        if (ready > 0) continue;
+        if (ready == 0) net_errno_set(blocked);
+        break;
+    }
     if (wrote < 0) return (BRes){0, net_err_op("send", net_errno())};
     return (BRes){(long long)wrote, NULL};
 }
@@ -11156,12 +11420,25 @@ BRes beans_net_recv(long long fd, long long max) {
 #if defined(_WIN32)
     if (max > 0x7fffffff) max = 0x7fffffff; // Winsock counts in int
 #endif
+    net_fiber_prepare(fd);
     BList* buf = bytes_mk(max);
     rt_ssize_t got;
-    do {
-        if (net_fp("recv", NET_FP_RECV)) { got = -1; continue; }
-        got = recv(net_fd_of(fd), (char*)buf->data, (size_t)max, 0);
-    } while (got < 0 && net_errno() == EINTR);
+    for (;;) {
+        do {
+            if (net_fp("recv", NET_FP_RECV)) { got = -1; continue; }
+            got = recv(net_fd_of(fd), (char*)buf->data, (size_t)max, 0);
+        } while (got < 0 && net_errno() == EINTR);
+        // A fiber's socket is nonblocking: not-ready parks here. Thread
+        // callers break out with EAGAIN exactly as before fibers — that
+        // answer is the try_* API's contract on a user-nonblocked socket.
+        int blocked = net_errno();
+        if (got >= 0 || (blocked != EAGAIN && blocked != EWOULDBLOCK)) break;
+        if (!net_on_fiber()) break;
+        int ready = net_wait(net_fd_of(fd), POLLIN, net_op_timeout_ms(fd, 0));
+        if (ready > 0) continue;
+        if (ready == 0) net_errno_set(blocked); // socket deadline expired
+        break;
+    }
 #if defined(_WIN32)
     // A datagram larger than the buffer still fills it; POSIX truncates
     // silently, so the WSAEMSGSIZE dressing is stripped to match.
@@ -11177,22 +11454,141 @@ BRes beans_net_recv(long long fd, long long max) {
 }
 long long beans_net_recv_out(long long fd, long long max, void** e_out) { BRes r = beans_net_recv(fd, max); *e_out = r.err; return r.val; }
 
+// read_into's engine: recv straight into caller-owned storage, parking the
+// calling fiber when the socket is not ready. The sockx bridge stays a
+// libc-only library, so the fiber-aware form lives here with the rest of
+// the net waits; the status codes and req words mirror
+// beans_sockx_recv_into exactly, and try_read_into keeps calling the
+// bridge so its would-block answer stays immediate.
+//   req[0] in: destination capacity; out: bytes read (0 is EOF)
+//   req[1] out: OS error code when the returned status is not 0
+//   req[2] in: 1 skips the nonblocking flip (the caller saw it happen
+//          before); out: 1 when the fd is fiber-prepared after this call —
+//          O_NONBLOCK is a property of the descriptor, so once flipped the
+//          caller may cache it for the socket's whole life
+//   req[3] in: wait budget in milliseconds, -1 to wait forever — the
+//          caller tracks its configured deadline so the wait loop never
+//          re-reads SO_RCVTIMEO
+//   req[4] in: 1 waits for readability before the first recv — for a
+//          caller that just drained the socket, this trades the
+//          speculative recv that would only say would-block for one
+//          poller wait; ignored off-fiber, where recv blocks anyway
+long long beans_net_recv_into_wait(long long fd, void* destination,
+                                   unsigned long long* req) {
+    if (!req || !destination || req[0] == 0) return 1; // invalid
+    net_init();
+    if (fd < 0) { req[1] = 0; return 112; } // closed
+    if (req[2]) {
+        req[2] = 1;
+    } else {
+        net_fiber_prepare(fd);
+        req[2] = net_on_fiber() ? 1 : 0;
+    }
+    long long budget = (long long)req[3];
+    int wait_first = req[4] != 0;
+    size_t wanted = (size_t)req[0];
+#if defined(_WIN32)
+    if (wanted > 0x7fffffff) wanted = 0x7fffffff; // Winsock counts in int
+#endif
+    for (;;) {
+        if (wait_first && net_on_fiber()) {
+            wait_first = 0;
+            int early = net_wait(net_fd_of(fd), POLLIN, budget);
+            if (early == 0) { req[1] = 0; return 110; } // timeout
+            if (early < 0) {
+                int woke = net_errno();
+                req[1] = (unsigned long long)woke;
+                if (woke == ECONNRESET || woke == ECONNABORTED ||
+                    woke == EPIPE)
+                    return 111; // reset
+                if (woke == EBADF || woke == ENOTCONN)
+                    return 112; // closed
+                return 116; // io
+            }
+        }
+        rt_ssize_t got;
+        do {
+#if defined(_WIN32)
+            got = recv((SOCKET)net_fd_of(fd), (char*)destination,
+                       (int)wanted, 0);
+#else
+            got = recv(net_fd_of(fd), destination, wanted, 0);
+#endif
+        } while (got < 0 && net_errno() == EINTR);
+        if (got >= 0) {
+            req[0] = (unsigned long long)got;
+            req[1] = 0;
+            return 0;
+        }
+        int blocked = net_errno();
+        if ((blocked == EAGAIN || blocked == EWOULDBLOCK) &&
+            net_on_fiber()) {
+            int ready = net_wait(net_fd_of(fd), POLLIN, budget);
+            if (ready > 0) continue;
+            if (ready == 0) { // the socket deadline expired
+                req[1] = (unsigned long long)blocked;
+                return 110; // timeout
+            }
+            blocked = net_errno();
+        }
+        req[1] = (unsigned long long)blocked;
+        if (blocked == EAGAIN || blocked == EWOULDBLOCK ||
+            blocked == ETIMEDOUT)
+            return 110; // timeout
+        if (blocked == ECONNRESET || blocked == ECONNABORTED ||
+            blocked == EPIPE)
+            return 111; // reset
+        if (blocked == EBADF || blocked == ENOTCONN)
+            return 112; // closed
+        if (blocked == EACCES || blocked == EPERM)
+            return 114; // permission
+        return 116; // io
+    }
+}
+
+// The tree walker resolves `extern "C"` calls through the dynamic loader,
+// which cannot see this executable's own symbols everywhere: an ELF
+// executable exports nothing without --export-dynamic, a PE one nothing at
+// all. The runtime-side socket calls the stdlib declares are answered from
+// inside the process instead — the interpreter asks here before it builds
+// any loader shim.
+void* beans_rt_host_symbol(const char* name) {
+    if (!name) return (void*)0;
+    if (strcmp(name, "beans_net_recv_into_wait") == 0)
+        return (void*)&beans_net_recv_into_wait;
+    if (strcmp(name, "beans_net_send_from_wait") == 0)
+        return (void*)&beans_net_send_from_wait;
+    return (void*)0;
+}
+
 static BRes net_recv_many(long long fd, long long limit, int exact) {
     net_init();
     if (fd < 0) return (BRes){0, net_closed_err("recv")};
     if (exact && limit <= 0)
         return (BRes){0, mk_error("recv: the byte count must be positive", "invalid")};
+    net_fiber_prepare(fd);
     BList* out = bytes_mk(0);
     while (out->len < limit) {
         long long room = limit - out->len;
         long long chunk = room < 8192 ? room : 8192;
         bytes_grow(out, out->len + chunk);
         rt_ssize_t got;
-        do {
-            if (net_fp("recv", NET_FP_RECV)) { got = -1; continue; }
-            got = recv(net_fd_of(fd), (char*)out->data + out->len,
-                       (size_t)chunk, 0);
-        } while (got < 0 && net_errno() == EINTR);
+        for (;;) {
+            do {
+                if (net_fp("recv", NET_FP_RECV)) { got = -1; continue; }
+                got = recv(net_fd_of(fd), (char*)out->data + out->len,
+                           (size_t)chunk, 0);
+            } while (got < 0 && net_errno() == EINTR);
+            int blocked = net_errno();
+            if (got >= 0 || (blocked != EAGAIN && blocked != EWOULDBLOCK))
+                break;
+            if (!net_on_fiber()) break;
+            int ready =
+                net_wait(net_fd_of(fd), POLLIN, net_op_timeout_ms(fd, 0));
+            if (ready > 0) continue;
+            if (ready == 0) net_errno_set(blocked);
+            break;
+        }
         if (got < 0) {
             int e = net_errno();
             beans_release(out);
@@ -11271,14 +11667,27 @@ BRes beans_net_send_to(long long fd, BList* data, char* host, long long port) {
     if (!list) return (BRes){0, net_gai_err(host, rc)};
     // Only an address of the socket's own family can be sent to, so a resolver that
     // answered with both v4 and v6 is filtered by trying each in turn.
+    net_fiber_prepare(fd);
     int last = 0;
     for (struct addrinfo* ai = list; ai; ai = ai->ai_next) {
         rt_ssize_t wrote;
-        do {
-            if (net_fp("send_to", NET_FP_SEND)) { wrote = -1; continue; }
-            wrote = sendto(net_fd_of(fd), (const char*)data->data, (size_t)data->len,
-                           NET_NOSIGNAL, ai->ai_addr, ai->ai_addrlen);
-        } while (wrote < 0 && net_errno() == EINTR);
+        for (;;) {
+            do {
+                if (net_fp("send_to", NET_FP_SEND)) { wrote = -1; continue; }
+                wrote = sendto(net_fd_of(fd), (const char*)data->data,
+                               (size_t)data->len, NET_NOSIGNAL, ai->ai_addr,
+                               ai->ai_addrlen);
+            } while (wrote < 0 && net_errno() == EINTR);
+            int blocked = net_errno();
+            if (wrote >= 0 || (blocked != EAGAIN && blocked != EWOULDBLOCK))
+                break;
+            if (!net_on_fiber()) break;
+            int ready =
+                net_wait(net_fd_of(fd), POLLOUT, net_op_timeout_ms(fd, 1));
+            if (ready > 0) continue;
+            if (ready == 0) net_errno_set(blocked);
+            break;
+        }
         if (wrote >= 0) {
             freeaddrinfo(list);
             return (BRes){(long long)wrote, NULL};
@@ -11299,16 +11708,26 @@ BRes beans_net_recv_from(long long fd, long long max) {
 #if defined(_WIN32)
     if (max > 0x7fffffff) max = 0x7fffffff; // Winsock counts in int
 #endif
+    net_fiber_prepare(fd);
     BList* payload = bytes_mk(max);
     struct sockaddr_storage sa;
     socklen_t len = sizeof sa;
     rt_ssize_t got;
-    do {
-        len = sizeof sa;
-        if (net_fp("recv_from", NET_FP_RECV)) { got = -1; continue; }
-        got = recvfrom(net_fd_of(fd), (char*)payload->data, (size_t)max, 0,
-                       (struct sockaddr*)&sa, &len);
-    } while (got < 0 && net_errno() == EINTR);
+    for (;;) {
+        do {
+            len = sizeof sa;
+            if (net_fp("recv_from", NET_FP_RECV)) { got = -1; continue; }
+            got = recvfrom(net_fd_of(fd), (char*)payload->data, (size_t)max, 0,
+                           (struct sockaddr*)&sa, &len);
+        } while (got < 0 && net_errno() == EINTR);
+        int blocked = net_errno();
+        if (got >= 0 || (blocked != EAGAIN && blocked != EWOULDBLOCK)) break;
+        if (!net_on_fiber()) break;
+        int ready = net_wait(net_fd_of(fd), POLLIN, net_op_timeout_ms(fd, 0));
+        if (ready > 0) continue;
+        if (ready == 0) net_errno_set(blocked);
+        break;
+    }
 #if defined(_WIN32)
     // Same WSAEMSGSIZE story as recv: the buffer holds the truncated datagram.
     if (got < 0 && WSAGetLastError() == WSAEMSGSIZE) got = (rt_ssize_t)max;
@@ -11394,11 +11813,6 @@ long long beans_net_set_nonblocking_out(long long fd, long long on, void** e_out
 BRes beans_net_close(long long fd) {
     net_init();
     if (fd < 0) return (BRes){0, net_closed_err("close")};
-    // A parked await on this number must finish false off its dead flag,
-    // never off whatever resource the number is reused for. Marked before
-    // the close so no window exists where the number is free but the
-    // entry still looks live.
-    beans_reactor_note_close(fd);
     // EINTR from close must not be retried: on Linux the descriptor is already gone,
     // so a retry would close whatever number was handed out next.
     if (net_close(net_fd_of(fd)) != 0 && net_errno() != EINTR)
@@ -12142,15 +12556,20 @@ static BRes beans_poll_wait_into_impl(long long poller, long long wake_read,
             // kqueue reports read and write as separate events for one descriptor.
             // epoll reports one with both bits, so they are merged here — otherwise the
             // same program would see a different number of events per platform.
+            // Merge one registration's pair by (descriptor, token): the token
+            // alone would fold two descriptors that share a caller token into
+            // one event, and the descriptor alone would fold a queued stale
+            // event into a new registration on the reused number.
+            long long ident = (long long)got[i].ident;
             long long at = -1;
             for (long long j = 0; j < found; j++)
-                if (idents[j] == got[i].ident) { at = j; break; }
+                if (idents[j] == ident && tokens[j] == token) { at = j; break; }
             if (at >= 0) {
                 flags[at] |= f;
                 continue;
             }
             if (found >= max_events) continue;
-            idents[found] = got[i].ident;
+            idents[found] = ident;
             tokens[found] = token;
             flags[found] = f;
             found++;
@@ -12287,253 +12706,6 @@ BRes beans_poll_close(long long poller, long long wake_read, long long handle) {
     return (BRes){1, NULL};
 }
 long long beans_poll_close_out(long long poller, long long wake_read, long long handle, void** e_out) { BRes r = beans_poll_close(poller, wake_read, handle); *e_out = r.err; return r.val; }
-
-// ---- hidden async executor state --------------------------------------------
-//
-// Four thread-local slots the async runtime package threads its reactor
-// through: [0..2] the shared poller triple from ready.open, [3] the number of
-// parked readiness awaits. State lives here because Beans has no globals and
-// the park tasks, the driver, and cancellation all need the same poller.
-// Thread-local, so each thread that drives async work gets its own executor.
-static _Thread_local long long beans_task_slots[4];
-
-long long beans_task_slot(long long index) {
-    return beans_task_slots[index & 3];
-}
-
-long long beans_set_task_slot(long long index, long long value) {
-    beans_task_slots[index & 3] = value;
-    return 1;
-}
-
-// Parked awaits are shared state. A worker may close a descriptor owned by an
-// executor on another thread, so a thread-local table loses the notification
-// and leaves that executor asleep forever. The registry is protected by one
-// mutex; every lookup and mutation, including cancellation and shutdown, goes
-// through it.
-//
-// The executor itself still stays thread-local. `owner` separates two reactors
-// that happen to watch the same descriptor, while the globally unique token is
-// the await's stable identity after close and descriptor reuse. `wake` is the
-// poller's slot-plus-generation handle, never its raw write descriptor. A close
-// copies those handles under this mutex and wakes them only after unlocking, so
-// no reactor mutex is nested and a concurrent shutdown merely makes the copied
-// handle stale.
-#define BEANS_PARKED_MAX 64
-typedef struct BeansParked {
-    long long fd;
-    long long token;
-    long long owner;
-    long long wake;
-    int dead;
-    struct BeansParked* next;
-} BeansParked;
-static BeansParked* beans_parked;
-static long long beans_parked_token_next;
-static long long beans_parked_owner_next;
-static pthread_mutex_t beans_parked_lock = PTHREAD_MUTEX_INITIALIZER;
-static _Thread_local long long beans_parked_owner;
-
-static long long beans_reactor_owner_locked(void) {
-    if (beans_parked_owner == 0) {
-        beans_parked_owner = ++beans_parked_owner_next;
-        if (beans_parked_owner <= 0) {
-            beans_parked_owner_next = 1;
-            beans_parked_owner = 1;
-        }
-    }
-    return beans_parked_owner;
-}
-
-// Validation is deliberately done here, before std.async opens its shared
-// reactor. POSIX fcntl checks every descriptor kind without allocating one.
-// Windows readiness accepts sockets only, so SO_TYPE is the matching
-// allocation-free handle check (after the process-wide WSA startup latch).
-static int beans_reactor_fd_valid(long long fd) {
-#if defined(_WIN32)
-    if (fd < 0) return 0;
-    net_init();
-    int type = 0;
-    int len = sizeof type;
-    return getsockopt(net_fd_of(fd), SOL_SOCKET, SO_TYPE, (char*)&type, &len) == 0;
-#else
-    if (fd < 0 || fd > INT_MAX) return 0;
-    return fcntl((int)fd, F_GETFD, 0) >= 0;
-#endif
-}
-
-// token (> 0) = noted, 0 = duplicate live park in this executor,
-// -1 = this executor's table is full, -2 = invalid descriptor. These remain
-// separate so the async layer can return false only for the invalid case.
-long long beans_reactor_note_park(long long fd) {
-    pthread_mutex_lock(&beans_parked_lock);
-    if (!beans_reactor_fd_valid(fd)) {
-        pthread_mutex_unlock(&beans_parked_lock);
-        return -2;
-    }
-    long long owner = beans_reactor_owner_locked();
-    long long count = 0;
-    for (BeansParked* p = beans_parked; p; p = p->next) {
-        if (p->owner != owner) continue;
-        count++;
-        if (!p->dead && p->fd == fd) {
-            pthread_mutex_unlock(&beans_parked_lock);
-            return 0;
-        }
-    }
-    if (count == BEANS_PARKED_MAX) {
-        pthread_mutex_unlock(&beans_parked_lock);
-        return -1;
-    }
-    BeansParked* p = malloc(sizeof *p);
-    if (!p) {
-        pthread_mutex_unlock(&beans_parked_lock);
-        return -1;
-    }
-    long long token = ++beans_parked_token_next;
-    if (token <= 0) token = beans_parked_token_next = 1;
-    p->fd = fd;
-    p->token = token;
-    p->owner = owner;
-    p->wake = 0;
-    p->dead = 0;
-    p->next = beans_parked;
-    beans_parked = p;
-    pthread_mutex_unlock(&beans_parked_lock);
-    return token;
-}
-
-// Connects a reserved token to its owning reactor after that reactor opens.
-// 1 = live and bound, 0 = the descriptor closed in between or token unknown.
-long long beans_reactor_bind_park(long long token, long long wake) {
-    pthread_mutex_lock(&beans_parked_lock);
-    long long owner = beans_parked_owner;
-    for (BeansParked* p = beans_parked; p; p = p->next) {
-        if (p->owner != owner || p->token != token) continue;
-        p->wake = wake;
-        long long live = p->dead ? 0 : 1;
-        pthread_mutex_unlock(&beans_parked_lock);
-        return live;
-    }
-    pthread_mutex_unlock(&beans_parked_lock);
-    return 0;
-}
-
-// 1 = removed, 0 = no entry owned by this executor carries that token.
-long long beans_reactor_forget_park(long long token) {
-    pthread_mutex_lock(&beans_parked_lock);
-    BeansParked** at = &beans_parked;
-    while (*at) {
-        BeansParked* p = *at;
-        if (p->owner == beans_parked_owner && p->token == token) {
-            *at = p->next;
-            free(p);
-            pthread_mutex_unlock(&beans_parked_lock);
-            return 1;
-        }
-        at = &p->next;
-    }
-    pthread_mutex_unlock(&beans_parked_lock);
-    return 0;
-}
-
-// 1 = the parked descriptor was closed under the await, 0 = still live,
-// -1 = no entry owned by this executor carries that token.
-long long beans_reactor_park_dead(long long token) {
-    pthread_mutex_lock(&beans_parked_lock);
-    for (BeansParked* p = beans_parked; p; p = p->next) {
-        if (p->owner != beans_parked_owner || p->token != token) continue;
-        long long dead = p->dead ? 1 : 0;
-        pthread_mutex_unlock(&beans_parked_lock);
-        return dead;
-    }
-    pthread_mutex_unlock(&beans_parked_lock);
-    return -1;
-}
-
-// Every runtime path that closes a descriptor reports it here. Mark every
-// matching token across all executors, then wake each distinct owning reactor.
-// Waking outside the registry mutex avoids lock inversion with reactor close.
-void beans_reactor_note_close(long long fd) {
-    int more;
-    do {
-        long long wakes[BEANS_PARKED_MAX];
-        int wake_count = 0;
-        more = 0;
-        pthread_mutex_lock(&beans_parked_lock);
-        for (BeansParked* p = beans_parked; p; p = p->next) {
-            if (p->dead || p->fd != fd) continue;
-            if (p->wake == 0) {
-                p->dead = 1;
-                continue;
-            }
-            int seen = 0;
-            for (int i = 0; i < wake_count; i++)
-                if (wakes[i] == p->wake) seen = 1;
-            if (seen) {
-                p->dead = 1;
-                continue;
-            }
-            if (wake_count == BEANS_PARKED_MAX) {
-                more = 1;
-                continue;
-            }
-            p->dead = 1;
-            wakes[wake_count++] = p->wake;
-        }
-        pthread_mutex_unlock(&beans_parked_lock);
-        for (int i = 0; i < wake_count; i++) {
-            BRes ignored = beans_poll_wake(wakes[i]);
-            if (ignored.err) beans_release(ignored.err);
-        }
-    } while (more);
-}
-
-// 1 when some park owned by this executor can never fire, else -1. The
-// POSIX probe is a fallback for a close that bypassed the runtime. Runtime
-// closes use the dead flag and active wake above, which remains the only
-// reliable path once a descriptor number has already been reused.
-long long beans_reactor_stale_park(void) {
-    pthread_mutex_lock(&beans_parked_lock);
-    for (BeansParked* p = beans_parked; p; p = p->next) {
-        if (p->owner != beans_parked_owner) continue;
-        if (p->dead) {
-            pthread_mutex_unlock(&beans_parked_lock);
-            return 1;
-        }
-#if !defined(_WIN32)
-        if (!beans_reactor_fd_valid(p->fd)) {
-            p->dead = 1;
-            pthread_mutex_unlock(&beans_parked_lock);
-            return 1;
-        }
-#endif
-    }
-    pthread_mutex_unlock(&beans_parked_lock);
-    return -1;
-}
-
-// Interpreter processes can drive several programs in sequence. The end of
-// shutdown drops any leftover entries for this executor and gives the next run
-// a fresh owner identity. If a close copied the old wake handle just before the
-// poller closed, its generation check now reports stale rather than using a
-// recycled descriptor.
-long long beans_reactor_shutdown_parks(void) {
-    pthread_mutex_lock(&beans_parked_lock);
-    BeansParked** at = &beans_parked;
-    while (*at) {
-        BeansParked* p = *at;
-        if (p->owner == beans_parked_owner) {
-            *at = p->next;
-            free(p);
-        } else {
-            at = &p->next;
-        }
-    }
-    beans_parked_owner = 0;
-    pthread_mutex_unlock(&beans_parked_lock);
-    return 1;
-}
 
 #endif // BEANS_RT_PROFILE >= BEANS_RT_FULL — sockets + readiness poller
 
@@ -12790,7 +12962,6 @@ BRes beans_signal_close(long long fd, BList* packed) {
     } else if (error) {
         beans_release(error);
     }
-    beans_reactor_note_close(fd);
     if (close((int)fd) != 0 && errno != EINTR)
         return (BRes){0, op_err_obj("signal close", errno)};
     return (BRes){1, NULL};
@@ -13130,6 +13301,10 @@ typedef struct {
     void* env;
     long long result_size;
     int joined;
+    // fiber-aware join: the finishing thread flips done and resumes the
+    // parked joiner (both __atomic; join_waiter holds a BeansFiber*)
+    int done;
+    void* join_waiter;
 } BThread;
 void beans_thread_release_env(void* env);
 static void* thread_main(void* arg) {
@@ -13148,6 +13323,16 @@ static void* thread_main(void* arg) {
             RT_I64_SLOT_MASK_AT(offsetof(BThread, result)))
             cc_mark_shared_graph((void*)(uintptr_t)t->result);
     }
+#if BEANS_RT_FIBERS
+    // Before the handle ref drops: wake a fiber parked in join. The wake
+    // latch absorbs every interleaving with the joiner registering itself.
+    __atomic_store_n(&t->done, 1, __ATOMIC_SEQ_CST);
+    {
+        void* waiter = __atomic_exchange_n(&t->join_waiter, (void*)0,
+                                           __ATOMIC_SEQ_CST);
+        if (waiter) beans_fiber_resume((BeansFiber*)waiter);
+    }
+#endif
     beans_release(t->env);
     beans_release(t); // the running thread's own ref on the handle
     cc_worker_roots_end();
@@ -13189,9 +13374,26 @@ BThread* beans_thread_spawn_typed(void* thunk, void* env, long long size,
     pthread_create(&t->th, NULL, thread_main, t);
     return t;
 }
+// A joiner on a fiber parks instead of blocking its worker — other fibers
+// keep running while the thread works. The finishing thread resumes it,
+// and the pthread_join that follows reaps an already-finished thread.
+static void thread_join_park(BThread* t) {
+#if BEANS_RT_FIBERS
+    if (!beans_fiber_current()) return;
+    __atomic_store_n(&t->join_waiter, (void*)beans_fiber_current(),
+                     __ATOMIC_SEQ_CST);
+    while (!__atomic_load_n(&t->done, __ATOMIC_SEQ_CST))
+        beans_fiber_park();
+    __atomic_store_n(&t->join_waiter, (void*)0, __ATOMIC_SEQ_CST);
+#else
+    (void)t;
+#endif
+}
+
 long long beans_thread_join(BThread* t) {
     if (t->joined) beans_panic("thread already joined", 0, 0);
     t->joined = 1;
+    thread_join_park(t);
     pthread_join(t->th, NULL);
     long long result = t->result;
     t->result = 0; // ownership of a pointer result moves to the caller
@@ -13200,6 +13402,7 @@ long long beans_thread_join(BThread* t) {
 void beans_thread_join_typed(BThread* t, void* out, long long size) {
     if (t->joined) beans_panic("thread already joined", 0, 0);
     t->joined = 1;
+    thread_join_park(t);
     pthread_join(t->th, NULL);
     if (size != t->result_size) beans_panic("thread result size mismatch", 0, 0);
     void* payload = t->payload;
@@ -13267,9 +13470,106 @@ BChan* beans_chan_new_typed(long long cap, long long stride, long long ptr_mask)
     pthread_cond_init(&c->can_recv, NULL);
     return c;
 }
+#if BEANS_RT_FIBERS
+// ---- fiber wait lines ------------------------------------------------------
+// A fiber that must wait on a channel parks instead of blocking its worker
+// — blocking would starve every other fiber, and two fibers of one worker
+// on opposite ends of a full channel would deadlock the thread outright.
+// Thread callers keep the condvar path unchanged.
+
+static void fiber_line_push(BFiberWaiter** head, BFiberWaiter** tail,
+                            BFiberWaiter* waiter) {
+    waiter->next = NULL;
+    if (*tail) (*tail)->next = waiter;
+    else *head = waiter;
+    *tail = waiter;
+}
+
+// Pops the first waiter, marks it signalled, and hands back its fiber.
+// The resume happens outside: beans_fiber_resume is safe under the lock
+// (same-worker wakes are a queue push, cross-thread wakes take only the
+// inbox lock), but keeping it at the call site keeps that reasoning local.
+static BeansFiber* fiber_line_pop(BFiberWaiter** head, BFiberWaiter** tail) {
+    BFiberWaiter* waiter = *head;
+    if (!waiter) return NULL;
+    *head = waiter->next;
+    if (!*head) *tail = NULL;
+    waiter->next = NULL;
+    waiter->signalled = 1;
+    return waiter->fiber;
+}
+
+// Parks the calling fiber in the line until a sender, receiver, or closer
+// marks it signalled. Enters and leaves with `m` held; the lock is
+// released around each park. Wakes can be spurious — a stale timer or a
+// second resume — and the waiter keeps its place in line across them.
+// Cancellation is interim-invisible here: a cancelled fiber keeps waiting,
+// and observing the cancel at this park lands with the unwind work.
+static void fiber_line_wait(pthread_mutex_t* m, BFiberWaiter** head,
+                            BFiberWaiter** tail) {
+    BFiberWaiter waiter = { beans_fiber_current(), NULL, 0 };
+    fiber_line_push(head, tail, &waiter);
+    while (!waiter.signalled) {
+        pthread_mutex_unlock(m);
+        beans_fiber_park();
+        pthread_mutex_lock(m);
+    }
+}
+#endif // BEANS_RT_FIBERS — fiber wait lines
+
+// One value entered the channel: hand it to the first waiting fiber, or
+// signal a waiting thread. One freed slot mirrors it for senders.
+static void chan_wake_receiver(BChan* c) {
+#if BEANS_RT_FIBERS
+    BeansFiber* fiber = fiber_line_pop(&c->recv_head, &c->recv_tail);
+    if (fiber) {
+        beans_fiber_resume(fiber);
+        return;
+    }
+#endif
+    pthread_cond_signal(&c->can_recv);
+}
+static void chan_wake_sender(BChan* c) {
+#if BEANS_RT_FIBERS
+    BeansFiber* fiber = fiber_line_pop(&c->send_head, &c->send_tail);
+    if (fiber) {
+        beans_fiber_resume(fiber);
+        return;
+    }
+#endif
+    pthread_cond_signal(&c->can_send);
+}
+
+// Waits until the channel can accept a send (or is closed), fiber-aware.
+// Called with the lock held; returns with it held.
+static void chan_send_wait(BChan* c) {
+    for (;;) {
+        if (c->count < c->cap || c->closed) return;
+#if BEANS_RT_FIBERS
+        if (beans_fiber_current()) {
+            fiber_line_wait(&c->m, &c->send_head, &c->send_tail);
+            continue;
+        }
+#endif
+        pthread_cond_wait(&c->can_send, &c->m);
+    }
+}
+static void chan_recv_wait(BChan* c) {
+    for (;;) {
+        if (c->count != 0 || c->closed) return;
+#if BEANS_RT_FIBERS
+        if (beans_fiber_current()) {
+            fiber_line_wait(&c->m, &c->recv_head, &c->recv_tail);
+            continue;
+        }
+#endif
+        pthread_cond_wait(&c->can_recv, &c->m);
+    }
+}
+
 long long beans_chan_send(BChan* c, long long v) {
     pthread_mutex_lock(&c->m);
-    while (c->count == c->cap && !c->closed) pthread_cond_wait(&c->can_send, &c->m);
+    chan_send_wait(c);
     if (c->closed) {
         pthread_mutex_unlock(&c->m);
         return 0; // caller panics; caller also still owns v
@@ -13282,13 +13582,13 @@ long long beans_chan_send(BChan* c, long long v) {
         cc_mark_shared_graph((void*)(uintptr_t)v);
     c->q[(c->head + c->count) % c->cap] = v;
     c->count += 1;
-    pthread_cond_signal(&c->can_recv);
+    chan_wake_receiver(c);
     pthread_mutex_unlock(&c->m);
     return 1;
 }
 long long beans_chan_send_typed(BChan* c, void* value) {
     pthread_mutex_lock(&c->m);
-    while (c->count == c->cap && !c->closed) pthread_cond_wait(&c->can_send, &c->m);
+    chan_send_wait(c);
     if (c->closed) {
         pthread_mutex_unlock(&c->m);
         return 0;
@@ -13300,13 +13600,13 @@ long long beans_chan_send_typed(BChan* c, void* value) {
         (char*)c->q + ((c->head + c->count) % c->cap) * c->stride;
     memcpy(destination, value, (size_t)c->stride);
     c->count += 1;
-    pthread_cond_signal(&c->can_recv);
+    chan_wake_receiver(c);
     pthread_mutex_unlock(&c->m);
     return 1;
 }
 long long beans_chan_recv(BChan* c, long long* ok) {
     pthread_mutex_lock(&c->m);
-    while (c->count == 0 && !c->closed) pthread_cond_wait(&c->can_recv, &c->m);
+    chan_recv_wait(c);
     if (c->count == 0) {
         *ok = 0;
         pthread_mutex_unlock(&c->m);
@@ -13316,13 +13616,13 @@ long long beans_chan_recv(BChan* c, long long* ok) {
     c->head = (c->head + 1) % c->cap;
     c->count -= 1;
     *ok = 1;
-    pthread_cond_signal(&c->can_send);
+    chan_wake_sender(c);
     pthread_mutex_unlock(&c->m);
     return v;
 }
 long long beans_chan_recv_typed(BChan* c, void* out) {
     pthread_mutex_lock(&c->m);
-    while (c->count == 0 && !c->closed) pthread_cond_wait(&c->can_recv, &c->m);
+    chan_recv_wait(c);
     if (c->count == 0) {
         pthread_mutex_unlock(&c->m);
         return 0;
@@ -13332,15 +13632,117 @@ long long beans_chan_recv_typed(BChan* c, void* out) {
     memset(source, 0, (size_t)c->stride);
     c->head = (c->head + 1) % c->cap;
     c->count -= 1;
-    pthread_cond_signal(&c->can_send);
+    chan_wake_sender(c);
+    pthread_mutex_unlock(&c->m);
+    return 1;
+}
+// The try twins: a verdict instead of a wait. A refused try_send leaves the
+// value with the caller — the checker limits it to copyable elements, so a
+// refused move-only value can never be lost.
+long long beans_chan_try_send(BChan* c, long long v) {
+    pthread_mutex_lock(&c->m);
+    if (c->closed || c->count == c->cap) {
+        pthread_mutex_unlock(&c->m);
+        return 0; // caller still owns v
+    }
+    // Same publish-once-committed ordering rule as beans_chan_send above.
+    if (cc_is_mt() && c->ptr_mask)
+        cc_mark_shared_graph((void*)(uintptr_t)v);
+    c->q[(c->head + c->count) % c->cap] = v;
+    c->count += 1;
+    chan_wake_receiver(c);
+    pthread_mutex_unlock(&c->m);
+    return 1;
+}
+long long beans_chan_try_send_typed(BChan* c, void* value) {
+    pthread_mutex_lock(&c->m);
+    if (c->closed || c->count == c->cap) {
+        pthread_mutex_unlock(&c->m);
+        return 0;
+    }
+    if (cc_is_mt() && c->ptr_mask)
+        cc_mark_shared_value(value, c->ptr_mask, 0);
+    void* destination =
+        (char*)c->q + ((c->head + c->count) % c->cap) * c->stride;
+    memcpy(destination, value, (size_t)c->stride);
+    c->count += 1;
+    chan_wake_receiver(c);
+    pthread_mutex_unlock(&c->m);
+    return 1;
+}
+long long beans_chan_try_recv(BChan* c, long long* ok) {
+    pthread_mutex_lock(&c->m);
+    if (c->count == 0) {
+        *ok = 0;
+        pthread_mutex_unlock(&c->m);
+        return 0;
+    }
+    long long v = c->q[c->head];
+    c->head = (c->head + 1) % c->cap;
+    c->count -= 1;
+    *ok = 1;
+    chan_wake_sender(c);
+    pthread_mutex_unlock(&c->m);
+    return v;
+}
+long long beans_chan_try_recv_typed(BChan* c, void* out) {
+    pthread_mutex_lock(&c->m);
+    if (c->count == 0) {
+        pthread_mutex_unlock(&c->m);
+        return 0;
+    }
+    void* source = (char*)c->q + c->head * c->stride;
+    memcpy(out, source, (size_t)c->stride);
+    memset(source, 0, (size_t)c->stride);
+    c->head = (c->head + 1) % c->cap;
+    c->count -= 1;
+    chan_wake_sender(c);
     pthread_mutex_unlock(&c->m);
     return 1;
 }
 void beans_chan_close(BChan* c) {
     pthread_mutex_lock(&c->m);
     c->closed = 1;
+#if BEANS_RT_FIBERS
+    // every parked fiber wakes and re-reads closed: senders answer 0 (the
+    // caller panics), receivers drain what is buffered and then answer none
+    BeansFiber* fiber;
+    while ((fiber = fiber_line_pop(&c->send_head, &c->send_tail)))
+        beans_fiber_resume(fiber);
+    while ((fiber = fiber_line_pop(&c->recv_head, &c->recv_tail)))
+        beans_fiber_resume(fiber);
+#endif
     pthread_cond_broadcast(&c->can_send);
     pthread_cond_broadcast(&c->can_recv);
+    pthread_mutex_unlock(&c->m);
+}
+
+// ---- Gate -------------------------------------------------------------------
+// A sticky broadcast flag (spec/CONCURRENCY.md, F3): wait() parks the
+// calling fiber until open() fires, open() wakes every waiter at once and
+// the gate stays open forever after. A Gate IS an empty channel — open is
+// close (sticky, wakes the whole wait line, broadcasts to thread waiters)
+// and wait is the closed-only half of a receive — so the kind-4 tracer
+// and destructor work unchanged: the queue never holds a value.
+BChan* beans_gate_new(void) { return beans_chan_new(1, 0); }
+void beans_gate_open(BChan* c) { beans_chan_close(c); }
+long long beans_gate_is_open(BChan* c) {
+    pthread_mutex_lock(&c->m);
+    long long open = c->closed;
+    pthread_mutex_unlock(&c->m);
+    return open;
+}
+void beans_gate_wait(BChan* c) {
+    pthread_mutex_lock(&c->m);
+    while (!c->closed) {
+#if BEANS_RT_FIBERS
+        if (beans_fiber_current()) {
+            fiber_line_wait(&c->m, &c->recv_head, &c->recv_tail);
+            continue;
+        }
+#endif
+        pthread_cond_wait(&c->can_recv, &c->m);
+    }
     pthread_mutex_unlock(&c->m);
 }
 
@@ -14761,3 +15163,421 @@ char* beans_decv_fmt(BDec* value, long long p) {
     return beans_fmt_dec(value, p);
 }
 #endif // BEANS_RT_DECIMAL
+
+// ---------------------------------------------------------------------------
+// brew — the compiler's layer over the fiber core (spec/CONCURRENCY.md, F2).
+//
+// Mirrors the BThread layer, minus every cross-thread cost: a brewed fiber
+// runs on the worker that brewed it, shares its non-atomic refcounts and its
+// cycle collector, and needs no shared-graph marking. The Brew handle also
+// carries no reference for the child: the checker's scope contract joins
+// every brew before its handle can drop, so the handle always outlives the
+// fiber writing into it.
+//
+// Interim, closed by the F2 unwind work: a contained panic (and a cancelled
+// park) abandons the fiber's frames — defers do not run yet and the child's
+// unclaimed closure box is not released on that path.
+#if BEANS_RT_FIBERS
+
+typedef struct {
+    void* payload;   // slot 0: typed-result box, masked
+    long long value; // slot 1: i64 result, masked when it is a pointer
+    void* env;       // slot 2: closure box, owned here until the child runs
+    BeansFiber* fiber; // never masked: fiber records are not beans heap
+    long long (*thunk)(void*);
+    void (*typed_thunk)(void*, void*);
+    long long result_size;
+    long long status; // -1 running, else the join's BEANS_FIBER_* answer
+    long long joined;
+    // TaskGroup rows only; never masked — the group owns its rows, never
+    // the other way round. done_stamp is the group clock's completion
+    // order, 0 while the child still runs.
+    void* group;
+    long long done_stamp;
+    char message[512]; // the child's panic report, copied at the join
+} BBrew;
+
+// Join answers, as the compiler's emitted Result construction reads them.
+// 0..2 are the BEANS_FIBER_* statuses; 3 is the dynamic second join.
+enum { BEANS_BREW_JOINED_ALREADY = 3 };
+
+static void brew_main(void* arg) {
+    BBrew* h = arg;
+    if (h->typed_thunk) h->typed_thunk(h->env, h->payload);
+    else h->value = h->thunk(h->env);
+    beans_release(h->env);
+    h->env = NULL;
+}
+
+static BBrew* brew_start(BBrew* h, void* name, long long stack_reserve) {
+    h->status = -1;
+    beans_worker_bootstrap(); // idempotent; first brew promotes the thread
+    h->fiber = beans_fiber_spawn(beans_worker_current(), brew_main, h,
+                                 (const char*)name, (size_t)stack_reserve);
+    if (!h->fiber) beans_panic("brew could not reserve a fiber stack", 0, 0);
+    return h;
+}
+
+// `name` is borrowed for the life of the fiber (reports, overflow): the
+// emitter passes the callee's name as a private constant.
+BBrew* beans_brew(void* thunk, void* env, long long result_ptr, void* name,
+                  long long stack_reserve) {
+    long long mask =
+        RT_I64_SLOT_MASK_AT(offsetof(BBrew, env)) |
+        (result_ptr ? RT_I64_SLOT_MASK_AT(offsetof(BBrew, value)) : 0);
+    BBrew* h = beans_alloc(sizeof(BBrew), 1 | (mask << 3));
+    h->thunk = (long long (*)(void*))thunk;
+    h->env = env;
+    return brew_start(h, name, stack_reserve);
+}
+BBrew* beans_brew_typed(void* thunk, void* env, long long size,
+                        long long ptr_mask, void* name,
+                        long long stack_reserve) {
+    if (size <= 0 || size > (1LL << 30))
+        beans_panic("invalid brew result size", 0, 0);
+    long long mask = RT_I64_SLOT_MASK_AT(offsetof(BBrew, payload)) |
+                     RT_I64_SLOT_MASK_AT(offsetof(BBrew, env));
+    BBrew* h = beans_alloc(sizeof(BBrew), 1 | (mask << 3));
+    h->payload = beans_alloc(size, 1 | (ptr_mask << 3));
+    h->result_size = size;
+    h->typed_thunk = (void (*)(void*, void*))thunk;
+    h->env = env;
+    return brew_start(h, name, stack_reserve);
+}
+
+// Parks until the child finishes; answers how it ended. The joiner's own
+// cancellation is not consumed here — the scope contract says a join waits
+// for the child to actually finish, and the joiner observes its cancel at
+// its next park.
+long long beans_brew_join(BBrew* h) {
+    if (h->joined) {
+        strncpy(h->message, "brew handle already joined",
+                sizeof h->message - 1);
+        return BEANS_BREW_JOINED_ALREADY;
+    }
+    h->joined = 1;
+    h->status = beans_fiber_join(h->fiber, h->message, sizeof h->message);
+    h->fiber = NULL; // the join retired the record
+    return h->status;
+}
+
+// Ownership of the result moves to the caller; emitted only on the ok arm.
+long long beans_brew_value(BBrew* h) {
+    long long v = h->value;
+    h->value = 0;
+    return v;
+}
+void beans_brew_value_typed(BBrew* h, void* out, long long size) {
+    if (size != h->result_size)
+        beans_panic("brew result size mismatch", 0, 0);
+    void* payload = h->payload;
+    memcpy(out, payload, (size_t)size);
+    memset(payload, 0, (size_t)size); // nested refs move out with the value
+    h->payload = NULL;
+    beans_release(payload);
+}
+
+// A fresh Beans string with the child's panic report ("" when it did not
+// panic); emitted only on the err arm.
+char* beans_brew_message(BBrew* h) {
+    return str_make(h->message, (long long)strlen(h->message));
+}
+
+void beans_brew_cancel(BBrew* h) {
+    if (h->fiber) beans_fiber_cancel(h->fiber); // joined/retired: a no-op
+}
+
+// Releases a joined row's unclaimed ok result. Panic and cancel carry
+// nothing to release here — the F2 note on abandoned frames covers what
+// the child itself still held.
+static void brew_drop_result(BBrew* h) {
+    if (h->status != BEANS_FIBER_OK) return;
+    if (h->payload) {
+        beans_release(h->payload);
+        h->payload = NULL;
+    } else {
+        long long mask = (cc_meta(head_of(h)) & CC_SHAPE) >> 3;
+        if (mask & RT_I64_SLOT_MASK_AT(offsetof(BBrew, value)))
+            beans_release((void*)(uintptr_t)h->value);
+        h->value = 0;
+    }
+}
+
+// The synthesized scope-exit join behind every brew. An explicit join()
+// already consumed the outcome and made this a no-op; otherwise a panic the
+// scope never looked at escalates here (contained again if the parent is
+// itself a brewed fiber), a cancelled child is the scope's own doing and
+// stays quiet, and an unclaimed ok result is released.
+void beans_brew_scope_join(BBrew* h, long long line, long long col) {
+    if (h->joined) return;
+    long long status = beans_brew_join(h);
+    if (status == BEANS_FIBER_PANICKED) {
+        char text[600];
+        rt_format(text, sizeof text,
+                  "a brewed fiber panicked with no join to catch it: %s",
+                  h->message);
+        beans_panic(text, line, col);
+    }
+    brew_drop_result(h);
+}
+
+// ---------------------------------------------------------------------------
+// TaskGroup — a scope-bound fleet of brewed fibers (spec/CONCURRENCY.md,
+// F3), for when the fiber count is a runtime value. group.brew(f(x))
+// starts a child exactly as `brew` does; next() delivers outcomes in
+// completion order with spawn order breaking ties; wait_all() joins the
+// rest in spawn order; cancel_all() discards a fleet. The group and every
+// child live on one worker — the handle is scope-bound and not Send — so
+// every field here is worker-local and lock-free. The children list is a
+// beans list so the group's shell traces the rows it still owns.
+
+typedef struct {
+    BList* children;     // slot 0, masked: BBrew* rows the group owns
+    long long delivered; // rows already detached by next/try_next
+    long long clock;     // completion stamps handed out by the done hook
+    BeansFiber* waiter;  // one parked next()/wait_all caller, or NULL
+} BTaskGroup;
+
+// The fiber core's done hook: settle() runs it for every ending — return,
+// panic, cancel — so a panicked child is deliverable too. brew_main's
+// return path could never see the panics (beans_fiber_panic does not
+// return through it).
+static void taskgroup_child_done(void* arg) {
+    BBrew* h = arg;
+    BTaskGroup* g = h->group;
+    h->done_stamp = ++g->clock;
+    if (g->waiter) {
+        BeansFiber* waiter = g->waiter;
+        g->waiter = NULL;
+        beans_fiber_resume(waiter);
+    }
+}
+
+BTaskGroup* beans_taskgroup_new(void) {
+    long long mask = RT_I64_SLOT_MASK_AT(offsetof(BTaskGroup, children));
+    BTaskGroup* g = beans_alloc(sizeof(BTaskGroup), 1 | (mask << 3));
+    g->children = beans_list_new(1); // rows are beans references
+    return g;
+}
+
+static void taskgroup_adopt(BTaskGroup* g, BBrew* h) {
+    h->group = g;
+    beans_list_push(g->children, (long long)(uintptr_t)h); // list takes the +1
+    // Safe this late: spawning never yields, the child has not run.
+    beans_fiber_set_done_hook(h->fiber, taskgroup_child_done, h);
+}
+
+// group.brew(f(x)) — the same two flavors as beans_brew(_typed), minus
+// the returned handle: the group keeps the row.
+void beans_taskgroup_brew(BTaskGroup* g, void* thunk, void* env,
+                          long long result_ptr, void* name,
+                          long long stack_reserve) {
+    taskgroup_adopt(g, beans_brew(thunk, env, result_ptr, name,
+                                  stack_reserve));
+}
+void beans_taskgroup_brew_typed(BTaskGroup* g, void* thunk, void* env,
+                                long long size, long long ptr_mask,
+                                void* name, long long stack_reserve) {
+    taskgroup_adopt(g, beans_brew_typed(thunk, env, size, ptr_mask, name,
+                                        stack_reserve));
+}
+
+// The undelivered row with the smallest completion stamp — the clock is
+// strictly increasing, so spawn order can only break the tie of "not
+// finished yet", never of two stamps. -1 when nothing deliverable is done.
+static long long taskgroup_pick_done(BTaskGroup* g) {
+    long long best = -1;
+    long long best_stamp = 0;
+    for (long long i = 0; i < g->children->len; i++) {
+        BBrew* row = (BBrew*)(uintptr_t)g->children->data[i];
+        if (!row || !row->done_stamp) continue;
+        if (best < 0 || row->done_stamp < best_stamp) {
+            best = i;
+            best_stamp = row->done_stamp;
+        }
+    }
+    return best;
+}
+
+static long long taskgroup_live(BTaskGroup* g) {
+    for (long long i = 0; i < g->children->len; i++)
+        if (g->children->data[i]) return 1;
+    return 0;
+}
+
+// Detaches one row: ownership of the reference moves to the caller. The
+// list resets once everything was handed out, so a drained group is
+// reusable.
+static BBrew* taskgroup_detach(BTaskGroup* g, long long index) {
+    BBrew* row = (BBrew*)(uintptr_t)g->children->data[index];
+    g->children->data[index] = 0;
+    g->delivered += 1;
+    if (g->delivered == g->children->len) {
+        g->children->len = 0;
+        g->delivered = 0;
+    }
+    return row;
+}
+
+// Parks until an undelivered child finishes; answers a joined row the
+// caller owns — read value or message, then release — or NULL when the
+// group has nothing left. The park loops on its condition (wakes can be
+// spurious), and cancellation stays interim-invisible here, the same
+// contract every std park holds to.
+BBrew* beans_taskgroup_next(BTaskGroup* g) {
+    for (;;) {
+        long long index = taskgroup_pick_done(g);
+        if (index >= 0) {
+            BBrew* row = taskgroup_detach(g, index);
+            beans_brew_join(row); // finished: answers without parking
+            return row;
+        }
+        if (!taskgroup_live(g)) return NULL;
+        g->waiter = beans_fiber_current();
+        beans_fiber_park();
+        g->waiter = NULL;
+    }
+}
+
+// Never parks: a finished row right now, or NULL.
+BBrew* beans_taskgroup_try_next(BTaskGroup* g) {
+    long long index = taskgroup_pick_done(g);
+    if (index < 0) return NULL;
+    BBrew* row = taskgroup_detach(g, index);
+    beans_brew_join(row);
+    return row;
+}
+
+// The emitted Result construction reads a delivered row's ending here —
+// the join already ran inside next(), whose answer had to be the row.
+long long beans_brew_status(BBrew* h) { return h->status; }
+
+// Parks until every remaining child has finished, then joins them all in
+// spawn order. All ok: answers NULL with every row joined and still held
+// for beans_taskgroup_collect. Any failure: answers the first failing row
+// in spawn order — caller-owned, for the err arm — and releases everyone
+// else, dropping their unclaimed results. One failure is the fleet's
+// answer; the rest is discarded, joined first.
+BBrew* beans_taskgroup_wait_all_join(BTaskGroup* g) {
+    for (;;) {
+        long long pending = 0;
+        for (long long i = 0; i < g->children->len; i++) {
+            BBrew* row = (BBrew*)(uintptr_t)g->children->data[i];
+            if (row && !row->done_stamp) {
+                pending = 1;
+                break;
+            }
+        }
+        if (!pending) break;
+        g->waiter = beans_fiber_current();
+        beans_fiber_park();
+        g->waiter = NULL;
+    }
+    long long bad = -1;
+    for (long long i = 0; i < g->children->len; i++) {
+        BBrew* row = (BBrew*)(uintptr_t)g->children->data[i];
+        if (!row) continue;
+        beans_brew_join(row); // finished: answers without parking
+        if (bad < 0 && row->status != BEANS_FIBER_OK) bad = i;
+    }
+    if (bad < 0) return NULL;
+    BBrew* first = (BBrew*)(uintptr_t)g->children->data[bad];
+    for (long long i = 0; i < g->children->len; i++) {
+        BBrew* row = (BBrew*)(uintptr_t)g->children->data[i];
+        if (!row || i == bad) continue;
+        brew_drop_result(row);
+        beans_release(row);
+    }
+    g->children->len = 0;
+    g->delivered = 0;
+    return first;
+}
+
+// After a NULL wait_all_join: the values in spawn order as a fresh list,
+// rows released, group emptied and reusable. The narrow flavor mirrors
+// beans_brew_value — ownership of a reference element just moves into the
+// list; the typed flavor mirrors beans_brew_value_typed with the list
+// slot as `out`.
+BList* beans_taskgroup_collect(BTaskGroup* g, long long elem_ref) {
+    BList* out = beans_list_new(elem_ref);
+    for (long long i = 0; i < g->children->len; i++) {
+        BBrew* row = (BBrew*)(uintptr_t)g->children->data[i];
+        if (!row) continue;
+        beans_list_push(out, beans_brew_value(row));
+        g->children->data[i] = 0;
+        beans_release(row);
+    }
+    g->children->len = 0;
+    g->delivered = 0;
+    return out;
+}
+BList* beans_taskgroup_collect_typed(BTaskGroup* g, long long stride,
+                                     long long ptr_mask) {
+    BList* out = beans_list_new_typed(stride, ptr_mask);
+    for (long long i = 0; i < g->children->len; i++) {
+        BBrew* row = (BBrew*)(uintptr_t)g->children->data[i];
+        if (!row) continue;
+        if (stride != row->result_size)
+            beans_panic("brew result size mismatch", 0, 0);
+        void* payload = row->payload;
+        beans_list_push_typed(out, payload);
+        memset(payload, 0, (size_t)stride); // nested refs moved into the list
+        row->payload = NULL;
+        beans_release(payload);
+        g->children->data[i] = 0;
+        beans_release(row);
+    }
+    g->children->len = 0;
+    g->delivered = 0;
+    return out;
+}
+
+// Cancels newest-first — later children often feed earlier ones — then
+// joins everyone and drops every outcome: cancel_all is handling by
+// discard, recorded in the spec. A child that finished before the cancel
+// reached it is dropped the same way.
+void beans_taskgroup_cancel_all(BTaskGroup* g) {
+    for (long long i = g->children->len; i > 0; i--) {
+        BBrew* row = (BBrew*)(uintptr_t)g->children->data[i - 1];
+        if (row) beans_brew_cancel(row);
+    }
+    for (long long i = 0; i < g->children->len; i++) {
+        BBrew* row = (BBrew*)(uintptr_t)g->children->data[i];
+        if (!row) continue;
+        beans_brew_join(row);
+        brew_drop_result(row);
+        g->children->data[i] = 0;
+        beans_release(row);
+    }
+    g->children->len = 0;
+    g->delivered = 0;
+}
+
+// The synthesized scope-exit join behind every group, the same contract a
+// lone brew holds to: join what is left in spawn order, escalate the
+// first panic nobody looked at, drop unclaimed ok results quietly.
+void beans_taskgroup_scope_join(BTaskGroup* g, long long line,
+                                long long col) {
+    for (long long i = 0; i < g->children->len; i++) {
+        BBrew* row = (BBrew*)(uintptr_t)g->children->data[i];
+        if (!row) continue;
+        g->children->data[i] = 0;
+        beans_brew_scope_join(row, line, col); // a panic escalates here
+        beans_release(row);
+    }
+    g->children->len = 0;
+    g->delivered = 0;
+}
+
+#endif // BEANS_RT_FIBERS — brew
+
+// ---------------------------------------------------------------------------
+// The fiber runtime core (spec/CONCURRENCY.md, F1). One include keeps the
+// runtime a single entry file for BEANS_RUNTIME resolution; the fiber core
+// stays its own translation-unit-shaped file so test/fiber_core.c can test
+// it without the rest of the runtime. Fibers need real threads and mmap, so
+// restricted profiles compile without them — the checker refuses `brew` and
+// parking there before this gate is ever reached.
+#if BEANS_RT_FIBERS
+#include "beans_fiber.c"
+#endif

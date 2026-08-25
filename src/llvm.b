@@ -588,6 +588,14 @@ partial class LlvmTextEmitter {
             output =
                 self.emit_thread_spawn(
                     function, instruction, values)
+        } else if instruction.op == "brew" {
+            output =
+                self.emit_brew(
+                    function, instruction, values)
+        } else if instruction.op == "group_brew" {
+            output =
+                self.emit_group_brew(
+                    function, instruction, values)
         } else if instruction.op == "selector" &&
                   canonical_hir_name(
                       instruction.type.name) ==
@@ -1005,6 +1013,16 @@ partial class LlvmTextEmitter {
                       self.value_type(
                           function,
                           instruction.operands[0]).name) ==
+                      "Gate" {
+            output =
+                self.emit_gate_method(
+                    function, instruction, values)
+        } else if instruction.op == "builtin_method" &&
+                  instruction.operands.len() != 0 &&
+                  canonical_hir_name(
+                      self.value_type(
+                          function,
+                          instruction.operands[0]).name) ==
                       "Atomic" {
             output =
                 self.emit_atomic_method(
@@ -1387,9 +1405,17 @@ partial class LlvmTextEmitter {
                 output =
                     self.emit_channel_send(
                         function, instruction, values)
+            } else if instruction.text == "try_send" {
+                output =
+                    self.emit_channel_try_send(
+                        function, instruction, values)
             } else if instruction.text == "receive" {
                 output =
                     self.emit_channel_recv(
+                        function, instruction, values)
+            } else if instruction.text == "try_receive" {
+                output =
+                    self.emit_channel_try_recv(
                         function, instruction, values)
             } else if instruction.text == "close" {
                 output =
@@ -1418,6 +1444,63 @@ partial class LlvmTextEmitter {
                 output =
                     self.emit_thread_detach(
                         function, instruction, values)
+            }
+        } else if instruction.op ==
+                      "builtin_method" &&
+                  instruction.operands.len() != 0 &&
+                  canonical_hir_name(
+                      self.value_type(
+                          function,
+                          instruction.operands[0]).name) ==
+                      "Brew" {
+            if instruction.text == "join" {
+                output =
+                    self.emit_brew_join(
+                        function, instruction, values)
+            } else if instruction.text == "cancel" {
+                output =
+                    self.emit_brew_cancel(
+                        function, instruction, values)
+            } else if instruction.text ==
+                          "brew_scope_join" {
+                output =
+                    self.emit_brew_scope_join(
+                        function, instruction, values)
+            } else {
+                self.fail(
+                    instruction,
+                    "LLVM emitter does not support Brew.{instruction.text} yet")
+            }
+        } else if instruction.op ==
+                      "builtin_method" &&
+                  instruction.operands.len() != 0 &&
+                  canonical_hir_name(
+                      self.value_type(
+                          function,
+                          instruction.operands[0]).name) ==
+                      "TaskGroup" {
+            if instruction.text == "next" ||
+               instruction.text == "try_next" {
+                output =
+                    self.emit_taskgroup_next(
+                        function, instruction, values)
+            } else if instruction.text == "wait_all" {
+                output =
+                    self.emit_taskgroup_wait_all(
+                        function, instruction, values)
+            } else if instruction.text == "cancel_all" {
+                output =
+                    self.emit_taskgroup_cancel_all(
+                        function, instruction, values)
+            } else if instruction.text ==
+                          "taskgroup_scope_join" {
+                output =
+                    self.emit_taskgroup_scope_join(
+                        function, instruction, values)
+            } else {
+                self.fail(
+                    instruction,
+                    "LLVM emitter does not support TaskGroup.{instruction.text} yet")
             }
         } else if instruction.op ==
                       "builtin_method" &&

@@ -12,8 +12,9 @@ RUNTIME_SRC := runtime/beans_rt.c
 RUNTIME_COPY := build/beans_rt.c
 .DEFAULT_GOAL := $(BIN)
 
-$(RUNTIME_COPY): $(RUNTIME_SRC)
+$(RUNTIME_COPY): $(RUNTIME_SRC) runtime/beans_fiber.c runtime/beans_fiber.h
 	@mkdir -p build
+	cp runtime/beans_fiber.c runtime/beans_fiber.h build/
 	cp $(RUNTIME_SRC) $(RUNTIME_COPY)
 
 # The compiler cannot read VERSION while compiling itself, so it reads the same
@@ -60,6 +61,14 @@ $(BIN): $(SELF_HOST_SRC) $(RUNTIME_COPY)
 	  echo ""; \
 	  exit 1; \
 	}
+# The released launcher exports its package's BEANS_* paths, so an installed
+# bootstrap would compile THIS tree's sources against LAST release's runtime
+# and stdlib — and the link breaks the first time src needs a runtime symbol
+# the release does not have. The launcher honours preset values, so the
+# bootstrap pins every source root to the tree it is building.
+	BEANS_RUNTIME=runtime/beans_rt.c BEANS_STDLIB=stdlib/std \
+	BEANS_ENCODING=runtime/encoding BEANS_NET=runtime/net \
+	BEANS_LOG=runtime/log \
 	$(BEANSC_BOOT) build --release src/main.b -o $(BIN).new
 	rm -f $(BIN) && mv $(BIN).new $(BIN)
 
@@ -150,7 +159,6 @@ test-semantics: $(BIN)
 	./test/fixed_arrays.sh
 	bash ./test/closure_captures.sh
 	bash ./test/send_functions.sh
-	bash ./test/async.sh
 	bash ./test/mir.sh
 	bash ./test/devirtualize.sh
 	bash ./test/default_eval_order.sh
@@ -163,10 +171,18 @@ test-semantics: $(BIN)
 	bash ./test/wide_owners.sh
 	bash ./test/wide_sync.sh
 	bash ./test/wide_concurrency.sh
+	bash ./test/channel_try.sh
+	bash ./test/brew.sh
+	bash ./test/fiber_std.sh
+	bash ./test/gate.sh
+	bash ./test/taskgroup.sh
+	bash ./test/fiber_soak.sh
+	bash ./test/fiber_net.sh
 	./test/self_host.sh
 	./test/fixpoint.sh
 
 test-runtime: $(BIN)
+	bash ./test/fiber_core.sh
 	bash ./test/thread_cleanup.sh
 	./test/resources.sh
 	./test/shm.sh
@@ -277,6 +293,7 @@ test-core: $(BIN)
 	./test/fixed_arrays.sh
 	bash ./test/send_functions.sh
 	./test/packed_layout.sh
+	bash ./test/fiber_core.sh
 	bash ./test/thread_cleanup.sh
 	./test/simd.sh
 	./test/intrinsics.sh
@@ -301,7 +318,6 @@ test-core: $(BIN)
 	./test/stored_callbacks.sh
 	bash ./test/same_thread_callbacks.sh
 	bash ./test/closure_captures.sh
-	bash ./test/async.sh
 	./test/stdlib_source.sh
 	bash ./test/api_names.sh
 	bash ./test/encoding.sh
@@ -332,6 +348,13 @@ test-core: $(BIN)
 	bash ./test/wide_owners.sh
 	bash ./test/wide_sync.sh
 	bash ./test/wide_concurrency.sh
+	bash ./test/channel_try.sh
+	bash ./test/brew.sh
+	bash ./test/fiber_std.sh
+	bash ./test/gate.sh
+	bash ./test/taskgroup.sh
+	bash ./test/fiber_soak.sh
+	bash ./test/fiber_net.sh
 
 	./test/profiles.sh
 	./test/asm.sh

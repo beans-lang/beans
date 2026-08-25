@@ -168,9 +168,6 @@ class CAbiChecker {
                     exported[function.extern_name] = function.qualified
                 }
             }
-            // Already rejected outright; a second complaint about the
-            // wrapped task return would only bury that error.
-            if function.is_async { continue }
             if function.name == "main" {
                 self.fail_function(
                     function,

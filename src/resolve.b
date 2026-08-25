@@ -68,10 +68,12 @@ fn builtin_type(name: string) -> bool {
            name == "Arena" || name == "Shared" || name == "Weak" ||
            name == "Mutex" || name == "Atomic" ||
            name == "Channel" || name == "Thread" ||
+           name == "Brew" || name == "TaskGroup" ||
            name == "Bytes" || name == "File" || name == "Dir" ||
            name == "MMap" || name == "Error" ||
            name == "RawSlice" ||
-           name == "AtomicInt" || name == "MemoryOrder" ||
+           name == "AtomicInt" || name == "Gate" ||
+           name == "MemoryOrder" ||
            name == "RoundingMode" || name == "CpuFeature" ||
            name == "StoredCallback" ||
            name == "LocalStoredCallback" ||

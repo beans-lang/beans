@@ -2,9 +2,7 @@
 // ported in spirit from libuv's and mio's regression tests: a modify that
 // must be visible to the very next wait, removal between batches, wakes from
 // another thread in both loop states, hangup with buffered data, timeout
-// precision, and the classic fd-reuse ABA. The async section proves a
-// structured task dropped mid-await deregisters its readiness interest —
-// the leak that turns "cancel" into "poisoned descriptor".
+// precision, and the classic fd-reuse ABA.
 //
 // Every printed line is a derived fact. The scale section reads its size
 // from POLL_SCALE_IDLE so the checked-in golden stays a quick run while the
@@ -476,43 +474,6 @@ fn check_scale_fairness() {
     }
 }
 
-// ---- 8. a cancelled await deregisters its interest ------------------------------
-//
-// The child parks on readable(fd) and is abandoned. If cancellation leaked
-// the registration, the second park on the same descriptor would panic —
-// the runtime refuses two live awaits on one fd — so this passing IS the
-// deregistration proof.
-async fn park_and_abandon(handle: int) -> bool {
-    async let forgotten: bool = net.readable(handle)
-    return true
-}
-
-async fn check_cancellation() {
-    var keep: List<net.TcpStream> = []
-    match connected_pair(keep) {
-        ok(_) => {}
-        err(e) => {
-            io.println("pair failed: {e.kind}")
-            return
-        }
-    }
-    let handle: int = keep[0].poll_handle()
-    let abandoned: bool = await park_and_abandon(handle)
-    io.println("abandoned await cancelled {abandoned}")
-    // Re-park on the same descriptor: only legal if the first registration
-    // is truly gone. Data arrives from this side of the pair via loopback
-    // write — the peer thread echoes nothing, so write to ourselves through
-    // the socket's own buffered direction: instead, close the write half so
-    // readable fires on EOF.
-    async let again: bool = net.readable(handle)
-    let half_closed: Result<bool> = keep[0].shutdown_write()
-    // EOF alone does not make the READ side ready; the peer thread parked in
-    // read(1) sees our EOF and exits, closing its end — which is what makes
-    // our side readable. Bounded by the peer's own read timeout.
-    let woke: bool = await again
-    io.println("descriptor parks again after cancel {woke}")
-}
-
 // wait_into fills a caller-kept list in place: the count is authoritative,
 // the list only grows, and entries past the count keep stale data from an
 // earlier batch — the contract that makes a steady loop allocation-free.
@@ -609,7 +570,7 @@ fn check_wait_into() {
     }
 }
 
-async fn main() {
+fn main() {
     check_modify_visibility()
     check_remove_between_batches()
     check_cross_thread_wake()
@@ -618,5 +579,4 @@ async fn main() {
     check_fd_reuse_aba()
     check_scale_fairness()
     check_wait_into()
-    await check_cancellation()
 }

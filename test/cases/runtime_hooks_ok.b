@@ -35,16 +35,6 @@ fn guarded() {
     io.println("body:guarded")
 }
 
-// Active hooks may coexist with async code, but version one does not allow an
-// active annotation on the async function itself.
-async fn keep<T>(move value: T) -> T {
-    return move value
-}
-
-async fn generic_async_probe() -> string {
-    return await keep("kept")
-}
-
 @runtime_start
 fn start_first() {
     io.println("start:first")

@@ -1,0 +1,18 @@
+empty none
+send 10 true
+send 11 true
+send 12 false
+recv 10
+tryrecv 11
+send 13 true
+closed send false
+drain 13
+after none
+text true
+text full false
+text got brew
+pair true
+pair got 7 35
+pair again none
+hand 1 true
+handoff 3

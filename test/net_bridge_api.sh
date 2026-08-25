@@ -23,12 +23,28 @@ perl -0777 -ne '
 ' stdlib/std/net/*.b stdlib/std/http/*.b stdlib/std/websocket/*.b \
   stdlib/std/compress/*.b stdlib/std/crypto/*.b stdlib/std/tls/*.b \
   test/cases/llhttp_corpus_runner.b |
-    sort -u >"$tmp/beans.externs"
+    sort -u >"$tmp/all.externs"
+
+# beans_net_* externs are the fiber-parking socket calls: they live in
+# beans_rt.c beside the netpoller, not in the bridge (the bridge is a
+# standalone translation unit with no fiber scheduler). They are checked
+# against the runtime below, exactly like the intrinsic-named symbols;
+# every other extern must pair with a bridge export.
+grep -v '^beans_net_' "$tmp/all.externs" >"$tmp/beans.externs"
+grep '^beans_net_' "$tmp/all.externs" >"$tmp/runtime.externs" || true
 
 if ! diff -u "$tmp/c.exports" "$tmp/beans.externs"; then
     echo "network bridge C exports and Beans declarations differ" >&2
     exit 1
 fi
+
+while IFS= read -r symbol; do
+    if ! grep -Eq "^[A-Za-z_][A-Za-z0-9_ *]*[ *]${symbol}\\(" \
+            runtime/beans_rt.c; then
+        echo "runtime-side net extern missing its C entry point: $symbol" >&2
+        exit 1
+    fi
+done <"$tmp/runtime.externs"
 
 # Pull the socket/poller runtime symbols named by runtime_abi.b and prove that
 # the C runtime defines each base entry point. The generated *_out wrappers are

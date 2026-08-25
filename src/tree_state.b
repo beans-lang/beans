@@ -74,6 +74,25 @@ class TreeMutexCell {
     }
 }
 
+// One interpreted channel: the buffered values plus the parked senders and
+// receivers, all behind one Mutex. Waiters park on their own one-slot signal
+// channel, so the try halves can answer without ever joining the queue.
+class TreeChannelState {
+    values: List<TreeValue>
+    capacity: int
+    closed: bool
+    send_waiters: List<Channel<int>>
+    receive_waiters: List<Channel<int>>
+
+    fn init(capacity: int) {
+        self.values = []
+        self.capacity = if capacity > 0 { capacity } else { 1 }
+        self.closed = false
+        self.send_waiters = []
+        self.receive_waiters = []
+    }
+}
+
 class TreeSingletonState {
     values: Map<string, TreeValue>
     static_values: Map<string, TreeValue>
@@ -119,6 +138,86 @@ unique class TreeThreadWork implements Send {
     }
 }
 
+// One brewed fiber's interpreter-side record (spec/CONCURRENCY.md). The C
+// fiber core only schedules the stack; every outcome fact lives here at
+// tree level: run() contains an interpreted panic before the walker's
+// failed flag could cross a park, and join or the scope join read the
+// answer back out. A plain aliased class on purpose — every touch is on
+// the one worker thread (the entry rides a LocalStoredCallback), and a
+// lock here would be held across the child's parks: the first parked
+// child would deadlock its own join.
+class TreeBrewState {
+    owner: TreeInterpreter
+    closure: TreeValue
+    node: HirNode
+    fiber: u64
+    // The BStoredCallback record behind the fiber's entry, closed by
+    // address at the reap — the Beans-level handle is trivial and cannot
+    // be closed through a borrowed field.
+    entry_context: u64
+    done: bool
+    panicked: bool
+    panic_message: string
+    result: Option<TreeValue>
+    joined: bool
+    reaped: bool
+    // TaskGroup rows only: the group clock's completion order, 0 while
+    // the child still runs. Stamped by the group entry's tail — an
+    // interpreted panic still returns through run(), so a panicked child
+    // gets its stamp too, exactly like native's fiber done hook.
+    done_stamp: int
+
+    fn init(owner: TreeInterpreter,
+            closure: TreeValue, node: HirNode) {
+        self.owner = owner
+        self.closure = closure
+        self.node = node
+        self.fiber = 0
+        self.entry_context = 0
+        self.done = false
+        self.panicked = false
+        self.panic_message = ""
+        self.result = none
+        self.joined = false
+        self.reaped = false
+        self.done_stamp = 0
+    }
+
+    fn run() {
+        let value: TreeValue =
+            self.owner.invoke_closure(
+                self.node, self.closure, [])
+        if self.owner.failed {
+            self.panicked = true
+            self.panic_message = self.owner.panic_text
+            self.owner.failed = false
+            self.owner.panic_text = ""
+        } else {
+            self.result = some(value)
+        }
+        self.done = true
+    }
+}
+
+// One fleet's interpreter-side record (spec/CONCURRENCY.md, F3). The
+// children reuse TreeBrewState rows; delivery order is their done_stamp
+// under this clock, and a joined row counts as delivered. A plain aliased
+// class for the same reason TreeBrewState is: everything runs on the one
+// worker thread, and a lock would be held across the waiter's parks.
+class TreeTaskGroupState {
+    children: List<TreeBrewState>
+    delivered: int
+    clock: int
+    waiter: u64 // parked next()/wait_all fiber address, or 0
+
+    fn init() {
+        self.children = []
+        self.delivered = 0
+        self.clock = 0
+        self.waiter = 0
+    }
+}
+
 unique class TreeStoredState implements Send {
     owner: TreeInterpreter
     function: HirFunction
@@ -153,9 +252,25 @@ class TreeStoredCallback {
     }
 }
 
+// One registered defer: the expression and the scope frame it was
+// registered in. The frame reference keeps that scope's locals alive past
+// the block's pop, so a defer inside a nested block (or a brew's
+// synthesized scope join) still sees its bindings at function exit — the
+// same thing native's stack slots give for free. The back-reference makes
+// a frame cycle; the collector owns those.
+class TreeDeferred {
+    expression: HirNode
+    frame: TreeFrame
+
+    fn init(expression: HirNode, frame: TreeFrame) {
+        self.expression = expression
+        self.frame = frame
+    }
+}
+
 class TreeFrame {
     values: Map<int, TreeValue>
-    defers: List<HirNode>
+    defers: List<TreeDeferred>
     parent: Option<TreeFrame>
     defer_owner: Option<TreeFrame>
     self_value: Option<TreeValue>
@@ -192,13 +307,14 @@ class TreeFrame {
         return result
     }
 
-    fn add_defer(expression: HirNode) {
+    fn add_defer(expression: HirNode, at: TreeFrame) {
         match self.defer_owner {
             some(owner) => {
-                owner.add_defer(expression)
+                owner.add_defer(expression, at)
             }
             none => {
-                self.defers.push(expression)
+                self.defers.push(
+                    new TreeDeferred(expression, at))
             }
         }
     }

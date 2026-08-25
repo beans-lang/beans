@@ -1,0 +1,8 @@
+open false
+opening
+watcher 1 through
+watcher 2 through
+total 4 open true
+sticky pass
+woken across threads true
+thread said 7

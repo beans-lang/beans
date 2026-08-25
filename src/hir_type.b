@@ -153,12 +153,35 @@ fn builtin_generic_arity(name: string) -> int {
        name == "Channel" || name == "Box" || name == "Arena" ||
        name == "Shared" || name == "Weak" || name == "RawPtr" ||
        name == "Slice" || name == "Atomic" ||
+       name == "Brew" || name == "TaskGroup" ||
        name == "StoredCallback" ||
        name == "LocalStoredCallback" ||
        name == "CFunctionPtr" {
         return 1
     }
     return -1
+}
+
+// Whether a type is or carries a Brew handle anywhere. Brew is scope-bound:
+// it may appear only as the outermost type of the let that brewed it, so
+// every stored position — fields, parameters, results, type arguments —
+// asks this and refuses.
+fn hir_type_contains_brew(type: HirType) -> bool {
+    if canonical_hir_name(type.name) == "Brew" { return true }
+    for argument: HirType in type.args {
+        if hir_type_contains_brew(argument) { return true }
+    }
+    return false
+}
+
+// The same scope-bound story for a whole fleet: a TaskGroup may appear
+// only as the outermost type of the let that made it.
+fn hir_type_contains_task_group(type: HirType) -> bool {
+    if canonical_hir_name(type.name) == "TaskGroup" { return true }
+    for argument: HirType in type.args {
+        if hir_type_contains_task_group(argument) { return true }
+    }
+    return false
 }
 
 fn builtin_class_name(name: string) -> bool {
@@ -171,6 +194,8 @@ fn builtin_class_name(name: string) -> bool {
            name == "Weak" || name == "Mutex" ||
            name == "Atomic" || name == "Channel" ||
            name == "Thread" || name == "AtomicInt" ||
+           name == "Gate" ||
+           name == "Brew" || name == "TaskGroup" ||
            name == "StoredCallback" ||
            name == "LocalStoredCallback" ||
            name == "CFunctionPtr" ||
@@ -187,7 +212,7 @@ fn builtin_thread_policy(type: HirType) -> string {
        name == "unit" || name == "RawPtr" ||
        name == "CFunctionPtr" || name == "Slice" ||
        name == "Error" || name == "Atomic" ||
-       name == "AtomicInt" ||
+       name == "AtomicInt" || name == "Gate" ||
        simd_description(name).is_some() {
         return "always"
     }
@@ -207,6 +232,11 @@ fn builtin_thread_policy(type: HirType) -> string {
     if name == "Channel" { return "channel_argument" }
     if name == "Mutex" { return "mutex_argument" }
     if name == "Thread" { return "thread_result" }
+    // A Brew belongs to the scope and the worker that brewed it; sending it
+    // would let another thread join or cancel a fiber only its own worker
+    // may touch. Cross-thread hand-off is what thread.spawn is for. A
+    // TaskGroup is a whole fleet of them and is bound the same way.
+    if name == "Brew" || name == "TaskGroup" { return "local" }
     if name == "fn" {
         return if type.fn_sendable { "send_only" } else { "local" }
     }
@@ -228,6 +258,7 @@ fn builtin_move_policy(type: HirType) -> string {
        name == "Map" || name == "OrderedMap" ||
        name == "StoredCallback" || name == "LocalStoredCallback" ||
        name == "Bytes" ||
+       name == "Brew" || name == "TaskGroup" ||
        name == "File" || name == "MMap" {
         return "unique"
     }
