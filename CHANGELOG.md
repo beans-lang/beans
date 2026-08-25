@@ -4,6 +4,8 @@ This file records user-facing changes in each Beans release.
 
 ## [Unreleased]
 
+## [0.1.31] - 2026-08-25
+
 ### Added
 
 - **`brew` — child fibers** (spec/CONCURRENCY.md). `brew f(args)` starts the
