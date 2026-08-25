@@ -24,6 +24,22 @@ This file records user-facing changes in each Beans release.
   method that declares generics of its own binds them at the call site and
   so cannot be reached through an interface.
 
+- **Generic bounds carry type arguments.**
+  `fn read<P implements Producer<int>>(p: P)` accepts an implementor pinned
+  to `int` and refuses one pinned to anything else, and a bound may forward
+  the call's own parameters — `fn twice<U, P implements Producer<U>>` — in
+  which case it is measured after inference rather than before. The bound
+  check had only ever compared the interface's bare name, so the arguments
+  were dropped, and a method reached through such a bound answered the
+  interface's own type parameter instead of what the bound pinned.
+
+- **A class may extend a generic base at a concrete argument.**
+  `class IntHolder extends Holder<int>` lays out the base's fields at the
+  arguments the `extends` pinned, and both `super.init` and every inherited
+  method resolve against them. Two subclasses may pin the same base
+  differently. A generic class still may not extend a base — only implement
+  interfaces.
+
 ### Fixed
 
 - **A generic class can implement an interface in native code.** The LLVM

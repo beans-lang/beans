@@ -1393,8 +1393,15 @@ dispatches dynamically, and `Producer<int>` and `Producer<string>` are two
 unrelated types. A chain pins arguments the same way, so `interface
 IntProducer extends Producer<int>` answers `int`. A method that declares
 generics of its own binds them at the call site and so cannot be reached
-through an interface. A generic class may implement interfaces but still
-may not extend a base class.
+through an interface.
+
+A generic bound carries type arguments the same way: `fn read<P implements
+Producer<int>>(p: P)` accepts only implementors pinned to `int`, and a bound
+may forward the call's own parameters, as in `fn twice<U, P implements
+Producer<U>>`. A class may also extend a generic base at a concrete
+argument — `class IntHolder extends Holder<int>` — and two subclasses may
+pin the same base differently. A generic class may implement interfaces but
+still may not extend a base class.
 
 ```
 interface Producer<T> {
