@@ -213,6 +213,12 @@ jobs:
           ln -sfn libc.so \
             "$RUNNER_TEMP/powerpc64-linux-musl/powerpc64-linux-musl/lib/ld-musl-powerpc64.so.1"
 
+      - name: Install libucontext into the sysroot
+        run: |
+          bash .github/scripts/install-libucontext.sh ppc64 \
+            "$RUNNER_TEMP/powerpc64-linux-musl/bin/powerpc64-linux-musl-" \
+            "$RUNNER_TEMP/powerpc64-linux-musl/powerpc64-linux-musl"
+
       - name: Source bootstrap and hosted differential loop
         env:
           BEANS_LINUX_ARCH_REQUIRE: "1"

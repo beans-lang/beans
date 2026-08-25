@@ -375,6 +375,11 @@ jobs:
           echo "PPC64_MUSL_SYSROOT=$RUNNER_TEMP/powerpc64-linux-musl/powerpc64-linux-musl" \
             >> "$GITHUB_ENV"
 
+      - name: Install libucontext into the sysroot
+        run: |
+          bash .github/scripts/install-libucontext.sh ppc64 \
+            "$PPC64_MUSL_ROOT/bin/powerpc64-linux-musl-" "$PPC64_MUSL_SYSROOT"
+
       - name: Hosted compiler gate under qemu
         env:
           BEANS_LINUX_ARCH_REQUIRE: "1"

@@ -172,6 +172,13 @@ x86-64 and arm64 and with the POSIX `ucontext` family everywhere else, and
 musl declares those functions without shipping them. glibc hosts need nothing
 extra.
 
+Big-endian PowerPC64 has no Alpine port and so no package. Build the same
+library from its source release into the sysroot instead:
+
+```bash
+make ARCH=ppc64 && make ARCH=ppc64 install
+```
+
 Override the tools Beans uses with `BEANS_CC`, `BEANS_AR`, `BEANS_RUNTIME`,
 `BEANS_WASM_HOST` and `BEANS_STDLIB`, or per build with `--cc`, `--ar`,
 `--linker` and `--sysroot`.
