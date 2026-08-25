@@ -2731,9 +2731,12 @@ static void cc_worker_collect(void) {
                     // slides everything over the published prefix
                     cc_append_roots(cc_worker_roots, walked);
                     long long now = cc_worker_root_len;
-                    memmove(cc_worker_roots, cc_worker_roots + walked,
-                            (size_t)(now - walked) *
-                                sizeof *cc_worker_roots);
+                    // walked == 0 leaves the buffer alone — it may still be
+                    // NULL, and NULL + 0 is undefined pointer arithmetic.
+                    if (walked > 0)
+                        memmove(cc_worker_roots, cc_worker_roots + walked,
+                                (size_t)(now - walked) *
+                                    sizeof *cc_worker_roots);
                     cc_worker_root_len = now - walked;
                 }
                 rt_free(st.v);
@@ -2752,9 +2755,12 @@ static void cc_worker_collect(void) {
                     cc_worker_collect_white(
                         cc_worker_roots[i], &st, &dead);
                 }
-                memmove(cc_worker_roots, cc_worker_roots + walked,
-                        (size_t)(cc_worker_root_len - walked) *
-                            sizeof *cc_worker_roots);
+                // walked == 0 leaves the buffer alone — it may still be
+                // NULL, and NULL + 0 is undefined pointer arithmetic.
+                if (walked > 0)
+                    memmove(cc_worker_roots, cc_worker_roots + walked,
+                            (size_t)(cc_worker_root_len - walked) *
+                                sizeof *cc_worker_roots);
                 cc_worker_root_len -= walked;
                 ARC_ADD(arc_cycle_objects, dead.len);
                 if (__atomic_load_n(&weak_live, __ATOMIC_RELAXED))
