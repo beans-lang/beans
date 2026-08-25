@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# Generic interfaces as real types: a class pins a concrete argument at the
+# Generic relations as real types: a class pins a concrete argument at the
 # implements site, the interface itself stands as a variable and parameter
-# type, and a pass-through generic class reaches the same interface at two
-# different arguments. Every one of those dispatches through the vtable, so
-# the interpreter, a debug build and a release build must agree byte for
-# byte — a null row or an unbound `T` shows up as a difference here. The
-# negative file locks the diagnostics that keep the bindings honest.
+# type, a pass-through generic class reaches the same interface at two
+# different arguments, a generic bound pins or forwards one, and a base
+# class is extended at a concrete argument. Every one of those dispatches
+# through the vtable or calls a body that only exists once its arguments
+# are bound, so the interpreter, a debug build and a release build must
+# agree byte for byte — a null row or an unbound `T` shows up as a
+# difference here. The negative file locks the diagnostics that keep the
+# bindings honest.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -53,5 +56,8 @@ check_bad test/cases/generic_interfaces_bad.b \
     "expected main.Producer<string>, got main.IntBox"
 check_bad test/cases/generic_interfaces_bad.b \
     "expected main.Producer<string>, got main.BoxOf<int>"
+# a bound pins the argument the same way an implements site does
+check_bad test/cases/generic_interfaces_bad.b \
+    "'through_bound' needs P implements main.Producer<int>, got main.BoxOf<string>"
 
-echo "ok generic interfaces: pinned arguments, interface-typed values, kept defaults"
+echo "ok generic relations: pinned arguments, interface-typed values, kept defaults, bounds, generic bases"

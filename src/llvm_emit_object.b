@@ -327,6 +327,84 @@ partial class LlvmTextEmitter {
         return true
     }
 
+    // A base written `extends Base<int>` compiles its methods as templates,
+    // the way every owner-generic method does, so a class inheriting one
+    // has no symbol to call — through the table or through a devirtualized
+    // call. Raise each inherited method under the inheriting class's own
+    // name with the arguments the `extends` pinned, nearest link first so
+    // an override closer to the leaf wins, and register its selectors so
+    // both paths resolve it the way they would a method the class wrote.
+    fn instantiate_base_methods(
+        instruction: MirInstruction,
+        declaration: HirDeclaration,
+        instance: string,
+        root: HirType) -> bool {
+        let chain: List<HirDeclaration> =
+            self.class_chain(declaration)
+        let chain_types: List<HirType> =
+            self.class_chain_types(declaration, root)
+        if chain.len() != chain_types.len() { return true }
+        var index: int = chain.len()
+        for index > 0 {
+            index -= 1
+            let link: HirDeclaration = chain[index]
+            // the class's own methods already have symbols, and a
+            // non-generic base's are whole functions the chain walk finds
+            if link.qualified == declaration.qualified ||
+               link.generics.len() == 0 {
+                continue
+            }
+            let link_type: HirType = chain_types[index]
+            if link.generics.len() != link_type.args.len() {
+                continue
+            }
+            let prefix: string = "{link.qualified}."
+            for candidate: MirFunction in
+                self.program.functions {
+                if candidate.declaration ||
+                   candidate.external ||
+                   candidate.cleanup_id >= 0 ||
+                   candidate.closure_id >= 0 ||
+                   candidate.generics.len() != 0 ||
+                   !candidate.name.starts_with(prefix) {
+                    continue
+                }
+                let method: string =
+                    candidate.name.slice(
+                        prefix.len(),
+                        candidate.name.len())
+                if method.contains(".") { continue }
+                // init and deinit are chained explicitly, not inherited
+                if method == "init" || method == "deinit" {
+                    continue
+                }
+                let key: string = "{instance}.{method}"
+                if self.function_symbols.contains_key(key) {
+                    continue
+                }
+                var bindings: Map<string, HirType> = {}
+                for slot_index: int in
+                    0..link.generics.len() {
+                    bindings[link.generics[slot_index]] =
+                        link_type.args[slot_index]
+                }
+                bindings[link.qualified] = root
+                bindings[link.name] = root
+                if self.instantiate_generic(
+                       instruction, candidate.name,
+                       key, bindings) == "" {
+                    return false
+                }
+                for slot: string in
+                    candidate.dispatch_slots {
+                    self.method_dispatch_slots[
+                        "{key}|{slot}"] = true
+                }
+            }
+        }
+        return true
+    }
+
     fn class_defines_method(
         declaration: HirDeclaration,
         method: string) -> bool {
@@ -384,10 +462,14 @@ partial class LlvmTextEmitter {
             match self.declaration_for(
                       current.relations[base_index]) {
                 some(base) => {
+                    // A generic base is laid out through the arguments
+                    // the `extends` pinned, so it needs no class id of
+                    // its own — only a non-generic one is a class the
+                    // pre-pass could have numbered.
                     if base.kind != "class" ||
-                       base.generics.len() != 0 ||
-                       !self.class_ids.contains_key(
-                           base.qualified) {
+                       (base.generics.len() == 0 &&
+                        !self.class_ids.contains_key(
+                            base.qualified)) {
                         supported = false
                     } else {
                         upward.push(base)
@@ -400,6 +482,47 @@ partial class LlvmTextEmitter {
         }
         var chain: List<HirDeclaration> = []
         if !supported { return move chain }
+        var index: int = upward.len()
+        for index > 0 {
+            index -= 1
+            chain.push(upward[index])
+        }
+        return move chain
+    }
+
+    // The type each link of class_chain is instantiated at, in the same
+    // base-first order. A base written `extends Base<int>` is laid out as
+    // `Base<int>`, not as the `Base<T>` its own source spells, so its
+    // fields have a size at all. Bindings compose down the chain.
+    fn class_chain_types(
+        declaration: HirDeclaration,
+        instance: HirType) -> List<HirType> {
+        var upward: List<HirType> = [instance]
+        var current: HirDeclaration = declaration
+        var current_type: HirType = instance
+        var depth: int = 0
+        for self.class_base_index(current) >= 0 {
+            depth += 1
+            if depth > 32 { break }
+            let base_index: int =
+                self.class_base_index(current)
+            let base_type: HirType =
+                self.substitute_class_type(
+                    current.relations[base_index],
+                    current, current_type)
+            var found: bool = false
+            match self.declaration_for(base_type) {
+                some(base) => {
+                    found = true
+                    upward.push(base_type)
+                    current = base
+                    current_type = base_type
+                }
+                none => {}
+            }
+            if !found { break }
+        }
+        var chain: List<HirType> = []
         var index: int = upward.len()
         for index > 0 {
             index -= 1
@@ -950,14 +1073,21 @@ partial class LlvmTextEmitter {
                     record_alignment =
                         declaration.declared_align
                 }
+                let chain_types: List<HirType> =
+                    self.class_chain_types(declaration, type)
+                if chain_types.len() != chain.len() {
+                    return none
+                }
                 // base fields first, so a subclass pointer is usable
                 // wherever the base is expected
-                for link: HirDeclaration in chain {
+                for link_index: int in 0..chain.len() {
+                    let link: HirDeclaration =
+                        chain[link_index]
                     for field: HirField in link.fields {
                     let field_type: HirType =
                         self.substitute_class_type(
                             field.type,
-                            link, type)
+                            link, chain_types[link_index])
                     let size: int =
                         self.type_size(field_type)
                     var alignment: int =
@@ -1602,6 +1732,11 @@ partial class LlvmTextEmitter {
                            dispatch_bindings) {
                         return ""
                     }
+                }
+                if !self.instantiate_base_methods(
+                       instruction, layout.declaration,
+                       layout.instance, instruction.type) {
+                    return ""
                 }
                 if !self.instantiate_interface_defaults(
                        instruction, layout.declaration,
@@ -2597,9 +2732,16 @@ partial class LlvmTextEmitter {
                         self.method_slot_symbol(
                             declaration, slot)
                     if symbol == "null" {
-                        // a kept default from a generic interface has no
-                        // symbol until its arguments are bound, and the
+                        // a method inherited from a generic base, or a
+                        // kept default from a generic interface, has no
+                        // symbol until its arguments are bound — and the
                         // receiver's `new` may not have been emitted yet
+                        if !self.instantiate_base_methods(
+                               instruction, declaration,
+                               declaration.qualified,
+                               receiver_type) {
+                            return ""
+                        }
                         if !self.instantiate_interface_defaults(
                                instruction, declaration,
                                declaration.qualified,
@@ -2807,12 +2949,104 @@ partial class LlvmTextEmitter {
     // A super call runs one checked parent implementation on the live self.
     // It is direct by design: virtual lookup here would call the override
     // again. super.init uses this same path with a unit result.
+    fn last_dot(text: string) -> int {
+        var split: int = 0 - 1
+        for index: int in 0..text.len() {
+            if text.byte_at(index) == 46 { split = index }
+        }
+        return split
+    }
+
+    // super.init on a generic base names a template: the parent body has
+    // no symbol until the arguments the `extends` pinned are bound. Raise
+    // it under the base's own instantiated name and answer that.
+    fn super_template_symbol(
+        function: MirFunction,
+        instruction: MirInstruction) -> string {
+        let parent_split: int =
+            self.last_dot(instruction.resolved)
+        let self_split: int =
+            self.last_dot(function.name)
+        if parent_split <= 0 || self_split <= 0 {
+            return ""
+        }
+        let parent_owner: string =
+            instruction.resolved.slice(0, parent_split)
+        let method: string =
+            instruction.resolved.slice(
+                parent_split + 1,
+                instruction.resolved.len())
+        let self_owner: string =
+            function.name.slice(0, self_split)
+        var found: Option<HirDeclaration> =
+            self.declarations.get(self_owner)
+        match found {
+            some(declaration) => {
+                if declaration.generics.len() != 0 {
+                    return ""
+                }
+                let root: HirType =
+                    new HirType(declaration.qualified)
+                let chain: List<HirDeclaration> =
+                    self.class_chain(declaration)
+                let chain_types: List<HirType> =
+                    self.class_chain_types(
+                        declaration, root)
+                if chain.len() != chain_types.len() {
+                    return ""
+                }
+                for index: int in 0..chain.len() {
+                    let link: HirDeclaration = chain[index]
+                    if link.qualified != parent_owner ||
+                       link.generics.len() == 0 {
+                        continue
+                    }
+                    let link_type: HirType =
+                        chain_types[index]
+                    if link.generics.len() !=
+                           link_type.args.len() {
+                        return ""
+                    }
+                    var bindings:
+                        Map<string, HirType> = {}
+                    for slot: int in
+                        0..link.generics.len() {
+                        bindings[link.generics[slot]] =
+                            link_type.args[slot]
+                    }
+                    bindings[link.qualified] = root
+                    bindings[link.name] = root
+                    return self.instantiate_generic(
+                        instruction,
+                        instruction.resolved,
+                        "{render_hir_type(link_type)}.{method}",
+                        bindings)
+                }
+            }
+            none => {}
+        }
+        return ""
+    }
+
     fn emit_super_call(
         function: MirFunction,
         instruction: MirInstruction,
         values: Map<int, string>) -> string {
-        if !self.function_symbols.contains_key(
+        // Never cached under the template's own name: two classes may
+        // extend the same base at different arguments, and each needs its
+        // own instance rather than whichever was raised first.
+        var callee: string = ""
+        if self.function_symbols.contains_key(
                instruction.resolved) {
+            callee =
+                self.function_symbols[
+                    instruction.resolved]
+        } else {
+            callee =
+                self.super_template_symbol(
+                    function, instruction)
+        }
+        if callee == "" {
             self.fail(
                 instruction,
                 "LLVM emitter cannot find parent method '{instruction.resolved}'")
@@ -2875,10 +3109,10 @@ partial class LlvmTextEmitter {
         let prefix: string =
             "  %super.self{id} = load ptr, ptr {self_slot}\n{argument_setup}"
         if result_type == "void" {
-            return "{prefix}  call void {self.function_symbols[instruction.resolved]}({arguments.join(", ")})\n"
+            return "{prefix}  call void {callee}({arguments.join(", ")})\n"
         }
         let result: string = "%v{instruction.result}"
         values[instruction.result] = result
-        return "{prefix}  {result} = call {result_type} {self.function_symbols[instruction.resolved]}({arguments.join(", ")})\n"
+        return "{prefix}  {result} = call {result_type} {callee}({arguments.join(", ")})\n"
     }
 }

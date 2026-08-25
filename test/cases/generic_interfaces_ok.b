@@ -45,6 +45,34 @@ pub fn read_int(p: Producer<int>) -> int {
     return p.make()
 }
 
+// a bound that pins the interface's argument, and one that forwards a
+// type parameter of the call into it
+pub fn through_bound<P implements Producer<int>>(p: P) -> int {
+    return p.make()
+}
+
+pub fn twice_through<U, P implements Producer<U>>(p: P) -> List<U> {
+    return [p.make(), p.make()]
+}
+
+// a base class reached at a concrete argument, from two subclasses that
+// pin it differently
+pub class Holder<T> {
+    pub held: T
+    pub fn init(held: T) { self.held = held }
+    pub fn get() -> T { return self.held }
+    pub fn tag() -> string { return "holder" }
+}
+
+pub class IntHolder extends Holder<int> {
+    pub fn init() { super.init(4) }
+}
+
+pub class NameHolder extends Holder<string> {
+    pub fn init() { super.init("held") }
+    pub override fn tag() -> string { return "named" }
+}
+
 fn main() {
     let a: Producer<int> = new IntBox()
     let b: Producer<string> = new NameBox()
@@ -66,4 +94,11 @@ fn main() {
         total += p.make()
     }
     io.println("total {total}")
+
+    io.println("{through_bound<IntBox>(new IntBox())} {through_bound<BoxOf<int>>(new BoxOf<int>(5))}")
+    io.println("{twice_through<int, BoxOf<int>>(new BoxOf<int>(6))[1]} {twice_through<string, NameBox>(new NameBox())[0]}")
+
+    let g: IntHolder = new IntHolder()
+    let h: NameHolder = new NameHolder()
+    io.println("{g.get()} {h.get()} {g.tag()} {h.tag()}")
 }
