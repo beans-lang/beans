@@ -20,6 +20,8 @@
 #     interpreter answered both
 #   * `Option<T> ==` where T is a reference, which the native backend
 #     answered by address — a wrong answer rather than a refusal
+#   * an interface default reached through a super-interface, which the
+#     INTERPRETER got wrong while the native backend was right
 #
 # Each case runs on the interpreter, a debug build and a release build, and
 # all three have to match. There is no golden output on purpose: the claim is
@@ -124,10 +126,11 @@ agree test/cases/parity/option_equality.b
 agree test/cases/parity/cast_compare.b
 agree test/cases/parity/option_layout.b
 agree test/cases/parity/composite_equality.b
+agree test/cases/parity/inherited_defaults.b
 
 # Every case in the directory has to be listed above with its own expected
 # count; a file added and forgotten would otherwise be silently unchecked.
-listed=11
+listed=12
 present=$(find test/cases/parity -name '*.b' | wc -l | tr -d ' ')
 if [ "$present" != "$listed" ]; then
     echo "test/cases/parity holds $present cases but $listed are run" >&2
@@ -177,6 +180,64 @@ grep -q "tags 12 atlas atlas" "$tmp/$name.interp" || {
     exit 1
 }
 echo "  agree: test/cases/$name (super.init argument ownership)"
+
+# Static fields initialise before main, in file order. The forward case is
+# ordinary; the backward one — reading a static whose initialiser has not run
+# yet — used to answer the zero it was born with in a native build while the
+# interpreter panicked.
+name=parity_statics
+( cd "test/cases/$name" && "$root/build/beansc" run main.b ) \
+    >"$tmp/$name.interp"
+( cd "test/cases/$name" \
+  && "$root/build/beansc" build --release main.b \
+       -o "$tmp/$name.release" >/dev/null )
+"$tmp/$name.release" >"$tmp/$name.release.out"
+diff -u "$tmp/$name.interp" "$tmp/$name.release.out"
+grep -q "built 3" "$tmp/$name.interp" || {
+    echo "static table entries were not built exactly once" >&2
+    cat "$tmp/$name.interp" >&2
+    exit 1
+}
+echo "  agree: test/cases/$name (static tables build once, before main)"
+
+# Reading one too early has to say so on both paths, not answer a zero on one.
+mkdir -p "$tmp/early"
+printf 'module early\nkind application\n' >"$tmp/early/beans.pot"
+cat >"$tmp/early/aa_reader.b" <<'EOF'
+package main
+class Reader {
+    static tripled: int = Seed.value * 3
+}
+EOF
+cat >"$tmp/early/zz_seed.b" <<'EOF'
+package main
+class Seed {
+    static value: int = 5
+}
+EOF
+cat >"$tmp/early/main.b" <<'EOF'
+package main
+import std.io
+fn main() {
+    io.println("{Reader.tripled}")
+}
+EOF
+( cd "$tmp/early" && "$root/build/beansc" run main.b ) \
+    >"$tmp/early.interp" 2>&1 || true
+( cd "$tmp/early" \
+  && "$root/build/beansc" build --release main.b \
+       -o "$tmp/early.bin" >/dev/null )
+"$tmp/early.bin" >"$tmp/early.native" 2>&1 || true
+if ! diff -u "$tmp/early.interp" "$tmp/early.native"; then
+    echo "reading a static before its initialiser ran differs between backends" >&2
+    exit 1
+fi
+grep -Fq "was read before initialization" "$tmp/early.interp" || {
+    echo "reading a static too early no longer reports it" >&2
+    cat "$tmp/early.interp" >&2
+    exit 1
+}
+echo "  refused: reading a static before its initialiser ran, both backends"
 
 # The forms that must stay refused, with the message that names the way out.
 cat >"$tmp/bad.b" <<'EOF'

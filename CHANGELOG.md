@@ -17,6 +17,31 @@ This file records user-facing changes in each Beans release.
   A whole package that returned an interface would run under `beansc run`
   and fail to build.
 
+- **An interface's `override` default was invisible through a
+  super-interface — and here the interpreter was the wrong half.** The
+  interpreter's dynamic lookup walked `extends` relations only, and only the
+  first, so a default body an interface supplies could not be reached from a
+  class that gets there through `implements`. The call fell back to the
+  bodyless declaration the checker had resolved and produced a value with no
+  type at all, which failed on the first field read with an empty name in the
+  message. The native backend had always been right. Both relation kinds are
+  walked now, breadth-first, so a nearer override wins.
+
+- **A generic class keeping an interface's default body.** It did not build
+  ("LLVM emitter has no template for"), because the default belongs to the
+  interface and is never raised per instantiation. Once it did build, calling
+  it through the interface jumped to address zero: the instance descriptor
+  looked only for methods registered under the instance name, so the row
+  stayed null. Both halves now resolve through the implemented interface.
+
+- **Reading a static field before its initialiser ran.** Statics initialise
+  eagerly, before `main`, in declaration order — which follows file order.
+  Reading one whose initialiser had not run yet answered the zero it was born
+  with in a native build, silently, while the interpreter panicked. Each
+  static now carries a flag, with one module-wide flag for whether the
+  prologue finished, so an ordinary read after `main` starts is a single
+  predictable branch and LLVM hoists it out of loops.
+
 - **A record holding an `Option` was laid out larger than LLVM lays it out,
   and a list of them was corrupted.** `type_alignment` had no Option case, so
   it fell through to the scalar rule and answered the aggregate's *size*:

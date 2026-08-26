@@ -8,148 +8,122 @@
 #   internal        an invariant, not something a user program can reach
 #   unknown         not triaged
 #
-file	line	message	status
-src/llvm.b	726	LLVM emitter does not support target fact 'X' yet	unknown
-src/llvm.b	1443	LLVM emitter does not support Channel.X yet	unknown
-src/llvm.b	1488	LLVM emitter does not support Brew.X yet	unknown
-src/llvm.b	1519	LLVM emitter does not support TaskGroup.X yet	unknown
-src/llvm.b	1574	LLVM emitter does not support builtin method 'X' yet	unknown
-src/llvm.b	1589	LLVM emitter does not support builtin call 'X' yet	unknown
-src/llvm.b	1601	LLVM emitter does not support MIR operation 'X'X yet	unknown
-src/llvm_emit_collections.b	222	LLVM emitter does not support array literal 'X' yet	unknown
-src/llvm_emit_collections.b	259	LLVM emitter does not support list type 'X' yet	unknown
-src/llvm_emit_collections.b	306	LLVM emitter does not support list element 'X' yet	unknown
-src/llvm_emit_collections.b	337	LLVM emitter does not support map type 'X' yet	unknown
-src/llvm_emit_collections.b	422	LLVM emitter does not support map value 'X' yet	unknown
-src/llvm_emit_collections.b	473	LLVM emitter does not support list element 'X' yet	unknown
-src/llvm_emit_collections.b	569	LLVM emitter only supports plain index assignment yet	unknown
-src/llvm_emit_collections.b	582	LLVM emitter does not support this index assignment yet	unknown
-src/llvm_emit_collections.b	642	LLVM emitter does not support wide list elements in List.X yet	unknown
-src/llvm_emit_collections.b	669	LLVM emitter does not support List<X>.X yet	unknown
-src/llvm_emit_collections.b	677	LLVM emitter does not support List.X on 'X' yet	unknown
-src/llvm_emit_collections.b	811	LLVM emitter does not support this Map.insert yet	unknown
-src/llvm_emit_collections.b	898	LLVM emitter does not support this Map.reserve yet	unknown
-src/llvm_emit_collections.b	983	LLVM emitter does not support Map.get on 'X' yet	unknown
-src/llvm_emit_collections.b	1038	LLVM emitter does not support this Map.get yet	unknown
-src/llvm_emit_collections.b	1117	LLVM emitter does not support this Map.contains yet	unknown
-src/llvm_emit_collections.b	1197	LLVM emitter does not support Slice.X yet	unknown
-src/llvm_emit_collections.b	1254	LLVM emitter does not support slice element 'X' yet	unknown
-src/llvm_emit_collections.b	1338	LLVM emitter does not support Slice.X yet	unknown
-src/llvm_emit_collections.b	1375	LLVM emitter does not support collection method 'X' yet	unknown
-src/llvm_emit_collections.b	1455	LLVM emitter does not support joining List<X> yet	unknown
-src/llvm_emit_collections.b	1463	LLVM emitter does not support joining List<X> yet	unknown
-src/llvm_emit_collections.b	1733	LLVM emitter does not support List.pop on 'X' yet	unknown
-src/llvm_emit_collections.b	1829	LLVM emitter does not support wide list elements in List.contains yet	interpreter-ok
-src/llvm_emit_collections.b	1847	LLVM emitter does not support List<X>.contains yet	interpreter-ok
-src/llvm_emit_collections.b	1925	LLVM emitter does not support List<X>.sort yet	unknown
-src/llvm_emit_collections.b	1972	LLVM emitter does not support sorting 'X' yet	unknown
-src/llvm_emit_collections.b	2098	LLVM emitter does not support List<X>.index_of yet	interpreter-ok
-src/llvm_emit_collections.b	2600	LLVM emitter does not support this index assignment yet	unknown
-src/llvm_emit_collections.b	2615	LLVM emitter cannot store owned references into an array inside a class object yet — copy the array to a local, update it, and assign it back	unknown
-src/llvm_emit_collections.b	2713	LLVM emitter does not support indexing 'X' yet	unknown
-src/llvm_emit_collections.b	2770	LLVM emitter does not support indexing 'X' yet	unknown
-src/llvm_emit_collections.b	2839	LLVM emitter only supports list indexing yet	unknown
-src/llvm_emit_collections.b	2848	LLVM emitter does not support list element 'X' yet	unknown
-src/llvm_emit_collections.b	2906	LLVM emitter does not support range element X yet	unknown
-src/llvm_emit_collections.b	3084	LLVM emitter only supports scalar range and list iteration yet	unknown
-src/llvm_emit_concurrency.b	22	LLVM emitter does not support capturing 'X' yet	unknown
-src/llvm_emit_concurrency.b	204	LLVM emitter does not support receiving 'X' yet	unknown
-src/llvm_emit_concurrency.b	322	LLVM emitter does not support receiving 'X' yet	unknown
-src/llvm_emit_concurrency.b	554	LLVM emitter does not support brewing 'X' yet	unknown
-src/llvm_emit_concurrency.b	678	LLVM emitter does not support delivering 'X' from a TaskGroup yet	unknown
-src/llvm_emit_concurrency.b	751	LLVM emitter does not support collecting 'X' from a TaskGroup yet	unknown
-src/llvm_emit_concurrency.b	943	LLVM emitter does not support Atomic<X> yet	unknown
-src/llvm_emit_concurrency.b	1118	LLVM emitter does not support builtin method 'Atomic.X' yet	unknown
-src/llvm_emit_concurrency.b	1165	LLVM emitter does not support builtin method 'AtomicInt.X' yet	unknown
-src/llvm_emit_concurrency.b	1202	LLVM emitter does not support builtin method 'Gate.X' yet	unknown
-src/llvm_emit_concurrency.b	1270	LLVM emitter does not support this defer capture yet	unknown
-src/llvm_emit_enum.b	191	LLVM emitter does not support enum payload type 'X' yet	unknown
-src/llvm_emit_enum.b	352	LLVM emitter only supports Option, Result and enum pattern bindings yet	unknown
-src/llvm_emit_enum.b	415	LLVM emitter does not support enum payload type 'X' yet	unknown
-src/llvm_emit_enum.b	575	LLVM emitter does not support match on 'X' yet	unknown
-src/llvm_emit_ffi.b	513	LLVM emitter does not support callback argument 'X' yet	unknown
-src/llvm_emit_ffi.b	530	LLVM emitter does not support callback result 'X' yet	unknown
-src/llvm_emit_ffi.b	672	LLVM emitter does not support extern result 'X' yet	unknown
-src/llvm_emit_ffi.b	771	LLVM emitter does not support extern argument 'X' yet	unknown
-src/llvm_emit_ffi.b	910	LLVM emitter does not support handle value 'X' yet	unknown
-src/llvm_emit_ffi.b	1009	LLVM emitter does not support raw pointer element 'X' yet	unknown
-src/llvm_emit_ffi.b	1149	LLVM emitter does not support RawPtr.X yet	unknown
-src/llvm_emit_ffi.b	1204	LLVM emitter does not support raw pointer element 'X' yet	unknown
-src/llvm_emit_ffi.b	1226	LLVM emitter does not support RawPtr.X yet	unknown
-src/llvm_emit_ffi.b	1337	LLVM emitter does not support stored callback method X yet	unknown
-src/llvm_emit_ffi.b	1434	LLVM emitter does not support CFunctionPtr.X yet	unknown
-src/llvm_emit_function.b	406	LLVM emitter does not support initializer 'X' yet	unknown
-src/llvm_emit_function.b	701	LLVM emitter does not support function-value argument 'X' yet	unknown
-src/llvm_emit_function.b	770	LLVM emitter does not support closure argument type 'X' yet	unknown
-src/llvm_emit_function.b	786	LLVM emitter does not support closure return 'X' yet	unknown
-src/llvm_emit_function.b	858	LLVM emitter does not support this local store yet	unknown
-src/llvm_emit_function.b	1188	LLVM emitter does not support phi type 'X' yet	unknown
-src/llvm_emit_function.b	1324	LLVM emitter does not support call argument type 'X' yet	unknown
-src/llvm_emit_function.b	1335	LLVM emitter does not support call result type 'X' yet	unknown
-src/llvm_emit_function.b	1420	LLVM emitter does not support guarded call argument 'X' yet	unknown
-src/llvm_emit_function.b	1431	LLVM emitter does not support guarded call result 'X' yet	unknown
-src/llvm_emit_function.b	1659	LLVM emitter only supports try on Option or Result yet	unknown
-src/llvm_emit_function.b	1715	LLVM emitter does not support MIR terminator 'X' yet	unknown
-src/llvm_emit_function.b	1769	LLVM emitter does not support result type 'X' yet	unknown
-src/llvm_emit_function.b	1808	LLVM emitter does not support local type 'X' yet	unknown
-src/llvm_emit_function.b	1959	LLVM emitter does not support capturing 'X' yet	unknown
-src/llvm_emit_memory.b	443	LLVM emitter does not support Weak.X yet	unknown
-src/llvm_emit_memory.b	464	LLVM emitter does not support local type 'X' yet	unknown
-src/llvm_emit_memory.b	662	LLVM emitter does not support builtin method 'Arena.X' yet	unknown
-src/llvm_emit_memory.b	751	LLVM emitter does not support builtin method 'Box.X' yet	unknown
-src/llvm_emit_numeric.b	125	LLVM emitter does not support literal type 'X' yet	unknown
-src/llvm_emit_numeric.b	145	LLVM emitter does not support this closure signature yet	unknown
-src/llvm_emit_numeric.b	257	LLVM emitter does not support builtin method 'X' yet	unknown
-src/llvm_emit_numeric.b	310	LLVM emitter does not support decimal method 'X' yet	unknown
-src/llvm_emit_numeric.b	544	LLVM emitter does not support binary 'X' for X yet	interpreter-ok
-src/llvm_emit_numeric.b	596	LLVM emitter does not support binary 'X' for X yet	interpreter-ok
-src/llvm_emit_numeric.b	635	LLVM emitter does not support binary 'X' for X yet	interpreter-ok
-src/llvm_emit_numeric.b	765	LLVM emitter does not support equality for 'X' yet	unknown
-src/llvm_emit_numeric.b	877	LLVM emitter does not support binary 'X' for X yet	interpreter-ok
-src/llvm_emit_numeric.b	1065	LLVM emitter does not support unary 'X' for X yet	unknown
-src/llvm_emit_numeric.b	1096	LLVM emitter does not support cast from X to X yet	unknown
-src/llvm_emit_numeric.b	1172	LLVM emitter does not support as? to 'X' yet	unknown
-src/llvm_emit_numeric.b	1307	LLVM emitter does not support cast from X to X yet	unknown
-src/llvm_emit_numeric.b	1388	LLVM emitter only supports literal alternatives yet	unknown
-src/llvm_emit_numeric.b	1434	LLVM emitter only supports literal ranges yet	unknown
-src/llvm_emit_numeric.b	1459	LLVM emitter does not support match pattern 'X' yet	unknown
-src/llvm_emit_object.b	1900	LLVM emitter does not support initializer argument type 'X' yet	unknown
-src/llvm_emit_object.b	2063	LLVM emitter does not support fields on 'X' yet	unknown
-src/llvm_emit_object.b	2110	LLVM emitter does not support fields on 'X' yet	unknown
-src/llvm_emit_object.b	2186	LLVM emitter does not support fields on 'X' yet	unknown
-src/llvm_emit_object.b	2379	LLVM emitter does not support fields on 'X' yet	unknown
-src/llvm_emit_object.b	2416	LLVM emitter does not support compound 'X' for X yet	unknown
-src/llvm_emit_object.b	2441	LLVM emitter does not support compound 'X' for X yet	unknown
-src/llvm_emit_object.b	2449	LLVM emitter does not support compound 'X' for X yet	unknown
-src/llvm_emit_object.b	2533	LLVM emitter does not support compound 'X' for X yet	unknown
-src/llvm_emit_object.b	2558	LLVM emitter does not support compound 'X' for X yet	unknown
-src/llvm_emit_object.b	2656	LLVM emitter does not support compound 'X' for X yet	unknown
-src/llvm_emit_object.b	2850	LLVM emitter does not support dynamic method dispatch on 'X' yet	unknown
-src/llvm_emit_object.b	2986	LLVM emitter does not support call argument type 'X' yet	unknown
-src/llvm_emit_object.b	2997	LLVM emitter does not support call result type 'X' yet	unknown
-src/llvm_emit_object.b	3160	LLVM emitter does not support super call argument type 'X' yet	unknown
-src/llvm_emit_object.b	3171	LLVM emitter does not support super call result type 'X' yet	unknown
-src/llvm_emit_reflect.b	526	LLVM emitter does not support builtin 'X' yet	unknown
-src/llvm_emit_reflect.b	1361	LLVM emitter does not support declaration 'X' yet	unknown
-src/llvm_emit_result.b	89	LLVM emitter does not support X yet	unknown
-src/llvm_emit_result.b	111	LLVM emitter does not support X yet	unknown
-src/llvm_emit_result.b	296	LLVM emitter does not support X yet	unknown
-src/llvm_emit_result.b	591	LLVM emitter does not support Result.expect payload 'X' yet	unknown
-src/llvm_emit_result.b	770	LLVM emitter does not support result type 'X' yet	unknown
-src/llvm_emit_result.b	825	LLVM emitter does not support X payload 'X' yet	unknown
-src/llvm_emit_result.b	844	LLVM emitter does not support result type 'X' yet	unknown
-src/llvm_emit_result.b	862	LLVM emitter does not support ok payload 'X' yet	unknown
-src/llvm_emit_result.b	950	LLVM emitter does not support err payload 'X' yet	unknown
-src/llvm_emit_result.b	1002	LLVM emitter only supports Result unwrap yet	unknown
-src/llvm_emit_result.b	1018	LLVM emitter does not support unwrap payload 'X' yet	unknown
-src/llvm_emit_result.b	1192	LLVM emitter does not support Result.or payload 'X' yet	unknown
-src/llvm_emit_result.b	1293	LLVM emitter does not support result payload 'X' yet	unknown
-src/llvm_emit_result.b	1442	LLVM emitter only supports Option match yet	unknown
-src/llvm_emit_simd.b	144	LLVM emitter does not support builtin call 'X' yet	unknown
-src/llvm_emit_simd.b	420	LLVM emitter does not support X.X yet	unknown
-src/llvm_emit_simd.b	836	LLVM emitter does not support X.X yet	unknown
-src/llvm_emit_text.b	90	LLVM emitter only supports string literal patterns and alternatives yet	unknown
-src/llvm_emit_text.b	324	LLVM emitter does not support interpolating X yet	unknown
-src/llvm_emit_text.b	437	LLVM emitter does not support formatting X yet	unknown
-src/llvm_emit_text.b	723	LLVM emitter does not support string.X yet	unknown
-src/llvm_emit_text.b	1083	LLVM emitter does not support X(X) yet	unknown
+file	message	sites	status
+src/llvm.b	LLVM emitter does not support Brew.X yet	1	unknown
+src/llvm.b	LLVM emitter does not support Channel.X yet	1	unknown
+src/llvm.b	LLVM emitter does not support MIR operation 'X'X yet	1	unknown
+src/llvm.b	LLVM emitter does not support TaskGroup.X yet	1	unknown
+src/llvm.b	LLVM emitter does not support builtin call 'X' yet	1	unknown
+src/llvm.b	LLVM emitter does not support builtin method 'X' yet	1	unknown
+src/llvm.b	LLVM emitter does not support target fact 'X' yet	1	unknown
+src/llvm_emit_collections.b	LLVM emitter cannot store owned references into an array inside a class object yet — copy the array to a local, update it, and assign it back	1	unknown
+src/llvm_emit_collections.b	LLVM emitter does not support List.X on 'X' yet	1	unknown
+src/llvm_emit_collections.b	LLVM emitter does not support List.pop on 'X' yet	1	unknown
+src/llvm_emit_collections.b	LLVM emitter does not support List<X>.X yet	1	unknown
+src/llvm_emit_collections.b	LLVM emitter does not support List<X>.contains yet	1	interpreter-ok
+src/llvm_emit_collections.b	LLVM emitter does not support List<X>.index_of yet	1	interpreter-ok
+src/llvm_emit_collections.b	LLVM emitter does not support List<X>.sort yet	1	unknown
+src/llvm_emit_collections.b	LLVM emitter does not support Map.get on 'X' yet	1	unknown
+src/llvm_emit_collections.b	LLVM emitter does not support Slice.X yet	2	unknown
+src/llvm_emit_collections.b	LLVM emitter does not support array literal 'X' yet	1	unknown
+src/llvm_emit_collections.b	LLVM emitter does not support collection method 'X' yet	1	unknown
+src/llvm_emit_collections.b	LLVM emitter does not support indexing 'X' yet	2	unknown
+src/llvm_emit_collections.b	LLVM emitter does not support joining List<X> yet	2	unknown
+src/llvm_emit_collections.b	LLVM emitter does not support list element 'X' yet	3	unknown
+src/llvm_emit_collections.b	LLVM emitter does not support list type 'X' yet	1	unknown
+src/llvm_emit_collections.b	LLVM emitter does not support map type 'X' yet	1	unknown
+src/llvm_emit_collections.b	LLVM emitter does not support map value 'X' yet	1	unknown
+src/llvm_emit_collections.b	LLVM emitter does not support range element X yet	1	unknown
+src/llvm_emit_collections.b	LLVM emitter does not support slice element 'X' yet	1	unknown
+src/llvm_emit_collections.b	LLVM emitter does not support sorting 'X' yet	1	unknown
+src/llvm_emit_collections.b	LLVM emitter does not support this Map.contains yet	1	unknown
+src/llvm_emit_collections.b	LLVM emitter does not support this Map.get yet	1	unknown
+src/llvm_emit_collections.b	LLVM emitter does not support this Map.insert yet	1	unknown
+src/llvm_emit_collections.b	LLVM emitter does not support this Map.reserve yet	1	unknown
+src/llvm_emit_collections.b	LLVM emitter does not support this index assignment yet	2	unknown
+src/llvm_emit_collections.b	LLVM emitter does not support wide list elements in List.X yet	1	unknown
+src/llvm_emit_collections.b	LLVM emitter does not support wide list elements in List.contains yet	1	interpreter-ok
+src/llvm_emit_collections.b	LLVM emitter only supports list indexing yet	1	unknown
+src/llvm_emit_collections.b	LLVM emitter only supports plain index assignment yet	1	unknown
+src/llvm_emit_collections.b	LLVM emitter only supports scalar range and list iteration yet	1	unknown
+src/llvm_emit_concurrency.b	LLVM emitter does not support Atomic<X> yet	1	unknown
+src/llvm_emit_concurrency.b	LLVM emitter does not support brewing 'X' yet	1	unknown
+src/llvm_emit_concurrency.b	LLVM emitter does not support builtin method 'Atomic.X' yet	1	unknown
+src/llvm_emit_concurrency.b	LLVM emitter does not support builtin method 'AtomicInt.X' yet	1	unknown
+src/llvm_emit_concurrency.b	LLVM emitter does not support builtin method 'Gate.X' yet	1	unknown
+src/llvm_emit_concurrency.b	LLVM emitter does not support capturing 'X' yet	1	unknown
+src/llvm_emit_concurrency.b	LLVM emitter does not support collecting 'X' from a TaskGroup yet	1	unknown
+src/llvm_emit_concurrency.b	LLVM emitter does not support delivering 'X' from a TaskGroup yet	1	unknown
+src/llvm_emit_concurrency.b	LLVM emitter does not support receiving 'X' yet	2	unknown
+src/llvm_emit_concurrency.b	LLVM emitter does not support this defer capture yet	1	unknown
+src/llvm_emit_enum.b	LLVM emitter does not support enum payload type 'X' yet	2	unknown
+src/llvm_emit_enum.b	LLVM emitter does not support match on 'X' yet	1	unknown
+src/llvm_emit_enum.b	LLVM emitter only supports Option, Result and enum pattern bindings yet	1	unknown
+src/llvm_emit_ffi.b	LLVM emitter does not support CFunctionPtr.X yet	1	unknown
+src/llvm_emit_ffi.b	LLVM emitter does not support RawPtr.X yet	2	unknown
+src/llvm_emit_ffi.b	LLVM emitter does not support callback argument 'X' yet	1	unknown
+src/llvm_emit_ffi.b	LLVM emitter does not support callback result 'X' yet	1	unknown
+src/llvm_emit_ffi.b	LLVM emitter does not support extern argument 'X' yet	1	unknown
+src/llvm_emit_ffi.b	LLVM emitter does not support extern result 'X' yet	1	unknown
+src/llvm_emit_ffi.b	LLVM emitter does not support handle value 'X' yet	1	unknown
+src/llvm_emit_ffi.b	LLVM emitter does not support raw pointer element 'X' yet	2	unknown
+src/llvm_emit_ffi.b	LLVM emitter does not support stored callback method X yet	1	unknown
+src/llvm_emit_function.b	LLVM emitter does not support MIR terminator 'X' yet	1	unknown
+src/llvm_emit_function.b	LLVM emitter does not support call argument type 'X' yet	1	unknown
+src/llvm_emit_function.b	LLVM emitter does not support call result type 'X' yet	1	unknown
+src/llvm_emit_function.b	LLVM emitter does not support capturing 'X' yet	1	unknown
+src/llvm_emit_function.b	LLVM emitter does not support closure argument type 'X' yet	1	unknown
+src/llvm_emit_function.b	LLVM emitter does not support closure return 'X' yet	1	unknown
+src/llvm_emit_function.b	LLVM emitter does not support function-value argument 'X' yet	1	unknown
+src/llvm_emit_function.b	LLVM emitter does not support guarded call argument 'X' yet	1	unknown
+src/llvm_emit_function.b	LLVM emitter does not support guarded call result 'X' yet	1	unknown
+src/llvm_emit_function.b	LLVM emitter does not support initializer 'X' yet	1	unknown
+src/llvm_emit_function.b	LLVM emitter does not support local type 'X' yet	1	unknown
+src/llvm_emit_function.b	LLVM emitter does not support phi type 'X' yet	1	unknown
+src/llvm_emit_function.b	LLVM emitter does not support result type 'X' yet	1	unknown
+src/llvm_emit_function.b	LLVM emitter does not support this local store yet	1	unknown
+src/llvm_emit_function.b	LLVM emitter only supports try on Option or Result yet	1	unknown
+src/llvm_emit_memory.b	LLVM emitter does not support Weak.X yet	1	unknown
+src/llvm_emit_memory.b	LLVM emitter does not support builtin method 'Arena.X' yet	1	unknown
+src/llvm_emit_memory.b	LLVM emitter does not support builtin method 'Box.X' yet	1	unknown
+src/llvm_emit_memory.b	LLVM emitter does not support local type 'X' yet	1	unknown
+src/llvm_emit_numeric.b	LLVM emitter does not support as? to 'X' yet	1	unknown
+src/llvm_emit_numeric.b	LLVM emitter does not support binary 'X' for X yet	4	interpreter-ok
+src/llvm_emit_numeric.b	LLVM emitter does not support builtin method 'X' yet	1	unknown
+src/llvm_emit_numeric.b	LLVM emitter does not support cast from X to X yet	2	unknown
+src/llvm_emit_numeric.b	LLVM emitter does not support decimal method 'X' yet	1	unknown
+src/llvm_emit_numeric.b	LLVM emitter does not support equality for 'X' yet	1	unknown
+src/llvm_emit_numeric.b	LLVM emitter does not support literal type 'X' yet	1	unknown
+src/llvm_emit_numeric.b	LLVM emitter does not support match pattern 'X' yet	1	unknown
+src/llvm_emit_numeric.b	LLVM emitter does not support this closure signature yet	1	unknown
+src/llvm_emit_numeric.b	LLVM emitter does not support unary 'X' for X yet	1	unknown
+src/llvm_emit_numeric.b	LLVM emitter only supports literal alternatives yet	1	unknown
+src/llvm_emit_numeric.b	LLVM emitter only supports literal ranges yet	1	unknown
+src/llvm_emit_object.b	LLVM emitter does not support call argument type 'X' yet	1	unknown
+src/llvm_emit_object.b	LLVM emitter does not support call result type 'X' yet	1	unknown
+src/llvm_emit_object.b	LLVM emitter does not support compound 'X' for X yet	6	unknown
+src/llvm_emit_object.b	LLVM emitter does not support dynamic method dispatch on 'X' yet	1	unknown
+src/llvm_emit_object.b	LLVM emitter does not support fields on 'X' yet	4	unknown
+src/llvm_emit_object.b	LLVM emitter does not support initializer argument type 'X' yet	1	unknown
+src/llvm_emit_object.b	LLVM emitter does not support super call argument type 'X' yet	1	unknown
+src/llvm_emit_object.b	LLVM emitter does not support super call result type 'X' yet	1	unknown
+src/llvm_emit_reflect.b	LLVM emitter does not support builtin 'X' yet	1	unknown
+src/llvm_emit_reflect.b	LLVM emitter does not support declaration 'X' yet	1	unknown
+src/llvm_emit_result.b	LLVM emitter does not support Result.expect payload 'X' yet	1	unknown
+src/llvm_emit_result.b	LLVM emitter does not support Result.or payload 'X' yet	1	unknown
+src/llvm_emit_result.b	LLVM emitter does not support X payload 'X' yet	1	unknown
+src/llvm_emit_result.b	LLVM emitter does not support X yet	3	unknown
+src/llvm_emit_result.b	LLVM emitter does not support err payload 'X' yet	1	unknown
+src/llvm_emit_result.b	LLVM emitter does not support ok payload 'X' yet	1	unknown
+src/llvm_emit_result.b	LLVM emitter does not support result payload 'X' yet	1	unknown
+src/llvm_emit_result.b	LLVM emitter does not support result type 'X' yet	2	unknown
+src/llvm_emit_result.b	LLVM emitter does not support unwrap payload 'X' yet	1	unknown
+src/llvm_emit_result.b	LLVM emitter only supports Option match yet	1	unknown
+src/llvm_emit_result.b	LLVM emitter only supports Result unwrap yet	1	unknown
+src/llvm_emit_simd.b	LLVM emitter does not support X.X yet	2	unknown
+src/llvm_emit_simd.b	LLVM emitter does not support builtin call 'X' yet	1	unknown
+src/llvm_emit_text.b	LLVM emitter does not support X(X) yet	1	unknown
+src/llvm_emit_text.b	LLVM emitter does not support formatting X yet	1	unknown
+src/llvm_emit_text.b	LLVM emitter does not support interpolating X yet	1	unknown
+src/llvm_emit_text.b	LLVM emitter does not support string.X yet	1	unknown
+src/llvm_emit_text.b	LLVM emitter only supports string literal patterns and alternatives yet	1	unknown

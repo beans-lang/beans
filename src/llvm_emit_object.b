@@ -945,6 +945,50 @@ partial class LlvmTextEmitter {
         return symbol
     }
 
+    // The template a generic receiver's method should be raised from. A
+    // default body an interface supplies lives on the interface, not on the
+    // class that keeps it, so asking for `{class}.{method}` finds nothing and
+    // the raise fails with "no template for". The path this serves used to
+    // say generic classes carry no bases or interfaces; that stopped being
+    // true when they were allowed to implement one.
+    fn generic_method_template(
+        declaration: HirDeclaration,
+        method: string) -> string {
+        let own: string =
+            "{declaration.qualified}.{method}"
+        if self.generic_templates.contains_key(own) {
+            return own
+        }
+        var pending: List<HirType> = []
+        for relation: HirType in declaration.relations {
+            pending.push(relation)
+        }
+        var seen: Map<string, bool> = {}
+        var cursor: int = 0
+        for cursor < pending.len() {
+            let current: HirType = pending[cursor]
+            cursor += 1
+            if seen.contains_key(current.name) { continue }
+            seen[current.name] = true
+            match self.declaration_for(current) {
+                some(parent) => {
+                    let candidate: string =
+                        "{parent.qualified}.{method}"
+                    if self.generic_templates.contains_key(
+                           candidate) {
+                        return candidate
+                    }
+                    for relation: HirType in
+                        parent.relations {
+                        pending.push(relation)
+                    }
+                }
+                none => {}
+            }
+        }
+        return own
+    }
+
     fn method_slot_symbol(
         declaration: HirDeclaration,
         slot: string) -> string {
@@ -1327,12 +1371,40 @@ partial class LlvmTextEmitter {
             some(symbol) => { return symbol }
             none => {}
         }
+        let index: int = self.static_field_symbols.len()
         let symbol: string =
-            "@.next.static.field{self.static_field_symbols.len()}"
+            "@.next.static.field{index}"
         self.static_field_symbols[key] = symbol
         self.static_field_definitions.push(
             "{symbol} = internal global {self.type_text(field.type)} zeroinitializer\n")
+        // A static is zero until the prologue reaches it, and reading one
+        // early used to hand back that zero in silence while the
+        // interpreter panicked. Each carries a flag saying whether its
+        // initializer has run, and one module-wide flag says whether the
+        // prologue has finished at all — so an ordinary read, after main
+        // starts, costs a single predictable branch.
+        if index == 0 {
+            self.static_field_definitions.push(
+                "@.next.statics.ready = internal global i8 0\n")
+        }
+        let ready: string =
+            "@.next.static.ready{index}"
+        self.static_field_ready_symbols[key] = ready
+        self.static_field_definitions.push(
+            "{ready} = internal global i8 0\n")
         return symbol
+    }
+
+    fn static_field_ready_for_key(
+        key: string) -> string {
+        // the value symbol is made first and makes the flag with it
+        if self.static_field_symbol_for_key(key) == "" {
+            return ""
+        }
+        match self.static_field_ready_symbols.get(key) {
+            some(found) => { return found }
+            none => { return "" }
+        }
     }
 
     fn static_field_symbol_for_key(
@@ -1366,9 +1438,16 @@ partial class LlvmTextEmitter {
                 let id: int = self.fresh()
                 let llvm: string =
                     self.type_text(field.type)
+                let ready: string =
+                    self.static_field_ready_symbols[
+                        "{declaration.qualified}.{field.name}"]
                 output =
-                    "{output}  %static.init{id} = call {llvm} {self.function_symbols[function_name]}()\n  store {llvm} %static.init{id}, ptr {symbol}\n"
+                    "{output}  %static.init{id} = call {llvm} {self.function_symbols[function_name]}()\n  store {llvm} %static.init{id}, ptr {symbol}\n  store i8 1, ptr {ready}\n"
             }
+        }
+        if output != "" {
+            output =
+                "{output}  store i8 1, ptr @.next.statics.ready\n"
         }
         return output
     }
@@ -1390,7 +1469,21 @@ partial class LlvmTextEmitter {
         values[instruction.result] = result
         let llvm: string =
             self.type_text(instruction.type)
-        return "  {result} = load {llvm}, ptr {symbol}\n{self.emit_arc_value(instruction.type, result, true)}"
+        let ready: string =
+            self.static_field_ready_for_key(
+                instruction.resolved)
+        var guard: string = ""
+        if ready != "" {
+            let id: int = self.fresh()
+            // beans_panic is already declared unconditionally in the
+            // module preamble; asking for it again redefines it
+            let message: string =
+                self.string_pointer(
+                    "static field '{instruction.resolved}' was read before initialization")
+            guard =
+                "  %static.done{id} = load i8, ptr @.next.statics.ready\n  %static.after{id} = icmp ne i8 %static.done{id}, 0\n  br i1 %static.after{id}, label %static.ok{id}, label %static.check{id}\nstatic.check{id}:\n  %static.flag{id} = load i8, ptr {ready}\n  %static.set{id} = icmp ne i8 %static.flag{id}, 0\n  br i1 %static.set{id}, label %static.ok{id}, label %static.bad{id}\nstatic.bad{id}:\n  call void @beans_panic(ptr {message}, i64 {instruction.line}, i64 {instruction.col})\n  unreachable\nstatic.ok{id}:\n"
+        }
+        return "{guard}  {result} = load {llvm}, ptr {symbol}\n{self.emit_arc_value(instruction.type, result, true)}"
     }
 
     fn emit_static_field_write(
@@ -2850,11 +2943,21 @@ partial class LlvmTextEmitter {
                         "LLVM emitter does not support dynamic method dispatch on '{render_hir_type(receiver_type)}' yet")
                     return ""
                 }
-                if declaration.generics.len() != 0 {
+                // A default body an interface supplies is not a template
+                // of the class's — it belongs to the interface, and for a
+                // non-generic interface it is an ordinary function that
+                // takes `self` as a pointer and dispatches from there. Only
+                // methods the class itself declares are raised per
+                // instantiation; the rest fall through to the dynamic path
+                // below, which reads the instance's own descriptor.
+                if declaration.generics.len() != 0 &&
+                   self.generic_method_template(
+                       declaration, instruction.text) ==
+                       "{declaration.qualified}.{instruction.text}" &&
+                   self.generic_templates.contains_key(
+                       "{declaration.qualified}.{instruction.text}") {
                     // an instantiated receiver names its methods by
-                    // the rendered instance type; dispatch stays
-                    // direct because generic classes carry no bases
-                    // or interfaces yet
+                    // the rendered instance type
                     if declaration.generics.len() !=
                            receiver_type.args.len() {
                         self.fail(
@@ -2877,7 +2980,8 @@ partial class LlvmTextEmitter {
                         receiver_type
                     return self.emit_generic_method_instance(
                         function, instruction, values,
-                        "{declaration.qualified}.{instruction.text}",
+                        self.generic_method_template(
+                            declaration, instruction.text),
                         "{render_hir_type(receiver_type)}.{instruction.text}",
                         bindings)
                 }

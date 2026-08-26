@@ -3529,37 +3529,52 @@ class TreeInterpreter {
         return tree_value_key(key)
     }
 
+    // The body to run for `method` on a value whose runtime type is
+    // `type_name`. This walked `extends` only, and only the first one, so a
+    // default body an interface supplies was unreachable: a class reaches its
+    // interface through `implements`. The call then fell back to whatever the
+    // checker had resolved statically, which for a receiver typed as a
+    // super-interface is the bodyless declaration — and running that answered
+    // a value with no type at all, which failed on the first field read with
+    // an empty name in the message. The native backend had always been right
+    // here.
+    //
+    // Breadth-first from the runtime type, so a nearer override wins over the
+    // one it overrides, and both relation kinds are followed.
     fn dynamic_method(type_name: string,
                       method: string,
                       dispatch_slot: string) ->
         Option<HirFunction> {
-        match self.find_function(
-            "{type_name}.{method}") {
-            some(function) => {
-                if dispatch_slot == "" ||
-                   function.dispatch_slots.contains(
-                       dispatch_slot) {
-                    return some(function)
+        var pending: List<string> = [type_name]
+        var seen: Map<string, bool> = {}
+        var cursor: int = 0
+        for cursor < pending.len() {
+            let current: string = pending[cursor]
+            cursor += 1
+            if seen.contains_key(current) { continue }
+            seen[current] = true
+            match self.find_function(
+                "{current}.{method}") {
+                some(function) => {
+                    // a declaration without a body is the interface saying
+                    // the method exists, not supplying one to run
+                    if function.has_body &&
+                       (dispatch_slot == "" ||
+                        function.dispatch_slots.contains(
+                            dispatch_slot)) {
+                        return some(function)
+                    }
                 }
+                none => {}
             }
-            none => {}
-        }
-        for declaration: HirDeclaration in
-            self.program.declarations {
-            if declaration.qualified != type_name &&
-               declaration.name != type_name {
-                continue
-            }
-            for index: int in
-                0..declaration.relations.len() {
-                if index <
-                       declaration.relation_kinds.len() &&
-                   declaration.relation_kinds[index] ==
-                       "extends" {
-                    return self.dynamic_method(
-                        declaration.relations[index].name,
-                        method, dispatch_slot)
+            match self.declaration(current) {
+                some(declaration) => {
+                    for relation: HirType in
+                        declaration.relations {
+                        pending.push(relation.name)
+                    }
                 }
+                none => {}
             }
         }
         return none

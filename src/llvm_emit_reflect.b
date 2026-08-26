@@ -400,9 +400,9 @@ partial class LlvmTextEmitter {
             var count: int = self.selector_order.len()
             if count == 0 { count = 1 }
             var slots: List<string> = []
-            for slot: string in self.selector_order {
+            for slot_name: string in self.selector_order {
                 let method: string =
-                    self.dispatch_method(slot)
+                    self.dispatch_method(slot_name)
                 if layout.declaration.generics.len() !=
                        0 {
                     // instantiated methods register under the
@@ -414,11 +414,37 @@ partial class LlvmTextEmitter {
                         some(found) => { slot = found }
                         none => {}
                     }
+                    // A default body the class's interface supplies is not
+                    // raised per instantiation — it belongs to the
+                    // interface and takes `self` as a pointer. Without this
+                    // the row stayed null and calling it jumped to address
+                    // zero, which only happened once generic classes were
+                    // allowed to implement an interface at all.
+                    if slot == "null" {
+                        for index: int in
+                            0..layout.declaration.relations.len() {
+                            if index >=
+                                   layout.declaration.relation_kinds.len() ||
+                               layout.declaration.relation_kinds[
+                                   index] != "implements" {
+                                continue
+                            }
+                            let found: string =
+                                self.interface_default_symbol(
+                                    layout.declaration.relations[
+                                        index],
+                                    slot_name, 0)
+                            if found != "" {
+                                slot = found
+                                break
+                            }
+                        }
+                    }
                     slots.push("ptr {slot}")
                     continue
                 }
                 slots.push(
-                    "ptr {self.method_slot_symbol(layout.declaration, slot)}")
+                    "ptr {self.method_slot_symbol(layout.declaration, slot_name)}")
             }
             if slots.len() == 0 {
                 slots.push("ptr null")

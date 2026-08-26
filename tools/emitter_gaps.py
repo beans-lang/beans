@@ -105,11 +105,17 @@ def blank_holes(text):
 
 
 def scan():
-    """Every declared gap, as (file, line, shape)."""
-    found = []
+    """Every declared gap, as (file, shape, count).
+
+    Counted per file rather than listed per line. A line number churns every
+    time anything above it moves, which made this file conflict on edits that
+    had nothing to do with it; the message is distinctive enough that grep
+    finds the site immediately, and the count still says how many there are.
+    """
+    found = {}
     for path in SOURCES:
         rel = path.relative_to(ROOT).as_posix()
-        for number, raw in enumerate(path.read_text().splitlines(), 1):
+        for raw in path.read_text().splitlines():
             for body in strings_in(raw):
                 if "yet" not in body:
                     continue
@@ -117,8 +123,8 @@ def scan():
                 # a message, not a stray word: every refusal names the emitter
                 if not shape.startswith("LLVM emitter"):
                     continue
-                found.append((rel, number, shape))
-    return sorted(found)
+                found[(rel, shape)] = found.get((rel, shape), 0) + 1
+    return sorted((rel, shape, count) for (rel, shape), count in found.items())
 
 
 def load_status():
@@ -131,7 +137,7 @@ def load_status():
             continue
         parts = line.split("\t")
         if len(parts) >= 4 and parts[0] != "file":
-            status[parts[2]] = parts[3]
+            status[parts[1]] = parts[3]
     return status
 
 
@@ -147,10 +153,10 @@ def render(rows, status):
         "#   internal        an invariant, not something a user program can reach",
         "#   unknown         not triaged",
         "#",
-        "file\tline\tmessage\tstatus",
+        "file\tmessage\tsites\tstatus",
     ]
-    for path, number, shape in rows:
-        out.append(f"{path}\t{number}\t{shape}\t{status.get(shape, 'unknown')}")
+    for path, shape, count in rows:
+        out.append(f"{path}\t{shape}\t{count}\t{status.get(shape, 'unknown')}")
     return "\n".join(out) + "\n"
 
 
@@ -180,19 +186,21 @@ def main():
                 file=sys.stderr,
             )
             return 1
-        shapes = {shape for _, _, shape in rows}
+        shapes = {shape for _, shape, _ in rows}
+        sites = sum(count for _, _, count in rows)
         untriaged = sum(
             1 for shape in shapes if status.get(shape, "unknown") == "unknown"
         )
         print(
-            f"ok emitter gaps: {len(rows)} sites, {len(shapes)} shapes, "
+            f"ok emitter gaps: {sites} sites, {len(shapes)} shapes, "
             f"{untriaged} untriaged"
         )
         return 0
 
     INVENTORY.write_text(text)
-    shapes = {shape for _, _, shape in rows}
-    print(f"wrote {INVENTORY.relative_to(ROOT)}: {len(rows)} sites, {len(shapes)} shapes")
+    shapes = {shape for _, shape, _ in rows}
+    sites = sum(count for _, _, count in rows)
+    print(f"wrote {INVENTORY.relative_to(ROOT)}: {sites} sites, {len(shapes)} shapes")
     return 0
 
 

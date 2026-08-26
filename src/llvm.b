@@ -46,6 +46,7 @@ partial class LlvmTextEmitter {
     reflection_callable_actions: Map<string, string>
     singleton_symbols: Map<string, string>
     static_field_symbols: Map<string, string>
+    static_field_ready_symbols: Map<string, string>
     static_field_definitions: List<string>
     function_allocas: List<string>
     used_builtin_symbols: Map<string, bool>
@@ -169,6 +170,7 @@ partial class LlvmTextEmitter {
         self.reflection_callable_actions = {}
         self.singleton_symbols = {}
         self.static_field_symbols = {}
+        self.static_field_ready_symbols = {}
         self.static_field_definitions = []
         self.function_allocas = []
         self.used_builtin_symbols = {}

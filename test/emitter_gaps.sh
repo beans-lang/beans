@@ -64,7 +64,7 @@ done
 
 # Every shape triaged `interpreter-ok` should have a probe standing behind it,
 # or the triage is a claim nobody checks.
-claimed=$(awk -F'\t' '$4 == "interpreter-ok" {print $3}' test/emitter_gaps.tsv |
+claimed=$(awk -F'\t' '$4 == "interpreter-ok" {print $2}' test/emitter_gaps.tsv |
           sort -u | wc -l | tr -d ' ')
 if [ "$probes" -lt "$claimed" ]; then
     echo "$claimed shapes are triaged interpreter-ok but only $probes probes exist" >&2
