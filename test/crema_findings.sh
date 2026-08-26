@@ -2,8 +2,9 @@
 # The crema-port findings as one suite: string escapes render identically in
 # both compilers and \{ never opens a slot (finding 1), '{{' gets a diagnostic
 # naming the real escape (finding 2), plain structs carry field defaults the
-# way classes do (finding 3), and both compilers run main() on the real
-# process main thread (finding 7).
+# way classes do (finding 3), both compilers run main() on the real process
+# main thread (finding 7), and a missing C runtime names the absolute path it
+# looked for rather than a relative one.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -93,4 +94,53 @@ BEANS
     echo "ok main-thread guarantee"
 fi
 
-echo "ok crema findings: escapes, brace diagnostics, struct defaults, main thread"
+# A compiler built in the tree resolves both C sources from the working
+# directory, so every package built from anywhere else fails to find them. That
+# is by design — pairing a tree compiler with another package's runtime is a
+# version skew with no handshake to catch it — but the old message named a
+# relative path, which reads as "the runtime is missing" rather than "you are
+# in the wrong directory". The message has to name the path it actually tried.
+root=$PWD
+mkdir -p "$tmp/elsewhere"
+cat >"$tmp/elsewhere/main.b" <<'BEANS'
+import std.io
+
+fn main() {
+    io.println("hi")
+}
+BEANS
+cd "$tmp/elsewhere"
+# The compiler prints the path getcwd() reports, which on macOS resolves the
+# /var -> /private/var symlink that $PWD keeps. Comparing against the logical
+# path would pass on a substring instead of on the answer.
+here=$(pwd -P)
+if env -u BEANS_RUNTIME -u BEANS_WASM_HOST \
+    BEANS_STDLIB="$root/stdlib/std" \
+    "$root/build/beansc" build main.b -o probe >"$tmp/runtime_missing" 2>&1; then
+    echo "a build with no runtime unexpectedly passed" >&2
+    exit 1
+fi
+grep -Fq "$here/runtime/beans_rt.c:0:0: error:" "$tmp/runtime_missing"
+grep -Fq "relative to the working directory, not to beansc" \
+    "$tmp/runtime_missing"
+# A variable that is set but wrong is a different mistake and says so.
+if env BEANS_RUNTIME="$tmp/nowhere/beans_rt.c" \
+    BEANS_STDLIB="$root/stdlib/std" \
+    "$root/build/beansc" build main.b -o probe >"$tmp/runtime_wrong" 2>&1; then
+    echo "a build with a bad BEANS_RUNTIME unexpectedly passed" >&2
+    exit 1
+fi
+grep -Fq "BEANS_RUNTIME is set to '$tmp/nowhere/beans_rt.c'" \
+    "$tmp/runtime_wrong"
+if grep -Fq "relative to the working directory" "$tmp/runtime_wrong"; then
+    echo "a configured BEANS_RUNTIME was blamed on the working directory" >&2
+    exit 1
+fi
+# doctor reports the same path, absolute, for the same reason.
+env -u BEANS_RUNTIME -u BEANS_WASM_HOST BEANS_STDLIB="$root/stdlib/std" \
+    "$root/build/beansc" doctor >"$tmp/doctor.out" 2>&1 || true
+grep -Fq "$here/runtime/beans_rt.c (missing)" "$tmp/doctor.out"
+cd "$root"
+echo "ok runtime-path diagnostics"
+
+echo "ok crema findings: escapes, brace diagnostics, struct defaults, main thread, runtime paths"

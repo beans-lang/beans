@@ -253,13 +253,20 @@ fn run_doctor() -> int {
         doctor_row("host target:", host_target_name()))
     io.println(doctor_row("install root:", root))
     let missing_note: string = " (missing)"
-    var stdlib_shown: string = stdlib
-    if !stdlib_ok { stdlib_shown = "{stdlib}{missing_note}" }
-    var runtime_shown: string = runtime
-    if !runtime_ok { runtime_shown = "{runtime}{missing_note}" }
-    var wasm_shown: string = wasm_host
+    var stdlib_shown: string = absolute_local_path(stdlib)
+    if !stdlib_ok {
+        stdlib_shown = "{stdlib_shown}{missing_note}"
+    }
+    // Both C sources default to a path under the working directory, so a
+    // relative one here tells a reader nothing about where the compiler looked.
+    // A configured value is already absolute and passes through unchanged.
+    var runtime_shown: string = absolute_local_path(runtime)
+    if !runtime_ok {
+        runtime_shown = "{runtime_shown}{missing_note}"
+    }
+    var wasm_shown: string = absolute_local_path(wasm_host)
     if !File.exists(wasm_host) {
-        wasm_shown = "{wasm_host}{missing_note}"
+        wasm_shown = "{wasm_shown}{missing_note}"
     }
     io.println(
         doctor_row("standard library:", stdlib_shown))
@@ -300,7 +307,11 @@ fn run_doctor() -> int {
     let stdlib_fix: string =
         "point BEANS_STDLIB at the package's lib/std directory"
     let runtime_fix: string =
-        "point BEANS_RUNTIME at the package's bin/beans_rt.c"
+        if doctor_env("BEANS_RUNTIME") != "" {
+            "point BEANS_RUNTIME at the package's bin/beans_rt.c"
+        } else {
+            "set BEANS_RUNTIME to the beans_rt.c that ships with this compiler (the path above is relative to the working directory, not to beansc)"
+        }
     let archiver_fix: string =
         "install llvm-ar or ar, or set BEANS_AR"
 

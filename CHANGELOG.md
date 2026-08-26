@@ -133,6 +133,20 @@ This file records user-facing changes in each Beans release.
 
 ### Changed
 
+- **"Cannot find the Beans C runtime" now says where it looked.** Both C
+  sources the driver hands to Clang — the runtime and the WASM host — default
+  to a path under the working directory, and only the installed launcher sets
+  the environment variables that override them. A compiler built in a source
+  tree therefore fails on every package built from any other directory, and
+  the old message named a relative path, so it read as "the runtime is
+  missing" when the truth was "you are in the wrong directory". It prints the
+  absolute path it tried, says that path is relative to the working directory
+  rather than to `beansc`, and gives both fixes. A configured-but-wrong
+  variable gets its own message naming the variable. `beansc doctor` shows the
+  same three paths absolute for the same reason. The search order is
+  unchanged: no compiler silently pairs itself with another package's runtime,
+  which would be a version skew with no handshake to catch it.
+
 - **A runtime value carrying no type names itself in a diagnostic.** It used
   to print as nothing, so `has no initialized field 'tag'` arrived with two
   spaces where the type should be — legible only to someone who noticed the

@@ -737,6 +737,34 @@ class NativeBuildDriver {
         return fallback
     }
 
+    // The runtime and the WASM host are C sources the driver hands to Clang,
+    // and both default to a path under the working directory. A compiler built
+    // in a source tree has no launcher to set the environment variables, so
+    // building a package from anywhere else looks for them beside that package
+    // and does not find them. "The runtime is missing" and "you are in the
+    // wrong directory" would otherwise read as the same error, and only the
+    // second one is ever true here — so name the absolute path that was tried
+    // and say where that path came from.
+    fn missing_c_source(kind: string,
+                        environment: string,
+                        tried: string) {
+        let full: string = absolute_local_path(tried)
+        match os.env(environment) {
+            some(value) => {
+                if value != "" {
+                    self.fail(
+                        full,
+                        "cannot find the Beans {kind}: {environment} is set to '{value}', and there is no file there")
+                    return
+                }
+            }
+            none => {}
+        }
+        self.fail(
+            full,
+            "cannot find the Beans {kind} here. This path is relative to the working directory, not to beansc, and a compiler built in a source tree has no launcher to set {environment}. To fix: set {environment} to the {kind} that ships with this compiler, or run beansc from the compiler checkout.")
+    }
+
     // A native build is the one command that needs software Beans does not
     // ship in every package. When it is missing, say so before Clang is
     // started: a user should never have to read "cannot start Clang: No such
@@ -2034,9 +2062,8 @@ class NativeBuildDriver {
                 "BEANS_RUNTIME",
                 "runtime/beans_rt.c")
         if !File.exists(runtime) {
-            self.fail(
-                runtime,
-                "cannot find the Beans C runtime; set BEANS_RUNTIME")
+            self.missing_c_source(
+                "C runtime", "BEANS_RUNTIME", runtime)
             return false
         }
         let compiler: string =
@@ -2253,9 +2280,8 @@ class NativeBuildDriver {
                         "BEANS_WASM_HOST",
                         "runtime/wasm_host.c")
                 if !File.exists(wasm_host) {
-                    self.fail(
-                        wasm_host,
-                        "cannot find the Beans WASM host; set BEANS_WASM_HOST")
+                    self.missing_c_source(
+                        "WASM host", "BEANS_WASM_HOST", wasm_host)
                     return false
                 }
             }
