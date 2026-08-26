@@ -451,7 +451,18 @@ functions, including for structural wide keys.
 `Option` provides instance methods `map`, `and_then`, and `filter`; `Result`
 provides instance methods `map`, `and_then`, and `recover`. There are no
 `std.option` or `std.result` packages. `std.math`
-provides `clamp` and `gcd`; `std.bytes` provides Beans-written `crc32`,
+provides integer `clamp` and `gcd`, the float helpers `fmax`, `fmin`, `fclamp`,
+`rem_euclid`, `is_finite`, `infinity`, `sqrt` and `hypot`, and the
+transcendentals `exp`, `sin` and `cos` — each with an `f32` twin named with a
+`32` suffix, the convention `std.intrinsic` sets with `sqrt`/`sqrt32`. They are
+written in Beans rather than bound to the platform's libm, because a
+freestanding or `wasm32-unknown-unknown` build has no libm and a std module
+that silently does not exist on some targets is worse than one that works
+everywhere. Measured against libm on raw bit patterns: `exp` within 1
+representable step over its whole finite range and exact where the result is
+subnormal, `sin` and `cos` within 2, and bit-identical at the multiples of
+pi/2. Past `angle_limit()` an f64 carries fewer bits than a full turn needs, so
+`sin` and `cos` answer NaN rather than invent one; `std.bytes` provides Beans-written `crc32`,
 `uvarint_size`, `encode_uvarint`, `append_uvarint`, `decode_uvarint`, and
 `decode_uvarint_at_or`; `std.path` is fully
 Beans-written; `std.fmt` implements `hex`, `binary`, and `group_digits` in Beans; and

@@ -157,6 +157,7 @@ test-semantics: $(BIN)
 	./test/moves.sh
 	bash ./test/borrowed_iteration.sh
 	bash ./test/downcast_borrow.sh
+	bash ./test/math.sh
 	bash ./test/slice_fusion.sh
 	./test/maps.sh
 	./test/traits.sh
@@ -278,6 +279,7 @@ test-core: $(BIN)
 	./test/moves.sh
 	bash ./test/borrowed_iteration.sh
 	bash ./test/downcast_borrow.sh
+	bash ./test/math.sh
 	bash ./test/slice_fusion.sh
 	./test/maps.sh
 	./test/traits.sh

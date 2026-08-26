@@ -6,6 +6,29 @@ This file records user-facing changes in each Beans release.
 
 ### Added
 
+- **`std.math` gains float helpers and transcendentals.** `fmax`, `fmin`,
+  `fclamp`, `rem_euclid`, `is_finite`, `infinity`, `sqrt`, `hypot`, `exp`,
+  `sin` and `cos`, each with an `f32` twin named with a `32` suffix — the
+  convention `std.intrinsic` already sets with `sqrt`/`sqrt32`. `clamp` and
+  `gcd` stay integer.
+  - **Written in Beans, not bound to libm.** A freestanding or
+    `wasm32-unknown-unknown` build has no libm, and that is exactly where a
+    project needs `sin` most. A std module that silently does not exist on some
+    targets is worse than one that works everywhere.
+  - **Measured, not asserted.** Against the platform's libm, comparing raw
+    64-bit patterns rather than printed digits, over 22,924 points: `exp`
+    within 1 representable step across its whole finite range and exact where
+    the result is subnormal, `sin` and `cos` within 2, and bit-identical at the
+    multiples of pi/2 — where the answer is made almost entirely of the
+    reduction residual, and a shorter constant builds it from bits that were
+    rounded away.
+  - Past `angle_limit()` an f64 carries fewer bits than a full turn needs, so
+    `sin` and `cos` answer NaN rather than invent one.
+  - `tools/gen_math_vectors.py` records how the vectors were derived and is
+    kept beside them. At f32 a vector is a constant a reader can check by eye;
+    at f64 nobody checks seventeen digits, so what the numbers came from
+    becomes the thing under test.
+
 - **`cflags <selector> <flag> [<flag>...]` in `beans.pot`.** Clang flags for
   the `csrc` files the same package declared — the define a vendored C library
   needs now lives where a reader of the manifest can see it, instead of in a

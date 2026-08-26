@@ -1,0 +1,18 @@
+clamp 5 1 3
+gcd 6 6 0
+fmax 2.5 -1.5
+fmin 1.5 -2.5
+fclamp 5 1
+rem -1 euclid 2
+euclid0 0
+sqrt 3 0
+hypot 5 0
+hypot big 5
+finite true false
+finite32 true false
+f32 2.5 1.5 5
+f32 rem 2 sqrt 3 hypot 5
+exp0 1 sin0 0 cos0 1
+exp32 1 sin32 0 cos32 1
+past true true
+limit 1e+15
