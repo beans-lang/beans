@@ -293,9 +293,15 @@ class TreeFrame {
 
     // A lexical scope shares the enclosing function's defer stack but owns its
     // locals. Dropping this frame is the represented block's cleanup point.
+    //
+    // It is the SAME function, so it has the same `self`. Without carrying it,
+    // `super.method(...)` panicked with "has no self" anywhere but the top
+    // level of a method body — inside an `if`, a block, a loop or a match arm
+    // — while the native backend compiled all of them correctly.
     static fn scope(parent: TreeFrame) -> TreeFrame {
         let result: TreeFrame = new TreeFrame()
         result.parent = some(parent)
+        result.self_value = parent.self_value
         match parent.defer_owner {
             some(owner) => {
                 result.defer_owner = some(owner)

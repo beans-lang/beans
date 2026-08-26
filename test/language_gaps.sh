@@ -83,4 +83,9 @@ check_bad panic_reach_bad.b "'one_arm' must return int — the body can finish w
 check_bad panic_reach_bad.b "'in_loop' must return int — the body can finish without a return"
 check_bad panic_reach_bad.b "'after_loop' must return int — the body can finish without a return"
 
+# A closure has no receiver, so `super` has nothing to stand behind. The
+# checker used to accept this, the interpreter panicked at run time, and the
+# native backend refused to build — three answers to one program.
+check_bad super_closure_bad.b "super.name cannot be called from a closure — a closure has no receiver; call it outside the closure and capture the result"
+
 echo "ok language gaps"

@@ -44,6 +44,9 @@ class ExpressionChecker {
     feature_guards: List<string>
     take_floor_depth: int
     capture_floor_depth: int
+    // >0 while a closure body is being checked. `super` has no receiver
+    // there: the closure is its own function and carries no self.
+    closure_depth: int
     require_send_captures: bool
     require_sync_captures: bool
     send_move_captures: Map<int, bool>
@@ -89,6 +92,7 @@ class ExpressionChecker {
         self.feature_guards = []
         self.take_floor_depth = -1
         self.capture_floor_depth = -1
+        self.closure_depth = 0
         self.require_send_captures = false
         self.require_sync_captures = false
         self.send_move_captures = {}
@@ -7408,6 +7412,20 @@ class ExpressionChecker {
                     return result
                 }
 
+                // A closure is its own function and carries no receiver, so
+                // there is no `self` for `super` to stand behind. The three
+                // halves used to disagree about this: the checker accepted it,
+                // the interpreter panicked at run time, and the native backend
+                // refused to build. One refusal, at the place that can name
+                // the fix.
+                if self.closure_depth > 0 {
+                    self.fail(
+                        node,
+                        "super.{callee.value} cannot be called from a closure — a closure has no receiver; call it outside the closure and capture the result")
+                    return self.make_node(
+                        node, "error", callee.value,
+                        poison_hir_type())
+                }
                 if self.current.owner == "" ||
                    self.current.is_static {
                     self.fail(
@@ -9611,6 +9629,7 @@ class ExpressionChecker {
         }
         let capture_floor: int = self.scopes.len()
         self.capture_floor_depth = capture_floor
+        self.closure_depth += 1
         if self.take_floor_depth < capture_floor {
             self.take_floor_depth = capture_floor
         }
@@ -9665,6 +9684,7 @@ class ExpressionChecker {
         self.pop_scope()
         self.current.result = saved_result
         self.current.body_result = saved_body_result
+        self.closure_depth -= 1
         self.capture_floor_depth = saved_capture_floor
         self.take_floor_depth = saved_take_floor
         self.send_move_captures = move saved_send_moves

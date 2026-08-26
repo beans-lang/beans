@@ -50,6 +50,27 @@ This file records user-facing changes in each Beans release.
 
 ### Fixed
 
+- **`super.method(...)` panicked under the interpreter in any nested scope —
+  and here the interpreter was the wrong half.** Inside an `if`, a block, a
+  loop, or either kind of match arm, it answered `super.name has no self` at
+  run time while the native backend compiled all of them correctly. A lexical
+  scope frame did not carry the enclosing function's `self`, and the super call
+  read it directly instead of walking up; only the top level of a method body
+  worked. It was reported as a match-arm bug, and the stated workaround —
+  `if` plus a statement-level `return super...` — turned out to fail the same
+  way, which is what showed the cause was the scope frame rather than the
+  match.
+  - This is on the extension path: overriding a lookup and deferring to the
+    parent for the default is naturally written
+    `match key { ... => super.lookup(key) }`, so the obvious spelling was the
+    broken one, and it broke only under `beansc run`.
+
+- **`super` in a closure gets one answer instead of three.** The checker
+  accepted it, the interpreter panicked at run time, and the native backend
+  refused to build it. A closure is its own function and carries no receiver,
+  so there is nothing for `super` to stand behind; the checker refuses it now
+  and names the fix.
+
 - **A body ending in `panic(...)` is a body that returns.** `fn pick(n: int)
   -> int { if n > 0 { return n } panic("no") }` was refused with "the body can
   finish without a return". `panic` does not come back, so as far as anything
