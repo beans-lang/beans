@@ -1499,6 +1499,22 @@ partial class LlvmTextEmitter {
         return "{guard}  {result} = load {llvm}, ptr {symbol}\n{self.emit_arc_value(instruction.type, result, true)}"
     }
 
+    // A write is the other way into a static, and it was the unguarded one.
+    // A shared module has no main, so the prologue runs on first touch — and
+    // a host that calls a writing export before any reading one stored into
+    // statics the prologue had not reached, then the next read ran the
+    // prologue on top of them. The export answered ok and the writes were
+    // gone. A write runs the prologue first for the same reason a read does.
+    // `running` means the prologue is mid-flight and this write comes from
+    // inside an initialiser, where storing is the whole point.
+    fn static_prologue_guard(key: string) -> string {
+        if self.static_field_ready_for_key(key) == "" {
+            return ""
+        }
+        let id: int = self.fresh()
+        return "  %static.wdone{id} = load i8, ptr @.next.statics.ready\n  %static.wafter{id} = icmp ne i8 %static.wdone{id}, 0\n  br i1 %static.wafter{id}, label %static.wok{id}, label %static.wcheck{id}\nstatic.wcheck{id}:\n  %static.wbusy{id} = load i8, ptr @.next.statics.running\n  %static.winside{id} = icmp ne i8 %static.wbusy{id}, 0\n  br i1 %static.winside{id}, label %static.wok{id}, label %static.wlazy{id}\nstatic.wlazy{id}:\n  call void @.next.statics.init()\n  br label %static.wok{id}\nstatic.wok{id}:\n"
+    }
+
     fn emit_static_field_write(
         function: MirFunction,
         instruction: MirInstruction,
@@ -1512,6 +1528,9 @@ partial class LlvmTextEmitter {
         let symbol: string =
             self.static_field_symbol_for_key(
                 instruction.resolved)
+        let guard: string =
+            self.static_prologue_guard(
+                instruction.resolved)
         match self.find_static_field(
             instruction.resolved) {
             some(field) => {
@@ -1524,7 +1543,7 @@ partial class LlvmTextEmitter {
                         instruction)
                 if instruction.text != "=" {
                     let address: int = self.fresh()
-                    return "  %field.assign.ptr{address} = getelementptr {llvm}, ptr {symbol}, i32 0\n{self.emit_field_compound(instruction, field.type, address, stored, instruction.text, "")}"
+                    return "{guard}  %field.assign.ptr{address} = getelementptr {llvm}, ptr {symbol}, i32 0\n{self.emit_field_compound(instruction, field.type, address, stored, instruction.text, "")}"
                 }
                 var output: string = ""
                 if self.type_has_owned_refs(field.type) {
@@ -1538,7 +1557,7 @@ partial class LlvmTextEmitter {
                     output =
                         "  store {llvm} {stored}, ptr {symbol}\n"
                 }
-                return output
+                return "{guard}{output}"
             }
             none => {
                 self.fail(

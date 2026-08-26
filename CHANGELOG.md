@@ -73,6 +73,25 @@ This file records user-facing changes in each Beans release.
 
 ### Fixed
 
+- **A shared module lost every write made before its first static read.** A
+  module built with `--emit shared` has no main, so the static prologue runs on
+  first touch — but only a *read* ran it. A host that called a writing export
+  first stored into globals the prologue had not reached yet; the next read
+  found the prologue still unrun, ran it, and overwrote every one of those
+  writes with the declared default. The export answered ok and its effect was
+  gone. It is not only the first call: two writing exports in a row both lost
+  their writes, because neither of them armed anything. Calling any reading
+  export first hid the whole fault, which is why it survived the fix that gave
+  the prologue a home outside main.
+  - A write now runs the prologue for the same reason a read does. Compound
+    assignment (`Class.count += 1`) went through a third path that guarded
+    neither half, and is covered too.
+  - It also leaked: the overwritten store released the null a zeroed global
+    holds rather than the default it was about to lose.
+  - The fix is in the emitter, so it is not a wasm fix — it reproduces on a
+    plain dylib, and was found in a browser only because a browser has no
+    refusal cases to check before the interesting one.
+
 - **`super.method(...)` panicked under the interpreter in any nested scope —
   and here the interpreter was the wrong half.** Inside an `if`, a block, a
   loop, or either kind of match arm, it answered `super.name has no self` at
