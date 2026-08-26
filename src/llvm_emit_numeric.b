@@ -1179,7 +1179,16 @@ partial class LlvmTextEmitter {
             let result: string =
                 "%v{instruction.result}"
             values[instruction.result] = result
-            return "  %asq.desc{id} = load ptr, ptr {source}\n  %asq.id{id} = load i64, ptr %asq.desc{id}\n  %asq.raw{id} = call i64 @beans_is_a(i64 %asq.id{id}, i64 {target_id})\n  %asq.ok{id} = icmp ne i64 %asq.raw{id}, 0\n  {result} = select i1 %asq.ok{id}, ptr {source}, ptr null\n  call void @beans_retain(ptr {result})\n"
+            // MIR proves when the source outlives the Option, and then the
+            // retain and its release are a pair that cancels. The test walk
+            // is unchanged: only the ownership transfer goes away.
+            let retain: string =
+                if instruction.borrow_elided {
+                    ""
+                } else {
+                    "  call void @beans_retain(ptr {result})\n"
+                }
+            return "  %asq.desc{id} = load ptr, ptr {source}\n  %asq.id{id} = load i64, ptr %asq.desc{id}\n  %asq.raw{id} = call i64 @beans_is_a(i64 %asq.id{id}, i64 {target_id})\n  %asq.ok{id} = icmp ne i64 %asq.raw{id}, 0\n  {result} = select i1 %asq.ok{id}, ptr {source}, ptr null\n{retain}"
         }
         if source_llvm == target_llvm {
             values[instruction.result] = source

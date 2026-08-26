@@ -323,6 +323,13 @@ partial class LlvmTextEmitter {
             let local: MirLocal =
                 function.locals[instruction.local]
             if self.type_is_reference(element) {
+                // MIR elides the pair when the source outlives the match:
+                // no scheduled release for the Option, so no count here.
+                if instruction.borrow_elided {
+                    return self.emit_local_bind_store(
+                        instruction, local, "ptr",
+                        option, "")
+                }
                 return "  call void @beans_retain(ptr {option})\n{self.emit_local_bind_store(instruction, local, "ptr", option, "")}"
             }
             // the binding takes its own count, exactly like the

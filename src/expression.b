@@ -11106,6 +11106,17 @@ class ExpressionChecker {
             return self.block_always_returns(
                 node.children[0])
         }
+        // `panic(...)` does not come back, so a body that ends in one has
+        // returned as far as anyone can observe. MIR closes the block for the
+        // same reason — both halves must agree, or the interpreter accepts a
+        // program the native backend refuses.
+        if node.kind == "expression" &&
+           node.children[0].kind == "call" &&
+           node.children[0].children.len() != 0 &&
+           node.children[0].children[0].kind == "name" &&
+           node.children[0].children[0].value == "panic" {
+            return true
+        }
         if node.kind == "expression" &&
            node.children[0].kind == "match" &&
            node.children[0].children.len() > 1 {

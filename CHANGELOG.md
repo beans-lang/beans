@@ -30,7 +30,40 @@ This file records user-facing changes in each Beans release.
   with the setting that named it, because Clang's own answer is a header error
   from inside the sysroot it did not find.
 
+### Changed
+
+- **`x as? T` stops retaining when the source outlives the match.** The Option
+  owns what it wraps, so the downcast takes a reference and gives it back when
+  the match is done. When the source is a local that holds an owned reference
+  and provably never changes, escapes or is captured, that pair cancels — the
+  local keeps the object alive across the whole match by itself. A match
+  binding counts as such a local, which is the common shape:
+  `match get() { some(x) => match x as? T { ... } }`.
+  - A **borrowed parameter** as the source is deliberately excluded. Its slot
+    belongs to the caller and nothing inside the callee can prove what the
+    caller does with it for the duration of the call, so the retain there is
+    real work. This matches what the existing borrowed-iteration analysis
+    already refuses, rather than inventing a weaker rule for one pass.
+  - The binding's own retain goes with it. Removing the drop without removing
+    the retain leaks: both backends compile, both print the same answer, and
+    the only witness is a `deinit` that runs on one and not the other.
+
 ### Fixed
+
+- **A body ending in `panic(...)` is a body that returns.** `fn pick(n: int)
+  -> int { if n > 0 { return n } panic("no") }` was refused with "the body can
+  finish without a return". `panic` does not come back, so as far as anything
+  can observe, it does.
+  - Both halves moved together, which is why this waited: the checker has an
+    end-of-body walk and MIR has its own fallthrough check. Fixing only the
+    checker would have made the interpreter accept a program the native
+    backend refuses — the exact bug class the rest of this release removes. A
+    block ending in a panic now takes a new MIR terminator, `unreachable`,
+    which LLVM emits directly and which lets the optimizer drop the dead code
+    after it.
+  - It counts only where control cannot get past it. A panic in one arm of an
+    `if` with no `else`, or in a loop body that may run zero times, still
+    leaves a path to the end of the body and is still refused.
 
 - **Calling a `fn`-typed static said the static did not exist.**
   `Table.seed(1)`, where `Table` declares `static seed: fn(int) -> int`, was

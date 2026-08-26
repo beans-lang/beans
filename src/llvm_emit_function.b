@@ -1710,6 +1710,12 @@ partial class LlvmTextEmitter {
                 "{output}  br i1 {condition}, label {self.edge_target(function, block, terminator.targets[0])}, label {self.edge_target(function, block, terminator.targets[1])}\n"
             return "{output}{self.emit_edge_blocks(function, block, values, source)}"
         }
+        if terminator.kind == "unreachable" {
+            // The block ended in a panic. LLVM's `unreachable` lets the
+            // optimizer drop everything after it, and a block still needs a
+            // terminator whether or not control can arrive here.
+            return "{output}  unreachable\n"
+        }
         self.fail_terminator(
             terminator,
             "LLVM emitter does not support MIR terminator '{terminator.kind}' yet")

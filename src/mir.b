@@ -1273,6 +1273,16 @@ class MirLowerer {
             self.current.value_ownership[result] =
                 "trivial"
         }
+        // `panic` never comes back, so nothing after it in this block runs and
+        // the block cannot fall through to the function's implicit return.
+        // Closing it here is what lets the checker treat a body ending in a
+        // panic as returning: the two halves have to agree, or one compiler
+        // accepts a program the other refuses.
+        if node.kind == "builtin_call" &&
+           node.resolved == "panic" &&
+           self.block_open() {
+            self.terminate(node, "unreachable", -1, [])
+        }
         return result
     }
 
@@ -4509,6 +4519,134 @@ class MirLowerer {
     // The binding may not be assigned, moved, captured, or returned;
     // everything else retains its own reference when it stores the
     // element, so the borrow never outlives the element's slot.
+    // `x as? T` retains what the Option wraps, because the Option owns it and
+    // the source could die while a match arm runs. When the source is a local
+    // that holds an owned reference and provably never changes, escapes or is
+    // captured, that retain and its release are a pair that cancels: the local
+    // keeps the object alive across the whole match by itself.
+    //
+    // The conditions are the same shape borrowed iteration already uses,
+    // including refusing a PARAMETER as the source. A parameter's slot belongs
+    // to the caller, and nothing inside the callee can prove what the caller
+    // does with it for the duration of the call — so the retain there is real
+    // work, not redundant work.
+    fn analyze_borrowed_downcasts(function: MirFunction) {
+        if function.declaration || function.external ||
+           function.blocks.len() == 0 {
+            return
+        }
+        for block: MirBlock in function.blocks {
+            for index: int in
+                0..block.instructions.len() {
+                let cast: MirInstruction =
+                    block.instructions[index]
+                if cast.removed || cast.op != "cast" ||
+                   cast.text != "as?" ||
+                   cast.borrow_elided ||
+                   cast.operands.len() != 1 ||
+                   cast.result < 0 {
+                    continue
+                }
+                self.try_elide_downcast(
+                    function, block, cast)
+            }
+        }
+    }
+
+    fn try_elide_downcast(function: MirFunction,
+                          block: MirBlock,
+                          cast: MirInstruction) {
+        if function.value_ownership[cast.result] !=
+           "owned" {
+            return
+        }
+        // the source has to be a borrow of a local that owns its object
+        let source: int =
+            self.local_for_value(
+                function, cast.operands[0])
+        if source < 0 ||
+           source >= function.locals.len() {
+            return
+        }
+        let holder: MirLocal = function.locals[source]
+        if holder.captured || holder.parameter ||
+           holder.scalar_replaced ||
+           holder.ownership != "owned" {
+            return
+        }
+        if !self.binding_stays_local(function, source) {
+            return
+        }
+        // every use of the Option is this match and the bindings it fills
+        var bindings: List<MirInstruction> = []
+        for use: MirPosition in
+            self.uses_for(function, cast.result) {
+            if use.instruction.op == "$terminator" {
+                if use.block != block.id ||
+                   block.terminator.kind != "match" {
+                    return
+                }
+                continue
+            }
+            if use.instruction.op != "pattern_bind" {
+                return
+            }
+            bindings.push(use.instruction)
+        }
+        if block.terminator.kind != "match" ||
+           self.tracked_id(
+               function, block.terminator.value) !=
+           self.tracked_id(function, cast.result) {
+            return
+        }
+        for bind: MirInstruction in bindings {
+            if bind.local < 0 ||
+               bind.local >= function.locals.len() {
+                return
+            }
+            let bound: MirLocal =
+                function.locals[bind.local]
+            if bound.captured || bound.parameter ||
+               bound.scalar_replaced ||
+               bound.ownership != "owned" {
+                return
+            }
+            if !self.binding_stays_local(
+                   function, bind.local) {
+                return
+            }
+        }
+        // commit: the Option borrows, and neither it nor its bindings drop
+        cast.borrow_elided = true
+        cast.ownership = "borrowed"
+        function.value_ownership[cast.result] =
+            "borrowed"
+        for bind: MirInstruction in bindings {
+            let bound: MirLocal =
+                function.locals[bind.local]
+            bound.ownership = "borrowed"
+            // The bind takes its own count to pair with the Option
+            // temporary's scheduled release. Neither happens now, so the
+            // retain here has to go with the drop below — leaving one
+            // without the other is a leak, not a saving.
+            bind.borrow_elided = true
+            bind.ownership = "borrowed"
+            for index: int in 0..bind.consumes.len() {
+                bind.consumes[index] = false
+            }
+            for scan: MirBlock in function.blocks {
+                for candidate: MirInstruction in
+                    scan.instructions {
+                    if !candidate.removed &&
+                       candidate.op == "drop_local" &&
+                       candidate.local == bind.local {
+                        candidate.removed = true
+                    }
+                }
+            }
+        }
+    }
+
     fn binding_stays_local(function: MirFunction,
                            binding: int) -> bool {
         for scan: MirBlock in function.blocks {
@@ -5757,6 +5895,14 @@ class MirLowerer {
                         "MIR branch condition must be bool")
                 }
             }
+            if block.terminator.kind == "unreachable" &&
+               block.terminator.targets.len() != 0 {
+                self.fail(
+                    block.terminator.file,
+                    block.terminator.line,
+                    block.terminator.col,
+                    "MIR unreachable takes no targets")
+            }
             if block.terminator.kind == "try_branch" &&
                block.terminator.targets.len() != 2 {
                 self.fail(
@@ -5882,6 +6028,7 @@ class MirLowerer {
             self.mark_last_uses(function)
             self.analyze_loop_bounds(function)
             self.analyze_borrowed_iteration(function)
+            self.analyze_borrowed_downcasts(function)
             self.analyze_ownership_transfers(function)
             self.plan_value_lifetimes(function)
             self.verify_function(function)

@@ -75,4 +75,12 @@ fi
 # the same file runs under the interpreter, which does support string +
 ./build/beansc run test/cases/backend_poison_bad.b >"$tmp/poison.interp"
 
+# `panic` ends a block, but only where control cannot get past it. These three
+# still have a path to the end of the body and must stay refused: the checker
+# and MIR agree on this, so accepting any of them here would mean the native
+# backend accepts a body that falls off the end.
+check_bad panic_reach_bad.b "'one_arm' must return int — the body can finish without a return"
+check_bad panic_reach_bad.b "'in_loop' must return int — the body can finish without a return"
+check_bad panic_reach_bad.b "'after_loop' must return int — the body can finish without a return"
+
 echo "ok language gaps"
