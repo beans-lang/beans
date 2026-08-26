@@ -123,10 +123,27 @@ class TreeInterpreter {
     // written to the protocol stream.
     debugger: Option<DebugSession>
     active_functions: List<string>
+    // Name lookups used to walk `program.functions` and
+    // `program.declarations` on every call, twice each — exact qualified
+    // name, then a short-name fallback. That is linear in the size of the
+    // whole program, so a call cost what the imports cost: measured at
+    // 7.5 microseconds with none, 47.5 with eight packages loaded, on the
+    // same loop. Neither list is added to once interpretation starts, so
+    // both are indexed once on first use.
+    lookup_index_built: bool
+    function_by_qualified: Map<string, HirFunction>
+    free_function_by_name: Map<string, HirFunction>
+    declaration_by_qualified: Map<string, HirDeclaration>
+    declaration_by_name: Map<string, HirDeclaration>
 
     fn init(program: HirProgram,
             move arguments: List<string>) {
         self.program = program
+        self.lookup_index_built = false
+        self.function_by_qualified = {}
+        self.free_function_by_name = {}
+        self.declaration_by_qualified = {}
+        self.declaration_by_name = {}
         self.arguments = move arguments
         self.failed = false
         self.panic_text = ""
@@ -549,19 +566,47 @@ class TreeInterpreter {
             "decimal operator '{operation}' is not in the Beans interpreter yet")
     }
 
-    fn find_function(name: string) -> Option<HirFunction> {
+    // Built once, on first lookup. Each map keeps the FIRST entry under a
+    // name, which is what the scans it replaces returned.
+    fn build_lookup_index() {
+        self.lookup_index_built = true
         for function: HirFunction in self.program.functions {
-            if function.qualified == name {
-                return some(function)
+            if !self.function_by_qualified.contains_key(
+                   function.qualified) {
+                self.function_by_qualified[
+                    function.qualified] = function
             }
-        }
-        for function: HirFunction in self.program.functions {
             if function.owner == "" &&
-               function.name == name {
-                return some(function)
+               !self.free_function_by_name.contains_key(
+                   function.name) {
+                self.free_function_by_name[
+                    function.name] = function
             }
         }
-        return none
+        for declaration: HirDeclaration in
+            self.program.declarations {
+            if !self.declaration_by_qualified.contains_key(
+                   declaration.qualified) {
+                self.declaration_by_qualified[
+                    declaration.qualified] = declaration
+            }
+            if !self.declaration_by_name.contains_key(
+                   declaration.name) {
+                self.declaration_by_name[
+                    declaration.name] = declaration
+            }
+        }
+    }
+
+    fn find_function(name: string) -> Option<HirFunction> {
+        if !self.lookup_index_built {
+            self.build_lookup_index()
+        }
+        match self.function_by_qualified.get(name) {
+            some(found) => { return some(found) }
+            none => {}
+        }
+        return self.free_function_by_name.get(name)
     }
 
     fn declaration(name: string) ->
@@ -569,19 +614,14 @@ class TreeInterpreter {
         // Exact qualified matches first: a dependency's class may share its
         // short name with one from the root package, and the short-name
         // fallback must not let whichever loaded first shadow the other.
-        for declaration: HirDeclaration in
-            self.program.declarations {
-            if declaration.qualified == name {
-                return some(declaration)
-            }
+        if !self.lookup_index_built {
+            self.build_lookup_index()
         }
-        for declaration: HirDeclaration in
-            self.program.declarations {
-            if declaration.name == name {
-                return some(declaration)
-            }
+        match self.declaration_by_qualified.get(name) {
+            some(found) => { return some(found) }
+            none => {}
         }
-        return none
+        return self.declaration_by_name.get(name)
     }
 
     fn tree_json_annotation(

@@ -92,6 +92,15 @@ This file records user-facing changes in each Beans release.
 
 ### Changed
 
+- **Interpreter call cost no longer scales with the size of the program.**
+  `find_function` and `declaration` walked every function and every
+  declaration on each lookup — twice, exact qualified name then a short-name
+  fallback — so a call cost what the imports cost. On the same loop, with a
+  project of eight packages loaded: 47.5 microseconds per call before, 10.2
+  after, and flat against import count where it used to climb from 7.5.
+  Neither list is added to once interpretation begins, so both are indexed
+  on first use.
+
 - **Comparing two maps is refused** rather than answered wrongly. The
   interpreter returned `false` for every pair — two empty maps, and a map
   against itself — while a native build refused to emit the comparison at
