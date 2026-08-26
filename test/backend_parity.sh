@@ -122,10 +122,12 @@ agree test/cases/parity/struct_sort.b 3
 agree test/cases/parity/list_equality.b
 agree test/cases/parity/option_equality.b
 agree test/cases/parity/cast_compare.b
+agree test/cases/parity/option_layout.b
+agree test/cases/parity/composite_equality.b
 
 # Every case in the directory has to be listed above with its own expected
 # count; a file added and forgotten would otherwise be silently unchecked.
-listed=9
+listed=11
 present=$(find test/cases/parity -name '*.b' | wc -l | tr -d ' ')
 if [ "$present" != "$listed" ]; then
     echo "test/cases/parity holds $present cases but $listed are run" >&2
@@ -159,6 +161,23 @@ grep -q "solid 0 1 2" "$tmp/$name.interp" || {
 check_effects "$tmp/$name.interp" "test/cases/$name" ""
 echo "  agree: test/cases/$name (cross-file struct defaults)"
 
+# `super.init(...)` ownership needs a library package: constructing from the
+# same package takes a different path and never showed the fault.
+name=parity_super
+( cd "test/cases/$name" && "$root/build/beansc" run tests/main.b ) \
+    >"$tmp/$name.interp"
+( cd "test/cases/$name" \
+  && "$root/build/beansc" build --release tests/main.b \
+       -o "$tmp/$name.release" >/dev/null )
+"$tmp/$name.release" >"$tmp/$name.release.out"
+diff -u "$tmp/$name.interp" "$tmp/$name.release.out"
+grep -q "tags 12 atlas atlas" "$tmp/$name.interp" || {
+    echo "the super-init field did not survive" >&2
+    cat "$tmp/$name.interp" >&2
+    exit 1
+}
+echo "  agree: test/cases/$name (super.init argument ownership)"
+
 # The forms that must stay refused, with the message that names the way out.
 cat >"$tmp/bad.b" <<'EOF'
 package main
@@ -178,5 +197,26 @@ grep -Fq "read it with get(key)" "$tmp/bad.out" || {
     exit 1
 }
 echo "  refused: indexing a move-only map value, both directions"
+
+# A map has no equality. The interpreter used to answer false for every pair,
+# including a map against itself, while a native build refused to emit it.
+cat >"$tmp/mapeq.b" <<'EOF'
+package main
+fn main() {
+    var left: Map<string, int> = {}
+    var right: Map<string, int> = {}
+    let same: bool = left == right
+}
+EOF
+if ./build/beansc check "$tmp/mapeq.b" >"$tmp/mapeq.out" 2>&1; then
+    echo "comparing two maps was accepted" >&2
+    exit 1
+fi
+grep -Fq "is not defined for Map<string, int>" "$tmp/mapeq.out" || {
+    echo "the map refusal no longer names the type" >&2
+    cat "$tmp/mapeq.out" >&2
+    exit 1
+}
+echo "  refused: comparing two maps, in the caller's own terms"
 
 echo "ok backend parity: answers, construct and release counts, refusals"

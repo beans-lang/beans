@@ -2398,8 +2398,20 @@ class MirLowerer {
                     let instruction: MirInstruction =
                         block.instructions[index]
                     index += 1
+                    // `super.init(...)` reaches the same initializer as
+                    // `new` does and its parameters sink ownership the same
+                    // way, but this pass only ever looked at `new`. The
+                    // caller therefore kept its reference and released the
+                    // argument after the call while the initializer had
+                    // stored it without retaining, so the field was left
+                    // pointing at freed memory. Reading it worked or
+                    // crashed depending on whether anything had reused the
+                    // block yet — which is why moving the call changed the
+                    // outcome.
                     if instruction.removed ||
-                       instruction.op != "new" {
+                       (instruction.op != "new" &&
+                        instruction.op != "super_init" &&
+                        instruction.op != "super_call") {
                         continue
                     }
                     for initializer: MirFunction in

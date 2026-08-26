@@ -5249,6 +5249,19 @@ class ExpressionChecker {
             if !hir_types_equal(left.type, right.type) {
                 self.fail(node, "comparison operands have different types")
             }
+            // A map has no equality. The interpreter answered `false` for
+            // every pair — two empty maps, and a map against itself — while
+            // a native build refused to emit the comparison at all. Silently
+            // answering the wrong thing is worse than not answering, so this
+            // is refused on both paths now, in the caller's own terms.
+            let compared: string =
+                canonical_hir_name(left.type.name)
+            if compared == "Map" ||
+               compared == "OrderedMap" {
+                self.fail(
+                    node,
+                    "'{operation}' is not defined for {render_hir_type(left.type)} — compare the entries you care about, or the lengths and then each key")
+            }
             type = new HirType("bool")
         } else if operation == "<" || operation == "<=" ||
                   operation == ">" || operation == ">=" {

@@ -983,6 +983,33 @@ partial class LlvmTextEmitter {
                 "  %inline.raw{tag}{id} = call i64 @beans_bytes_eq(ptr {left}, ptr {right})\n  %inline.eq{tag}{id} = icmp ne i64 %inline.raw{tag}{id}, 0\n",
                 "%inline.eq{tag}{id}")
         }
+        // An enum carrying a payload is a heap value, so the reference test
+        // below would compare two of them by address and call equal ones
+        // different. A bare `a == b` never had the problem because it goes
+        // through the structural thunk; only an enum sitting in a field took
+        // the identity path, so a struct wrapping one disagreed with the
+        // interpreter — silently, and whatever the payload was.
+        match self.declaration_for(type) {
+            some(declaration) => {
+                if declaration.kind == "enum" &&
+                   !self.enum_has_fixed_repr(type) {
+                    let symbol: string =
+                        self.request_value_eq(type)
+                    if symbol != "" {
+                        let left_word: string =
+                            "%inline.eq.left{tag}{id}"
+                        let right_word: string =
+                            "%inline.eq.right{tag}{id}"
+                        let raw: string =
+                            "%inline.eq.raw{tag}{id}"
+                        return new LlvmSlotConversion(
+                            "  {left_word} = ptrtoint ptr {left} to i64\n  {right_word} = ptrtoint ptr {right} to i64\n  {raw} = call i64 {symbol}(i64 {left_word}, i64 {right_word})\n  %inline.eq{tag}{id} = icmp ne i64 {raw}, 0\n",
+                            "%inline.eq{tag}{id}")
+                    }
+                }
+            }
+            none => {}
+        }
         // Not Option. A niche-encoded `Option<T>` — one whose payload is a
         // reference — is a bare pointer, so type_is_reference answers true
         // for it and this branch used to swallow it and compare the two
@@ -1040,15 +1067,22 @@ partial class LlvmTextEmitter {
             if compared.value == "" {
                 return new LlvmSlotConversion("", "")
             }
+            // The payload comparison may open blocks of its own — a nested
+            // Option does exactly that — so the block this branch started in
+            // is not the block it ends in. Naming the start block in the phi
+            // below produced "PHI node entries do not match predecessors".
+            // Landing on a block of our own first makes the predecessor
+            // known whatever the payload emitted.
+            let compare_end: int = self.fresh()
             output =
-                "{output}{compared.setup}  br label %inline.option.merge{merge_block}\ninline.option.tags{tags_block}:\n"
+                "{output}{compared.setup}  br label %inline.option.ready{compare_end}\ninline.option.ready{compare_end}:\n  br label %inline.option.merge{merge_block}\ninline.option.tags{tags_block}:\n"
             let tags: int = self.fresh()
             output =
                 "{output}  %inline.option.tags.same{tags} = icmp eq i1 {left_some}, {right_some}\n  br label %inline.option.merge{merge_block}\ninline.option.merge{merge_block}:\n"
             let result: string =
                 "%inline.eq{tag}{id}"
             output =
-                "{output}  {result} = phi i1 [ {compared.value}, %inline.option.compare{compare_block} ], [ %inline.option.tags.same{tags}, %inline.option.tags{tags_block} ]\n"
+                "{output}  {result} = phi i1 [ {compared.value}, %inline.option.ready{compare_end} ], [ %inline.option.tags.same{tags}, %inline.option.tags{tags_block} ]\n"
             return new LlvmSlotConversion(
                 output, result)
         }

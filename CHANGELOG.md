@@ -17,6 +17,33 @@ This file records user-facing changes in each Beans release.
   A whole package that returned an interface would run under `beansc run`
   and fail to build.
 
+- **A record holding an `Option` was laid out larger than LLVM lays it out,
+  and a list of them was corrupted.** `type_alignment` had no Option case, so
+  it fell through to the scalar rule and answered the aggregate's *size*:
+  `Option<f32>` came back 8-aligned instead of 4. A struct of two ints and an
+  `Option<Inner>` was then computed at 40 bytes where LLVM uses 32, the list
+  stride was eight bytes wider than the element, and every element after the
+  first read partly from its neighbour — plausible integers in the `int`
+  fields, `none` in the Option fields, no diagnostic.
+
+- **A struct holding a payload-carrying enum compared by address.** A bare
+  `a == b` was always right; only an enum sitting in a field took the identity
+  path, so equal values were reported different. The payload's own type made
+  no difference — a bare `int` payload failed the same way.
+
+- **A struct holding `Option<S>`, where S also holds Options, failed to
+  build**: "PHI node entries do not match predecessors". The payload
+  comparison opens blocks of its own, so the block that branch started in was
+  not the block it ended in, and the phi named the wrong predecessor.
+
+- **`super.init(...)` left the field pointing at freed memory.** The pass that
+  settles ownership for a parameter the initializer sinks only ever looked at
+  `new`. Through `super.init` the caller kept its reference and released after
+  the call, while the initializer had stored without retaining. Reading the
+  field worked or crashed depending on whether anything had reused the block
+  yet, so moving an unrelated call changed the outcome. Needs a library
+  package to reproduce.
+
 - **`Option<T> ==` where T is a reference answered by address.** A niche
   Option is stored as a bare pointer, so the emitter's reference test claimed
   the Option itself was a reference and compared two payloads by address:
@@ -64,6 +91,11 @@ This file records user-facing changes in each Beans release.
   Both are now raised for the arguments the `extends` pinned.
 
 ### Changed
+
+- **Comparing two maps is refused** rather than answered wrongly. The
+  interpreter returned `false` for every pair — two empty maps, and a map
+  against itself — while a native build refused to emit the comparison at
+  all. It is now a checker error naming the type, on both paths.
 
 - `test/backend_parity.sh` compares construct and release counts, not only
   printed answers. The cases mark each value as it is built and released,

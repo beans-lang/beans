@@ -300,6 +300,21 @@ partial class LlvmTextEmitter {
            type.args.len() == 1 {
             return self.type_alignment(type.args[0])
         }
+        // A wide Option is {i1, T} and aligns to T, the way inline_alignment
+        // already had it. Without this the fall-through below treated the
+        // aggregate as a scalar and answered its *size*: `Option<f32>` came
+        // back 8-aligned instead of 4, so a record holding one was computed
+        // larger than LLVM lays it out — 40 bytes against 32 for a struct of
+        // two ints and an `Option<Inner>`. The list stride was then eight
+        // bytes wider than the element, and every element after the first
+        // read partly from its neighbour: plausible-looking integers, no
+        // diagnostic, and only in a native build.
+        if canonical_hir_name(type.name) ==
+               "Option" &&
+           type.args.len() == 1 &&
+           !self.type_is_reference(type) {
+            return self.type_alignment(type.args[0])
+        }
         if self.result_is_inline(type) {
             var alignment: int =
                 self.inline_alignment(type.args[0])
