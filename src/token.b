@@ -24,6 +24,16 @@ fn keyword_kind(text: string) -> string {
     return "ident"
 }
 
+// A bare `while` followed by the start of another expression can only be the
+// loop keyword other languages have: two expressions never sit side by side in
+// one statement, so a valid program cannot reach this. `while(` is deliberately
+// left out — `while` is an ordinary identifier in Beans, and that one is a call.
+fn starts_loop_condition(kind: string) -> bool {
+    return kind == "ident" || kind == "int" || kind == "float" ||
+           kind == "string" || kind == "true" || kind == "false" ||
+           kind == "self" || kind == "!"
+}
+
 fn ends_statement(kind: string) -> bool {
     return kind == "ident" || kind == "int" || kind == "float" ||
            kind == "string" || kind == "return" || kind == "break" ||

@@ -6,6 +6,16 @@ This file records user-facing changes in each Beans release.
 
 ### Fixed
 
+- **Calling a `fn`-typed static said the static did not exist.**
+  `Table.seed(1)`, where `Table` declares `static seed: fn(int) -> int`, was
+  refused with `main.Table has no static 'seed'` — a message that was never
+  true. Reading it into a local and calling that local always worked, and the
+  same call through an *instance* field had always been accepted. Only the
+  static branch of call resolution lacked the fallback: it looked for a static
+  *method* of that name, found none, and reported the name missing instead of
+  looking at the static fields. A static method still wins over a static field
+  of the same name, matching the instance rule.
+
 - **A class may be returned where an interface it implements is declared.**
   `fn make() -> Shape { return new Dot() }` compiled to native code again;
   the interpreter had always accepted it. The MIR verifier walked only
@@ -132,6 +142,26 @@ This file records user-facing changes in each Beans release.
   Both are now raised for the arguments the `extends` pinned.
 
 ### Changed
+
+- **Three diagnostics that pointed away from the mistake.** All found in one
+  day by a 48,000-line port, and all the same shape: the first line sends the
+  reader somewhere the program is fine.
+  - `while cond { }` reported `expected end of statement` at the condition,
+    and the recovery then ate the block's closing brace and put two more
+    errors on correct lines. It now says once that there is no `while` and
+    names the loop keyword there is, then parses the `for` it meant, so the
+    rest of the function still checks. `while` is still an ordinary
+    identifier, and the message only fires where a valid program cannot
+    reach — a bare name followed by the start of another expression.
+  - `X.y`, where `X` is a type and `y` is not on it, blamed `X`:
+    `unknown name 'Gap'` for a class that resolved a line earlier, or
+    `package 'style' has no function 'Gap'` across a package boundary, for a
+    class that is not a function. It names the type and the missing member
+    now — `Gap has no static field 's2p' — did you mean 's2'?` — and says so
+    when the name is a static method rather than a field.
+  - A string piece opening with `{` produced three parse errors from inside
+    the braces before the one line that explains it. The explanation now
+    comes alone.
 
 - **"Cannot find the Beans C runtime" now says where it looked.** Both C
   sources the driver hands to Clang — the runtime and the WASM host — default

@@ -436,6 +436,20 @@ class ExpressionChecker {
         return "{shown}<{arguments.join(", ")}>"
     }
 
+    // The package elision diagnostic_type does, for a declaration with no
+    // HirType at hand: a name from the file's own package reads as the user
+    // wrote it, and only a foreign one carries its package. test/diagnostics.sh
+    // fails if the root package ever leaks into a message.
+    fn diagnostic_symbol(qualified: string) -> string {
+        let package_id: string = symbol_package(qualified)
+        if package_id != "" &&
+           package_id == self.package_path_for_file(
+               self.current.file) {
+            return symbol_name(qualified)
+        }
+        return display_symbol(qualified)
+    }
+
     fn field_names(receiver: HirType) -> List<string> {
         var names: List<string> = []
         var pending: List<HirType> = [receiver]
@@ -4578,15 +4592,27 @@ class ExpressionChecker {
             let lexer: Lexer =
                 new Lexer(expression_source)
             let tokens: List<Token> = lexer.scan()
+            let parser: Parser =
+                new Parser(move tokens)
+            let expression: AstNode =
+                parser.parse_standalone_expression()
+            // Every parse error inside a piece that opens with '{' is
+            // downstream of the same mistake, and each one points between
+            // the braces rather than at them. Burying the one line that
+            // fixes it under three that do not is its own bug.
+            if brace_opened &&
+               (lexer.errors.len() != 0 ||
+                parser.errors.len() != 0) {
+                self.fail(
+                    node,
+                    "'\{\{' is not an escape — it starts an interpolation whose expression begins with '\{'; for a literal brace write \\\{ or \\\}")
+                continue
+            }
             for diagnostic: Diagnostic in lexer.errors {
                 self.fail(
                     node,
                     "in string piece \{{segment}\}: {diagnostic.message}")
             }
-            let parser: Parser =
-                new Parser(move tokens)
-            let expression: AstNode =
-                parser.parse_standalone_expression()
             for diagnostic: Diagnostic in parser.errors {
                 self.fail(
                     node,
@@ -5384,6 +5410,51 @@ class ExpressionChecker {
                         none => {}
                     }
                 }
+            // The receiver named a type and nothing on it matched. Falling
+            // through from here evaluated the type name as a value, so the
+            // error blamed the receiver — "unknown name 'Gap'" for a class
+            // that resolved a line earlier, or "package 'style' has no
+            // function 'Gap'" for a class that is not a function. Neither
+            // mentions the part that is actually wrong, which is the name
+            // after the dot.
+            var static_names: List<string> = []
+            for field: HirField in declaration.static_fields {
+                static_names.push(field.name)
+            }
+            match self.methods.get(
+                "{declaration.qualified}.{node.value}") {
+                some(function) => {
+                    if function.is_static {
+                        self.fail(
+                            node,
+                            "'{node.value}' is a static method — call it as {self.diagnostic_symbol(declaration.qualified)}.{node.value}(...)")
+                        return self.make_node(
+                            node, "error", node.value,
+                            poison_hir_type())
+                    }
+                }
+                none => {}
+            }
+            if declaration.kind == "enum" {
+                var variant_names: List<string> = []
+                for variant: HirField in declaration.variants {
+                    variant_names.push(variant.name)
+                }
+                self.fail(
+                    node,
+                    add_name_suggestion(
+                        "{self.diagnostic_symbol(declaration.qualified)} has no variant '{node.value}'",
+                        node.value, variant_names))
+            } else {
+                self.fail(
+                    node,
+                    add_name_suggestion(
+                        "{self.diagnostic_symbol(declaration.qualified)} has no static field '{node.value}'",
+                        node.value, static_names))
+            }
+            return self.make_node(
+                node, "error", node.value,
+                poison_hir_type())
             }
             none => {}
         }
@@ -7517,6 +7588,64 @@ class ExpressionChecker {
                                 poison_hir_type())
                         }
                         none => {
+                            // A static method wins over a static field of the
+                            // same name; with no method at all, a fn-typed
+                            // static is callable through the same syntax an
+                            // instance fn field already accepts. Without this
+                            // the call site said the static did not exist,
+                            // which was never true — reading it into a local
+                            // and calling that local always worked.
+                            match self.static_field_for(
+                                declaration, callee.value) {
+                                some(field) => {
+                                    if field.type.name == "fn" &&
+                                       field.type.fn_parameter_count >= 0 &&
+                                       field.type.fn_parameter_count <=
+                                           field.type.args.len() {
+                                        self.require_field_visible(
+                                            node,
+                                            new ResolvedField(
+                                                declaration, field,
+                                                field.type),
+                                            "{self.static_syntax_name(receiver_syntax)}.{callee.value}")
+                                        let access: HirNode =
+                                            self.make_node(
+                                                callee, "static_field",
+                                                field.name, field.type)
+                                        access.resolved =
+                                            "{declaration.qualified}.{field.name}"
+                                        // no result entry in the args means unit
+                                        let result_type: HirType =
+                                            if field.type.fn_parameter_count <
+                                               field.type.args.len() {
+                                                field.type.args[
+                                                    field.type.fn_parameter_count]
+                                            } else {
+                                                new HirType("unit")
+                                            }
+                                        var parameters: List<HirType> = []
+                                        for index: int in
+                                            0..field.type.fn_parameter_count {
+                                            parameters.push(
+                                                field.type.args[index])
+                                        }
+                                        let result: HirNode =
+                                            self.make_node(
+                                                node, "closure_call", "",
+                                                result_type)
+                                        result.children.push(access)
+                                        self.check_builtin_arguments(
+                                            node, 1,
+                                            new BuiltinSignature(
+                                                parameters, result_type),
+                                            result)
+                                        self.expect_type(
+                                            node, result.type, expected)
+                                        return result
+                                    }
+                                }
+                                none => {}
+                            }
                             if declaration.kind != "enum" {
                                 self.fail(
                                     node,

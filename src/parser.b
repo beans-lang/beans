@@ -1033,6 +1033,20 @@ class Parser {
         }
         if self.check("if") { return self.parse_if() }
         if self.check("for") { return self.parse_for() }
+        // `while cond { }` is what a newcomer writes on reflex, and `while`
+        // lexes as an ordinary name, so it used to parse as an expression and
+        // fail at the condition with "expected end of statement". The
+        // recovery then ate the block's closing brace and reported two more
+        // errors on correct lines. Say it once and parse the `for` it meant.
+        if self.check("ident") &&
+           self.current().text == "while" &&
+           starts_loop_condition(
+               self.tokens[self.pos + 1].kind) {
+            self.fail(
+                self.current(),
+                "there is no 'while' — beans has one loop keyword: write 'for condition \{ … \}'")
+            return self.parse_for()
+        }
         if self.check("defer") {
             let token: Token = self.advance()
             let result: AstNode = self.node("defer", "", token)
