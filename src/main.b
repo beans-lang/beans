@@ -37,7 +37,7 @@ fn print_usage() {
     io.eprintln("  --features <+f,-f,...> enable or disable CPU features")
     io.eprintln("  --sysroot <path>       target sysroot for a cross link")
     io.eprintln("  --cc <path>            C driver to use (default clang)")
-    io.eprintln("  --linker <name>        pass -fuse-ld=<name>")
+    io.eprintln("  --linker <name|path>   pass -fuse-ld=<value>; a full path works")
     io.eprintln("  --ar <path>            static archive tool (default ar)")
     io.eprintln("  --header <path>        write a C header for library exports")
     io.eprintln("  --emit <bin|obj|static|shared|ir>")

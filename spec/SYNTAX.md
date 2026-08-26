@@ -1945,7 +1945,7 @@ Build options:
 | `--features <+f,-f,...>` | enable or disable CPU features |
 | `--sysroot <path>` | target sysroot for a cross link |
 | `--cc <path>` | C driver to use, default `clang` |
-| `--linker <name>` | passed through as `-fuse-ld=<name>` |
+| `--linker <name\|path>` | passed through as `-fuse-ld=<value>`. A full path works, which is how a linker that is not on `PATH` is reached — `--linker /path/to/wasm-ld` links a wasm target without touching `PATH` |
 | `--emit <bin\|obj\|static\|shared\|ir>` | choose a binary, object, archive, shared library, or `.ll` |
 | `--ar <path>` | static archive tool, default `ar` |
 | `--header <path>` | write a C header for `pub extern "C"` library exports |
@@ -2884,6 +2884,22 @@ void  beans_host_exit(int code);                                          // no 
   hooks, `beans_host_format_f64` and `beans_host_parse_f64`, cover floating-point text;
   they are weak everywhere and panic if a freestanding program uses a float without
   supplying them, so a program that never touches one never has to.
+- **The host may also owe libc memory routines, and which ones depends on the
+  program.** LLVM lowers a struct copy or a bulk clear to `memcpy` and `memset`
+  rather than emitting the loop, so those arrive as ordinary imports beside the
+  `beans_host_*` hooks; a program that copies nothing asks for neither. A loader
+  built from a fixed list will therefore be right for one module and wrong for
+  the next. Read the imports off the module instead — for a wasm build:
+
+  ```js
+  const module = await WebAssembly.compile(bytes)
+  console.log(WebAssembly.Module.imports(module).map(i => `${i.module}.${i.name}`))
+  ```
+
+  A module holding one integer static asks only for `beans_host_write` and
+  `beans_host_exit`; one that builds a list of structs asks for the three
+  allocator hooks, `memcpy` and `memset` as well. Supplying an import the module
+  never requests is harmless; missing one it does means instantiation fails.
 - **Three rules for an implementer.** A hook must not call back into any `beans_`
   function — the allocator runs inside allocation. The panic path must not allocate, so
   it formats into a fixed stack buffer and calls write then exit, and still works when

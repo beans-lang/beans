@@ -1386,6 +1386,10 @@ partial class LlvmTextEmitter {
         if index == 0 {
             self.static_field_definitions.push(
                 "@.next.statics.ready = internal global i8 0\n")
+            // set while the prologue is running, so a read from inside an
+            // initialiser keeps the per-static check rather than recursing
+            self.static_field_definitions.push(
+                "@.next.statics.running = internal global i8 0\n")
         }
         let ready: string =
             "@.next.static.ready{index}"
@@ -1422,6 +1426,10 @@ partial class LlvmTextEmitter {
     }
 
     fn static_field_initializers() -> string {
+        if self.statics_init_built {
+            return "  call void @.next.statics.init()\n"
+        }
+        self.statics_init_built = true
         var output: string = ""
         for declaration: HirDeclaration in
             self.program.declarations {
@@ -1445,11 +1453,16 @@ partial class LlvmTextEmitter {
                     "{output}  %static.init{id} = call {llvm} {self.function_symbols[function_name]}()\n  store {llvm} %static.init{id}, ptr {symbol}\n  store i8 1, ptr {ready}\n"
             }
         }
-        if output != "" {
-            output =
-                "{output}  store i8 1, ptr @.next.statics.ready\n"
-        }
-        return output
+        if output == "" { return "" }
+        // The prologue is its own function rather than inline in main,
+        // because a module built with `--emit shared` has no main to put it
+        // in: it links with --no-entry and the host calls straight into an
+        // exported function. Every static then read as the zero it was born
+        // with, and once reads were guarded it panicked instead. A read that
+        // arrives before the prologue has run now runs it.
+        self.ffi_functions.push(
+            "define internal void @.next.statics.init() \{\n  store i8 1, ptr @.next.statics.running\n{output}  store i8 1, ptr @.next.statics.ready\n  store i8 0, ptr @.next.statics.running\n  ret void\n\}\n")
+        return "  call void @.next.statics.init()\n"
     }
 
     fn emit_static_field_read(
@@ -1481,7 +1494,7 @@ partial class LlvmTextEmitter {
                 self.string_pointer(
                     "static field '{instruction.resolved}' was read before initialization")
             guard =
-                "  %static.done{id} = load i8, ptr @.next.statics.ready\n  %static.after{id} = icmp ne i8 %static.done{id}, 0\n  br i1 %static.after{id}, label %static.ok{id}, label %static.check{id}\nstatic.check{id}:\n  %static.flag{id} = load i8, ptr {ready}\n  %static.set{id} = icmp ne i8 %static.flag{id}, 0\n  br i1 %static.set{id}, label %static.ok{id}, label %static.bad{id}\nstatic.bad{id}:\n  call void @beans_panic(ptr {message}, i64 {instruction.line}, i64 {instruction.col})\n  unreachable\nstatic.ok{id}:\n"
+                "  %static.done{id} = load i8, ptr @.next.statics.ready\n  %static.after{id} = icmp ne i8 %static.done{id}, 0\n  br i1 %static.after{id}, label %static.ok{id}, label %static.check{id}\nstatic.check{id}:\n  %static.busy{id} = load i8, ptr @.next.statics.running\n  %static.inside{id} = icmp ne i8 %static.busy{id}, 0\n  br i1 %static.inside{id}, label %static.order{id}, label %static.lazy{id}\nstatic.lazy{id}:\n  call void @.next.statics.init()\n  br label %static.ok{id}\nstatic.order{id}:\n  %static.flag{id} = load i8, ptr {ready}\n  %static.set{id} = icmp ne i8 %static.flag{id}, 0\n  br i1 %static.set{id}, label %static.ok{id}, label %static.bad{id}\nstatic.bad{id}:\n  call void @beans_panic(ptr {message}, i64 {instruction.line}, i64 {instruction.col})\n  unreachable\nstatic.ok{id}:\n"
         }
         return "{guard}  {result} = load {llvm}, ptr {symbol}\n{self.emit_arc_value(instruction.type, result, true)}"
     }

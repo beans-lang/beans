@@ -47,6 +47,7 @@ partial class LlvmTextEmitter {
     singleton_symbols: Map<string, string>
     static_field_symbols: Map<string, string>
     static_field_ready_symbols: Map<string, string>
+    statics_init_built: bool
     static_field_definitions: List<string>
     function_allocas: List<string>
     used_builtin_symbols: Map<string, bool>
@@ -171,6 +172,7 @@ partial class LlvmTextEmitter {
         self.singleton_symbols = {}
         self.static_field_symbols = {}
         self.static_field_ready_symbols = {}
+        self.statics_init_built = false
         self.static_field_definitions = []
         self.function_allocas = []
         self.used_builtin_symbols = {}
@@ -1996,6 +1998,10 @@ partial class LlvmTextEmitter {
         let record_types: string = self.emit_record_types()
         let definitions: string =
             self.emit_global_definitions()
+        // Build the static prologue here rather than while emitting main:
+        // a module built with `--emit shared` has no main, and the guard on
+        // every static read calls this when nothing else has run it.
+        self.static_field_initializers()
         let static_fields: string =
             self.static_field_definitions.join("")
         for text: string in self.value_eq_functions {

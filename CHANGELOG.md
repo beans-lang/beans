@@ -34,6 +34,22 @@ This file records user-facing changes in each Beans release.
   looked only for methods registered under the instance name, so the row
   stayed null. Both halves now resolve through the implemented interface.
 
+- **A module built with `--emit shared` never initialised its statics.** It
+  has no `main`, and the static prologue was emitted inside `main`, so every
+  `pub static` read as the zero it was born with — silently, until the guard
+  below turned it into a panic, which is how it was found. The prologue is a
+  function of its own now: `main` calls it where there is one, and the first
+  static read calls it where there is not. A read from inside an initialiser
+  still gets the ordering check rather than recursing.
+
+- **Assigning to a field that does not exist crashed the compiler.** The
+  guard beside the report tested one node's children and the line below it
+  indexed another's, so the checker died on an unguarded index before
+  printing the error it had already recorded. Reading the same missing field
+  was always reported properly. The crash landed before any output and named
+  a position inside the compiler's own source, so it read as a static-init
+  fault in an imported package.
+
 - **Reading a static field before its initialiser ran.** Statics initialise
   eagerly, before `main`, in declaration order — which follows file order.
   Reading one whose initialiser had not run yet answered the zero it was born

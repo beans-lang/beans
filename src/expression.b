@@ -10599,9 +10599,19 @@ class ExpressionChecker {
                 }
             let value: HirNode = self.check_expression(
                 node.children[1], place.type)
+            // `place.children` is what gets indexed just below, and the
+            // guard checked `target.children` — a different list. Assigning
+            // to a field that does not exist leaves the checked place with
+            // no children, so this crashed the compiler on an unguarded
+            // index instead of printing the error it had already recorded.
+            // Reading the same missing field was always reported properly,
+            // which is what made the write path look like a different fault
+            // entirely: the crash lands before main and before any output,
+            // so it reads as a static-init failure in an imported package.
             if target.kind == "field" &&
                place.kind != "static_field" &&
-               target.children.len() != 0 {
+               target.children.len() != 0 &&
+               place.children.len() != 0 {
                 match self.declaration_for(
                     place.children[0].type) {
                     some(declaration) => {

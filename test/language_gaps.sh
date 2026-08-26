@@ -37,6 +37,9 @@ run_both self_return_ok
 run_both default_params_ok
 run_both string_match
 
+check_bad missing_field_write_bad.b "Box2 has no field 'h' — did you mean 'w'?"
+check_bad missing_field_write_bad.b "Box2 has no field 'd'"
+check_bad missing_field_write_bad.b "Holder has no field 'missing'"
 check_bad method_chains_bad.b "expected name after '.'"
 check_bad weak_fields_bad.b "a weak field needs type Option<C> for a non-unique class C, got Option<int>"
 check_bad weak_fields_bad.b "a weak field needs type Option<C> for a non-unique class C, got main.Solo"

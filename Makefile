@@ -228,6 +228,7 @@ test-ffi: $(BIN)
 	./test/link_manifest.sh
 	bash ./test/csrc_build.sh
 	./test/library_output.sh
+	bash ./test/shared_statics.sh
 	./test/bindgen.sh
 	./test/bindgen_link.sh
 	./test/sqlite_system.sh
@@ -317,6 +318,7 @@ test-core: $(BIN)
 	./test/link_manifest.sh
 	bash ./test/csrc_build.sh
 	./test/library_output.sh
+	bash ./test/shared_statics.sh
 	./test/bindgen.sh
 	./test/bindgen_link.sh
 	./test/sqlite_system.sh
