@@ -424,6 +424,16 @@ fn tree_value_key(value: TreeValue) -> string {
     return "{value.kind}:{tree_value_text(value)}"
 }
 
+// A runtime type name for a diagnostic. A value carrying no type at all
+// renders as a phrase rather than as nothing: printed bare it becomes two
+// spaces in the middle of a sentence, which reads like a formatting slip.
+// A dispatch bug hid behind exactly that gap — the message said what was
+// wrong and nobody could see it.
+fn tree_type_label(name: string) -> string {
+    if name == "" { return "a value with no type" }
+    return name
+}
+
 fn tree_value_equal(left: TreeValue,
                     right: TreeValue) -> bool {
     if left.kind != right.kind { return false }

@@ -10445,7 +10445,7 @@ class TreeInterpreter {
             none => {
                 return self.fail(
                     node,
-                    "{receiver.text} has no initialized field '{node.value}'")
+                    "{tree_type_label(receiver.text)} has no initialized field '{node.value}'")
             }
         }
     }
@@ -11212,7 +11212,7 @@ class TreeInterpreter {
                 none => {
                     return self.fail(
                         node,
-                        "{base.text} has no initialized field '{node.value}'")
+                        "{tree_type_label(base.text)} has no initialized field '{node.value}'")
                 }
             }
         }

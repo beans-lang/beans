@@ -117,6 +117,12 @@ This file records user-facing changes in each Beans release.
 
 ### Changed
 
+- **A runtime value carrying no type names itself in a diagnostic.** It used
+  to print as nothing, so `has no initialized field 'tag'` arrived with two
+  spaces where the type should be — legible only to someone who noticed the
+  gap. It reads `a value with no type` now. The dispatch bug above hid behind
+  exactly that whitespace.
+
 - **Interpreter call cost no longer scales with the size of the program.**
   `find_function` and `declaration` walked every function and every
   declaration on each lookup — twice, exact qualified name then a short-name
