@@ -468,6 +468,28 @@ fn manifest_link_arguments(links: List<ModuleLink>,
     return move arguments
 }
 
+// `cflags` manifest rows: extra Clang flags for the C sources a package
+// declares with `csrc`. They are scoped to the package that wrote them — a
+// dependency's -D must never reach another package's C — and selector-filtered
+// exactly like `link` and `csrc`.
+//
+// Flags arrive as separate words rather than one quoted string so that a path
+// with a space stays one argument: manifest_words already handles the quoting,
+// and re-splitting a joined string is how that bug gets written.
+class ModuleCflags {
+    selector: string
+    flags: List<string>
+    root: string
+
+    fn init(selector: string,
+            move flags: List<string>,
+            root: string) {
+        self.selector = selector
+        self.flags = move flags
+        self.root = root
+    }
+}
+
 class ModuleLoader {
     sources: SourceManager
     module_name: string
@@ -492,6 +514,7 @@ class ModuleLoader {
     local_name_roots: Map<string, string>
     links: List<ModuleLink>
     csrc_rows: List<ModuleLink>
+    cflag_rows: List<ModuleCflags>
     overlays: Map<string, string>
     has_local_dependencies: bool
     // The depth-first stack of packages being loaded, and the import edge
@@ -524,6 +547,7 @@ class ModuleLoader {
         self.local_name_roots = {}
         self.links = []
         self.csrc_rows = []
+        self.cflag_rows = []
         self.overlays = {}
         self.has_local_dependencies = false
         self.stack = []
@@ -736,6 +760,42 @@ class ModuleLoader {
                         value: words[2],
                         root: root,
                     })
+                }
+            } else if words[0] == "cflags" {
+                // cflags <selector> <flag> [<flag>...] — extra Clang flags
+                // for this package's own csrc rows. Every flag is part of
+                // the object's cache key, so changing one recompiles rather
+                // than reusing an object built with the old set.
+                if words.len() < 3 {
+                    self.fail(
+                        mod_path, line_number, 1,
+                        "cflags needs 'cflags <selector> <flag> [<flag>...]'")
+                } else {
+                    var flags: List<string> = []
+                    var rejected: bool = false
+                    for index: int in 2..words.len() {
+                        let flag: string = words[index]
+                        // -o would fight the driver for the output path and
+                        // win silently, leaving the real object stale.
+                        if flag == "-o" || flag.starts_with("-o") {
+                            self.fail(
+                                mod_path, line_number, 1,
+                                "cflags cannot set '-o': the object path belongs to the build, not the package")
+                            rejected = true
+                        } else if flag == "-c" {
+                            self.fail(
+                                mod_path, line_number, 1,
+                                "cflags cannot set '-c': every csrc file is already compiled to an object")
+                            rejected = true
+                        } else {
+                            flags.push(flag)
+                        }
+                    }
+                    if !rejected {
+                        self.cflag_rows.push(
+                            new ModuleCflags(
+                                words[1], move flags, root))
+                    }
                 }
             } else {
                 self.fail(mod_path, 0, 0,

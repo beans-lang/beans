@@ -248,6 +248,51 @@ fn net_source_root() -> string {
 
 // Bump when a request-buffer layout, a status code, or the entry-point set
 // changes, so an object built against the old contract is never reused.
+// A wasm sysroot is a per-machine constant: wasi-libc lands somewhere
+// different on every host, so a project that names it in a script names one
+// machine. It reads from the environment for the same reason the wasm C
+// compiler does, and the pair matches — BEANS_WASM_SYSROOT over BEANS_SYSROOT
+// the way BEANS_WASM_CC sits over BEANS_CC. An explicit --sysroot always wins,
+// because a flag is the one thing a person can see in the command they ran.
+class ResolvedSysroot {
+    path: string
+    // What named it, for a diagnostic: "--sysroot" or the variable's name.
+    source: string
+
+    fn init(path: string, source: string) {
+        self.path = path
+        self.source = source
+    }
+}
+
+fn effective_sysroot(target: TargetDescription,
+                     requested: string) -> ResolvedSysroot {
+    if requested != "" {
+        return new ResolvedSysroot(requested, "--sysroot")
+    }
+    if target.object_format == "wasm" {
+        match os.env("BEANS_WASM_SYSROOT") {
+            some(value) => {
+                if value != "" {
+                    return new ResolvedSysroot(
+                        value, "BEANS_WASM_SYSROOT")
+                }
+            }
+            none => {}
+        }
+    }
+    match os.env("BEANS_SYSROOT") {
+        some(value) => {
+            if value != "" {
+                return new ResolvedSysroot(
+                    value, "BEANS_SYSROOT")
+            }
+        }
+        none => {}
+    }
+    return new ResolvedSysroot("", "")
+}
+
 fn net_bridge_abi() -> string {
     return "net-abi-4"
 }
@@ -670,6 +715,7 @@ class NativeBuildDriver {
     debug: bool
     lto: bool
     sysroot: string
+    sysroot_source: string
     compiler: string
     linker: string
     link_arguments: List<string>
@@ -677,7 +723,7 @@ class NativeBuildDriver {
     encoding_features: List<string>
     log_enabled: bool
     net_features: List<string>
-    csrc_sources: List<string>
+    csrc_sources: List<CsrcUnit>
     errors: List<Diagnostic>
 
     fn init(target: TargetDescription,
@@ -694,7 +740,7 @@ class NativeBuildDriver {
             move encoding_features: List<string>,
             log_enabled: bool,
             move net_features: List<string>,
-            move csrc_sources: List<string>) {
+            move csrc_sources: List<CsrcUnit>) {
         self.target = target
         self.cpu = cpu
         self.runtime_profile = runtime_profile
@@ -703,7 +749,10 @@ class NativeBuildDriver {
         // A debug build with link-time optimization is not a debug build:
         // LTO is what erases the boundaries a person is trying to look at.
         self.lto = lto && !debug
-        self.sysroot = sysroot
+        let resolved: ResolvedSysroot =
+            effective_sysroot(target, sysroot)
+        self.sysroot = resolved.path
+        self.sysroot_source = resolved.source
         self.compiler = compiler
         self.linker = linker
         self.link_arguments = move link_arguments
@@ -959,6 +1008,20 @@ class NativeBuildDriver {
                       output: string,
                       pic: bool,
                       runtime_source: bool) -> bool {
+        return self.compile_object_with(
+            compiler, source, output, pic,
+            runtime_source, [])
+    }
+
+    // `extra` is a package's own `cflags` row, appended after the build's own
+    // flags and before -c, so a package can override a default the driver set
+    // and cannot touch the output path.
+    fn compile_object_with(compiler: string,
+                           source: string,
+                           output: string,
+                           pic: bool,
+                           runtime_source: bool,
+                           extra: List<string>) -> bool {
         let command: process.Command =
             new process.Command(compiler)
         command.arg(self.optimization_flag())
@@ -1005,6 +1068,9 @@ class NativeBuildDriver {
             command.arg("-fvisibility=hidden")
         }
         self.add_target_flags(command)
+        for flag: string in extra {
+            command.arg(flag)
+        }
         command.arg("-c")
         command.arg(source)
         command.arg("-o")
@@ -1530,9 +1596,14 @@ class NativeBuildDriver {
     fn csrc_cache_path(compiler: string,
                        source: string,
                        pic: bool,
-                       inputs: string) -> string {
+                       inputs: string,
+                       flags: List<string>) -> string {
+        // The package's own flags are part of the key for the same reason the
+        // build's are: the same file compiled with a different -D is a
+        // different object, and a key that ignored them would hand back the
+        // one built before the flag changed.
         let key: string =
-            "csrc|{csrc_compiler_identity(compiler)}|{self.target.triple}|{self.cpu}|{self.target.features.join(",")}|{self.runtime_profile}|{self.release}|{self.debug}|{self.lto}|{pic}|{sanitizer_flags().join(" ")}|{inputs}"
+            "csrc|{csrc_compiler_identity(compiler)}|{self.target.triple}|{self.cpu}|{self.target.features.join(",")}|{self.runtime_profile}|{self.release}|{self.debug}|{self.lto}|{pic}|{sanitizer_flags().join(" ")}|{csrc_arguments_key(flags)}|{inputs}"
         let extension: string =
             if self.lto { "bc" } else { "o" }
         let stem: string = path.stem(source)
@@ -1542,8 +1613,9 @@ class NativeBuildDriver {
     }
 
     fn cached_csrc_object(compiler: string,
-                          source: string,
+                          unit: CsrcUnit,
                           pic: bool) -> string {
+        let source: string = unit.path
         if !File.exists(source) {
             self.fail(
                 source,
@@ -1559,11 +1631,14 @@ class NativeBuildDriver {
             }
         }
         let object: string =
-            self.csrc_cache_path(compiler, source, pic, inputs)
+            self.csrc_cache_path(
+                compiler, source, pic, inputs,
+                unit.flags)
         if File.exists(object) { return object }
         let staging: string = csrc_staging_name(object)
-        if !self.compile_object(
-               compiler, source, staging, pic, false) {
+        if !self.compile_object_with(
+               compiler, source, staging, pic, false,
+               unit.flags) {
             return ""
         }
         csrc_publish(staging, object)
@@ -1574,10 +1649,10 @@ class NativeBuildDriver {
                            pic: bool) -> List<string> {
         var objects: List<string> = []
         var failed: bool = false
-        for source: string in self.csrc_sources {
+        for unit: CsrcUnit in self.csrc_sources {
             let object: string =
                 self.cached_csrc_object(
-                    compiler, source, pic)
+                    compiler, unit, pic)
             if object == "" {
                 failed = true
             } else {
@@ -2066,6 +2141,16 @@ class NativeBuildDriver {
                 "C runtime", "BEANS_RUNTIME", runtime)
             return false
         }
+        // Clang answers a missing sysroot with a header error from inside the
+        // sysroot it did not find, which reads as a broken installation. Say
+        // which setting named the directory instead.
+        if self.sysroot != "" &&
+           !Dir.exists(self.sysroot) {
+            self.fail(
+                source,
+                "sysroot '{self.sysroot}' is not a directory ({self.sysroot_source} named it)")
+            return false
+        }
         let compiler: string =
             if self.compiler != "" {
                 self.compiler
@@ -2192,7 +2277,7 @@ class NativeBuildDriver {
             }
             for index: int in 0..csrc_objects.len() {
                 let member: string =
-                    "{output}_csrc_{path.stem(self.csrc_sources[index])}.o"
+                    "{output}_csrc_{path.stem(self.csrc_sources[index].path)}.o"
                 match fs.copy(csrc_objects[index], member) {
                     ok(_) => { io.println("built {member}") }
                     err(error) => {

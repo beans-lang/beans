@@ -4,6 +4,32 @@ This file records user-facing changes in each Beans release.
 
 ## [Unreleased]
 
+### Added
+
+- **`cflags <selector> <flag> [<flag>...]` in `beans.pot`.** Clang flags for
+  the `csrc` files the same package declared — the define a vendored C library
+  needs now lives where a reader of the manifest can see it, instead of in a
+  wrapper source or a build script. Flags are separate words rather than one
+  quoted string, so a path with a space stays one argument. Selectors and
+  propagation follow `link` and `csrc`.
+  - **Scoped to the declaring package.** A dependency's `-D` never reaches
+    another package's C: one package silently miscompiling another's code with
+    a define its author never saw is the failure this rules out.
+  - **In the cache key, both backends.** Changing a flag recompiles rather than
+    reusing the object built with the old set — a key that ignored them would
+    answer with the previous build forever and give nothing to notice it by.
+    The interpreter's path compiles one object per file for the same reason:
+    two packages can disagree about a `-D`, so the flags cannot be unioned
+    into one command.
+  - `-o` and `-c` are refused: the object path belongs to the build.
+
+- **A cross sysroot can come from the environment.** `BEANS_WASM_SYSROOT` for a
+  wasm target and `BEANS_SYSROOT` for anything else, with `--sysroot` winning
+  over both — so the path a machine happens to keep wasi-libc at stays out of
+  every project's build script. A directory that does not exist is reported
+  with the setting that named it, because Clang's own answer is a header error
+  from inside the sysroot it did not find.
+
 ### Fixed
 
 - **Calling a `fn`-typed static said the static did not exist.**

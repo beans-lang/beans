@@ -171,4 +171,102 @@ if (cd "$tmp/app" && "$root/build/beansc" check main.b) \
 fi
 grep -Fq "csrc file does not exist" "$tmp/missing.out"
 
+# ---- cflags rows -----------------------------------------------------------
+# A package's own Clang flags, declared where a reader of beans.pot can see
+# them. FAST_BIAS is back to 40 by this point, so the baseline is 42.
+cat > "$tmp/mathlib/beans.pot" <<'POT'
+module mathlib
+kind library
+csrc all "native/fast_add.c"
+cflags all -DCOMPILER_BIAS=5
+link macos framework "CoreFoundation"
+POT
+(cd "$tmp/app" && "$root/build/beansc" run main.b) >"$tmp/cflags.interp.out"
+grep -Fqx "fast 47" "$tmp/cflags.interp.out"
+(cd "$tmp/app" && "$root/build/beansc" build main.b -o app.cflags.bin) \
+    >"$tmp/cflags.build.out" 2>&1
+"$tmp/app/app.cflags.bin" >"$tmp/cflags.native.out"
+grep -Fqx "fast 47" "$tmp/cflags.native.out"
+
+# Changing only a flag must recompile. A cache key that ignored the flags
+# would hand back the object built with the old -D and answer 48 forever —
+# a wrong answer with nothing to notice it by.
+cat > "$tmp/mathlib/beans.pot" <<'POT'
+module mathlib
+kind library
+csrc all "native/fast_add.c"
+cflags all -DCOMPILER_BIAS=6
+link macos framework "CoreFoundation"
+POT
+(cd "$tmp/app" && "$root/build/beansc" run main.b) >"$tmp/cflags2.interp.out"
+grep -Fqx "fast 48" "$tmp/cflags2.interp.out"
+(cd "$tmp/app" && "$root/build/beansc" build main.b -o app.cflags2.bin) \
+    >"$tmp/cflags2.build.out" 2>&1
+"$tmp/app/app.cflags2.bin" >"$tmp/cflags2.native.out"
+grep -Fqx "fast 48" "$tmp/cflags2.native.out"
+
+# Flags belong to the package that wrote them. The app declaring its own must
+# not reach the dependency's C, or one package would silently miscompile
+# another's code with a define its author never saw.
+cat > "$tmp/app/beans.pot" <<'POT'
+module csrcapp
+kind application
+require path "../mathlib"
+cflags all -DCOMPILER_BIAS=900
+POT
+(cd "$tmp/app" && "$root/build/beansc" run main.b) >"$tmp/cflags.scope.out"
+grep -Fqx "fast 48" "$tmp/cflags.scope.out"
+(cd "$tmp/app" && "$root/build/beansc" build main.b -o app.scope.bin) \
+    >"$tmp/cflags.scope.build" 2>&1
+"$tmp/app/app.scope.bin" >"$tmp/cflags.scope.native"
+grep -Fqx "fast 48" "$tmp/cflags.scope.native"
+cat > "$tmp/app/beans.pot" <<'POT'
+module csrcapp
+kind application
+require path "../mathlib"
+POT
+
+# A selector that does not match this host contributes nothing.
+cat > "$tmp/mathlib/beans.pot" <<'POT'
+module mathlib
+kind library
+csrc all "native/fast_add.c"
+cflags nonesuch-os -DCOMPILER_BIAS=700
+link macos framework "CoreFoundation"
+POT
+(cd "$tmp/app" && "$root/build/beansc" run main.b) >"$tmp/cflags.sel.out"
+grep -Fqx "fast 42" "$tmp/cflags.sel.out"
+
+# Flags that would fight the driver for the output are refused at read time.
+refuse_cflags() {
+    local row=$1
+    local message=$2
+    cat > "$tmp/mathlib/beans.pot" <<POT
+module mathlib
+kind library
+csrc all "native/fast_add.c"
+$row
+POT
+    if (cd "$tmp/app" && "$root/build/beansc" check main.b) \
+        >"$tmp/cflags.bad" 2>&1; then
+        echo "cflags row '$row' unexpectedly accepted" >&2
+        exit 1
+    fi
+    grep -Fq "$message" "$tmp/cflags.bad"
+}
+refuse_cflags "cflags all -o /tmp/hijack.o" \
+    "cflags cannot set '-o': the object path belongs to the build, not the package"
+refuse_cflags "cflags all -c" \
+    "cflags cannot set '-c': every csrc file is already compiled to an object"
+refuse_cflags "cflags all" \
+    "cflags needs 'cflags <selector> <flag> [<flag>...]'"
+
+cat > "$tmp/mathlib/beans.pot" <<'POT'
+module mathlib
+kind library
+csrc all "native/fast_add.c"
+link macos framework "CoreFoundation"
+POT
+echo "  ok cflags: applied, cached per flag set, package-scoped, validated"
+
 echo "ok csrc build"

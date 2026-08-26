@@ -181,7 +181,10 @@ make ARCH=ppc64 && make ARCH=ppc64 install
 
 Override the tools Beans uses with `BEANS_CC`, `BEANS_AR`, `BEANS_RUNTIME`,
 `BEANS_WASM_HOST` and `BEANS_STDLIB`, or per build with `--cc`, `--ar`,
-`--linker` and `--sysroot`.
+`--linker` and `--sysroot`. A cross sysroot can also come from the environment
+— `BEANS_WASM_SYSROOT` for a wasm target, `BEANS_SYSROOT` for anything else —
+so the path a machine happens to keep it at stays out of a project's scripts.
+`--sysroot` wins over both.
 
 A large `beansc build` splits its module into a fixed set of chunks, compiles
 them with concurrent Clang processes, and caches each object by content, so a

@@ -14,17 +14,63 @@ import std.time
 // shared library and resolves extern symbols through it, the same way it
 // treats a manifest `link` library.
 
-fn csrc_selected(rows: List<ModuleLink>,
-                 target: TargetDescription) -> List<string> {
-    var sources: List<string> = []
-    for row: ModuleLink in rows {
-        if row.selector == "all" ||
-           row.selector == target.os ||
-           row.selector == target.triple {
-            sources.push(path.join(row.root, row.value))
-        }
+// One C source and the flags that belong to it. The flags travel with the
+// path because they are part of the object's identity: the same file compiled
+// with a different -D is a different object, and a cache that keyed only on
+// the path would hand back the other one.
+class CsrcUnit {
+    path: string
+    flags: List<string>
+
+    fn init(path: string, move flags: List<string>) {
+        self.path = path
+        self.flags = move flags
     }
-    return move sources
+}
+
+fn csrc_row_matches(selector: string,
+                    target: TargetDescription) -> bool {
+    return selector == "all" ||
+           selector == target.os ||
+           selector == target.triple
+}
+
+// Flags apply only to csrc rows from the package that declared them. A
+// dependency's -DFT2_BUILD_LIBRARY reaching another package's C would be a
+// silent miscompile of code its author never saw the flag for.
+fn csrc_selected(rows: List<ModuleLink>,
+                 cflag_rows: List<ModuleCflags>,
+                 target: TargetDescription) -> List<CsrcUnit> {
+    var units: List<CsrcUnit> = []
+    for row: ModuleLink in rows {
+        if !csrc_row_matches(row.selector, target) {
+            continue
+        }
+        var flags: List<string> = []
+        for cflags: ModuleCflags in cflag_rows {
+            if cflags.root != row.root { continue }
+            if !csrc_row_matches(
+                   cflags.selector, target) {
+                continue
+            }
+            for flag: string in cflags.flags {
+                flags.push(flag)
+            }
+        }
+        units.push(
+            new CsrcUnit(
+                path.join(row.root, row.value),
+                move flags))
+    }
+    return move units
+}
+
+fn csrc_unit_paths(units: List<CsrcUnit>) -> List<string> {
+    var paths: List<string> = []
+    for unit: CsrcUnit in units {
+        paths.push(unit.path)
+    }
+    return move paths
 }
 
 // Two independent hashes plus the byte length make accidental cache aliases
@@ -194,12 +240,21 @@ fn csrc_publish(staging: string, target: string) {
 // One host shared library holding every selected csrc source, for the
 // interpreter. Cached by content hash beside the package cache, so a
 // dependency edit rebuilds and an unchanged tree loads instantly.
-fn csrc_run_library(sources: List<string>,
+fn csrc_run_library(units: List<CsrcUnit>,
                     link_arguments: List<string>,
                     os_name: string,
                     target_name: string) -> Result<string> {
     let compiler: string = csrc_host_compiler()
-    let inputs: string = csrc_inputs_key(sources)?
+    // Each unit's own flags go into the key beside its sources. Two packages
+    // can disagree about a -D, so the flags cannot be unioned into one
+    // compile — each file is compiled with its own set and the objects are
+    // linked together below.
+    var inputs: string = ""
+    var seen: List<string> = []
+    for unit: CsrcUnit in units {
+        inputs =
+            "{inputs}{csrc_arguments_key(unit.flags)}{csrc_dependency_key(unit.path, seen)?}"
+    }
     let arguments: string = csrc_arguments_key(link_arguments)
     let key: string =
         "run|{target_name}|{csrc_compiler_identity(compiler)}|{inputs}|{arguments}"
@@ -226,9 +281,53 @@ fn csrc_run_library(sources: List<string>,
             "beans_csrc.{csrc_key_tag(key)}.{extension}")
     if File.exists(library) { return ok(library) }
     let staging: string = csrc_staging_name(library)
+    var objects: List<string> = []
+    for unit: CsrcUnit in units {
+        let object: string =
+            csrc_staging_name("{library}.{objects.len()}.o")
+        let compile: process.Command =
+            new process.Command(compiler)
+        compile.arg("-O2")
+        if os_name != "windows" {
+            compile.arg("-fPIC")
+        }
+        for flag: string in unit.flags {
+            compile.arg(flag)
+        }
+        compile.arg("-c")
+        compile.arg(unit.path)
+        compile.arg("-o")
+        compile.arg(object)
+        match compile.run() {
+            ok(done) => {
+                if !done.succeeded() {
+                    var message: string =
+                        done.stderr_text().trim()
+                    if message == "" {
+                        message =
+                            "the C compiler failed with no output"
+                    }
+                    for stale: string in objects {
+                        match File.remove(stale) {
+                            ok(_) => {}
+                            err(_) => {}
+                        }
+                    }
+                    return err(
+                        "cannot compile {unit.path}: {message}",
+                        "csrc")
+                }
+            }
+            err(error) => {
+                return err(
+                    "cannot start the C compiler: {error.msg}",
+                    "csrc")
+            }
+        }
+        objects.push(object)
+    }
     let command: process.Command =
         new process.Command(compiler)
-    command.arg("-O2")
     if os_name != "windows" {
         command.arg("-fPIC")
     }
@@ -237,8 +336,8 @@ fn csrc_run_library(sources: List<string>,
     } else {
         command.arg("-shared")
     }
-    for source: string in sources {
-        command.arg(source)
+    for object: string in objects {
+        command.arg(object)
     }
     for argument: string in link_arguments {
         command.arg(argument)
@@ -261,6 +360,12 @@ fn csrc_run_library(sources: List<string>,
             return err(
                 "cannot start Clang to build csrc sources: {error.msg} — csrc packages need a C compiler even under 'beansc run'",
                 "toolchain")
+        }
+    }
+    for object: string in objects {
+        match File.remove(object) {
+            ok(_) => {}
+            err(_) => {}
         }
     }
     csrc_publish(staging, library)

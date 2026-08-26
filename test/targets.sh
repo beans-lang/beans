@@ -336,4 +336,45 @@ if [[ "$host_objects" -lt 2 ]]; then
     exit 1
 fi
 
+# A wasm sysroot is a per-machine constant, so it reads from the environment
+# the way the wasm C compiler does. These check the resolution and its
+# diagnostics, which need no wasm toolchain: every case below fails or
+# succeeds before Clang is started.
+echo "checking sysroot resolution and the setting that named it"
+cat >"$tmp/sysroot.b" <<'SYSROOT'
+import std.io
+
+fn main() {
+    io.println("sysroot")
+}
+SYSROOT
+
+# each setting names itself, so nobody edits the one they did not set
+if ./build/beansc build --target wasm32-wasip1 "$tmp/sysroot.b" \
+        -o "$tmp/sysroot.wasm" >"$tmp/wasm.out" 2>&1; then
+    echo "a wasm build with a missing sysroot unexpectedly passed" >&2
+    exit 1
+fi
+env BEANS_WASM_SYSROOT="$tmp/nowhere" ./build/beansc build \
+    --target wasm32-wasip1 "$tmp/sysroot.b" -o "$tmp/sysroot.wasm" \
+    >"$tmp/wasm.bad" 2>&1 || true
+grep -Fq "sysroot '$tmp/nowhere' is not a directory (BEANS_WASM_SYSROOT named it)" \
+    "$tmp/wasm.bad"
+env BEANS_SYSROOT="$tmp/nowhere" ./build/beansc build "$tmp/sysroot.b" \
+    -o "$tmp/sysroot.bin" >"$tmp/native.bad" 2>&1 || true
+grep -Fq "sysroot '$tmp/nowhere' is not a directory (BEANS_SYSROOT named it)" \
+    "$tmp/native.bad"
+
+# the wasm variable must not reach a native build: a machine that sets it once
+# for its wasm work would otherwise break every ordinary build on it
+env BEANS_WASM_SYSROOT="$tmp/nowhere" ./build/beansc build "$tmp/sysroot.b" \
+    -o "$tmp/sysroot.bin" >"$tmp/native.ok" 2>&1
+"$tmp/sysroot.bin" | grep -Fqx "sysroot"
+
+# an explicit flag wins over both, and says so
+env BEANS_SYSROOT="$tmp" ./build/beansc build --sysroot "$tmp/nowhere" \
+    "$tmp/sysroot.b" -o "$tmp/sysroot.bin" >"$tmp/flag.bad" 2>&1 || true
+grep -Fq -- "--sysroot $tmp/nowhere is not a directory" "$tmp/flag.bad"
+echo "  ok sysroot: BEANS_WASM_SYSROOT, BEANS_SYSROOT, --sysroot precedence"
+
 echo "ok target model, cross-target facts, CPU features, and setting validation"

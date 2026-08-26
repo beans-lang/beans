@@ -175,6 +175,7 @@ link macos framework "CoreFoundation"
 link x86_64-unknown-linux-gnu library "platform_helper"
 csrc all "native/shim.c"
 csrc macos "native/shim_macos.c"
+cflags all -DSHIM_BUILD -I native/include
 ```
 
 `kind` is `application` or `library` and defaults to `application`. Applications
@@ -319,6 +320,14 @@ fn main() {
   into a host shared library cached under `$BEANS_HOME/cache/csrc` and
   resolves extern symbols through it. Quoted `#include "..."` headers resolve
   beside each source; a missing file is a manifest error.
+- `cflags <selector> <flag> [<flag>...]` adds Clang flags to the `csrc` files
+  **the same package declared**. A dependency's `-D` never reaches another
+  package's C, so one package cannot silently miscompile another's code with a
+  define its author never saw. Flags are separate words rather than one quoted
+  string, so a path with a space stays one argument. Every flag is part of the
+  object's cache key: changing one recompiles instead of reusing the object
+  built with the old set. `-o` and `-c` are refused — the object path belongs
+  to the build.
 
 ## Lexical
 
@@ -2937,6 +2946,11 @@ beansc build --target wasm32-unknown-unknown --runtime freestanding \
 - A direct WASIp1 link needs a WASI SDK C sysroot. Set `BEANS_WASM_CC` or pass `--cc`
   when the host's normal Clang has no WASI sysroot. `--emit ir` and `--emit obj` still
   need no sysroot.
+- The sysroot itself lands somewhere different on every machine, so it reads from the
+  environment rather than from a project's build script: `BEANS_WASM_SYSROOT` when the
+  target emits wasm, `BEANS_SYSROOT` otherwise, and `--sysroot` wins over both. A
+  directory that does not exist is reported with the setting that named it, because
+  Clang's own answer is a header error from inside the sysroot it did not find.
 - `runtime/wasm_host.c` is the shipped WASIp1 adapter. It declares the preview-1 imports,
   owns startup, caches arguments and environment, and implements the runtime hooks.
   wasi-libc supplies allocation, floating-point text and the filesystem ABI.

@@ -315,9 +315,10 @@ class TreeInterpreter {
     fn load_manifest_links() {
         // csrc rows compile once into a cached host library, opened like
         // any manifest library so extern symbols resolve through it.
-        let csrc_sources: List<string> =
+        let csrc_sources: List<CsrcUnit> =
             csrc_selected(
                 self.program.csrc_rows,
+                self.program.cflag_rows,
                 self.program.target)
         if csrc_sources.len() != 0 {
             let link_arguments: List<string> =

@@ -1384,6 +1384,7 @@ fn main() {
                                             loader.packages),
                                         csrc_selected(
                                             loader.csrc_rows,
+                                            loader.cflag_rows,
                                             selected))
                                 // The same module split into standalone
                                 // chunks for the parallel backend, or an

@@ -398,6 +398,7 @@ class HirProgram {
     target: TargetDescription
     links: List<ModuleLink>
     csrc_rows: List<ModuleLink>
+    cflag_rows: List<ModuleCflags>
     declarations: List<HirDeclaration>
     c_globals: List<HirCGlobal>
     functions: List<HirFunction>
@@ -411,6 +412,7 @@ class HirProgram {
         self.target = target
         self.links = []
         self.csrc_rows = []
+        self.cflag_rows = []
         self.declarations = []
         self.c_globals = []
         self.functions = []
@@ -501,6 +503,10 @@ class SignatureChecker {
         }
         for row: ModuleLink in resolver.loader.csrc_rows {
             self.hir.csrc_rows.push(row)
+        }
+        for row: ModuleCflags in
+            resolver.loader.cflag_rows {
+            self.hir.cflag_rows.push(row)
         }
         self.hir.entry_symbol =
             package_symbol(resolver.loader.entry_package, "main")
