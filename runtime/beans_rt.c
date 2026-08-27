@@ -3021,6 +3021,13 @@ static void cc_at_exit(void) {
         cc_collect(1);
         if (pass >= 1 && cc_len == 0) break;
     }
+    // A cycle member's deinit prints like any other, and on Windows those bytes
+    // sit in the runtime's own stdout buffer. That buffer's atexit flush is
+    // registered from beans_os_init — inside main, so after this handler's
+    // constructor — and atexit runs last-registered-first, which drains it
+    // before this pass ever writes. Flush here and the ordering stops
+    // mattering; on every other platform it is a no-op fflush.
+    beans_out_flush();
 }
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
 __attribute__((constructor)) static void cc_setup(void) { atexit(cc_at_exit); }
