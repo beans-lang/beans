@@ -11,4 +11,7 @@ swapped
 main.Greets=main.Greeter
 true|true
 5
+true|false|true
+9|z
+true|false
 done

@@ -44,6 +44,9 @@ class ExpressionChecker {
     feature_guards: List<string>
     take_floor_depth: int
     capture_floor_depth: int
+    // The map a match subject reads its value from, while that match's arm
+    // patterns are being declared. -1 when the subject is anything else.
+    pattern_borrow_owner: int
     // >0 while a closure body is being checked. `super` has no receiver
     // there: the closure is its own function and carries no self.
     closure_depth: int
@@ -91,6 +94,7 @@ class ExpressionChecker {
         self.defer_depth = 0
         self.feature_guards = []
         self.take_floor_depth = -1
+        self.pattern_borrow_owner = -1
         self.capture_floor_depth = -1
         self.closure_depth = 0
         self.require_send_captures = false
@@ -568,6 +572,7 @@ class ExpressionChecker {
                         binding.mutable, binding.borrowed,
                         binding.inout_parameter)
                 item.move_state = binding.move_state
+                item.borrows_owner = binding.borrows_owner
                 copied.bindings[name] = item
             }
             result.push(copied)
@@ -776,6 +781,22 @@ class ExpressionChecker {
                 if self.is_subtype(own, bound) { return true }
             }
             return false
+        }
+        return false
+    }
+
+    // A generic body may compare two values of a type parameter whose bounds
+    // promise Order — spec/SYNTAX.md says that is what the bound is for, and
+    // sort, max and min already rely on it. Deliberately narrower than
+    // trait_satisfied: only a parameter, never a concrete type that merely
+    // implements the interface, because these operators lower to the builtin
+    // comparison of whatever the instantiation binds, and a user type has
+    // none to lower to.
+    fn ordered_parameter(type: HirType) -> bool {
+        for constraint: HirGeneric in
+            self.current_constraints {
+            if constraint.name != type.name { continue }
+            return self.trait_satisfied(type, "Order")
         }
         return false
     }
@@ -1007,6 +1028,163 @@ class ExpressionChecker {
         return false
     }
 
+    // A Mutex is Send and Sync when the lock is genuinely the only way in.
+    // For a move-only value it is: `new Mutex(move v)` consumes the value and
+    // leaves the source dead, and `with_lock` hands the body a borrow the
+    // checker refuses to store anywhere. So the mutex owns it outright — but
+    // only if nothing the value holds can be reached another way, which is
+    // what this walks. An ordinary `class` field fails on purpose: it is an
+    // aliasable handle, so a reference to it can outlive the move into the
+    // mutex and be touched without the lock.
+    //
+    // This is what spec/SYNTAX.md means by wrapping shared mutable data in a
+    // Mutex. It is derived, not promised: `unique class ... implements Send`
+    // stays the unchecked escape hatch for anything this cannot see.
+    // Why a Mutex was refused. Wrapping shared state in a lock is what the
+    // spec tells people to do, so this refusal is the one they meet, and the
+    // verdict on its own says nothing about what to change.
+    fn send_capture_hint(type: HirType) -> string {
+        if canonical_hir_name(type.name) != "Mutex" ||
+           type.args.len() != 1 {
+            return ""
+        }
+        let inner: HirType = type.args[0]
+        match self.declaration_for(inner) {
+            some(declaration) => {
+                if declaration.kind == "class" &&
+                   !declaration.is_unique {
+                    return " — a Mutex owns what it locks, and an ordinary class stays an aliasable handle the move cannot take away. Declare '{render_hir_type(inner)}' a unique class"
+                }
+            }
+            none => {}
+        }
+        let leak: string = self.unconfined_field(inner)
+        if leak != "" {
+            return " — {leak} is reachable without the lock"
+        }
+        return ""
+    }
+
+    // The first field of a locked value that something else can still hold,
+    // named all the way down: the field that fails is often a class two hops
+    // in, and the owner at the top is not the one to change.
+    fn unconfined_field(type: HirType) -> string {
+        let path: string =
+            self.unconfined_path(
+                type, render_hir_type(type), 0)
+        return path
+    }
+
+    fn unconfined_path(
+        type: HirType, prefix: string,
+        depth: int) -> string {
+        if depth > 8 { return "" }
+        match self.declaration_for(type) {
+            some(declaration) => {
+                if declaration.kind != "class" { return "" }
+                for field: HirField in declaration.fields {
+                    let field_type: HirType =
+                        self.substitute_owner_type(
+                            field.type, declaration, type)
+                    var seen: Map<string, bool> = {}
+                    if self.mutex_confined_seen(
+                        field_type, inout seen) {
+                        continue
+                    }
+                    let named: string =
+                        "{prefix}.{field.name}"
+                    let deeper: string =
+                        self.unconfined_path(
+                            field_type, named, depth + 1)
+                    if deeper != "" { return deeper }
+                    return "'{named}' of type {render_hir_type(field_type)}"
+                }
+            }
+            none => {}
+        }
+        return ""
+    }
+
+    fn mutex_confined(type: HirType) -> bool {
+        if !self.is_move_only(type) { return false }
+        var seen: Map<string, bool> = {}
+        return self.mutex_confined_seen(type, inout seen)
+    }
+
+    fn mutex_confined_seen(
+        type: HirType,
+        inout seen: Map<string, bool>) -> bool {
+        if self.trait_satisfied(type, "Send") { return true }
+        let key: string = hir_type_key(type)
+        // A field of the owner's own type is no new way in: the answer for
+        // the whole graph is the answer for its other edges.
+        if seen.contains_key(key) { return true }
+        seen[key] = true
+        let name: string = canonical_hir_name(type.name)
+        if name == "array" || name == "Option" ||
+           name == "List" || name == "Box" ||
+           name == "Arena" {
+            return type.args.len() == 1 &&
+                   self.mutex_confined_seen(
+                       type.args[0], inout seen)
+        }
+        if name == "Result" || name == "Map" ||
+           name == "OrderedMap" {
+            if type.args.len() == 0 { return false }
+            for argument: HirType in type.args {
+                if !self.mutex_confined_seen(
+                    argument, inout seen) {
+                    return false
+                }
+            }
+            return true
+        }
+        match self.declaration_for(type) {
+            some(declaration) => {
+                if declaration.kind != "class" ||
+                   !declaration.is_unique {
+                    return false
+                }
+                return self.confined_fields(
+                    type, declaration, inout seen)
+            }
+            none => {}
+        }
+        return false
+    }
+
+    // Every field the value carries, inherited ones included.
+    fn confined_fields(
+        type: HirType,
+        declaration: HirDeclaration,
+        inout seen: Map<string, bool>) -> bool {
+        for field: HirField in declaration.fields {
+            let field_type: HirType =
+                self.substitute_owner_type(
+                    field.type, declaration, type)
+            if !self.mutex_confined_seen(
+                field_type, inout seen) {
+                return false
+            }
+        }
+        for relation: HirType in declaration.relations {
+            let bound: HirType =
+                self.substitute_owner_type(
+                    relation, declaration, type)
+            match self.declaration_for(bound) {
+                some(base) => {
+                    if base.kind == "class" &&
+                       !self.confined_fields(
+                           bound, base, inout seen) {
+                        return false
+                    }
+                }
+                none => {}
+            }
+        }
+        return true
+    }
+
     fn builtin_thread_trait(
         type: HirType, trait: string) -> Option<bool> {
         let policy: string = builtin_thread_policy(type)
@@ -1058,7 +1236,9 @@ class ExpressionChecker {
         if policy == "mutex_argument" {
             return some(
                 type.args.len() == 1 &&
-                self.trait_satisfied(type.args[0], "Send"))
+                (self.trait_satisfied(
+                     type.args[0], "Send") ||
+                 self.mutex_confined(type.args[0])))
         }
         if policy == "thread_result" {
             return some(
@@ -4806,7 +4986,7 @@ class ExpressionChecker {
                 self.bad_send_captures[capture_key] = true
                 self.fail(
                     node,
-                    "thread closure cannot capture '{binding.name}' of non-Send type {render_hir_type(binding.type)}")
+                    "thread closure cannot capture '{binding.name}' of non-Send type {render_hir_type(binding.type)}{self.send_capture_hint(binding.type)}")
             } else if self.is_move_only(binding.type) &&
                       !self.send_move_captures.contains_key(binding.id) {
                 self.bad_send_captures[capture_key] = true
@@ -5297,7 +5477,8 @@ class ExpressionChecker {
                   operation == ">" || operation == ">=" {
             if !hir_types_equal(left.type, right.type) ||
                (!hir_is_numeric(left.type) &&
-                left.type.name != "string") {
+                left.type.name != "string" &&
+                !self.ordered_parameter(left.type)) {
                 self.fail(
                     node,
                     "'{operation}' needs matching ordered operands")
@@ -8328,6 +8509,28 @@ class ExpressionChecker {
                             }
                         }
                     }
+                    // A move-only map value comes back as the map's
+                    // own, so the binding it lands in is a borrow of the
+                    // map. Two of those alive together would be two
+                    // mutating names for one value — a write through
+                    // either shows up in the other — which is the one
+                    // thing move-only exists to rule out. One at a time.
+                    if (receiver.type.name == "Map" ||
+                        receiver.type.name == "OrderedMap") &&
+                       callee.value == "get" &&
+                       receiver.type.args.len() == 2 &&
+                       self.is_move_only(
+                           receiver.type.args[1]) &&
+                       receiver.kind == "local" {
+                        let held: string =
+                            self.live_map_borrow(
+                                receiver.binding_id)
+                        if held != "" {
+                            self.fail(
+                                node,
+                                "'{receiver.value}' is already read into '{held}', which still holds its {render_hir_type(receiver.type.args[1])} — a move-only value has one live reader at a time, so finish with '{held}' first")
+                        }
+                    }
                     if (receiver.type.name == "RawPtr" &&
                         callee.value != "is_null") ||
                        receiver.type.name == "Slice" ||
@@ -10033,6 +10236,15 @@ class ExpressionChecker {
             }
             let binding_id: int = self.declare(
                 binding, binding_type, false, true, false)
+            if self.pattern_borrow_owner >= 0 {
+                match self.find_local(binding.value) {
+                    some(declared) => {
+                        declared.borrows_owner =
+                            self.pattern_borrow_owner
+                    }
+                    none => {}
+                }
+            }
             let lowered: HirNode = self.make_node(
                 binding, "pattern_binding",
                 binding.value, binding_type)
@@ -10123,6 +10335,49 @@ class ExpressionChecker {
             "match on {render_hir_type(subject)} needs a _ arm")
     }
 
+    // `m.get(k)` on a map whose values are move-only answers the map's own
+    // value, not a copy — the index forms are refused precisely because they
+    // would have to copy it. That makes the binding a borrow of the map, so
+    // the map is named here and carried onto the arm's bindings.
+    fn map_borrow_owner(subject: HirNode) -> int {
+        if subject.kind != "builtin_method" ||
+           subject.value != "get" ||
+           subject.children.len() == 0 {
+            return -1
+        }
+        let receiver: HirNode = subject.children[0]
+        let name: string =
+            canonical_hir_name(receiver.type.name)
+        if (name != "Map" && name != "OrderedMap") ||
+           receiver.type.args.len() != 2 ||
+           !self.is_move_only(receiver.type.args[1]) {
+            return -1
+        }
+        if receiver.kind != "local" ||
+           receiver.binding_id < 0 {
+            return -1
+        }
+        return receiver.binding_id
+    }
+
+    // The name of a binding still in scope that borrows this map, or "".
+    fn live_map_borrow(owner_id: int) -> string {
+        if owner_id < 0 { return "" }
+        for scope: LocalScope in self.scopes {
+            for name: string in scope.bindings.keys() {
+                match scope.bindings.get(name) {
+                    some(binding) => {
+                        if binding.borrows_owner == owner_id {
+                            return binding.name
+                        }
+                    }
+                    none => {}
+                }
+            }
+        }
+        return ""
+    }
+
     fn check_match(node: AstNode,
                    expected: HirType) -> HirNode {
         let discard: bool = expected.name == "discard"
@@ -10138,6 +10393,8 @@ class ExpressionChecker {
                     expected
                 })
         result.children.push(subject)
+        let borrow_owner: int =
+            self.map_borrow_owner(subject)
         let move_base: List<LocalScope> =
             self.copy_scopes(self.scopes)
         var merged: List<LocalScope> =
@@ -10164,9 +10421,11 @@ class ExpressionChecker {
                 arm.children[0], inout covered,
                 inout has_wildcard,
                 inout saw_true, inout saw_false)
+            self.pattern_borrow_owner = borrow_owner
             lowered.children.push(
                 self.check_pattern(
                     arm.children[0], subject.type))
+            self.pattern_borrow_owner = -1
             if !discard && expected.name != "" &&
                expected.name != "unit" &&
                arm.children[1].kind == "block" {

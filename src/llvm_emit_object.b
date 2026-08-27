@@ -2568,6 +2568,34 @@ partial class LlvmTextEmitter {
             }
             output =
                 "{output}  {result} = {opcode} {llvm} {left}, {right}\n"
+        } else if canonical_hir_name(field_type.name) ==
+                      "decimal" &&
+                  (operator == "+" || operator == "-" ||
+                   operator == "*" || operator == "/") {
+            // `self.total += amount` is the accumulator every ledger writes,
+            // and it reached here only to be refused: the checker and the
+            // tree interpreter both take it, so a program that ran would not
+            // build. Decimal arithmetic is a runtime call on spilled slots,
+            // the same one an ordinary `a + b` makes; the local form's
+            // constant fast path is an optimization, not part of the answer.
+            let opcode: string =
+                if operator == "+" {
+                    "add"
+                } else if operator == "-" {
+                    "sub"
+                } else if operator == "*" {
+                    "mul"
+                } else {
+                    "div"
+                }
+            let left_slot: string =
+                self.spill_slot(llvm, "field.dec.left")
+            let right_slot: string =
+                self.spill_slot(llvm, "field.dec.right")
+            let out_slot: string =
+                self.spill_slot(llvm, "field.dec.out")
+            output =
+                "{output}  store {llvm} {left}, ptr {left_slot}\n  store {llvm} {right}, ptr {right_slot}\n  call void @beans_decv_{opcode}(ptr {out_slot}, ptr {left_slot}, ptr {right_slot}, i64 {instruction.line}, i64 {instruction.col})\n  {result} = load {llvm}, ptr {out_slot}\n"
         } else {
             self.fail(
                 instruction,

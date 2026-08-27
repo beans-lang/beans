@@ -1,7 +1,25 @@
 import std.io
+import std.time
 
 fn work(a: int) -> int {
     return a * 2
+}
+
+fn on_gate(gate: Gate) -> int {
+    gate.wait()
+    return 5
+}
+
+fn on_sleep() -> int {
+    time.sleep_millis(30000)
+    return 6
+}
+
+fn on_channel(box: Channel<int>) -> int {
+    match box.receive() {
+        some(value) => { return value }
+        none => { return -1 }
+    }
 }
 
 fn boom(a: int) -> int {
@@ -139,6 +157,49 @@ fn main() {
     match c.join() {
         ok(value) => { io.println("spin finished {value}") }
         err(error) => { io.println("spin err kind={error.kind}") }
+    }
+
+    // a cancel reaches a child that is parked, not just one that never
+    // parks: every park site answers the cancel and the child ends with the
+    // cancelled outcome instead of waiting for a wake that never comes
+    let gate: Gate = new Gate()
+    let waiting: Brew<int> = brew on_gate(gate)
+    waiting.cancel()
+    match waiting.join() {
+        ok(value) => { io.println("gate finished {value}") }
+        err(error) => { io.println("gate kind={error.kind}") }
+    }
+
+    let dozing: Brew<int> = brew on_sleep()
+    dozing.cancel()
+    match dozing.join() {
+        ok(value) => { io.println("sleep finished {value}") }
+        err(error) => { io.println("sleep kind={error.kind}") }
+    }
+
+    let box: Channel<int> = new Channel<int>(1)
+    let listening: Brew<int> = brew on_channel(box)
+    listening.cancel()
+    match listening.join() {
+        ok(value) => { io.println("channel finished {value}") }
+        err(error) => { io.println("channel kind={error.kind}") }
+    }
+
+    // cancel_all on a group whose child is parked returns, and a gate that
+    // is opened instead still delivers the child's value
+    let shut: Gate = new Gate()
+    let fleet: TaskGroup<int> = new TaskGroup<int>()
+    fleet.brew(on_gate(shut))
+    fleet.cancel_all()
+    io.println("cancel_all returned")
+
+    let opened: Gate = new Gate()
+    let alive: TaskGroup<int> = new TaskGroup<int>()
+    alive.brew(on_gate(opened))
+    opened.open()
+    match alive.wait_all() {
+        ok(values) => { io.println("opened {values}") }
+        err(error) => { io.println("opened kind={error.kind}") }
     }
 
     // the statement form: an anonymous child, joined by the scope exit —

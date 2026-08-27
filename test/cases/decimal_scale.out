@@ -1,0 +1,12 @@
+zero left 233.00 1.5000 -233.00
+zero right 233.00 1.5000
+both zero 0.00 0.0000
+through mul 0.00 0
+running 15.00
+plain 20.00 234.50 2.2500
+field add 20.00
+field sub 16.00
+field mul 32.000
+field div 8.00
+equal true true
+one key 1 zero

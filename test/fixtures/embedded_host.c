@@ -219,8 +219,11 @@ void beans_host_exit(int code) { board_exit(code); }
 // ---- float formatting ------------------------------------------------------
 //
 // The runtime routes every float through these two rather than snprintf/strtod. The
-// program prints one division, so the fixed-point conversion below is enough — and being
-// explicit about that is better than a half-written dtoa that looks general.
+// program prints one division at a written-out precision, so the fixed-point conversion
+// below is enough — and being explicit about that is better than a half-written dtoa
+// that looks general. The signatures match the runtime's declarations exactly: on these
+// ILP32 targets a `long long` return rides in two registers and an `int` one fills only
+// the first, so a narrower definition hands the caller half an answer.
 
 static int digits_of(u64 value, char* out) {
     int n = 0;
@@ -235,7 +238,8 @@ static int digits_of(u64 value, char* out) {
     return n;
 }
 
-int beans_host_format_f64(char* out, u64 cap, double value, int precision, char kind) {
+long long beans_host_format_f64(char* out, u64 cap, double value, int precision,
+                                int kind) {
     (void)kind;
     if (precision < 0) precision = 0;
     if (precision > 17) precision = 17;
@@ -259,11 +263,15 @@ int beans_host_format_f64(char* out, u64 cap, double value, int precision, char 
     return n;
 }
 
-// Only reached by string-to-float conversion, which examples/embedded.b never does. A
-// wrong answer here would be worse than an obvious one, so it reports failure.
-int beans_host_parse_f64(const char* text, double* out) {
-    (void)text;
+// A bare `{x}` asks for the shortest text that reads back as the same value, and the
+// runtime finds it by formatting and reparsing — so a board that wants that answer has
+// to ship a correctly rounded parser, which is a real dtoa and not this. Reporting
+// failure is the honest reply: the runtime then prints a fixed ten significant digits
+// rather than trusting an answer this cannot give. examples/embedded.b writes its
+// precision out for the same reason, so nothing on these boards reaches here at all.
+int beans_host_parse_f64(const char* text, double* out, const char** end) {
     (void)out;
+    if (end) *end = text;
     return 0;
 }
 

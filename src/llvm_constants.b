@@ -59,6 +59,61 @@ fn llvm_integer_constant(text: string) -> string {
     return "{value}"
 }
 
+// LLVM's IR lexer only reads an exponent that follows a decimal point, so the
+// source spelling `1e10` reaches it as an integer token and the module is
+// rejected with "integer constant must have integer type". Source float
+// literals may leave the point out, so hand LLVM a mantissa it reads as
+// floating point regardless of how the literal was written.
+fn llvm_float_constant(text: string) -> string {
+    let cleaned: string = text.replace("_", "")
+    var index: int = 0
+    if cleaned.starts_with("-") ||
+       cleaned.starts_with("+") {
+        index = 1
+    }
+    // A hex float spelling is already unambiguous to LLVM.
+    if index + 2 <= cleaned.len() &&
+       cleaned.byte_at(index) == 48 {
+        let marker: int = cleaned.byte_at(index + 1)
+        if marker == 120 || marker == 88 {
+            return cleaned
+        }
+    }
+    var mantissa_end: int = cleaned.len()
+    var has_dot: bool = false
+    var position: int = index
+    for position < cleaned.len() {
+        let byte: int = cleaned.byte_at(position)
+        if byte == 46 {
+            has_dot = true
+        }
+        if byte == 101 || byte == 69 {
+            mantissa_end = position
+            break
+        }
+        position += 1
+    }
+    var mantissa: string =
+        cleaned.slice(0, mantissa_end)
+    let exponent: string =
+        cleaned.slice(mantissa_end, cleaned.len())
+    if mantissa.len() == index {
+        return cleaned
+    }
+    if mantissa.byte_at(index) == 46 {
+        mantissa =
+            "{mantissa.slice(0, index)}0{mantissa.slice(index, mantissa.len())}"
+        has_dot = true
+    }
+    if !has_dot {
+        return "{mantissa}.0{exponent}"
+    }
+    if mantissa.byte_at(mantissa.len() - 1) == 46 {
+        return "{mantissa}0{exponent}"
+    }
+    return "{mantissa}{exponent}"
+}
+
 // Mirrors the interpreter's decimal parse: one digit string, a scale from the
 // dot and exponent, leading zeros stripped, 38 digits and scale 65535 the
 // caps. The i128 coefficient is emitted as its digit text — LLVM parses wide

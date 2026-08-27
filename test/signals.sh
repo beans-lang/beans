@@ -174,19 +174,76 @@ second watcher still owns the signal true
 overlap ok
 EXPECTED
 
-echo "checking there is no signal handler anywhere"
-# The design claim, checked against the source: no sigaction, no signal(), no
-# sigsetjmp. A watched signal is blocked and read, so no Beans code — and no reference
-# counting or cycle collection — ever runs in async-signal context.
-if grep -nE '\b(sigaction|sigsetjmp|siglongjmp)\b' runtime/beans_rt.c; then
-    echo "a signal handler appeared; signals must be blocked and read, never handled" >&2
+echo "checking no watched signal is ever handled"
+# The design claim, checked against the source: no Beans code — and no reference
+# counting or cycle collection — ever runs in async-signal context. A watched signal
+# is blocked and read from a descriptor, so it needs no disposition at all.
+#
+# One handler exists, and it is fenced off in the source between two markers: the
+# fault reporter. SIGSEGV and SIGBUS cannot be blocked and read — each names an
+# instruction that has already failed, and returning to it faults again forever — so
+# the choice there is between saying what happened and dying silently with the
+# program's buffered output still in stdio. Everything below holds that handler to
+# what makes it safe: only those two signals, no Beans entry point but the output
+# flush, and no return to the faulting code.
+outside=$(awk '
+    /BEGIN THE ONE SIGNAL HANDLER/ { inside = 1 }
+    !inside { print }
+    /END THE ONE SIGNAL HANDLER/ { inside = 0 }
+' runtime/beans_rt.c)
+inside=$(awk '
+    /BEGIN THE ONE SIGNAL HANDLER/ { inside = 1; next }
+    /END THE ONE SIGNAL HANDLER/ { inside = 0 }
+    inside { print }
+' runtime/beans_rt.c)
+test -n "$inside" || {
+    echo "the fault reporter's markers are gone; this check now proves nothing" >&2
+    exit 1
+}
+if printf '%s\n' "$outside" | grep -nE '\b(sigaction|sigsetjmp|siglongjmp)\b'; then
+    echo "a signal handler appeared outside the fault reporter; watched signals must be blocked and read, never handled" >&2
     exit 1
 fi
 # `signal(` would install one too. SIG_IGN/SIG_DFL through it are equally out.
-if grep -nE '(^|[^a-z_])signal\(' runtime/beans_rt.c; then
+if printf '%s\n' "$outside" | grep -nE '(^|[^a-z_])signal\(' ; then
     echo "signal() installs a disposition; this design does not use one" >&2
     exit 1
 fi
+if printf '%s\n' "$inside" | grep -nE '(^|[^a-z_])signal\(' ; then
+    echo "the fault reporter must use sigaction, not signal()" >&2
+    exit 1
+fi
+# Only the two synchronous faults, and only the ones that cannot be deferred.
+for named in $(printf '%s\n' "$inside" | grep -oE '\bSIG[A-Z]+\b' | sort -u); do
+    case "$named" in
+        SIGSEGV | SIGBUS | SIG_DFL) ;;
+        *)
+            echo "the fault reporter names $named; only SIGSEGV and SIGBUS may be handled" >&2
+            exit 1
+            ;;
+    esac
+done
+# The handler allocates nothing and runs no Beans code. The output flush is the
+# one deliberate exception: recovering what the program already printed is most of
+# why the handler exists.
+for called in $(printf '%s\n' "$inside" | grep -oE '\bbeans_[a-z_]+\(' | sort -u); do
+    case "$called" in
+        "beans_out_flush(") ;;
+        *)
+            echo "the fault reporter calls $called; it may run no Beans code but the output flush" >&2
+            exit 1
+            ;;
+    esac
+done
+if printf '%s\n' "$inside" | grep -nE '\b(malloc|calloc|realloc|free|printf|fprintf|snprintf)\('; then
+    echo "the fault reporter allocates or formats; it may only write and re-raise" >&2
+    exit 1
+fi
+# It must not return to the faulting instruction under its own handler.
+printf '%s\n' "$inside" | grep -q 'raise(number)' || {
+    echo "the fault reporter must re-raise through the default action" >&2
+    exit 1
+}
 # The mechanism that replaces it, in both copies.
 if [[ "$(uname -s)" == Darwin ]]; then
     grep -q 'EVFILT_SIGNAL' runtime/beans_rt.c

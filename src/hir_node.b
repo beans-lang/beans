@@ -47,6 +47,10 @@ class LocalBinding {
     borrowed: bool
     inout_parameter: bool
     move_state: string
+    // The binding whose move-only value this one borrows, or -1. Only a
+    // map read sets it: `m.get(k)` hands back the map's own value, and two
+    // of those alive at once would be two mutating names for one value.
+    borrows_owner: int
 
     fn init(id: int, name: string, type: HirType, mutable: bool,
             borrowed: bool, inout_parameter: bool) {
@@ -57,6 +61,7 @@ class LocalBinding {
         self.borrowed = borrowed
         self.inout_parameter = inout_parameter
         self.move_state = "available"
+        self.borrows_owner = -1
     }
 }
 

@@ -106,7 +106,7 @@ partial class LlvmTextEmitter {
             let result: string =
                 "%v{instruction.result}"
             values[instruction.result] = result
-            return "  {result} = fptrunc double {instruction.text.replace("_", "")} to float\n"
+            return "  {result} = fptrunc double {llvm_float_constant(instruction.text)} to float\n"
         }
         if llvm_type_is_integer(instruction.type) ||
            llvm_type_is_float(instruction.type) {
@@ -116,7 +116,8 @@ partial class LlvmTextEmitter {
                     llvm_integer_constant(
                         instruction.text)
                 } else {
-                    instruction.text.replace("_", "")
+                    llvm_float_constant(
+                        instruction.text)
                 }
             return ""
         }
