@@ -60,12 +60,15 @@ class OwnedBox<T> {
     fn deinit() { io.println("box down") }
 }
 
-// a cycle never reaches zero by itself, so deinit is skipped on both sides
+// a cycle never reaches zero by itself, so the collector is what reclaims it —
+// and it runs each member's deinit before the shells go. Which member goes
+// first is the collector's discovery order, so the line carries no name: the
+// two backends walk different graphs to reach the same cycle.
 class Ring {
     name: string
     next: Option<Ring> = none
     fn init(name: string) { self.name = name }
-    fn deinit() { io.println("ring {self.name} down (acyclic only)") }
+    fn deinit() { io.println("ring down") }
 }
 
 fn scopes_and_reassign() {
@@ -162,7 +165,7 @@ fn cycles() {
     var a: Ring = new Ring("a")
     var b: Ring = new Ring("b")
     a.next = some(b)
-    b.next = some(a)                  // rc never hits zero: no deinit, ever
+    b.next = some(a)                  // rc never hits zero: the collector ends it
     io.println("ring linked")
 }
 

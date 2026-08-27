@@ -758,6 +758,8 @@ static void sleeper_fire_due(BeansWorker* worker, long long now) {
     }
 }
 
+static void sleeper_remove(BeansWorker* worker, BeansFiber* fiber);
+
 void beans_fiber_sleep(long long nanos) {
     BeansWorker* worker = tls_worker;
     if (nanos <= 0) return; // non-positive completes now (the timer rule)
@@ -767,9 +769,12 @@ void beans_fiber_sleep(long long nanos) {
     // and re-parks with the entry still armed.
     while (fiber_now() < deadline) {
         if (beans_fiber_park() == BEANS_FIBER_PARK_CANCELLED) {
-            // Interim: cancellation unwinds land with the F2 unwind work;
-            // until then a cancelled sleeper just finishes its sleep.
-            continue;
+            // The cancel is the answer to this park: drop the timer entry so
+            // nothing fires at a retired fiber, and end here. Until the frame
+            // unwind lands the frame is abandoned, the same as a contained
+            // panic — a cancel that returns beats one that never does.
+            sleeper_remove(worker, worker->current);
+            beans_fiber_exit_cancelled();
         }
     }
 }
@@ -1066,9 +1071,13 @@ long long beans_fiber_wait_io(long long fd, long long write,
             result = 1;
             break;
         }
-        // Cancellation is interim-invisible at io parks, the same rule as
-        // channels and sleep: observing it lands with the unwind work.
-        beans_fiber_park();
+        if (beans_fiber_park() == BEANS_FIBER_PARK_CANCELLED) {
+            // Same answer as every other park: disarm what was armed for this
+            // wait, then end the fiber with the cancelled outcome.
+            poller_disarm(worker, fiber);
+            if (deadline >= 0) sleeper_remove(worker, fiber);
+            beans_fiber_exit_cancelled();
+        }
     }
     if (deadline >= 0) sleeper_remove(worker, fiber);
     return result;
@@ -1374,8 +1383,14 @@ int beans_fiber_join(BeansFiber* fiber, char* message_out,
     }
     while (atomic_load(&fiber->state) != FIBER_DONE) {
         fiber->joiner = worker->current;
-        beans_fiber_park();
+        int outcome = beans_fiber_park();
         fiber->joiner = NULL;
+        // A joiner cancelled mid-wait stops waiting. The child keeps running
+        // and nobody reaps it — abandoned, like every other frame a cancel
+        // leaves behind until the unwind lands.
+        if (outcome == BEANS_FIBER_PARK_CANCELLED &&
+            atomic_load(&fiber->state) != FIBER_DONE)
+            beans_fiber_exit_cancelled();
     }
     fiber->joined = 1;
     int status = fiber->status;

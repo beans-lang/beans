@@ -157,6 +157,9 @@ class TreeBrewState {
     entry_context: u64
     done: bool
     panicked: bool
+    // The child observed a cancel at a park and left through it, so its
+    // frame never returned: no result, no panic message, just the ending.
+    cancelled: bool
     panic_message: string
     result: Option<TreeValue>
     joined: bool
@@ -176,6 +179,7 @@ class TreeBrewState {
         self.entry_context = 0
         self.done = false
         self.panicked = false
+        self.cancelled = false
         self.panic_message = ""
         self.result = none
         self.joined = false

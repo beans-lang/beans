@@ -8817,6 +8817,10 @@ class TreeInterpreter {
                             TreeValue.error(
                                 work.panic_message, "panic"))
                     }
+                    if work.cancelled {
+                        return TreeValue.result_err(
+                            TreeValue.error("", "cancelled"))
+                    }
                     match work.result {
                         some(delivered) => {
                             return TreeValue.result_ok(
@@ -8917,6 +8921,12 @@ class TreeInterpreter {
                                         TreeValue.error(
                                             work.panic_message,
                                             "panic"))
+                                }
+                            } else if work.cancelled {
+                                if failure.is_none() {
+                                    failure = some(
+                                        TreeValue.error(
+                                            "", "cancelled"))
                                 }
                             } else {
                                 match work.result {
@@ -9374,13 +9384,20 @@ class TreeInterpreter {
     fn tree_brew_reap(work: TreeBrewState) {
         if work.reaped { return }
         unsafe {
-            beans_fiber_join(
-                RawPtr.from_address(work.fiber),
-                RawPtr.null(), 0)
-            if work.entry_context != 0 {
+            let ending: i32 =
+                beans_fiber_join(
+                    RawPtr.from_address(work.fiber),
+                    RawPtr.null(), 0)
+            // 2 is BEANS_FIBER_CANCELLED. A cancelled child left through its
+            // park, not through its entry, so the stored callback hosting its
+            // body is still marked active and closing it would wait for a
+            // return that never comes. It leaks with the rest of the
+            // abandoned frame until the cancellation unwind lands.
+            if work.entry_context != 0 && ending != 2 {
                 beans_stored_callback_close(
                     RawPtr.from_address(work.entry_context))
             }
+            if ending == 2 { work.cancelled = true }
         }
         work.reaped = true
         work.entry_context = 0
@@ -9528,6 +9545,10 @@ class TreeInterpreter {
             return TreeValue.result_err(
                 TreeValue.error(
                     work.panic_message, "panic"))
+        }
+        if work.cancelled {
+            return TreeValue.result_err(
+                TreeValue.error("", "cancelled"))
         }
         match work.result {
             some(delivered) => {

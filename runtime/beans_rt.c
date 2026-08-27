@@ -2628,6 +2628,97 @@ static void cc_worker_collect_white(void* root, CCStack* st, CCStack* dead) {
 }
 #endif
 
+// One trial deletion, undone. mark_gray decremented once per edge walked and
+// scan_black put back only the edges leaving black nodes, so exactly the edges
+// leaving the white set are still owed a count. Each collector has its own
+// version, matching what its own decrement skipped.
+static void cc_restore_edge(void* c, void* ctx) {
+    (void)ctx;
+    BHead* h = head_of(c);
+    if (h->rc >= BEANS_IMMORTAL) return;
+    h->rc += 1; // undo one trial deletion
+}
+#if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
+static void cc_worker_restore_edge(void* c, void* ctx) {
+    (void)ctx;
+    BHead* h = head_of(c);
+    if (!cc_owner_local_node(h)) return;
+    h->rc += 1;
+}
+#endif
+
+// A cycle's members die like any other object, deinit included — but a deinit
+// body is user code, and user code needs the counts it can see to be true.
+// Trial deletion destroyed them for this set, so give them back first: the
+// cycle becomes ordinary uncollected garbage again, with working retain,
+// release and death for everything a body touches.
+//
+// Nothing here is freed. The set is parked as candidates instead and the next
+// collection re-derives it from scratch — with the deinits already run and
+// RC_FIN off so they cannot run twice, and with anything a body resurrected
+// now genuinely reachable and no longer part of the answer. One extra
+// collection buys a body that may allocate, may drop what it owns, and may
+// hand a reference to something that outlives it.
+//
+// Returns non-zero when it took the set over, which means the caller must not
+// free those shells.
+static int cc_run_cycle_deinits(void** dead, long long len, int owner_local) {
+    long long i = 0;
+    for (i = 0; i < len; i++)
+        if (rt_rc_load(head_of(dead[i])) & RC_FIN) break;
+    if (i == len) return 0; // no member has a deinit: the fast path stands
+
+    void (*restore)(void*, void*) = cc_restore_edge;
+#if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
+    if (owner_local) restore = cc_worker_restore_edge;
+#else
+    (void)owner_local;
+#endif
+    for (i = 0; i < len; i++) {
+        BHead* h = head_of(dead[i]);
+        cc_walk(dead[i], cc_meta(h), restore, NULL);
+    }
+    // Hold the whole set across the bodies: with true counts a member can now
+    // really die mid-loop, and this loop must not walk a freed shell.
+    for (i = 0; i < len; i++) beans_retain(dead[i]);
+
+    for (i = 0; i < len; i++) {
+        BHead* h = head_of(dead[i]);
+        long long rc = rt_rc_load(h);
+        // beans_do_deinit puts the count back with RC_FIN off, so death runs
+        // once whether it happens here or through an ordinary release.
+        if (rc & RC_FIN) beans_do_deinit(dead[i], h, rc);
+    }
+
+    // Park before dropping the hold: a member that dies on the release below
+    // then finds itself buffered and leaves its shell for the collector,
+    // exactly as any other parked death does.
+    for (i = 0; i < len; i++) cc_possible_root(dead[i]);
+    for (i = 0; i < len; i++) beans_release(dead[i]);
+    return 1;
+}
+
+// The white set's shells, for the pass that has no deinit to run. A member
+// that is somehow buffered is left for whoever holds that buffer — black with
+// a zero count is exactly the husk the candidate filter already knows how to
+// free, and beans_release takes the same branch for the same reason.
+static void cc_free_cycle_shells(void** dead, long long len, CCStack* deferred) {
+    for (long long i = 0; i < len; i++) {
+        void* p = dead[i];
+        BHead* h = head_of(p);
+        long long meta = cc_meta(h); // colors can move while user code runs
+        if (meta & CC_BUF) {
+#if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
+            __atomic_thread_fence(__ATOMIC_RELEASE);
+#endif
+            rt_w_and(&h->meta, ~CC_COLOR);
+            continue;
+        }
+        void* child = cc_free_shell(p, meta);
+        if (child) cc_push(deferred, child);
+    }
+}
+
 static void cc_collect_white(void* root, CCStack* st, CCStack* dead) {
     cc_push(st, root);
     while (st->len) {
@@ -2766,11 +2857,8 @@ static void cc_worker_collect(void) {
                 if (__atomic_load_n(&weak_live, __ATOMIC_RELAXED))
                     for (long long i = 0; i < dead.len; i++)
                         rt_weak_invalidate(dead.v[i]);
-                for (long long i = 0; i < dead.len; i++) {
-                    void* child = cc_free_shell(
-                        dead.v[i], cc_meta(head_of(dead.v[i])));
-                    if (child) cc_push(&deferred, child);
-                }
+                if (!cc_run_cycle_deinits(dead.v, dead.len, 1))
+                    cc_free_cycle_shells(dead.v, dead.len, &deferred);
                 cc_worker_walk_min = dead.len
                                          ? 256
                                          : (cc_worker_walk_min * 4 >
@@ -2824,6 +2912,9 @@ static void cc_collect(int force) {
     // takes cc_mu again, and cc_mu is not recursive.
     void* dlocal[64];
     CCStack deferred = {dlocal, 0, 64, dlocal};
+    // The white set outlives the lock: deinit bodies are user code that
+    // allocates and releases, and parking a possible root takes cc_mu again.
+    CCStack doomed = {0, 0, 0};
     CC_LOCK();
 
     // keep only live purple candidates; zombies (released while parked)
@@ -2862,20 +2953,19 @@ static void cc_collect(int force) {
         }
         cc_len = 0;
         ARC_ADD(arc_cycle_objects, dead.len);
-        // cycle members die without their deinit, but their weak handles
-        // still read "gone" from the first moment of the kill
+        // weak handles read "gone" from the first moment of the kill, before
+        // any deinit body can run and try to resurrect a member
         if (__atomic_load_n(&weak_live, __ATOMIC_RELAXED))
             for (long long i = 0; i < dead.len; i++)
                 rt_weak_invalidate(dead.v[i]);
         // nothing was freed while walking, so no stale pointer was ever
-        // read; now the whole white set goes at once
-        for (long long i = 0; i < dead.len; i++) {
-            void* child = cc_free_shell(dead.v[i], head_of(dead.v[i])->meta);
-            if (child) cc_push(&deferred, child);
-        }
-        cc_walk_min = dead.len ? 256
-                               : (cc_walk_min * 4 > (1LL << 18) ? (1LL << 18)
-                                                                : cc_walk_min * 4);
+        // read; the deinits and then the whole white set go below, outside
+        // the lock
+        doomed = dead;
+        dead.v = 0;
+        cc_walk_min = doomed.len ? 256
+                                 : (cc_walk_min * 4 > (1LL << 18) ? (1LL << 18)
+                                                                  : cc_walk_min * 4);
         rt_free(st.v);
         rt_free(aux.v);
         rt_free(dead.v);
@@ -2888,6 +2978,9 @@ static void cc_collect(int force) {
     cc_threshold = cc_len * 2 + 256;
     cc_pending = 0;
     CC_UNLOCK();
+    if (!cc_run_cycle_deinits(doomed.v, doomed.len, 0))
+        cc_free_cycle_shells(doomed.v, doomed.len, &deferred);
+    rt_free(doomed.v);
     for (long long i = 0; i < deferred.len; i++) beans_release(deferred.v[i]);
     if (deferred.v != dlocal) rt_free(deferred.v);
     cc_collecting = 0;
@@ -2902,12 +2995,23 @@ static void cc_at_exit(void) {
     // runs at zero workers. Drop the adaptive gate so the trial walk cannot
     // decline this last pass.
     if (cc_worker_root_batching) {
+        // Twice: the pass that runs a cycle member's deinit hands the set
+        // back as candidates rather than freeing it, and the pass after is
+        // what frees the shells.
+        cc_worker_walk_min = 0;
+        cc_worker_collect();
         cc_worker_walk_min = 0;
         cc_worker_collect();
         cc_worker_roots_end();
     }
 #endif
-    if (cc_threads == 0) cc_collect(1); // forced: leaks must see 0 at exit
+    // Forced, and more than once for the same reason: leaks must see 0 at
+    // exit, and a deinit body may build a fresh cycle of its own on the way
+    // out. Stop as soon as a pass leaves nothing parked.
+    for (int pass = 0; pass < 8 && cc_threads == 0; pass++) {
+        cc_collect(1);
+        if (pass >= 1 && cc_len == 0) break;
+    }
 }
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
 __attribute__((constructor)) static void cc_setup(void) { atexit(cc_at_exit); }
@@ -2957,6 +3061,129 @@ void beans_panic(const char* msg, long long line, long long col) {
     for (;;) {} // beans_host_exit must not return; this is here so the compiler knows
 #endif
 }
+
+// ---- fatal faults ---- BEGIN THE ONE SIGNAL HANDLER --------------------------
+//
+// Everything between this marker and END below is the whole of this runtime's
+// use of a signal disposition, and test/signals.sh holds it to that: no other
+// part of the file may install one, and nothing in here may call a Beans
+// entry point other than the output flush. No Beans code, no reference
+// counting and no cycle collection ever runs in async-signal context, which
+// is the claim the rest of the signal design rests on.
+//
+// SIGSEGV and SIGBUS cannot be blocked and read as data the way the watched
+// signals below are: each names an instruction that has already failed. What
+// they can still do is say so. Without this, running the stack out is exit 139
+// against an empty terminal — the program's own stdout is block-buffered when
+// it is not a tty, so minutes of output die inside stdio with the process and
+// the run reads as "it printed nothing" rather than "it recursed too deep".
+//
+// The handler runs on its own stack, because the fault it mainly exists for is
+// the one where no ordinary stack is left. It flushes the program's output,
+// writes one line with write(2), and then re-raises through the default
+// action, so the exit status, any core file and a waiting debugger all still
+// see the original signal.
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer) || \
+    __has_feature(memory_sanitizer)
+#define BEANS_RT_SANITIZED 1
+#endif
+#endif
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+#define BEANS_RT_SANITIZED 1
+#endif
+
+#if BEANS_RT_PROFILE >= BEANS_RT_FULL && !defined(_WIN32) && \
+    !defined(__wasi__) && !defined(__wasm__) && !defined(BEANS_RT_SANITIZED)
+#define BEANS_RT_FAULT_REPORT 1
+// MINSIGSTKSZ is a runtime call on recent glibc, so the size is fixed here.
+// The handler itself needs a page; the rest is headroom for the libc calls
+// that read this thread's stack bounds.
+#define RT_FAULT_STACK_BYTES 32768
+static _Thread_local char rt_fault_stack[RT_FAULT_STACK_BYTES];
+
+static void rt_fault_stack_bounds(char** low, char** high) {
+    *low = NULL;
+    *high = NULL;
+#if defined(__APPLE__)
+    char* top = (char*)pthread_get_stackaddr_np(pthread_self());
+    size_t size = pthread_get_stacksize_np(pthread_self());
+    if (top && size) {
+        *high = top;
+        *low = top - size;
+    }
+#elif defined(__linux__) && defined(__GLIBC__)
+    // Declared here rather than by defining _GNU_SOURCE: the feature-test
+    // macros at the top of this file must precede every include, and widening
+    // one of them changes what libc hands the rest of the runtime.
+    extern int pthread_getattr_np(pthread_t thread, pthread_attr_t* attr);
+    pthread_attr_t attr;
+    if (pthread_getattr_np(pthread_self(), &attr) == 0) {
+        void* base = NULL;
+        size_t size = 0;
+        if (pthread_attr_getstack(&attr, &base, &size) == 0 && base && size) {
+            *low = (char*)base;
+            *high = (char*)base + size;
+        }
+        pthread_attr_destroy(&attr);
+    }
+#endif
+}
+
+static void rt_fault_handler(int number, siginfo_t* info, void* context) {
+    (void)context;
+    beans_out_flush(); // the program's own output, ahead of this line
+    char* low = NULL;
+    char* high = NULL;
+    rt_fault_stack_bounds(&low, &high);
+    char* addr = info ? (char*)info->si_addr : NULL;
+    // The guard page sits just under the low end; a frame big enough to step
+    // over it lands a little further down, so allow a megabyte of slack.
+    int overflow = low && addr && addr < low + 4096 &&
+                   addr + (1LL << 20) >= low;
+    const char* text =
+        overflow ? "runtime fault: stack overflow — recursion ran the stack out\n"
+                 : (number == SIGBUS ? "runtime fault: bus error\n"
+                                     : "runtime fault: segmentation fault\n");
+    size_t len = strlen(text);
+    ssize_t wrote = write(2, text, len);
+    (void)wrote;
+    struct sigaction fallback;
+    memset(&fallback, 0, sizeof fallback);
+    fallback.sa_handler = SIG_DFL;
+    sigemptyset(&fallback.sa_mask);
+    sigaction(number, &fallback, NULL);
+    raise(number);
+}
+
+// The alternate stack is per thread; the disposition is process-wide and set
+// once by the constructor.
+static void rt_fault_arm_thread(void) {
+    stack_t alt;
+    memset(&alt, 0, sizeof alt);
+    alt.ss_sp = rt_fault_stack;
+    alt.ss_size = sizeof rt_fault_stack;
+    alt.ss_flags = 0;
+    sigaltstack(&alt, NULL);
+}
+
+__attribute__((constructor)) static void rt_fault_setup(void) {
+    // The escape hatch is for anyone chasing a fault under a tool that wants
+    // the raw signal and installs no handler of its own.
+    if (getenv("BEANS_NO_FAULT_REPORT")) return;
+    rt_fault_arm_thread();
+    struct sigaction action;
+    memset(&action, 0, sizeof action);
+    action.sa_sigaction = rt_fault_handler;
+    action.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    sigemptyset(&action.sa_mask);
+    sigaction(SIGSEGV, &action, NULL);
+    sigaction(SIGBUS, &action, NULL);
+}
+#else
+#define rt_fault_arm_thread() ((void)0)
+#endif
+// ---- END THE ONE SIGNAL HANDLER ---------------------------------------------
 
 #if BEANS_RT_PROFILE < BEANS_RT_MINIMAL
 // Reached only if a program formats or parses a float without supplying the hook.
@@ -3052,9 +3279,76 @@ char* beans_from_uint(unsigned long long v) {
     } while (v);
     return str_make(p, e - p);
 }
+// The shortest decimal spelling that reads back as the same value. One fixed
+// precision cannot do both jobs: %.10g drops digits the value really holds
+// (0.1 + 0.2 printed as 0.3, and nothing round-trips), while %.17g spells out
+// every double in full (0.1 as 0.10000000000000001). Walking the precisions
+// upward and stopping at the first spelling that reparses gives the short form
+// where one exists and an exact one always. NaN never compares equal, so it
+// falls out at the cap with the same text either way.
+static int rt_text_exponent(const char* s, int* found) {
+    *found = 0;
+    for (const char* p = s; *p; p++) {
+        if (*p != 'e' && *p != 'E') continue;
+        int sign = 1;
+        int value = 0;
+        p++;
+        if (*p == '+') p++;
+        else if (*p == '-') { sign = -1; p++; }
+        while (*p >= '0' && *p <= '9') { value = value * 10 + (*p - '0'); p++; }
+        *found = 1;
+        return sign * value;
+    }
+    return 0;
+}
+
+// The hooks are the host's, and one of them predates being called from here:
+// the length is measured rather than taken from the return value, so a host
+// whose formatter answers a narrower type cannot make this read past the text.
+static long long rt_cstr_len(const char* s) {
+    long long n = 0;
+    while (s[n]) n++;
+    return n;
+}
+
+static long long rt_round_trip_f64(char* out, unsigned long long cap, double v) {
+    int chosen = 0;
+    for (int places = 1; places <= 17; places++) {
+        beans_host_format_f64(out, cap, v, places, 'g');
+        double back = 0;
+        const char* end = NULL;
+        if (!beans_host_parse_f64(out, &back, &end)) {
+            // A host may supply the formatter and not the parser — nothing in
+            // its program reads a float from text. Keep the fixed ten digits
+            // this used to print rather than guess at a shortest form.
+            beans_host_format_f64(out, cap, v, 10, 'g');
+            return rt_cstr_len(out);
+        }
+        if (back == v) {
+            chosen = places;
+            break;
+        }
+    }
+    if (!chosen) chosen = 17; // nothing reparses: NaN, and nothing else
+    beans_host_format_f64(out, cap, v, chosen, 'g');
+    // %g reaches for exponent notation as soon as the value's exponent
+    // reaches the digit count it was given, and the count here is whatever
+    // round-tripping needed — often one, which would print 100 as 1e+02.
+    // Keep the notation the fixed ten-digit format used to choose by asking
+    // for enough digits to stay in place-value form over the same range.
+    int found = 0;
+    int exponent = rt_text_exponent(out, &found);
+    if (found && exponent >= -4 && exponent < 10) {
+        int widen = exponent + 1;
+        if (widen < chosen) widen = chosen;
+        beans_host_format_f64(out, cap, v, widen, 'g');
+    }
+    return rt_cstr_len(out);
+}
+
 char* beans_from_float(double v) {
     char b[48];
-    beans_host_format_f64(b, sizeof b, v, 10, 'g');
+    rt_round_trip_f64(b, sizeof b, v);
     return rc_strdup(b);
 }
 char* beans_from_bool(int v) { return rc_strdup(v ? "true" : "false"); }
@@ -3079,8 +3373,7 @@ char* beans_interpolate(long long n, ...) {
             total += uint_digits(va_arg(ap, unsigned long long));
         } else if (kind == 3) {
             char b[48];
-            total += beans_host_format_f64(b, sizeof b,
-                                           va_arg(ap, double), 10, 'g');
+            total += rt_round_trip_f64(b, sizeof b, va_arg(ap, double));
         } else {
             total += va_arg(ap, int) ? 4 : 5;
         }
@@ -3102,8 +3395,7 @@ char* beans_interpolate(long long n, ...) {
             w = write_uint(w, va_arg(ap, unsigned long long));
         } else if (kind == 3) {
             char b[48];
-            int len = (int)beans_host_format_f64(b, sizeof b,
-                                                 va_arg(ap, double), 10, 'g');
+            int len = (int)rt_round_trip_f64(b, sizeof b, va_arg(ap, double));
             memcpy(w, b, (size_t)len);
             w += len;
         } else {
@@ -3234,7 +3526,7 @@ static BRes parse_fail(const char* s, const char* what) {
     memcpy(w, p2, l2);
     w += l2;
     memcpy(w, what, lw);
-    return (BRes){0, mk_error_own(m, "")};
+    return (BRes){0, mk_error_own(m, "invalid")};
 }
 
 // A base-10 signed parse, so the core does not need strtoll. Rejects anything the
@@ -13344,6 +13636,7 @@ typedef struct {
 void beans_thread_release_env(void* env);
 static void* thread_main(void* arg) {
     BThread* t = arg;
+    rt_fault_arm_thread();
     cc_worker_roots_begin();
     if (t->typed_thunk) {
         t->typed_thunk(t->env, t->payload);
@@ -13417,8 +13710,15 @@ static void thread_join_park(BThread* t) {
     if (!beans_fiber_current()) return;
     __atomic_store_n(&t->join_waiter, (void*)beans_fiber_current(),
                      __ATOMIC_SEQ_CST);
-    while (!__atomic_load_n(&t->done, __ATOMIC_SEQ_CST))
-        beans_fiber_park();
+    while (!__atomic_load_n(&t->done, __ATOMIC_SEQ_CST)) {
+        if (beans_fiber_park() == BEANS_FIBER_PARK_CANCELLED &&
+            !__atomic_load_n(&t->done, __ATOMIC_SEQ_CST)) {
+            // The OS thread keeps running and stays unreaped: a cancel cannot
+            // stop a thread, only stop waiting on one.
+            __atomic_store_n(&t->join_waiter, (void*)0, __ATOMIC_SEQ_CST);
+            beans_fiber_exit_cancelled();
+        }
+    }
     __atomic_store_n(&t->join_waiter, (void*)0, __ATOMIC_SEQ_CST);
 #else
     (void)t;
@@ -13534,20 +13834,45 @@ static BeansFiber* fiber_line_pop(BFiberWaiter** head, BFiberWaiter** tail) {
     return waiter->fiber;
 }
 
+// Takes a waiter out of the line wherever it sits. A cancelled waiter is the
+// only one that leaves from the middle; every other exit is a pop.
+static void fiber_line_remove(BFiberWaiter** head, BFiberWaiter** tail,
+                              BFiberWaiter* waiter) {
+    BFiberWaiter* previous = NULL;
+    BFiberWaiter* cursor = *head;
+    while (cursor && cursor != waiter) {
+        previous = cursor;
+        cursor = cursor->next;
+    }
+    if (!cursor) return;
+    if (previous) previous->next = waiter->next;
+    else *head = waiter->next;
+    if (*tail == waiter) *tail = previous;
+    waiter->next = NULL;
+}
+
 // Parks the calling fiber in the line until a sender, receiver, or closer
 // marks it signalled. Enters and leaves with `m` held; the lock is
 // released around each park. Wakes can be spurious — a stale timer or a
 // second resume — and the waiter keeps its place in line across them.
-// Cancellation is interim-invisible here: a cancelled fiber keeps waiting,
-// and observing the cancel at this park lands with the unwind work.
+//
+// A cancel observed at the park is the answer, per spec/CONCURRENCY.md: leave
+// the line, drop the lock this wait owns (nothing will return to unlock it),
+// and end the fiber with the cancelled outcome. A signal that already landed
+// wins over the cancel — the value is ours and dropping it would lose it.
 static void fiber_line_wait(pthread_mutex_t* m, BFiberWaiter** head,
                             BFiberWaiter** tail) {
     BFiberWaiter waiter = { beans_fiber_current(), NULL, 0 };
     fiber_line_push(head, tail, &waiter);
     while (!waiter.signalled) {
         pthread_mutex_unlock(m);
-        beans_fiber_park();
+        int outcome = beans_fiber_park();
         pthread_mutex_lock(m);
+        if (outcome == BEANS_FIBER_PARK_CANCELLED && !waiter.signalled) {
+            fiber_line_remove(head, tail, &waiter);
+            pthread_mutex_unlock(m);
+            beans_fiber_exit_cancelled();
+        }
     }
 }
 #endif // BEANS_RT_FIBERS — fiber wait lines
@@ -15564,7 +15889,7 @@ static BBrew* taskgroup_detach(BTaskGroup* g, long long index) {
 // Parks until an undelivered child finishes; answers a joined row the
 // caller owns — read value or message, then release — or NULL when the
 // group has nothing left. The park loops on its condition (wakes can be
-// spurious), and cancellation stays interim-invisible here, the same
+// spurious), and a cancel observed at that park ends this fiber, the same
 // contract every std park holds to.
 BBrew* beans_taskgroup_next(BTaskGroup* g) {
     for (;;) {
@@ -15576,8 +15901,10 @@ BBrew* beans_taskgroup_next(BTaskGroup* g) {
         }
         if (!taskgroup_live(g)) return NULL;
         g->waiter = beans_fiber_current();
-        beans_fiber_park();
+        int outcome = beans_fiber_park();
         g->waiter = NULL;
+        if (outcome == BEANS_FIBER_PARK_CANCELLED)
+            beans_fiber_exit_cancelled();
     }
 }
 
@@ -15612,8 +15939,10 @@ BBrew* beans_taskgroup_wait_all_join(BTaskGroup* g) {
         }
         if (!pending) break;
         g->waiter = beans_fiber_current();
-        beans_fiber_park();
+        int outcome = beans_fiber_park();
         g->waiter = NULL;
+        if (outcome == BEANS_FIBER_PARK_CANCELLED)
+            beans_fiber_exit_cancelled();
     }
     long long bad = -1;
     for (long long i = 0; i < g->children->len; i++) {
