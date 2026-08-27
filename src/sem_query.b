@@ -17,6 +17,7 @@ fn semantic_copy_diagnostics(from: List<Diagnostic>,
 // which is what the workspace uses to decide whether to keep this snapshot as
 // the last good one.
 fn semantic_build(entry: string,
+                  file_path: string,
                   overlays: Map<string, string>,
                   revision: int) -> SemanticSnapshot {
     let sources: SourceManager = new SourceManager()
@@ -25,6 +26,10 @@ fn semantic_build(entry: string,
     for path: string in overlays.keys() {
         loader.set_overlay(path, overlays[path])
     }
+    // The question is about `file_path`; the entry is only how the project is
+    // reached. Naming it lets the loader pull in that file's package when the
+    // entry does not import it.
+    loader.set_editor_file(file_path)
     let snapshot: SemanticSnapshot =
         new SemanticSnapshot(entry, revision, loader, sources)
     let loaded: bool = loader.load(entry)

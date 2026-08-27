@@ -632,4 +632,108 @@ s.finish()
 if not any(x["name"] == "draw_all" for x in s.result(folders)):
     fail(f"workspaceFolders should be searched too: {s.result(folders)}")
 print("ok workspace symbols search the workspace, with no file open")
+
+# ---------------------------------------------------------------------------
+# A library whose root is named after its module and imports nothing
+#
+# `test/cases/semantic_lib` is that shape: the manifest sits beside `semlib.b`
+# rather than `main.b`, and `semlib.b` imports none of the project's own
+# packages. Both halves used to break an editor. Picking the open file as the
+# entry got it refused with "entry file must sit next to beans.pot", and even
+# once an entry was found, loading through a root that imports nothing reached
+# one file and left the rest of the project unanswerable.
+# ---------------------------------------------------------------------------
+LIB = pathlib.Path.cwd() / "test/cases/semantic_lib"
+DEEP = LIB / "deep/deep.b"
+PROBE = LIB / "tests/probe.b"
+
+s = Session(DEEP)
+# `doubled(21)` inside `local_use`, a call to a name declared above it.
+same_file = s.ask("textDocument/definition", DEEP, 30, 12)
+docs = s.ask("textDocument/hover", DEEP, 30, 12)
+tokens = s.ask("textDocument/semanticTokens/full", DEEP)
+s.finish()
+
+problems = [n for n in s.notes
+            if n["method"] == "textDocument/publishDiagnostics"
+            and n["params"]["diagnostics"]]
+if problems:
+    fail(f"a file inside a library package should check cleanly: {problems}")
+if at(s.result(same_file)) != ("deep.b", 25, 7):
+    fail(f"definition inside an unimported package: {s.result(same_file)}")
+hover = s.result(docs)
+if hover is None or "Twice the value." not in hover["contents"]["value"]:
+    fail(f"hover should carry the /// docs of the declaration: {hover}")
+
+# `private` is bit 2 of the legend, below `declaration` and `static`, and
+# `seen` is the only `priv` name in the file.
+legend = ["declaration", "static", "private"]
+data = s.result(tokens)["data"]
+if len(data) % 5 != 0 or not data:
+    fail(f"semantic tokens must be a non-empty multiple-of-5 array: {data!r}")
+line = 0
+private_lines = set()
+for i in range(0, len(data), 5):
+    line += data[i]
+    if data[i + 4] & (1 << legend.index("private")):
+        private_lines.add(line + 1)
+if private_lines != {10, 14, 19, 20}:
+    fail(f"`priv seen` and its uses should be the only private tokens, "
+         f"got lines {sorted(private_lines)}")
+print("ok library root: unimported packages answer, and `priv` reaches a theme")
+
+# A `tests/` program is an entry of its own, and reaches the library from a
+# root that never imports it.
+s = Session(PROBE)
+across = s.ask("textDocument/definition", PROBE, 10, 40)
+s.finish()
+problems = [n for n in s.notes
+            if n["method"] == "textDocument/publishDiagnostics"
+            and n["params"]["diagnostics"]]
+if problems:
+    fail(f"a library's own test program should check cleanly: {problems}")
+if at(s.result(across)) != ("deep.b", 25, 7):
+    fail(f"a tests/ entry should reach the library: {s.result(across)}")
+print("ok a library's tests/ program is its own entry and still navigates")
+
+# The other half of a partial class. It is lowered into the part that carries
+# the header, so nothing is registered at this file's own positions — and an
+# editor asking about this file used to get nothing at all for it.
+MORE = LIB / "deep/more.b"
+
+s = Session(MORE)
+inside = s.ask("textDocument/definition", MORE, 13, 21)
+docs = s.ask("textDocument/hover", MORE, 12, 12)
+outline = s.ask("textDocument/documentSymbol", MORE)
+tokens = s.ask("textDocument/semanticTokens/full", MORE)
+s.finish()
+
+if at(s.result(inside)) != ("deep.b", 8, 8):
+    fail(f"a field of the other half should resolve: {s.result(inside)}")
+hover = s.result(docs)
+if hover is None or "Half the value" not in hover["contents"]["value"]:
+    fail(f"a method written in a continuation should hover: {hover}")
+
+# The outline names the class this file continues, with the members it holds
+# and no others.
+symbols = s.result(outline)
+if [x["name"] for x in symbols] != ["Counter"]:
+    fail(f"the outline should name the class this part continues: {symbols}")
+children = sorted(x["name"] for x in symbols[0].get("children", []))
+if children != ["halved", "hidden"]:
+    fail(f"only this part's members belong in its outline: {children}")
+
+data = s.result(tokens)["data"]
+if len(data) < 10:
+    fail(f"a continuation part should carry semantic tokens, got {len(data) // 5}")
+line = 0
+private_lines = set()
+for i in range(0, len(data), 5):
+    line += data[i]
+    if data[i + 4] & (1 << legend.index("private")):
+        private_lines.add(line + 1)
+if private_lines != {16, 17}:
+    fail(f"`priv fn hidden` and its `self.seen` are the private tokens here, "
+         f"got {sorted(private_lines)}")
+print("ok the other half of a partial class answers for itself")
 PY

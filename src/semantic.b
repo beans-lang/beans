@@ -1299,6 +1299,70 @@ class SemanticBuilder {
         self.add_ref(
             type_id, node.name_line, node.name_col,
             declared.name.len(), true, false)
+        self.walk_type_members(node, declared, type_id)
+        self.owner = saved_owner
+    }
+
+    // A later part of a partial class.
+    //
+    // The type is declared once, by the part carrying the header, and every
+    // part's members are folded into that one declaration — so nothing is
+    // registered at this node's own position and `walk_file` finds nothing
+    // there. The members are still *written* here, though, and an editor
+    // asking about this file has to find them: without this, every
+    // continuation file answered no symbols, no hover and no navigation, for
+    // any of its members.
+    //
+    // It records the name as a reference rather than declaring the type
+    // again. A second `declare_type` would give the class two positions, and
+    // which one an editor jumped to would depend on the order the loader
+    // happened to walk the files in.
+    fn walk_partial_part(node: AstNode,
+                         declared: HirDeclaration) {
+        self.walk_annotations(node)
+        let saved_owner: string = self.owner
+        self.owner = declared.qualified
+        let type_id: string = sem_type_id(declared.qualified)
+        self.add_ref(type_id, node.name_line, node.name_col,
+                     declared.name.len(), false, false)
+        self.record_partial_part(node, declared, type_id)
+        self.walk_type_members(node, declared, type_id)
+        self.owner = saved_owner
+    }
+
+    // This part, as an outline entry. It carries the class's name, kind and
+    // detail with this part's own span, so the file's outline shows the class
+    // it continues rather than nothing at all.
+    fn record_partial_part(node: AstNode,
+                           declared: HirDeclaration,
+                           type_id: string) {
+        let entry: SemanticDecl =
+            new SemanticDecl(type_id, declared.name, declared.kind)
+        entry.container = self.package_path
+        entry.package_id = self.package_path
+        var prefix: string = ""
+        if declared.is_public { prefix = "pub " }
+        entry.detail =
+            "{prefix}partial {declared.kind} {declared.name}"
+        entry.type_text = display_symbol(declared.qualified)
+        entry.type_id = type_id
+        entry.is_public = declared.is_public
+        entry.file = self.file_path
+        entry.line = node.line
+        entry.col = node.col
+        entry.name_line = node.name_line
+        entry.name_col = node.name_col
+        entry.name_length = declared.name.len()
+        entry.end_line = node.end_line
+        entry.end_col = node.end_col
+        self.snapshot.partial_parts.push(entry)
+    }
+
+    // One part's members. `node` is the part being read; `declared` is the
+    // whole class, which for a partial one is built from every part.
+    fn walk_type_members(node: AstNode,
+                         declared: HirDeclaration,
+                         type_id: string) {
         for child: AstNode in node.children {
             if child.kind == "generic" {
                 self.declare_generic(child, declared.qualified)
@@ -1332,7 +1396,6 @@ class SemanticBuilder {
                                  child.kind == "variant")
             }
         }
-        self.owner = saved_owner
     }
 
     fn walk_member(node: AstNode, owner: HirDeclaration,
@@ -1492,6 +1555,15 @@ class SemanticBuilder {
         }
     }
 
+    // The declaration a later part of a partial class belongs to. The
+    // resolver stamps the note once every part has been seen, because the
+    // primary is whichever part carries the header and that is not always the
+    // first one loaded.
+    fn partial_primary(node: AstNode) -> Option<HirDeclaration> {
+        if node.note != "partial_continuation" { return none }
+        return self.declarations.get(node.resolved)
+    }
+
     fn walk_file(package: LoadedPackage, file: ParsedModuleFile) {
         self.package_path = package.import_path
         self.file_path = file.path
@@ -1537,7 +1609,14 @@ class SemanticBuilder {
                     some(declared) => {
                         self.walk_type_declaration(node, declared)
                     }
-                    none => {}
+                    none => {
+                        match self.partial_primary(node) {
+                            some(declared) => {
+                                self.walk_partial_part(node, declared)
+                            }
+                            none => {}
+                        }
+                    }
                 }
             } else if node.kind == "c_global" {
                 for global: HirCGlobal in self.program.c_globals {

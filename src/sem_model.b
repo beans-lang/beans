@@ -197,6 +197,11 @@ class SemanticSnapshot {
     package_members: Map<string, SemIds>
     // file path -> import binding names it declares
     file_imports: Map<string, SemIds>
+    // The later parts of every partial class, one entry per part, carrying
+    // the class's name and kind but that part's own file and span. The
+    // declaration itself belongs to the part that holds the header; this is
+    // what lets a continuation file still show an outline of what it holds.
+    partial_parts: List<SemanticDecl>
 
     fn init(entry: string, revision: int,
             loader: ModuleLoader, sources: SourceManager) {
@@ -218,6 +223,7 @@ class SemanticSnapshot {
         self.refs_by_file = {}
         self.refs_by_id = {}
         self.bindings_by_file = {}
+        self.partial_parts = []
         self.supertypes = {}
         self.subtypes = {}
         self.overridden = {}

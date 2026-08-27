@@ -4,6 +4,47 @@ This file records user-facing changes in each Beans release.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The editor answered nothing for most files in a library.** Opening any file
+  of a project whose module root is not called `main.b` or `lib.b` got
+  `entry file must sit next to beans.pot` on line 1 and no navigation, no
+  hover, no completion and no semantic tokens anywhere in the file. `beansc
+  lsp` picked the project's entry by looking for those two names and, finding
+  neither, handed the loader the file the editor had open — which the loader
+  refuses, because an entry has to sit beside the manifest. A module root is
+  free to be called anything; `community-libs/crema`'s is `crema.b`.
+  - The entry is now the file the loader would start from, which is the same
+    rule `beansc build` uses and the same one workspace discovery already used.
+  - **And the entry alone was not enough.** A library root that imports none of
+    its own packages — the common shape, since a module root is often an empty
+    `package` clause and no more — loads exactly one file, leaving every other
+    file in the project with nothing to answer from. The loader now also pulls
+    in the package the open file belongs to, or loads it as its own entry when
+    it sits under `examples/` or `tests/`. A compiler build never names an open
+    file, so nothing here changes what `beansc build` compiles.
+
+- **The other half of a partial class was invisible to an editor.** A class
+  written across two files is lowered once, into the part that carries the
+  header, so nothing was registered at the continuation part's own positions:
+  every file holding a `partial class` continuation answered no outline, no
+  hover, no go-to-definition and no semantic tokens, for every member written
+  in it. `community-libs/crema/ui/theme/lookup.b` is 377 lines of one, and the
+  editor had nothing to say about any of it.
+  - The continuation's members are now walked against the class they belong
+    to, and the file's outline names that class with the members this part
+    holds. The type keeps one declaration, at the part carrying the header —
+    declaring it twice would make go-to-definition depend on the order the
+    loader happened to walk the files in.
+
+### Added
+
+- **`declaration`, `static` and `private` semantic-token modifiers.** The
+  server already knew which members are `priv`; it advertised an empty modifier
+  legend, so no editor could paint them differently from public ones. LSP has
+  no `private` modifier of its own, so the VS Code extension declares it and
+  renders private members italic by default.
+
 ## [0.1.33] - 2026-08-27
 
 ### Added

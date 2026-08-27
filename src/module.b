@@ -517,6 +517,10 @@ class ModuleLoader {
     cflag_rows: List<ModuleCflags>
     overlays: Map<string, string>
     has_local_dependencies: bool
+    // Editors only: the one file the question is about. An entry can load a
+    // project without reaching this file, and then the editor has nothing to
+    // answer with; `ensure_editor_file` closes that gap.
+    editor_file: string
     // The depth-first stack of packages being loaded, and the import edge
     // that pushed each one (stack_edges[i] led to stack[i]).
     stack: List<string>
@@ -550,12 +554,17 @@ class ModuleLoader {
         self.cflag_rows = []
         self.overlays = {}
         self.has_local_dependencies = false
+        self.editor_file = ""
         self.stack = []
         self.stack_edges = []
     }
 
     fn set_overlay(file_path: string, text: string) {
         self.overlays[file_path] = text
+    }
+
+    fn set_editor_file(file_path: string) {
+        self.editor_file = file_path
     }
 
     fn fail(path: string, line: int, col: int, message: string) {
@@ -1749,20 +1758,70 @@ class ModuleLoader {
     }
 
     fn is_library_entry(entry: string) -> bool {
-        if self.kind != "library" || !entry.ends_with(".b") { return false }
-        let normalized_entry: string = absolute_local_path(entry)
-        let normalized_root: string = absolute_local_path(self.root)
-        var relative: string = ""
-        if normalized_root == "." && !normalized_entry.starts_with("/") {
-            relative = normalized_entry
-        } else {
-            let prefix: string = "{normalized_root}/"
-            if !normalized_entry.starts_with(prefix) { return false }
-            relative = normalized_entry.slice(prefix.len(),
-                                                normalized_entry.len())
-        }
+        if self.kind != "library" { return false }
+        return self.in_entry_directory(entry)
+    }
+
+    // A file under `examples/` or `tests/` is a program of its own rather than
+    // a member of a package: two of them side by side each declare
+    // `package main`, which is why they are loaded one file at a time.
+    fn in_entry_directory(entry: string) -> bool {
+        if !entry.ends_with(".b") { return false }
+        let relative: string = self.relative_to_root(entry)
+        if relative == "" { return false }
         let first: string = relative.split("/")[0]
         return first == "examples" || first == "tests"
+    }
+
+    // Where `entry` sits inside the project, or "" when it sits outside it.
+    fn relative_to_root(entry: string) -> string {
+        let normalized_entry: string = absolute_local_path(entry)
+        let normalized_root: string = absolute_local_path(self.root)
+        if normalized_root == "." && !normalized_entry.starts_with("/") {
+            return normalized_entry
+        }
+        let prefix: string = "{normalized_root}/"
+        if !normalized_entry.starts_with(prefix) { return "" }
+        return normalized_entry.slice(prefix.len(), normalized_entry.len())
+    }
+
+    // Is this file already part of the graph?
+    fn has_loaded_file(file_path: string) -> bool {
+        let wanted: string = absolute_local_path(file_path)
+        for package: LoadedPackage in self.packages {
+            for file: ParsedModuleFile in package.files {
+                if absolute_local_path(file.path) == wanted { return true }
+            }
+        }
+        return false
+    }
+
+    // Editors ask about one file, and the entry a project loads through is
+    // rarely that file. A library root that imports nothing is the common
+    // shape — a module root is often an empty `package` clause and no more —
+    // and loading through it reaches exactly one file, leaving every other
+    // file in the project with nothing to answer from. So once the entry is
+    // in, the file the editor is asking about gets its package loaded too.
+    //
+    // A compiler build never sets `editor_file`, so nothing here can change
+    // what `beansc build` compiles.
+    fn ensure_editor_file() {
+        if self.editor_file == "" || self.root == "" { return }
+        if !self.editor_file.ends_with(".b") { return }
+        if self.has_loaded_file(self.editor_file) { return }
+        if self.in_entry_directory(self.editor_file) {
+            self.load_library_entry(self.editor_file)
+            return
+        }
+        var dir: string = path.parent(self.editor_file)
+        if dir == "" { dir = "." }
+        let relative_dir: string = self.relative_to_root(dir)
+        // Outside the project, or the root package, which is already loaded.
+        if relative_dir == "" { return }
+        let import_path: string =
+            "{self.module_name}.{relative_dir.replace("/", ".")}"
+        self.load_package(import_path, dir, self.module_name, self.root,
+                          "", self.editor_file, 1, 1)
     }
 
     fn load_library_entry(entry: string) {
@@ -1853,6 +1912,7 @@ class ModuleLoader {
         }
         self.load_root_package()
         if library_entry { self.load_library_entry(entry) }
+        self.ensure_editor_file()
         self.bind_imports()
         if self.locked || self.offline {
             for locked_path: string in self.lock_entries.keys() {

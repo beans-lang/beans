@@ -127,6 +127,25 @@ fn lsp_symbol_kind(kind: string) -> int {
 
 // The semantic-token type of a symbol, indexed into the legend the server
 // advertises.
+// Bit flags into the `tokenModifiers` legend below. `declaration` and
+// `static` are LSP's own names; `private` is not one of LSP's, and it is here
+// because Beans has a visibility a theme should be able to see — an editor
+// that paints `priv` fields like public ones hides the one thing the modifier
+// exists to say.
+fn lsp_token_modifiers(snapshot: SemanticSnapshot,
+                       reference: SemanticRef) -> int {
+    var bits: int = 0
+    if reference.is_declaration { bits = bits | 1 }
+    match snapshot.declaration(reference.id) {
+        some(declaration) => {
+            if declaration.is_static { bits = bits | 2 }
+            if declaration.is_private { bits = bits | 4 }
+        }
+        none => {}
+    }
+    return bits
+}
+
 fn lsp_token_type(id: string) -> int {
     let kind: string = sem_id_kind(id)
     if kind == "type" { return 0 }
@@ -946,6 +965,33 @@ class BeansLspServer {
                 self.document_symbol(
                     text, declaration, move children))
         }
+        // The later parts of a partial class. The declaration lives in the
+        // file that carries the header, so the loop above skipped it here —
+        // and a continuation file would otherwise show an empty outline for
+        // however many members it holds.
+        for part: SemanticDecl in snapshot.partial_parts {
+            if part.file != file_path { continue }
+            var children: List<string> = []
+            match snapshot.members.get(part.type_id) {
+                some(member_ids) => {
+                    for member_id: string in member_ids.items {
+                        match snapshot.decls.get(member_id) {
+                            some(member) => {
+                                if member.file != file_path { continue }
+                                if member.name == "" { continue }
+                                children.push(
+                                    self.document_symbol(
+                                        text, member, []))
+                            }
+                            none => {}
+                        }
+                    }
+                }
+                none => {}
+            }
+            items.push(
+                self.document_symbol(text, part, move children))
+        }
         self.reply(id, lsp_array(items))
     }
 
@@ -1410,7 +1456,8 @@ class BeansLspServer {
             data.push("{delta_start}")
             data.push("{length}")
             data.push("{lsp_token_type(reference.id)}")
-            data.push("0")
+            data.push(
+                "{lsp_token_modifiers(snapshot, reference)}")
             previous_line = line
             previous_start = start
         }
@@ -1998,7 +2045,12 @@ fn lsp_capabilities() -> string {
                                 lsp_quote("property"),
                                 lsp_quote("enumMember"),
                                 lsp_quote("keyword")])),
-                        lsp_member("tokenModifiers", "[]")])),
+                        lsp_member(
+                            "tokenModifiers",
+                            lsp_array([
+                                lsp_quote("declaration"),
+                                lsp_quote("static"),
+                                lsp_quote("private")]))])),
                 lsp_member("full", "true")])),
         lsp_member(
             "renameProvider",
