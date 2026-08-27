@@ -704,6 +704,15 @@ jobs:
           path: assets
           format: spdx-json
           output-file: sbom/beans-v${{ env.VERSION }}.spdx.json
+          # The action attaches its own copy to any release that already
+          # exists for this tag, under its own name and outside assets/ — so
+          # it is not in the checksum list and not in the manifest. A first
+          # run never sees one, because the release is created further down;
+          # a re-run of this job does, because the previous attempt left the
+          # release behind. v0.1.33 published a stray beans-publish.spdx.json
+          # that way. The upload step below is the only thing that may put a
+          # file in front of a user.
+          upload-release-assets: false
 
       - name: Write the checksum list
         run: |
