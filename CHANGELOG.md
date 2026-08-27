@@ -4,6 +4,8 @@ This file records user-facing changes in each Beans release.
 
 ## [Unreleased]
 
+## [0.1.34] - 2026-08-27
+
 ### Fixed
 
 - **The editor answered nothing for most files in a library.** Opening any file
