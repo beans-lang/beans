@@ -135,6 +135,43 @@ for words in ffi_words ffi_rotate; do
 done
 echo "narrow extern arguments marshal by declared width on this host"
 
+# Which exception killed it, when one did.
+#
+# Git Bash reports a native crash as 139 — its own translation of a Windows
+# exception into SIGSEGV — and that translation throws away the one thing
+# worth knowing. The raw NTSTATUS separates faults that mean entirely
+# different bugs: 0xC0000005 is an access violation, 0xC0000374 is heap
+# corruption found at free, 0xC0000409 is a stack cookie or __fastfail, and
+# 0xC0000005 during teardown is a different investigation from either.
+#
+# So on a mismatch, run it once more and ask PowerShell, which keeps the
+# whole 32-bit value. Only ever runs after a failure, and says nothing if the
+# second run does not reproduce — an intermittent fault is itself a finding.
+windows_status() {
+    local exe=$1 raw
+    command -v powershell.exe >/dev/null 2>&1 || return 0
+    raw=$(powershell.exe -NoProfile -NonInteractive -Command \
+              "\$p = Start-Process -FilePath '$exe' -PassThru -Wait \
+                        -WindowStyle Hidden; \
+               if (\$p.ExitCode -ne 0) { '0x{0:X8}' -f \$p.ExitCode }" \
+              2>/dev/null | tr -d '\r' | tr -d '[:space:]')
+    if [[ -z "$raw" ]]; then
+        echo "  the second run exited cleanly: this fault is intermittent"
+        return 0
+    fi
+    local meaning
+    case "$raw" in
+        0xC0000005) meaning="access violation" ;;
+        0xC0000374) meaning="heap corruption detected at free" ;;
+        0xC0000409) meaning="stack cookie or __fastfail" ;;
+        0xC000001D) meaning="illegal instruction" ;;
+        0xC0000094) meaning="integer divide by zero" ;;
+        0xC00000FD) meaning="stack overflow" ;;
+        *)          meaning="see ntstatus.h" ;;
+    esac
+    echo "  NTSTATUS $raw ($meaning)"
+}
+
 fails=0
 ran=0
 refused=0
@@ -164,6 +201,7 @@ for src in examples/*.b; do
     ran=$((ran + 1))
     if [[ $interp_code -ne $native_code ]]; then
         echo "FAIL: $src: interpreter exit $interp_code, native exit $native_code" >&2
+        windows_status "build/windows_hosted/$name.exe" >&2
         fails=$((fails + 1))
     fi
     if ! cmp -s "build/windows_hosted/$name.interp.out" "build/windows_hosted/$name.native.out"; then

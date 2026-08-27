@@ -4,6 +4,18 @@ This file records user-facing changes in each Beans release.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A stalled download no longer fails the install.** `tools/install-release.sh`
+  passed `--retry 3` to curl, which counts only curl's own transient errors — a
+  connection that opens and then goes quiet is error 56, and curl will not
+  retry that. There was no timeout either, so such a transfer sat until the
+  kernel gave up on the socket: nine minutes, then a failed install for a user
+  whose network hiccuped once. The retry is a loop in the script now, so it
+  works the same for wget and needs no newer curl than a supported
+  distribution already ships, and `--speed-limit`/`--speed-time` turn a stall
+  into an abort after thirty seconds rather than nine minutes.
+
 ## [0.1.34] - 2026-08-27
 
 ### Fixed

@@ -87,16 +87,42 @@ fi
 # A local BEANS_INSTALL_BASE_URL is how CI exercises this script end to end
 # without a published release. Anything that is not a bare path still goes over
 # HTTPS with the same checks, so the tested code path is the shipped one.
+# A stalled transfer is the failure this has to survive, not a refused one.
+# `--retry` alone does not: curl counts only its own transient errors, and a
+# connection that opens and then goes quiet is error 56, which it will not
+# retry. With no timeout either, such a transfer sits until the kernel gives
+# up on the socket — nine minutes on a GitHub macOS runner, and then a failed
+# install for a user whose network hiccuped once.
+#
+# So the retry is a loop here rather than a curl flag, which also means it
+# works the same for wget and needs no version of either newer than what a
+# supported distribution already ships. `--speed-limit`/`--speed-time` turn a
+# stall into an abort after 30 seconds, and the loop then tries again.
+fetch_attempts=${BEANS_INSTALL_ATTEMPTS:-3}
+
+fetch_once() {
+    if [ "$downloader" = curl ]; then
+        curl -fsSL --proto '=https' --tlsv1.2 \
+             --connect-timeout 20 --speed-limit 1024 --speed-time 30 \
+             -o "$2" "$1"
+    else
+        wget -q --https-only --timeout=30 --tries=1 -O "$2" "$1"
+    fi
+}
+
 fetch() {
     from=$1 to=$2
     case $from in
         http://*|https://*)
-            if [ "$downloader" = curl ]; then
-                curl -fsSL --proto '=https' --tlsv1.2 --retry 3 -o "$to" "$from" ||
-                    return 1
-            else
-                wget -q --https-only -O "$to" "$from" || return 1
-            fi
+            attempt=1
+            while :; do
+                fetch_once "$from" "$to" && return 0
+                [ "$attempt" -ge "$fetch_attempts" ] && return 1
+                # A stalled mirror rarely recovers instantly; back off a
+                # little rather than spending all three tries in one second.
+                sleep $((attempt * 2))
+                attempt=$((attempt + 1))
+            done
             ;;
         *)
             [ -f "$from" ] || return 1
