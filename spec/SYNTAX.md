@@ -883,7 +883,12 @@ it cannot revive a dead value. A cycle made through `Shared` must be broken with
 fields); the local-class cycle collector does
 not trace through explicit Shared control blocks. `Shared<T>` and `Weak<T>` are
 `Send` and `Sync` only when `T` is both. `Mutex<T>` is the explicit lock-based
-synchronization boundary, including for local ARC class values.
+synchronization boundary: it is `Send` and `Sync` when `T` is `Send`, and also
+when the mutex owns `T` outright — a move-only `T` whose own state cannot be
+reached any other way. An ordinary `class` is not that, because it is an
+aliasable handle and the move into the mutex takes nothing away from whoever
+else holds it; a `unique class` is, so long as every field is `Send` or owned
+the same way.
 
 ### Struct and collection literals
 
@@ -1038,6 +1043,15 @@ the clone does not change the original. Class elements remain shared ARC
 references. A collection holding another move-only value cannot be cloned yet,
 because that needs a type-specialized deep clone. Likewise, `get`/index reads
 cannot copy a move-only element; List `pop`/`remove` are consuming reads.
+
+`Map.get` on a move-only value type is the one read that answers the
+collection's own value rather than a copy — which is why the index forms are
+refused there, and why the binding it lands in cannot be moved out. That makes
+it a borrow of the map, and a move-only value has one live reader at a time:
+reading the same map again while an earlier read is still in scope is refused,
+because two such bindings would be two mutating names for one value. Reads that
+do not overlap, reads of a different map, and reads of a value type that is not
+move-only are all unaffected.
 
 Everything has methods:
 
@@ -1743,11 +1757,15 @@ hits.add(1)
   sendable function local needs `move` at the call. Plain class references
   remain local. `List<T>`, `Box<T>`, and `Arena<T>` are `Send` when `T` is;
   `Map<K, V>` and `OrderedMap<K, V>` are `Send` when both arguments are.
-  `Bytes`, `File`, and `MMap` are move-only `Send` owners. `Mutex<T>` and
-  `Channel<T>` require `T: Send`; `Shared<T>` and `Weak<T>` require
-  `T: Send + Sync`.
-  This makes `class` a local ARC reference by default; wrap shared mutable data
-  in Mutex instead of silently racing it.
+  `Bytes`, `File`, and `MMap` are move-only `Send` owners. `Channel<T>`
+  requires `T: Send`; `Shared<T>` and `Weak<T>` require `T: Send + Sync`.
+  `Mutex<T>` takes `T: Send`, or any move-only `T` it can own outright:
+  `new Mutex(move v)` consumes the value and `with_lock` lends it to the body
+  without letting the body keep it, so the lock is the only way in as long as
+  every field of `T` is itself `Send` or owned the same way. This makes
+  `class` a local ARC reference by default; wrap shared mutable data in a
+  `Mutex` — as a `unique class`, so the mutex really owns it — instead of
+  silently racing it.
 - A `unique class` may explicitly implement `Send` to promise that transferring
   its sole owner is safe. This does not make it `Sync`, copyable, or shared.
   `TcpListener`, `TcpStream`, `UdpSocket`, `http.Server`, and

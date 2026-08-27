@@ -88,6 +88,19 @@ jobs:
           export OOP_FUZZ_LANES=interp,debug,release,lto
           make fuzz-oop
 
+      - name: Fuzz ownership — what a Mutex owns, and one live reader
+        if: contains(matrix.groups, 'classes')
+        env:
+          INPUT_CASES: ${{ github.event_name == 'workflow_dispatch' && inputs.cases || '400' }}
+          INPUT_START_SEED: ${{ github.event_name == 'workflow_dispatch' && inputs.start_seed || '100' }}
+          SHARD: ${{ matrix.shard }}
+        run: |
+          OWNERSHIP_FUZZ_SEED=$(( INPUT_START_SEED + SHARD - 1 ))
+          export OWNERSHIP_FUZZ_SEED
+          export OWNERSHIP_FUZZ_CASES="$INPUT_CASES"
+          export OWNERSHIP_FUZZ_LANES=interp,debug,release,lto
+          make fuzz-ownership
+
       - name: Upload failure artifacts
         if: failure()
         uses: actions/upload-artifact@v4
@@ -96,5 +109,6 @@ jobs:
           path: |
             build/differential-fuzz/failures/
             build/oop-fuzz/failures/
+            build/ownership-fuzz/failures/
             build/fuzz-artifacts/
           if-no-files-found: ignore

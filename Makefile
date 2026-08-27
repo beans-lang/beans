@@ -72,7 +72,7 @@ $(BIN): $(SELF_HOST_SRC) $(RUNTIME_COPY)
 	$(BEANSC_BOOT) build --release src/main.b -o $(BIN).new
 	rm -f $(BIN) && mv $(BIN).new $(BIN)
 
-.PHONY: run clean install test test-ci test-core test-quick test-frontend test-semantics test-runtime test-ffi test-platform platform-status test-platform-manifest test-compiler-arch-objects test-musl-hosted test-armv6hf-hosted test-release-package test-install-release test-release-completeness test-c-abi-tier1 test-barq-core test-sanitize fuzz-oop fuzz-oop-smoke fuzz-oop-long fuzz-reflection fuzz-reflection-smoke fuzz-net fuzz-net-soak fuzz-differential fuzz-differential-smoke test-fixpoint test-clean-self-host test-linux test-linux-arch test-linux-hosted test-windows test-windows-native test-windows-native-i686 test-windows-native-arm64 test-windows-arch test-windows-hosted test-encoding-targets test-encoding-windows access-score self-host-next test-self-host test-self-host-full bench-compiler bench-quick bench-full bench-verify bench-profile bench-abstractions bench-abstractions-quick
+.PHONY: run clean install test test-ci fuzz-ownership fuzz-ownership-long test-core test-quick test-frontend test-semantics test-runtime test-ffi test-platform platform-status test-platform-manifest test-compiler-arch-objects test-musl-hosted test-armv6hf-hosted test-release-package test-install-release test-release-completeness test-c-abi-tier1 test-barq-core test-sanitize fuzz-oop fuzz-oop-smoke fuzz-oop-long fuzz-reflection fuzz-reflection-smoke fuzz-net fuzz-net-soak fuzz-differential fuzz-differential-smoke test-fixpoint test-clean-self-host test-linux test-linux-arch test-linux-hosted test-windows test-windows-native test-windows-native-i686 test-windows-native-arm64 test-windows-arch test-windows-hosted test-encoding-targets test-encoding-windows access-score self-host-next test-self-host test-self-host-full bench-compiler bench-quick bench-full bench-verify bench-profile bench-abstractions bench-abstractions-quick
 run: $(BIN)
 	./$(BIN) parse examples/hello.b examples/tour.b
 
@@ -102,6 +102,7 @@ test-quick: $(BIN)
 	./test/deterministic_build.sh
 	bash ./test/unsafe.sh
 	./test/differential.sh
+	bash ./test/ownership_fuzz.sh smoke
 	bash ./test/ci_coverage.sh
 	$(MAKE) fuzz-differential-smoke
 
@@ -155,6 +156,7 @@ test-semantics: $(BIN)
 	./test/panic.sh
 	./test/numerics.sh
 	./test/moves.sh
+	bash ./test/ownership_fuzz.sh smoke
 	bash ./test/borrowed_iteration.sh
 	bash ./test/downcast_borrow.sh
 	bash ./test/math.sh
@@ -301,6 +303,7 @@ test-core: $(BIN)
 	bash ./test/oop_fuzz.sh smoke
 	bash ./test/reflection_fuzz.sh
 	bash ./test/differential_fuzz.sh smoke
+	bash ./test/ownership_fuzz.sh smoke
 	./test/fixed_arrays.sh
 	bash ./test/send_functions.sh
 	./test/packed_layout.sh
@@ -454,6 +457,16 @@ test-sanitize: $(BIN)
 
 # This fuzzer exercises self-hosted OOP semantics. The smoke target is also
 # part of test-core.
+# Ownership fuzzing: what a Mutex may own across a thread boundary, and how
+# many live readers a move-only map value may have. Both answers come from a
+# type shape, so the shapes are generated and an independent model in
+# tools/ownership_fuzz.py answers alongside the compiler.
+fuzz-ownership: $(BIN)
+	bash ./test/ownership_fuzz.sh run
+
+fuzz-ownership-long: $(BIN)
+	bash ./test/ownership_fuzz.sh long
+
 fuzz-oop: $(BIN)
 	bash ./test/oop_fuzz.sh run
 

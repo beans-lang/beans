@@ -95,5 +95,39 @@ fn main() {
     let swapped: Map<string, int> =
         deep.replace<Map<string, int>>({"k": 5})
     io.println(swapped["k"])
+
+    // 8. an Order bound promises the comparison operators inside the body,
+    // not just sort/max/min on the outside
+    io.println("{smaller(1, 2)}|{smaller("b", "a")}|{smaller(1.5, 2.5)}")
+    io.println("{largest([3, 9, 4], 0)}|{largest(["a", "z", "m"], "")}")
+    let ranked: Ranked<int, string> =
+        new Ranked<int, string>(5, "five")
+    io.println("{ranked.before(9)}|{ranked.before(1)}")
     io.println("done")
+}
+
+fn smaller<T implements Order>(a: T, b: T) -> bool {
+    return a < b
+}
+
+fn largest<T implements Order>(xs: List<T>, seed: T) -> T {
+    var best: T = seed
+    for item: T in xs {
+        if item > best {
+            best = item
+        }
+    }
+    return best
+}
+
+class Ranked<K implements Order, V> {
+    key: K
+    value: V
+    fn init(key: K, value: V) {
+        self.key = key
+        self.value = value
+    }
+    fn before(other: K) -> bool {
+        return self.key <= other
+    }
 }

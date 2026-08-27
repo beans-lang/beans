@@ -33,6 +33,29 @@ if ./build/beansc check test/cases/box_move_bad.b >"$tmp/box-bad" 2>&1; then
 fi
 grep -q "because Box<int> is move-only" "$tmp/box-bad"
 grep -q "List.push needs 'move second'" "$tmp/box-bad"
+
+# A move-only map value comes back as the map's own, which makes the binding a
+# borrow of the map. One reader at a time: two live ones would be two mutating
+# names for one value, which is the whole thing move-only rules out.
+./build/beansc run test/cases/map_borrow_ok.b >"$tmp/borrow.interp"
+./build/beansc build test/cases/map_borrow_ok.b \
+    -o "$tmp/borrow.native" >"$tmp/borrow.build" 2>&1
+"$tmp/borrow.native" >"$tmp/borrow.native.out"
+diff -u test/cases/map_borrow_ok.out "$tmp/borrow.interp"
+diff -u test/cases/map_borrow_ok.out "$tmp/borrow.native.out"
+
+if ./build/beansc check test/cases/map_borrow_bad.b \
+    >"$tmp/borrow-bad" 2>&1; then
+    echo "map_borrow_bad.b unexpectedly passed" >&2
+    exit 1
+fi
+# nested, deeper in a block, and for a move-only class value
+test "$(grep -c "already read into 'first'" "$tmp/borrow-bad")" -eq 3
+grep -q "one live reader at a time" "$tmp/borrow-bad"
+grep -q "can't move borrowed binding 'held'" "$tmp/borrow-bad"
+grep -q "can't copy a move-only map value by index" "$tmp/borrow-bad"
+
+echo "ok one live reader at a time for a move-only map value"
 grep -q "some needs 'move second'" "$tmp/box-bad"
 grep -q "new Shared needs 'move second'" "$tmp/box-bad"
 
