@@ -86,10 +86,19 @@ fn wide_arithmetic() {
 
 // Floating point with no FPU: thumbv7em-none-eabi is the soft-float ABI, so every one
 // of these goes through the compiler's double-precision helpers.
+//
+// The precision is written out rather than left to `{x}`. A bare interpolation asks for
+// the shortest text that reads back as the same value, and finding it means formatting
+// and reparsing — so the digit count is decided by the host's float hooks. A hosted libc
+// answers with a correctly rounded dtoa and strtod; a board that supplies neither cannot
+// reach the same answer without shipping both, and this file's claim is that all three
+// machines print the same bytes. Asking for ten decimals asks the hooks only for what a
+// board can honestly do, and still runs the division and the formatting through the
+// soft-float helpers, which is what is under test here.
 fn soft_float() {
     let half: float = 0.5
     let third: float = 1.0 / 3.0
-    io.println("half plus a third is {half + third}")
+    io.println("half plus a third is {half + third:.10}")
     io.println("and ordering still works: {third < half}")
 }
 

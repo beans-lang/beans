@@ -31,6 +31,18 @@ if ./build/beansc check test/cases/decimal_rounding_bad.b \
 fi
 grep -q "unknown rounding mode 'sideways'" "$tmp/round.bad"
 
+# Scale is part of the answer. A zero operand used to hand back the other side
+# untouched, so 0.00 + 233 lost its cents, and a compound assignment to a
+# decimal field was refused by the native backend alone — the checker and the
+# interpreter both took it, so a program that ran would not build.
+./build/beansc run test/cases/decimal_scale.b >"$tmp/scale.interp"
+./build/beansc build test/cases/decimal_scale.b \
+    -o "$tmp/scale.native" >"$tmp/scale.build" 2>&1
+"$tmp/scale.native" >"$tmp/scale.native.out"
+diff -u test/cases/decimal_scale.out "$tmp/scale.interp"
+diff -u test/cases/decimal_scale.out "$tmp/scale.native.out"
+grep -q 'call void @beans_decv_add(' build/decimal_scale.ll
+
 ./build/beansc run test/cases/decimal_precision.b >"$tmp/precision.interp"
 ./build/beansc build test/cases/decimal_precision.b \
     -o "$tmp/precision.native" >"$tmp/precision.build" 2>&1

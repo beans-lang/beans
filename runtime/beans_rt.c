@@ -440,6 +440,15 @@ extern char** environ;
 //       weak defaults below panic rather than being absent — a missing symbol
 //       would fail the link for programs that do not need it.
 //
+//       They come as a pair. A bare `{x}` asks for the shortest text that reads
+//       back as the same value, and the only way to know which spelling does is
+//       to format one and read it back, so printing a float calls the parser
+//       too. A host that supplies the formatter and not the parser still works:
+//       it gets a fixed ten significant digits, which is what this printed
+//       before there was a search. It will not match what a host with both
+//       hooks prints for the same value, because that answer is a correctly
+//       rounded dtoa's and this one is not.
+//
 // Three rules for every implementer:
 //
 //   **A hook must not call back into any beans_ function.** The allocator runs
@@ -14920,10 +14929,39 @@ void beans_decv_from_int(BDec* out, long long value) {
     BU128 magnitude = {value < 0 ? 0ULL - bits : bits, 0};
     dec_set(out, magnitude, value < 0, 0);
 }
+// Widen a value to a larger scale, as far as 38 significant digits allow. The
+// wider scale is an ideal, not a promise: the contract is the digit count, so
+// a coefficient that cannot grow that far keeps what it can.
+static void dec_widen(BDec* out, const BDec* value, long long scale,
+                      long long line, long long col) {
+    if (scale <= value->s) {
+        *out = *value;
+        return;
+    }
+    long long room = BDEC_PRECISION - dec_digits128(dec_mag(value));
+    long long step = scale - value->s;
+    if (step > room) step = room;
+    if (step <= 0) {
+        *out = *value;
+        return;
+    }
+    BDecWide wide = decw_from128(dec_mag(value));
+    decw_mul_pow10(&wide, step, line, col);
+    dec_finish(out, wide, dec_negative(value), value->s + step,
+               BROUND_HALF_EVEN, line, col);
+}
+
 void beans_decv_add(BDec* out, const BDec* a, const BDec* b,
                     long long line, long long col) {
-    if (dec_zero(a)) { *out = *b; return; }
-    if (dec_zero(b)) { *out = *a; return; }
+    // A zero still carries a scale, and a sum's scale is the wider of the two:
+    // 0.00 + 233 is 233.00. Handing back the other operand untouched dropped
+    // it, which is how a money total that starts at 0.00 lost its cents on the
+    // first addition — and money is what this type is for.
+    if (dec_zero(a) || dec_zero(b)) {
+        dec_widen(out, dec_zero(a) ? b : a,
+                  a->s > b->s ? a->s : b->s, line, col);
+        return;
+    }
     BU128 am = dec_mag(a), bm = dec_mag(b);
     int ae = dec_digits128(am) - 1 - (int)a->s;
     int be = dec_digits128(bm) - 1 - (int)b->s;
