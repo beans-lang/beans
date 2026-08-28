@@ -54,6 +54,23 @@ fn exercise() {
     sink += set.items().len()
     sink += deque.to_list().len()
 
+    // Set algebra allocates where the core operations do not: union_with clones
+    // a whole map, and the other three build a fresh set by walking. Every
+    // result here is a temporary whose length is read and then dropped, so the
+    // leaks sweep sees the clone and the walked sets freed — including the
+    // self-union, whose clone is walked against its own source.
+    var other: collections.Set<int> = new()
+    var pick: int = 0
+    for pick < 150 {
+        other.add(pick * 2)
+        pick += 1
+    }
+    sink += set.union_with(other).len()
+    sink += set.intersection(other).len()
+    sink += set.difference(other).len()
+    sink += set.symmetric_difference(other).len()
+    sink += set.union_with(set).len()
+
     io.println("ok {set.len()} {deque.len()} {queue.len()} {map.len()} {sink}")
 }
 
