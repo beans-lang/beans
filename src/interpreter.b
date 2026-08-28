@@ -5027,15 +5027,25 @@ class TreeInterpreter {
         if (node.resolved == "std.fmt.pad_left" ||
             node.resolved == "std.fmt.pad_right") &&
            arguments.len() == 2 {
+            let width: int = arguments[1].int_data
+            // beans_fmt_pad_left/right refuse a width past FMT_PAD_MAX; left
+            // to the host the panic would name this compiler's line, so the
+            // same limit is refused here with the runtime's own words.
+            if width > 1000000 {
+                return self.fail_at(
+                    node,
+                    node.col,
+                    "pad width too large")
+            }
             return TreeValue.string(
                 if node.value == "pad_left" {
                     host_fmt.pad_left(
                         arguments[0].text,
-                        arguments[1].int_data)
+                        width)
                 } else {
                     host_fmt.pad_right(
                         arguments[0].text,
-                        arguments[1].int_data)
+                        width)
                 })
         }
         if node.resolved == "std.fmt.float" &&
@@ -5188,12 +5198,28 @@ class TreeInterpreter {
         }
         if node.value == "reserve" &&
            arguments.len() == 2 {
-            data.reserve(arguments[1].int_data)
+            let n: int = arguments[1].int_data
+            if n < 0 {
+                self.fail_at(
+                    node,
+                    node.col,
+                    "negative reserve capacity {n}")
+                return some(TreeValue.unit())
+            }
+            data.reserve(n)
             return some(TreeValue.unit())
         }
         if node.value == "resize" &&
            arguments.len() == 2 {
-            data.resize(arguments[1].int_data)
+            let n: int = arguments[1].int_data
+            if n < 0 {
+                self.fail_at(
+                    node,
+                    node.col,
+                    "negative size {n}")
+                return some(TreeValue.unit())
+            }
+            data.resize(n)
             return some(TreeValue.unit())
         }
         if node.value == "fill" &&
@@ -5330,8 +5356,17 @@ class TreeInterpreter {
            arguments.len() == 3 {
             match arguments[1].bytes_data {
                 some(source) => {
-                    data.copy_from(
-                        source, arguments[2].int_data)
+                    let at: int = arguments[2].int_data
+                    if at < 0 ||
+                       source.len() > data.len() ||
+                       at > data.len() - source.len() {
+                        self.fail_at(
+                            node,
+                            node.col,
+                            "copy of {source.len()} bytes at {at} out of range (len {data.len()})")
+                        return some(TreeValue.unit())
+                    }
+                    data.copy_from(source, at)
                     return some(TreeValue.unit())
                 }
                 none => {}
@@ -5361,10 +5396,17 @@ class TreeInterpreter {
            arguments.len() == 4 {
             match arguments[1].bytes_data {
                 some(source) => {
-                    data.append_range(
-                        source,
-                        arguments[2].int_data,
-                        arguments[3].int_data)
+                    let from: int = arguments[2].int_data
+                    let to: int = arguments[3].int_data
+                    if from < 0 || to < from ||
+                       to > source.len() {
+                        self.fail_at(
+                            node,
+                            node.col,
+                            "slice {from}..{to} out of range (len {source.len()})")
+                        return some(TreeValue.unit())
+                    }
+                    data.append_range(source, from, to)
                     return some(TreeValue.unit())
                 }
                 none => {}
@@ -5385,16 +5427,62 @@ class TreeInterpreter {
         }
         if node.value == "get_uvarint" &&
            arguments.len() == 2 {
+            let pos: int = arguments[1].int_data
+            let n: int = data.len()
+            // Match beans_bytes_get_varint's own checks, in its order, so a
+            // read that runs off the end reports the interpreted call site
+            // (not this compiler's line) with the runtime's exact words —
+            // whether it fails at `pos` or midway through a continuation.
+            // Only the bounds are re-walked here; the value is still decoded
+            // once, by the shared host builtin, after the read is known safe.
+            var problem: string = ""
+            if pos < 0 {
+                problem =
+                    "varint read at {pos} out of range (len {n})"
+            } else {
+                var i: int = pos
+                var shift: int = 0
+                var scanning: bool = true
+                for scanning {
+                    if i >= n {
+                        problem =
+                            "varint read at {pos} out of range (len {n})"
+                        scanning = false
+                    } else if shift >= 64 {
+                        problem = "varint too long at {pos}"
+                        scanning = false
+                    } else {
+                        let byte: int = data.get(i)
+                        i = i + 1
+                        if byte < 128 {
+                            scanning = false
+                        } else {
+                            shift = shift + 7
+                        }
+                    }
+                }
+            }
+            if problem != "" {
+                self.fail_at(node, node.col, problem)
+                return some(TreeValue.unit())
+            }
             return some(TreeValue.integer(
-                data.get_uvarint(
-                    arguments[1].int_data)))
+                data.get_uvarint(pos)))
         }
         if node.value == "crc32" &&
            arguments.len() == 3 {
+            let from: int = arguments[1].int_data
+            let to: int = arguments[2].int_data
+            if from < 0 || to < from ||
+               to > data.len() {
+                self.fail_at(
+                    node,
+                    node.col,
+                    "crc32 {from}..{to} out of range (len {data.len()})")
+                return some(TreeValue.unit())
+            }
             return some(TreeValue.integer(
-                data.crc32(
-                    arguments[1].int_data,
-                    arguments[2].int_data) as int))
+                data.crc32(from, to) as int))
         }
         return none
     }
@@ -7926,6 +8014,12 @@ class TreeInterpreter {
                 return TreeValue.string(
                     receiver.text.first(count))
             }
+            if count < 0 {
+                return self.fail_at(
+                    node,
+                    node.col,
+                    "negative repeat count {count}")
+            }
             return TreeValue.string(
                 receiver.text.repeat(count))
         }
@@ -7968,9 +8062,16 @@ class TreeInterpreter {
         if receiver.kind == "string" &&
            node.value == "byte_at" &&
            arguments.len() == 2 {
+            let index: int = arguments[1].int_data
+            if index < 0 ||
+               index >= receiver.text.len() {
+                return self.fail_at(
+                    node,
+                    node.col,
+                    "byte index {index} out of range (len {receiver.text.len()})")
+            }
             return TreeValue.integer(
-                receiver.text.byte_at(
-                    arguments[1].int_data))
+                receiver.text.byte_at(index))
         }
         if receiver.kind == "string" &&
            (node.value == "find" ||
@@ -8032,27 +8133,55 @@ class TreeInterpreter {
         if receiver.kind == "string" &&
            node.value == "find_byte" &&
            arguments.len() == 3 {
+            let byte: int = arguments[1].int_data
+            let from: int = arguments[2].int_data
+            if byte < 0 || byte > 255 {
+                return self.fail_at(
+                    node,
+                    node.col,
+                    "byte {byte} out of range")
+            }
+            if from < 0 ||
+               from > receiver.text.len() {
+                return self.fail_at(
+                    node,
+                    node.col,
+                    "find start {from} out of range (len {receiver.text.len()})")
+            }
             return TreeValue.integer(
-                receiver.text.find_byte(
-                    arguments[1].int_data,
-                    arguments[2].int_data))
+                receiver.text.find_byte(byte, from))
         }
         if receiver.kind == "string" &&
            node.value == "range_equals" &&
            arguments.len() == 4 {
+            let from: int = arguments[1].int_data
+            let to: int = arguments[2].int_data
+            if from < 0 || to < from ||
+               to > receiver.text.len() {
+                return self.fail_at(
+                    node,
+                    node.col,
+                    "range {from}..{to} out of range (len {receiver.text.len()})")
+            }
             return TreeValue.boolean(
                 receiver.text.range_equals(
-                    arguments[1].int_data,
-                    arguments[2].int_data,
-                    arguments[3].text))
+                    from, to, arguments[3].text))
         }
         if receiver.kind == "string" &&
            node.value == "parse_int_range_or" &&
            arguments.len() == 4 {
+            let from: int = arguments[1].int_data
+            let to: int = arguments[2].int_data
+            if from < 0 || to < from ||
+               to > receiver.text.len() {
+                return self.fail_at(
+                    node,
+                    node.col,
+                    "range {from}..{to} out of range (len {receiver.text.len()})")
+            }
             return TreeValue.integer(
                 receiver.text.parse_int_range_or(
-                    arguments[1].int_data,
-                    arguments[2].int_data,
+                    from, to,
                     arguments[3].int_data))
         }
         if receiver.kind == "string" &&
@@ -8109,8 +8238,16 @@ class TreeInterpreter {
         if receiver.kind == "list" &&
            node.value == "insert" &&
            arguments.len() == 3 {
+            let index: int = arguments[1].int_data
+            if index < 0 ||
+               index > receiver.items.len() {
+                return self.fail_at(
+                    node,
+                    node.col,
+                    "insert at {index} out of range (len {receiver.items.len()})")
+            }
             receiver.items.insert(
-                arguments[1].int_data,
+                index,
                 tree_value_copy(arguments[2]))
             return TreeValue.unit()
         }
@@ -10127,7 +10264,7 @@ class TreeInterpreter {
         }
     }
 
-    fn builtin_object(name: string,
+    fn builtin_object(node: HirNode, name: string,
                       arguments: List<TreeValue>) ->
         Option<TreeValue> {
         var kind: string = ""
@@ -10181,6 +10318,13 @@ class TreeInterpreter {
                 } else {
                     0
                 }
+            if size < 0 {
+                self.fail_at(
+                    node,
+                    node.col,
+                    "negative size {size}")
+                return some(TreeValue.unit())
+            }
             result.bytes_data =
                 some(new Bytes(size))
         } else if kind == "shared" {
@@ -10316,7 +10460,7 @@ class TreeInterpreter {
             arguments.push(argument)
         }
         match self.builtin_object(
-            node.type.name, arguments) {
+            node, node.type.name, arguments) {
             some(value) => { return value }
             none => {}
         }
