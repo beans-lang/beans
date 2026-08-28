@@ -12355,15 +12355,11 @@ long long beans_term_size(long long fd, void* out) {
 long long beans_term_set_raw(long long fd) { (void)fd; return RT_TERM_UNSUPPORTED; }
 long long beans_term_restore(long long fd) { (void)fd; return 0; }
 
-#else
-// Freestanding and the minimal POSIX profile: no terminal to control.
-long long beans_term_is_tty(long long fd) { (void)fd; return 0; }
-long long beans_term_size(long long fd, void* out) {
-    (void)fd; (void)out; return RT_TERM_UNSUPPORTED;
-}
-long long beans_term_set_raw(long long fd) { (void)fd; return RT_TERM_UNSUPPORTED; }
-long long beans_term_restore(long long fd) { (void)fd; return 0; }
 #endif
+// No third branch: std.term is refused by the checker on any runtime below full
+// (capability "terminal control", src/hir.b), so this section compiles only at
+// the full profile, where a build is POSIX or Windows and never neither. The
+// minimal and freestanding runtimes never see a call to reach these symbols.
 
 // ---- readiness poller -------------------------------------------------------
 //

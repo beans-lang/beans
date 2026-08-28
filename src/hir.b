@@ -571,6 +571,9 @@ class SignatureChecker {
         if import_path == "std.dl" || import_path == "std.dylib" {
             return "dynamic libraries"
         }
+        if import_path == "std.term" {
+            return "terminal control"
+        }
         return ""
     }
 

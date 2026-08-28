@@ -2608,10 +2608,14 @@ for going {
   It decodes arrows, Home/End, Page-Up/Down, Insert/Delete, F1–F12, printable characters
   (UTF-8), `Alt`+key, `Ctrl`+key, Enter, Tab and Backspace, with the xterm modifier mask
   read back through `has_shift`/`has_alt`/`has_ctrl`.
-- **Platform.** macOS and Linux are complete. On Windows `is_tty` and `size` work through
-  the console API; **raw mode is refused** with kind `unsupported` (the console-mode and
-  virtual-terminal-input path is not driven yet) rather than left half-configured. The
-  freestanding and minimal profiles have no terminal and report the same `unsupported`.
+- **Platform.** `std.term` needs the **full** runtime — its calls live in the full-profile
+  runtime — so `import std.term` is **refused by the checker** on the minimal and
+  freestanding profiles, with a message naming the program (`'std.term' needs terminal
+  control, which the minimal runtime does not have`), never a link error about a missing
+  symbol. macOS and Linux are complete. On Windows `is_tty` and `size` work through the
+  console API; **raw mode is refused** with kind `unsupported` at runtime (the console-mode
+  and virtual-terminal-input path is not driven yet) rather than left half-configured.
+  `wasi` has no terminal and the checker refuses it there too.
 
 ### std.http (v1.0, implemented)
 
