@@ -3662,6 +3662,15 @@ class TreeInterpreter {
         if value.kind == "err" && value.items.len() == 1 {
             return "err({self.render_for_string(value.items[0], inout cycle_path)})"
         }
+        // The builtin Error prints as its message, the string a caller passed
+        // to err(...) — matched to the native backend, which reads the same
+        // field.
+        if value.kind == "error" {
+            match value.fields.entries.get("msg") {
+                some(message) => { return message.text }
+                none => { return "" }
+            }
+        }
         if value.kind == "list" || value.kind == "array" {
             var pieces: List<string> = []
             for item: TreeValue in value.items {

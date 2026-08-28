@@ -505,9 +505,12 @@ registry rows remain for low-level allocation/storage, raw bytes, OS calls,
 atomics, and thread entry while more of `core` and `std` move to `.b` files.
 
 **What prints** (same rule for `io.println` and `{x}` interpolation): numbers, bools, strings;
-enums, as `variant` or `variant(payload, ...)`; lists of printable things, as `[a, b, c]`;
-maps of printable keys and values, as `{k: v, k: v}`; and structs and class instances, as
-`Name { field: value, ... }` — nesting included, and `join(sep)` renders the same way. A map
+enums, as `variant` or `variant(payload, ...)`; options as `some(x)` / `none` and results as
+`ok(x)` / `err(e)`; lists of printable things, as `[a, b, c]`; maps of printable keys and
+values, as `{k: v, k: v}`; and structs and class instances, as `Name { field: value, ... }` —
+nesting included, and `join(sep)` renders the same way. A result's default `err` payload is an
+`Error`, which prints as the message a caller passed to `err(...)`; a custom err type prints
+as itself. A map
 renders its entries in **insertion order**, the order `keys()` walks: an updated key keeps
 its place, a removed-then-reinserted one moves to the end, and both backends impose the same
 order so a golden file can pin it. Strings render without quotes, the same as inside a list.
@@ -531,8 +534,7 @@ way: a **leaf, standalone class** (not an interface, not `abstract`, not a base 
 `extends`, and — until inherited fields render — not itself extending one). A base, an
 interface or an abstract class is refused, because its value's real type is not knowable from
 its declared one and the two backends would render different fields; give it a string form
-first, or match on it. (`Result` carries an `Error` object, so it stays unprintable too —
-match on it.)
+first, or match on it.
 
 [examples/kv.b](examples/kv.b) is the proof: an append-only KV store with binary records and a
 durable compaction (write temp, sync, rename over, sync the parent dir).
@@ -3563,7 +3565,7 @@ file declares one, so `package` stays usable as an ordinary identifier.
   then full self; destruction runs at refcount zero before field release,
   subclass then parent, and is skipped for cycle garbage
 - Stdlib v0.5 phase 4 (implemented): Beans-written `std.reader` line reading over positional I/O (the old native `BufReader` is gone), format specs in interpolation (`{x:8.2}` — first top-level `:` in the braces; the same rendering as `std.fmt`), `chars()` for UTF-8, varint + crc32 on `Bytes`, `MMap.resize` (the handle keeps its fd), `Dir.walk` (recursive, sorted, relative), and Beans-written `std.path`
-- Stdlib v0.5 phase 3 (implemented): the List/Map method set with **stable** sorts (`sort_by` takes a less-than closure; both backends run the identical merge), `Bytes` value `==`, advisory file locks, `MMap` (whole-file, shared, drop unmaps, grow = close + reopen), `std.fmt`, and printing widened to enums and lists — `variant(payload)` / `[a, b]` — everywhere strings interpolate; maps, class instances, and `Result` stay unprintable
+- Stdlib v0.5 phase 3 (implemented): the List/Map method set with **stable** sorts (`sort_by` takes a less-than closure; both backends run the identical merge), `Bytes` value `==`, advisory file locks, `MMap` (whole-file, shared, drop unmaps, grow = close + reopen), `std.fmt`, and printing widened to enums and lists — `variant(payload)` / `[a, b]` — everywhere strings interpolate; maps, class instances, and `Result` stayed unprintable until the derived rendering above landed
 - Stdlib v0.5: the string method set, `Bytes`, `File`/`Dir`, `std.os`, and the `std.io` console set (implemented); byte semantics, panics carry positions, byte-owner mutators return `unit`, fs errors carry kind slugs
 - Modules: `beans.pot`, one folder = one package, git imports with a global cache (v0.4, implemented)
 - Block-bodied match arms in statement position (v0.4, implemented)

@@ -1274,6 +1274,13 @@ partial class LlvmTextEmitter {
         if step == "" { return "" }
         let llvm: string = self.type_text(type)
         let id: int = self.fresh()
+        // A boxed result is neither a reference nor a scalar: the field
+        // holds the box pointer. Load it and hand the whole box to the
+        // result show step, which reads the tag and the live arm.
+        if canonical_hir_name(type.name) == "Result" &&
+           !self.result_is_inline(type) {
+            return "  %show.ptr.{tag}{id} = load ptr, ptr {pointer}\n  %show.slot.{tag}{id} = ptrtoint ptr %show.ptr.{tag}{id} to i64\n  call void @beans_show_push_val(ptr %c, ptr @{step}, i64 %show.slot.{tag}{id})\n"
+        }
         if self.type_is_reference(type) ||
            self.type_is_raw_pointer(type) {
             return "  %show.ptr.{tag}{id} = load ptr, ptr {pointer}\n  %show.slot.{tag}{id} = ptrtoint ptr %show.ptr.{tag}{id} to i64\n  call void @beans_show_push_val(ptr %c, ptr @{step}, i64 %show.slot.{tag}{id})\n"
@@ -1422,6 +1429,65 @@ partial class LlvmTextEmitter {
                 "{output}show.none{id}:\n  store ptr {none_text}, ptr {slot}\n  br label %show.merge{id}\n"
             output =
                 "{output}show.merge{id}:\n  %show.{tag}{id} = load ptr, ptr {slot}\n"
+            return new LlvmSlotConversion(
+                output, "%show.{tag}{id}")
+        }
+        // A result prints as ok(x) / err(e). Its ok and err payloads live in
+        // one box (or one aggregate for an inline result), read out of the
+        // arm the discriminant selects — exactly how a match on it reads
+        // them — and each rendered by the same show_value that renders any
+        // value. The err payload's default type is Error, which prints as
+        // the message a caller passed to err(...).
+        if name == "Result" && type.args.len() >= 1 {
+            let ok_type: HirType = type.args[0]
+            let err_type: HirType =
+                self.result_error_type(type)
+            let id: int = self.fresh()
+            let ok_open: string = self.string_pointer("ok(")
+            let err_open: string = self.string_pointer("err(")
+            let close: string = self.string_pointer(")")
+            let slot: string =
+                self.spill_slot("ptr", "show.res")
+            var header: string = ""
+            if self.result_is_inline(type) {
+                header =
+                    "  %show.res.err{id} = extractvalue {self.type_text(type)} {value}, 0\n  %show.res.ok{id} = xor i1 %show.res.err{id}, true\n"
+            } else {
+                header =
+                    "  %show.res.tag{id} = load i64, ptr {value}\n  %show.res.ok{id} = icmp eq i64 %show.res.tag{id}, 0\n"
+            }
+            let ok_payload: LlvmSlotConversion =
+                self.emit_result_payload_value(
+                    value, type, true, "show.resok{id}")
+            if ok_payload.value == "" {
+                return new LlvmSlotConversion("", "")
+            }
+            let ok_shown: LlvmSlotConversion =
+                self.show_value(
+                    ok_type, ok_payload.value, "resok{id}")
+            if ok_shown.value == "" {
+                return new LlvmSlotConversion("", "")
+            }
+            let err_payload: LlvmSlotConversion =
+                self.emit_result_payload_value(
+                    value, type, false, "show.reserr{id}")
+            if err_payload.value == "" {
+                return new LlvmSlotConversion("", "")
+            }
+            let err_shown: LlvmSlotConversion =
+                self.show_value(
+                    err_type, err_payload.value, "reserr{id}")
+            if err_shown.value == "" {
+                return new LlvmSlotConversion("", "")
+            }
+            var output: string =
+                "{header}  br i1 %show.res.ok{id}, label %show.res.oklbl{id}, label %show.res.errlbl{id}\n"
+            output =
+                "{output}show.res.oklbl{id}:\n{ok_payload.setup}{ok_shown.setup}  %show.res.okwrap{id} = call ptr @beans_concat(ptr {ok_open}, ptr {ok_shown.value})\n  call void @beans_release(ptr {ok_shown.value})\n  %show.res.okfull{id} = call ptr @beans_concat(ptr %show.res.okwrap{id}, ptr {close})\n  call void @beans_release(ptr %show.res.okwrap{id})\n  store ptr %show.res.okfull{id}, ptr {slot}\n  br label %show.res.merge{id}\n"
+            output =
+                "{output}show.res.errlbl{id}:\n{err_payload.setup}{err_shown.setup}  %show.res.errwrap{id} = call ptr @beans_concat(ptr {err_open}, ptr {err_shown.value})\n  call void @beans_release(ptr {err_shown.value})\n  %show.res.errfull{id} = call ptr @beans_concat(ptr %show.res.errwrap{id}, ptr {close})\n  call void @beans_release(ptr %show.res.errwrap{id})\n  store ptr %show.res.errfull{id}, ptr {slot}\n  br label %show.res.merge{id}\n"
+            output =
+                "{output}show.res.merge{id}:\n  %show.{tag}{id} = load ptr, ptr {slot}\n"
             return new LlvmSlotConversion(
                 output, "%show.{tag}{id}")
         }

@@ -623,6 +623,20 @@ partial class LlvmTextEmitter {
                 return ""
             }
             body = "{body}{pushed}  ret void\n"
+        } else if name == "Result" &&
+                  type.args.len() >= 1 &&
+                  self.result_is_inline(type) {
+            // An inline result {is_error, okay, failed} whose address the
+            // driver handed us: read is_error, append ok( / err(, and push
+            // the live arm's field.
+            let built: string =
+                self.request_result_show_body(
+                    type, "%raw", true)
+            if built == "" {
+                self.show_wide_step_functions[key] = ""
+                return ""
+            }
+            body = built
         } else if self.declaration_is_struct(type) {
             // A struct is a value, so it crosses by address and cannot be a
             // reference cycle — no path marking, just its fields in
@@ -729,6 +743,13 @@ partial class LlvmTextEmitter {
         } else if name == "string" {
             body =
                 "  %show.text = inttoptr i64 %v to ptr\n  call void @beans_show_append(ptr %c, ptr %show.text)\n  ret void\n"
+        } else if name == "Error" {
+            // Error prints as its message — the string a caller passed to
+            // err(...). The message pointer sits at the Error object's msg
+            // offset, moving with the target pointer width.
+            let offset: int = self.error_field_offset("msg")
+            body =
+                "  %show.err = inttoptr i64 %v to ptr\n  %show.err.msg.ptr = getelementptr i8, ptr %show.err, i64 {offset}\n  %show.err.msg = load ptr, ptr %show.err.msg.ptr\n  call void @beans_show_append(ptr %c, ptr %show.err.msg)\n  ret void\n"
         } else if name == "List" &&
                   type.args.len() == 1 {
             let element: HirType = type.args[0]
@@ -809,6 +830,15 @@ partial class LlvmTextEmitter {
                 "void @beans_show_push_val(ptr, ptr, i64)")
             body =
                 "  %show.none = icmp eq i64 %v, 0\n  br i1 %show.none, label %show.option.none, label %show.option.some\nshow.option.none:\n  call void @beans_show_append(ptr %c, ptr {none_text})\n  ret void\nshow.option.some:\n  call void @beans_show_append(ptr %c, ptr {some_text})\n  call void @beans_show_push_lit(ptr %c, ptr {close})\n  call void @beans_show_push_val(ptr %c, ptr @{inner}, i64 %v)\n  ret void\n"
+        } else if name == "Result" &&
+                  type.args.len() >= 1 &&
+                  !self.result_is_inline(type) {
+            // A boxed result: {i64 tag, payload}. Read the tag, append
+            // ok( / err(, and push the live arm's payload from the box's
+            // payload slot — the same offset a match reads it from.
+            body =
+                self.request_result_show_body(
+                    type, "%v", false)
         } else if (name == "Map" || name == "OrderedMap") &&
                   type.args.len() == 2 {
             // A map prints as {k: v, k: v}. The runtime driver walks the
@@ -1080,6 +1110,73 @@ partial class LlvmTextEmitter {
         }
     }
 
+    // The iterative show step body for a result — ok(x) / err(e). Reads the
+    // arm the discriminant selects and pushes its payload, exactly how a
+    // match reads it. `is_wide` distinguishes the inline aggregate
+    // {is_error, okay, failed}, whose slot is the value's address, from the
+    // boxed {tag, payload}, whose slot is the box pointer. Empty when a
+    // payload has no show step, so the caller refuses.
+    fn request_result_show_body(
+        type: HirType,
+        slot_name: string,
+        is_wide: bool) -> string {
+        let ok_type: HirType = type.args[0]
+        let err_type: HirType =
+            self.result_error_type(type)
+        let id: int = self.fresh()
+        let ok_open: string = self.string_pointer("ok(")
+        let err_open: string = self.string_pointer("err(")
+        let close: string = self.string_pointer(")")
+        self.require_declare(
+            "beans_show_push_lit",
+            "void @beans_show_push_lit(ptr, ptr)")
+        let base: string = "%show.resbase{id}"
+        var body: string =
+            "  {base} = inttoptr i64 {slot_name} to ptr\n"
+        if is_wide {
+            body =
+                "{body}  %show.reserrflag{id} = load i1, ptr {base}\n  %show.resok{id} = xor i1 %show.reserrflag{id}, true\n"
+        } else {
+            body =
+                "{body}  %show.restag{id} = load i64, ptr {base}\n  %show.resok{id} = icmp eq i64 %show.restag{id}, 0\n"
+        }
+        body =
+            "{body}  br i1 %show.resok{id}, label %show.resoklbl{id}, label %show.reserrlbl{id}\n"
+        // ok arm
+        let ok_ptr: string = "%show.resokptr{id}"
+        var ok_setup: string = ""
+        if is_wide {
+            ok_setup =
+                "  {ok_ptr} = getelementptr {self.type_text(type)}, ptr {base}, i32 0, i32 1\n"
+        } else {
+            ok_setup =
+                "  {ok_ptr} = getelementptr i8, ptr {base}, i64 {self.result_payload_offset(ok_type)}\n"
+        }
+        let ok_push: string =
+            self.show_step_push_at(
+                ok_type, ok_ptr, "resok{id}")
+        if ok_push == "" { return "" }
+        body =
+            "{body}show.resoklbl{id}:\n  call void @beans_show_append(ptr %c, ptr {ok_open})\n  call void @beans_show_push_lit(ptr %c, ptr {close})\n{ok_setup}{ok_push}  ret void\n"
+        // err arm
+        let err_ptr: string = "%show.reserrptr{id}"
+        var err_setup: string = ""
+        if is_wide {
+            err_setup =
+                "  {err_ptr} = getelementptr {self.type_text(type)}, ptr {base}, i32 0, i32 2\n"
+        } else {
+            err_setup =
+                "  {err_ptr} = getelementptr i8, ptr {base}, i64 {self.result_payload_offset(err_type)}\n"
+        }
+        let err_push: string =
+            self.show_step_push_at(
+                err_type, err_ptr, "reserr{id}")
+        if err_push == "" { return "" }
+        body =
+            "{body}show.reserrlbl{id}:\n  call void @beans_show_append(ptr %c, ptr {err_open})\n  call void @beans_show_push_lit(ptr %c, ptr {close})\n{err_setup}{err_push}  ret void\n"
+        return body
+    }
+
     // one owned-string renderer per shown type, memoized so nested
     // lists reuse their element's function; the empty string means
     // "cannot show this type". Mirrors production's request_show so
@@ -1118,6 +1215,12 @@ partial class LlvmTextEmitter {
         } else if name == "string" {
             body =
                 "  %text = inttoptr i64 %v to ptr\n  call void @beans_retain(ptr %text)\n  ret ptr %text\n"
+        } else if name == "Error" {
+            // Error prints as its message; hand back a retained copy of the
+            // message string the Error object holds.
+            let offset: int = self.error_field_offset("msg")
+            body =
+                "  %err = inttoptr i64 %v to ptr\n  %err.msg.ptr = getelementptr i8, ptr %err, i64 {offset}\n  %err.msg = load ptr, ptr %err.msg.ptr\n  call void @beans_retain(ptr %err.msg)\n  ret ptr %err.msg\n"
         } else if name == "List" &&
                   type.args.len() == 1 {
             let element: HirType = type.args[0]
@@ -1160,6 +1263,14 @@ partial class LlvmTextEmitter {
                 self.type_is_reference(type)
             if (name == "Map" || name == "OrderedMap") &&
                type.args.len() == 2 {
+                iterative = true
+            }
+            // A boxed result crosses as its box pointer, a slot the driver
+            // can carry; an inline result is wide and reaches the driver by
+            // address through the wide step instead.
+            if name == "Result" &&
+               type.args.len() >= 1 &&
+               !self.result_is_inline(type) {
                 iterative = true
             }
             match self.declaration_for(type) {

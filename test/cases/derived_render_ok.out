@@ -16,5 +16,11 @@ Person { name: Al, age: 1 } | Person { name: Bo, age: 2 }
 Node { label: a, next: some(Node { label: b, next: some(<cycle>), owner: <weak> }), owner: <weak> }
 Node { label: x, next: some(Node { label: leaf, next: none, owner: <weak> }), owner: <weak> }
 Node { label: root, next: some(Node { label: kid, next: none, owner: <weak> }), owner: <weak> }
+ok(7)
+err(boom)
+ok(Point { x: 5, y: 6 })
+err(nope)
+[ok(1), err(x), ok(3)]
+{a: ok(1), b: err(no)}
 |Point { x: 1, y: 2 }|
 |        {a: 1, b: 2}|

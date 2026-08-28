@@ -4883,21 +4883,24 @@ class ExpressionChecker {
             return self.printable_in_string_rec(
                 type.args[1], inout seen)
         }
-        // The builtin enums live outside the declaration table; their
-        // shapes mirror stage 0's registrations. Result's err payload is
-        // Error — a class — unless spelled otherwise, which is what
-        // keeps Result out of strings.
+        // A result prints as ok(x) / err(e). It is printable when its ok
+        // type is and its err type is — and its err type is Error unless
+        // spelled otherwise, which prints as the error's message.
         if name == "Result" {
+            if type.args.len() == 0 { return false }
+            if !self.printable_in_string_rec(
+                type.args[0], inout seen) {
+                return false
+            }
             if type.args.len() >= 2 {
-                if !self.printable_in_string_rec(
-                    type.args[0], inout seen) {
-                    return false
-                }
                 return self.printable_in_string_rec(
                     type.args[1], inout seen)
             }
-            return false
+            return true
         }
+        // The builtin Error class lives outside the declaration table; it
+        // prints as its message, the string a caller passed to err(...).
+        if name == "Error" { return true }
         if name == "MemoryOrder" || name == "RoundingMode" {
             return true
         }

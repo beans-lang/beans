@@ -102,6 +102,22 @@ fn main() {
     kid.owner = some(root)
     io.println("{root}")
 
+    // A result prints as ok(x) / err(e). The default err payload is an Error,
+    // which prints as the message a caller passed to err(...); a custom err
+    // type prints as itself. Nesting works both ways.
+    let ok_int: Result<int> = ok(7)
+    io.println("{ok_int}")
+    let err_int: Result<int> = err("boom")
+    io.println("{err_int}")
+    let ok_pt: Result<Point> = ok(Point { x: 5, y: 6 })
+    io.println("{ok_pt}")
+    let custom: Result<bool, string> = err("nope")
+    io.println("{custom}")
+    let results: List<Result<int>> = [ok(1), err("x"), ok(3)]
+    io.println("{results}")
+    let by_key: Map<string, Result<int>> = {"a": ok(1), "b": err("no")}
+    io.println("{by_key}")
+
     // Width pads the rendered form of any printable value in columns.
     io.println("|{p:16}|")
     io.println("|{basic:20}|")
