@@ -871,8 +871,14 @@ match n {
 ```
 
 - `size_of`, `align_of` and `offset_of` are **not** constant expressions: they
-  are answered after layout, which runs later than a constant is folded. So is
-  a fixed array's length, which stays an integer literal.
+  are answered after layout, which runs later than a constant is folded, so
+  they cannot appear in a `const` initializer.
+- A `const` cannot **size a fixed array**. An array's length is read while
+  types are laid out, which is before the checker folds constants, so the
+  length is still an integer literal (`[int; 128]`, not `[int; LIMIT]`). Using
+  a constant there is refused at that point, naming the constant. Lifting this
+  would mean folding constant initializers before type layout; it is the one
+  use in the original request that is not yet delivered.
 - `const` is contextual. It is a declaration keyword only in `const <NAME>` at
   the start of a module-level declaration, and stays an ordinary identifier
   everywhere else.
