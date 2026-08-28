@@ -64,4 +64,23 @@ check_bad const_assign_bad.b \
 check_bad const_arraylen_bad.b \
     "an array length must be an integer literal — a module const is folded after types are laid out, so 'SIZE' cannot size an array"
 
+# pub const is the library case: a consumer in another package folds it,
+# reaches it qualified and through an import binding, and uses it in a match
+# arm — on both backends, against one golden. A non-pub const stays private.
+./build/beansc run test/cases/const_pkg/main.b >"$tmp/pkg.interp"
+./build/beansc build test/cases/const_pkg/main.b -o "$tmp/pkg.native" \
+    >"$tmp/pkg.build" 2>&1
+"$tmp/pkg.native" >"$tmp/pkg.native.out"
+diff -u test/cases/const_pkg/main.out "$tmp/pkg.interp"
+diff -u test/cases/const_pkg/main.out "$tmp/pkg.native.out"
+
+if ./build/beansc check test/cases/const_pkg_private/main.b \
+        >"$tmp/priv" 2>&1; then
+    echo "a private cross-package const was reachable" >&2
+    exit 1
+fi
+grep -Fq "constant 'secret.HIDDEN' isn't pub in package 'priv_app.secret'" \
+    "$tmp/priv" ||
+    { echo "private const message wrong:" >&2; cat "$tmp/priv" >&2; exit 1; }
+
 echo "ok module constants: folding matches run time, bad initializers named"
