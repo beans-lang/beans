@@ -81,8 +81,10 @@ pub class Set<T implements Eq & Hash & Clone> {
         return self.members.keys()
     }
 
-    /// A new set holding every member of either set.
-    pub fn union(other: Set<T>) -> Set<T> {
+    /// A new set holding every member of either set. Named `union_with`
+    /// because `union` is a keyword — the same reason `poll.Interest` spells
+    /// its constructor `read_only`.
+    pub fn union_with(other: Set<T>) -> Set<T> {
         var result: Set<T> = new Set<T>()
         result.reserve(self.len() + other.len())
         result.add_all(self.items())
