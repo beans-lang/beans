@@ -381,21 +381,29 @@ fn check_deque_blocks() -> int {
     }
     if deque.len() != 0 { errors += 1 }
 
-    // Pure FIFO across many blocks (push_back N, pop_front N): the crossover
-    // that moves the head half of a full back side to the front, over and over.
+    // Pure FIFO across many blocks (push_back N, pop_front N): the multi-block
+    // crossover that moves the head half of a full back side to the front, over
+    // and over. Values are deterministic, so each pop is checked, not only
+    // folded into the checksum — a lost block reverse must raise errors here,
+    // not merely change the golden.
     i = 0
     for i < 4000 { deque.push_back(i * 3 + 1); i += 1 }
     i = 0
     for i < 4000 {
-        checksum = checksum * 31 + deque.pop_front().or(-777)
+        let got: int = deque.pop_front().or(-777)
+        if got != i * 3 + 1 { errors += 1 }
+        checksum = checksum * 31 + got
         i += 1
     }
-    // The mirror: push_front N, pop_back N.
+    // The mirror: push_front N, pop_back N drains from the tail in push order,
+    // exercising multi-block crossover_to_back.
     i = 0
     for i < 4000 { deque.push_front(i * 5 + 2); i += 1 }
     i = 0
     for i < 4000 {
-        checksum = checksum * 31 + deque.pop_back().or(-777)
+        let got: int = deque.pop_back().or(-777)
+        if got != i * 5 + 2 { errors += 1 }
+        checksum = checksum * 31 + got
         i += 1
     }
     if deque.len() != 0 { errors += 1 }
