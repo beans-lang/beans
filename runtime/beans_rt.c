@@ -7439,6 +7439,11 @@ typedef struct BShowCtx {
     long long len, cap;
     char* out;
     long long olen, ocap;
+    // The class instances whose rendering has begun and not finished. A
+    // reference graph may be a cycle, and a printer that assumes otherwise
+    // runs until the stack is gone.
+    long long* path;
+    long long plen, pcap;
 } BShowCtx;
 static void show_out(BShowCtx* c, const char* p, long long n) {
     if (c->olen + n + 1 > c->ocap) {
@@ -7463,6 +7468,63 @@ void beans_show_push_val(BShowCtx* c, void* fn, long long v) {
 void beans_show_push_lit(BShowCtx* c, char* s) {
     show_push(c, NULL, 0, s, beans_slen(s));
 }
+// A leave item pops the object it names off the path. The generated step
+// pushes it *under* its own closing text, so it comes back out only after
+// everything nested inside that object has been rendered.
+static void show_leave_step(BShowCtx* c, long long v) {
+    (void)v;
+    if (c->plen > 0) c->plen -= 1;
+}
+// 1 when this object is already on the path — the caller prints a cycle
+// marker and pushes no leave. 0 when it has just been put there.
+long long beans_show_enter(BShowCtx* c, long long v) {
+    for (long long i = 0; i < c->plen; i++) {
+        if (c->path[i] == v) return 1;
+    }
+    if (c->plen == c->pcap) {
+        c->pcap = c->pcap ? c->pcap * 2 : 16;
+        c->path = rt_realloc(c->path, (size_t)c->pcap * sizeof(long long));
+        if (!c->path) beans_panic("out of memory", 0, 0);
+    }
+    c->path[c->plen++] = v;
+    return 0;
+}
+void beans_show_push_leave(BShowCtx* c, long long v) {
+    show_push(c, (void*)show_leave_step, v, NULL, 0);
+}
+static long long map_show_value(BMap* m, long long i, long long wide) {
+    if (wide) return (long long)((char*)m->wide_values + i * m->value_stride);
+    return m->data[i * 2 + 1];
+}
+// A map's entries pushed onto the driver's stack as `{k: v, k: v}`, walking
+// the entry storage the way keys() and a direct `for k, v in m` walk it.
+// Map promises no particular order, but it does promise both compilers the
+// same one, which is what a golden file needs. A wide value lives in the
+// parallel buffer and crosses as its address, the way every other wide
+// inline value reaches a show step.
+void beans_show_map_iter(BShowCtx* c, BMap* m, void* key_step, void* val_step,
+                         long long wide) {
+    show_out(c, "{", 1);
+    show_push(c, NULL, 0, "}", 1);
+    long long first = -1;
+    for (long long i = 0; i < m->used; i++) {
+        if (!MAP_DEAD(m, i)) {
+            first = i;
+            break;
+        }
+    }
+    if (first < 0) return;
+    for (long long i = m->used; i-- > first + 1;) {
+        if (MAP_DEAD(m, i)) continue;
+        show_push(c, val_step, map_show_value(m, i, wide), NULL, 0);
+        show_push(c, NULL, 0, ": ", 2);
+        show_push(c, key_step, m->data[i * 2], NULL, 0);
+        show_push(c, NULL, 0, ", ", 2);
+    }
+    show_push(c, val_step, map_show_value(m, first, wide), NULL, 0);
+    show_push(c, NULL, 0, ": ", 2);
+    show_push(c, key_step, m->data[first * 2], NULL, 0);
+}
 void beans_show_list_iter(BShowCtx* c, BList* l, void* elem_step) {
     show_out(c, "[", 1);
     show_push(c, NULL, 0, "]", 1);
@@ -7473,7 +7535,7 @@ void beans_show_list_iter(BShowCtx* c, BList* l, void* elem_step) {
     if (l->len > 0) show_push(c, elem_step, list_slot_at(l, 0), NULL, 0);
 }
 char* beans_show_run(void* fn, long long v) {
-    BShowCtx c = {0, 0, 0, 0, 0, 0};
+    BShowCtx c = {0, 0, 0, 0, 0, 0, 0, 0, 0};
     show_push(&c, fn, v, NULL, 0);
     while (c.len > 0) {
         BShowItem it = c.items[--c.len];
@@ -7483,6 +7545,7 @@ char* beans_show_run(void* fn, long long v) {
     char* r = str_make(c.out ? c.out : "", c.olen);
     rt_free(c.out);
     rt_free(c.items);
+    rt_free(c.path);
     return r;
 }
 
