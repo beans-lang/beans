@@ -4837,6 +4837,7 @@ class ExpressionChecker {
                 // own: it never mentions the brace that made it a name.
                 if expression.kind == "name" &&
                    piece.kind == "error" &&
+                   piece.resolved == "" &&
                    piece.type.name == "poison" {
                     self.fail(
                         node,
@@ -12817,9 +12818,27 @@ class ExpressionChecker {
         self.ensure_const(constant)
         self.expect_type(node, constant.type, expected)
         if !constant.folded {
-            return self.make_node(
-                node, "error", constant.name,
-                poison_hir_type())
+            // Still on the fold stack: this use is inside the constant's
+            // own initializer, so the constant is defined in terms of
+            // itself. Anything else already said why it did not fold, at
+            // its declaration.
+            if self.consts_visiting.contains_key(
+                   constant.qualified) &&
+               !self.consts_folded.contains_key(
+                   constant.qualified) {
+                self.fail(
+                    node,
+                    "const {constant.name} is defined in terms of itself")
+            }
+            let refused: HirNode =
+                self.make_node(
+                    node, "error", constant.name,
+                    poison_hir_type())
+            // The name did resolve — to a constant that could not be
+            // folded. Anything reading this must not go on to say the
+            // name means nothing.
+            refused.resolved = constant.qualified
+            return refused
         }
         let value: HirNode =
             self.constant_value_node(
