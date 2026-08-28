@@ -23,5 +23,10 @@ user route
 comma
 quoted
 other
+[a"}b]
+[x:y]
+[p"}:q]
+len 4
+fmt z|  42
 show = /users/{id}
 nested = /users/{id}/posts/{slug}

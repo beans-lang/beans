@@ -73,6 +73,19 @@ fn patterns() {
     io.println(kind("nope"))
 }
 
+// A raw literal nested in an interpolation is bytes to the walker too: a
+// hashed body that holds a quote before a brace must not split the slot at
+// that brace, and a colon in a raw body is not a format separator. The
+// naive scanner splits these at the wrong place; only the raw-aware walkers
+// in the checker and both backends agree.
+fn nested_in_interpolation() {
+    io.println("[{r#"a"}b"#}]")
+    io.println("[{r"x:y"}]")
+    io.println("[{r#"p"}:q"#}]")
+    io.println("len {r#"a"}b"#.len()}")
+    io.println("fmt {r"z"}|{42:4}")
+}
+
 fn annotations() {
     let shape: reflect.Type = type_of(Api)
     for method: reflect.Method in shape.methods() {
@@ -92,5 +105,6 @@ fn main() {
     multiline()
     equality()
     patterns()
+    nested_in_interpolation()
     annotations()
 }

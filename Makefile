@@ -117,6 +117,7 @@ test-frontend: $(BIN)
 	bash ./test/syntax_v07.sh
 	bash ./test/language_gaps.sh
 	bash ./test/crema_findings.sh
+	bash ./test/string_literals.sh
 	bash ./test/generic_calls.sh
 	bash ./test/named_imports.sh
 	bash ./test/private_fields.sh
@@ -163,6 +164,7 @@ test-semantics: $(BIN)
 	bash ./test/slice_fusion.sh
 	./test/maps.sh
 	./test/traits.sh
+	bash ./test/module_consts.sh
 	./test/fixed_arrays.sh
 	bash ./test/closure_captures.sh
 	bash ./test/send_functions.sh
@@ -285,9 +287,11 @@ test-core: $(BIN)
 	bash ./test/slice_fusion.sh
 	./test/maps.sh
 	./test/traits.sh
+	bash ./test/module_consts.sh
 	bash ./test/syntax_v07.sh
 	bash ./test/language_gaps.sh
 	bash ./test/crema_findings.sh
+	bash ./test/string_literals.sh
 	bash ./test/generic_calls.sh
 	bash ./test/named_imports.sh
 	bash ./test/private_fields.sh

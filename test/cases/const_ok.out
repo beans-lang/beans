@@ -1,0 +1,21 @@
+add -56 -56 true
+sub 249 249 true
+mul 24464 24464 true
+div -1073741823 -1073741823 true
+mod -2 -2 true
+neg 10 10 true
+not 255 255 true
+shl -2147483648 -2147483648 true
+shr 912091 912091 true
+and 12336 12336 true
+or 16191 16191 true
+xor 61680 61680 true
+u16 1 1 true
+i64 9223372036854775807 9223372036854775807 true
+chain -28 -28 true
+base 10 double 20 quad 40 fromBelow 60 tail 100
+bool false true true true true true true
+str [hello] [/users/{id}] esc=12 uni=4
+raw-eq true esc-eq true
+public 1048576
+classify base quad tail other
