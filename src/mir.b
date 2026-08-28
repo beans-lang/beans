@@ -894,16 +894,28 @@ class MirLowerer {
             [success, propagate])
 
         self.current_block = propagate
-        let failure: int =
-            self.emit(
-                node, "propagate",
-                self.current.result, "",
-                [operand])
-        if operand >= 0 &&
-           self.current.value_ownership[operand] == "owned" {
-            self.consume_operand(self.last_instruction(), 0)
+        if node.children.len() == 2 {
+            // The callee's error does not fit this function's, so the
+            // checker attached a conversion (check_try_error_bridge). Take
+            // the error out of the operand into the try node's binding, run
+            // the conversion on it, and return an err of this function's
+            // own Result type. Nothing new is invented here: the same
+            // pattern_bind an `err(e) =>` arm emits, the conversion as an
+            // ordinary call, and the same err construction a `return
+            // err(...)` writes.
+            self.lower_try_conversion(node, operand)
+        } else {
+            let failure: int =
+                self.emit(
+                    node, "propagate",
+                    self.current.result, "",
+                    [operand])
+            if operand >= 0 &&
+               self.current.value_ownership[operand] == "owned" {
+                self.consume_operand(self.last_instruction(), 0)
+            }
+            self.emit_return(node, failure)
         }
-        self.emit_return(node, failure)
 
         self.current_block = success
         let result: int = self.emit(
@@ -913,6 +925,44 @@ class MirLowerer {
             self.consume_operand(self.last_instruction(), 0)
         }
         return result
+    }
+
+    // The propagate side of a `?` whose error has to be converted. The
+    // operand box stays owned by the try, exactly as it is on the plain
+    // path — the binding takes its own count, the conversion reads it, and
+    // the fresh error goes out in a Result of this function's type.
+    fn lower_try_conversion(node: HirNode, operand: int) {
+        let bridge: HirNode = node.children[1]
+        let carried: HirType =
+            hir_result_error(node.children[0].type)
+        self.push_scope()
+        let local: int = self.add_local(
+            node.binding_id, "$error", carried,
+            false, false, "")
+        let bind: MirInstruction =
+            self.emit_action(
+                node, "pattern_bind", "$error",
+                [operand])
+        bind.local = local
+        bind.resolved = "err.0"
+        var produced: int = self.lower_expression(bridge)
+        if produced >= 0 &&
+           !mir_type_is_trivial(bridge.type) {
+            produced = self.ensure_owned(bridge, produced)
+        }
+        let failure: int =
+            self.emit(
+                node, "err", self.current.result, "",
+                [produced])
+        if produced >= 0 &&
+           self.current.value_ownership[produced] == "owned" {
+            self.consume_operand(self.last_instruction(), 0)
+        }
+        self.pop_scope()
+        // The operand box is deliberately not consumed here: the error was
+        // copied out into the binding, so the box still owns its own count
+        // and the value-lifetime planner releases it at its last use.
+        self.emit_return(node, failure)
     }
 
     fn owns_operands(kind: string) -> bool {

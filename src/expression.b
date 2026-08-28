@@ -71,6 +71,12 @@ class ExpressionChecker {
     // were written but nothing took them.
     call_generics_syntax: Option<AstNode>
     call_generics_taken: bool
+    // The Result expectation a `?` pushed into its own operand, held by
+    // identity. `?` decides for itself whether the callee's error can reach
+    // this function's (check_try_error_bridge), so expect_type must not
+    // refuse a convertible error before the conversion is looked for — it
+    // compares only the ok type, and only against exactly this object.
+    try_expectation: Option<HirType>
 
     fn init(signature: SignatureChecker) {
         self.signature = signature
@@ -110,6 +116,7 @@ class ExpressionChecker {
         self.next_binding_id = 0
         self.call_generics_syntax = none
         self.call_generics_taken = true
+        self.try_expectation = none
         for function: HirFunction in self.program.functions {
             if function.owner != "" {
                 self.methods["{function.owner}.{function.name}"] =
@@ -4550,6 +4557,26 @@ class ExpressionChecker {
 
     fn expect_type(node: AstNode, actual: HirType,
                    expected: HirType) {
+        // The expectation a `?` pushes into its operand is a hint about the
+        // ok type, not a demand about the error. Whether the callee's error
+        // reaches this function's is check_try's own decision, and it now
+        // makes it for every `?`, so comparing whole Results here would
+        // refuse a convertible error before the conversion was looked for.
+        match self.try_expectation {
+            some(open) => {
+                if expected == open &&
+                   expected.name == "Result" &&
+                   expected.args.len() >= 1 &&
+                   actual.name == "Result" &&
+                   actual.args.len() >= 1 {
+                    self.expect_type(
+                        node, actual.args[0],
+                        expected.args[0])
+                    return
+                }
+            }
+            none => {}
+        }
         if expected.name != "" &&
            !hir_types_equal(actual, expected) &&
            self.is_move_only(actual) &&
@@ -9096,6 +9123,27 @@ class ExpressionChecker {
             self.expect_type(node, type, expected)
             return result
         }
+        // `Error` is a builtin class every `err(...)` hands back, and until
+        // now nothing could make one: `err` builds a Result, not the error
+        // inside it. The `?` conversion hook is `fn to_error() -> Error`, so
+        // the hook could not have been written without this. The kind
+        // defaults to the empty slug, exactly as `err(message)` stores it.
+        if type.name == "Error" {
+            var parameters: List<HirType> =
+                [new HirType("string")]
+            if node.children.len() - 1 >= 2 {
+                parameters.push(new HirType("string"))
+            }
+            let signature: BuiltinSignature =
+                new BuiltinSignature(parameters, type)
+            let result: HirNode =
+                self.make_node(node, "new", "Error", type)
+            result.resolved = "Error.init"
+            self.check_builtin_arguments(
+                node, 1, signature, result)
+            self.expect_type(node, type, expected)
+            return result
+        }
         if type.name == "AtomicInt" {
             let signature: BuiltinSignature =
                 new BuiltinSignature(
@@ -9627,10 +9675,18 @@ class ExpressionChecker {
                   self.current.body_result.args.len() == 1 {
             operand_expected = hir_named("Option", [expected])
         }
+        let outer_expectation: Option<HirType> =
+            self.try_expectation
+        if operand_expected.name == "Result" {
+            self.try_expectation = some(operand_expected)
+        }
         let operand: HirNode =
             self.check_expression(
                 node.children[0], operand_expected)
+        self.try_expectation = outer_expectation
         var result_type: HirType = poison_hir_type()
+        var bridge: Option<HirNode> = none
+        var bridge_binding: int = -1
         if operand.type.name == "Result" &&
            operand.type.args.len() >= 1 {
             result_type = operand.type.args[0]
@@ -9638,6 +9694,21 @@ class ExpressionChecker {
                 self.fail(
                     node,
                     "'?' needs a function returning Result")
+            } else {
+                // The error has to reach this function's error type. It
+                // used to be checked only when the `?` sat in a spot with a
+                // declared type, so a bare `f()?` let a foreign error
+                // through the checker and out to a backend that could not
+                // emit it.
+                bridge_binding = self.next_binding_id
+                self.next_binding_id += 1
+                bridge =
+                    self.check_try_error_bridge(
+                        node,
+                        hir_result_error(operand.type),
+                        hir_result_error(
+                            self.current.body_result),
+                        bridge_binding)
             }
         } else if operand.type.name == "Option" &&
                   operand.type.args.len() == 1 {
@@ -9658,7 +9729,142 @@ class ExpressionChecker {
         let result: HirNode =
             self.make_node(node, "try", "", result_type)
         result.children.push(operand)
+        match bridge {
+            some(conversion) => {
+                // Both backends read the binding off the try node: the
+                // error comes out of the operand into it, and the second
+                // child turns it into this function's error.
+                result.binding_id = bridge_binding
+                result.children.push(conversion)
+            }
+            none => {}
+        }
         return result
+    }
+
+    // `?` crossing a layer boundary. The callee's error type does not have
+    // to be this function's, it has to *reach* it, and there are exactly
+    // three ways (spec/SYNTAX.md, "Option and Result"):
+    //
+    //   1. it is the same type, and nothing happens;
+    //   2. it is a subtype of it, and the reference widens — the same
+    //      object read as the wider type, which is what a plain assignment
+    //      already does, so no code runs and nothing is lost;
+    //   3. it declares `fn to_error() -> <this function's error>`, and `?`
+    //      calls it on the error and propagates what comes back.
+    //
+    // Anything else is refused here, at the `?`, naming both types. The
+    // answer is the expression that produces this function's error out of a
+    // binding holding the callee's, or none when the error already fits.
+    // The conversion runs only on the error path, only once — `to_error()`
+    // is never chained through a second type.
+    fn check_try_error_bridge(
+        node: AstNode, source: HirType, target: HirType,
+        binding_id: int) -> Option<HirNode> {
+        if source.name == "poison" ||
+           target.name == "poison" ||
+           hir_types_equal(source, target) {
+            return none
+        }
+        let carried: HirNode =
+            self.make_node(
+                node, "local", "$error", source)
+        carried.binding_id = binding_id
+        if self.is_subtype(source, target) {
+            if self.is_move_only(source) &&
+               !self.is_move_only(target) {
+                self.fail(
+                    node,
+                    "can't erase move-only ownership by converting {render_hir_type(source)} to {render_hir_type(target)}")
+                return none
+            }
+            return some(carried)
+        }
+        if canonical_hir_name(source.name) == "Error" {
+            self.fail(
+                node,
+                "'?' can't turn the builtin Error into {render_hir_type(target)} — Error is a builtin and cannot carry a to_error method. match on the Result and build the {render_hir_type(target)} yourself")
+            return none
+        }
+        match self.method_for(source, "to_error") {
+            some(function) => {
+                return self.check_error_conversion(
+                    node, function, source, target,
+                    carried)
+            }
+            none => {}
+        }
+        self.fail(
+            node,
+            "'?' can't turn {render_hir_type(source)} into {render_hir_type(target)} — give {render_hir_type(source)} a `fn to_error() -> {render_hir_type(target)}` method, or match on the Result and build the error yourself")
+        return none
+    }
+
+    // The `to_error` a type offers has to be usable as one: an instance
+    // method of its own, taking nothing, generic over nothing, answering a
+    // type that itself reaches the target. A method that misses any of
+    // those says so rather than being quietly ignored, because a silently
+    // skipped conversion reads as the feature not existing.
+    fn check_error_conversion(
+        node: AstNode, function: HirFunction,
+        source: HirType, target: HirType,
+        carried: HirNode) -> Option<HirNode> {
+        let shown: string =
+            "{render_hir_type(source)}.to_error"
+        if function.is_static ||
+           function.parameters.len() != 0 ||
+           function.generics.len() != 0 {
+            self.fail(
+                node,
+                "'?' needs {shown} to be an instance method taking no arguments and no type parameters")
+            return none
+        }
+        var owner: Option<HirDeclaration> =
+            self.declaration_for(source)
+        match owner {
+            some(declaration) => {}
+            none => {
+                owner = self.declarations.get(function.owner)
+            }
+        }
+        match owner {
+            some(declaration) => {
+                let produced: HirType =
+                    if function.returns_self {
+                        source
+                    } else {
+                        self.substitute_method_type(
+                            function.result, function,
+                            declaration, source)
+                    }
+                if !hir_types_equal(produced, target) &&
+                   !self.is_subtype(produced, target) {
+                    self.fail(
+                        node,
+                        "{shown}() answers {render_hir_type(produced)}, which doesn't reach this function's error type {render_hir_type(target)}")
+                    return none
+                }
+                self.require_method_visible(
+                    node, function, "method", shown)
+                let call: HirNode =
+                    self.make_node(
+                        node, "method_call",
+                        function.name, produced)
+                call.resolved = function.qualified
+                call.dispatch_slot =
+                    hir_method_slot(
+                        function.owner, function.name,
+                        function.is_public,
+                        function.is_private)
+                call.children.push(carried)
+                return some(call)
+            }
+            none => {}
+        }
+        self.fail(
+            node,
+            "'?' can't turn {render_hir_type(source)} into {render_hir_type(target)} — give {render_hir_type(source)} a `fn to_error() -> {render_hir_type(target)}` method, or match on the Result and build the error yourself")
+        return none
     }
 
     fn check_cast(node: AstNode,

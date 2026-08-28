@@ -10152,6 +10152,23 @@ class TreeInterpreter {
             kind = "channel"
         } else if name == "Bytes" {
             kind = "bytes"
+        } else if name == "Error" {
+            // `new Error(message)` / `new Error(message, kind)` — the same
+            // object `err("message", "kind")` builds, so the two spellings
+            // stay one representation on this backend too.
+            let message: string =
+                if arguments.len() != 0 {
+                    arguments[0].text
+                } else {
+                    ""
+                }
+            let slug: string =
+                if arguments.len() > 1 {
+                    arguments[1].text
+                } else {
+                    ""
+                }
+            return some(TreeValue.error(message, slug))
         } else {
             return none
         }
@@ -11152,6 +11169,9 @@ class TreeInterpreter {
         if node.kind == "try" {
             let result: TreeValue =
                 self.expression(node.children[0], frame)
+            if result.kind == "propagate" {
+                return result
+            }
             if (result.kind == "ok" ||
                 result.kind == "some") &&
                result.items.len() == 1 {
@@ -11160,6 +11180,31 @@ class TreeInterpreter {
             }
             if result.kind == "err" ||
                result.kind == "none" {
+                // The callee's error does not fit this function's, so the
+                // checker attached a conversion (check_try_error_bridge):
+                // the error goes into the try node's binding and the
+                // second child answers this function's error. Same rule,
+                // same one call, as the native backend's lowering.
+                if node.children.len() == 2 &&
+                   result.items.len() == 1 {
+                    let scope: TreeFrame =
+                        TreeFrame.scope(frame)
+                    scope.set(
+                        node.binding_id,
+                        tree_value_copy(result.items[0]))
+                    let converted: TreeValue =
+                        self.expression(
+                            node.children[1], scope)
+                    if converted.kind == "propagate" {
+                        return converted
+                    }
+                    if self.failed {
+                        return TreeValue.unit()
+                    }
+                    return TreeValue.propagation(
+                        TreeValue.result_err(
+                            tree_value_copy(converted)))
+                }
                 return TreeValue.propagation(result)
             }
             return self.fail(node, "'?' received a non-result value")
