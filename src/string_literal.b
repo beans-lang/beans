@@ -19,19 +19,27 @@ package main
 
 // ---- shape -----------------------------------------------------------------
 
+// The number of '#' a raw literal opening at `index` uses, or -1 when a raw
+// literal does not open there. `r"` opens with none, so it answers 0; `r#"`
+// answers 1. This is the raw-literal test at an arbitrary position — the
+// lexer asks it at the start of a token, and a brace-matcher asks it in the
+// middle of an interpolation, so both agree on what `r"…"` means.
+fn raw_hashes_at(source: string, index: int, end: int) -> int {
+    if index >= end || source.byte_at(index) != 114 { return -1 }
+    var at: int = index + 1
+    for at < end && source.byte_at(at) == 35 {
+        at += 1
+    }
+    if at >= end || source.byte_at(at) != 34 {
+        return -1
+    }
+    return at - index - 1
+}
+
 // The number of '#' a raw literal opened with, or -1 when `source` is an
 // ordinary escaped literal. `r"…"` opened with none, so it answers 0.
 fn string_literal_hashes(source: string) -> int {
-    if source.len() < 2 { return -1 }
-    if source.byte_at(0) != 114 { return -1 }
-    var index: int = 1
-    for index < source.len() && source.byte_at(index) == 35 {
-        index += 1
-    }
-    if index >= source.len() || source.byte_at(index) != 34 {
-        return -1
-    }
-    return index - 1
+    return raw_hashes_at(source, 0, source.len())
 }
 
 fn string_literal_is_raw(source: string) -> bool {
