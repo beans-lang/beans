@@ -188,10 +188,27 @@ class TreeBrewState {
     }
 
     fn run() {
+        // A fresh fiber body starts with a clean unwind context. If an outer
+        // fiber is itself mid-unwind — parked inside a defer or deinit that
+        // yielded to let this one run — its unwind state is set aside here and
+        // restored below, so a contained panic in this body cannot clobber the
+        // outer unwind still owed to that fiber.
+        let outer_unwinding: bool = self.owner.unwinding
+        let outer_unwinding_fiber: u64 =
+            self.owner.unwinding_fiber
+        let outer_unwinding_message: string =
+            self.owner.unwinding_message
+        self.owner.unwinding = false
+        self.owner.unwinding_fiber = 0
+        self.owner.unwinding_message = ""
         let value: TreeValue =
             self.owner.invoke_closure(
                 self.node, self.closure, [])
         if self.owner.failed {
+            // The body panicked and its frames have already unwound to here —
+            // the fiber entry, where a contained unwind ends: defers ran and
+            // owned locals dropped on the way up. Deliver the failure to the
+            // join and put the interpreter back to a running state.
             self.panicked = true
             self.panic_message = self.owner.panic_text
             self.owner.failed = false
@@ -199,6 +216,10 @@ class TreeBrewState {
         } else {
             self.result = some(value)
         }
+        self.owner.unwinding = outer_unwinding
+        self.owner.unwinding_fiber = outer_unwinding_fiber
+        self.owner.unwinding_message =
+            outer_unwinding_message
         self.done = true
     }
 }

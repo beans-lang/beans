@@ -1,0 +1,42 @@
+  deep defer B
+  deep defer A
+  drop deep-second
+  drop deep-first
+  middle defer
+  drop middle-held
+first: panic
+  deep defer B
+  deep defer A
+  drop deep-second
+  drop deep-first
+  middle defer
+  drop middle-held
+loop: panic
+  deep defer B
+  deep defer A
+  drop deep-second
+  drop deep-first
+  middle defer
+  drop middle-held
+loop: panic
+  deep defer B
+  deep defer A
+  drop deep-second
+  drop deep-first
+  middle defer
+  drop middle-held
+loop: panic
+  deep defer B
+  deep defer A
+  drop deep-second
+  drop deep-first
+  middle defer
+  drop middle-held
+loop: panic
+counter after 5 contained panics: 0
+  moveonly defer
+  drop token 7
+moveonly: panic
+  capture defer
+  drop captured-res
+capture: panic

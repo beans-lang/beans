@@ -22,13 +22,28 @@ diff -u test/cases/brew.out "$tmp/native.out"
 
 # The i64 result path lands beans_brew, the sixteen-byte Pair the typed
 # entry, joins park through beans_brew_join, and every brew arms the
-# synthesized scope join.
-grep -q 'call ptr @beans_brew(' build/brew.ll
-grep -q 'call ptr @beans_brew_typed(' build/brew.ll
-grep -q 'call i64 @beans_brew_join(' build/brew.ll
-grep -q 'call void @beans_brew_scope_join(' build/brew.ll
-grep -q 'call void @beans_brew_cancel(' build/brew.ll
+# synthesized scope join. A program that brews can contain a panic, so its
+# calls are emitted as `invoke` with a cleanup edge (issue #44) rather than a
+# plain `call` — either spelling of the runtime call satisfies the assertion.
+grep -Eq '(call|invoke) ptr @beans_brew\(' build/brew.ll
+grep -Eq '(call|invoke) ptr @beans_brew_typed\(' build/brew.ll
+grep -Eq '(call|invoke) i64 @beans_brew_join\(' build/brew.ll
+grep -Eq '(call|invoke) void @beans_brew_scope_join\(' build/brew.ll
+grep -Eq '(call|invoke) void @beans_brew_cancel\(' build/brew.ll
 grep -q 'define i64 @spawn.thunk' build/brew.ll
+
+echo "checking a contained panic unwinds its frames on both backends"
+# issue #44: a panic caught by join runs every frame's defers newest-first and
+# drops what it owns on the way to the fiber entry — not abandoned. The golden
+# pins the order and pins both backends: revert either half (the native
+# cleanup pads or the interpreter's tree-level unwind) and cleanup stops
+# running, so the golden no longer matches.
+./build/beansc run test/cases/brew_unwind.b >"$tmp/unwind.interp"
+./build/beansc build test/cases/brew_unwind.b -o "$tmp/unwind.native" \
+    >"$tmp/unwind.build" 2>&1
+"$tmp/unwind.native" >"$tmp/unwind.native.out"
+diff -u test/cases/brew_unwind.out "$tmp/unwind.interp"
+diff -u test/cases/brew_unwind.out "$tmp/unwind.native.out"
 
 echo "checking an unjoined panic escalates at the scope exit"
 cat >"$tmp/escalate.b" <<'BEANS'
