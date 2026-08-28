@@ -120,4 +120,58 @@ grep -q "9223372036854775808 does not fit int (-9223372036854775808..92233720368
 grep -q -- "-9223372036854775809 does not fit int (-9223372036854775808..9223372036854775807)" "$tmp/bad"
 grep -q -- "-1 does not fit u64 (0..18446744073709551615)" "$tmp/bad"
 
+
+# A number literal written straight under `as` is read in the target type. It
+# used to become an f64 first, so `19.99 as decimal` carried the float's error
+# in the one type that exists to have none — and a hex literal in a float or a
+# decimal was taken by the checker and then read two different ways by the two
+# backends.
+./build/beansc run test/cases/numeric_cast_literal.b >"$tmp/castlit.interp"
+./build/beansc build test/cases/numeric_cast_literal.b \
+    -o "$tmp/castlit.native" >"$tmp/castlit.build" 2>&1
+"$tmp/castlit.native" >"$tmp/castlit.native.out"
+diff -u test/cases/numeric_cast_literal.out "$tmp/castlit.interp"
+diff -u test/cases/numeric_cast_literal.out "$tmp/castlit.native.out"
+if ./build/beansc check test/cases/numeric_cast_literal_bad.b \
+    >"$tmp/castlit.bad" 2>&1; then
+    echo "a 64-bit-wide hex literal passed checking in a float" >&2
+    exit 1
+fi
+grep -q "hex or binary literal 0xFFFFFFFFFFFFFFFF does not fit float" \
+    "$tmp/castlit.bad"
+
+# The scale of a zero, of a sum whose operands are far apart, and of a zero
+# quotient. Answers cross-checked against Python's decimal module at 38 digits
+# half-even; test/decimal_conformance.sh replays the IBM operand suite against
+# the same oracle.
+./build/beansc run test/cases/decimal_zero_scale.b >"$tmp/zscale.interp"
+./build/beansc build test/cases/decimal_zero_scale.b \
+    -o "$tmp/zscale.native" >"$tmp/zscale.build" 2>&1
+"$tmp/zscale.native" >"$tmp/zscale.native.out"
+diff -u test/cases/decimal_zero_scale.out "$tmp/zscale.interp"
+diff -u test/cases/decimal_zero_scale.out "$tmp/zscale.native.out"
+
+# A float-to-int cast saturates at the target type's own range, NaN to zero,
+# every width from f32 and f64. The native backend emitted a bare fptosi, which
+# LLVM defines as poison there, so the answer moved with the optimizer.
+./build/beansc run test/cases/float_int_cast.b >"$tmp/fcast.interp"
+./build/beansc build test/cases/float_int_cast.b \
+    -o "$tmp/fcast.native" >"$tmp/fcast.build" 2>&1
+"$tmp/fcast.native" >"$tmp/fcast.native.out"
+diff -u test/cases/float_int_cast.out "$tmp/fcast.interp"
+diff -u test/cases/float_int_cast.out "$tmp/fcast.native.out"
+# ...and it is the intrinsic doing it, not the instruction set being kind: a
+# bare fptosi/fptoui must not appear at all.
+for width in i8 i16 i32 i64; do
+    grep -q "call $width @llvm.fptosi.sat.$width.f64(" build/float_int_cast.ll
+    grep -q "call $width @llvm.fptoui.sat.$width.f64(" build/float_int_cast.ll
+    grep -q "call $width @llvm.fptosi.sat.$width.f32(" build/float_int_cast.ll
+done
+if grep -Eq '= (fptosi|fptoui) ' build/float_int_cast.ll; then
+    echo "a bare fptosi/fptoui survived in float_int_cast.ll" >&2
+    grep -nE '= (fptosi|fptoui) ' build/float_int_cast.ll >&2
+    exit 1
+fi
+
 echo "ok numeric widths, boundaries, unsigned operations, f32, and checked 38-digit decimal"
+echo "   plus literal casts, decimal result scales, and saturating float-to-int"

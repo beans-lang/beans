@@ -192,11 +192,18 @@ partial class LlvmTextEmitter {
             return "  {result} = call i64 @beans_f64_round(double {receiver})\n"
         }
         if instruction.resolved == "f32.round" {
+            // The convert saturates like every other float-to-int step: a bare
+            // fptosi is poison once the rounded value leaves int's range, and
+            // beans_f64_round — the f64 twin, and the interpreter's answer for
+            // both widths — clamps.
             self.require_declare(
                 "llvm.round.f32",
                 "float @llvm.round.f32(float)")
+            self.require_declare(
+                "llvm.fptosi.sat.i64.f32",
+                "i64 @llvm.fptosi.sat.i64.f32(float)")
             values[instruction.result] = result
-            return "  %round.f32{id} = call float @llvm.round.f32(float {receiver})\n  {result} = fptosi float %round.f32{id} to i64\n"
+            return "  %round.f32{id} = call float @llvm.round.f32(float {receiver})\n  {result} = call i64 @llvm.fptosi.sat.i64.f32(float %round.f32{id})\n"
         }
         if instruction.resolved == "f32.abs" {
             self.require_declare(
@@ -1271,6 +1278,43 @@ partial class LlvmTextEmitter {
             }
             return "{output}  {result} = fptrunc double %dec.wide{id} to {target_llvm}\n"
         }
+        // A float that has no value in the target integer type saturates at
+        // that type's own bounds, and NaN is zero (spec/SYNTAX.md, "Number
+        // rules"). A bare fptosi/fptoui is *poison* for exactly those inputs,
+        // so `1e300 as i32` answered a different number on every build — an
+        // address, once the optimizer could see the constant — while the
+        // interpreter answered something else again. The saturating intrinsics
+        // are the rule written down, and they cost one instruction on every
+        // target that has a saturating convert.
+        if llvm_type_is_float(source_type) &&
+           llvm_type_is_integer(target_type) {
+            let bits: int =
+                llvm_integer_bits(target_type)
+            if bits != 8 && bits != 16 &&
+               bits != 32 && bits != 64 {
+                self.fail(
+                    instruction,
+                    "LLVM emitter does not support cast from {render_hir_type(source_type)} to {render_hir_type(target_type)} yet")
+                return ""
+            }
+            let suffix: string =
+                if source_llvm == "float" {
+                    "f32"
+                } else {
+                    "f64"
+                }
+            let intrinsic: string =
+                if llvm_type_is_unsigned(target_type) {
+                    "llvm.fptoui.sat.{target_llvm}.{suffix}"
+                } else {
+                    "llvm.fptosi.sat.{target_llvm}.{suffix}"
+                }
+            self.require_declare(
+                intrinsic,
+                "{target_llvm} @{intrinsic}({source_llvm})")
+            values[instruction.result] = result
+            return "  {result} = call {target_llvm} @{intrinsic}({source_llvm} {source})\n"
+        }
         var opcode: string = ""
         if llvm_type_is_integer(source_type) &&
            llvm_type_is_integer(target_type) {
@@ -1292,14 +1336,6 @@ partial class LlvmTextEmitter {
                     "uitofp"
                 } else {
                     "sitofp"
-                }
-        } else if llvm_type_is_float(source_type) &&
-                  llvm_type_is_integer(target_type) {
-            opcode =
-                if llvm_type_is_unsigned(target_type) {
-                    "fptoui"
-                } else {
-                    "fptosi"
                 }
         } else if llvm_type_is_float(source_type) &&
                   llvm_type_is_float(target_type) {

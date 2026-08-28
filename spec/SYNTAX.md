@@ -940,6 +940,16 @@ Primitives (all unboxed in codegen):
   call site.
 - Division produces up to 38 significant digits and rounds the last digit
   half-even.
+- **Scale is part of the answer.** `a + b` and `a - b` carry
+  `max(scale(a), scale(b))`; `a * b` carries `scale(a) + scale(b)`; `a / b`
+  carries the smallest scale that represents the exact quotient, and when the
+  quotient is zero it carries `max(0, scale(a) - scale(b))` — so `1.25 + 1.25`
+  is `2.50`, `123.45 * 10000000` is `1234500000.00`, and `0.000 / 0.7` is
+  `0.00`. Growing toward that scale stops at 38 significant digits, because the
+  appended zeros are significant; a zero coefficient has none to protect and
+  always reaches the full scale, which is what makes `0E-45 + 0E-1` and
+  `0E-1 + 0E-45` the same number. There is no negative scale and no negative
+  zero: a scale the rules put below 0 is 0, and `-0` and `0` are one value.
 - Decimal stays an inline value in locals, fields, parameters, returns, List,
   Map values, Box, Arena, Shared, Mutex, Channel, and thread results.
 - Native layout is `{i128 coefficient, i64 scale}` (32 bytes, 16-byte
@@ -950,10 +960,45 @@ Primitives (all unboxed in codegen):
 
 - A number literal takes the type the spot demands: `let p: decimal = 19.99` makes a decimal, `let f: f64 = 19.99` makes a float. No suffix zoo.
 - With no demand, an integer literal is `int` and a decimal-point literal is `f64`.
+- **A cast is a demand when its operand is a number literal.** A number written
+  straight under `as decimal`, `as float`/`as f64` or `as f32` is read *in* that
+  type: `19.99 as decimal` is the decimal 19.99, exactly like `let p: decimal =
+  19.99`, and the f64 that would otherwise stand between them never exists. A
+  leading `-` belongs to the literal, so `-19.99 as decimal` is the decimal
+  -19.99. It reaches through nothing else: `rate as decimal` where `rate` is a
+  `float` variable still says exactly what that float is, because the operand is
+  a value and not a spelling. Integer targets are excluded so the wrapping rule
+  below keeps its meaning — `300 as i8` is still `44`.
+- A hex or binary literal is the integer it spells, in `float`, `f32` and
+  `decimal` as much as in an integer type, and there it must be an `int` value:
+  `0xffffffffffffffff` is a bit pattern, which `u64` has a rule for and a
+  real-number type does not.
 - **No implicit numeric conversions, ever.** Mixing `int`/`float`/`decimal` needs `as`: `price * (qty as decimal)`.
 - Integer literals must fit their demanded type. The checker rejects both ends outside the exact `i8`..`u64` range.
 - Fixed-width integer `+`, `-`, `*`, unary `-`, and bit operations wrap to that width. Shift counts are masked by `width - 1`. Divide or modulo by zero panics.
 - Integer casts keep the low target-width bits. Widening sign-extends a signed source and zero-extends an unsigned source.
+- **A float-to-integer cast saturates at the target type's own range**, and NaN
+  is `0`. `+inf` and anything above the maximum give the maximum, `-inf` and
+  anything below the minimum give the minimum, and a value inside the range
+  truncates toward zero as usual. The bound is the target's, not `int`'s and
+  then narrowed: `1e300 as i32` is `2147483647`, never `-1`. `float.round()`
+  and `f32.round()` answer the same way. The rule holds for every width from
+  both `f32` and `f64`, in the interpreter and the native backend alike — the
+  native one emits `llvm.fptosi.sat` / `llvm.fptoui.sat`, because a bare
+  `fptosi` is *poison* for exactly these inputs and the same expression
+  answered a different number on every build. Saturation is the rule and
+  not a panic, deliberately: the interpreter already answered this way, so
+  making the two backends agree meant giving the native one that same rule,
+  not turning a shipped total conversion into a fault. It maps every float —
+  NaN and both infinities included — to a defined value at no codegen cost
+  (one saturating instruction), and it is what the nearest neighbours do (a
+  Rust `as` from float to integer, WebAssembly's `trunc_sat`). The cost is
+  named here rather than hidden: a magnitude past the target's range becomes
+  the bound silently instead of stopping the program, so code that must not
+  proceed on such a value checks the range before the cast. `decimal` still
+  panics on NaN, an infinity, or a magnitude past 38 digits (below), because
+  those have no nearest decimal to land on, where a bounded integer type has
+  an obvious one at each end.
 - `f32` rounds after every literal, cast, and arithmetic operation. It is a real 32-bit LLVM value in locals, calls, and fields, not an alias for `f64`.
 - Float comparisons are IEEE-754: a NaN operand makes `==`, `<`, `<=`, `>`, and
   `>=` false and `!=` true, in the interpreter and the native backend alike.

@@ -3760,16 +3760,30 @@ class TreeInterpreter {
                 tree_parse_unsigned(node.value),
                 tree_integer_bits(name))
         }
+        // A hex or binary literal is the integer it spells, in a float or a
+        // decimal as much as in an int. strtod reads "0xFF" as a C hex float
+        // and stops dead at "0b101", and the decimal parser takes neither, so
+        // the digits are rewritten before either parser sees them.
+        let based: string =
+            base_literal_decimal_text(node.value)
         if hir_is_float(node.type) {
             let clean: string =
-                node.value.replace("_", "")
+                if based != "" {
+                    based
+                } else {
+                    node.value.replace("_", "")
+                }
             return self.floating_value(
                 node.type,
                 clean.to_float().or(0.0))
         }
         if name == "decimal" {
             let clean: string =
-                node.value.replace("_", "")
+                if based != "" {
+                    based
+                } else {
+                    node.value.replace("_", "")
+                }
             return TreeValue.decimal_value(
                 clean.to_decimal().or(0.0))
         }
@@ -10973,13 +10987,18 @@ class TreeInterpreter {
                     }
                 }
                 if value.kind == "float" {
+                    // saturating at the target width, not at int's and then
+                    // truncated: 1e300 as i32 is i32's maximum, never the -1
+                    // that dropping the top 32 bits of int.max leaves behind
                     return if unsigned {
                         TreeValue.unsigned_integer(
-                            value.float_data as u64,
+                            tree_float_to_unsigned(
+                                value.float_data, bits),
                             bits)
                     } else {
                         TreeValue.signed_integer(
-                            value.float_data as int,
+                            tree_float_to_signed(
+                                value.float_data, bits),
                             bits)
                     }
                 }

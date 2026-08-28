@@ -155,6 +155,7 @@ test-semantics: $(BIN)
 	./test/differential.sh
 	./test/panic.sh
 	./test/numerics.sh
+	bash ./test/decimal_conformance.sh
 	./test/moves.sh
 	bash ./test/ownership_fuzz.sh smoke
 	bash ./test/borrowed_iteration.sh
@@ -278,6 +279,7 @@ test-core: $(BIN)
 	./test/version.sh
 	./test/deterministic_build.sh
 	./test/numerics.sh
+	bash ./test/decimal_conformance.sh
 	./test/moves.sh
 	bash ./test/borrowed_iteration.sh
 	bash ./test/downcast_borrow.sh
