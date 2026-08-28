@@ -9182,7 +9182,7 @@ class ExpressionChecker {
             if !self.at_body_floor() {
                 self.fail(
                     node,
-                    "new TaskGroup inside a nested block is not ready yet — its scope join runs at function exit, after the block's group is gone. make the group at the function's own scope (per-scope joins land with the fiber unwind work)")
+                    "new TaskGroup inside a nested block is not ready yet — its scope join runs at function exit, after the block's group is gone. make the group at the function's own scope; group.brew(...) on it stays legal at any depth, including inside this block (per-scope joins land with the fiber unwind work)")
             }
             if type.args.len() != 1 {
                 self.fail(
@@ -11689,7 +11689,7 @@ class ExpressionChecker {
         if !self.at_body_floor() {
             self.fail(
                 node,
-                "brew inside a nested block is not ready yet — its scope join runs at function exit, after the block's handle is gone. brew at the function's own scope (per-scope joins land with the fiber unwind work)")
+                "brew inside a nested block is not ready yet — its scope join runs at function exit, after the block's handle is gone. use TaskGroup<T> for a fiber per loop iteration: make the group at the function's own scope, and group.brew(...) on it is legal at any depth. a lone brew works at the function's own scope (per-scope joins land with the fiber unwind work)")
         }
         if node.children.len() != 1 ||
            node.children[0].kind != "call" {
