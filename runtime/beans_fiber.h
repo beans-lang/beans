@@ -109,15 +109,39 @@ int beans_fiber_cancelled(BeansFiber* fiber);
 int beans_fiber_is_root(BeansFiber* fiber);
 
 // Ends the running fiber with a contained failure. The message is copied.
-// Control never returns; the failure is delivered at the join. In F1 the
-// fiber's C frames are abandoned, not unwound — running defers on the way
-// out is compiler-emitted unwind code and lands with F2.
+// Control never returns; the failure is delivered at the join. When the
+// program was built with unwind support (BEANS_FIBER_UNWIND) this starts a
+// controlled unwind of the fiber's own frames — the compiler-emitted
+// cleanup pads run each frame's defers and drop what it owns — and the
+// fiber ends at beans_fiber_unwind_finish. Without it the frames are
+// abandoned, which is what F1 did.
 void beans_fiber_panic(const char* message) __attribute__((noreturn));
 
-// Ends the running fiber as cancelled: the terminal step of a cancellation
-// unwind. F2's emitted unwind code lands here after the defers have run;
-// F1 tests call it directly after seeing a cancelled park verdict.
+// Ends the running fiber as cancelled. Same shape as the panic above: a
+// controlled unwind where the build has one, an abandoned stack where it
+// does not. Park sites call this after seeing a cancelled park verdict.
 void beans_fiber_exit_cancelled(void) __attribute__((noreturn));
+
+// Starts the controlled unwind directly with the ending it should carry
+// (BEANS_FIBER_PANICKED or BEANS_FIBER_CANCELLED). The two calls above are
+// the ones code should use; this is the shared body behind them.
+void beans_fiber_begin_unwind(int status) __attribute__((noreturn));
+
+// The terminal step of a controlled unwind, called from the compiler's
+// emitted cleanup pad on the fiber's entry frame once every frame above it
+// has run its defers and dropped what it owned. Ends the fiber with the
+// status the unwind carries.
+void beans_fiber_unwind_finish(void) __attribute__((noreturn));
+
+// True while `fiber` is inside a controlled unwind. A panic raised here is
+// a panic inside a defer or a deinit that the unwind itself is running —
+// the one unrecoverable case (spec/CONCURRENCY.md), reported and aborted
+// rather than unwound a second time.
+int beans_fiber_unwinding(BeansFiber* fiber);
+
+// The failure report a fiber is carrying, or "" — read by the double-panic
+// report, which has to name the failure that was already being unwound.
+const char* beans_fiber_message(BeansFiber* fiber);
 
 // Parks until `fiber` finishes and delivers how it ended: BEANS_FIBER_OK,
 // _PANICKED, or _CANCELLED. The panic message (or "") is copied into

@@ -3063,6 +3063,21 @@ void beans_panic(const char* msg, long long line, long long col) {
     // where there is no fiber at all) keeps today's report and exit.
     {
         BeansFiber* fiber = beans_fiber_current();
+        if (fiber && beans_fiber_unwinding(fiber)) {
+            // A panic raised while this fiber is already unwinding is a panic
+            // inside a defer or a deinit the unwind itself is running. There
+            // is no second unwind to give it (spec/CONCURRENCY.md calls this
+            // the one unrecoverable case), so both reports go out and the
+            // process stops.
+            rt_write(2, "double panic during unwind: ",
+                     (unsigned long long)28);
+            rt_write(2, text, (unsigned long long)n);
+            rt_write(2, "  while unwinding: ", (unsigned long long)19);
+            const char* first = beans_fiber_message(fiber);
+            rt_write(2, first, (unsigned long long)strlen(first));
+            rt_write(2, "\n", (unsigned long long)1);
+            abort();
+        }
         if (fiber && !beans_fiber_is_root(fiber)) {
             text[n - 1] = '\0'; // the stored message carries no newline
             beans_fiber_panic(text);

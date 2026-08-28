@@ -118,6 +118,16 @@ partial class LlvmTextEmitter {
     debug_main_file: string
     debug_unit: int
     debug_subroutine_type: int
+    // Controlled unwind (src/llvm_unwind.b). The cleanup pad of the function
+    // being emitted, "" when it has nothing to clean up or the program cannot
+    // unwind at all; whether any call actually named it; and the label of the
+    // block the rewrite is currently inside, with the splits it has made, so
+    // a phi can still name the predecessor it really has.
+    unwind_pad: string
+    unwind_used: bool
+    unwind_block: string
+    unwind_alias_from: List<string>
+    unwind_alias_to: List<string>
     // The subprogram of the function being emitted, or -1 outside one and in
     // a function the debugger is not told about.
     debug_scope: int
@@ -140,6 +150,11 @@ partial class LlvmTextEmitter {
         self.debug_scope = -1
         self.debug_scope_file = ""
         self.debug_scope_line = 0
+        self.unwind_pad = ""
+        self.unwind_used = false
+        self.unwind_block = ""
+        self.unwind_alias_from = []
+        self.unwind_alias_to = []
         self.errors = []
         self.encoding_intrinsics = {}
         self.log_intrinsics = {}

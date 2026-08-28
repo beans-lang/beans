@@ -5433,7 +5433,9 @@ class MirLowerer {
         // the flag, which is the shape the emitter produces today.
         for local: MirLocal in function.locals {
             if local.needs_live_flag {
-                local.live_flag_used = false
+                // A program that can unwind reads every armed flag from the
+                // cleanup pad, so no flag has "no reader left" there.
+                local.live_flag_used = self.mir.uses_fibers
             }
         }
         for block: MirBlock in function.blocks {
@@ -5454,6 +5456,56 @@ class MirLowerer {
                 function.locals[
                     local].live_flag_used = true
             }
+        }
+    }
+
+    // Does anything in this program start a fiber? Only a brewed fiber can
+    // contain a panic — every other failure ends the process — so this is
+    // the question "can a frame ever have to unwind", and the answer decides
+    // whether the backend emits cleanup pads at all. A program that never
+    // brews is compiled exactly as it was before the unwind existed.
+    fn detect_fiber_use() -> bool {
+        for function: MirFunction in self.mir.functions {
+            for block: MirBlock in function.blocks {
+                for instruction: MirInstruction in
+                    block.instructions {
+                    if instruction.removed { continue }
+                    if instruction.op == "brew" ||
+                       instruction.op == "group_brew" {
+                        return true
+                    }
+                }
+            }
+        }
+        return false
+    }
+
+    // A frame that can be unwound needs a runtime answer to "does this local
+    // still hold a reference" at *every* point, not only at the drops the
+    // normal exits carry: a panic can land before a local is initialized,
+    // between its initialization and its move, or after it. The fixpoint
+    // below folds a flag away whenever the drops it can see all know the
+    // answer statically, so the flag is pinned on here — before the fixpoint
+    // runs — for every owned local the cleanup pad will have to consider.
+    // The pins cost stores the optimizer promotes out of memory; they buy
+    // the pad the only thing that makes it safe to run at an arbitrary
+    // instruction.
+    fn arm_unwind_flags(function: MirFunction) {
+        if function.declaration || function.external {
+            return
+        }
+        for local: MirLocal in function.locals {
+            if local.ownership != "owned" { continue }
+            if local.scalar_replaced { continue }
+            if local.stack_closure_id >= 0 { continue }
+            if local.captured || local.escapes {
+                // a cell local's slot is the cleanup unit: the prologue
+                // stores null, every drop stores null back, and releasing
+                // a null cell is nothing — so the slot is already its own
+                // flag and a second one would only disagree with it
+                continue
+            }
+            local.needs_live_flag = true
         }
     }
 
@@ -6022,6 +6074,13 @@ class MirLowerer {
         }
         for function: MirFunction in self.mir.functions {
             self.analyze_scalar_replacements(function)
+        }
+        self.mir.uses_fibers = self.detect_fiber_use()
+        if self.mir.uses_fibers {
+            for function: MirFunction in
+                self.mir.functions {
+                self.arm_unwind_flags(function)
+            }
         }
         for function: MirFunction in self.mir.functions {
             self.mark_reachable(function)
