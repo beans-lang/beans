@@ -3816,8 +3816,23 @@ char* beans_str_repeat(char* s, long long n, long long line, long long col) {
 // zero, the same rule spec/SYNTAX.md gives `as int`: a C cast of an
 // out-of-range double is undefined behaviour, and this answer is an int either
 // way. 2^63 is exact in a double, so the two guards are exact.
+//
+// NaN is recognised from the bits, not by asking whether the value equals
+// itself. On a target with no hardware double — the RV32 and Cortex-M boards
+// this runtime also builds for — an unordered compare lowers to __unorddf2,
+// which is a compiler-rt symbol the freestanding profile does not link and
+// test/freestanding.sh refuses. Reading the exponent and mantissa is the same
+// answer with no libcall, and the ordered compares below are all ordinary
+// soft-float ones the profile already carries.
+static int beans_f64_is_nan(double v) {
+    unsigned long long bits;
+    memcpy(&bits, &v, sizeof bits);
+    return (bits & 0x7ff0000000000000ULL) == 0x7ff0000000000000ULL &&
+           (bits & 0x000fffffffffffffULL) != 0;
+}
+
 long long beans_f64_round(double v) {
-    if (!(v == v)) return 0;
+    if (beans_f64_is_nan(v)) return 0;
     if (v >= 9223372036854775808.0) return 9223372036854775807LL;
     if (v <= -9223372036854775808.0) return -9223372036854775807LL - 1;
     double rounded = v < 0 ? -(-v + 0.5) : (v + 0.5);
