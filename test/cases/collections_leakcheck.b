@@ -39,6 +39,25 @@ fn exercise() {
         step += 1
     }
 
+    // Deque past two full 512-blocks on each end, then drained both ways, so
+    // the block map, both crossovers and the recycled spare are all built and
+    // torn down under the leak sweep — the small churn above never leaves one
+    // block. Every element is popped, so a leak here is a real regression.
+    var big: collections.Deque<int> = new()
+    var grow: int = 0
+    for grow < 1300 {
+        big.push_back(grow)
+        big.push_front(-1 - grow)
+        grow += 1
+    }
+    var pulled: int = 0
+    var drained: int = 0
+    for drained < 1300 {
+        pulled += big.pop_front().or(0)
+        drained += 1
+    }
+    for big.len() != 0 { pulled += big.pop_back().or(0) }
+
     // Ordered queries hand back copies; the temporaries they build must free.
     var probe: int = 0
     var sink: int = 0
@@ -53,6 +72,8 @@ fn exercise() {
     sink += map.values().len()
     sink += set.items().len()
     sink += deque.to_list().len()
+    sink += pulled
+    sink += big.len()
 
     io.println("ok {set.len()} {deque.len()} {queue.len()} {map.len()} {sink}")
 }

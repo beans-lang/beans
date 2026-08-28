@@ -313,6 +313,134 @@ fn check_deque() -> int {
     return errors
 }
 
+// The random walk in check_deque stays a few hundred elements deep, so with a
+// 512-slot block it never leaves the head block — no crossover, no inner-block
+// get. This case drives the deque past several full blocks on BOTH sides so the
+// block map, both crossovers (multi-block and the lone-block split), the spare
+// and every region of get() are exercised. It is checked against the same
+// linear list model and folds every drained value into a checksum, so a wrong
+// crossover, a lost reverse or an off-by-one in the get formula moves the
+// printed line and fails the golden on both backends.
+fn check_deque_blocks() -> int {
+    var deque: collections.Deque<int> = new()
+    var model: List<int> = []   // index 0 is the head
+    var errors: int = 0
+    var checksum: int = 0
+    var seed: u64 = 0x9e3779b97f4a7c15
+
+    // Grow past 2*BLOCK on the back, then past 2*BLOCK on the front, so each
+    // side spans several full blocks with a partial block outermost.
+    var i: int = 0
+    for i < 1600 {
+        seed = seed * 6364136223846793005 + 1442695040888963407
+        let value: int = (seed >> 11) as int
+        deque.push_back(value)
+        model.push(value)
+        i += 1
+    }
+    i = 0
+    for i < 1600 {
+        seed = seed * 6364136223846793005 + 1442695040888963407
+        let value: int = (seed >> 11) as int
+        deque.push_front(value)
+        model.insert(0, value)
+        i += 1
+    }
+    if deque.len() != model.len() { errors += 1 }
+    // get in every region: head partial block, inner front blocks, inner back
+    // blocks, tail partial block — a coprime stride visits them all.
+    var probe: int = 0
+    for probe < model.len() {
+        if deque.get(probe).or(-777) != model.get(probe).or(0) { errors += 1 }
+        probe += 137
+    }
+    if deque.first().or(-777) != model.get(0).or(0) { errors += 1 }
+    if deque.last().or(-777) != model.get(model.len() - 1).or(0) { errors += 1 }
+    if deque.get(-1).is_some() { errors += 1 }
+    if deque.get(model.len()).is_some() { errors += 1 }
+
+    // Drain across the middle from both ends alternately: each side empties in
+    // turn, so both crossovers fire repeatedly against the other side's blocks.
+    var toggle: int = 0
+    for model.len() != 0 {
+        if toggle % 2 == 0 {
+            let want: int = model.get(0).or(0)
+            let got: int = deque.pop_front().or(-777)
+            if got != want { errors += 1 }
+            checksum = checksum * 31 + got
+            model.remove(0)
+        } else {
+            let last: int = model.len() - 1
+            let want: int = model.get(last).or(0)
+            let got: int = deque.pop_back().or(-777)
+            if got != want { errors += 1 }
+            checksum = checksum * 31 + got
+            model.remove(last)
+        }
+        toggle += 1
+    }
+    if deque.len() != 0 { errors += 1 }
+
+    // Pure FIFO across many blocks (push_back N, pop_front N): the multi-block
+    // crossover that moves the head half of a full back side to the front, over
+    // and over. Values are deterministic, so each pop is checked, not only
+    // folded into the checksum — a lost block reverse must raise errors here,
+    // not merely change the golden.
+    i = 0
+    for i < 4000 { deque.push_back(i * 3 + 1); i += 1 }
+    i = 0
+    for i < 4000 {
+        let got: int = deque.pop_front().or(-777)
+        if got != i * 3 + 1 { errors += 1 }
+        checksum = checksum * 31 + got
+        i += 1
+    }
+    // The mirror: push_front N, pop_back N drains from the tail in push order,
+    // exercising multi-block crossover_to_back.
+    i = 0
+    for i < 4000 { deque.push_front(i * 5 + 2); i += 1 }
+    i = 0
+    for i < 4000 {
+        let got: int = deque.pop_back().or(-777)
+        if got != i * 5 + 2 { errors += 1 }
+        checksum = checksum * 31 + got
+        i += 1
+    }
+    if deque.len() != 0 { errors += 1 }
+
+    // Single-partial-block ping-pong (size never exceeds 1) then a boundary
+    // thrash at exactly 2*BLOCK: neither may churn or lose an element.
+    i = 0
+    for i < 2000 {
+        deque.push_back(i)
+        if deque.pop_front().or(-1) != i { errors += 1 }
+        i += 1
+    }
+    var m4: List<int> = []
+    i = 0
+    for i < 1024 { deque.push_back(i); m4.push(i); i += 1 }
+    i = 0
+    for i < 3000 {
+        deque.push_back(200000 + i)
+        m4.push(200000 + i)
+        let last: int = m4.len() - 1
+        let got: int = deque.pop_back().or(-1)
+        if got != m4.get(last).or(-2) { errors += 1 }
+        checksum = checksum * 31 + got
+        m4.remove(last)
+        i += 1
+    }
+    for m4.len() != 0 {
+        let last: int = m4.len() - 1
+        if deque.pop_back().or(-1) != m4.get(last).or(-2) { errors += 1 }
+        m4.remove(last)
+    }
+    if deque.len() != 0 { errors += 1 }
+
+    io.println("deque blocks {errors} {checksum}")
+    return errors
+}
+
 // ---- PriorityQueue =========================================================
 
 fn check_priority_queue() -> int {
@@ -407,6 +535,7 @@ fn main() {
     errors += check_sorted_map()
     errors += check_set()
     errors += check_deque()
+    errors += check_deque_blocks()
     errors += check_priority_queue()
     errors += check_builder()
     io.println("total errors {errors}")

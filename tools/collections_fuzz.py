@@ -142,6 +142,64 @@ def gen_deque(rng, ops):
                 '    io.println("ends {opt_of(dq.first())} {opt_of(dq.last())}")'
             )
             expected.append(f"ends {opt_int(first)} {opt_int(last)}")
+    # The random walk above stays under a hundred elements, so with a 512-slot
+    # block the deque never leaves its head block: no crossover, no inner-block
+    # get, no spare reuse. Grow it deterministically past 2*BLOCK on BOTH ends,
+    # read get in every region, then drain each way so every crossover fires —
+    # all mirrored in the model so the answers still have to match exactly.
+    # Values are kept small and the checksum is reduced each step, so the Python
+    # model and the 64-bit Beans arithmetic agree.
+    body.append("    var grow: int = 0")
+    body.append("    for grow < 1300 {")
+    body.append("        dq.push_back(grow % 1000)")
+    body.append("        dq.push_front((grow * 7 + 3) % 1000)")
+    body.append("        grow += 1")
+    body.append("    }")
+    for grow in range(1300):
+        model.append(grow % 1000)
+        model.insert(0, (grow * 7 + 3) % 1000)
+    body.append("    var gp: int = 0")
+    body.append("    for gp < dq.len() {")
+    body.append('        io.println("g {gp} {opt_of(dq.get(gp))}")')
+    body.append("        gp += 517")
+    body.append("    }")
+    gp = 0
+    while gp < len(model):
+        expected.append(f"g {gp} {opt_int(model[gp])}")
+        gp += 517
+    # Drain the whole deque from the FRONT: the front side empties, then the
+    # entire multi-block back side crosses over — crossover_to_front on two or
+    # more full blocks, the shape the alternating middle-drain never reaches
+    # (there the far side is down to one block by the time a side empties).
+    body.append("    var fifo: int = 0")
+    body.append("    for dq.len() != 0 {")
+    body.append("        match dq.pop_front() {"
+                " some(v) => { fifo = (fifo * 31 + v) % 1000000007 } none => {} }")
+    body.append("    }")
+    body.append('    io.println("fifo {fifo}")')
+    fifo = 0
+    while model:
+        fifo = (fifo * 31 + model.pop(0)) % 1000000007
+    expected.append(f"fifo {fifo}")
+    # Refill the FRONT past 2*BLOCK, then drain from the BACK: the mirror,
+    # crossover_to_back on two or more full blocks.
+    body.append("    var refill: int = 0")
+    body.append("    for refill < 1300 {")
+    body.append("        dq.push_front(refill % 1000)")
+    body.append("        refill += 1")
+    body.append("    }")
+    for refill in range(1300):
+        model.insert(0, refill % 1000)
+    body.append("    var lifo: int = 0")
+    body.append("    for dq.len() != 0 {")
+    body.append("        match dq.pop_back() {"
+                " some(v) => { lifo = (lifo * 31 + v) % 1000000007 } none => {} }")
+    body.append("    }")
+    body.append('    io.println("lifo {lifo}")')
+    lifo = 0
+    while model:
+        lifo = (lifo * 31 + model.pop()) % 1000000007
+    expected.append(f"lifo {lifo}")
     # Drain head to tail: a fully defined order.
     body.append("    var out: List<string> = []")
     body.append('    for value: int in dq.to_list() { out.push("{value}") }')
