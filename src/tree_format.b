@@ -24,7 +24,8 @@ fn tree_format_spec(segment: string) -> TreeFormatSpec {
     for index < segment.len() {
         let byte: int = segment.byte_at(index)
         if byte == 92 {
-            index += 2
+            index += string_escape_length(
+                segment, index, segment.len())
             continue
         }
         if in_string {
@@ -73,43 +74,6 @@ fn tree_format_spec(segment: string) -> TreeFormatSpec {
                 result.places * 10 + byte - 48
             index += 1
         }
-    }
-    return result
-}
-
-fn tree_unquote(source: string) -> string {
-    var start: int = 0
-    var end: int = source.len()
-    if source.len() >= 2 &&
-       source.starts_with("\"") &&
-       source.ends_with("\"") {
-        start = 1
-        end -= 1
-    }
-    var result: string = ""
-    var index: int = start
-    for index < end {
-        let byte: int = source.byte_at(index)
-        if byte != 92 || index + 1 >= end {
-            result =
-                "{result}{source.slice(index, index + 1)}"
-            index += 1
-            continue
-        }
-        let escaped: int = source.byte_at(index + 1)
-        if escaped == 110 {
-            result = "{result}\n"
-        } else if escaped == 114 {
-            result = "{result}\r"
-        } else if escaped == 116 {
-            result = "{result}\t"
-        } else if escaped == 48 {
-            result = "{result}\0"
-        } else {
-            result =
-                "{result}{source.slice(index + 1, index + 2)}"
-        }
-        index += 2
     }
     return result
 }

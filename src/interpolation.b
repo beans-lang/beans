@@ -7,7 +7,8 @@ fn interpolation_expression_source(segment: string) -> string {
     for index < segment.len() {
         let byte: int = segment.byte_at(index)
         if byte == 92 {
-            index += 2
+            index += string_escape_length(
+                segment, index, segment.len())
             continue
         }
         if in_string {

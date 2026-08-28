@@ -431,6 +431,17 @@ class Parser {
             let result: AstNode = self.node("error", "extern", abi)
             return result
         }
+        // `const` stays contextual, like every other declaration word the
+        // language has added since: outside `const <NAME>` at the start of a
+        // declaration it is an ordinary identifier, so no program loses a
+        // name it was already using.
+        if self.check("ident") &&
+           self.current().text == "const" &&
+           self.tokens[self.pos + 1].kind == "ident" {
+            let result: AstNode = self.parse_const_declaration()
+            if public { result.value = "pub {result.value}" }
+            return result
+        }
         if self.check("import") {
             let result: AstNode = self.parse_import()
             if public { result.value = "pub {result.value}" }
@@ -456,6 +467,26 @@ class Parser {
         self.fail(token, "expected a declaration")
         let result: AstNode = self.node("error", token.text, token)
         for !self.check("newline") && !self.at_end() { self.advance() }
+        return result
+    }
+
+    fn parse_const_declaration() -> AstNode {
+        let start: Token = self.advance()
+        let name: Token =
+            self.expect("ident", "expected a constant name after 'const'")
+        let result: AstNode =
+            self.named(
+                self.node("const", "const {name.text}", start),
+                name)
+        self.expect(
+            ":",
+            "a constant needs a declared type, like const LIMIT: int = 128")
+        result.add(self.parse_type())
+        self.expect(
+            "=",
+            "a constant needs a value, like const LIMIT: int = 128")
+        result.add(self.parse_expression())
+        self.finish_statement()
         return result
     }
 

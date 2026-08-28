@@ -83,6 +83,7 @@ fn semantic_completion_kind(kind: string) -> string {
     if kind == "import" { return "module" }
     if kind == "package" { return "module" }
     if kind == "c_global" { return "variable" }
+    if kind == "const" { return "constant" }
     if kind == "generic" { return "typeParameter" }
     if kind == "builtin_type" { return "class" }
     if kind == "keyword" { return "keyword" }

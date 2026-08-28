@@ -23,6 +23,14 @@ class ExpressionChecker {
     methods: Map<string, HirFunction>
     declarations: Map<string, HirDeclaration>
     c_globals: Map<string, HirCGlobal>
+    consts: Map<string, HirConst>
+    // A constant's initializer may name another constant, and files of one
+    // package create no edges between each other, so the order the program
+    // happens to hold must not decide whether a fold succeeds. These say
+    // what is folded and what is on the stack, so a self-referential
+    // constant stops instead of recursing forever.
+    consts_folded: Map<string, bool>
+    consts_visiting: Map<string, bool>
     imports: Map<string, string>
     // Names bound by `import {…} from path`, keyed "file|binding" and
     // valued "path\nname" — the target package and the original symbol.
@@ -79,6 +87,9 @@ class ExpressionChecker {
         self.methods = {}
         self.declarations = {}
         self.c_globals = {}
+        self.consts = {}
+        self.consts_folded = {}
+        self.consts_visiting = {}
         self.imports = {}
         self.named_imports = {}
         self.errors = []
@@ -125,6 +136,9 @@ class ExpressionChecker {
             self.program.c_globals {
             self.c_globals[
                 global.qualified] = global
+        }
+        for constant: HirConst in self.program.consts {
+            self.consts[constant.qualified] = constant
         }
         // Bindings are keyed by file: an import in one file of a package
         // must not qualify anything in its siblings.
@@ -1328,12 +1342,7 @@ class ExpressionChecker {
         if syntax.kind != "literal" || syntax.note != "string" {
             return ""
         }
-        if syntax.value.len() >= 2 &&
-           syntax.value.starts_with("\"") &&
-           syntax.value.ends_with("\"") {
-            return syntax.value.slice(1, syntax.value.len() - 1)
-        }
-        return syntax.value
+        return string_literal_decode(syntax.value)
     }
 
     fn json_camel_case(name: string) -> string {
@@ -2008,6 +2017,11 @@ class ExpressionChecker {
 
     fn current_c_global(name: string) -> Option<HirCGlobal> {
         return self.c_globals.get(
+            self.current_qualified(name))
+    }
+
+    fn current_const(name: string) -> Option<HirConst> {
+        return self.consts.get(
             self.current_qualified(name))
     }
 
@@ -4720,12 +4734,14 @@ class ExpressionChecker {
         var lowered: List<HirNode> = []
         let raw: string = node.value
         if raw.len() < 2 { return move lowered }
-        var index: int = 1
-        let end: int = raw.len() - 1
+        // A raw literal is bytes: `{` in it is a brace, not a slot.
+        if string_literal_is_raw(raw) { return move lowered }
+        var index: int = string_literal_body_start(raw)
+        let end: int = string_literal_body_end(raw)
         for index < end {
             let byte: int = raw.byte_at(index)
             if byte == 92 {
-                index += 2
+                index += string_escape_length(raw, index, end)
                 continue
             }
             if byte != 123 {
@@ -4739,7 +4755,8 @@ class ExpressionChecker {
             for cursor < end && depth > 0 {
                 let current: int = raw.byte_at(cursor)
                 if current == 92 {
-                    cursor += 2
+                    cursor += string_escape_length(
+                        raw, cursor, end)
                     continue
                 }
                 if in_string {
@@ -4813,6 +4830,18 @@ class ExpressionChecker {
                 node.interpolations.push(expression)
                 let piece: HirNode = self.check_expression(
                     expression, no_hir_type())
+                // A piece that is one bare name nothing answers is far
+                // more often a brace someone meant literally — a route
+                // template, a regex, a printf format — than a typo. The
+                // resolver's "unknown name" is true and useless on its
+                // own: it never mentions the brace that made it a name.
+                if expression.kind == "name" &&
+                   piece.kind == "error" &&
+                   piece.type.name == "poison" {
+                    self.fail(
+                        node,
+                        "'\{{segment}\}' in a string is an interpolation, so '{segment}' has to name something; for a literal brace write \\\{{segment}\\\} or make the whole literal raw: r\"...\"")
+                }
                 // Stage 0 refuses non-printable pieces at check time;
                 // without this gate the tree interpreter printed a
                 // placeholder and the LLVM emitter refused late, so the
@@ -5040,6 +5069,13 @@ class ExpressionChecker {
             }
             none => {}
         }
+        match self.current_const(node.value) {
+            some(constant) => {
+                return self.constant_node(
+                    node, constant, expected)
+            }
+            none => {}
+        }
         match self.current_c_global(node.value) {
             some(global) => {
                 self.require_unsafe(
@@ -5071,6 +5107,18 @@ class ExpressionChecker {
             let original: string = parts[1]
             if self.signature.resolver.is_loaded_package(
                 import_path) {
+                match self.consts.get(
+                    package_symbol(import_path, original)) {
+                    some(constant) => {
+                        self.require_visible(
+                            node, constant.is_public,
+                            constant.file, "constant",
+                            node.value)
+                        return self.constant_node(
+                            node, constant, expected)
+                    }
+                    none => {}
+                }
                 match self.functions.get(
                     package_symbol(import_path, original)) {
                     some(function) => {
@@ -5726,6 +5774,18 @@ class ExpressionChecker {
             if import_path != "" &&
                self.signature.resolver.is_loaded_package(
                    import_path) {
+                match self.consts.get(
+                    package_symbol(import_path, node.value)) {
+                    some(constant) => {
+                        self.require_visible(
+                            node, constant.is_public,
+                            constant.file, "constant",
+                            "{receiver_syntax.value}.{node.value}")
+                        return self.constant_node(
+                            node, constant, expected)
+                    }
+                    none => {}
+                }
                 match self.functions.get(
                     package_symbol(import_path, node.value)) {
                     some(function) => {
@@ -10106,6 +10166,52 @@ class ExpressionChecker {
         return []
     }
 
+    // The constant a pattern name stands for, as the literal pattern the
+    // source could have written instead. Nothing downstream learns a new
+    // pattern shape: `render_pattern`, the match tables and both backends
+    // see exactly what a written literal produces.
+    fn constant_pattern(pattern: AstNode,
+                        subject: HirType) -> Option<HirNode> {
+        var found: Option<HirConst> =
+            self.current_const(pattern.value)
+        if found.is_none() {
+            let encoded: string =
+                self.named_import_target(pattern.value)
+            if encoded != "" {
+                let parts: List<string> = encoded.split("\n")
+                found = self.consts.get(
+                    package_symbol(parts[0], parts[1]))
+            }
+        }
+        match found {
+            some(constant) => {
+                self.ensure_const(constant)
+                if !constant.folded { return none }
+                self.require_visible(
+                    pattern, constant.is_public,
+                    constant.file, "constant",
+                    pattern.value)
+                if !hir_types_equal(constant.type, subject) {
+                    self.fail(
+                        pattern,
+                        "pattern is {render_hir_type(constant.type)} but the match subject is {render_hir_type(subject)}")
+                    return some(
+                        self.make_node(
+                            pattern, "pattern_literal",
+                            constant.text, subject))
+                }
+                let result: HirNode =
+                    self.make_node(
+                        pattern, "pattern_literal",
+                        constant.text, subject)
+                result.resolved = constant.qualified
+                return some(result)
+            }
+            none => {}
+        }
+        return none
+    }
+
     fn check_pattern(pattern: AstNode,
                      subject: HirType) -> HirNode {
         let result: HirNode =
@@ -10125,8 +10231,13 @@ class ExpressionChecker {
             if pattern.value == "true" ||
                pattern.value == "false" {
                 literal_type = new HirType("bool")
-            } else if pattern.value.starts_with("\"") {
+            } else if string_literal_is_text(pattern.value) {
                 literal_type = new HirType("string")
+                // Below the checker a pattern is one spelling: a raw
+                // literal is the same bytes written another way, and the
+                // MIR match tables are read back as ordinary literals.
+                result.value =
+                    string_literal_cook(pattern.value)
             } else if pattern.value.contains(".") ||
                       (!pattern.value.starts_with("0x") &&
                        !pattern.value.starts_with("0X") &&
@@ -10194,6 +10305,17 @@ class ExpressionChecker {
                     }
                 }
                 none => {}
+            }
+        }
+        // A module constant is a value, so it may stand where a literal
+        // stands. An enum variant of the same name still wins: the arm is
+        // about the subject's own shape.
+        if !enum_subject || !known_variant {
+            if pattern.children.len() == 0 {
+                match self.constant_pattern(pattern, subject) {
+                    some(literal) => { return literal }
+                    none => {}
+                }
             }
         }
         if !enum_subject {
@@ -10603,6 +10725,11 @@ class ExpressionChecker {
     fn annotation_constant(
         syntax: AstNode, expected: HirType,
         checked: HirNode) -> bool {
+        // A module constant already is a compile-time value; the checker
+        // folded it before any annotation was looked at.
+        if checked.kind == "const" {
+            return hir_types_equal(checked.type, expected)
+        }
         if syntax.kind == "literal" {
             if syntax.note == "string" {
                 return expected.name == "string" &&
@@ -10669,12 +10796,17 @@ class ExpressionChecker {
                 if argument.defaulted && argument.value.is_some() {
                     continue
                 }
+                let before: int = self.errors.len()
                 let value: HirNode =
                     self.check_expression(
                         argument.syntax, argument.type)
                 argument.value = some(value)
-                if !self.annotation_constant(
-                    argument.syntax, argument.type, value) {
+                // An argument that did not check has already been
+                // explained. Saying it is also not constant is a second
+                // line about the same mistake, two steps from its cause.
+                if self.errors.len() == before &&
+                   !self.annotation_constant(
+                       argument.syntax, argument.type, value) {
                     self.fail(
                         argument.syntax,
                         "annotation argument '{argument.name}' must be a compile-time constant")
@@ -11170,11 +11302,22 @@ class ExpressionChecker {
                         result.children.push(value)
                     }
                     none => {
-                        self.fail(
-                            target,
-                            add_name_suggestion(
-                                "unknown name '{target.value}'",
-                                target.value, self.local_names()))
+                        match self.current_const(
+                            target.value) {
+                            some(constant) => {
+                                self.fail(
+                                    target,
+                                    "'{target.value}' is a constant and has no storage to assign to")
+                            }
+                            none => {
+                                self.fail(
+                                    target,
+                                    add_name_suggestion(
+                                        "unknown name '{target.value}'",
+                                        target.value,
+                                        self.local_names()))
+                            }
+                        }
                     }
                 }
             }
@@ -12199,6 +12342,496 @@ class ExpressionChecker {
         self.pop_scope()
     }
 
+    // ---- module constants ---------------------------------------------------
+    //
+    // `const NAME: T = <expression>` has no storage. The initializer is
+    // checked once, in its own package, and folded on the *checked* HIR, so
+    // the language's own typing decides what each operator means. What the
+    // fold produces is the spelling a literal of that type is written in;
+    // a use site materializes that, which makes a constant behave exactly
+    // as if its value had been typed there — in both backends, with nothing
+    // left for them to disagree about.
+
+    fn check_consts() {
+        self.consts_folded = {}
+        self.consts_visiting = {}
+        for constant: HirConst in self.program.consts {
+            self.fold_one_const(constant)
+        }
+    }
+
+    // Asked for by name the moment a constant's initializer names another
+    // one. The ask arrives from the middle of that constant's own pass, so
+    // the checking state around it is saved and put back.
+    fn ensure_const(constant: HirConst) {
+        if self.consts_folded.contains_key(
+               constant.qualified) ||
+           self.consts_visiting.contains_key(
+               constant.qualified) {
+            return
+        }
+        let saved_current: HirFunction = self.current
+        var saved_constraints: List<HirGeneric> = []
+        for constraint: HirGeneric in
+            self.current_constraints {
+            saved_constraints.push(constraint)
+        }
+        var saved_scopes: List<LocalScope> = []
+        for scope: LocalScope in self.scopes {
+            saved_scopes.push(scope)
+        }
+        self.fold_one_const(constant)
+        self.current = saved_current
+        self.current_constraints = move saved_constraints
+        self.scopes = move saved_scopes
+    }
+
+    fn fold_one_const(constant: HirConst) {
+        if self.consts_folded.contains_key(
+               constant.qualified) {
+            return
+        }
+        if self.consts_visiting.contains_key(
+               constant.qualified) {
+            // Reported once, at the constant the cycle was entered from.
+            return
+        }
+        self.consts_visiting[constant.qualified] = true
+        self.current = new HirFunction(
+            "$const", "{constant.qualified}.$const",
+            "", false, false, constant.file,
+            constant.line, constant.col)
+        self.current_constraints = []
+        self.scopes = []
+        self.push_scope()
+        constant.annotations =
+            self.check_hir_annotations(
+                constant.annotations)
+        match constant.syntax {
+            some(syntax) => {
+                let before: int = self.errors.len()
+                let checked: HirNode =
+                    self.check_expression(
+                        syntax, constant.type)
+                if self.errors.len() == before &&
+                   constant.type.name != "poison" {
+                    let value: ConstValue =
+                        self.fold_const(
+                            checked, syntax, constant.name)
+                    if value.kind != "" {
+                        constant.folded = true
+                        constant.kind = value.kind
+                        constant.number = value.number
+                        constant.text = value.text
+                    }
+                }
+            }
+            none => {}
+        }
+        self.pop_scope()
+        self.consts_folded[constant.qualified] = true
+    }
+
+    fn const_failure(site: AstNode, name: string,
+                     what: string) {
+        self.fail(
+            site,
+            "const {name} is not a compile-time value: {what}")
+    }
+
+    // What the node in front of the fold actually is, said in the program's
+    // own words. "not a constant" on its own leaves a reader guessing which
+    // part of the line the compiler could not settle.
+    fn const_reason(node: HirNode) -> string {
+        if node.kind == "call" || node.kind == "method_call" ||
+           node.kind == "static_call" ||
+           node.kind == "builtin_call" ||
+           node.kind == "module_call" {
+            return "a call runs at run time"
+        }
+        if node.kind == "layout_query" {
+            return "{node.value} is answered after layout, which runs later than a constant is folded"
+        }
+        if node.kind == "local" {
+            return "'{node.value}' is a local, and a local has no value until its function runs"
+        }
+        if node.kind == "c_global" {
+            return "'{node.value}' is an extern C global, and C decides its value"
+        }
+        if node.kind == "field" || node.kind == "weak_field" ||
+           node.kind == "static_field" {
+            return "'{node.value}' is a field read"
+        }
+        if node.kind == "list" || node.kind == "map" ||
+           node.kind == "initializer" ||
+           node.kind == "new" {
+            return "a constant is a number, bool or string, and this builds a value"
+        }
+        if node.kind == "cast" {
+            return "'as' converts at run time — declare the constant with the type you want"
+        }
+        if node.kind == "variant" {
+            return "'{node.value}' is an enum variant, and a constant is a number, bool or string"
+        }
+        if node.kind == "if" || node.kind == "match" ||
+           node.kind == "block" {
+            return "a constant is one expression, not a branch"
+        }
+        return "'{node.kind}' is computed at run time"
+    }
+
+    fn fold_const(node: HirNode, site: AstNode,
+                  name: string) -> ConstValue {
+        if node.kind == "const" {
+            match self.consts.get(node.resolved) {
+                some(other) => {
+                    if other.folded {
+                        return ConstValue {
+                            kind: other.kind,
+                            number: other.number,
+                            text: other.text,
+                        }
+                    }
+                    // Its own declaration already said why.
+                    return const_value_failed()
+                }
+                none => {}
+            }
+            return const_value_failed()
+        }
+        if node.kind == "literal" {
+            return self.fold_const_literal(node, site, name)
+        }
+        if node.kind == "unary" && node.children.len() == 1 {
+            return self.fold_const_unary(node, site, name)
+        }
+        if node.kind == "binary" && node.children.len() == 2 {
+            return self.fold_const_binary(node, site, name)
+        }
+        if node.kind == "error" || node.type.name == "poison" {
+            return const_value_failed()
+        }
+        self.const_failure(
+            site, name, self.const_reason(node))
+        return const_value_failed()
+    }
+
+    fn fold_const_literal(node: HirNode, site: AstNode,
+                          name: string) -> ConstValue {
+        let canonical: string =
+            canonical_hir_name(node.type.name)
+        if canonical == "bool" {
+            return const_value_bool(node.value == "true")
+        }
+        if canonical == "string" {
+            if node.children.len() != 0 {
+                self.const_failure(
+                    site, name,
+                    "a string constant cannot interpolate — a \{\} piece is filled in at run time")
+                return const_value_failed()
+            }
+            return ConstValue {
+                kind: "string",
+                number: 0,
+                text: string_literal_cook(node.value),
+            }
+        }
+        if hir_is_integer(node.type) {
+            return const_value_int(
+                tree_parse_int(node.value), node.value)
+        }
+        if hir_is_float(node.type) {
+            return ConstValue {
+                kind: "float", number: 0, text: node.value,
+            }
+        }
+        if canonical == "decimal" {
+            return ConstValue {
+                kind: "decimal", number: 0, text: node.value,
+            }
+        }
+        self.const_failure(
+            site, name,
+            "a {render_hir_type(node.type)} has no compile-time value")
+        return const_value_failed()
+    }
+
+    // A folded integer answers what the same expression answers at run time,
+    // so every result is narrowed to its own type. u64 is the exception the
+    // fold cannot carry: a 64-bit signed accumulator holds the bit pattern
+    // but not the number, so rather than answer a different value than the
+    // program would, folding stops and says so. A u64 mask written out in
+    // full is still a literal and still works.
+    fn fold_const_int(value: int, type: HirType,
+                      site: AstNode,
+                      name: string) -> ConstValue {
+        let narrowed: int = const_wrap(value, type)
+        if const_unsigned_64(type) && narrowed < 0 {
+            self.const_failure(
+                site, name,
+                "this folds past 2^63 in u64, which the checker cannot compute — write the value as a literal")
+            return const_value_failed()
+        }
+        return const_value_int(
+            narrowed, const_int_text(narrowed))
+    }
+
+    fn fold_const_unary(node: HirNode, site: AstNode,
+                        name: string) -> ConstValue {
+        if node.value == "move" || node.value == "inout" {
+            self.const_failure(
+                site, name,
+                "'{node.value}' is an ownership operator, not a value")
+            return const_value_failed()
+        }
+        let operand: ConstValue =
+            self.fold_const(node.children[0], site, name)
+        if operand.kind == "" { return const_value_failed() }
+        if node.value == "-" {
+            if operand.kind == "int" {
+                return self.fold_const_int(
+                    0 - operand.number,
+                    node.children[0].type, site, name)
+            }
+            if operand.kind == "float" ||
+               operand.kind == "decimal" {
+                if operand.text.starts_with("-") {
+                    return ConstValue {
+                        kind: operand.kind,
+                        number: 0,
+                        text: operand.text.slice(
+                            1, operand.text.len()),
+                    }
+                }
+                return ConstValue {
+                    kind: operand.kind,
+                    number: 0,
+                    text: "-{operand.text}",
+                }
+            }
+            self.const_failure(
+                site, name,
+                "unary '-' needs a number")
+            return const_value_failed()
+        }
+        if node.value == "!" {
+            if operand.kind != "bool" {
+                self.const_failure(
+                    site, name, "unary '!' needs bool")
+                return const_value_failed()
+            }
+            return const_value_bool(operand.number == 0)
+        }
+        if node.value == "~" {
+            if operand.kind != "int" {
+                self.const_failure(
+                    site, name,
+                    "unary '~' needs an integer")
+                return const_value_failed()
+            }
+            return self.fold_const_int(
+                ~operand.number,
+                node.children[0].type, site, name)
+        }
+        self.const_failure(
+            site, name,
+            "unary '{node.value}' has no constant form")
+        return const_value_failed()
+    }
+
+    fn fold_const_compare(operation: string, left: ConstValue,
+                          right: ConstValue, site: AstNode,
+                          name: string) -> ConstValue {
+        if left.kind == "string" && right.kind == "string" {
+            let a: string = string_literal_decode(left.text)
+            let b: string = string_literal_decode(right.text)
+            if operation == "==" {
+                return const_value_bool(a == b)
+            }
+            if operation == "!=" {
+                return const_value_bool(a != b)
+            }
+            if operation == "<" { return const_value_bool(a < b) }
+            if operation == "<=" { return const_value_bool(a <= b) }
+            if operation == ">" { return const_value_bool(a > b) }
+            return const_value_bool(a >= b)
+        }
+        if (left.kind == "int" || left.kind == "bool") &&
+           left.kind == right.kind {
+            let a: int = left.number
+            let b: int = right.number
+            if operation == "==" { return const_value_bool(a == b) }
+            if operation == "!=" { return const_value_bool(a != b) }
+            if left.kind == "bool" {
+                self.const_failure(
+                    site, name,
+                    "'{operation}' has no constant form for bool")
+                return const_value_failed()
+            }
+            if operation == "<" { return const_value_bool(a < b) }
+            if operation == "<=" { return const_value_bool(a <= b) }
+            if operation == ">" { return const_value_bool(a > b) }
+            return const_value_bool(a >= b)
+        }
+        self.const_failure(
+            site, name,
+            "'{operation}' folds integers, bools and strings; a float comparison would need the compiler to round for you")
+        return const_value_failed()
+    }
+
+    fn fold_const_binary(node: HirNode, site: AstNode,
+                         name: string) -> ConstValue {
+        let operation: string = node.value
+        let left: ConstValue =
+            self.fold_const(node.children[0], site, name)
+        if left.kind == "" { return const_value_failed() }
+        let right: ConstValue =
+            self.fold_const(node.children[1], site, name)
+        if right.kind == "" { return const_value_failed() }
+        if operation == "&&" || operation == "||" {
+            if left.kind != "bool" || right.kind != "bool" {
+                self.const_failure(
+                    site, name,
+                    "'{operation}' needs bool operands")
+                return const_value_failed()
+            }
+            let value: bool =
+                if operation == "&&" {
+                    left.number != 0 && right.number != 0
+                } else {
+                    left.number != 0 || right.number != 0
+                }
+            return const_value_bool(value)
+        }
+        if operation == "==" || operation == "!=" ||
+           operation == "<" || operation == "<=" ||
+           operation == ">" || operation == ">=" {
+            return self.fold_const_compare(
+                operation, left, right, site, name)
+        }
+        if left.kind != "int" || right.kind != "int" {
+            self.const_failure(
+                site, name,
+                "'{operation}' folds integers; a {left.kind} constant is the literal it was written as")
+            return const_value_failed()
+        }
+        let type: HirType = node.children[0].type
+        if const_unsigned_64(type) &&
+           (left.number < 0 || right.number < 0) {
+            self.const_failure(
+                site, name,
+                "this folds past 2^63 in u64, which the checker cannot compute — write the value as a literal")
+            return const_value_failed()
+        }
+        if operation == "+" {
+            return self.fold_const_int(
+                left.number + right.number, type, site, name)
+        }
+        if operation == "-" {
+            return self.fold_const_int(
+                left.number - right.number, type, site, name)
+        }
+        if operation == "*" {
+            return self.fold_const_int(
+                left.number * right.number, type, site, name)
+        }
+        if operation == "/" || operation == "%" {
+            if right.number == 0 {
+                self.const_failure(
+                    site, name,
+                    "this divides by zero")
+                return const_value_failed()
+            }
+            if right.number == -1 &&
+               integer_literal_signed(type.name) &&
+               left.number == const_int_minimum(type) {
+                self.const_failure(
+                    site, name,
+                    "this divides {render_hir_type(type)}'s smallest value by -1, which has no result in {render_hir_type(type)}")
+                return const_value_failed()
+            }
+            if operation == "/" {
+                return self.fold_const_int(
+                    left.number / right.number,
+                    type, site, name)
+            }
+            return self.fold_const_int(
+                left.number % right.number, type, site, name)
+        }
+        if operation == "&" {
+            return self.fold_const_int(
+                left.number & right.number, type, site, name)
+        }
+        if operation == "|" {
+            return self.fold_const_int(
+                left.number | right.number, type, site, name)
+        }
+        if operation == "^" {
+            return self.fold_const_int(
+                left.number ^ right.number, type, site, name)
+        }
+        if operation == "<<" || operation == ">>" {
+            let bits: int = integer_literal_bits(type.name)
+            if right.number < 0 || right.number >= bits {
+                self.const_failure(
+                    site, name,
+                    "a {render_hir_type(type)} shift needs a count from 0 to {bits - 1}, got {right.number}")
+                return const_value_failed()
+            }
+            if operation == "<<" {
+                return self.fold_const_int(
+                    left.number << right.number,
+                    type, site, name)
+            }
+            return self.fold_const_int(
+                left.number >> right.number,
+                type, site, name)
+        }
+        self.const_failure(
+            site, name,
+            "'{operation}' has no constant form")
+        return const_value_failed()
+    }
+
+    // The node a use site gets: the constant's value, written where the use
+    // is. A negative number becomes unary minus over its magnitude, which is
+    // the shape source itself produces, so no backend meets a literal
+    // spelling it has never seen.
+    fn constant_value_node(node: AstNode, type: HirType,
+                           text: string) -> HirNode {
+        if text.starts_with("-") {
+            let magnitude: HirNode =
+                self.make_node(
+                    node, "literal",
+                    text.slice(1, text.len()), type)
+            let negated: HirNode =
+                self.make_node(node, "unary", "-", type)
+            negated.children.push(magnitude)
+            return negated
+        }
+        return self.make_node(node, "literal", text, type)
+    }
+
+    fn constant_node(node: AstNode, constant: HirConst,
+                     expected: HirType) -> HirNode {
+        self.ensure_const(constant)
+        self.expect_type(node, constant.type, expected)
+        if !constant.folded {
+            return self.make_node(
+                node, "error", constant.name,
+                poison_hir_type())
+        }
+        let value: HirNode =
+            self.constant_value_node(
+                node, constant.type, constant.text)
+        let result: HirNode =
+            self.make_node(
+                node, "const", constant.name, constant.type)
+        result.resolved = constant.qualified
+        result.children.push(value)
+        return result
+    }
+
     fn check_field_defaults() {
         self.defaults_checked = {}
         self.defaults_visiting = {}
@@ -12415,6 +13048,9 @@ class ExpressionChecker {
     }
 
     fn run() -> bool {
+        // Constants first: an annotation argument, a field default or any
+        // body may name one, and every one of those asks for the value.
+        self.check_consts()
         self.check_annotation_declarations()
         self.check_c_global_annotations()
         self.check_field_defaults()

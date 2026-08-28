@@ -10,7 +10,7 @@ partial class LlvmTextEmitter {
         pattern: string) -> List<string> {
         var result: List<string> = []
         if pattern.starts_with("pattern_literal:\"") {
-            result.push(llvm_unquote(
+            result.push(string_literal_decode(
                 pattern.slice(16, pattern.len())))
             return move result
         }
@@ -42,7 +42,7 @@ partial class LlvmTextEmitter {
                 end += 1
             }
             if !closed { return [] }
-            result.push(llvm_unquote(
+            result.push(string_literal_decode(
                 inner.slice(literal_start, end)))
             if end == inner.len() {
                 cursor = end
@@ -120,35 +120,18 @@ partial class LlvmTextEmitter {
         List<LlvmInterpolationPiece> {
         var pieces: List<LlvmInterpolationPiece> = []
         let source: string = instruction.text
-        var start: int = 0
-        var end: int = source.len()
-        if source.len() >= 2 &&
-           source.starts_with("\"") &&
-           source.ends_with("\"") {
-            start = 1
-            end -= 1
-        }
+        let start: int = string_literal_body_start(source)
+        let end: int = string_literal_body_end(source)
         var literal: string = ""
         var operand: int = 0
         var index: int = start
         for index < end {
             let byte: int = source.byte_at(index)
             if byte == 92 && index + 1 < end {
-                let escaped: int =
-                    source.byte_at(index + 1)
-                if escaped == 110 {
-                    literal = "{literal}\n"
-                } else if escaped == 114 {
-                    literal = "{literal}\r"
-                } else if escaped == 116 {
-                    literal = "{literal}\t"
-                } else if escaped == 48 {
-                    literal = "{literal}\0"
-                } else {
-                    literal =
-                        "{literal}{source.slice(index + 1, index + 2)}"
-                }
-                index += 2
+                literal =
+                    "{literal}{string_escape_text(source, index, end)}"
+                index +=
+                    string_escape_length(source, index, end)
                 continue
             }
             if byte != 123 {
@@ -173,7 +156,8 @@ partial class LlvmTextEmitter {
                     source.byte_at(cursor)
                 if current == 92 &&
                    cursor + 1 < end {
-                    cursor += 2
+                    cursor += string_escape_length(
+                        source, cursor, end)
                     continue
                 }
                 if in_string {

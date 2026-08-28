@@ -53,7 +53,7 @@ partial class LlvmTextEmitter {
                     function, instruction, values)
             }
             let text: string =
-                llvm_unquote(instruction.text)
+                string_literal_decode(instruction.text)
             self.selector_texts[
                 instruction.result] = text
             values[instruction.result] =

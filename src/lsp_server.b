@@ -112,6 +112,7 @@ fn lsp_symbol_kind(kind: string) -> int {
     if kind == "field" { return 8 }
     if kind == "function" { return 12 }
     if kind == "c_global" { return 14 }
+    if kind == "const" { return 21 }
     if kind == "variant" { return 22 }
     if kind == "enum" { return 10 }
     if kind == "interface" { return 11 }
@@ -183,6 +184,7 @@ fn lsp_hover_markdown(declaration: SemanticDecl) -> string {
 
 fn lsp_kind_word(kind: string) -> string {
     if kind == "c_global" { return "extern C global" }
+    if kind == "const" { return "constant" }
     if kind == "generic" { return "type parameter" }
     if kind == "builtin_member" { return "builtin method" }
     if kind == "builtin_type" { return "builtin type" }

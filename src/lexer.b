@@ -176,9 +176,61 @@ class Lexer {
         }
     }
 
+    fn error_at(line: int, col: int, message: string) {
+        self.errors.push(Diagnostic {
+            severity: Severity.error,
+            file: "",
+            line: line,
+            col: col,
+            message: message,
+        })
+    }
+
+    // An escape is consumed whole, here, before anything else looks at the
+    // literal. `\u{7b}` holds a brace that is a codepoint digit and not an
+    // interpolation opener, so a scanner that steps two bytes past every
+    // backslash would lose the string's structure, not just its value.
+    // Returns the number of bytes consumed, counting the backslash.
+    fn scan_escape(line: int, col: int) -> int {
+        let start: int = self.pos
+        let length: int =
+            string_escape_length(
+                self.source, start, self.source.len())
+        if start + 1 >= self.source.len() {
+            self.advance()
+            return 1
+        }
+        let marker: int = self.source.byte_at(start + 1)
+        if !string_escape_known(marker) {
+            self.error_at(
+                line, col,
+                "unknown escape '\\{self.source.slice(start + 1, start + 2)}' — the escapes are \\n \\t \\r \\0 \\\\ \\\" \\\{ \\\} \\xNN \\u\{...\}")
+        } else if marker == 120 && length != 4 {
+            self.error_at(
+                line, col,
+                "\\x needs exactly two hex digits, like \\x1b")
+        } else if marker == 117 {
+            if length == 2 {
+                self.error_at(
+                    line, col,
+                    "\\u needs a braced codepoint of one to six hex digits, like \\u\{1f600\}")
+            } else {
+                let value: int =
+                    string_escape_unicode_value(
+                        self.source, start, length - 4)
+                if !string_escape_unicode_valid(value) {
+                    self.error_at(
+                        line, col,
+                        "\\u\{{self.source.slice(start + 3, start + length - 1)}\} is not a Unicode codepoint — the range is 0 to 10FFFF and surrogates D800-DFFF have no encoding")
+                }
+            }
+        }
+        for index: int in 0..length { self.advance() }
+        return length
+    }
+
     fn scan_string(inout out: List<Token>, from: int, line: int, col: int) {
         self.advance()
-        var escaped: bool = false
         var interpolation_depth: int = 0
         var inner_string: bool = false
         var closed: bool = false
@@ -186,22 +238,20 @@ class Lexer {
         for !self.at_end() {
             let value: int = self.peek()
             if value == 10 {
-                self.errors.push(Diagnostic {
-                    severity: Severity.error,
-                    file: "",
-                    line: line,
-                    col: col,
-                    message: "string not closed before end of line",
-                })
+                self.error_at(
+                    line, col,
+                    "string not closed before end of line")
                 ended_at_line = true
                 break
             }
+            if value == 92 {
+                let escape_line: int = self.line
+                let escape_col: int = self.col
+                self.scan_escape(escape_line, escape_col)
+                continue
+            }
             self.advance()
-            if escaped {
-                escaped = false
-            } else if value == 92 {
-                escaped = true
-            } else if interpolation_depth > 0 {
+            if interpolation_depth > 0 {
                 if inner_string {
                     if value == 34 { inner_string = false }
                 } else if value == 34 {
@@ -219,13 +269,62 @@ class Lexer {
             }
         }
         if !closed && !ended_at_line {
-            self.errors.push(Diagnostic {
-                severity: Severity.error,
-                file: "",
-                line: line,
-                col: col,
-                message: "string never closed",
-            })
+            self.error_at(line, col, "string never closed")
+        }
+        self.add(inout out, "string", from, line, col)
+    }
+
+    // `r"…"` and `r#"…"#`: the body is bytes, not syntax. Nothing in it is
+    // an escape and nothing in it opens an interpolation, so a route
+    // template, a regex or a Windows path is written the way its own reader
+    // spells it. Newlines are allowed — the terminator is explicit, so there
+    // is no line to guess the end of.
+    fn raw_string_ahead() -> bool {
+        var at: int = self.pos + 1
+        let len: int = self.source.len()
+        for at < len && self.source.byte_at(at) == 35 {
+            at += 1
+        }
+        return at < len && self.source.byte_at(at) == 34
+    }
+
+    fn scan_raw_string(inout out: List<Token>, from: int,
+                       line: int, col: int) {
+        self.advance()
+        var hashes: int = 0
+        for self.peek() == 35 {
+            self.advance()
+            hashes += 1
+        }
+        self.advance()
+        var closed: bool = false
+        for !self.at_end() {
+            if self.peek() == 34 {
+                var seen: int = 0
+                for seen < hashes &&
+                    self.pos + 1 + seen < self.source.len() &&
+                    self.source.byte_at(self.pos + 1 + seen) == 35 {
+                    seen += 1
+                }
+                if seen == hashes {
+                    self.advance()
+                    for index: int in 0..hashes {
+                        self.advance()
+                    }
+                    closed = true
+                    break
+                }
+            }
+            self.advance()
+        }
+        if !closed {
+            var closer: string = "\""
+            for index: int in 0..hashes {
+                closer = "{closer}#"
+            }
+            self.error_at(
+                line, col,
+                "raw string never closed — it ends at {closer}")
         }
         self.add(inout out, "string", from, line, col)
     }
@@ -301,7 +400,9 @@ class Lexer {
             let from: int = self.pos
             let line: int = self.line
             let col: int = self.col
-            if is_alpha(value) {
+            if value == 114 && self.raw_string_ahead() {
+                self.scan_raw_string(inout out, from, line, col)
+            } else if is_alpha(value) {
                 self.scan_ident(inout out, from, line, col)
             } else if is_digit(value) {
                 self.scan_number(inout out, from, line, col)

@@ -649,7 +649,7 @@ class TreeInterpreter {
         match self.tree_json_annotation(field.annotations, "name") {
             some(annotation) => {
                 match self.tree_json_annotation_value(annotation) {
-                    some(syntax) => { return llvm_unquote(syntax.value) }
+                    some(syntax) => { return string_literal_decode(syntax.value) }
                     none => {}
                 }
             }
@@ -1209,9 +1209,14 @@ class TreeInterpreter {
     }
 
     fn reflect_annotation_text(value: HirNode) -> string {
+        if value.kind == "const" &&
+           value.children.len() == 1 {
+            return self.reflect_annotation_text(
+                value.children[0])
+        }
         if value.kind == "literal" {
             if canonical_hir_name(value.type.name) == "string" {
-                return tree_unquote(value.value)
+                return string_literal_decode(value.value)
             }
             return value.value.replace("_", "")
         }
@@ -3627,34 +3632,17 @@ class TreeInterpreter {
         // way the checker and the LLVM emitter find the pieces. Decoding
         // first would turn \{ into a bare { that looks like a slot.
         let raw: string = node.value
-        var start: int = 0
-        var end: int = raw.len()
-        if raw.len() >= 2 &&
-           raw.starts_with("\"") &&
-           raw.ends_with("\"") {
-            start = 1
-            end -= 1
-        }
+        let start: int = string_literal_body_start(raw)
+        let end: int = string_literal_body_end(raw)
         var result: string = ""
         var index: int = start
         var value_index: int = 0
         for index < end {
             let byte: int = raw.byte_at(index)
             if byte == 92 && index + 1 < end {
-                let escaped: int = raw.byte_at(index + 1)
-                if escaped == 110 {
-                    result = "{result}\n"
-                } else if escaped == 114 {
-                    result = "{result}\r"
-                } else if escaped == 116 {
-                    result = "{result}\t"
-                } else if escaped == 48 {
-                    result = "{result}\0"
-                } else {
-                    result =
-                        "{result}{raw.slice(index + 1, index + 2)}"
-                }
-                index += 2
+                result =
+                    "{result}{string_escape_text(raw, index, end)}"
+                index += string_escape_length(raw, index, end)
                 continue
             }
             if byte != 123 {
@@ -3669,7 +3657,8 @@ class TreeInterpreter {
             for cursor < end && depth > 0 {
                 let current: int = raw.byte_at(cursor)
                 if current == 92 && cursor + 1 < end {
-                    cursor += 2
+                    cursor += string_escape_length(
+                        raw, cursor, end)
                     continue
                 }
                 if in_string {
@@ -3689,7 +3678,7 @@ class TreeInterpreter {
                 // The checker stops splitting at an unterminated {,
                 // so from here on everything is literal text.
                 result =
-                    "{result}{tree_unquote(raw.slice(index, end))}"
+                    "{result}{string_literal_decode(raw.slice(index, end))}"
                 index = end
                 continue
             }
@@ -3744,7 +3733,7 @@ class TreeInterpreter {
                     self.interpolation(node, frame))
             }
             return TreeValue.string(
-                tree_unquote(node.value))
+                string_literal_decode(node.value))
         }
         if name == "bool" {
             return TreeValue.boolean(
@@ -10568,10 +10557,10 @@ class TreeInterpreter {
                    value.bool_data ==
                        (pattern.value == "true")
         }
-        if pattern.value.starts_with("\"") {
+        if string_literal_is_text(pattern.value) {
             return value.kind == "string" &&
                    value.text ==
-                       tree_unquote(pattern.value)
+                       string_literal_decode(pattern.value)
         }
         if pattern.value.contains(".") ||
            pattern.value.contains("e") ||
@@ -10748,6 +10737,10 @@ class TreeInterpreter {
         }
         if node.kind == "local" {
             return self.local(frame, node)
+        }
+        if node.kind == "const" &&
+           node.children.len() == 1 {
+            return self.expression(node.children[0], frame)
         }
         if node.kind == "c_global" {
             match self.c_global(node.resolved) {

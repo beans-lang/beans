@@ -394,6 +394,47 @@ class HirCGlobal {
     }
 }
 
+// A module constant. It has no storage and no address: the checker folds
+// the initializer once and every use is the value, materialized where the
+// use is written. `text` is that value in the spelling a literal of this
+// type takes, which is all a use site needs to build the same node source
+// would have produced.
+class HirConst {
+    name: string
+    qualified: string
+    type: HirType
+    is_public: bool
+    // the initializer, kept for the expression checker to fold
+    syntax: Option<AstNode>
+    file: string
+    line: int
+    col: int
+    // filled in by the expression checker's const pass
+    folded: bool
+    kind: string
+    number: int
+    text: string
+    annotations: List<HirAnnotation>
+
+    fn init(name: string, qualified: string, type: HirType,
+            is_public: bool, file: string, line: int,
+            col: int) {
+        self.name = name
+        self.qualified = qualified
+        self.type = type
+        self.is_public = is_public
+        self.syntax = none
+        self.file = file
+        self.line = line
+        self.col = col
+        self.folded = false
+        self.kind = ""
+        self.number = 0
+        self.text = ""
+        self.annotations = []
+    }
+}
+
 class HirProgram {
     target: TargetDescription
     links: List<ModuleLink>
@@ -401,6 +442,7 @@ class HirProgram {
     cflag_rows: List<ModuleCflags>
     declarations: List<HirDeclaration>
     c_globals: List<HirCGlobal>
+    consts: List<HirConst>
     functions: List<HirFunction>
     annotation_declarations: List<HirAnnotationDeclaration>
     errors: List<Diagnostic>
@@ -415,6 +457,7 @@ class HirProgram {
         self.cflag_rows = []
         self.declarations = []
         self.c_globals = []
+        self.consts = []
         self.functions = []
         self.annotation_declarations = []
         self.errors = []
@@ -478,10 +521,8 @@ fn required_feature_from_value(value: string) -> string {
             continue
         }
         let quoted: string = words[index + 1]
-        if quoted.len() >= 2 &&
-           quoted.starts_with("\"") &&
-           quoted.ends_with("\"") {
-            return quoted.slice(1, quoted.len() - 1)
+        if string_literal_is_text(quoted) {
+            return string_literal_decode(quoted)
         }
     }
     return ""
@@ -878,12 +919,7 @@ class SignatureChecker {
         if node.kind != "literal" || node.note != "string" {
             return ""
         }
-        if node.value.len() >= 2 &&
-           node.value.starts_with("\"") &&
-           node.value.ends_with("\"") {
-            return node.value.slice(1, node.value.len() - 1)
-        }
-        return node.value
+        return string_literal_decode(node.value)
     }
 
     fn annotation_schema_type(type: HirType) -> bool {
@@ -1040,7 +1076,7 @@ class SignatureChecker {
                     target == "function" || target == "method" ||
                     target == "field" || target == "variant" ||
                     target == "parameter" || target == "local" ||
-                    target == "c_global"
+                    target == "c_global" || target == "const"
                 if !valid {
                     self.fail(file.path, item,
                               "unknown annotation target '{target}'")
@@ -1144,7 +1180,8 @@ class SignatureChecker {
             match self.annotation_declaration(use.resolved) {
                 some(schema) => {
                     if schema.retention == "runtime" &&
-                       (target == "local" || target == "c_global") {
+                       (target == "local" || target == "c_global" ||
+                        target == "const") {
                         self.fail(
                             file, use,
                             "runtime annotation '@{use.value}' cannot target {target} declarations")
@@ -1378,11 +1415,9 @@ class SignatureChecker {
             } else if child.kind == "block" {
                 function.has_body = true
             } else if child.kind == "symbol_alias" {
-                if child.value.len() >= 2 &&
-                   child.value.starts_with("\"") &&
-                   child.value.ends_with("\"") {
+                if string_literal_is_text(child.value) {
                     function.extern_name =
-                        child.value.slice(1, child.value.len() - 1)
+                        string_literal_decode(child.value)
                 }
             }
         }
@@ -1413,12 +1448,9 @@ class SignatureChecker {
         var extern_name: string = name
         for child: AstNode in node.children {
             if child.kind == "symbol_alias" &&
-               child.value.len() >= 2 &&
-               child.value.starts_with("\"") &&
-               child.value.ends_with("\"") {
+               string_literal_is_text(child.value) {
                 extern_name =
-                    child.value.slice(
-                        1, child.value.len() - 1)
+                    string_literal_decode(child.value)
             }
         }
         let global: HirCGlobal =
@@ -1434,6 +1466,59 @@ class SignatureChecker {
             self.lower_annotations(
                 node.annotations, "c_global", file.path)
         self.hir.c_globals.push(global)
+    }
+
+    // A constant's type must be one a value can be written as a literal in:
+    // it has no storage, so there is nothing for a composite to live in, and
+    // no runtime call to build one.
+    fn const_type_allowed(type: HirType) -> bool {
+        if type.args.len() != 0 { return false }
+        if hir_is_numeric(type) { return true }
+        let name: string = canonical_hir_name(type.name)
+        return name == "bool" || name == "string"
+    }
+
+    fn lower_const(node: AstNode, file: ParsedModuleFile) {
+        let name: string = declaration_name(node.value)
+        var type: HirType = new HirType("poison")
+        match type_child(node) {
+            some(type_node) => {
+                type = self.lower_type(type_node, file.path)
+            }
+            none => {
+                self.fail(
+                    file.path, node,
+                    "a constant needs a declared type, like const LIMIT: int = 128")
+            }
+        }
+        if type.name != "poison" &&
+           !self.const_type_allowed(type) {
+            self.fail(
+                file.path, node,
+                "a constant is a number, bool or string — {render_hir_type(type)} has no compile-time value")
+            type = new HirType("poison")
+        }
+        let constant: HirConst =
+            new HirConst(
+                name, node.resolved, type,
+                node.value.starts_with("pub "),
+                file.path, node.line, node.col)
+        for child: AstNode in node.children {
+            if child.kind != "type" &&
+               child.kind != "array_type" &&
+               child.kind != "fn_type" {
+                constant.syntax = some(child)
+            }
+        }
+        if constant.syntax.is_none() {
+            self.fail(
+                file.path, node,
+                "a constant needs a value, like const LIMIT: int = 128")
+        }
+        constant.annotations =
+            self.lower_annotations(
+                node.annotations, "const", file.path)
+        self.hir.consts.push(constant)
     }
 
     fn lower_declaration(node: AstNode, file: ParsedModuleFile) {
@@ -2214,6 +2299,8 @@ class SignatureChecker {
                     } else if declaration.kind == "c_global" {
                         self.lower_c_global(
                             declaration, file)
+                    } else if declaration.kind == "const" {
+                        self.lower_const(declaration, file)
                     } else if declaration.kind == "class" ||
                               declaration.kind == "struct" ||
                               declaration.kind == "union" ||
@@ -2275,6 +2362,10 @@ fn render_hir_type(type: HirType) -> string {
 
 fn render_hir(program: HirProgram) -> string {
     var lines: List<string> = []
+    for constant: HirConst in program.consts {
+        lines.push(
+            "const {constant.qualified} {render_hir_type(constant.type)} = {constant.text}")
+    }
     for global: HirCGlobal in program.c_globals {
         let mutability: string =
             if global.is_var { "var" } else { "let" }
