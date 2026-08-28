@@ -4937,6 +4937,14 @@ class ExpressionChecker {
                 if declaration.kind == "struct" ||
                    (declaration.kind == "class" &&
                     self.class_render_ready(declaration)) {
+                    // A class that spells out its own string form renders
+                    // through it, so its fields need not each be printable.
+                    if declaration.kind == "class" &&
+                       hir_string_form(
+                           declaration.qualified,
+                           self.program.functions).is_some() {
+                        return true
+                    }
                     for field: HirField in declaration.fields {
                         // Static fields belong to the type, and a weak field
                         // renders as <weak> without being followed — neither

@@ -22,5 +22,8 @@ ok(Point { x: 5, y: 6 })
 err(nope)
 [ok(1), err(x), ok(3)]
 {a: ok(1), b: err(no)}
+money(1250)
+[money(1), money(2)]
+Wallet { holder: Ada, balance: money(9999) }
 |Point { x: 1, y: 2 }|
 |        {a: 1, b: 2}|

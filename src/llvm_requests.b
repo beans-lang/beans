@@ -1071,6 +1071,24 @@ partial class LlvmTextEmitter {
     fn request_class_show_body(
         type: HirType,
         declaration: HirDeclaration) -> string {
+        // A class that spells out its own string form renders through it:
+        // call to_string, append what it returned, release it. No cycle
+        // guard — the user's method owns its own recursion.
+        match hir_string_form(
+                  declaration.qualified,
+                  self.program.reflection_functions) {
+            some(form) => {
+                let key: string =
+                    "{declaration.qualified}.to_string"
+                if self.function_symbols.contains_key(key) {
+                    let symbol: string =
+                        self.function_symbols[key]
+                    let sid: int = self.fresh()
+                    return "  %show.form.obj{sid} = inttoptr i64 %v to ptr\n  %show.form.text{sid} = call ptr {symbol}(ptr %show.form.obj{sid})\n  call void @beans_show_append(ptr %c, ptr %show.form.text{sid})\n  call void @beans_release(ptr %show.form.text{sid})\n  ret void\n"
+                }
+            }
+            none => {}
+        }
         match self.class_layout(type) {
             some(layout) => {
                 let id: int = self.fresh()

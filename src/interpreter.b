@@ -3714,6 +3714,20 @@ class TreeInterpreter {
     // cycle stops at <cycle>.
     fn render_object_for_string(value: TreeValue,
                                 inout cycle_path: List<int>) -> string {
+        // A class that spells out its own string form renders through it,
+        // the same value the native backend calls to_string for.
+        if value.kind == "object" {
+            match hir_string_form(
+                      value.text, self.program.functions) {
+                some(form) => {
+                    let rendered: TreeValue =
+                        self.invoke(form, [], some(value))
+                    if self.failed { return "" }
+                    return rendered.text
+                }
+                none => {}
+            }
+        }
         let simple: string =
             self.render_type_simple_name(value.text)
         match self.declaration_by_qualified.get(value.text) {

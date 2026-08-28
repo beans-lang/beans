@@ -28,6 +28,20 @@ class Node {
     fn init(label: string) { self.label = label; self.next = none }
 }
 
+// A class that spells out its own string form: {money} renders through
+// to_string, not through the derived Name { ... } form, at every depth.
+class Money {
+    cents: int
+    fn init(cents: int) { self.cents = cents }
+    fn to_string() -> string { return "money({self.cents})" }
+}
+
+class Wallet {
+    holder: string
+    balance: Money
+    fn init(holder: string, balance: Money) { self.holder = holder; self.balance = balance }
+}
+
 fn main() {
     // A map, in insertion order, wrapped in braces.
     let basic: Map<string, int> = {"a": 1, "b": 2}
@@ -117,6 +131,15 @@ fn main() {
     io.println("{results}")
     let by_key: Map<string, Result<int>> = {"a": ok(1), "b": err("no")}
     io.println("{by_key}")
+
+    // A class's own string form wins over the derived one, and keeps
+    // winning when the class is nested in a list, a map or another object.
+    let cash: Money = new Money(1250)
+    io.println("{cash}")
+    let purse: List<Money> = [new Money(1), new Money(2)]
+    io.println("{purse}")
+    let wallet: Wallet = new Wallet("Ada", new Money(9999))
+    io.println("{wallet}")
 
     // Width pads the rendered form of any printable value in columns.
     io.println("|{p:16}|")

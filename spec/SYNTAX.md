@@ -516,8 +516,12 @@ its place, a removed-then-reinserted one moves to the end, and both backends imp
 order so a golden file can pin it. Strings render without quotes, the same as inside a list.
 
 A struct or class instance renders its fields **in declaration order**, using the bare type
-name (`Point { x: 1, y: 2 }`, `Empty {}`). The rendering is derived, not customizable in this
-form, and it is the compiler's own view of the value, so:
+name (`Point { x: 1, y: 2 }`, `Empty {}`). A **class** that declares its own string form —
+a `to_string() -> string` method taking no argument — renders through it instead: `{obj}` and
+every nested position (a list element, a map value, another object's field, `join`) print what
+`to_string` returns, so a class's own form wins over the derived one everywhere. A class with a
+`to_string` is printable even when a field of it is not, since the derived form is never used.
+When there is no `to_string`, the derived form is the compiler's own view of the value, so:
 
 - A **private** field is shown like any other — hiding half the object would make the debug
   form lie.

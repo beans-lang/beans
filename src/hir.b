@@ -184,6 +184,28 @@ fn hir_method_slot(owner: string, name: string,
     return "pkg:{symbol_package(owner)}:{name}"
 }
 
+// A type's own string form, if it declares one: a `to_string(self) -> string`
+// with a body and no argument beyond the receiver. When present, `{obj}`
+// renders through it rather than through the derived Name { field: value }
+// form, so a class that spells out how it reads wins over the default. The
+// checker, the native show emitter and the tree interpreter all ask this one
+// question, so the three agree on which values take the custom path.
+fn hir_string_form(owner: string,
+                   functions: List<HirFunction>) -> Option<HirFunction> {
+    for function: HirFunction in functions {
+        if function.owner == owner &&
+           function.name == "to_string" &&
+           function.has_body &&
+           !function.is_static &&
+           !function.is_abstract &&
+           function.parameters.len() == 0 &&
+           canonical_hir_name(function.result.name) == "string" {
+            return some(function)
+        }
+    }
+    return none
+}
+
 class HirFunction {
     name: string
     qualified: string
