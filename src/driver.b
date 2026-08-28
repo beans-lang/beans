@@ -1688,13 +1688,18 @@ class NativeBuildDriver {
 
     fn runtime_cache_path(runtime: string,
                           pic: bool) -> string {
-        var source: string = ""
-        match fs.read(runtime) {
-            ok(text) => { source = text }
-            err(_) => {}
-        }
+        // self.unwind flips -DBEANS_FIBER_UNWIND and -funwind-tables, which
+        // change the object with no change to any source. A program that brews
+        // needs the unwinding runtime; without this in the key it would reuse
+        // a non-brewing build's object and its contained panics would abandon
+        // their frames (issue #44). The amalgamated source folds in the
+        // companion units beans_rt.c #includes (beans_fiber.c and its header),
+        // which compile into this one object, so editing them cannot reuse a
+        // stale object either.
+        let source: string =
+            self.runtime_amalgamated_source(runtime)
         let key: string =
-            "{self.target.triple}|{self.cpu}|{self.target.features.join(",")}|{self.runtime_profile}|{self.release}|{self.debug}|{self.lto}|{pic}|{sanitizer_flags().join(" ")}|{source}"
+            "{self.target.triple}|{self.cpu}|{self.target.features.join(",")}|{self.runtime_profile}|{self.release}|{self.debug}|{self.lto}|{pic}|{self.unwind}|{sanitizer_flags().join(" ")}|{source}"
         var hash: int = 0
         for index: int in 0..key.len() {
             hash =
@@ -1706,6 +1711,56 @@ class NativeBuildDriver {
         return path.join(
             "build",
             "beans_rt.{self.target.triple}.{hash}.{extension}")
+    }
+
+    // The runtime is one object built from beans_rt.c, which #includes its
+    // companion units (beans_fiber.c and its header) so they compile into it.
+    // Reading the runtime plus every file it quote-includes from the same
+    // directory gives the cache key the whole content that feeds the object,
+    // so an edit to a companion cannot silently reuse a stale object.
+    fn runtime_amalgamated_source(
+        runtime: string) -> string {
+        var base: string = ""
+        match fs.read(runtime) {
+            ok(text) => { base = text }
+            err(_) => { return "" }
+        }
+        let dir: string = path.parent(runtime)
+        var extra: string = ""
+        var start: int = 0
+        for start < base.len() {
+            var end: int = start
+            for end < base.len() &&
+                base.byte_at(end) != 10 {
+                end += 1
+            }
+            let line: string = base.slice(start, end)
+            var head: int = 0
+            for head < line.len() &&
+                (line.byte_at(head) == 32 ||
+                 line.byte_at(head) == 9) {
+                head += 1
+            }
+            let rest: string = line.slice(head, line.len())
+            if rest.starts_with("#include \"") {
+                let after: string =
+                    rest.slice(10, rest.len())
+                match after.find("\"") {
+                    some(at) => {
+                        let name: string = after.slice(0, at)
+                        match fs.read(path.join(dir, name)) {
+                            ok(text) => {
+                                extra = "{extra}\n// {name}\n{text}"
+                            }
+                            err(_) => {}
+                        }
+                    }
+                    none => {}
+                }
+            }
+            start = end + 1
+        }
+        return "{base}{extra}"
     }
 
     fn cached_runtime_object(compiler: string,
