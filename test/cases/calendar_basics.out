@@ -1,0 +1,44 @@
+== http parse ==
+imf   : 1994-11-06T08:49:37Z
+rfc850: 1994-11-06T08:49:37Z
+asctime: 1994-11-06T08:49:37Z
+format: Sun, 06 Nov 1994 08:49:37 GMT
+bad-day : err(invalid) 'Xxx, 06 Nov 1994 08:49:37 GMT' has no valid day name
+bad-zone: err(invalid) 'Sun, 06 Nov 1994 08:49:37 UTC' does not end in GMT
+== rfc3339 parse ==
+basic  : 1994-11-06T08:49:37Z
+lower-t: 1994-11-06T08:49:37Z
+space  : 1994-11-06T08:49:37Z
+offset+: 2024-03-05T04:00:00Z
+offset-: 2024-03-05T17:30:00Z
+frac   : 1994-11-06T08:49:37.123456789Z
+leap60 : err(invalid) second 60 is a leap second, which this calendar does not model
+no-zone: err(invalid) '1994-11-06T08:49:37' is too short for an RFC 3339 timestamp
+frac-format: 1994-11-06T08:49:37.123456789Z
+== of() errors ==
+feb29-1900: err(invalid) day 29 is outside 1..28 for 1900-02
+feb29-2000: 2000-02-29T00:00:00Z
+month13   : err(invalid) month 13 is outside 1..12
+hour24    : err(invalid) hour 24 is outside 0..23
+leap-sec  : err(invalid) second 60 is a leap second, which this calendar does not model
+year0     : err(invalid) year 0 is outside 1..9999
+== epoch ranges ==
+millis-huge: err(range) epoch millisecond 999999999999999999 is outside years 1..9999
+nanos-9999: err(range) 9999-01-01T00:00:00Z is outside the nanosecond epoch range
+nanos-2000: 946684800000000000
+== arithmetic ==
+plus1day : 2024-02-01T12:00:00Z
+plus400d : 2025-03-06T12:00:00Z
+minus1day: 2023-12-30T12:00:00Z
+minus60s : 2024-02-29T23:59:30Z
+plus90m  : 2024-03-01T01:30:30Z
+plus25h  : 2024-03-02T01:00:30Z
+== ordering ==
+before=true after=false cmp=-1
+seconds_until=86400 millis_until=86400000
+now_after_epoch=true
+== facts ==
+leap 2000=true 1900=false 2024=true
+days feb2024=29 feb2023=28 apr=30
+weekday Sunday short Sun num 0
+day_of_year 310 epoch_day 9075
