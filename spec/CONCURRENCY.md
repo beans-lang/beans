@@ -5,7 +5,8 @@ Status: **F1 and the F2 core are implemented.** The fiber runtime
 parse, check, both lowerings, `Brew<T>` with join/cancel, the synthesized
 scope join, panic containment and escalation — are in the tree; see the
 "where the implementation stands" section at the end for what deliberately
-remains (unwinds, may-park inference, std park sites). The async v2
+remains (the cancelled-park unwind, may-park inference, std park sites) — the
+contained-panic unwind now lands on both backends. The async v2
 state-machine branch is archived, unmerged, at the tag
 `archive/async-v2-statemachine`; its measured failure is the reason this
 document exists.
@@ -386,14 +387,35 @@ woken into panics, senders panicking on a closed channel, and four
 threads running fleets of their own — every failure a value, both
 engines byte-identical (`test/fiber_soak.sh`).
 
+Landed since:
+
+0. **The contained-panic unwind, both backends** (#44). A panic caught by
+   `brew`/`join` no longer abandons the fiber's frames: every frame between the
+   failure and the fiber entry runs its defers newest-first and drops what it
+   owns — owned, move-only and captured-cell locals alike — exactly as a return
+   would. Native does it with the platform unwinder: `invoke`/`landingpad`
+   cleanup pads (`src/llvm_unwind.b`) walked by `_Unwind_ForcedUnwind`, armed
+   only for a program that brews, ended at the fiber entry thunk. The
+   interpreter does it at tree level: its walker raises a panic by a poison
+   flag, and on a contained one it runs each frame's defers and each local's
+   deinit as the poison returns through the frame, with the panic set aside so
+   the cleanup body runs. A panic inside a defer or deinit during the unwind is
+   the one unrecoverable case — double panic, reported and aborted — on both.
+   `test/cases/brew_unwind.b` is the differential golden. The child's closure
+   box is released on both paths.
+
 Deliberately not yet here, in dependency order:
 
-1. **Per-fiber unwinds.** A contained panic (and a cancelled park) abandons
-   the fiber's frames: defers do not run and owned values are not dropped on
-   that path yet. The interpreter, whose walker unwinds at tree level, does
-   run interpreted defers — so differential tests avoid defer-under-panic
-   until the native unwind lands. The child's closure box is also not
-   released on the abandon path.
+1. **The cancelled-park unwind.** A cancelled park still abandons the fiber's
+   frames on *both* backends: unlike a panic, a cancel is delivered from inside
+   a runtime park primitive (Gate/channel/join), and the tree interpreter
+   cannot run its tree-level cleanup from there — the primitive is hosting a
+   walk whose defers and deinits are tree data, not pads an unwinder could run.
+   The native runtime could unwind a cancel (the mechanism is the panic's), but
+   doing so while the interpreter abandons it would make the two backends
+   disagree on the same program, which this project holds above the feature —
+   so both abandon until the interpreter's park sites can hand a cancel back to
+   the walker for a tree-level unwind, the way a contained panic already is.
 2. **Cancellation observation.** Cancelled parks exist in the fiber core,
    but compiled code's only park site today is join, and a join waits for
    the child by contract. Until std park sites land (F3), a cancelled child

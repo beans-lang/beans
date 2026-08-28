@@ -117,9 +117,13 @@ int beans_fiber_is_root(BeansFiber* fiber);
 // abandoned, which is what F1 did.
 void beans_fiber_panic(const char* message) __attribute__((noreturn));
 
-// Ends the running fiber as cancelled. Same shape as the panic above: a
-// controlled unwind where the build has one, an abandoned stack where it
-// does not. Park sites call this after seeing a cancelled park verdict.
+// Ends the running fiber as cancelled. Unlike the panic above, this does NOT
+// unwind: a cancel is delivered from inside a park primitive, and the tree
+// interpreter cannot run its tree-level cleanup from there, so the two
+// backends would disagree if native unwound a cancel. Both abandon the
+// frames; the cancellation unwind (spec/CONCURRENCY.md) waits until a cancel
+// can be handed back to the interpreter's walker. Park sites call this after
+// seeing a cancelled park verdict.
 void beans_fiber_exit_cancelled(void) __attribute__((noreturn));
 
 // Starts the controlled unwind directly with the ending it should carry

@@ -1398,7 +1398,18 @@ void beans_fiber_panic(const char* message) {
 }
 
 void beans_fiber_exit_cancelled(void) {
-    beans_fiber_begin_unwind(BEANS_FIBER_CANCELLED);
+    // Cancel abandons the fiber's frames rather than unwinding them, on every
+    // build. The panic unwind above runs frames the compiler emitted cleanup
+    // pads for, but a cancel is delivered here by a runtime park primitive
+    // (Gate/channel/join), and in the tree interpreter that primitive is
+    // hosting a tree walk whose defers and deinits are tree-level data, not
+    // pads this unwinder could run. Unwinding a cancel natively while the
+    // interpreter abandons it would make the two backends disagree on the same
+    // program — the invariant this project holds above the feature. So both
+    // abandon, and the cancellation unwind (spec/CONCURRENCY.md) waits until
+    // the interpreter's park sites can hand a cancel back to the walker for a
+    // tree-level unwind, the same way a contained panic already is (#44).
+    fiber_finish(BEANS_FIBER_CANCELLED);
     __builtin_unreachable();
 }
 

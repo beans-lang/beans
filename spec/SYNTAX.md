@@ -3077,11 +3077,16 @@ beansc build --target riscv32imac-unknown-none-elf --runtime freestanding f.b --
 - `defer f.close()` — runs when the function exits normally, including through
   `return` and `?`, newest first and before local destruction. Must sit at the
   top level of the function body (not inside `if`/`for`/blocks — it is a function-exit hook,
-  and nested registration would need runtime capture the native backend does not do). A panic
-  exits the process without running defers, and a panic inside a defer is itself fatal.
+  and nested registration would need runtime capture the native backend does not do). An
+  *uncontained* panic exits the process without running defers. A panic *contained* by
+  `brew`/`join` (spec/CONCURRENCY.md) does the opposite: it unwinds the fiber's frames on
+  the way to the fiber entry, running each function's defers newest-first and dropping what
+  it owns — the same cleanup a return runs — and the join reports the failure. A panic inside
+  a defer is itself fatal: uncontained it exits, and during a contained unwind it aborts the
+  process (the one unrecoverable case — there is no second unwind to give it).
   `?` is not allowed inside a deferred expression because the function's
   return path is already being processed.
-  (Go's best idea, minus unwinding.)
+  (Go's best idea, with an unwind only where a panic is caught.)
 - `unsafe { }` — gates low-level operations. The first implemented part is
   `RawPtr<T>` for primitive integer, float, bool, raw-pointer, fixed-array, and
   declared `extern "C" struct`/`union` values. These shapes can nest.
