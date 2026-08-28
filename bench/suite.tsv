@@ -38,3 +38,4 @@ mixed_app	application	0	1500000	17	c33415ba8983fab1	1
 box_churn	allocation	0	10000000	17	678d22d606680bbe	1
 arena_churn	allocation	0	20000000	17	8b66806880cd52b2	1
 ordered_maps	maps	0	2000000	17	51f2e7118c978719	1
+sets	maps	0	1000000	17	97573726be96cf15	1
