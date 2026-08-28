@@ -505,10 +505,13 @@ registry rows remain for low-level allocation/storage, raw bytes, OS calls,
 atomics, and thread entry while more of `core` and `std` move to `.b` files.
 
 **What prints** (same rule for `io.println` and `{x}` interpolation): numbers, bools, strings;
-enums, as `variant` or `variant(payload, ...)`; lists of printable things, as `[a, b, c]`,
-nesting included — and `join(sep)` renders the same way. Maps and class instances don't print
-yet — give them a string form first. (`Result` carries an `Error` object, so it stays
-unprintable too — match on it.)
+enums, as `variant` or `variant(payload, ...)`; lists of printable things, as `[a, b, c]`;
+and maps of printable keys and values, as `{k: v, k: v}` — nesting included, and `join(sep)`
+renders the same way. A map renders its entries in **insertion order**, the order `keys()`
+walks: an updated key keeps its place, a removed-then-reinserted one moves to the end, and
+both backends impose the same order so a golden file can pin it. Strings render without
+quotes, the same as inside a list. Class instances don't print yet — give them a string
+form first. (`Result` carries an `Error` object, so it stays unprintable too — match on it.)
 
 [examples/kv.b](examples/kv.b) is the proof: an append-only KV store with binary records and a
 durable compaction (write temp, sync, rename over, sync the parent dir).

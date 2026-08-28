@@ -164,6 +164,7 @@ test-semantics: $(BIN)
 	./test/maps.sh
 	./test/traits.sh
 	bash ./test/display_width.sh
+	bash ./test/derived_render.sh
 	./test/fixed_arrays.sh
 	bash ./test/closure_captures.sh
 	bash ./test/send_functions.sh
@@ -287,6 +288,7 @@ test-core: $(BIN)
 	./test/maps.sh
 	./test/traits.sh
 	bash ./test/display_width.sh
+	bash ./test/derived_render.sh
 	bash ./test/syntax_v07.sh
 	bash ./test/language_gaps.sh
 	bash ./test/crema_findings.sh

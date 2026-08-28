@@ -754,6 +754,45 @@ partial class LlvmTextEmitter {
                 "void @beans_show_push_val(ptr, ptr, i64)")
             body =
                 "  %show.none = icmp eq i64 %v, 0\n  br i1 %show.none, label %show.option.none, label %show.option.some\nshow.option.none:\n  call void @beans_show_append(ptr %c, ptr {none_text})\n  ret void\nshow.option.some:\n  call void @beans_show_append(ptr %c, ptr {some_text})\n  call void @beans_show_push_lit(ptr %c, ptr {close})\n  call void @beans_show_push_val(ptr %c, ptr @{inner}, i64 %v)\n  ret void\n"
+        } else if (name == "Map" || name == "OrderedMap") &&
+                  type.args.len() == 2 {
+            // A map prints as {k: v, k: v}. The runtime driver walks the
+            // entry storage in insertion order — the order keys() and a
+            // direct `for k, v in m` walk — and pushes each key and value
+            // onto the same stack as a list's elements. Keys cross as a
+            // runtime slot; a wide value crosses by address, the way every
+            // other wide inline value reaches a show step.
+            let key_type: HirType = type.args[0]
+            let value_type: HirType = type.args[1]
+            if self.wide_inline_value(key_type) {
+                self.show_step_functions[key] = ""
+                return ""
+            }
+            let key_step: string =
+                self.request_show_step(key_type)
+            if key_step == "" {
+                self.show_step_functions[key] = ""
+                return ""
+            }
+            var wide: int = 0
+            var value_step: string = ""
+            if self.wide_inline_value(value_type) {
+                wide = 1
+                value_step =
+                    self.request_show_wide_step(value_type)
+            } else {
+                value_step =
+                    self.request_show_step(value_type)
+            }
+            if value_step == "" {
+                self.show_step_functions[key] = ""
+                return ""
+            }
+            self.require_declare(
+                "beans_show_map_iter",
+                "void @beans_show_map_iter(ptr, ptr, ptr, ptr, i64)")
+            body =
+                "  %show.map = inttoptr i64 %v to ptr\n  call void @beans_show_map_iter(ptr %c, ptr %show.map, ptr @{key_step}, ptr @{value_step}, i64 {wide})\n  ret void\n"
         } else {
             match self.declaration_for(type) {
                 some(declaration) => {
@@ -928,6 +967,10 @@ partial class LlvmTextEmitter {
                 name == "Option" &&
                 type.args.len() == 1 &&
                 self.type_is_reference(type)
+            if (name == "Map" || name == "OrderedMap") &&
+               type.args.len() == 2 {
+                iterative = true
+            }
             match self.declaration_for(type) {
                 some(declaration) => {
                     if declaration.kind == "enum" {
