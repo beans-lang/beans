@@ -990,9 +990,14 @@ let n: Option<int> = m.get("a")     // no null, no panic
 param, trusting its constraint), `contains`, `index_of` → `Option<int>`, `insert(i, v)` and
 `remove(i) -> T` (panic out of range), `reverse`, `clear`, `slice(from, to)` (copy, half-open,
 panics), `sort` (ordered elements), `sort_by(fn(a: T, b: T) -> bool)` (any `T`; the predicate
-is strict less-than), `sort_by_key(fn(T) -> int)` (one key call per item), `join(sep)`.
+is strict less-than), `sort_by_key(fn(T) -> int)` (one key call per item — including the
+one item a one-element list holds, which nothing sorts), `join(sep)`.
 Sorts are **stable**. The native backend uses a stable radix path for integers and integer
 keys, and the shared merge semantics for other values and custom predicates.
+`reserve(capacity)` on a List, `Map` or `OrderedMap` asks for room, never for less:
+a negative capacity is a bug in the caller and panics as `negative reserve capacity
+<n>`, and a capacity above 2^58 panics as `reserve capacity too large`. `reserve(0)`
+and a capacity the collection already has are no-ops.
 
 **Map and OrderedMap methods (v0.5, implemented):** `clone`, `get` → `Option<V>`,
 `set` (also `m[k] = v` sugar), `insert(k, v) -> bool` (false leaves the old value),
@@ -1020,6 +1025,66 @@ key, `remove`, `clear`, `reserve`, or bracket/set of a new key) invalidates the
 iterator and panics before another entry is read. Replacing the value of an
 existing key is allowed.
 Direct map iteration is currently limited to synchronous functions.
+
+### Changing a collection while a loop reads it
+
+`for x: T in xs` over a `List` reads the list itself, one element at a time. It
+takes no copy, so a change the body makes is a change to what the loop is
+walking.
+
+A **structural** change is one that alters the list's length or moves an
+element to a different index: `push`, `pop`, `insert`, `remove`, `clear`,
+`reverse`, `sort`, `sort_by` and `sort_by_key`. Any of them invalidates the
+iterator, and the loop panics before it reads another element — the same rule a
+map follows, and the same rule whether the change came from the loop body, from
+a function the body called, or from a closure it invoked. The message names the
+operation that last changed the list and what its length did:
+
+```
+var xs: List<int> = [1, 2, 3, 4, 5]
+for x: int in xs {
+    xs.push(99)             // runtime panic at 2:1:
+}                           // list changed during iteration (push, length 5 -> 6)
+```
+
+Everything else is allowed and the loop keeps running:
+
+- `xs[i] = v` at an index the list already has. The loop sees the replacement
+  when it reaches that index — exactly as replacing an existing map key's value
+  is allowed and read live. Writing an index the list does not have still
+  panics as an out-of-range write, iteration or no iteration.
+- `reserve(n)` on a List changes only its capacity and moves no element, so it
+  never invalidates the loop. (A map is stricter: it counts *every* `reserve`
+  among the changes that invalidate its iterator, `reserve(0)` included, because
+  a map that grows rehashes and moves its entries between buckets. A List has no
+  buckets to rehash, so its `reserve` is always safe to call mid-loop.)
+- Every read: `len`, `get`, `first`, `last`, `contains`, `index_of`, `min`,
+  `max`, `slice`, `clone`, `join`.
+- Mutating a *different* list, including one built from this one by `clone` or
+  `slice`.
+- Mutating the *element* — a class element's fields are its own value, not the
+  list's shape.
+- Leaving the loop with `break` or `return` immediately after a structural
+  change. The check happens before the next element is read, so a loop that
+  never reads again never sees it.
+
+`xs.slice(from, to)` answers a copy, so `for x: T in xs.slice(from, to)` walks
+that copy and a change to `xs` does not reach it. The compiler may skip
+materializing the copy and walk `xs`'s own storage when it can prove `xs`
+cannot change while the loop runs; that is invisible, and if the proof were
+ever wrong the loop stops with the same `list changed during iteration` panic
+rather than reading storage that moved out from under it.
+
+The rule for the other iterables follows from what they are:
+
+- A **fixed array** is a value. `for value: T in a` walks the value `a` held
+  when the loop started, and a write to `a` during the loop does not reach it.
+- A **`Slice<T>`** is a borrowed `{pointer, length}` view of memory something
+  else owns. Its length cannot change, so there is nothing to invalidate, and
+  each turn reads the memory as it is now: a write to the memory it views during
+  the loop -- made through whatever owns that memory -- is visible to the turns
+  that have not run yet.
+- A **range** is fixed when the loop starts.
 
 Bracket reads are checked, required reads: `list[i]` panics when the index is
 outside the list, and `map[key]` panics when the key is missing. Use

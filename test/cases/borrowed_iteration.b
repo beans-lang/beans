@@ -9,14 +9,17 @@ class Item {
     fn init(value: int) { self.value = value }
 }
 
-// The loop body clears the list while `item` is still live. The
-// binding must keep the element alive: borrowing here would free the
-// item before the field read.
+// The loop body clears the list while `item` is still live, then leaves
+// before the loop would notice the list changed. The binding must keep
+// the element alive: borrowing here would free the item before the field
+// read. Two items, so the hazard is not the one-element case where a
+// cleared list and a walked list happen to agree.
 fn mutation_during_iteration() {
-    var items: List<Item> = [new Item(7)]
+    var items: List<Item> = [new Item(7), new Item(8)]
     for item: Item in items {
         items.clear()
         io.println("mutated {item.value}")
+        break
     }
 }
 

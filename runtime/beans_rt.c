@@ -1287,6 +1287,12 @@ typedef struct {
     // magnitude is the byte stride. Typed inline values always use a positive
     // stride, so their pointer masks describe their real in-memory fields.
     long long stride, ptr_mask;
+    // Structural changes invalidate direct list iterators, the same way they
+    // invalidate a map's. Element replacement is safe because each loop turn
+    // reads its own copy. Generated code loads this at offset 40 -- keep it
+    // last, and keep the struct at 48 bytes so a list still fits the 64-byte
+    // allocation class it has always used.
+    long long version;
 } BList;
 typedef struct {
     long long* data;
@@ -3819,6 +3825,24 @@ long long beans_f64_round(double v) {
 static long long list_stride(BList* l) {
     return l->stride < 0 ? -l->stride : (l->stride ? l->stride : 8);
 }
+// Which operation last changed a list's shape. The code rides in the low four
+// bits of `version` so a structural change is still one store on the hot path,
+// and the panic can name the operation that broke the loop. The rest of the
+// word is a plain change count, so the value always moves.
+// The emitted loop reads the field directly, so its offset is part of the ABI.
+_Static_assert(offsetof(BList, version) == 40,
+               "generated list loops load the change count at offset 40");
+#define LIST_CHANGE_MASK 15
+#define LIST_CHANGE_PUSH 1
+#define LIST_CHANGE_POP 2
+#define LIST_CHANGE_INSERT 3
+#define LIST_CHANGE_REMOVE 4
+#define LIST_CHANGE_CLEAR 5
+#define LIST_CHANGE_REVERSE 6
+#define LIST_CHANGE_SORT 7
+static void list_changed(BList* l, long long what) {
+    l->version = (l->version & ~(long long)LIST_CHANGE_MASK) + 16 + what;
+}
 static void list_retain_element(BList* l, void* element) {
     int i64_encoded = l->stride < 0;
     for (int slot = 0; slot < RT_MASK_SLOTS && (l->ptr_mask >> slot); slot++) {
@@ -3889,6 +3913,7 @@ void beans_list_push(BList* l, long long v) {
         if (!l->data) beans_panic("out of memory", 0, 0);
     }
     l->data[l->len++] = v;
+    list_changed(l, LIST_CHANGE_PUSH);
 }
 void beans_list_push_typed(BList* l, const void* value) {
     beans_cc_write_typed(l, (void*)value, l->ptr_mask);
@@ -3900,6 +3925,7 @@ void beans_list_push_typed(BList* l, const void* value) {
     }
     memcpy((char*)l->data + l->len * stride, value, (size_t)stride);
     l->len += 1;
+    list_changed(l, LIST_CHANGE_PUSH);
 }
 void beans_list_reserve(BList* l, long long capacity, long long line, long long col) {
     if (capacity < 0) {
@@ -5999,6 +6025,7 @@ void beans_list_insert(BList* l, long long i, long long v, long long line,
     memmove(l->data + i + 1, l->data + i, (size_t)(l->len - i) * 8);
     l->data[i] = v;
     l->len += 1;
+    list_changed(l, LIST_CHANGE_INSERT);
 }
 void beans_list_insert_typed(BList* l, long long i, const void* value,
                              long long line, long long col) {
@@ -6018,6 +6045,7 @@ void beans_list_insert_typed(BList* l, long long i, const void* value,
     memmove(at + stride, at, (size_t)(l->len - i) * (size_t)stride);
     memcpy(at, value, (size_t)stride);
     l->len += 1;
+    list_changed(l, LIST_CHANGE_INSERT);
 }
 long long beans_list_remove(BList* l, long long i, long long line, long long col) {
     if (i < 0 || i >= l->len) {
@@ -6028,6 +6056,7 @@ long long beans_list_remove(BList* l, long long i, long long line, long long col
     long long v = l->data[i];
     memmove(l->data + i, l->data + i + 1, (size_t)(l->len - i - 1) * 8);
     l->len -= 1;
+    list_changed(l, LIST_CHANGE_REMOVE);
     return v; // the caller now owns the moved-out ref
 }
 void beans_list_remove_typed(BList* l, long long i, void* out, long long line,
@@ -6042,8 +6071,10 @@ void beans_list_remove_typed(BList* l, long long i, void* out, long long line,
     memcpy(out, at, (size_t)stride);
     memmove(at, at + stride, (size_t)(l->len - i - 1) * (size_t)stride);
     l->len -= 1;
+    list_changed(l, LIST_CHANGE_REMOVE);
 }
 void beans_list_reverse(BList* l) {
+    if (l->len > 1) list_changed(l, LIST_CHANGE_REVERSE);
     long long stride = list_stride(l);
     if (stride != 8) {
         void* tmp = rt_alloc((size_t)stride);
@@ -6065,6 +6096,7 @@ void beans_list_reverse(BList* l) {
     }
 }
 void beans_list_clear(BList* l) {
+    if (l->len != 0) list_changed(l, LIST_CHANGE_CLEAR);
     // last element first — deinit made death order observable, and the
     // interpreter's vector teardown destroys back to front
     if (l->ptr_mask) {
@@ -6074,6 +6106,35 @@ void beans_list_clear(BList* l) {
         }
     }
     l->len = 0;
+}
+// A `for` loop over a list holds the change count it started with. A
+// structural change moves that count, and the next turn stops here instead of
+// walking a sequence that no longer exists. The message names the operation
+// that moved it and what the length did, because the loop's own position --
+// all the panic otherwise carries -- says nothing about which line changed it.
+void beans_list_iter_invalid(BList* l, long long was_len, long long line,
+                             long long col) {
+    const char* what = "change";
+    switch (l->version & LIST_CHANGE_MASK) {
+        case LIST_CHANGE_PUSH: what = "push"; break;
+        case LIST_CHANGE_POP: what = "pop"; break;
+        case LIST_CHANGE_INSERT: what = "insert"; break;
+        case LIST_CHANGE_REMOVE: what = "remove"; break;
+        case LIST_CHANGE_CLEAR: what = "clear"; break;
+        case LIST_CHANGE_REVERSE: what = "reverse"; break;
+        case LIST_CHANGE_SORT: what = "sort"; break;
+        default: break;
+    }
+    char b[96];
+    if (l->len != was_len)
+        rt_format(b, sizeof b,
+                  "list changed during iteration (%s, length %lld -> %lld)",
+                  what, was_len, l->len);
+    else
+        rt_format(b, sizeof b,
+                  "list changed during iteration (%s, length %lld)", what,
+                  was_len);
+    beans_panic(b, line, col);
 }
 void beans_list_slice_check(BList* l, long long from, long long to,
                             long long line, long long col) {
@@ -6204,6 +6265,7 @@ static void list_narrow_slots(BList* l, long long* wide) {
     rt_free(wide);
 }
 void beans_list_sort(BList* l, long long kind) {
+    if (l->len > 1) list_changed(l, LIST_CHANGE_SORT);
     if (l->stride == 4) {
         long long* wide = list_widen_slots(l);
         if (kind == 0) list_radix_sort_int(wide, l->len);
@@ -6215,6 +6277,7 @@ void beans_list_sort(BList* l, long long kind) {
     else list_merge_sort(l->data, l->len, kind, NULL, NULL);
 }
 void beans_list_sort_by(BList* l, void* thunk, void* box) {
+    if (l->len > 1) list_changed(l, LIST_CHANGE_SORT);
     if (l->stride == 4) {
         long long* wide = list_widen_slots(l);
         list_merge_sort(wide, l->len, 0, thunk, box);
@@ -6224,6 +6287,7 @@ void beans_list_sort_by(BList* l, void* thunk, void* box) {
     list_merge_sort(l->data, l->len, 0, thunk, box);
 }
 void beans_list_sort_by_key(BList* l, void* thunk, void* box) {
+    if (l->len > 1) list_changed(l, LIST_CHANGE_SORT);
     if (l->stride == 4) {
         long long saved_len = l->len;
         long long* wide = list_widen_slots(l);
@@ -6236,11 +6300,13 @@ void beans_list_sort_by_key(BList* l, void* thunk, void* box) {
         return;
     }
     long long n = l->len;
-    if (n < 2) return;
+    if (n < 1) return;
+    // Keys first, then the "nothing to sort" exit. spec/SYNTAX.md promises one
+    // key call per item, and a one-element list must not be the exception that
+    // only a call counter can see: returning above this loop made the native
+    // backend skip the call the interpreter made.
     long long* keys = rt_alloc((size_t)n * 8);
-    long long* val_buf = rt_alloc((size_t)n * 8);
-    size_t* count = rt_alloc(65536 * sizeof(size_t));
-    size_t* at = rt_alloc(65536 * sizeof(size_t));
+    if (!keys) beans_panic("out of memory", 0, 0);
     long long (*key_fn)(void*, long long) =
         (long long (*)(void*, long long))thunk;
     long long minimum = 0, maximum = 0;
@@ -6249,6 +6315,13 @@ void beans_list_sort_by_key(BList* l, void* thunk, void* box) {
         if (i == 0 || keys[i] < minimum) minimum = keys[i];
         if (i == 0 || keys[i] > maximum) maximum = keys[i];
     }
+    if (n < 2) {
+        rt_free(keys);
+        return;
+    }
+    long long* val_buf = rt_alloc((size_t)n * 8);
+    size_t* count = rt_alloc(65536 * sizeof(size_t));
+    size_t* at = rt_alloc(65536 * sizeof(size_t));
     unsigned long long span =
         (unsigned long long)maximum - (unsigned long long)minimum;
     int passes = span <= 0xffffULL ? 1 : span <= 0xffffffffULL ? 2 : 4;
@@ -15429,13 +15502,19 @@ static void list_decv_merge_sort(BList* list, void* thunk, void* box) {
     }
     rt_free(buffer);
 }
-void beans_list_decv_sort(BList* list) { list_decv_merge_sort(list, NULL, NULL); }
+void beans_list_decv_sort(BList* list) {
+    if (list->len > 1) list_changed(list, LIST_CHANGE_SORT);
+    list_decv_merge_sort(list, NULL, NULL);
+}
 void beans_list_decv_sort_by(BList* list, void* thunk, void* box) {
+    if (list->len > 1) list_changed(list, LIST_CHANGE_SORT);
     list_decv_merge_sort(list, thunk, box);
 }
 void beans_list_decv_sort_by_key(BList* list, void* thunk, void* box) {
     long long n = list->len;
-    if (n < 2) return;
+    // one key call per item, including the single item nothing sorts
+    if (n < 1) return;
+    if (n > 1) list_changed(list, LIST_CHANGE_SORT);
     BDec* values = (BDec*)list->data;
     long long (*key_fn)(void*, BDec*) = (long long (*)(void*, BDec*))thunk;
     long long* keys = rt_alloc((size_t)n * sizeof(long long));
@@ -15481,6 +15560,7 @@ void beans_list_decv_sort_by_key(BList* list, void* thunk, void* box) {
 void beans_list_val_sort_by(BList* list, void* thunk, void* box) {
     long long n = list->len;
     if (n < 2) return;
+    list_changed(list, LIST_CHANGE_SORT);
     long long stride = list_stride(list);
     long long (*less)(void*, void*, void*) =
         (long long (*)(void*, void*, void*))thunk;
@@ -15527,7 +15607,9 @@ void beans_list_val_sort_by(BList* list, void* thunk, void* box) {
 }
 void beans_list_val_sort_by_key(BList* list, void* thunk, void* box) {
     long long n = list->len;
-    if (n < 2) return;
+    // one key call per item, including the single item nothing sorts
+    if (n < 1) return;
+    if (n > 1) list_changed(list, LIST_CHANGE_SORT);
     long long stride = list_stride(list);
     char* values = (char*)list->data;
     long long (*key_fn)(void*, void*) = (long long (*)(void*, void*))thunk;
