@@ -155,6 +155,154 @@ fn set_checksum(values: List<int>) -> int {
     return sum
 }
 
+fn in_range(value: int, lo: int, hi: int) -> bool {
+    return value >= lo && value < hi
+}
+
+fn range_set(lo: int, hi: int) -> collections.Set<int> {
+    var s: collections.Set<int> = new()
+    var i: int = lo
+    for i < hi {
+        s.add(i)
+        i += 1
+    }
+    return s
+}
+
+// An algebra result is right when it has the model's length and the same
+// order-independent checksum; either miss is one error.
+fn set_match(got: List<int>, want: List<int>) -> int {
+    if got.len() != want.len() { return 1 }
+    if set_checksum(got) != set_checksum(want) { return 1 }
+    return 0
+}
+
+// Every set-algebra method on two contiguous ranges A=[a_lo,a_hi) and
+// B=[b_lo,b_hi), in both argument orders, against models built by range
+// arithmetic. Different-sized ranges make one call take both the walk-smaller
+// and the clone-larger branch: within a.union_with(b) and b.union_with(a) the
+// larger side is once the receiver and once the argument, and likewise for the
+// smaller side that intersection and is_disjoint_from walk. So a walk of the
+// wrong side, a dropped early exit or a union that forgets to merge the
+// smaller side turns the error count non-zero and fails the golden.
+fn check_ranges(a_lo: int, a_hi: int, b_lo: int, b_hi: int) -> int {
+    var errors: int = 0
+    let a: collections.Set<int> = range_set(a_lo, a_hi)
+    let b: collections.Set<int> = range_set(b_lo, b_hi)
+
+    var union_model: List<int> = []
+    var inter_model: List<int> = []
+    var diff_ab_model: List<int> = []
+    var diff_ba_model: List<int> = []
+    var sym_model: List<int> = []
+    var v: int = a_lo
+    for v < a_hi {
+        union_model.push(v)
+        if in_range(v, b_lo, b_hi) {
+            inter_model.push(v)
+        } else {
+            diff_ab_model.push(v)
+            sym_model.push(v)
+        }
+        v += 1
+    }
+    v = b_lo
+    for v < b_hi {
+        if !in_range(v, a_lo, a_hi) {
+            union_model.push(v)
+            diff_ba_model.push(v)
+            sym_model.push(v)
+        }
+        v += 1
+    }
+
+    let uab: collections.Set<int> = a.union_with(b)
+    let uba: collections.Set<int> = b.union_with(a)
+    errors += set_match(uab.items(), union_model)
+    errors += set_match(uba.items(), union_model)
+
+    let iab: collections.Set<int> = a.intersection(b)
+    let iba: collections.Set<int> = b.intersection(a)
+    errors += set_match(iab.items(), inter_model)
+    errors += set_match(iba.items(), inter_model)
+
+    let dab: collections.Set<int> = a.difference(b)
+    let dba: collections.Set<int> = b.difference(a)
+    errors += set_match(dab.items(), diff_ab_model)
+    errors += set_match(dba.items(), diff_ba_model)
+
+    let sab: collections.Set<int> = a.symmetric_difference(b)
+    let sba: collections.Set<int> = b.symmetric_difference(a)
+    errors += set_match(sab.items(), sym_model)
+    errors += set_match(sba.items(), sym_model)
+
+    // Predicate truth read off the models: A ⊆ B iff A\B is empty, the two
+    // sets are disjoint iff they intersect in nothing, and equal iff each is a
+    // subset of the other.
+    let sub_ab: bool = diff_ab_model.len() == 0
+    let sub_ba: bool = diff_ba_model.len() == 0
+    let disjoint: bool = inter_model.len() == 0
+    let equal: bool = sub_ab && sub_ba
+    if a.is_subset_of(b) != sub_ab { errors += 1 }
+    if b.is_subset_of(a) != sub_ba { errors += 1 }
+    if a.is_superset_of(b) != sub_ba { errors += 1 }
+    if b.is_superset_of(a) != sub_ab { errors += 1 }
+    if a.is_disjoint_from(b) != disjoint { errors += 1 }
+    if b.is_disjoint_from(a) != disjoint { errors += 1 }
+    if a.equals(b) != equal { errors += 1 }
+    if b.equals(a) != equal { errors += 1 }
+    return errors
+}
+
+// A set against itself: the union and the intersection are the set, the two
+// differences are empty, it equals and contains itself, and it is disjoint
+// from itself only when it is empty. The clone-then-walk union must not be
+// confused by the source and the copy sharing members.
+fn check_self(lo: int, hi: int) -> int {
+    var errors: int = 0
+    let a: collections.Set<int> = range_set(lo, hi)
+    var members: List<int> = []
+    var v: int = lo
+    for v < hi {
+        members.push(v)
+        v += 1
+    }
+    let empty: List<int> = []
+    errors += set_match(a.union_with(a).items(), members)
+    errors += set_match(a.intersection(a).items(), members)
+    errors += set_match(a.difference(a).items(), empty)
+    errors += set_match(a.symmetric_difference(a).items(), empty)
+    if a.equals(a) != true { errors += 1 }
+    if a.is_subset_of(a) != true { errors += 1 }
+    if a.is_superset_of(a) != true { errors += 1 }
+    if a.is_disjoint_from(a) != (hi <= lo) { errors += 1 }
+    return errors
+}
+
+// The algebra at n in the thousands, across the shapes the churn above never
+// reaches: partial overlap with each side larger in turn, fully disjoint,
+// identical, a proper subset, an empty operand on either side, both empty, and
+// a set against itself.
+fn check_set_algebra() -> int {
+    var errors: int = 0
+    // Partial overlap at n in the thousands with the sides different sizes, so
+    // this one call takes both the walk-smaller and the clone-larger branch.
+    errors += check_ranges(0, 2000, 1200, 3000)
+    // Disjoint, identical, and a proper subset — each a shape the churn above
+    // never lands on — with the sides different sizes where that is possible.
+    errors += check_ranges(0, 1000, 3000, 3800)
+    errors += check_ranges(0, 1000, 0, 1000)
+    errors += check_ranges(0, 1200, 300, 800)
+    // An empty operand on either side, and both empty.
+    errors += check_ranges(0, 1000, 0, 0)
+    errors += check_ranges(0, 0, 0, 1000)
+    errors += check_ranges(0, 0, 0, 0)
+    // A set against itself, at scale and empty.
+    errors += check_self(0, 1200)
+    errors += check_self(0, 0)
+    return errors
+}
+
 fn check_set() -> int {
     var set: collections.Set<int> = new()
     var members: List<int> = []
@@ -250,6 +398,12 @@ fn check_set() -> int {
         errors += 1
     }
     if set.equals(set) != true { errors += 1 }
+
+    // The algebra again, at scale and across the empty/identical/disjoint/self
+    // shapes. This touches neither `set` nor `members`, so a correct run leaves
+    // the printed line — errors, length and checksum — exactly as the golden
+    // pins it.
+    errors += check_set_algebra()
 
     io.println("set model {errors} {set.len()} {set_checksum(members)}")
     return errors
