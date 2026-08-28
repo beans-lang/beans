@@ -26,10 +26,19 @@ echo "checking the calendar golden on both backends and under ASan"
 diff -u test/cases/calendar_basics.out "$tmp/interp"
 diff -u "$tmp/interp" "$tmp/native.out"
 
-clang -O1 -g -pthread -fsanitize=address -Wno-override-module \
-    build/calendar_basics.ll build/beans_rt.c -lm -o "$tmp/asan"
-BEANS_NO_POOL=1 "$tmp/asan" >"$tmp/asan.out" 2>"$tmp/asan.err"
-if grep -q 'AddressSanitizer' "$tmp/asan.err"; then
+clang -O1 -g -pthread -fsanitize=address,undefined -fno-sanitize-recover=undefined \
+    -Wno-override-module build/calendar_basics.ll build/beans_rt.c -lm -o "$tmp/asan"
+# The calendar allocates and frees a string for every field it formats and
+# parses, so LeakSanitizer (default on Linux) covers those loops. A non-zero
+# exit is a failure; the grep names any of the three sanitizers so a leak is
+# loud rather than a silent death under `set -e`.
+if ! BEANS_NO_POOL=1 "$tmp/asan" >"$tmp/asan.out" 2>"$tmp/asan.err"; then
+    cat "$tmp/asan.err" >&2
+    echo "calendar_basics exited non-zero under the sanitizers" >&2
+    exit 1
+fi
+if grep -Eq 'AddressSanitizer|UndefinedBehaviorSanitizer|LeakSanitizer' \
+    "$tmp/asan.err"; then
     cat "$tmp/asan.err" >&2
     exit 1
 fi
