@@ -4711,6 +4711,53 @@ class ExpressionChecker {
                     "{type.name} key needs Hash, got {render_hir_type(type.args[0])}")
             }
         }
+        // A user generic type states bounds on its parameters — `class
+        // SortedMap<K implements Order & Clone, ...>` — and those bounds are
+        // promises the body then relies on: it compares two K with `<`, or
+        // hands a V back by copy. A generic function already refuses an
+        // argument that breaks such a promise at the call; a generic type did
+        // not, so `SortedMap<SomeClass, int>` passed checking and then failed
+        // in the backend — the interpreter panicking on `<` of two objects,
+        // the native emitter reporting it cannot lower `<` for the class. Both
+        // are the checker letting through what no backend can run. Measure the
+        // argument against the declared bound here, at the type, so the error
+        // names the program.
+        match self.declaration_for(type) {
+            some(declaration) => {
+                if declaration.generic_constraints.len() != 0 &&
+                   type.args.len() == declaration.generics.len() {
+                    var binding: Map<string, HirType> = {}
+                    var slot: int = 0
+                    for parameter_name: string in declaration.generics {
+                        binding[parameter_name] = type.args[slot]
+                        slot += 1
+                    }
+                    for constraint: HirGeneric in
+                        declaration.generic_constraints {
+                        match binding.get(constraint.name) {
+                            some(actual) => {
+                                for bound: HirType in constraint.bounds {
+                                    // A bound may name a sibling parameter
+                                    // (`T implements Producer<U>`), so it is
+                                    // read after the arguments are bound.
+                                    let wanted: HirType =
+                                        self.substitute_generic_type(
+                                            bound, declaration.generics,
+                                            binding)
+                                    if !self.bound_satisfied(actual, wanted) {
+                                        self.fail(
+                                            node,
+                                            "{declaration.name} needs {constraint.name} implements {render_hir_type(wanted)}, got {render_hir_type(actual)}")
+                                    }
+                                }
+                            }
+                            none => {}
+                        }
+                    }
+                }
+            }
+            none => {}
+        }
         for argument: HirType in type.args {
             self.validate_target_type(node, argument)
         }
