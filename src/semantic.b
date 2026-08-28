@@ -215,6 +215,9 @@ class SemanticBuilder {
                 parts = move with_self
             }
         }
+        if function.variadic_from >= 0 {
+            parts.push("...")
+        }
         var prefix: string = ""
         if function.is_private {
             prefix = "priv "
@@ -1126,6 +1129,9 @@ class SemanticBuilder {
     // checked node carries the binding. A function's are declared from the
     // signature, so the binding lives on the HirParameter instead.
     fn walk_parameter(node: AstNode) {
+        // The `...` marker is a position in a C signature, not a
+        // declaration: it names nothing and binds nothing.
+        if node.kind == "variadic" { return }
         self.walk_annotations(node)
         for child: AstNode in node.children {
             self.walk_type(child)

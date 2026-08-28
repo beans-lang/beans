@@ -17,6 +17,7 @@ tests=(
     test/c_layout_unions.sh
     test/c_layout_c_abi.sh
     test/c_wide_args.sh
+    test/c_variadic.sh
     test/c_callbacks.sh
     test/c_opaque.sh
     test/c_globals.sh

@@ -108,6 +108,11 @@ fn semantic_parameter_labels(snapshot: SemanticSnapshot,
                     labels.push(
                         "{passing}{parameter.name}: {render_hir_type(parameter.type)}")
                 }
+                // A `...` tail is a real position for signature help: it is
+                // where the cursor sits for every argument past the head.
+                if function.variadic_from >= 0 {
+                    labels.push("...")
+                }
                 break
             }
         }

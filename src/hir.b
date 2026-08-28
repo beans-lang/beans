@@ -6,6 +6,12 @@ fn takes_arguments_message(shown: string, wanted: int,
     return "{shown} takes {wanted} {noun} but got {got}"
 }
 
+fn takes_at_least_arguments_message(shown: string, wanted: int,
+                                    got: int) -> string {
+    let noun: string = if wanted == 1 { "argument" } else { "arguments" }
+    return "{shown} takes at least {wanted} {noun} but got {got}"
+}
+
 fn type_arguments_count(count: int) -> string {
     let noun: string =
         if count == 1 { "type argument" } else { "type arguments" }
@@ -202,6 +208,12 @@ class HirFunction {
     is_extern_c: bool
     extern_name: string
     is_c_export: bool
+    // Where the C variadic tail starts: -1 for an ordinary signature,
+    // otherwise the number of fixed parameters written before `...`.
+    // A call site may pass more arguments than there are parameters
+    // only past this point, and only a variadic-shaped C call is
+    // emitted for it.
+    variadic_from: int
     is_static: bool
     is_inout: bool
     is_abstract: bool
@@ -246,6 +258,7 @@ class HirFunction {
         self.is_extern_c = false
         self.extern_name = name
         self.is_c_export = false
+        self.variadic_from = -1
         self.is_static = false
         self.is_inout = false
         self.is_abstract = false
@@ -1278,6 +1291,14 @@ class SignatureChecker {
         for child: AstNode in node.children {
             if child.kind == "params" {
                 for parameter: AstNode in child.children {
+                    if parameter.kind == "variadic" {
+                        // The parser already guaranteed one fixed
+                        // parameter in front and nothing behind, so the
+                        // count so far is the fixed count.
+                        function.variadic_from =
+                            function.parameters.len()
+                        continue
+                    }
                     var passing: string = ""
                     for part: AstNode in parameter.children {
                         if part.kind == "passing" {
@@ -1384,6 +1405,22 @@ class SignatureChecker {
                     function.extern_name =
                         child.value.slice(1, child.value.len() - 1)
                 }
+            }
+        }
+        if function.variadic_from >= 0 {
+            // `...` describes how a *host* C function reads its
+            // arguments. Beans has no va_list, so a signature it would
+            // have to implement cannot carry one.
+            if !function.is_extern_c {
+                self.fail(
+                    file.path, node,
+                    "'...' is only for an extern \"C\" declaration")
+                function.variadic_from = -1
+            } else if function.has_body {
+                self.fail(
+                    file.path, node,
+                    "an extern \"C\" function with a body cannot be variadic — Beans has no va_list")
+                function.variadic_from = -1
             }
         }
         function.is_c_export =
@@ -2342,6 +2379,9 @@ fn render_hir(program: HirProgram) -> string {
             }
             parameters.push(
                 "{passing}{parameter.name}: {render_hir_type(parameter.type)}")
+        }
+        if function.variadic_from >= 0 {
+            parameters.push("...")
         }
         var generics: string = ""
         if function.generics.len() != 0 {

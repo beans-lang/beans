@@ -24,8 +24,14 @@ fn render_mir(program: MirProgram) -> string {
             } else {
                 "fn"
             }
+        let variadic: string =
+            if function.variadic_from >= 0 {
+                " variadic-from={function.variadic_from}"
+            } else {
+                ""
+            }
         lines.push(
-            "{form} {function.name} -> {render_hir_type(function.result)}")
+            "{form} {function.name}{variadic} -> {render_hir_type(function.result)}")
         for capture: MirCapture in function.captures {
             lines.push(
                 "  capture {capture.name} binding={capture.binding_id} l{capture.source}->l{capture.target}: {render_hir_type(capture.type)}")

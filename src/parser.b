@@ -629,6 +629,33 @@ class Parser {
         self.skip_newlines()
         let parameters: AstNode = self.node("params", "", name)
         for !self.check(")") && !self.at_end() {
+            // `...` closes the list: it is the C variadic marker, so
+            // nothing may follow it and it needs a fixed parameter in
+            // front of it, exactly as C requires.
+            if self.check("...") {
+                let marker: Token = self.advance()
+                if parameters.children.len() == 0 {
+                    self.fail(
+                        marker,
+                        "'...' needs at least one fixed parameter before it")
+                }
+                parameters.add(
+                    self.node("variadic", "", marker))
+                self.skip_newlines()
+                if self.check(",") {
+                    self.fail(
+                        self.current(),
+                        "'...' must be the last parameter")
+                    // Swallow the rest of the list so one mistake
+                    // reports once instead of cascading into
+                    // "expected ')'" and "expected a declaration".
+                    for !self.check(")") && !self.at_end() &&
+                        !self.check("newline") {
+                        self.advance()
+                    }
+                }
+                break
+            }
             let annotations: List<AstNode> = self.parse_annotations()
             if self.check("self") {
                 let explicit_self: Token = self.advance()

@@ -6012,6 +6012,32 @@ class ExpressionChecker {
         return result
     }
 
+    // A C variadic argument crosses the ABI with the type written at the
+    // call site: the backend hands Clang that exact C type and Clang
+    // applies C's default argument promotions to it. Only the shapes with
+    // a single, unambiguous C spelling may go through `...` — see
+    // c_variadic_shape in hir_type.b.
+    fn check_variadic_arguments(node: AstNode, first: int,
+                                function: HirFunction,
+                                shown: string,
+                                fixed: int,
+                                count: int,
+                                result: HirNode) {
+        for index: int in fixed..count {
+            let argument: HirNode =
+                self.check_expression(
+                    node.children[index + first], no_hir_type())
+            if canonical_hir_name(argument.type.name) != "poison" &&
+               !c_variadic_shape(argument.type) {
+                self.fail(
+                    node.children[index + first],
+                    "{shown} variadic argument {index + 1} needs an integer, float, bool, RawPtr, or CFunctionPtr — nothing else has one C type past '...', got {render_hir_type(argument.type)}")
+            }
+            result.children.push(argument)
+            result.argument_passing.push("")
+        }
+    }
+
     fn check_arguments(node: AstNode, first: int,
                        function: HirFunction,
                        owner: HirType,
@@ -6020,8 +6046,16 @@ class ExpressionChecker {
         let count: int = node.children.len() - first
         let required: int =
             self.required_argument_count(function)
-        if count < required ||
-           count > function.parameters.len() {
+        let variadic: bool = function.variadic_from >= 0
+        if variadic {
+            if count < required {
+                self.fail(
+                    node,
+                    takes_at_least_arguments_message(
+                        shown, required, count))
+            }
+        } else if count < required ||
+                  count > function.parameters.len() {
             self.fail(
                 node,
                 takes_arguments_message(
@@ -6102,12 +6136,18 @@ class ExpressionChecker {
             result.argument_passing.push(
                 function.parameters[index].passing)
         }
-        for index: int in shared..count {
-            result.children.push(self.check_expression(
-                node.children[index + first], no_hir_type()))
-            result.argument_passing.push("")
+        if variadic {
+            self.check_variadic_arguments(
+                node, first, function, shown,
+                shared, count, result)
+        } else {
+            for index: int in shared..count {
+                result.children.push(self.check_expression(
+                    node.children[index + first], no_hir_type()))
+                result.argument_passing.push("")
+            }
         }
-        if count >= required &&
+        if !variadic && count >= required &&
            count < function.parameters.len() {
             self.append_default_arguments(
                 function, count, owner_declaration,

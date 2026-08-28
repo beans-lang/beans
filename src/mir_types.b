@@ -210,6 +210,10 @@ class MirFunction {
     external: bool
     external_name: string
     c_export: bool
+    // Mirrors HirFunction.variadic_from: -1, or the number of fixed
+    // parameters an extern "C" declaration wrote before `...`. The
+    // emitter reads it to shape the C prototype the wrapper declares.
+    variadic_from: int
     required_feature: string
     dispatch_slots: List<string>
     entry: int
@@ -240,6 +244,7 @@ class MirFunction {
         self.external = false
         self.external_name = name
         self.c_export = false
+        self.variadic_from = -1
         self.required_feature = ""
         self.dispatch_slots = []
         self.entry = -1

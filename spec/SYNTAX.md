@@ -336,7 +336,8 @@ fn main() {
   continues (the dot can never end a statement), and a newline is not a
   terminator when the next line begins with `.name` — so fluent chains write
   trailing-dot or leading-dot style. `..` stays a range operator and never
-  continues a line.
+  continues a line. `...` is one token and means only the C variadic tail in
+  an `extern "C" fn` signature.
 - Style consequence, same as Go: `} else {` must be on one line.
 - Comments: `//` line, `/* */` block (nesting allowed).
 - Number literals can use `_` separators: `1_000_000`. Hex `0xFF`, binary `0b1010`.
@@ -3121,6 +3122,27 @@ beansc build --target riscv32imac-unknown-none-elf --runtime freestanding f.b --
   synchronous, and same-thread:
   C may call it only before the surrounding extern call returns, must not store
   it, and must not invoke it from another thread.
+- `extern "C" fn name(fixed: T, ...) -> R` declares a C function with a
+  variadic tail — `ioctl`, `fcntl`, three-argument `open`, `printf`. `...`
+  comes last and needs at least one named parameter in front of it, exactly as
+  C requires. There is no `va_list` in Beans, so a variadic declaration never
+  has a body and a `pub extern "C" fn` export is never variadic.
+  A **call site writes its own tail**, and the type it writes is the C type
+  that crosses: the backend hands Clang that spelling at that call site, so the
+  target's own variadic rules classify it. That is the point of the form — on
+  Apple arm64 the whole tail goes on the stack while the fixed head stays in
+  registers, while SysV x86-64 and generic AAPCS64 keep filling the register
+  banks, so a variadic function declared with a fixed signature passes its
+  arguments in the wrong place with no diagnostic.
+  **C's default argument promotions apply to the tail**, because the tail is
+  written as C: `i8`, `u8`, `i16`, `u16` and `bool` arrive as `int`, and `f32`
+  arrives as `double`. A tail argument must be an integer, float, bool,
+  `RawPtr` or `CFunctionPtr` — an `extern "C"` struct or union by value, a
+  callback and every managed Beans value are refused, because past the last
+  named parameter the prototype describes nothing and only a type with one
+  unambiguous C spelling can cross. Beans `int` is 64 bits, so a bare integer
+  literal in a tail passes as C `long long`; write `value as i32` where the
+  callee reads an `int`.
 - `extern "C" opaque struct Handle` declares an incomplete C type. It is valid
   only behind `RawPtr`; allocation, field access, embedding, and layout queries
   are rejected.
@@ -3172,7 +3194,9 @@ unions, arrays, enums, globals, TLS, functions, and function pointers. C
 nullability annotations (`_Nullable`, `_Nonnull`, `_Null_unspecified`) are
 ignored for type mapping. Declarations come from every requested header, while
 types may also come from any header they include. This gives split `core.h` +
-`service.h` APIs one shared record and opaque-handle identity. Nested function
+`service.h` APIs one shared record and opaque-handle identity. A variadic C
+function binds as `fn name(fixed: T, ...)`; a variadic *callback* type does not
+bind at all, since `fn(...)` would have to name a tail only a call site knows. Nested function
 pointers keep each level: only a callback passed directly to an imported
 function is borrowed as `fn(...)`; stored or nested callback addresses use
 `CFunctionPtr<F>`.

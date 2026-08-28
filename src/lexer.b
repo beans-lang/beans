@@ -265,6 +265,13 @@ class Lexer {
                 if pair == ".." && self.peek() == 61 {
                     self.advance()
                     kind = "..="
+                } else if pair == ".." && self.peek() == 46 {
+                    // `...` is the C variadic marker in an extern
+                    // signature. Nothing else in the grammar can follow
+                    // a range operator with another dot, so claiming the
+                    // third dot here takes no spelling away.
+                    self.advance()
+                    kind = "..."
                 }
             }
         }

@@ -267,6 +267,11 @@ class CAbiDescription {
     parameter_declarations: List<string>
     callbacks: List<CAbiCallbackDescription>
     has_callback: bool
+    // -1, or how many of the parameters above are the fixed head of a
+    // variadic C prototype. The rest are this call site's tail: they are
+    // passed, but the prototype ends in `...` so Clang classifies and
+    // promotes them by the target's variadic rules.
+    variadic_from: int
 
     fn init() {
         self.definitions = ""
@@ -275,6 +280,7 @@ class CAbiDescription {
         self.parameter_declarations = []
         self.callbacks = []
         self.has_callback = false
+        self.variadic_from = -1
     }
 }
 
@@ -469,6 +475,7 @@ class CAbiTextBuilder {
         CAbiDescription {
         let result: CAbiDescription =
             new CAbiDescription()
+        result.variadic_from = function.variadic_from
         result.return_type =
             self.base(function.result)
         for index: int in

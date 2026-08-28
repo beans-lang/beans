@@ -1782,6 +1782,7 @@ class MirLowerer {
             function.is_extern_c && !function.is_c_export
         self.current.external_name = function.extern_name
         self.current.c_export = function.is_c_export
+        self.current.variadic_from = function.variadic_from
         self.current.required_feature =
             function.required_feature
         for slot: string in function.dispatch_slots {

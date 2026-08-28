@@ -206,17 +206,33 @@ grep -F 'extern "C" struct NestedChild' \
 grep -F 'child: RawPtr<NestedChild>' \
     "$tmp/nested_callbacks.b" >"$tmp/match"
 
+# A variadic *import* binds: the declaration carries `...` and each call site
+# writes its own tail. A variadic *callback* still cannot — `fn(...)` would
+# have to name a tail that only a call site knows — so it is refused wherever a
+# function pointer is stored, passed or returned.
+cat >"$tmp/variadic.h" <<'C'
+int logline(const char*, ...);
+int ioctl_like(int fd, unsigned long request, ...);
+C
+"$beansc" bindgen "$tmp/variadic.h" -o "$tmp/variadic.b" >"$tmp/variadic.out"
+"$beansc" check "$tmp/variadic.b" >"$tmp/variadic.check"
+grep -F 'fn logline(arg0: RawPtr<i8>, ...) -> i32' "$tmp/variadic.b" >"$tmp/match"
+grep -F 'fn ioctl_like(fd: i32, request: u64, ...) -> i32' \
+    "$tmp/variadic.b" >"$tmp/match"
+
 cat >"$tmp/unsupported.h" <<'C'
-int variadic(const char*, ...);
+typedef int (*Logger)(const char*, ...);
+int install(Logger log);
 C
 if "$beansc" bindgen "$tmp/unsupported.h" -o "$tmp/bad.b" \
     >"$tmp/bad.out" 2>&1; then
-    echo "bindgen accepted varargs" >&2
+    echo "bindgen accepted a variadic callback type" >&2
     exit 1
 fi
+grep -F 'variadic C callback type is unsupported' "$tmp/bad.out" >"$tmp/match"
 "$beansc" bindgen "$tmp/unsupported.h" -o "$tmp/allowed.b" \
     --allow-unsupported >"$tmp/allowed.out"
-grep -F 'skipped: variadic function' "$tmp/allowed.b" >"$tmp/match"
+grep -F 'skipped:' "$tmp/allowed.b" >"$tmp/match"
 
 # Bindings are generated to be dropped into a real project, and every file in a
 # package declares that package. Without --package the output has no clause at
