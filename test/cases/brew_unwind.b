@@ -91,6 +91,31 @@ fn shield_capture() -> string {
     }
 }
 
+// The espresso shielded-handle shape: a handler is called through `?`, and the
+// handler panics. The operand's panic is already in flight when `?` is
+// reached, so `?` must short-circuit rather than see the poisoned unit as a
+// non-result and raise a second failure inside the unwind — which the
+// interpreter would report as a double panic and abort. The handler still
+// drops what it owns on the way out.
+fn faulty() -> Result<int> {
+    let held: Res = new Res("faulty-held")
+    panic("faulty lost it")
+    return ok(0)
+}
+
+fn pipeline() -> Result<int> {
+    let produced: int = faulty()?
+    return ok(produced)
+}
+
+fn shield_pipeline() -> string {
+    let child: Brew<Result<int>> = brew pipeline()
+    match child.join() {
+        ok(r) => { return "ok" }
+        err(problem) => { return "pipeline: {problem.kind}" }
+    }
+}
+
 fn main() {
     let c: Counter = new Counter()
     io.println(shielded(c, "first"))
@@ -102,4 +127,5 @@ fn main() {
     io.println("counter after 5 contained panics: {c.n}")
     io.println(shield_moveonly())
     io.println(shield_capture())
+    io.println(shield_pipeline())
 }

@@ -498,15 +498,22 @@ class TreeInterpreter {
                message: string) -> TreeValue {
         let text: string =
             "runtime panic at {node.line}:{col}: {message}"
-        if self.unwinding &&
+        if self.unwinding && !self.failed &&
            self.current_fiber_address() ==
                self.unwinding_fiber {
             // A panic raised while THIS fiber is already unwinding a contained
-            // failure: a defer or a deinit that the unwind itself is running
-            // has panicked. There is no second unwind to give it — this is the
-            // one unrecoverable case (spec/CONCURRENCY.md) — so both reports go
-            // out and the process stops, the same answer the native backend
-            // gives when beans_panic sees the fiber is already unwinding.
+            // failure, AND while no panic is currently in flight — meaning it
+            // came from a defer or a deinit the unwind is running, which clear
+            // the poison so their body executes. There is no second unwind to
+            // give it — the one unrecoverable case (spec/CONCURRENCY.md) — so
+            // both reports go out and the process stops, the same answer the
+            // native backend gives when beans_panic sees the fiber unwinding.
+            //
+            // The !self.failed guard is what keeps this from firing on the
+            // ordinary poison walk: a node that computes on a poisoned value
+            // and then calls fail (a `?` on the unit a panicked call left, say)
+            // is not a second panic — the poison is already set, so fail below
+            // no-ops and the first panic stands.
             self.report_double_panic(text)
         }
         if !self.failed {
@@ -11256,6 +11263,13 @@ class TreeInterpreter {
         if node.kind == "try" {
             let result: TreeValue =
                 self.expression(node.children[0], frame)
+            // A panic in the operand leaves a poisoned unit, not a result: the
+            // panic is already in flight, so short-circuit like every other
+            // node rather than mistaking the unit for a non-result and raising
+            // a second failure over the first. (A `?` operand that itself
+            // propagated a `?` bubbles that out unchanged.)
+            if self.failed { return TreeValue.unit() }
+            if result.kind == "propagate" { return result }
             if (result.kind == "ok" ||
                 result.kind == "some") &&
                result.items.len() == 1 {
@@ -11966,7 +11980,7 @@ class TreeInterpreter {
                    message: string) -> TreeValue {
         let text: string =
             "runtime panic at {function.line}:{function.col}: {message}"
-        if self.unwinding &&
+        if self.unwinding && !self.failed &&
            self.current_fiber_address() ==
                self.unwinding_fiber {
             self.report_double_panic(text)

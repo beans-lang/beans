@@ -40,3 +40,5 @@ moveonly: panic
   capture defer
   drop captured-res
 capture: panic
+  drop faulty-held
+pipeline: panic
