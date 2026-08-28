@@ -136,6 +136,12 @@ pub class SortedMap<K implements Order & Clone, V implements Clone> {
     }
 
     /// Remove `key`. True when it was there.
+    ///
+    /// Known limitation: on the native backend this currently leaks the removed
+    /// node. The cause is a bug in the recursive-removal ARC codegen (#60) —
+    /// `field = recurse(field)` never frees an unlinked node — not in this tree;
+    /// the interpreter is unaffected and every answer is correct on both
+    /// backends. The note goes when #60 lands.
     pub fn remove(key: K) -> bool {
         let before: int = self.len()
         self.root = self.remove_from(self.root, key)

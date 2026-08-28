@@ -68,6 +68,9 @@ run_asan examples/box.b box
 run_asan examples/arena.b arena
 run_asan examples/containers.b containers 3
 run_asan test/cases/map_models.b map_models
+run_asan test/cases/collections_models.b collections_models
+run_asan test/cases/collections_leakcheck.b collections_leakcheck
+run_asan test/cases/calendar_basics.b calendar_basics
 run_asan examples/shared_weak.b shared_weak
 run_asan examples/unsafe_raw.b unsafe_raw
 run_asan examples/simd.b simd
@@ -319,6 +322,10 @@ fi
 echo "ASan/UBSan/TSan checking stored C callbacks"
 BEANS_SANITIZE_CALLBACKS=1 bash ./test/stored_callbacks.sh
 
+# collections_models.b (which removes from an owned AVL tree) is checked
+# under ASan/UBSan above but held out of this leaks sweep: a structural
+# remove leaks in the native ARC codegen, filed as #60. collections_leakcheck.b
+# covers the leak-clean operations until #60 is fixed.
 if [[ "$(uname -s)" == Darwin ]] && command -v leaks >/dev/null 2>&1; then
     for file in bench/trees.b examples/box.b examples/arena.b examples/fmt.b \
                 examples/shared_weak.b examples/inline_results.b examples/wide_lists.b \
@@ -327,7 +334,9 @@ if [[ "$(uname -s)" == Darwin ]] && command -v leaks >/dev/null 2>&1; then
                 examples/wide_sync.b examples/wide_concurrency.b \
                 examples/stdlib_beans.b examples/packed.b examples/atomics.b \
                 examples/simd_families.b examples/resources.b \
-                test/cases/map_models.b test/cases/decimal_precision.b \
+                test/cases/map_models.b \
+                test/cases/collections_leakcheck.b test/cases/calendar_basics.b \
+                test/cases/decimal_precision.b \
                 test/cases/reflect_value.b test/cases/reflect_fields.b \
                 test/cases/reflect_calls.b test/cases/reflect_construct.b; do
         echo "leaks checking $file"
