@@ -349,7 +349,13 @@ fn main() {
 - Format specs ride after a `:` in the braces: `{x:8}` pads to width 8 (right-aligned),
   `{x:-8}` left-aligns, `{pi:.2}` fixes decimals (float/decimal only), `{pi:8.2}` both.
   Width pads anything printable — `{xs:12}` pads a whole list. Same rendering as `std.fmt`.
-- **There is no `+` for strings.** Building strings happens through interpolation, `std.fmt` (sprintf-style: padding, precision, alignment), or `list.join(sep)`. One way to do it, and it's the readable one.
+- **There is no `+` for strings.** To render *one* string, use interpolation
+  (`"hi {name}"`) or `std.fmt` (sprintf-style: padding, precision, alignment).
+  To *accumulate* a string across a loop, use `fmt.StringBuilder` (push the
+  pieces, `to_string()` once) or `list.join(sep)` — never `text = "{text}piece"`
+  in a loop, which rebuilds the whole string every turn and so costs O(n²) in
+  the total length. Interpolation is the readable tool for a single value and
+  the wrong one for a growing buffer; a builder is the other way round.
 - Escapes: `\n \t \r \0 \\ \" \{ \}`. The backslash forms are the *only* brace
   escapes: `{{` is not one. A `{` right after another `{` begins an
   interpolation whose expression starts with a map literal, so `"{{}}"` is an
@@ -515,6 +521,10 @@ Interpolation assembles, fmt formats. No printf — the language has no varargs.
 - `hex(n)` / `binary(n)` — the 64-bit two's-complement pattern, lowercase, no prefix:
   `hex(-1)` is 16 f's.
 - `group_digits(n, sep)` — thousands grouping: `group_digits(1234567, ",")` is `"1,234,567"`.
+- `StringBuilder` — accumulate a string across a loop into one growing buffer:
+  `push(text)`, `push_int`, `push_bool`, `push_line`, `push_byte`, then
+  `to_string()` (or `to_bytes()`) once. `text = "{text}piece"` in a loop rebuilds
+  the whole string every turn — O(n²) in the length; a builder is O(n).
 
 ## std.encoding (v0.9, implemented)
 
