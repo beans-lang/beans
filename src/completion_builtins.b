@@ -49,6 +49,7 @@ fn semantic_builtin_member_names() -> List<string> {
             "try_next", "try_receive", "try_send",
             "unlock", "upgrade", "values", "wait", "wait_all",
             "wait_timeout",
+            "width",
             "with_lane", "with_lock", "write", "write_at", "write_text",
             "write_text_at",
             "write_volatile"]

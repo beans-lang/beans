@@ -3100,6 +3100,11 @@ class ExpressionChecker {
                 return some(new BuiltinSignature(
                     [integer, integer], integer))
             }
+            // The third measure of a string, beside bytes (len) and scalars
+            // (chars): how many terminal columns it occupies.
+            if name == "width" {
+                return some(new BuiltinSignature([], integer))
+            }
         }
         if receiver.name == "array" {
             if name == "len" {
@@ -4834,17 +4839,20 @@ class ExpressionChecker {
         return move lowered
     }
 
-    // Mirrors stage 0's printable walk: lists print as [a, b], enums as
-    // variant(payload...) — printable when every piece is. Class payloads
-    // stay out: their display would need the dynamic class name, which
-    // the native backend does not carry. That excludes Result.
+    // What a value looks like when it goes into a string. Every shape the
+    // language builds out of other values has a derived form — lists as
+    // [a, b], maps as {k: v}, options and results as some(x)/none and
+    // ok(x)/err(e), enums as variant(payload), structs and classes as
+    // Name { field: value } — so this asks one question: does this type
+    // have a shape at all.
+    //
+    // A type with none — a file, a lock, a channel, a closure — is refused
+    // here. Inside a structured value the same type renders as <Type>
+    // instead, because one opaque field should not take a whole object's
+    // rendering away; at the top level the caller named the value and can
+    // give it a string form. Unions are refused with them: which field is
+    // live is not knowable, so reading one would be a guess.
     fn printable_in_string(type: HirType) -> bool {
-        var seen: Map<string, bool> = {}
-        return self.printable_in_string_rec(type, inout seen)
-    }
-
-    fn printable_in_string_rec(type: HirType,
-                               inout seen: Map<string, bool>) -> bool {
         let name: string = canonical_hir_name(type.name)
         if name == "poison" { return true }
         if hir_is_numeric(type) || name == "bool" ||
@@ -4852,50 +4860,28 @@ class ExpressionChecker {
             return true
         }
         if name == "List" && type.args.len() == 1 {
-            return self.printable_in_string_rec(
-                type.args[0], inout seen)
+            return true
         }
-        // The builtin enums live outside the declaration table; their
-        // shapes mirror stage 0's registrations. Result's err payload is
-        // Error — a class — unless spelled otherwise, which is what
-        // keeps Result out of strings.
         if name == "Option" && type.args.len() == 1 {
-            return self.printable_in_string_rec(
-                type.args[0], inout seen)
+            return true
         }
         if name == "Result" {
-            if type.args.len() >= 2 {
-                if !self.printable_in_string_rec(
-                    type.args[0], inout seen) {
-                    return false
-                }
-                return self.printable_in_string_rec(
-                    type.args[1], inout seen)
-            }
-            return false
+            return type.args.len() >= 2
         }
+        if name == "Map" || name == "OrderedMap" {
+            return type.args.len() == 2
+        }
+        // The builtin classes and enums live outside the declaration table.
+        if name == "Error" { return true }
         if name == "MemoryOrder" || name == "RoundingMode" {
             return true
         }
         match self.declaration_for(type) {
             some(declaration) => {
-                if declaration.kind != "enum" { return false }
-                let key: string = render_hir_type(type)
-                // self-recursive enums hold finite values
-                if seen.contains_key(key) { return true }
-                seen[key] = true
-                for variant: HirField in declaration.variants {
-                    for payload: HirType in variant.type.args {
-                        let item: HirType =
-                            self.substitute_owner_type(
-                                payload, declaration, type)
-                        if !self.printable_in_string_rec(
-                            item, inout seen) {
-                            return false
-                        }
-                    }
-                }
-                return true
+                return declaration.kind == "enum" ||
+                       declaration.kind == "struct" ||
+                       declaration.kind == "class" ||
+                       declaration.kind == "interface"
             }
             none => {}
         }

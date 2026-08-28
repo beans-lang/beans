@@ -166,6 +166,11 @@ pub fn runtime_builtin_method(key: string) -> Option<RuntimeBuiltin> {
             ["i64", "i64"],
             "i64", "beans_str_count_chars", true))
     }
+    if key == "string.width" {
+        return some(new RuntimeBuiltin(
+            [],
+            "i64", "beans_str_width", false))
+    }
     if key == "Bytes.len" {
         return some(new RuntimeBuiltin(
             [],

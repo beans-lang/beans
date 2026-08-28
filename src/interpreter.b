@@ -67,6 +67,24 @@ extern "C" fn beans_gate_wait(gate: RawPtr<u8>)
 extern "C" fn beans_gate_open(gate: RawPtr<u8>)
 extern "C" fn beans_gate_is_open(
     gate: RawPtr<u8>) -> int
+// Display width is one table, in the runtime, and both compilers read it
+// through this one function — the tree walker cannot answer a column count
+// differently from the native backend because it is not answering it.
+// Spelling it as a method here would need a bootstrap compiler that already
+// knows string.width, so the call goes through the C name until one ships.
+extern "C" fn beans_width_utf8(
+    text: RawPtr<u8>, length: int) -> int
+
+// The column count of a string, the measure `{s:12}` pads to.
+fn tree_display_width(text: string) -> int {
+    if text.len() == 0 { return 0 }
+    var buffer: Bytes = new Bytes(0)
+    buffer.append_string(text)
+    unsafe {
+        return beans_width_utf8(
+            buffer.as_ptr(), text.len())
+    }
+}
 
 class TreeInterpreter {
     program: HirProgram
@@ -8028,6 +8046,12 @@ class TreeInterpreter {
             }
             return TreeValue.integer(
                 receiver.text.count_chars(from, to))
+        }
+        if receiver.kind == "string" &&
+           node.value == "width" &&
+           arguments.len() == 1 {
+            return TreeValue.integer(
+                tree_display_width(receiver.text))
         }
         if receiver.kind == "string" &&
            node.value == "find_byte" &&

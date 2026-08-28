@@ -163,6 +163,7 @@ test-semantics: $(BIN)
 	bash ./test/slice_fusion.sh
 	./test/maps.sh
 	./test/traits.sh
+	bash ./test/display_width.sh
 	./test/fixed_arrays.sh
 	bash ./test/closure_captures.sh
 	bash ./test/send_functions.sh
@@ -285,6 +286,7 @@ test-core: $(BIN)
 	bash ./test/slice_fusion.sh
 	./test/maps.sh
 	./test/traits.sh
+	bash ./test/display_width.sh
 	bash ./test/syntax_v07.sh
 	bash ./test/language_gaps.sh
 	bash ./test/crema_findings.sh

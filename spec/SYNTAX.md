@@ -349,6 +349,11 @@ fn main() {
 - Format specs ride after a `:` in the braces: `{x:8}` pads to width 8 (right-aligned),
   `{x:-8}` left-aligns, `{pi:.2}` fixes decimals (float/decimal only), `{pi:8.2}` both.
   Width pads anything printable — `{xs:12}` pads a whole list. Same rendering as `std.fmt`.
+- **Width is measured in display columns, not bytes.** `{s:12}` fills until the
+  rendered value occupies twelve terminal columns, so `"café 東京 🍜"` (17 bytes,
+  9 characters, 12 columns) is already full and `"ok"` gets ten spaces. Byte
+  padding lined up only ASCII; there is no caller that wanted it for anything
+  else. `s.width()` is the same measure, spelled out.
 - **There is no `+` for strings.** Building strings happens through interpolation, `std.fmt` (sprintf-style: padding, precision, alignment), or `list.join(sep)`. One way to do it, and it's the readable one.
 - Escapes: `\n \t \r \0 \\ \" \{ \}`. The backslash forms are the *only* brace
   escapes: `{{` is not one. A `{` right after another `{` begins an
@@ -368,6 +373,31 @@ fn main() {
 `count_chars(from, to)` for a checked, allocation-free byte range scan,
 `find_byte(byte, from) -> int` (`-1` when absent), `range_equals(from, to, other)`,
 and `parse_int_range_or(from, to, fallback)` for allocation-free byte-range work.
+
+`width() -> int` is the third measure, beside `len()` in bytes and
+`chars().len()` in characters: how many terminal columns the string occupies.
+It is what `{s:N}` and `std.fmt`'s pads fill to. The rules, from the Unicode
+Character Database (`tools/gen_width_table.py` regenerates the tables in
+`runtime/beans_rt.c`; the shipped ones are Unicode 17.0.0):
+
+- East_Asian_Width `W` and `F`, and anything with `Emoji_Presentation`, take
+  two columns; everything else takes one.
+- Combining marks (`Mn`, `Me`), format characters (`Cf`), control characters
+  (`Cc`), conjoining Hangul jamo (`V`, `T`) and the emoji skin-tone modifiers
+  take none. `U+00AD SOFT HYPHEN` is the one exception: terminals draw it, so
+  it counts one.
+- `U+200D ZERO WIDTH JOINER` welds the next scalar onto the current glyph, so
+  that scalar takes no column either: a four-person family emoji is two
+  columns, not eight.
+- `U+FE0F` promotes the pictograph before it to two columns and `U+FE0E`
+  pulls it back to one, so `❤` is one column and `❤️` is two.
+- Two regional indicators make one flag and two columns; a third starts a new
+  pair.
+- Invalid UTF-8 counts one column per bad byte, which is what a terminal draws
+  for the replacement character it substitutes.
+
+This is a column count, not a grapheme count: a `Mc` spacing mark advances the
+caret and counts one, and no normalization happens first.
 
 ## Bytes (v0.5, implemented)
 
@@ -507,8 +537,8 @@ one owner may move between threads, but concurrent aliases are forbidden.
 
 Interpolation assembles, fmt formats. No printf — the language has no varargs.
 
-- `pad_left(s, width)` / `pad_right(s, width)` — spaces, byte width; already-wide input
-  comes back unchanged.
+- `pad_left(s, width)` / `pad_right(s, width)` — spaces, **display columns**
+  (`string.width()`, not `len()`); already-wide input comes back unchanged.
 - `float(x, places)` — fixed decimals (`3.14`), places clamped to 0..100.
 - `decimal(d, places)` — exact decimals: rounds half-even when narrowing, zero-pads
   when widening. `fmt.decimal(19.995, 2)` is `"20.00"`.

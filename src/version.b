@@ -11,5 +11,5 @@ fn compiler_version() -> string {
 }
 
 fn compiler_banner() -> string {
-    return "beansc 0.1.34 (language 1.0, runtime ABI 11)"
+    return "beansc 0.1.34 (language 1.0, runtime ABI 12)"
 }
