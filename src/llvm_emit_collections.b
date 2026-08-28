@@ -2573,6 +2573,48 @@ partial class LlvmTextEmitter {
         return none
     }
 
+    // The pointer a place chain names: the setup IR, then the register that
+    // holds the address. The array-element store and the record-field store
+    // both go through here so the two cannot answer a different address for
+    // the same chain. The root goes through local_value_address because a
+    // captured or escaping local's slot holds a cell pointer, not the value
+    // — geping off the slot itself would write over the cell pointer.
+    fn place_address(
+        function: MirFunction,
+        place: LlvmBorrowedPlace) -> LlvmSlotConversion {
+        var setup: string = ""
+        var pointer: string = ""
+        if place.root_local >= 0 {
+            if place.root_local < function.locals.len() {
+                let root: MirLocal =
+                    function.locals[place.root_local]
+                let slot: LlvmSlotConversion =
+                    self.local_value_address(root)
+                setup = slot.setup
+                pointer = slot.value
+            } else {
+                pointer = "%l{place.root_local}"
+            }
+        } else {
+            pointer = place.root_register
+        }
+        for step: LlvmPlaceStep in place.steps {
+            let next: int = self.fresh()
+            if step.kind == "struct" {
+                setup =
+                    "{setup}  %place.step{next} = getelementptr {step.aggregate}, ptr {pointer}, i64 0, i32 {step.index}\n"
+            } else if step.kind == "class" {
+                setup =
+                    "{setup}  %place.step{next} = getelementptr i8, ptr {pointer}, i64 {step.index}\n"
+            } else {
+                setup =
+                    "{setup}  %place.step{next} = getelementptr {step.aggregate}, ptr {pointer}, i64 0, i64 {step.register}\n"
+            }
+            pointer = "%place.step{next}"
+        }
+        return new LlvmSlotConversion(setup, pointer)
+    }
+
     // writing an array element goes through the storage the array was
     // read out of — a store into the borrowed SSA copy would be
     // discarded. The place chain walks locals, struct fields, class
@@ -2615,37 +2657,10 @@ partial class LlvmTextEmitter {
                         "LLVM emitter cannot store owned references into an array inside a class object yet — copy the array to a local, update it, and assign it back")
                     return ""
                 }
-                if place.root_local >= 0 {
-                    if place.root_local <
-                           function.locals.len() {
-                        let root: MirLocal =
-                            function.locals[
-                                place.root_local]
-                        let slot: LlvmSlotConversion =
-                            self.local_value_address(root)
-                        address_setup = slot.setup
-                        base_pointer = slot.value
-                    } else {
-                        base_pointer =
-                            "%l{place.root_local}"
-                    }
-                } else {
-                    base_pointer = place.root_register
-                }
-                for step: LlvmPlaceStep in place.steps {
-                    let next: int = self.fresh()
-                    if step.kind == "struct" {
-                        address_setup =
-                            "{address_setup}  %place.step{next} = getelementptr {step.aggregate}, ptr {base_pointer}, i64 0, i32 {step.index}\n"
-                    } else if step.kind == "class" {
-                        address_setup =
-                            "{address_setup}  %place.step{next} = getelementptr i8, ptr {base_pointer}, i64 {step.index}\n"
-                    } else {
-                        address_setup =
-                            "{address_setup}  %place.step{next} = getelementptr {step.aggregate}, ptr {base_pointer}, i64 0, i64 {step.register}\n"
-                    }
-                    base_pointer = "%place.step{next}"
-                }
+                let slot: LlvmSlotConversion =
+                    self.place_address(function, place)
+                address_setup = slot.setup
+                base_pointer = slot.value
             }
             none => {
                 self.fail(

@@ -2380,8 +2380,12 @@ partial class LlvmTextEmitter {
             none => {}
         }
         if record_struct {
-            // a record is an SSA aggregate everywhere else, so an
-            // assignment writes through the local's own storage
+            // A record is an SSA aggregate everywhere else, so the store
+            // has to reach the storage that copy was read out of. The place
+            // chain says where that is — a local's slot, or a byte offset
+            // inside a heap object — through as many struct fields and
+            // fixed-array elements as the source wrote. It is the same
+            // chain an array element store walks.
             match self.record_layout(receiver_type) {
                 some(layout) => {
                     if !layout.field_indices.contains_key(
@@ -2393,16 +2397,28 @@ partial class LlvmTextEmitter {
                             "LLVM emitter cannot find field '{name}' in {render_hir_type(receiver_type)}")
                         return ""
                     }
-                    if !self.borrowed_local_of.contains_key(
-                         receiver_id) {
-                        self.fail(
-                            instruction,
-                            "LLVM emitter needs a plain local behind this record assignment")
-                        return ""
+                    var address_setup: string = ""
+                    var base_pointer: string = ""
+                    // The heap object the record lives in, or "" when it
+                    // lives in a stack slot. It is the cycle collector's
+                    // owner for a reference stored into the record.
+                    var owner: string = ""
+                    match self.place_for(receiver_id) {
+                        some(place) => {
+                            let slot: LlvmSlotConversion =
+                                self.place_address(
+                                    function, place)
+                            address_setup = slot.setup
+                            base_pointer = slot.value
+                            owner = place.root_register
+                        }
+                        none => {
+                            self.fail(
+                                instruction,
+                                "LLVM emitter needs storage behind this record assignment")
+                            return ""
+                        }
                     }
-                    let target: int =
-                        self.borrowed_local_of[
-                            receiver_id]
                     let field_type: HirType =
                         layout.field_types[name]
                     let type: string =
@@ -2413,13 +2429,13 @@ partial class LlvmTextEmitter {
                             instruction.operands[1],
                             instruction)
                     let address: int = self.fresh()
-                    var output: string = ""
+                    var output: string = address_setup
                     if layout.is_union {
                         output =
-                            "  %field.assign.ptr{address} = getelementptr i8, ptr %l{target}, i64 0\n"
+                            "{output}  %field.assign.ptr{address} = getelementptr i8, ptr {base_pointer}, i64 0\n"
                     } else {
                         output =
-                            "  %field.assign.ptr{address} = getelementptr {llvm_record_instance_name(layout.instance)}, ptr %l{target}, i32 0, i32 {layout.field_indices[name]}\n"
+                            "{output}  %field.assign.ptr{address} = getelementptr {llvm_record_instance_name(layout.instance)}, ptr {base_pointer}, i32 0, i32 {layout.field_indices[name]}\n"
                     }
                     if operation != "=" {
                         let access: string =
@@ -2438,6 +2454,26 @@ partial class LlvmTextEmitter {
                         }
                     if self.type_has_owned_refs(
                            field_type) {
+                        // A record inside a heap object is owned by that
+                        // object, so a reference stored into it needs the
+                        // same publication barrier a direct class field
+                        // store emits. A record in a stack slot has no
+                        // shared owner and needs none.
+                        let barrier: string =
+                            if owner == "" {
+                                ""
+                            } else {
+                                self.emit_cc_write(
+                                    owner, field_type,
+                                    stored, "field")
+                            }
+                        let publish: string =
+                            if owner == "" {
+                                ""
+                            } else {
+                                self.emit_cc_publish(
+                                    owner, field_type)
+                            }
                         let previous: int =
                             self.fresh()
                         let old: string =
@@ -2446,7 +2482,7 @@ partial class LlvmTextEmitter {
                             self.emit_arc_value(
                                 field_type, old,
                                 false)
-                        return "{output}  {old} = load {type}, ptr %field.assign.ptr{address}{access}\n  store {type} {stored}, ptr %field.assign.ptr{address}{access}\n{release}"
+                        return "{output}{barrier}  {old} = load {type}, ptr %field.assign.ptr{address}{access}\n  store {type} {stored}, ptr %field.assign.ptr{address}{access}\n{publish}{release}"
                     }
                     return "{output}  store {type} {stored}, ptr %field.assign.ptr{address}{access}\n"
                 }

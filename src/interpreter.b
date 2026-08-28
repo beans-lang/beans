@@ -11355,9 +11355,18 @@ class TreeInterpreter {
         }
         if target.kind == "field" &&
            target.children.len() == 1 {
+            // The storage the field lives in, not a copy of it. A plain
+            // read of a record hands back an independent wrapper, so a
+            // write through `n.inner.x` would land in that wrapper and
+            // vanish — the same reason the element-assignment path has
+            // always walked the place instead of evaluating it.
             let receiver: TreeValue =
-                self.expression(
+                self.place_receiver(
                     target.children[0], frame)
+            if receiver.kind == "propagate" {
+                return TreeExec.next()
+            }
+            if self.failed { return TreeExec.next() }
             match self.declaration(receiver.text) {
                 some(declaration) => {
                     if declaration.kind == "union" {

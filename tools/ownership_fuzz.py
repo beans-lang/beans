@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Structural fuzzing for the two rules that decide who may touch a value.
+"""Structural fuzzing for the rules that decide who may touch a value.
 
-Both rules are about the same thing — how many names a mutable value may have
-at once — and both are invisible at runtime when they go wrong, which is why
-they need a fuzzer rather than a few hand-written cases.
+All three rules are about the same thing — how many names a mutable value may
+have at once — and each is invisible at runtime when it goes wrong, which is
+why they need a fuzzer rather than a few hand-written cases.
 
   Confinement.  `Mutex<T>` crosses a thread boundary when the lock is the only
   way in. For a move-only T it is: the constructor consumes the value and
@@ -16,10 +16,17 @@ they need a fuzzer rather than a few hand-written cases.
   two mutating names for one value. A random read pattern decides whether the
   program has two, and again the model decides it independently.
 
+  Move-in write.  `m[k] = v` on that same map is a move, not the copy the read
+  would be, so it is accepted where the read is refused. The model accepts a
+  fresh value written by bracket and an existing local moved in, and refuses
+  the read-by-index and a local left un-moved — the boundary that keeps the
+  loosened rule from swallowing the read rule beside it.
+
 Accepted programs must also run: every counter is exact because a lock
-serializes, so a hole in either rule shows up as a wrong number and not as a
-flake. Rejected programs must be rejected for the stated reason — accepting
-bad code and changing the reason both fail the run.
+serializes and every measure is a fixed size, so a hole in any rule shows up
+as a wrong number and not as a flake. Rejected programs must be rejected for
+the stated reason — accepting bad code and changing the reason both fail the
+run.
 """
 
 import argparse
@@ -424,6 +431,158 @@ def map_case(rng, index):
     return Program(f"map_{pattern}_{value}", source, expected)
 
 
+# ---- family three: moving a value into a map by bracket ---------------------
+#
+# `m[k] = v` on a map of move-only values is a move-in — the same transfer
+# m.set(k, v) does — and the rule is asymmetric on purpose. Reading one out by
+# index (family two) would copy the map's own value and stays refused; writing
+# one in is accepted, because a store is not a copy. Both bracket forms once
+# quoted the read's refusal, so the write was refused for a reason that
+# described an operation it was not doing.
+#
+# The model accepts every bracket write of a fresh move-only value and of an
+# existing local moved in, and refuses the read-by-index and the write of a
+# local left un-moved. An accepted program also has to run and count exactly:
+# a write the backend drops shows up as a missing value, and an overwrite that
+# does not release-then-store shows up as the wrong measure. Reverting the
+# rule refuses the fresh and moved-in writes, and the run fails at check.
+
+WRITE_VALUES = ("Bytes", "list", "slot")
+WRITE_PATTERNS = ("fresh", "overwrite", "move_local", "read_index", "no_move")
+
+
+def write_value(kind, index):
+    """A move-only map value: render, decls, three (builder, measure) values,
+    and how a bound name of it measures to the int the program prints."""
+    if kind == "Bytes":
+        return (
+            "Bytes",
+            [],
+            [
+                ('Bytes.from("AAAA")', 4),
+                ('Bytes.from("BBBBBB")', 6),
+                ('Bytes.from("CC")', 2),
+            ],
+            lambda name: "{" + name + ".len()}",
+        )
+    if kind == "list":
+        return (
+            "List<int>",
+            [],
+            [("[1, 2, 3]", 3), ("[7]", 1), ("[4, 5]", 2)],
+            lambda name: "{" + name + ".len()}",
+        )
+    slot = f"W{index}_Slot"
+    decls = [
+        f"unique class {slot} {{\n"
+        f"    pub hits: int\n"
+        f"    fn init(hits: int) {{ self.hits = hits }}\n"
+        f"}}"
+    ]
+    return (
+        slot,
+        decls,
+        [(f"new {slot}(5)", 5), (f"new {slot}(6)", 6), (f"new {slot}(7)", 7)],
+        lambda name: "{" + name + ".hits}",
+    )
+
+
+def compose_main(decls, body):
+    return (
+        "\n\n".join(
+            ["import std.io"] + decls + [f"fn main() {{\n{body}\n}}"]
+        )
+        + "\n"
+    )
+
+
+def map_write_case(rng, index):
+    kind = rng.choice(WRITE_VALUES)
+    pattern = rng.choice(WRITE_PATTERNS)
+    render, decls, vals, measure = write_value(kind, index)
+
+    # Each key is read alone in its own arm, so no two reads of a move-only
+    # value are ever live at once — that is family two's rule, and this family
+    # composes with it rather than leaning on it.
+    def read_block(key, binding, tag):
+        hit = '            io.println("' + tag + " " + measure(binding) + '")'
+        return (
+            f'    match store.get("{key}") {{\n'
+            f"        some({binding}) => {{\n"
+            f"{hit}\n"
+            f"        }}\n"
+            f'        none => {{ io.println("{tag} miss") }}\n'
+            f"    }}"
+        )
+
+    head = f"    var store: Map<string, {render}> = {{}}"
+
+    if pattern == "fresh":
+        body = (
+            f"{head}\n"
+            f'    store["k0"] = {vals[0][0]}\n'
+            f'    store["k1"] = {vals[1][0]}\n'
+            f'{read_block("k0", "a", "k0")}\n'
+            f'{read_block("k1", "b", "k1")}'
+        )
+        expected = f"k0 {vals[0][1]}\nk1 {vals[1][1]}\n"
+        return Program(f"map_write_fresh_{kind}", compose_main(decls, body), expected)
+
+    if pattern == "overwrite":
+        # k0 is written, then overwritten: the first value must be released and
+        # the third stored, which the printed measure of the third confirms.
+        body = (
+            f"{head}\n"
+            f'    store["k0"] = {vals[0][0]}\n'
+            f'    store["k0"] = {vals[2][0]}\n'
+            f'    store["k1"] = {vals[1][0]}\n'
+            f'{read_block("k0", "a", "k0")}\n'
+            f'{read_block("k1", "b", "k1")}'
+        )
+        expected = f"k0 {vals[2][1]}\nk1 {vals[1][1]}\n"
+        return Program(
+            f"map_write_overwrite_{kind}", compose_main(decls, body), expected
+        )
+
+    if pattern == "move_local":
+        body = (
+            f"{head}\n"
+            f"    let held: {render} = {vals[0][0]}\n"
+            f'    store["k0"] = move held\n'
+            f'{read_block("k0", "a", "k0")}'
+        )
+        expected = f"k0 {vals[0][1]}\n"
+        return Program(
+            f"map_write_move_local_{kind}", compose_main(decls, body), expected
+        )
+
+    if pattern == "read_index":
+        # A write, accepted, then a read of the same value by index — refused.
+        # The file has exactly the one error, and it names the way out.
+        body = (
+            f"{head}\n"
+            f'    store["k0"] = {vals[0][0]}\n'
+            f'    let taken: {render} = store["k0"]'
+        )
+        return Rejected(
+            f"map_write_read_index_{kind}",
+            compose_main(decls, body),
+            "read it with get(key)",
+        )
+
+    # no_move: an existing move-only local written in without `move`.
+    body = (
+        f"{head}\n"
+        f"    let held: {render} = {vals[0][0]}\n"
+        f'    store["k0"] = held'
+    )
+    return Rejected(
+        f"map_write_no_move_{kind}",
+        compose_main(decls, body),
+        "needs 'move held'",
+    )
+
+
 # ---- driver -----------------------------------------------------------------
 
 LANE_FLAGS = {"debug": ["--debug"], "release": ["--release"], "lto": ["--lto"]}
@@ -535,7 +694,7 @@ def main():
         for offset in range(args.cases):
             case_index = args.start + offset
             rng = random.Random(f"{args.seed}:{case_index}")
-            for build_case in (mutex_case, map_case):
+            for build_case in (mutex_case, map_case, map_write_case):
                 case = build_case(rng, case_index)
                 root = tmp / f"{case_index}-{case.name}"
                 root.mkdir(parents=True, exist_ok=True)

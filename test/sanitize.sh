@@ -100,6 +100,14 @@ run_asan test/cases/shared_publication.b shared_publication
 run_asan examples/stdlib_beans.b stdlib_beans
 run_asan examples/ffi.b ffi
 run_asan test/cases/move_ok.b move_ok
+# A discard still owns and drops its value, and a struct field is written
+# through the storage the struct lives in — including a reference stored into
+# a record inside a heap object, which takes the publication barrier. Both are
+# lifetime claims the arc-marker parity gate counts; here the same programs run
+# under ASan/UBSan so a drop that lands on the wrong address or a barrier that
+# frees early surfaces as a real memory error rather than only a wrong count.
+run_asan test/cases/parity/discard_binding.b discard_binding
+run_asan test/cases/parity/record_place.b record_place
 run_asan examples/regress_mem.b regress_mem 3
 run_asan test/cases/decimal_precision.b decimal_precision
 run_asan test/cases/decimal_extrema.b decimal_extrema
@@ -329,7 +337,9 @@ if [[ "$(uname -s)" == Darwin ]] && command -v leaks >/dev/null 2>&1; then
                 examples/simd_families.b examples/resources.b \
                 test/cases/map_models.b test/cases/decimal_precision.b \
                 test/cases/reflect_value.b test/cases/reflect_fields.b \
-                test/cases/reflect_calls.b test/cases/reflect_construct.b; do
+                test/cases/reflect_calls.b test/cases/reflect_construct.b \
+                test/cases/parity/discard_binding.b \
+                test/cases/parity/record_place.b; do
         echo "leaks checking $file"
         name=$(basename "$file" .b)
         ./build/beansc build "$file" -o "$out/${name}_leaks" >/dev/null
