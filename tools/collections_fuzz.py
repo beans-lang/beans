@@ -110,6 +110,61 @@ def gen_set(rng, ops):
     body.append("    for member: int in s.items() { total += member }")
     body.append('    io.println("sum {total} len {s.len()}")')
     expected.append(f"sum {sum(model)} len {len(model)}")
+
+    # A second set, drawn from the same value range so it overlaps, then every
+    # algebra method against the first. Each is emitted both as s.op(t) and
+    # t.op(s): when the two sets differ in size — the common case for two random
+    # subsets — that single pair takes both the walk-smaller and the
+    # clone-larger branch, so a branch selected wrong is a wrong answer here.
+    # A set is order-independent, so results are summed and counted, never
+    # listed; predicates print their bool.
+    body.append("    var t: collections.Set<int> = new()")
+    other = set()
+    for _ in range(rng.randint(0, ops)):
+        value = rng.randint(0, 20)
+        body.append(f"    t.add({value})")
+        other.add(value)
+
+    binding = 0
+
+    def emit_set(tag, expr, members):
+        nonlocal binding
+        name = f"r{binding}"
+        binding += 1
+        body.append(f"    let {name}: collections.Set<int> = {expr}")
+        body.append(f'    io.println("{tag} {{set_sum({name})}} {{{name}.len()}}")')
+        expected.append(f"{tag} {sum(members)} {len(members)}")
+
+    def emit_bool(tag, expr, truth):
+        body.append(f'    io.println("{tag} {{{expr}}}")')
+        expected.append(f"{tag} {'true' if truth else 'false'}")
+
+    emit_set("union_st", "s.union_with(t)", model | other)
+    emit_set("union_ts", "t.union_with(s)", model | other)
+    emit_set("inter_st", "s.intersection(t)", model & other)
+    emit_set("inter_ts", "t.intersection(s)", model & other)
+    emit_set("diff_st", "s.difference(t)", model - other)
+    emit_set("diff_ts", "t.difference(s)", other - model)
+    emit_set("sym_st", "s.symmetric_difference(t)", model ^ other)
+    emit_set("sym_ts", "t.symmetric_difference(s)", other ^ model)
+    emit_bool("subset_st", "s.is_subset_of(t)", model <= other)
+    emit_bool("subset_ts", "t.is_subset_of(s)", other <= model)
+    emit_bool("superset_st", "s.is_superset_of(t)", model >= other)
+    emit_bool("superset_ts", "t.is_superset_of(s)", other >= model)
+    emit_bool("disjoint_st", "s.is_disjoint_from(t)", model.isdisjoint(other))
+    emit_bool("disjoint_ts", "t.is_disjoint_from(s)", other.isdisjoint(model))
+    emit_bool("equal_st", "s.equals(t)", model == other)
+    emit_bool("equal_ts", "t.equals(s)", other == model)
+
+    # A set against itself: the clone-then-walk union must not be confused by
+    # its source and its copy sharing every member.
+    emit_set("self_union", "s.union_with(s)", model)
+    emit_set("self_inter", "s.intersection(s)", model)
+    emit_set("self_diff", "s.difference(s)", set())
+    emit_set("self_sym", "s.symmetric_difference(s)", set())
+    emit_bool("self_equal", "s.equals(s)", True)
+    emit_bool("self_subset", "s.is_subset_of(s)", True)
+
     return body, expected
 
 
@@ -381,6 +436,12 @@ fn opt_of(value: Option<int>) -> string {
         some(inner) => { return "{inner}" }
         none => { return "none" }
     }
+}
+
+fn set_sum(s: collections.Set<int>) -> int {
+    var total: int = 0
+    for member: int in s.items() { total += member }
+    return total
 }
 """
 
