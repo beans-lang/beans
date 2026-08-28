@@ -33,120 +33,126 @@ package collections
 ///
 /// `P` must be `Order & Clone` and `V` must be `Clone`, because both are read
 /// back out; a move-only payload such as `Bytes` is refused.
+///
+/// **Storage is one list of entries, sifted with a hole.** Priority, payload
+/// and sequence travel together in a single `Entry`, so one bounds check reads
+/// a whole entry and one write stores one. `push` and `pop` do not swap; they
+/// carve a hole where the removed entry was and slide parents or children into
+/// it, one entry read and one entry write per level, and drop the held entry
+/// in once at the end. `push` and `pop` are O(log n); `peek`, `peek_priority`,
+/// `len` and `is_empty` are O(1). A comparison reads only the priority and the
+/// sequence of the two entries it is handed and never touches the payload, so
+/// ordering an `<int, string>` queue never retains a string.
 pub class PriorityQueue<P implements Order & Clone, V implements Clone> {
-    priorities: List<P> = []
-    values: List<V> = []
-    sequences: List<int> = []
+    entries: List<Entry<P, V>> = []
     next_sequence: int = 0
 
     /// An empty queue.
     pub fn init() {}
 
-    /// Add `value` under `priority`.
+    /// Add `value` under `priority`. O(log n): the new entry is appended and
+    /// sifted toward the root through a hole until a parent it does not sort
+    /// before stops it.
     pub fn push(priority: P, value: V) {
-        self.priorities.push(priority)
-        self.values.push(value)
-        self.sequences.push(self.next_sequence)
+        let entry: Entry<P, V> = Entry {
+            priority: priority,
+            value: value,
+            sequence: self.next_sequence,
+        }
         self.next_sequence += 1
-        self.sift_up(self.values.len() - 1)
+        self.entries.push(entry)
+        let last: int = self.entries.len() - 1
+        var hole: int = last
+        for hole > 0 {
+            let parent: int = (hole - 1) / 2
+            if !self.sorts_before(entry, self.entries[parent]) { break }
+            self.entries[hole] = self.entries[parent]
+            hole = parent
+        }
+        // `push` already left an equal copy at `last`, so only write the held
+        // entry back when the hole actually moved.
+        if hole != last {
+            self.entries[hole] = entry
+        }
     }
 
-    /// The smallest-priority value, without removing it.
+    /// The smallest-priority value, without removing it. O(1).
     pub fn peek() -> Option<V> {
-        if self.values.len() == 0 { return none }
-        return some(self.values[0])
+        if self.entries.len() == 0 { return none }
+        return some(self.entries[0].value)
     }
 
     /// The smallest priority, without removing its entry. This is the "when
-    /// does the next thing happen" question, answered without taking it.
+    /// does the next thing happen" question, answered without taking it. O(1).
     pub fn peek_priority() -> Option<P> {
-        if self.priorities.len() == 0 { return none }
-        return some(self.priorities[0])
+        if self.entries.len() == 0 { return none }
+        return some(self.entries[0].priority)
     }
 
-    /// Remove and answer the smallest-priority value.
+    /// Remove and answer the smallest-priority value. O(log n): the tail entry
+    /// is lifted out and sifted down from the root through a hole, each level
+    /// taking the smaller child, until neither child sorts before it.
     pub fn pop() -> Option<V> {
-        if self.values.len() == 0 { return none }
-        let top: V = self.values[0]
-        let last: int = self.values.len() - 1
-        if last > 0 {
-            self.priorities[0] = self.priorities[last]
-            self.values[0] = self.values[last]
-            self.sequences[0] = self.sequences[last]
-        }
-        self.priorities.remove(last)
-        self.values.remove(last)
-        self.sequences.remove(last)
-        if self.values.len() > 1 {
-            self.sift_down(0)
+        if self.entries.len() == 0 { return none }
+        let top: V = self.entries[0].value
+        match self.entries.pop() {
+            some(last) => {
+                let count: int = self.entries.len()
+                if count > 0 {
+                    var hole: int = 0
+                    for {
+                        var child: int = hole * 2 + 1
+                        if child >= count { break }
+                        let right: int = child + 1
+                        if right < count && self.sorts_before(self.entries[right], self.entries[child]) {
+                            child = right
+                        }
+                        if !self.sorts_before(self.entries[child], last) { break }
+                        self.entries[hole] = self.entries[child]
+                        hole = child
+                    }
+                    // The root slot still holds the entry just returned; the
+                    // held tail entry always lands, even when it stays at 0.
+                    self.entries[hole] = last
+                }
+            }
+            none => {}
         }
         return some(top)
     }
 
-    /// How many entries.
+    /// How many entries. O(1).
     pub fn len() -> int {
-        return self.values.len()
+        return self.entries.len()
     }
 
-    /// True while the queue holds nothing.
+    /// True while the queue holds nothing. O(1).
     pub fn is_empty() -> bool {
-        return self.values.len() == 0
+        return self.entries.len() == 0
     }
 
     /// Drop every entry. The push counter keeps running, so tie order stays
     /// consistent across a clear.
     pub fn clear() {
-        self.priorities.clear()
-        self.values.clear()
-        self.sequences.clear()
+        self.entries.clear()
     }
 
-    // Entry `left` sorts before entry `right`: smaller priority first, and
-    // among equal priorities the earlier push.
-    fn sorts_before(left: int, right: int) -> bool {
-        let a: P = self.priorities[left]
-        let b: P = self.priorities[right]
-        if a < b { return true }
-        if b < a { return false }
-        return self.sequences[left] < self.sequences[right]
+    // `left` sorts before `right`: smaller priority first, and among equal
+    // priorities the earlier push. Reads only the priority and the sequence of
+    // the two entries, so it never retains a payload; both entries arrive as
+    // borrows, so no entry is copied to compare it.
+    fn sorts_before(left: Entry<P, V>, right: Entry<P, V>) -> bool {
+        if left.priority < right.priority { return true }
+        if right.priority < left.priority { return false }
+        return left.sequence < right.sequence
     }
+}
 
-    fn swap(left: int, right: int) {
-        let priority: P = self.priorities[left]
-        self.priorities[left] = self.priorities[right]
-        self.priorities[right] = priority
-        let value: V = self.values[left]
-        self.values[left] = self.values[right]
-        self.values[right] = value
-        let sequence: int = self.sequences[left]
-        self.sequences[left] = self.sequences[right]
-        self.sequences[right] = sequence
-    }
-
-    fn sift_up(start: int) {
-        var index: int = start
-        for index > 0 {
-            let parent: int = (index - 1) / 2
-            if !self.sorts_before(index, parent) { return }
-            self.swap(index, parent)
-            index = parent
-        }
-    }
-
-    fn sift_down(start: int) {
-        let count: int = self.values.len()
-        var index: int = start
-        for {
-            let left: int = index * 2 + 1
-            if left >= count { return }
-            var smallest: int = left
-            let right: int = left + 1
-            if right < count && self.sorts_before(right, left) {
-                smallest = right
-            }
-            if !self.sorts_before(smallest, index) { return }
-            self.swap(index, smallest)
-            index = smallest
-        }
-    }
+// Priority, payload and sequence in one cache line's worth of struct, so a
+// single indexed read or write moves a whole heap entry. Module-private: it is
+// the queue's storage, not part of its surface.
+struct Entry<P, V> {
+    priority: P
+    value: V
+    sequence: int
 }
