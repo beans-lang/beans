@@ -23,11 +23,14 @@
 //
 // A pop from an empty end does not rebuild the other end element by element;
 // it moves HALF of it across as block handles (`remove(len-1)` + `push(move)`,
-// O(1) each) and reverses only the moved blocks' contents in C. Halving rather
-// than moving everything is what keeps the amortized cost O(1) per element
-// when pushes and pops alternate between the ends; moving all of it would let
-// an alternating pattern pay O(n/BLOCK) every turn. A single crossover is
-// O(BLOCK + n/BLOCK) worst case; a lone block is split in two instead.
+// O(1) each) and flips each moved block's contents with one C `reverse`, never
+// a Beans-level per-element copy. That C reverse still touches the elements it
+// moves, so a single crossover is O(k) in the k elements it carries — up to
+// O(n) for one unlucky pop. Halving is what amortizes it: across a run of pops
+// each element is carried across at most O(1) times (n/2 + n/4 + ... = n), so
+// the amortized cost stays O(1) per pop. Moving ALL of the far end instead
+// would let pops alternating between the two ends pay O(n) every turn. A lone
+// block is split down its middle rather than moved.
 
 package collections
 
@@ -47,10 +50,13 @@ package collections
 ///
 /// Elements live in fixed 512-slot blocks held by two stacks of block handles,
 /// the front stack reversed so both ends grow by `push`. An element body is
-/// written once on a push and read once on a pop; it is never shifted, and a
-/// rebalance across the middle moves block handles, not element bodies. `get`,
-/// `first`, `last`, `len` and `is_empty` are O(1); `push_*` and `pop_*` are
-/// amortized O(1); `clear` and `to_list` are O(n).
+/// written once on a push and read once on a pop; it is never shifted by an
+/// insert or a remove. A rebalance across the middle moves whole blocks by
+/// their handle and flips a moved block's contents with one C `reverse`, rather
+/// than copying elements across one at a time. `get`, `first`, `last`, `len`
+/// and `is_empty` are O(1); `push_*` and `pop_*` are amortized O(1) — a pop that
+/// triggers a rebalance is O(k) in the elements it carries but such carries
+/// amortize to O(1) per pop; `clear` and `to_list` are O(n).
 pub class Deque<T implements Clone> {
     // front[len-1] is the head block; a front block is stored reversed.
     front: List<List<T>> = []
