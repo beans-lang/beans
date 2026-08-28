@@ -215,6 +215,7 @@ test-runtime: $(BIN)
 	./test/tls.sh
 	./test/websocket.sh
 	./test/signals.sh
+	./test/term.sh
 	./test/dylib.sh
 	./test/child.sh
 	bash ./test/encoding.sh
@@ -397,6 +398,7 @@ test-core: $(BIN)
 	./test/tls.sh
 	./test/websocket.sh
 	./test/signals.sh
+	./test/term.sh
 	./test/dylib.sh
 	./test/child.sh
 

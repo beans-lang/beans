@@ -163,5 +163,11 @@ for its own architecture — the per-architecture fixed point.
   *is* detected, via `PF_ARM_V82_FP16_INSTRUCTIONS_AVAILABLE`.
 - **`std.asm` and `intrinsic.crc32c` are refused on i686**, for the reasons in
   spec/SYNTAX.md's refusal table.
+- **`std.term` raw mode is refused on every Windows target.** `is_tty` and
+  `size` work through the console API (`_isatty`, `GetConsoleScreenBufferInfo`),
+  but `RawMode.enter` returns `err` with kind `unsupported` rather than a
+  half-configured console: the console-mode plus virtual-terminal-input path is
+  not driven yet. A TUI that checks the result degrades cleanly; one that
+  unwraps sees the gap in a sentence. macOS and Linux are complete.
 - **No ARM64EC target.** ARM64EC is a different mixed x64/ARM64 ABI, not an
   alias for ARM64 MSVC.

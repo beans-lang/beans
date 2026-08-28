@@ -2548,6 +2548,71 @@ poll.wake(signal)?                                        // from a worker
 - `Poller` is a `unique class`, closed by `deinit`, like every other resource. The
   low-level layer is `std.ready`.
 
+### std.term (v1.0, implemented)
+
+```beans
+import std.term
+import std.proc
+
+if !term.is_tty(0) { return }
+let size: term.Size = term.size(0)?                       // ioctl(TIOCGWINSZ), in the runtime's C
+let raw: term.RawMode = term.RawMode.enter(0)?            // restored on drop, exit, and panic
+
+var frame: term.Frame = new term.Frame()
+frame.enter_alt_screen()
+frame.hide_cursor()
+frame.clear()
+frame.move_to(1, 1)
+frame.fg(2)
+frame.text("hello, {size.rows}x{size.cols}")
+frame.reset_style()
+frame.flush(1)?                                            // one unbuffered write(2)
+
+var keys: term.KeyDecoder = new term.KeyDecoder()
+keys.feed(proc.read(0, 64)?)                              // a read can split a sequence
+for going {
+    match keys.next() {                                   // holds an incomplete sequence
+        some(key) => { match key { up(mods) => { ... } char(c) => { ... } _ => {} } }
+        none => { going = false }                         // feed more and call again
+    }
+}
+```
+
+- **The struct-shaped calls live in the runtime's C**, because their layout is the
+  platform's: `struct termios` is 72 bytes on macOS and 60 on Linux, and `struct
+  winsize` and the Windows console have no portable Beans spelling. `is_tty`, `size`,
+  and raw mode set/restore are four `beans_term_*` entry points; everything with a
+  portable shape — the ANSI writers, the CSI decoder — is Beans.
+- **`RawMode.enter(fd)`** puts a terminal into raw mode — no echo, no line buffering, no
+  signal generation (`Ctrl-C` is delivered as the byte `0x03`, not `SIGINT`), no input or
+  output translation — and hands back a `unique class` guard. `err` with kind `invalid`
+  when `fd` is not a terminal, kind `unsupported` where raw mode is not offered.
+- **Restore is guaranteed on three paths and honest about the fourth.** The guard
+  restores cooked mode on `restore()`, on going out of scope (`deinit`), and — because the
+  runtime registers the restore with `atexit` — on a normal exit and on a **panic**, which
+  reaches `exit()` without unwinding on both backends. What it does **not** cover is a
+  crash by `SIGSEGV`/`SIGBUS`: only the runtime's fault reporter runs then, and it is
+  fenced to flushing output (adding a second signal disposition is what `test/signals.sh`
+  forbids). A full-screen program watches `terminate` and `hangup` through `std.signal`
+  and restores from its own loop, which needs no handler.
+- **`Frame`** builds a screen's worth of escapes and text and writes it whole:
+  `clear`, `clear_line`, `move_to(row, col)`, `home`, `hide_cursor`/`show_cursor`,
+  `enter_alt_screen`/`leave_alt_screen`, `reset_style`, `bold`, `fg`/`bg` (256-colour),
+  `fg_rgb`/`bg_rgb` (24-bit), `text`, `byte`, then `flush(fd)` — one unbuffered `write(2)`,
+  because `io.print` goes through stdio and a frame with no trailing newline would sit in
+  the buffer. `reset` empties it for reuse.
+- **`KeyDecoder`** turns bytes into `Key`s and buffers an incomplete escape sequence
+  across `feed`s, so a sequence **split across two reads** is one key, not two wrong ones.
+  `next()` returns `none` while what is buffered is only a prefix; a lone `ESC` is held as
+  ambiguous and `flush()` — called once input has settled — resolves it to the Escape key.
+  It decodes arrows, Home/End, Page-Up/Down, Insert/Delete, F1–F12, printable characters
+  (UTF-8), `Alt`+key, `Ctrl`+key, Enter, Tab and Backspace, with the xterm modifier mask
+  read back through `has_shift`/`has_alt`/`has_ctrl`.
+- **Platform.** macOS and Linux are complete. On Windows `is_tty` and `size` work through
+  the console API; **raw mode is refused** with kind `unsupported` (the console-mode and
+  virtual-terminal-input path is not driven yet) rather than left half-configured. The
+  freestanding and minimal profiles have no terminal and report the same `unsupported`.
+
 ### std.http (v1.0, implemented)
 
 ```beans

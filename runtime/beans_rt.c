@@ -148,9 +148,11 @@
 #include <netdb.h>
 #include <poll.h>
 #include <sys/file.h>
+#include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
+#include <termios.h>
 #if defined(__linux__)
 #include <sys/epoll.h>
 #include <sys/sendfile.h>
@@ -11889,6 +11891,13 @@ long long beans_net_recv_into_wait(long long fd, void* destination,
     }
 }
 
+// Defined further down, in the terminal section; declared here so this lookup
+// can take their addresses.
+long long beans_term_is_tty(long long fd);
+long long beans_term_size(long long fd, void* out);
+long long beans_term_set_raw(long long fd);
+long long beans_term_restore(long long fd);
+
 // The tree walker resolves `extern "C"` calls through the dynamic loader,
 // which cannot see this executable's own symbols everywhere: an ELF
 // executable exports nothing without --export-dynamic, a PE one nothing at
@@ -11901,6 +11910,17 @@ void* beans_rt_host_symbol(const char* name) {
         return (void*)&beans_net_recv_into_wait;
     if (strcmp(name, "beans_net_send_from_wait") == 0)
         return (void*)&beans_net_send_from_wait;
+    // std.term's bridge. The interpreter reaches these by name; answering here
+    // gives the same address on every platform and keeps the linker from
+    // dropping symbols the natively-compiled interpreter never calls itself.
+    if (strcmp(name, "beans_term_is_tty") == 0)
+        return (void*)&beans_term_is_tty;
+    if (strcmp(name, "beans_term_size") == 0)
+        return (void*)&beans_term_size;
+    if (strcmp(name, "beans_term_set_raw") == 0)
+        return (void*)&beans_term_set_raw;
+    if (strcmp(name, "beans_term_restore") == 0)
+        return (void*)&beans_term_restore;
     return (void*)0;
 }
 
@@ -12195,6 +12215,155 @@ BRes beans_net_resolve(char* host, long long port) {
     return (BRes){(long long)out, NULL};
 }
 long long beans_net_resolve_out(char* host, long long port, void** e_out) { BRes r = beans_net_resolve(host, port); *e_out = r.err; return r.val; }
+
+// ---- terminal (tty) control -------------------------------------------------
+//
+// The struct-shaped half of a terminal lives here, in C, because its layout is
+// the platform's: `struct termios` is 72 bytes on macOS and 60 on Linux, and
+// `struct winsize` and the Windows console API have no portable Beans spelling
+// at all. std.term stands on these four calls and keeps everything with a
+// portable shape — the ANSI writers, the CSI key decoder — in Beans.
+//
+// The return protocol is a plain status, never a struct: 0 on success, a
+// negative value on failure. On POSIX that value is -errno; -1000 means "this
+// platform has no terminal control" (a stub or Windows raw mode). Sizes come
+// back through the caller's out buffer, so a status is never mistaken for a
+// count and no 64-bit length is narrowed on the way out.
+//
+// **Restore is registered with atexit, not with a signal handler.** A raw
+// terminal that outlives the program is the module's worst failure, and exit(3)
+// — which is where both a normal return and a panic end up, on either backend —
+// runs atexit handlers. That covers the ordinary exit and the panic without
+// installing a disposition, which the fault reporter's guard (test/signals.sh)
+// forbids anywhere else in this file. A crash by SIGSEGV/SIGBUS does not run
+// atexit and is not restored here: only the fenced fault reporter runs then, and
+// it is held to flushing output. std.term documents that boundary and asks a TUI
+// to watch SIGTERM/SIGHUP through std.signal, which needs no handler.
+#define RT_TERM_UNSUPPORTED (-1000)
+
+#if BEANS_RT_PROFILE >= BEANS_RT_FULL && !defined(_WIN32)
+// A small table rather than one slot: a program may hold more than one terminal
+// raw at once, and every one of them must be restored at exit. VMIN=1/VTIME=0
+// gives a blocking read that returns as soon as a byte is there, which is what a
+// poll-driven loop and a plain read-a-key loop both want.
+#define RT_TERM_MAX 4
+static struct {
+    int fd;
+    volatile sig_atomic_t active;
+    struct termios saved;
+} rt_term_slots[RT_TERM_MAX];
+static int rt_term_atexit_registered = 0;
+
+static void rt_term_restore_all(void) {
+    for (int i = 0; i < RT_TERM_MAX; i++) {
+        if (rt_term_slots[i].active) {
+            tcsetattr(rt_term_slots[i].fd, TCSANOW, &rt_term_slots[i].saved);
+            rt_term_slots[i].active = 0;
+        }
+    }
+}
+
+long long beans_term_is_tty(long long fd) {
+    return isatty((int)fd) ? 1 : 0;
+}
+
+long long beans_term_size(long long fd, void* out) {
+    struct winsize ws;
+    if (ioctl((int)fd, TIOCGWINSZ, &ws) != 0) return -errno;
+    // Some terminals report a window they cannot size yet (0x0). That is not an
+    // error the caller can act on, so it is reported as one rather than handed
+    // back as a real screen with no rows.
+    if (ws.ws_row == 0 || ws.ws_col == 0) return -ENOTTY;
+    uint16_t* slots = (uint16_t*)out;
+    slots[0] = ws.ws_row;
+    slots[1] = ws.ws_col;
+    return 0;
+}
+
+long long beans_term_set_raw(long long fd) {
+    int d = (int)fd;
+    // A second set_raw on the same descriptor keeps the first save, so restore
+    // always returns the terminal to how the program found it, never to a raw
+    // mode a nested caller left.
+    for (int i = 0; i < RT_TERM_MAX; i++)
+        if (rt_term_slots[i].active && rt_term_slots[i].fd == d) return 0;
+    struct termios current;
+    if (tcgetattr(d, &current) != 0) return -errno;
+    int slot = -1;
+    for (int i = 0; i < RT_TERM_MAX; i++)
+        if (!rt_term_slots[i].active) { slot = i; break; }
+    if (slot < 0) return -EMFILE;
+    struct termios raw = current;
+    // The standard raw make-up, written out rather than cfmakeraw so the flags
+    // that matter are visible: no signal generation (Ctrl-C is a byte, not
+    // SIGINT), no echo, no line buffering, no input or output translation.
+    raw.c_iflag &= ~(tcflag_t)(IGNBRK | BRKINT | PARMRK | ISTRIP |
+                               INLCR | IGNCR | ICRNL | IXON);
+    raw.c_oflag &= ~(tcflag_t)OPOST;
+    raw.c_lflag &= ~(tcflag_t)(ECHO | ECHONL | ICANON | ISIG | IEXTEN);
+    raw.c_cflag &= ~(tcflag_t)(CSIZE | PARENB);
+    raw.c_cflag |= (tcflag_t)CS8;
+    raw.c_cc[VMIN] = 1;
+    raw.c_cc[VTIME] = 0;
+    if (tcsetattr(d, TCSANOW, &raw) != 0) return -errno;
+    rt_term_slots[slot].fd = d;
+    rt_term_slots[slot].saved = current;
+    rt_term_slots[slot].active = 1;
+    if (!rt_term_atexit_registered) {
+        rt_term_atexit_registered = 1;
+        atexit(rt_term_restore_all);
+    }
+    return 0;
+}
+
+long long beans_term_restore(long long fd) {
+    int d = (int)fd;
+    for (int i = 0; i < RT_TERM_MAX; i++) {
+        if (rt_term_slots[i].active && rt_term_slots[i].fd == d) {
+            int rc = tcsetattr(d, TCSANOW, &rt_term_slots[i].saved);
+            rt_term_slots[i].active = 0;
+            if (rc != 0) return -errno;
+            return 0;
+        }
+    }
+    return 0; // never went raw, or already restored: a no-op, not a failure
+}
+
+#elif defined(_WIN32) && BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
+long long beans_term_is_tty(long long fd) {
+    return _isatty((int)fd) ? 1 : 0;
+}
+
+long long beans_term_size(long long fd, void* out) {
+    HANDLE h = (HANDLE)_get_osfhandle((int)fd);
+    if (h == INVALID_HANDLE_VALUE) return -1;
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    if (!GetConsoleScreenBufferInfo(h, &csbi)) return -1;
+    int rows = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
+    int cols = csbi.srWindow.Right - csbi.srWindow.Left + 1;
+    if (rows <= 0 || cols <= 0) return -1;
+    uint16_t* slots = (uint16_t*)out;
+    slots[0] = (uint16_t)rows;
+    slots[1] = (uint16_t)cols;
+    return 0;
+}
+
+// Raw mode on Windows needs the console-mode API and virtual-terminal input,
+// which this runtime does not drive yet. Refused with a defined status rather
+// than left half-configured, so a TUI reports "not supported here" instead of
+// running against a cooked console that silently swallows its keys.
+long long beans_term_set_raw(long long fd) { (void)fd; return RT_TERM_UNSUPPORTED; }
+long long beans_term_restore(long long fd) { (void)fd; return 0; }
+
+#else
+// Freestanding and the minimal POSIX profile: no terminal to control.
+long long beans_term_is_tty(long long fd) { (void)fd; return 0; }
+long long beans_term_size(long long fd, void* out) {
+    (void)fd; (void)out; return RT_TERM_UNSUPPORTED;
+}
+long long beans_term_set_raw(long long fd) { (void)fd; return RT_TERM_UNSUPPORTED; }
+long long beans_term_restore(long long fd) { (void)fd; return 0; }
+#endif
 
 // ---- readiness poller -------------------------------------------------------
 //
