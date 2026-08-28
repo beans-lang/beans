@@ -506,12 +506,33 @@ atomics, and thread entry while more of `core` and `std` move to `.b` files.
 
 **What prints** (same rule for `io.println` and `{x}` interpolation): numbers, bools, strings;
 enums, as `variant` or `variant(payload, ...)`; lists of printable things, as `[a, b, c]`;
-and maps of printable keys and values, as `{k: v, k: v}` — nesting included, and `join(sep)`
-renders the same way. A map renders its entries in **insertion order**, the order `keys()`
-walks: an updated key keeps its place, a removed-then-reinserted one moves to the end, and
-both backends impose the same order so a golden file can pin it. Strings render without
-quotes, the same as inside a list. Class instances don't print yet — give them a string
-form first. (`Result` carries an `Error` object, so it stays unprintable too — match on it.)
+maps of printable keys and values, as `{k: v, k: v}`; and structs and class instances, as
+`Name { field: value, ... }` — nesting included, and `join(sep)` renders the same way. A map
+renders its entries in **insertion order**, the order `keys()` walks: an updated key keeps
+its place, a removed-then-reinserted one moves to the end, and both backends impose the same
+order so a golden file can pin it. Strings render without quotes, the same as inside a list.
+
+A struct or class instance renders its fields **in declaration order**, using the bare type
+name (`Point { x: 1, y: 2 }`, `Empty {}`). The rendering is derived, not customizable in this
+form, and it is the compiler's own view of the value, so:
+
+- A **private** field is shown like any other — hiding half the object would make the debug
+  form lie.
+- A **move-only** field is shown by borrowing it; rendering never moves or consumes a value.
+- A **weak** field prints as `<weak>` and is **not followed**. It is the one edge the cycle
+  collector refuses to trace, and the printer refuses it too — so a cleared weak cannot fault
+  the printer and a back-reference cannot loop it. Its type need not be printable.
+- Static fields belong to the type, not the instance, and never appear.
+- A **reference cycle** prints `<cycle>` where it closes; a shared value that is not on the
+  current path renders in full each time it is reached.
+
+Only a class whose declared type is the one concrete type a value of it can carry prints this
+way: a **leaf, standalone class** (not an interface, not `abstract`, not a base another class
+`extends`, and — until inherited fields render — not itself extending one). A base, an
+interface or an abstract class is refused, because its value's real type is not knowable from
+its declared one and the two backends would render different fields; give it a string form
+first, or match on it. (`Result` carries an `Error` object, so it stays unprintable too —
+match on it.)
 
 [examples/kv.b](examples/kv.b) is the proof: an append-only KV store with binary records and a
 durable compaction (write temp, sync, rename over, sync the parent dir).

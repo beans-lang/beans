@@ -4903,25 +4903,100 @@ class ExpressionChecker {
         }
         match self.declaration_for(type) {
             some(declaration) => {
-                if declaration.kind != "enum" { return false }
                 let key: string = render_hir_type(type)
-                // self-recursive enums hold finite values
+                // self-recursive shapes hold finite values, and a class
+                // graph that loops back is caught at runtime, not here
                 if seen.contains_key(key) { return true }
                 seen[key] = true
-                for variant: HirField in declaration.variants {
-                    for payload: HirType in variant.type.args {
+                if declaration.kind == "enum" {
+                    for variant: HirField in declaration.variants {
+                        for payload: HirType in variant.type.args {
+                            let item: HirType =
+                                self.substitute_owner_type(
+                                    payload, declaration, type)
+                            if !self.printable_in_string_rec(
+                                item, inout seen) {
+                                return false
+                            }
+                        }
+                    }
+                    return true
+                }
+                // A struct or a plain class prints as Name { field: value }.
+                // A struct is a value with no identity and no subtype, so it
+                // is always its own concrete shape. A class prints only when
+                // its declared type is the only type it can be — not an
+                // interface, not abstract, not a base some other class
+                // extends, and (until inherited fields render) not itself a
+                // subclass. Otherwise the value's real type is not knowable
+                // from its declared one, and the two backends would render
+                // different fields.
+                if declaration.kind == "struct" ||
+                   (declaration.kind == "class" &&
+                    self.class_render_ready(declaration)) {
+                    for field: HirField in declaration.fields {
+                        // Static fields belong to the type, and a weak field
+                        // renders as <weak> without being followed — neither
+                        // needs a printable type.
+                        if field.is_static || field.is_weak {
+                            continue
+                        }
                         let item: HirType =
                             self.substitute_owner_type(
-                                payload, declaration, type)
+                                field.type, declaration, type)
                         if !self.printable_in_string_rec(
                             item, inout seen) {
                             return false
                         }
                     }
+                    return true
                 }
-                return true
+                return false
             }
             none => {}
+        }
+        return false
+    }
+
+    // A class whose declared type is the only concrete type a value of it
+    // can carry: a leaf, standalone class. An abstract class is never
+    // instantiated as itself, a base one hands its slot to a subclass, and a
+    // subclass carries inherited fields the derived rendering does not walk
+    // yet — each renders fields the other backend cannot see, so each is
+    // refused rather than rendered two ways.
+    fn class_render_ready(declaration: HirDeclaration) -> bool {
+        if declaration.is_abstract { return false }
+        var index: int = 0
+        for index < declaration.relation_kinds.len() {
+            if declaration.relation_kinds[index] == "extends" {
+                return false
+            }
+            index += 1
+        }
+        return !self.class_is_subclassed(declaration.qualified)
+    }
+
+    // Whether some other declaration extends this class. The rendering of a
+    // base-class slot cannot know which subclass fills it, so a base is
+    // refused rather than rendered as itself on one backend and as the
+    // subclass on the other.
+    fn class_is_subclassed(qualified: string) -> bool {
+        for other: HirDeclaration in self.program.declarations {
+            var index: int = 0
+            for index < other.relation_kinds.len() {
+                if other.relation_kinds[index] == "extends" {
+                    match self.declaration_for(
+                              other.relations[index]) {
+                        some(base) => {
+                            if base.qualified == qualified {
+                                return true
+                            }
+                        }
+                        none => {}
+                    }
+                }
+                index += 1
+            }
         }
         return false
     }

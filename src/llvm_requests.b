@@ -623,6 +623,49 @@ partial class LlvmTextEmitter {
                 return ""
             }
             body = "{body}{pushed}  ret void\n"
+        } else if self.declaration_is_struct(type) {
+            // A struct is a value, so it crosses by address and cannot be a
+            // reference cycle — no path marking, just its fields in
+            // declaration order read from the address the driver handed us.
+            match self.record_layout(type) {
+                some(layout) => {
+                    match self.declaration_for(type) {
+                        some(declaration) => {
+                            let simple: string =
+                                declaration.name
+                            let open_full: string =
+                                self.string_pointer(
+                                    "{simple} \{ ")
+                            let open_empty: string =
+                                self.string_pointer(
+                                    "{simple} \{\}")
+                            let close: string =
+                                self.string_pointer(" \}")
+                            let fields: string =
+                                self.request_record_fields(
+                                    declaration.fields,
+                                    layout.field_offsets,
+                                    layout.field_types,
+                                    "%show.wide.ptr",
+                                    open_full, open_empty,
+                                    close, "rec")
+                            if fields == "" {
+                                self.show_wide_step_functions[key] = ""
+                                return ""
+                            }
+                            body = "{body}{fields}  ret void\n"
+                        }
+                        none => {
+                            self.show_wide_step_functions[key] = ""
+                            return ""
+                        }
+                    }
+                }
+                none => {
+                    self.show_wide_step_functions[key] = ""
+                    return ""
+                }
+            }
         } else {
             self.show_wide_step_functions[key] = ""
             return ""
@@ -630,6 +673,18 @@ partial class LlvmTextEmitter {
         self.ffi_functions.push(
             "define internal void @{symbol}(ptr %c, i64 %raw) \{\n{body}\}\n")
         return symbol
+    }
+
+    // A user struct declaration, told apart from the wide builtins
+    // (decimal, an inline Option, a Slice, a SIMD vector, an inline array)
+    // that also cross a show step by address.
+    fn declaration_is_struct(type: HirType) -> bool {
+        match self.declaration_for(type) {
+            some(declaration) => {
+                return declaration.kind == "struct"
+            }
+            none => { return false }
+        }
     }
 
     // Iterative display steps append their own text and push child work.
@@ -875,6 +930,18 @@ partial class LlvmTextEmitter {
                             self.string_pointer("?")
                         body =
                             "{body}show.variant{id}.bad:\n  call void @beans_show_append(ptr %c, ptr {unknown})\n  ret void\n"
+                    } else if declaration.kind == "class" {
+                        // A class instance prints as Name { field: value }.
+                        // The object arrives as its own pointer, which is
+                        // also its identity on the render path: a reference
+                        // graph may be a cycle, so the object is marked on
+                        // the path and a re-entry prints <cycle> instead of
+                        // running forever. The leave step, pushed under the
+                        // closing brace, takes it back off once every field
+                        // nested under it has rendered.
+                        body =
+                            self.request_class_show_body(
+                                type, declaration)
                     }
                 }
                 none => {}
@@ -887,6 +954,130 @@ partial class LlvmTextEmitter {
         self.ffi_functions.push(
             "define internal void @{symbol}(ptr %c, i64 %v) \{\nentry:\n{body}\}\n")
         return symbol
+    }
+
+    // The fields of a struct or class object at `base` pushed onto the
+    // driver's stack as `{ f0: v0, f1: v1 }` — the open text appended, the
+    // closing brace pushed first so it comes back out last, then each field
+    // pushed in reverse so they pop in declaration order. `base` is a ptr
+    // register already pointing at the object. Returns "" when a field type
+    // has no show step, which makes the whole object unshowable.
+    fn request_record_fields(
+        fields: List<HirField>,
+        field_offsets: Map<string, int>,
+        field_types: Map<string, HirType>,
+        base: string,
+        open_full: string,
+        open_empty: string,
+        close: string,
+        tag: string) -> string {
+        // Static fields belong to the type, not the instance, so an object's
+        // rendering never carries them.
+        var ordered: List<HirField> = []
+        for candidate: HirField in fields {
+            if !candidate.is_static { ordered.push(candidate) }
+        }
+        if ordered.len() == 0 {
+            return "  call void @beans_show_append(ptr %c, ptr {open_empty})\n"
+        }
+        self.require_declare(
+            "beans_show_push_lit",
+            "void @beans_show_push_lit(ptr, ptr)")
+        let comma: string = self.string_pointer(", ")
+        var body: string =
+            "  call void @beans_show_append(ptr %c, ptr {open_full})\n  call void @beans_show_push_lit(ptr %c, ptr {close})\n"
+        var index: int = ordered.len() - 1
+        for index >= 0 {
+            let field: HirField = ordered[index]
+            let offset: int = field_offsets[field.name]
+            // The concrete field type: for a generic owner the declared
+            // field type is a parameter, and only the layout carries what it
+            // was bound to.
+            var field_type: HirType = field.type
+            match field_types.get(field.name) {
+                some(bound) => { field_type = bound }
+                none => {}
+            }
+            let label: string =
+                self.string_pointer("{field.name}: ")
+            if field.is_weak {
+                // A weak field is a non-owning reference — the one edge the
+                // cycle collector refuses to trace. The printer refuses it
+                // too: it prints <weak> without loading the pointer, which a
+                // cleared weak has zeroed and a live one may loop back
+                // through. Its type never has to be printable.
+                let weak_mark: string =
+                    self.string_pointer("<weak>")
+                body =
+                    "{body}  call void @beans_show_push_lit(ptr %c, ptr {weak_mark})\n  call void @beans_show_push_lit(ptr %c, ptr {label})\n"
+                if index > 0 {
+                    body =
+                        "{body}  call void @beans_show_push_lit(ptr %c, ptr {comma})\n"
+                }
+                index -= 1
+                continue
+            }
+            let pointer: string =
+                "%show.field.{tag}.{index}"
+            body =
+                "{body}  {pointer} = getelementptr i8, ptr {base}, i64 {offset}\n"
+            let pushed: string =
+                self.show_step_push_at(
+                    field_type, pointer,
+                    "{tag}.{index}")
+            if pushed == "" { return "" }
+            body = "{body}{pushed}  call void @beans_show_push_lit(ptr %c, ptr {label})\n"
+            if index > 0 {
+                body =
+                    "{body}  call void @beans_show_push_lit(ptr %c, ptr {comma})\n"
+            }
+            index -= 1
+        }
+        return body
+    }
+
+    // The iterative show step body for a class instance. Empty when the
+    // class carries a field no backend can render, so the caller refuses.
+    fn request_class_show_body(
+        type: HirType,
+        declaration: HirDeclaration) -> string {
+        match self.class_layout(type) {
+            some(layout) => {
+                let id: int = self.fresh()
+                let simple: string = declaration.name
+                let open_full: string =
+                    self.string_pointer("{simple} \{ ")
+                let open_empty: string =
+                    self.string_pointer("{simple} \{\}")
+                let close: string =
+                    self.string_pointer(" \}")
+                let cycle: string =
+                    self.string_pointer("<cycle>")
+                self.require_declare(
+                    "beans_show_enter",
+                    "i64 @beans_show_enter(ptr, i64)")
+                self.require_declare(
+                    "beans_show_push_leave",
+                    "void @beans_show_push_leave(ptr, i64)")
+                var body: string =
+                    "  %show.obj{id} = inttoptr i64 %v to ptr\n  %show.onpath{id} = call i64 @beans_show_enter(ptr %c, i64 %v)\n  %show.cyc{id} = icmp ne i64 %show.onpath{id}, 0\n  br i1 %show.cyc{id}, label %show.cycle{id}, label %show.fresh{id}\nshow.cycle{id}:\n  call void @beans_show_append(ptr %c, ptr {cycle})\n  ret void\nshow.fresh{id}:\n  call void @beans_show_push_leave(ptr %c, i64 %v)\n"
+                // Declaration order, the order the interpreter walks too —
+                // the checker admits only a leaf standalone class, so the
+                // declared fields are the whole instance and inherited ones
+                // never enter.
+                let fields: string =
+                    self.request_record_fields(
+                        declaration.fields,
+                        layout.field_offsets,
+                        layout.field_types,
+                        "%show.obj{id}",
+                        open_full, open_empty, close,
+                        "obj{id}")
+                if fields == "" { return "" }
+                return "{body}{fields}  ret void\n"
+            }
+            none => { return "" }
+        }
     }
 
     // one owned-string renderer per shown type, memoized so nested
@@ -973,7 +1164,8 @@ partial class LlvmTextEmitter {
             }
             match self.declaration_for(type) {
                 some(declaration) => {
-                    if declaration.kind == "enum" {
+                    if declaration.kind == "enum" ||
+                       declaration.kind == "class" {
                         iterative = true
                     }
                 }

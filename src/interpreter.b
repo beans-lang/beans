@@ -3634,6 +3634,143 @@ class TreeInterpreter {
         }
     }
 
+    // What a value looks like inside a string, matched byte for byte to the
+    // native backend's show driver. Scalars, lists, maps, options, results
+    // and enums render the way tree_value_text renders them; a struct or a
+    // class instance renders as Name { field: value } in declaration order.
+    // `path` holds the object ids whose rendering has begun and not
+    // finished, so a class reference that loops back prints <cycle> instead
+    // of recurring until the stack is gone — the same guard the runtime
+    // driver keeps for the native backend.
+    fn render_for_string_top(value: TreeValue) -> string {
+        var cycle_path: List<int> = []
+        return self.render_for_string(value, inout cycle_path)
+    }
+
+    fn render_for_string(value: TreeValue,
+                         inout cycle_path: List<int>) -> string {
+        if value.kind == "object" || value.kind == "record" {
+            return self.render_object_for_string(
+                value, inout cycle_path)
+        }
+        if value.kind == "some" && value.items.len() == 1 {
+            return "some({self.render_for_string(value.items[0], inout cycle_path)})"
+        }
+        if value.kind == "ok" && value.items.len() == 1 {
+            return "ok({self.render_for_string(value.items[0], inout cycle_path)})"
+        }
+        if value.kind == "err" && value.items.len() == 1 {
+            return "err({self.render_for_string(value.items[0], inout cycle_path)})"
+        }
+        if value.kind == "list" || value.kind == "array" {
+            var pieces: List<string> = []
+            for item: TreeValue in value.items {
+                pieces.push(
+                    self.render_for_string(item, inout cycle_path))
+            }
+            return "[{pieces.join(", ")}]"
+        }
+        if value.kind == "map" {
+            var pieces: List<string> = []
+            for key: TreeValue in value.map_keys {
+                let encoded: string = tree_value_key(key)
+                match value.map_values.get(encoded) {
+                    some(item) => {
+                        pieces.push(
+                            "{self.render_for_string(key, inout cycle_path)}: {self.render_for_string(item, inout cycle_path)}")
+                    }
+                    none => {}
+                }
+            }
+            return "\{{pieces.join(", ")}\}"
+        }
+        if value.kind == "variant" {
+            if value.items.len() == 0 {
+                return value.text
+            }
+            var payload: List<string> = []
+            for item: TreeValue in value.items {
+                payload.push(
+                    self.render_for_string(item, inout cycle_path))
+            }
+            return "{value.text}({payload.join(", ")})"
+        }
+        // Scalars and everything else render exactly as they do everywhere.
+        return tree_value_text(value)
+    }
+
+    // A struct or class instance as Name { field: value }, fields in
+    // declaration order — the order the native backend reads them — with the
+    // static fields dropped and the object marked on the render cycle_path so a
+    // cycle stops at <cycle>.
+    fn render_object_for_string(value: TreeValue,
+                                inout cycle_path: List<int>) -> string {
+        let simple: string =
+            self.render_type_simple_name(value.text)
+        match self.declaration_by_qualified.get(value.text) {
+            some(declaration) => {
+                var on_path: bool = false
+                if value.kind == "object" {
+                    for seen: int in cycle_path {
+                        if seen == value.object_id {
+                            on_path = true
+                        }
+                    }
+                    if on_path { return "<cycle>" }
+                    cycle_path.push(value.object_id)
+                }
+                var pieces: List<string> = []
+                for field: HirField in declaration.fields {
+                    if field.is_static { continue }
+                    // A weak field prints as <weak> without being followed —
+                    // the same non-owning edge the cycle collector leaves
+                    // alone, matched to the native backend.
+                    if field.is_weak {
+                        pieces.push("{field.name}: <weak>")
+                        continue
+                    }
+                    match value.fields.entries.get(field.name) {
+                        some(item) => {
+                            pieces.push(
+                                "{field.name}: {self.render_for_string(item, inout cycle_path)}")
+                        }
+                        none => {}
+                    }
+                }
+                if value.kind == "object" {
+                    cycle_path.pop()
+                }
+                if pieces.len() == 0 {
+                    return "{simple} \{\}"
+                }
+                return "{simple} \{ {pieces.join(", ")} \}"
+            }
+            none => {
+                // No declaration to order fields by — fall back rather than
+                // invent a shape; the checker keeps this off the printable
+                // cycle_path, so this is only a diagnostic safety net.
+                return tree_value_text(value)
+            }
+        }
+    }
+
+    // The bare class name from a qualified one: `main::Point` -> `Point`.
+    fn render_type_simple_name(qualified: string) -> string {
+        var cut: int = 0
+        var index: int = 0
+        let bytes: int = qualified.len()
+        for index + 1 < bytes {
+            if qualified.byte_at(index) == 58 &&
+               qualified.byte_at(index + 1) == 58 {
+                cut = index + 2
+                index += 2
+                continue
+            }
+            index += 1
+        }
+        return qualified.slice(cut, bytes)
+    }
+
     fn interpolation(node: HirNode,
                      frame: TreeFrame) -> string {
         var values: List<TreeValue> = []
@@ -3719,7 +3856,7 @@ class TreeInterpreter {
                 let format: TreeFormatSpec =
                     tree_format_spec(segment)
                 var piece: string =
-                    tree_value_text(value)
+                    self.render_for_string_top(value)
                 if format.has &&
                    format.places >= 0 {
                     if value.kind == "float" {
@@ -4324,7 +4461,7 @@ class TreeInterpreter {
                 if arguments.len() == 0 {
                     ""
                 } else {
-                    tree_value_text(arguments[0])
+                    self.render_for_string_top(arguments[0])
                 }
             let to_error: bool =
                 node.resolved == "std.io.eprintln" ||
@@ -8272,9 +8409,13 @@ class TreeInterpreter {
         if receiver.kind == "list" &&
            node.value == "join" &&
            arguments.len() == 2 {
+            // join renders each element the same way interpolation does, so
+            // the native backend (which joins through the same show driver)
+            // and the tree agree on a list of printable objects too.
             var pieces: List<string> = []
             for value: TreeValue in receiver.items {
-                pieces.push(tree_value_text(value))
+                pieces.push(
+                    self.render_for_string_top(value))
             }
             return TreeValue.string(
                 pieces.join(arguments[1].text))

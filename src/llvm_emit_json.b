@@ -1425,6 +1425,27 @@ partial class LlvmTextEmitter {
             return new LlvmSlotConversion(
                 output, "%show.{tag}{id}")
         }
+        // A struct is a value, not a reference, so it cannot be handed to
+        // the driver as a slot. It crosses the way it does everywhere else a
+        // wide value is shown — by address: spilled to a stack slot whose
+        // pointer the wide show step reads its fields back from.
+        if self.declaration_is_struct(type) {
+            let wide: string =
+                self.request_show_wide_step(type)
+            if wide == "" {
+                return new LlvmSlotConversion("", "")
+            }
+            self.require_declare(
+                "beans_show_run",
+                "ptr @beans_show_run(ptr, i64)")
+            let id: int = self.fresh()
+            let slot: string =
+                self.spill_slot(
+                    self.type_text(type), "show.rec")
+            return new LlvmSlotConversion(
+                "  store {self.type_text(type)} {value}, ptr {slot}\n  %show.rec.raw{id} = ptrtoint ptr {slot} to i64\n  %show.{tag}{id} = call ptr @beans_show_run(ptr @{wide}, i64 %show.rec.raw{id})\n",
+                "%show.{tag}{id}")
+        }
         let shown: string =
             self.request_show(type)
         if shown != "" {

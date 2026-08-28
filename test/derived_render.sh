@@ -46,10 +46,17 @@ refuse_both() {
     fi
 }
 
-echo "checking maps, options and lists render alike on both backends"
+echo "checking maps, structs, classes and cycles render alike on both backends"
 run_both derived_render_ok
 
-echo "checking a value the backends cannot render alike is refused"
-refuse_both derived_render_class_bad "give it a string form first"
+# A class whose real type is not its declared one — an interface, a base a
+# subclass extends — and a class carrying an unrenderable field, each refused
+# at check time, the same way on both backends.
+echo "checking an interface value is refused"
+refuse_both derived_render_iface_bad "give it a string form first"
+echo "checking a subclassed base is refused"
+refuse_both derived_render_base_bad "give it a string form first"
+echo "checking a class with an unrenderable field is refused"
+refuse_both derived_render_opaque_bad "give it a string form first"
 
 echo "derived render ok"

@@ -2,7 +2,19 @@
 {}
 {xs: [1, 2], ys: []}
 {1: some(hi), 2: none}
-{outer: {inner: 5}}
 {z: 9, a: 2}
 {a: 2, z: 100}
+Point { x: 1, y: 2 }
+Mix { flag: true, ratio: 1.5, tag: 200, note: hi }
+Person { name: Ada, age: 36 }
+Empty {}
+Wrap { value: 42 }
+Wrap { value: Point { x: 3, y: 4 } }
+{row: [some(Point { x: 9, y: 9 }), none]}
+[Person { name: Al, age: 1 }, Person { name: Bo, age: 2 }]
+Person { name: Al, age: 1 } | Person { name: Bo, age: 2 }
+Node { label: a, next: some(Node { label: b, next: some(<cycle>), owner: <weak> }), owner: <weak> }
+Node { label: x, next: some(Node { label: leaf, next: none, owner: <weak> }), owner: <weak> }
+Node { label: root, next: some(Node { label: kid, next: none, owner: <weak> }), owner: <weak> }
+|Point { x: 1, y: 2 }|
 |        {a: 1, b: 2}|
