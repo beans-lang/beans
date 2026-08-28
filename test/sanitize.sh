@@ -146,6 +146,15 @@ run_bridge_asan() {
     echo "ASan/UBSan ok native bridge in $file"
 }
 
+# A contained panic (issue #44) must reclaim everything the fiber owned on the
+# way out — the unwind pad drops each owned local exactly once. Two hundred
+# contained panics, each holding a 64 KiB buffer behind an armed defer, under
+# ASan/UBSan through the real driver (which compiles beans_fiber.c): a missed
+# or doubled drop is a heap error here, and the leaks sweep below proves the
+# same run reclaims every byte.
+run_bridge_asan test/cases/brew_unwind_leak.b brew_unwind_leak \
+    'contained 200 panics'
+
 run_bridge_asan test/cases/sock_fuzz.b sockx 'ok sock_fuzz' 1 120
 run_bridge_asan test/cases/http_fuzz.b h1 'ok http_fuzz' 1 80
 run_bridge_asan test/cases/http2_fuzz.b h2 'ok http2_fuzz' 1 8
@@ -321,6 +330,7 @@ BEANS_SANITIZE_CALLBACKS=1 bash ./test/stored_callbacks.sh
 
 if [[ "$(uname -s)" == Darwin ]] && command -v leaks >/dev/null 2>&1; then
     for file in bench/trees.b examples/box.b examples/arena.b examples/fmt.b \
+                test/cases/brew_unwind_leak.b \
                 examples/shared_weak.b examples/inline_results.b examples/wide_lists.b \
                 examples/wide_maps.b examples/wide_enums.b examples/enum_repr.b \
                 examples/wide_owners.b \
