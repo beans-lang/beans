@@ -130,10 +130,17 @@ agree test/cases/parity/inherited_defaults.b
 agree test/cases/parity/static_fn_field.b
 agree test/cases/parity/panic_diverges.b
 agree test/cases/parity/super_in_scope.b
+# `?` crossing an error boundary: the source error is converted through
+# to_error or widened to a supertype, and both backends have to do it once.
+# The two source errors are the pinned construct count.
+agree test/cases/parity/error_conversion.b 2
+# std failing its own users — a std.reflect failure crossing into a plain
+# Result<T> through ReflectError.to_error, on both the ok and err paths.
+agree test/cases/parity/reflect_error_bridge.b
 
 # Every case in the directory has to be listed above with its own expected
 # count; a file added and forgotten would otherwise be silently unchecked.
-listed=15
+listed=17
 present=$(find test/cases/parity -name '*.b' | wc -l | tr -d ' ')
 if [ "$present" != "$listed" ]; then
     echo "test/cases/parity holds $present cases but $listed are run" >&2

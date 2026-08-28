@@ -81,4 +81,30 @@ check_bad diagnostics_brace_piece_bad
 grep -Fq "'{{' is not an escape" "$tmp/diagnostics_brace_piece_bad"
 test "$(grep -c ': error:' "$tmp/diagnostics_brace_piece_bad")" -eq 1
 
+# #46: `?` may only cross an error boundary when the callee's error reaches the
+# caller's — same type, a subtype, or a `to_error` hook. Every other shape is
+# refused here, at the `?`, with a message about the program: one error each,
+# naming both types and what is missing. It used to be accepted for a bare
+# `f()?` and left to a backend the interpreter got wrong and native could not
+# emit.
+check_bad diagnostics_try_convert_no_hook_bad
+grep -Fq "'?' can't turn main.DbError into Error — give main.DbError a \`fn to_error() -> Error\` method, or match on the Result and build the error yourself" \
+    "$tmp/diagnostics_try_convert_no_hook_bad"
+test "$(grep -c ': error:' "$tmp/diagnostics_try_convert_no_hook_bad")" -eq 1
+
+check_bad diagnostics_try_convert_builtin_src_bad
+grep -Fq "'?' can't turn the builtin Error into main.MyErr — Error is a builtin and cannot carry a to_error method" \
+    "$tmp/diagnostics_try_convert_builtin_src_bad"
+test "$(grep -c ': error:' "$tmp/diagnostics_try_convert_builtin_src_bad")" -eq 1
+
+check_bad diagnostics_try_convert_wrong_return_bad
+grep -Fq "main.Weird.to_error() answers int, which doesn't reach this function's error type Error" \
+    "$tmp/diagnostics_try_convert_wrong_return_bad"
+test "$(grep -c ': error:' "$tmp/diagnostics_try_convert_wrong_return_bad")" -eq 1
+
+check_bad diagnostics_try_convert_bad_shape_bad
+grep -Fq "'?' needs main.Weird.to_error to be an instance method taking no arguments and no type parameters" \
+    "$tmp/diagnostics_try_convert_bad_shape_bad"
+test "$(grep -c ': error:' "$tmp/diagnostics_try_convert_bad_shape_bad")" -eq 1
+
 echo "ok diagnostics: locations, imports, suggestions, wording, and recovery"
