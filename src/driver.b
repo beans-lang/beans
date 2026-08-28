@@ -724,6 +724,12 @@ class NativeBuildDriver {
     log_enabled: bool
     net_features: List<string>
     csrc_sources: List<CsrcUnit>
+    // Does the emitted module carry the controlled unwind (src/llvm_unwind.b)?
+    // The runtime half has to agree with the backend half — a runtime that
+    // starts an unwind through frames with no cleanup pads would walk to the
+    // end of the fiber's stack — so both read the one answer the emitter
+    // computed.
+    unwind: bool
     errors: List<Diagnostic>
 
     fn init(target: TargetDescription,
@@ -740,7 +746,8 @@ class NativeBuildDriver {
             move encoding_features: List<string>,
             log_enabled: bool,
             move net_features: List<string>,
-            move csrc_sources: List<CsrcUnit>) {
+            move csrc_sources: List<CsrcUnit>,
+            unwind: bool) {
         self.target = target
         self.cpu = cpu
         self.runtime_profile = runtime_profile
@@ -761,6 +768,10 @@ class NativeBuildDriver {
         self.log_enabled = log_enabled
         self.net_features = move net_features
         self.csrc_sources = move csrc_sources
+        // A profile without fibers has no contained panic to unwind from, and
+        // no beans_fiber_* to link against.
+        self.unwind =
+            unwind && runtime_profile != "freestanding"
         self.errors = []
     }
 
@@ -1061,6 +1072,18 @@ class NativeBuildDriver {
                 } else {
                     "-DBEANS_RT_DECIMAL=0"
                 })
+        }
+        if self.unwind {
+            // The unwinder steps through every frame between the failure and
+            // the fiber's entry, C frames of the runtime and of a package's
+            // own sources included, and it can only step through a frame that
+            // has an unwind table. Clang already defaults to one on the
+            // targets supports_unwind allows; asking makes it the build's
+            // decision rather than the driver default's.
+            command.arg("-funwind-tables")
+            if runtime_source {
+                command.arg("-DBEANS_FIBER_UNWIND=1")
+            }
         }
         command.arg("-Wno-override-module")
         if pic {
