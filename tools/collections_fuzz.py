@@ -156,6 +156,44 @@ def gen_pqueue(rng, ops):
     expected = []
     entries = []  # (priority, seq, value)
     seq = 0
+
+    def deep_fill(count, band):
+        # A loop fill, so a heap thousands deep costs a handful of lines. The
+        # priority is a deterministic mix into a narrow band, computed the same
+        # way here and in Beans, so hundreds of entries land on one priority.
+        # value == seq == base + k keeps every payload distinct and trackable.
+        nonlocal seq
+        base = seq
+        counter = f"fill_{base}"
+        body.append(f"    var {counter}: int = 0")
+        body.append(f"    for {counter} < {count} {{")
+        body.append(
+            f"        pq.push(({counter} * 2654435761) % {band}, {base} + {counter})"
+        )
+        body.append(f"        {counter} += 1")
+        body.append("    }")
+        for k in range(count):
+            entries.append(((k * 2654435761) % band, seq, base + k))
+            seq += 1
+
+    def drain(suffix, label):
+        # Drain the whole queue and check the order in one comparison. With a
+        # dense-tie heap this forces hundreds of equal-priority entries out in
+        # FIFO (sequence) order and a full-depth sift on every pop.
+        order = [e[2] for e in sorted(entries, key=lambda e: (e[0], e[1]))]
+        out = f"out_{suffix}"
+        joined = f"joined_{suffix}"
+        body.append(f"    var {out}: List<string> = []")
+        body.append("    for pq.len() != 0 {")
+        body.append(f'        {out}.push("{{opt_of(pq.pop())}}")')
+        body.append("    }")
+        body.append(f'    let {joined}: string = {out}.join(",")')
+        body.append(f'    io.println("{label} {{{joined}}}")')
+        expected.append(f"{label} " + ",".join(str(v) for v in order))
+        entries.clear()
+
+    # Phase 1: random small ops with per-op peek/pop checks — the cross-backend
+    # coverage of tiny, oddly shaped heaps.
     for _ in range(ops):
         choice = rng.random()
         if choice < 0.55 or not entries:
@@ -173,15 +211,28 @@ def gen_pqueue(rng, ops):
             entries.remove(best)
             body.append('    io.println("pop {opt_of(pq.pop())}")')
             expected.append(f"pop {best[2]}")
-    # Drain by priority, FIFO among ties.
-    order = [e[2] for e in sorted(entries, key=lambda e: (e[0], e[1]))]
-    body.append("    var out: List<string> = []")
-    body.append("    for pq.len() != 0 {")
-    body.append('        out.push("{opt_of(pq.pop())}")')
-    body.append("    }")
-    body.append("    let joined: string = out.join(\",\")")
-    body.append('    io.println("drain {joined}")')
-    expected.append("drain " + ",".join(str(v) for v in order))
+
+    # Phase 2: a deep, dense-tie fill on top of whatever phase 1 left, then a
+    # full drain. The size crosses 1024 and a narrow band puts hundreds of
+    # entries on one priority, so the drain is a FIFO tie-break at scale over a
+    # ~11-level heap — a shape the 30–90 random ops never reach.
+    deep_fill(rng.choice([1200, 1600, 2000]), rng.choice([2, 3, 4]))
+    drain("deep", "drain")
+
+    # Phase 3: clear() must empty a multi-level heap and leave a working queue.
+    # Refill to several levels, clear, then push a fresh dense-tie batch and
+    # drain it. The push counter keeps running across the clear, so post-clear
+    # ties still break FIFO.
+    deep_fill(rng.choice([200, 400]), rng.choice([2, 3]))
+    body.append("    pq.clear()")
+    entries.clear()
+    for _ in range(rng.randint(8, 24)):
+        priority = rng.randint(0, 3)
+        entries.append((priority, seq, seq))
+        body.append(f"    pq.push({priority}, {seq})")
+        seq += 1
+    drain("after_clear", "after_clear")
+
     return body, expected
 
 
