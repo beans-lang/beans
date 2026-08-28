@@ -75,6 +75,9 @@ partial class LlvmTextEmitter {
                    function, local) {
                 return true
             }
+            // a captured trivial local owns no value but does own its cell,
+            // and release_function_cells is what gives that back
+            if self.cell_local(local) { return true }
         }
         return false
     }
@@ -153,6 +156,13 @@ partial class LlvmTextEmitter {
             output =
                 "{output}{self.emit_drop_local(function, drop)}"
         }
+        // MIR drops owned locals; a captured *trivial* local still owns its
+        // heap cell, and the return path releases those separately. The pad
+        // has to release them too or a frame that captured anything leaks its
+        // cells. Cells hold null before their init and after their drop, so
+        // running this here and at the return cannot double-release.
+        output =
+            "{output}{self.release_function_cells(function)}"
         return "{output}  resume \{ ptr, i32 \} {token}\n"
     }
 
