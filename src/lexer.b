@@ -244,6 +244,18 @@ class Lexer {
                 ended_at_line = true
                 break
             }
+            // A raw literal nested in an interpolation is bytes: its braces
+            // do not open slots and its backslashes are not escapes. Consume
+            // it whole, the same way the top level does, so the outer
+            // string's structure survives — `"{r"\d+"}"` must keep `\d` a
+            // regex, not read it as an unknown escape.
+            if interpolation_depth > 0 && !inner_string &&
+               raw_hashes_at(
+                   self.source, self.pos,
+                   self.source.len()) >= 0 {
+                self.consume_raw_literal()
+                continue
+            }
             if value == 92 {
                 let escape_line: int = self.line
                 let escape_col: int = self.col
@@ -288,8 +300,12 @@ class Lexer {
         return at < len && self.source.byte_at(at) == 34
     }
 
-    fn scan_raw_string(inout out: List<Token>, from: int,
-                       line: int, col: int) {
+    // Advance from the `r` of a raw literal, which must sit at self.pos,
+    // to just past its terminator. Returns false when the terminator never
+    // arrived. Shared by the top-level raw token and a raw literal nested
+    // inside an interpolation, so both find the same end and one spelling of
+    // `r"…"` is understood everywhere the lexer meets it.
+    fn consume_raw_literal() -> bool {
         self.advance()
         var hashes: int = 0
         for self.peek() == 35 {
@@ -297,7 +313,6 @@ class Lexer {
             hashes += 1
         }
         self.advance()
-        var closed: bool = false
         for !self.at_end() {
             if self.peek() == 34 {
                 var seen: int = 0
@@ -311,16 +326,24 @@ class Lexer {
                     for index: int in 0..hashes {
                         self.advance()
                     }
-                    closed = true
-                    break
+                    return true
                 }
             }
             self.advance()
         }
-        if !closed {
+        return false
+    }
+
+    fn scan_raw_string(inout out: List<Token>, from: int,
+                       line: int, col: int) {
+        let hashes: int =
+            raw_hashes_at(self.source, from, self.source.len())
+        if !self.consume_raw_literal() {
             var closer: string = "\""
-            for index: int in 0..hashes {
+            var index: int = 0
+            for index < hashes {
                 closer = "{closer}#"
+                index += 1
             }
             self.error_at(
                 line, col,

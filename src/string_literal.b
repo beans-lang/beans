@@ -36,6 +36,45 @@ fn raw_hashes_at(source: string, index: int, end: int) -> int {
     return at - index - 1
 }
 
+// A raw literal opens at `index`, and its `r` is a fresh token: the byte
+// before it is not an identifier byte, so a name that ends in `r` — `str`,
+// `ptr` — right before a `"` is not read as a raw prefix. This is the rule
+// the lexer already keeps by scanning a whole identifier before it ever
+// looks for `r"`, restated so a walker re-reading a string token agrees with
+// how that token was lexed.
+fn raw_open_at(source: string, index: int, end: int) -> bool {
+    if raw_hashes_at(source, index, end) < 0 { return false }
+    if index > 0 && is_ident_byte(source.byte_at(index - 1)) {
+        return false
+    }
+    return true
+}
+
+// One past the terminator of the raw literal that opens at `index`, or `end`
+// when it never closes. `index` must be where `raw_hashes_at` said a raw
+// literal opens. A walker stepping over a raw literal nested in an
+// interpolation calls this, so the checker, both backends and the lexer all
+// find the same end of `r"…"` and split one string the same way.
+fn raw_literal_end(source: string, index: int, end: int) -> int {
+    let hashes: int = raw_hashes_at(source, index, end)
+    if hashes < 0 { return index }
+    var at: int = index + hashes + 2
+    for at < end {
+        if source.byte_at(at) == 34 {
+            var seen: int = 0
+            for seen < hashes && at + 1 + seen < end &&
+                source.byte_at(at + 1 + seen) == 35 {
+                seen += 1
+            }
+            if seen == hashes {
+                return at + 1 + hashes
+            }
+        }
+        at += 1
+    }
+    return end
+}
+
 // The number of '#' a raw literal opened with, or -1 when `source` is an
 // ordinary escaped literal. `r"…"` opened with none, so it answers 0.
 fn string_literal_hashes(source: string) -> int {

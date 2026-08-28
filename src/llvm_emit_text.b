@@ -160,6 +160,15 @@ partial class LlvmTextEmitter {
                         source, cursor, end)
                     continue
                 }
+                // A raw literal nested in the slot is bytes: step over it
+                // whole so a brace or a `:` in a route template or a hashed
+                // raw body neither nests the slot nor starts a format spec.
+                if !in_string &&
+                   raw_open_at(source, cursor, end) {
+                    cursor = raw_literal_end(
+                        source, cursor, end)
+                    continue
+                }
                 if in_string {
                     if current == 34 {
                         in_string = false

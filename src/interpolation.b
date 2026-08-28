@@ -11,6 +11,15 @@ fn interpolation_expression_source(segment: string) -> string {
                 segment, index, segment.len())
             continue
         }
+        // A raw literal is bytes: a `:` or a brace in it is not a format
+        // separator or a bracket. Step over it whole so `{r"a:b"}` keeps
+        // its own reader's colon.
+        if !in_string &&
+           raw_open_at(segment, index, segment.len()) {
+            index = raw_literal_end(
+                segment, index, segment.len())
+            continue
+        }
         if in_string {
             if byte == 34 { in_string = false }
             index += 1

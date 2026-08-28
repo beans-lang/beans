@@ -28,6 +28,15 @@ fn tree_format_spec(segment: string) -> TreeFormatSpec {
                 segment, index, segment.len())
             continue
         }
+        // A raw literal is bytes: a `:` or a brace in it is not a format
+        // separator or a bracket. Step over it whole so the format spec is
+        // found after the value, not inside a raw one.
+        if !in_string &&
+           raw_open_at(segment, index, segment.len()) {
+            index = raw_literal_end(
+                segment, index, segment.len())
+            continue
+        }
         if in_string {
             if byte == 34 { in_string = false }
             index += 1

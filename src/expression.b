@@ -4759,6 +4759,17 @@ class ExpressionChecker {
                         raw, cursor, end)
                     continue
                 }
+                // A raw literal nested in the slot is bytes: its braces do
+                // not nest the slot and its quotes do not open a string.
+                // Step over it whole, the way the lexer did, so the slot
+                // ends at its own `}` and not at a brace inside a route
+                // template or a hashed raw body.
+                if !in_string &&
+                   raw_open_at(raw, cursor, end) {
+                    cursor = raw_literal_end(
+                        raw, cursor, end)
+                    continue
+                }
                 if in_string {
                     if current == 34 {
                         in_string = false

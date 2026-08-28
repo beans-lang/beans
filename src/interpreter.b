@@ -3661,6 +3661,15 @@ class TreeInterpreter {
                         raw, cursor, end)
                     continue
                 }
+                // A raw literal nested in the slot is bytes: step over it
+                // whole so its braces and quotes do not split the slot,
+                // the same way the checker and the lexer do.
+                if !in_string &&
+                   raw_open_at(raw, cursor, end) {
+                    cursor = raw_literal_end(
+                        raw, cursor, end)
+                    continue
+                }
                 if in_string {
                     if current == 34 {
                         in_string = false
