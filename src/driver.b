@@ -1083,6 +1083,16 @@ class NativeBuildDriver {
             command.arg("-funwind-tables")
             if runtime_source {
                 command.arg("-DBEANS_FIBER_UNWIND=1")
+                // The runtime frames that host Beans callbacks carry
+                // __attribute__((cleanup)) guards for their scratch and for
+                // the collection they are mutating (issue #73). C cleanups
+                // only run during an unwind when the frame has exception
+                // handling, which for C is -fexceptions — the same pairing
+                // glibc uses for pthread cleanup handlers. Only the runtime
+                // unit needs it, and the runtime object cache keys on
+                // self.unwind, so an unwinding and a non-unwinding build
+                // can never share this object.
+                command.arg("-fexceptions")
             }
         }
         command.arg("-Wno-override-module")

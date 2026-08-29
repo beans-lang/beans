@@ -160,6 +160,14 @@ run_bridge_asan() {
 run_bridge_asan test/cases/brew_unwind_leak.b brew_unwind_leak \
     'contained 600 panics'
 
+# A contained panic unwinding through a runtime frame frees the frame's
+# scratch and leaves the collection it was permuting as it was (issue #73):
+# every sort variant's merge/radix buffers, a key function panicking first,
+# mid and last, and a reflective call past its stack arity, one hundred
+# rounds each. The marker line also asserts the lists were restored.
+run_bridge_asan test/cases/sort_unwind_leak.b sort_unwind_leak \
+    'sorted under panic 900'
+
 run_bridge_asan test/cases/sock_fuzz.b sockx 'ok sock_fuzz' 1 120
 run_bridge_asan test/cases/http_fuzz.b h1 'ok http_fuzz' 1 80
 run_bridge_asan test/cases/http2_fuzz.b h2 'ok http2_fuzz' 1 8
@@ -336,6 +344,7 @@ BEANS_SANITIZE_CALLBACKS=1 bash ./test/stored_callbacks.sh
 if [[ "$(uname -s)" == Darwin ]] && command -v leaks >/dev/null 2>&1; then
     for file in bench/trees.b examples/box.b examples/arena.b examples/fmt.b \
                 test/cases/brew_unwind_leak.b \
+                test/cases/sort_unwind_leak.b \
                 test/cases/unlink_leak.b \
                 examples/shared_weak.b examples/inline_results.b examples/wide_lists.b \
                 examples/wide_maps.b examples/wide_enums.b examples/enum_repr.b \
