@@ -76,8 +76,15 @@ class MirLowerer {
     }
 
     fn emit_local_drops_from(first_scope: int) {
+        self.emit_local_drops_between(
+            first_scope, self.scopes.len())
+    }
+
+    // Drops for the scopes [first_scope, end_scope), innermost first.
+    fn emit_local_drops_between(first_scope: int,
+                                end_scope: int) {
         if !self.block_open() { return }
-        var scope_index: int = self.scopes.len()
+        var scope_index: int = end_scope
         for scope_index > first_scope {
             scope_index -= 1
             let scope: MirScope = self.scopes[scope_index]
@@ -599,8 +606,18 @@ class MirLowerer {
         if value >= 0 {
             value = self.ensure_owned(node, value)
         }
+        // A return leaves every scope it sits in, innermost first: the
+        // nested scopes' locals drop as their blocks exit, the function's
+        // defers run newest-first, and the function's own locals drop last
+        // (spec/SYNTAX.md, "defer"). The tree interpreter walks out of the
+        // blocks in exactly that order; the native backend used to run the
+        // defers before any local, which made the two disagree about the
+        // deinit order of a local declared inside an `if` or a loop.
+        self.emit_local_drops_between(1, self.scopes.len())
         self.emit_run_defers(node)
-        self.emit_local_drops_from(0)
+        if self.scopes.len() > 0 {
+            self.emit_local_drops_between(0, 1)
+        }
         self.terminate(node, "return", value, [])
         if value >= 0 &&
            self.current.value_ownership[value] == "owned" {

@@ -116,6 +116,55 @@ fn shield_pipeline() -> string {
     }
 }
 
+// A defer that panics on the normal return path. The panic is contained, so
+// the unwind takes over the rest of the frame's cleanup: the defer that
+// panicked does not run a second time, the older defer still runs, and the
+// local drops. The native backend once re-ran the panicking defer from its
+// cleanup pad and died of a double panic.
+fn boom_unit() { let empty: List<int> = []; let unused: int = empty[2] }
+
+fn defer_panics() -> int {
+    let local: Res = new Res("dp-local")
+    defer io.println("  dp older defer")
+    defer boom_unit()
+    return 0
+}
+
+fn shield_defer_panic() -> string {
+    let child: Brew<int> = brew defer_panics()
+    match child.join() {
+        ok(v) => { return "ok" }
+        err(problem) => { return "defer-panic: {problem.kind}" }
+    }
+}
+
+// A deinit that panics while a frame drops its locals on the normal path.
+// The panic is contained; the object whose deinit panicked is abandoned
+// mid-destruction and is not released a second time, and the locals that
+// had not dropped yet still drop.
+class Bomb {
+    fn deinit() {
+        io.println("  deinit bomb panics")
+        let empty: List<int> = []
+        let unused: int = empty[0]
+    }
+}
+
+fn deinit_panics() -> int {
+    let first: Res = new Res("first")
+    let bomb: Bomb = new Bomb()
+    let last: Res = new Res("last")
+    return 1
+}
+
+fn shield_deinit_panic() -> string {
+    let child: Brew<int> = brew deinit_panics()
+    match child.join() {
+        ok(v) => { return "ok" }
+        err(problem) => { return "deinit-panic: {problem.kind}" }
+    }
+}
+
 fn main() {
     let c: Counter = new Counter()
     io.println(shielded(c, "first"))
@@ -128,4 +177,6 @@ fn main() {
     io.println(shield_moveonly())
     io.println(shield_capture())
     io.println(shield_pipeline())
+    io.println(shield_defer_panic())
+    io.println(shield_deinit_panic())
 }

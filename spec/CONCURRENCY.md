@@ -404,6 +404,16 @@ Landed since:
    `test/cases/brew_unwind.b` is the differential golden. The child's closure
    box is released on both paths.
 
+   The cleanup a frame runs is the one a return runs, in the same order: the
+   locals of the nested blocks drop as their blocks exit, the function's defers
+   run newest-first, the function's own locals drop newest-first
+   (spec/SYNTAX.md, "defer"). A defer runs at most once: one that panics while
+   the frame is exiting normally hands the rest of that frame's cleanup to the
+   unwind, which does not run it again. An object whose deinit panics during a
+   normal exit is abandoned mid-destruction — it is not released a second time
+   by the unwind, and whatever it still held is not released either — while
+   the locals that had not dropped yet still drop.
+
 Deliberately not yet here, in dependency order:
 
 1. **The cancelled-park unwind.** A cancelled park still abandons the fiber's

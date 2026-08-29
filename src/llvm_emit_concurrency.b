@@ -1306,8 +1306,14 @@ partial class LlvmTextEmitter {
                 continue
             }
             let id: int = self.fresh()
+            // Disarm before the body runs. A defer runs once: if its body
+            // panics (contained), the cleanup pad walks this same list and
+            // must not run it a second time — that would be a panic raised
+            // during the unwind, reported as a double panic. The interpreter
+            // likewise moves past a defer that panicked and runs the older
+            // ones (issue #44).
             output =
-                "{output}  %defer.armed{id} = load i1, ptr %defer.flag{site.cleanup_id}\n  br i1 %defer.armed{id}, label %defer.run{id}, label %defer.next{id}\ndefer.run{id}:\n{body}  call void {self.function_symbols[cleanup_name]}({arguments.join(", ")})\n  br label %defer.next{id}\ndefer.next{id}:\n"
+                "{output}  %defer.armed{id} = load i1, ptr %defer.flag{site.cleanup_id}\n  br i1 %defer.armed{id}, label %defer.run{id}, label %defer.next{id}\ndefer.run{id}:\n  store i1 0, ptr %defer.flag{site.cleanup_id}\n{body}  call void {self.function_symbols[cleanup_name]}({arguments.join(", ")})\n  br label %defer.next{id}\ndefer.next{id}:\n"
         }
         return move output
     }

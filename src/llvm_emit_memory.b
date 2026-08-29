@@ -871,11 +871,15 @@ partial class LlvmTextEmitter {
                 if !self.live_flag_slot(local) {
                     return "  {dropped} = load {type}, ptr %l{local.id}\n{release}"
                 }
-                return "  {dropped} = load {type}, ptr %l{local.id}\n{release}  store i1 false, ptr %l{local.id}.live\n"
+                // The flag clears before the release, not after: a deinit
+                // run by the release can panic (contained), and the cleanup
+                // pad then reads this flag — a set flag would release the
+                // object a second time while it is still being destroyed.
+                return "  {dropped} = load {type}, ptr %l{local.id}\n  store i1 false, ptr %l{local.id}.live\n{release}"
             }
             let release_block: int = self.fresh()
             let merge_block: int = self.fresh()
-            return "  %drop.live{temporary} = load i1, ptr %l{local.id}.live\n  br i1 %drop.live{temporary}, label %drop.release{release_block}, label %drop.merge{merge_block}\ndrop.release{release_block}:\n  {dropped} = load {type}, ptr %l{local.id}\n{release}  store i1 false, ptr %l{local.id}.live\n  br label %drop.merge{merge_block}\ndrop.merge{merge_block}:\n"
+            return "  %drop.live{temporary} = load i1, ptr %l{local.id}.live\n  br i1 %drop.live{temporary}, label %drop.release{release_block}, label %drop.merge{merge_block}\ndrop.release{release_block}:\n  {dropped} = load {type}, ptr %l{local.id}\n  store i1 false, ptr %l{local.id}.live\n{release}  br label %drop.merge{merge_block}\ndrop.merge{merge_block}:\n"
         }
         return "  {dropped} = load {type}, ptr %l{local.id}\n{release}"
     }

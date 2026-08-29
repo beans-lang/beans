@@ -3075,15 +3075,22 @@ beansc build --target riscv32imac-unknown-none-elf --runtime freestanding f.b --
   logical `closed` flag flips immediately, so same-thread `close()` semantics are unchanged; only
   the OS-level release is deferred, and only while threads run.
 - `defer f.close()` — runs when the function exits normally, including through
-  `return` and `?`, newest first and before local destruction. Must sit at the
-  top level of the function body (not inside `if`/`for`/blocks — it is a function-exit hook,
-  and nested registration would need runtime capture the native backend does not do). An
-  *uncontained* panic exits the process without running defers. A panic *contained* by
-  `brew`/`join` (spec/CONCURRENCY.md) does the opposite: it unwinds the fiber's frames on
-  the way to the fiber entry, running each function's defers newest-first and dropping what
-  it owns — the same cleanup a return runs — and the join reports the failure. A panic inside
-  a defer is itself fatal: uncontained it exits, and during a contained unwind it aborts the
-  process (the one unrecoverable case — there is no second unwind to give it).
+  `return` and `?`, newest first. A return leaves every scope it sits in, innermost
+  first: the locals of the nested blocks (`if`, loop bodies, match arms) drop as their
+  blocks exit, *then* the function's defers run, *then* the function's own locals drop —
+  so a defer sees the function-level locals still alive and the block-level ones already
+  gone. Must sit at the top level of the function body (not inside `if`/`for`/blocks — it
+  is a function-exit hook, and nested registration would need runtime capture the native
+  backend does not do). Each defer runs at most once. An *uncontained* panic exits the
+  process without running defers. A panic *contained* by `brew`/`join`
+  (spec/CONCURRENCY.md) does the opposite: it unwinds the fiber's frames on the way to the
+  fiber entry, running each function's defers newest-first and dropping what it owns — the
+  same cleanup a return runs, in the same order — and the join reports the failure. A defer
+  that panics while the function is exiting normally is a contained panic like any other
+  when the fiber is brewed: it is not run again, the older defers still run, and the locals
+  still drop. A panic inside a defer *during* a contained unwind is fatal — it aborts the
+  process (the one unrecoverable case — there is no second unwind to give it) — and an
+  uncontained one exits.
   `?` is not allowed inside a deferred expression because the function's
   return path is already being processed.
   (Go's best idea, with an unwind only where a panic is caught.)

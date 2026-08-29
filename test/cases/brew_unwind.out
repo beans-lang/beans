@@ -42,3 +42,10 @@ moveonly: panic
 capture: panic
   drop faulty-held
 pipeline: panic
+  dp older defer
+  drop dp-local
+defer-panic: panic
+  drop last
+  deinit bomb panics
+  drop first
+deinit-panic: panic
