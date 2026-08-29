@@ -6184,9 +6184,9 @@ BList* beans_list_clone(BList* l) {
     return r;
 }
 
-// bottom-up stable merge — structurally identical to the interpreter's
-// stable_merge, so both backends produce the same order for ANY predicate,
-// even one that is not a strict weak ordering
+// bottom-up stable merge — structurally identical to the interpreter's sort
+// branch (src/interpreter.b), block for block, so both backends produce the
+// same order for ANY predicate, even one that is not a strict weak ordering
 static long long sort_less(long long x, long long y, long long kind, void* thunk,
                            void* box) {
     if (thunk) return ((long long (*)(void*, long long, long long))thunk)(box, x, y);

@@ -440,14 +440,22 @@ Landed since:
    releases it; once the entry has stored it, it is the collection's. Every
    such entry validates before it takes, and none runs Beans code after the
    take: a class used as a map key hashes by identity with the runtime's own
-   hasher, so no user `hash` or `eq` ever runs inside a map operation. The
-   one place the backends differ is a panic raised *inside* a runtime frame
-   that called back into Beans code — a sort comparator, a `deinit` the
-   runtime ran while replacing an element — and only in what that C frame
-   itself held: its scratch buffers are not freed and the collection it was
-   mutating is left as it was mid-operation on the native backend, while the
-   interpreter, whose runtime frames are Beans frames, frees them. What the
-   Beans frames above and below hold is released on both.
+   hasher, so no user `hash` or `eq` ever runs inside a map operation.
+
+   A runtime frame that calls back into Beans code — a sort's comparator or
+   key function, a reflected callee — owns no heap memory across that call
+   without a cleanup the unwind runs: when a contained panic passes through,
+   the frame's scratch is freed like everything else. And a collection
+   operation interrupted by a panicking callback leaves the collection
+   exactly as it was before the call — same contents, same order — on both
+   backends: a sort snapshots the array it permutes in place before the
+   first callback can run, and the unwind puts it back. With no panic at
+   all, both backends run the same bottom-up stable merge, so they agree on
+   the order for any predicate, one that is not a strict weak ordering
+   included. A `deinit` that panics while a runtime replace holds the old
+   value (`map[k] = v` over an existing key, `Box.set`) is contained like
+   any other panic: the store stands, the interrupted old value's second
+   release is a no-op rather than a double free, and both backends agree.
 
 Deliberately not yet here, in dependency order:
 

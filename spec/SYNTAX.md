@@ -992,7 +992,11 @@ param, trusting its constraint), `contains`, `index_of` → `Option<int>`, `inse
 panics), `sort` (ordered elements), `sort_by(fn(a: T, b: T) -> bool)` (any `T`; the predicate
 is strict less-than), `sort_by_key(fn(T) -> int)` (one key call per item), `join(sep)`.
 Sorts are **stable**. The native backend uses a stable radix path for integers and integer
-keys, and the shared merge semantics for other values and custom predicates.
+keys, and the shared merge semantics for other values and custom predicates. Both backends
+run the same bottom-up stable merge for a custom predicate, so they produce the same order
+even for a predicate that is not a strict weak ordering; and a comparator or key function
+that panics (contained, spec/CONCURRENCY.md) leaves the list exactly as it was before the
+call, on both backends.
 
 **Map and OrderedMap methods (v0.5, implemented):** `clone`, `get` → `Option<V>`,
 `set` (also `m[k] = v` sugar), `insert(k, v) -> bool` (false leaves the old value),

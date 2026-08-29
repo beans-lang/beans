@@ -8402,6 +8402,17 @@ class TreeInterpreter {
            (node.value == "sort" ||
             node.value == "sort_by" ||
             node.value == "sort_by_key") {
+            // The same bottom-up stable merge the native runtime runs
+            // (list_merge_sort in beans_rt.c), block for block: comparisons
+            // read the live items, each merged block lands in a buffer and
+            // is copied back only when the block completes. Structural
+            // identity is the point — an insertion sort gives a different
+            // permutation for a predicate that is not a strict weak
+            // ordering, and the two backends must agree for ANY predicate.
+            // Keys are extracted first, one call per item, before the first
+            // write, exactly as the native sort_by_key does; a stable merge
+            // by those integer keys is the same permutation as its stable
+            // radix.
             var keys: List<TreeValue> = []
             if node.value == "sort_by_key" &&
                arguments.len() == 2 {
@@ -8411,45 +8422,127 @@ class TreeInterpreter {
                             node, arguments[1], [value]))
                 }
             }
-            var index: int = 1
-            for index < receiver.items.len() {
-                var current: int = index
-                for current > 0 {
-                    var less: bool = false
-                    if node.value == "sort" {
-                        less = tree_value_less(
-                            receiver.items[current],
-                            receiver.items[current - 1])
-                    } else if node.value == "sort_by" &&
-                              arguments.len() == 2 {
-                        let compared: TreeValue =
-                            self.invoke_closure(
-                                node, arguments[1],
-                                [receiver.items[current],
-                                 receiver.items[current - 1]])
-                        less = self.truth(node, compared)
-                    } else if node.value ==
-                                  "sort_by_key" {
-                        less = tree_value_less(
-                            keys[current],
-                            keys[current - 1])
-                    }
-                    if !less { break }
-                    let saved: TreeValue =
-                        receiver.items[current - 1]
-                    receiver.items[current - 1] =
-                        receiver.items[current]
-                    receiver.items[current] = saved
-                    if node.value == "sort_by_key" {
-                        let saved_key: TreeValue =
-                            keys[current - 1]
-                        keys[current - 1] =
-                            keys[current]
-                        keys[current] = saved_key
-                    }
-                    current -= 1
+            // A panicking comparator or key function leaves the list
+            // exactly as it was (issue #73, spec/CONCURRENCY.md): the
+            // items are snapshotted before the first write and restored in
+            // place if the walk comes back poisoned. `sort` compares with
+            // tree_value_less, which cannot panic, and takes no snapshot.
+            var snapshot: List<TreeValue> = []
+            if node.value != "sort" {
+                for value: TreeValue in receiver.items {
+                    snapshot.push(value)
                 }
-                index += 1
+            }
+            let length: int = receiver.items.len()
+            var buffer: List<TreeValue> = []
+            for value: TreeValue in receiver.items {
+                buffer.push(value)
+            }
+            var key_buffer: List<TreeValue> = []
+            for key: TreeValue in keys {
+                key_buffer.push(key)
+            }
+            var width: int = 1
+            for width < length && !self.failed {
+                var low: int = 0
+                for low < length && !self.failed {
+                    let mid: int =
+                        if low + width < length {
+                            low + width
+                        } else {
+                            length
+                        }
+                    let high: int =
+                        if low + 2 * width < length {
+                            low + 2 * width
+                        } else {
+                            length
+                        }
+                    if mid < high {
+                        var left: int = low
+                        var right: int = mid
+                        var out: int = low
+                        for left < mid && right < high &&
+                            !self.failed {
+                            // take left unless right is strictly less,
+                            // which keeps the merge stable
+                            var take_right: bool = false
+                            if node.value == "sort" {
+                                take_right = tree_value_less(
+                                    receiver.items[right],
+                                    receiver.items[left])
+                            } else if node.value == "sort_by" &&
+                                      arguments.len() == 2 {
+                                let compared: TreeValue =
+                                    self.invoke_closure(
+                                        node, arguments[1],
+                                        [receiver.items[right],
+                                         receiver.items[left]])
+                                take_right =
+                                    self.truth(node, compared)
+                            } else {
+                                take_right = tree_value_less(
+                                    keys[right], keys[left])
+                            }
+                            if take_right {
+                                buffer[out] =
+                                    receiver.items[right]
+                                if keys.len() != 0 {
+                                    key_buffer[out] =
+                                        keys[right]
+                                }
+                                right += 1
+                            } else {
+                                buffer[out] =
+                                    receiver.items[left]
+                                if keys.len() != 0 {
+                                    key_buffer[out] =
+                                        keys[left]
+                                }
+                                left += 1
+                            }
+                            out += 1
+                        }
+                        for left < mid {
+                            buffer[out] = receiver.items[left]
+                            if keys.len() != 0 {
+                                key_buffer[out] = keys[left]
+                            }
+                            left += 1
+                            out += 1
+                        }
+                        for right < high {
+                            buffer[out] = receiver.items[right]
+                            if keys.len() != 0 {
+                                key_buffer[out] = keys[right]
+                            }
+                            right += 1
+                            out += 1
+                        }
+                        if !self.failed {
+                            var back: int = low
+                            for back < high {
+                                receiver.items[back] =
+                                    buffer[back]
+                                if keys.len() != 0 {
+                                    keys[back] =
+                                        key_buffer[back]
+                                }
+                                back += 1
+                            }
+                        }
+                    }
+                    low += 2 * width
+                }
+                width *= 2
+            }
+            if self.failed && node.value != "sort" {
+                var restore: int = 0
+                for restore < snapshot.len() {
+                    receiver.items[restore] =
+                        snapshot[restore]
+                    restore += 1
+                }
             }
             return TreeValue.unit()
         }
