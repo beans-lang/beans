@@ -22,8 +22,10 @@ struct Pair {
 class Store {
     pub static ints: List<int> = []
     pub static narrow: List<i32> = []
+    pub static floats: List<f32> = []
     pub static decs: List<decimal> = []
     pub static pairs: List<Pair> = []
+    pub static seen: List<string> = []
 }
 
 fn boom() -> bool {
@@ -157,6 +159,57 @@ fn set_ints(n: int) {
     }
 }
 
+// A comparator that reads the list it is sorting, through a captured
+// reference, sees the same intermediate states on both backends: each
+// merged block is committed when it completes — on the list's own slots,
+// and mirrored block for block when the sort runs over a widened copy
+// (List<f32>, the one slot-sorted element with 4-byte storage).
+fn view_ints() -> string {
+    var line: string = ""
+    for x: int in Store.ints { line = "{line}{x}" }
+    return line
+}
+fn view_floats() -> string {
+    var line: string = ""
+    for x: f32 in Store.floats { line = "{line}{x}" }
+    return line
+}
+fn observe_ints() -> int {
+    Store.ints.sort_by(fn(a: int, b: int) -> bool {
+        Store.seen.push(view_ints())
+        return a < b
+    })
+    return 0
+}
+fn observe_floats() -> int {
+    Store.floats.sort_by(fn(a: f32, b: f32) -> bool {
+        Store.seen.push(view_floats())
+        return a < b
+    })
+    return 0
+}
+fn observe_panic() -> int {
+    Store.floats.sort_by(fn(a: f32, b: f32) -> bool {
+        Store.seen.push(view_floats())
+        if a == 9.0 || b == 9.0 { return boom() }
+        return a < b
+    })
+    return 0
+}
+fn run_observer(which: int) -> int {
+    if which == 1 { return observe_ints() }
+    if which == 2 { return observe_floats() }
+    return observe_panic()
+}
+fn shield_observer(which: int, tag: string) {
+    let child: Brew<int> = brew run_observer(which)
+    match child.join() {
+        ok(v) => { io.println("{tag}: ok") }
+        err(problem) => { io.println("{tag}: {problem.kind}") }
+    }
+    io.println("{tag} views: {Store.seen.join(" ")}")
+    Store.seen = []
+}
 fn main() {
     // interrupted sorts restore, at n = 2, 3, 12, 40
     for n: int in [2, 3, 12, 40] {
@@ -206,4 +259,13 @@ fn main() {
     show_ints("sorted")
     Store.ints.sort_by_key(fn(a: int) -> int { return 0 - a })
     show_ints("by-key-desc")
+    Store.ints = [4, 2, 3, 1]
+    shield_observer(1, "observed ints")
+    show_ints("observed ints after")
+    Store.floats = [4.0, 2.0, 3.0, 1.0]
+    shield_observer(2, "observed floats")
+    io.println("observed floats after: {view_floats()}")
+    Store.floats = [4.0, 9.0, 2.0, 1.0]
+    shield_observer(3, "observed floats panic")
+    io.println("observed floats panic after: {view_floats()}")
 }

@@ -6192,13 +6192,23 @@ static long long sort_less(long long x, long long y, long long kind, void* thunk
     if (thunk) return ((long long (*)(void*, long long, long long))thunk)(box, x, y);
     return slot_cmp(x, y, kind) < 0;
 }
+// `mirror` is the narrow-stride list `a` was widened from, or NULL when `a`
+// is the list's own storage. A Beans comparator can read the list it is
+// sorting through a captured reference, and the two backends must show it
+// the same thing at every call, so a widened sort writes each completed
+// block back through the mirror exactly where the in-place sort (and the
+// interpreter, block for block) commits its own — and the restore guard
+// then snapshots the narrow storage the program can actually see.
 static void list_merge_sort(long long* a, long long n, long long kind, void* thunk,
-                            void* box) {
+                            void* box, BList* mirror) {
     if (n < 2) return;
     // the kind comparators cannot panic; only a Beans comparator can
     // interrupt the permutation, so only then is the array snapshotted
     RT_RESTORE RtRestore restore = {0, 0, 0};
-    if (thunk) rt_restore_arm(&restore, a, (size_t)n * 8);
+    if (thunk) {
+        if (mirror) rt_restore_arm(&restore, mirror->data, (size_t)n * 4);
+        else rt_restore_arm(&restore, a, (size_t)n * 8);
+    }
     RT_SCRATCH long long* buf = rt_alloc((size_t)n * 8);
     for (long long w = 1; w < n; w *= 2) {
         for (long long lo = 0; lo < n; lo += 2 * w) {
@@ -6213,6 +6223,11 @@ static void list_merge_sort(long long* a, long long n, long long kind, void* thu
             while (i < mid) buf[o++] = a[i++];
             while (j < hi) buf[o++] = a[j++];
             memcpy(a + lo, buf + lo, (size_t)(hi - lo) * 8);
+            if (mirror)
+                for (long long back = lo; back < hi; back++) {
+                    unsigned int raw = (unsigned int)a[back];
+                    memcpy((char*)mirror->data + back * 4, &raw, 4);
+                }
         }
     }
     rt_restore_done(&restore);
@@ -6283,23 +6298,25 @@ void beans_list_sort(BList* l, long long kind) {
     if (l->stride == 4) {
         RT_SCRATCH long long* wide = list_widen_slots(l);
         if (kind == 0) list_radix_sort_int(wide, l->len);
-        else list_merge_sort(wide, l->len, kind, NULL, NULL);
+        else list_merge_sort(wide, l->len, kind, NULL, NULL, NULL);
         list_narrow_slots(l, wide);
         return;
     }
     if (kind == 0) list_radix_sort_int(l->data, l->len);
-    else list_merge_sort(l->data, l->len, kind, NULL, NULL);
+    else list_merge_sort(l->data, l->len, kind, NULL, NULL, NULL);
 }
 void beans_list_sort_by(BList* l, void* thunk, void* box) {
     if (l->stride == 4) {
-        // the merge permutes `wide`, a copy: a panicking comparator leaves
-        // the list untouched, and the copy itself is unwind-owned scratch
+        // the merge permutes `wide`, a copy, and mirrors each completed
+        // block into the list, so the comparator observes the same states
+        // it would over the list's own slots; the copy is unwind-owned
+        // scratch and the restore guard inside puts the narrow storage back
         RT_SCRATCH long long* wide = list_widen_slots(l);
-        list_merge_sort(wide, l->len, 0, thunk, box);
+        list_merge_sort(wide, l->len, 0, thunk, box, l);
         list_narrow_slots(l, wide);
         return;
     }
-    list_merge_sort(l->data, l->len, 0, thunk, box);
+    list_merge_sort(l->data, l->len, 0, thunk, box, NULL);
 }
 void beans_list_sort_by_key(BList* l, void* thunk, void* box) {
     if (l->stride == 4) {
