@@ -37,6 +37,7 @@
 #endif
 
 #include <stdatomic.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -141,9 +142,14 @@ struct BeansFiber {
     // the double-panic case. unwind_exc is storage for the platform's
     // _Unwind_Exception: it must outlive every frame the unwind pops, so it
     // cannot sit on the stack being unwound, and one per fiber is enough
-    // because a fiber unwinds at most once.
+    // because a fiber unwinds at most once. The record wants 16-byte
+    // alignment and this struct comes from calloc, which promises only
+    // max_align_t's — 8 on a 32-bit target — so the storage is over-allocated
+    // and the record is aligned where it is used, not declared _Alignas on
+    // the member: a declared alignment the allocator does not honour is
+    // undefined behaviour in every memset and store of the struct.
     int unwind_status;
-    _Alignas(16) unsigned char unwind_exc[64];
+    unsigned char unwind_exc[64 + 16];
 
     BeansFiber* joiner;    // parked fiber waiting on this one, if any
     int forgotten;         // nobody will join; reclaim on finish
@@ -1363,10 +1369,16 @@ static _Unwind_Reason_Code fiber_unwind_stop(
 void beans_fiber_begin_unwind(int status) {
     BeansFiber* fiber = tls_worker->current;
     fiber->unwind_status = status;
+    // Align the record inside the over-allocated scratch (see the member).
+    _Static_assert(sizeof(struct _Unwind_Exception) + 16 <=
+                       sizeof fiber->unwind_exc,
+                   "fiber unwind scratch is too small for an aligned _Unwind_Exception");
+    _Static_assert(_Alignof(struct _Unwind_Exception) <= 16,
+                   "_Unwind_Exception wants more than 16-byte alignment here");
+    uintptr_t raw = (uintptr_t)fiber->unwind_exc;
+    raw = (raw + 15u) & ~(uintptr_t)15u;
     struct _Unwind_Exception* exception =
-        (struct _Unwind_Exception*)(void*)fiber->unwind_exc;
-    _Static_assert(sizeof(struct _Unwind_Exception) <= 64,
-                   "fiber unwind scratch is too small for _Unwind_Exception");
+        (struct _Unwind_Exception*)raw;
     memset(exception, 0, sizeof *exception);
     exception->exception_class = 0x4245414e53554e57ULL; // "BEANSUNW"
     _Unwind_ForcedUnwind(exception, fiber_unwind_stop, NULL);
