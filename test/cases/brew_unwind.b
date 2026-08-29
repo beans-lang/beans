@@ -215,6 +215,24 @@ fn temps_index_store() -> int {
     return 0
 }
 
+// a runtime entry that refuses the value: an insert out of range panics in
+// the runtime before it takes the value, so the value is still the frame's
+// and drops on the unwind (the allowlist in src/llvm_unwind.b)
+fn temps_insert_store() -> int {
+    var slots: List<Res> = [mk("ti-slot0")]
+    slots.insert(7, mk("ti-inserted"))
+    return 0
+}
+
+// a send on a closed channel: the runtime declines the value and the inline
+// panic follows, so the value drops on the unwind
+fn temps_closed_send() -> int {
+    let line: Channel<Res> = new Channel(2)
+    line.close()
+    line.send(mk("cs-sent"))
+    return 0
+}
+
 // the collection a `for` took from a temporary, released when the body
 // panics mid-iteration
 fn make_list() -> List<Res> { return [mk("t-item-a"), mk("t-item-b")] }
@@ -282,7 +300,9 @@ fn run_shape(which: int) -> int {
     if which == 9 { return init_after_field() }
     if which == 10 { return init_before_field() }
     if which == 11 { return locals_only() }
-    return defer_only()
+    if which == 12 { return defer_only() }
+    if which == 13 { return temps_insert_store() }
+    return temps_closed_send()
 }
 
 fn shield_shape(which: int, label: string) -> string {
@@ -319,4 +339,6 @@ fn main() {
     io.println(shield_shape(10, "init before field"))
     io.println(shield_shape(11, "locals only"))
     io.println(shield_shape(12, "defer only"))
+    io.println(shield_shape(13, "insert store"))
+    io.println(shield_shape(14, "closed send"))
 }

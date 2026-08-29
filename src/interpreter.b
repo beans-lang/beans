@@ -8240,9 +8240,21 @@ class TreeInterpreter {
         if receiver.kind == "list" &&
            node.value == "insert" &&
            arguments.len() == 3 {
+            // The bounds are the program's to fail, not this interpreter's:
+            // handing an out-of-range index to the host list panicked the
+            // interpreter itself — the report carried this file's position,
+            // and on a brewed fiber the interpreter's own runtime abandoned
+            // the fiber, so the program's join never returned. The message
+            // is the native runtime's (beans_list_insert), so both backends
+            // print the same report.
+            let index: int = arguments[1].int_data
+            if index < 0 || index > receiver.items.len() {
+                return self.fail(
+                    node,
+                    "insert at {index} out of range (len {receiver.items.len()})")
+            }
             receiver.items.insert(
-                arguments[1].int_data,
-                tree_value_copy(arguments[2]))
+                index, tree_value_copy(arguments[2]))
             return TreeValue.unit()
         }
         if receiver.kind == "list" &&

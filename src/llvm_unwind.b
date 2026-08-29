@@ -334,40 +334,76 @@ partial class LlvmTextEmitter {
     // have the pad release a value the consumer already owns — a double
     // release. A consumer that can refuse the value with a panic before it
     // takes it must clear after: a flag already clear at that panic would
-    // leak the value the interpreter releases. So "after" is only for
-    // entries audited to take last and never fail past the take:
-    //
-    //   List.push / List.insert     runtime: bounds and growth first, store last
-    //   Map/OrderedMap set/insert,  runtime: grow first, place last; hashes and
-    //   map[k] = v                  compares are the runtime's own, never Beans
-    //   Channel.send                runtime declines a closed channel without
-    //                               taking; the inline panic follows
-    //   Box.set / Arena.add         runtime: growth first, store last
-    //   list[i] = v, array[i] = v   inline: bounds first; the store clears the
-    //                               flag itself, before the old element's release
-    //   cast (`as!`)                inline: refuses before it produces
-    //   unwrap / propagate          cannot panic
-    //   iterate_init                cannot panic
-    //
-    // Everything else owns the value from its entry: a Beans callee (its own
-    // frame drops a moved argument), a store into a local or a field, an
-    // aggregate being built, a class `new` (its init is a Beans callee), and
-    // `brew`, `group_brew` and `thread.spawn`, whose records take the closure
-    // before the fiber or thread can fail to start.
+    // leak the value the interpreter releases. Clearing before is the safe
+    // half, so it is the default; "after" is an allowlist of entries each
+    // audited to take last and never fail past the take, and a runtime
+    // method that consumes a reference and is not on the list gets the
+    // default until someone audits it and adds it here with its line.
     fn unwind_transfer_at_entry(
         function: MirFunction,
         instruction: MirInstruction) -> bool {
+        return !self.unwind_validates_before_take(
+            function, instruction)
+    }
+
+    // The allowlist. Every entry names the audit that put it here.
+    fn unwind_validates_before_take(
+        function: MirFunction,
+        instruction: MirInstruction) -> bool {
         let op: string = instruction.op
-        if op == "builtin_method" || op == "cast" ||
-           op == "unwrap" || op == "propagate" ||
+        if op == "cast" {
+            // `as!` refuses before it produces (inline)
+            return true
+        }
+        if op == "unwrap" || op == "propagate" ||
            op == "iterate_init" {
-            return false
+            // cannot panic
+            return true
         }
         if op == "assign" &&
            instruction.text.starts_with("index::") {
+            // list[i] = v, array[i] = v: inline, bounds first; the store
+            // clears the flag itself, before the old element's release.
+            // map[k] = v: beans_map_set grows first and places last, and
+            // its hashes and compares are the runtime's own (a class key
+            // hashes by identity), never Beans code.
+            return true
+        }
+        if op != "builtin_method" ||
+           instruction.operands.len() == 0 {
             return false
         }
-        return true
+        let receiver: string =
+            canonical_hir_name(
+                self.value_type(
+                    function,
+                    instruction.operands[0]).name)
+        let method: string = instruction.text
+        if receiver == "List" {
+            // beans_list_push / beans_list_insert(_typed): bounds check and
+            // growth (with its out-of-memory panic) first, store last
+            return method == "push" || method == "insert"
+        }
+        if receiver == "Map" || receiver == "OrderedMap" {
+            // beans_map_set: as map[k] = v above
+            return method == "set" || method == "insert"
+        }
+        if receiver == "Channel" {
+            // beans_chan_send declines a closed channel without taking the
+            // value ("caller also still owns v"); the inline panic follows
+            return method == "send"
+        }
+        if receiver == "Box" {
+            // beans_box_set: releases the old value, then stores; nothing
+            // panics after the store
+            return method == "set"
+        }
+        if receiver == "Arena" {
+            // beans_arena_put(_typed): growth (out-of-memory, capacity)
+            // first, store last
+            return method == "add" || method == "put"
+        }
+        return false
     }
 
     // Can this instruction start an unwind? Its own effects say so for the

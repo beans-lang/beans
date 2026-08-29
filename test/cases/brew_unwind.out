@@ -89,3 +89,8 @@ locals only: panic
   do defer A
   do defer B
 defer only: panic
+  drop ti-inserted
+  drop ti-slot0
+insert store: panic
+  drop cs-sent
+closed send: panic
