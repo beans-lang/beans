@@ -324,41 +324,50 @@ partial class LlvmTextEmitter {
         }
     }
 
-    // Does this consumer own its consumed operands from its entry?
+    // Does this consumer own its consumed operands from its entry — so the
+    // temporary's flag clears before the instruction — or does it validate
+    // before it takes them, so the flag clears after?
+    //
+    // The line is drawn by what can go wrong between the two points. A
+    // consumer that takes the value and can then panic, or run Beans code
+    // that panics, must clear before: a flag still set past the take would
+    // have the pad release a value the consumer already owns — a double
+    // release. A consumer that can refuse the value with a panic before it
+    // takes it must clear after: a flag already clear at that panic would
+    // leak the value the interpreter releases. So "after" is only for
+    // entries audited to take last and never fail past the take:
+    //
+    //   List.push / List.insert     runtime: bounds and growth first, store last
+    //   Map/OrderedMap set/insert,  runtime: grow first, place last; hashes and
+    //   map[k] = v                  compares are the runtime's own, never Beans
+    //   Channel.send                runtime declines a closed channel without
+    //                               taking; the inline panic follows
+    //   Box.set / Arena.add         runtime: growth first, store last
+    //   list[i] = v, array[i] = v   inline: bounds first; the store clears the
+    //                               flag itself, before the old element's release
+    //   cast (`as!`)                inline: refuses before it produces
+    //   unwrap / propagate          cannot panic
+    //   iterate_init                cannot panic
+    //
+    // Everything else owns the value from its entry: a Beans callee (its own
+    // frame drops a moved argument), a store into a local or a field, an
+    // aggregate being built, a class `new` (its init is a Beans callee), and
+    // `brew`, `group_brew` and `thread.spawn`, whose records take the closure
+    // before the fiber or thread can fail to start.
     fn unwind_transfer_at_entry(
         function: MirFunction,
         instruction: MirInstruction) -> bool {
         let op: string = instruction.op
-        if op == "call" || op == "method_call" ||
-           op == "closure_call" ||
-           op == "super_init" || op == "super_call" ||
-           op == "runtime_hook_call" ||
-           op == "local_init" {
-            return true
+        if op == "builtin_method" || op == "cast" ||
+           op == "unwrap" || op == "propagate" ||
+           op == "iterate_init" {
+            return false
         }
-        if op == "static_call" {
-            return self.function_symbols.contains_key(
-                instruction.resolved)
+        if op == "assign" &&
+           instruction.text.starts_with("index::") {
+            return false
         }
-        if op == "new" {
-            return self.unwind_class_new(instruction)
-        }
-        if op == "assign" {
-            // a list or array element store checks its bounds first, so it
-            // takes the value only once it is in the slot; a map store is
-            // the runtime's from the call
-            if instruction.text.starts_with("index::") &&
-               instruction.operands.len() != 0 {
-                let target: string =
-                    canonical_hir_name(
-                        self.value_type(
-                            function,
-                            instruction.operands[0]).name)
-                return target != "List" && target != "array"
-            }
-            return true
-        }
-        return false
+        return true
     }
 
     // Can this instruction start an unwind? Its own effects say so for the

@@ -432,12 +432,22 @@ Landed since:
    to the unwind, which does not run it again. An object whose deinit panics during a normal exit is
    abandoned mid-destruction — it is not released a second time by the unwind,
    and whatever it still held is not released either — while the locals that
-   had not dropped yet still drop. A value handed to a runtime call that
-   panics before taking it (a map store whose key's `hash` panics) is
-   released by the unwind on the native backend only when the runtime had not
-   yet taken it; the interpreter always releases it. That gap is the one
-   place the two can differ, and it is confined to a user callback panicking
-   inside a runtime frame.
+   had not dropped yet still drop.
+
+   A value handed to a runtime entry (`push`, `insert`, `set`, `send`, a
+   `map[k] = v`) is released by the unwind when the entry refused it — a store
+   out of range, a send on a closed channel — exactly as the interpreter
+   releases it; once the entry has stored it, it is the collection's. Every
+   such entry validates before it takes, and none runs Beans code after the
+   take: a class used as a map key hashes by identity with the runtime's own
+   hasher, so no user `hash` or `eq` ever runs inside a map operation. The
+   one place the backends differ is a panic raised *inside* a runtime frame
+   that called back into Beans code — a sort comparator, a `deinit` the
+   runtime ran while replacing an element — and only in what that C frame
+   itself held: its scratch buffers are not freed and the collection it was
+   mutating is left as it was mid-operation on the native backend, while the
+   interpreter, whose runtime frames are Beans frames, frees them. What the
+   Beans frames above and below hold is released on both.
 
 Deliberately not yet here, in dependency order:
 
