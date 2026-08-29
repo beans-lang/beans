@@ -82,19 +82,19 @@ class TreeInterpreter {
     // A contained panic (one raised on a brewed, non-root fiber) does not
     // abandon its frames: it unwinds them, running each function's defers and
     // dropping each owned local, exactly as a return would — the same thing
-    // the native backend does with the platform unwinder. `unwinding` is true
-    // while that tree-level unwind is in flight, and `unwinding_fiber` is the
-    // address of the fiber it belongs to. A panic raised while the *same*
-    // fiber is already unwinding is the double-panic case (a defer or deinit
-    // the unwind itself is running has panicked): unrecoverable, reported and
-    // aborted. The address is what tells that apart from a sibling fiber that
-    // panics while this one is parked inside a cleanup action.
-    unwinding: bool
-    unwinding_fiber: u64
-    // The message of the panic being unwound, kept aside so the double-panic
-    // report can name the failure that was already in flight — the cleanup
-    // path clears panic_text while it runs a defer, so it is not there to read.
-    unwinding_message: string
+    // the native backend does with the platform unwinder. The unwind is a
+    // fact about one fiber, so it is kept per fiber, keyed by the address
+    // the fiber core hands out: the entry maps the fiber to the message of
+    // the panic being unwound (kept aside because the cleanup path clears
+    // panic_text while it runs a defer or a deinit), and it is removed when
+    // the fiber's body has unwound to its entry. A fiber parked inside a
+    // cleanup action — a defer that joins, a deinit that sends — lets other
+    // fibers run, finish and panic; none of that touches this fiber's entry,
+    // which is what the native runtime's per-fiber unwind_status gives it. A
+    // panic raised while the *same* fiber is already unwinding is the
+    // double-panic case (a defer or deinit the unwind itself is running has
+    // panicked): unrecoverable, reported and aborted.
+    unwinds: Map<u64, string>
     next_object_id: int
     // Zeroing weak fields: the registry maps a weakly referenced object's
     // id to an inner TreeValue sharing the same fields map, and the
@@ -169,9 +169,7 @@ class TreeInterpreter {
         self.arguments = move arguments
         self.failed = false
         self.panic_text = ""
-        self.unwinding = false
-        self.unwinding_fiber = 0
-        self.unwinding_message = ""
+        self.unwinds = {}
         self.next_object_id = 0
         self.weak_track = false
         self.weak_registry = {}
@@ -498,9 +496,7 @@ class TreeInterpreter {
                message: string) -> TreeValue {
         let text: string =
             "runtime panic at {node.line}:{col}: {message}"
-        if self.unwinding && !self.failed &&
-           self.current_fiber_address() ==
-               self.unwinding_fiber {
+        if !self.failed && self.fiber_unwinding() {
             // A panic raised while THIS fiber is already unwinding a contained
             // failure, AND while no panic is currently in flight — meaning it
             // came from a defer or a deinit the unwind is running, which clear
@@ -525,10 +521,7 @@ class TreeInterpreter {
             // the root fiber (or before any fiber exists) leaves the process,
             // which is what run() already does — no unwind is armed for it.
             if self.panic_is_contained() {
-                self.unwinding = true
-                self.unwinding_fiber =
-                    self.current_fiber_address()
-                self.unwinding_message = text
+                self.begin_unwind(text)
             }
             // Stop with the frames still standing, so a person can see what
             // the program was doing when it failed.
@@ -549,6 +542,33 @@ class TreeInterpreter {
         unsafe {
             return beans_fiber_current().address()
         }
+    }
+
+    // Is the fiber running the walker right now inside a contained unwind?
+    fn fiber_unwinding() -> bool {
+        return self.unwinds.contains_key(
+            self.current_fiber_address())
+    }
+
+    // The message of the panic this fiber is unwinding, or "".
+    fn unwinding_message() -> string {
+        match self.unwinds.get(
+                  self.current_fiber_address()) {
+            some(text) => { return text }
+            none => { return "" }
+        }
+    }
+
+    // Arm the tree-level unwind for the fiber running the walker.
+    fn begin_unwind(text: string) {
+        self.unwinds[self.current_fiber_address()] = text
+    }
+
+    // The fiber's body has unwound to its entry: it is no longer unwinding.
+    // Fiber addresses are reused once a fiber is reaped, so the entry must
+    // not outlive the fiber it describes.
+    fn end_unwind() {
+        self.unwinds.remove(self.current_fiber_address())
     }
 
     // Is a panic raised right now contained, i.e. will a `join` catch it?
@@ -576,7 +596,7 @@ class TreeInterpreter {
         io.eprintln(
             "double panic during unwind: {text}")
         io.eprintln(
-            "  while unwinding: {self.unwinding_message}")
+            "  while unwinding: {self.unwinding_message()}")
         host_os.exit(134)
     }
 
@@ -3612,7 +3632,7 @@ class TreeInterpreter {
             // object without a deinit (spec: it leaves the process). A panic
             // raised inside the deinit is the double-panic case that fail_at
             // aborts on; the guards below never re-arm the old panic over it.
-            if !self.unwinding { return }
+            if !self.fiber_unwinding() { return }
             let saved: string = self.panic_text
             self.failed = false
             self.panic_text = ""
@@ -11949,7 +11969,7 @@ class TreeInterpreter {
                 // the panic aside so the defer body runs, then restore it and
                 // keep unwinding. A panic inside the defer is the double-panic
                 // case, which fail_at has already turned into an abort.
-                if !self.unwinding { continue }
+                if !self.fiber_unwinding() { continue }
                 let saved: string = self.panic_text
                 self.failed = false
                 self.panic_text = ""
@@ -11980,19 +12000,14 @@ class TreeInterpreter {
                    message: string) -> TreeValue {
         let text: string =
             "runtime panic at {function.line}:{function.col}: {message}"
-        if self.unwinding && !self.failed &&
-           self.current_fiber_address() ==
-               self.unwinding_fiber {
+        if !self.failed && self.fiber_unwinding() {
             self.report_double_panic(text)
         }
         if !self.failed {
             self.failed = true
             self.panic_text = text
             if self.panic_is_contained() {
-                self.unwinding = true
-                self.unwinding_fiber =
-                    self.current_fiber_address()
-                self.unwinding_message = text
+                self.begin_unwind(text)
             }
         }
         return TreeValue.unit()

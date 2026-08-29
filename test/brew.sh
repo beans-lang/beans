@@ -45,6 +45,18 @@ echo "checking a contained panic unwinds its frames on both backends"
 diff -u test/cases/brew_unwind.out "$tmp/unwind.interp"
 diff -u test/cases/brew_unwind.out "$tmp/unwind.native.out"
 
+echo "checking an unwind parked in its cleanup survives other fibers finishing"
+# issue #44 (B3): the unwind is per fiber on both backends. A child that
+# started before the parent's panic finishes — or panics — while the parent is
+# parked inside a cleanup defer; the parent's remaining cleanup still runs and
+# its join reports the parent's own failure.
+./build/beansc run test/cases/brew_unwind_park.b >"$tmp/park.interp"
+./build/beansc build test/cases/brew_unwind_park.b -o "$tmp/park.native" \
+    >"$tmp/park.build" 2>&1
+"$tmp/park.native" >"$tmp/park.native.out"
+diff -u test/cases/brew_unwind_park.out "$tmp/park.interp"
+diff -u test/cases/brew_unwind_park.out "$tmp/park.native.out"
+
 echo "checking an unjoined panic escalates at the scope exit"
 cat >"$tmp/escalate.b" <<'BEANS'
 import std.io
