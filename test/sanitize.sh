@@ -68,6 +68,9 @@ run_asan examples/box.b box
 run_asan examples/arena.b arena
 run_asan examples/containers.b containers 3
 run_asan test/cases/map_models.b map_models
+# #60: a pattern-bound node dropped on an early return must be released; under
+# ASan on Linux a missed release is an LSan report and a non-zero exit.
+run_asan test/cases/unlink_leak.b unlink_leak
 run_asan examples/shared_weak.b shared_weak
 run_asan examples/unsafe_raw.b unsafe_raw
 run_asan examples/simd.b simd
@@ -331,6 +334,7 @@ BEANS_SANITIZE_CALLBACKS=1 bash ./test/stored_callbacks.sh
 if [[ "$(uname -s)" == Darwin ]] && command -v leaks >/dev/null 2>&1; then
     for file in bench/trees.b examples/box.b examples/arena.b examples/fmt.b \
                 test/cases/brew_unwind_leak.b \
+                test/cases/unlink_leak.b \
                 examples/shared_weak.b examples/inline_results.b examples/wide_lists.b \
                 examples/wide_maps.b examples/wide_enums.b examples/enum_repr.b \
                 examples/wide_owners.b \

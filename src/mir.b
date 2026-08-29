@@ -5143,10 +5143,13 @@ class MirLowerer {
             // emit_local_store always finishes with `store i1 true`
             state.set_flag(local, 1)
         } else if instruction.op == "pattern_bind" {
-            // Option arms bind without touching the flag while enum
-            // and Result arms set it; the emitter picks by payload
-            // type, so from here the flag is simply unknown
-            state.set_flag(local, 2)
+            // every arm — Option, Result, enum, and the Option a cast
+            // makes — stores its payload and then `store i1 true`. An
+            // elided bind stores a borrow the frame never releases, so
+            // the flag it leaves is the clear one the prologue wrote.
+            state.set_flag(
+                local,
+                if instruction.borrow_elided { 0 } else { 1 })
         } else if instruction.op == "move" ||
                   instruction.op == "drop_local" {
             // a move clears the flag as it reads; a drop leaves it
