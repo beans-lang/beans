@@ -1639,7 +1639,15 @@ partial class LlvmTextEmitter {
                 self.value(
                     function, values,
                     terminator.value, source)
-            return "{output}{self.release_function_cells(function)}{parent_deinit}  ret {result_type} {value}\n"
+            // the caller owns the returned reference from here; an in-flight
+            // temporary this return consumes leaves the frame's care last
+            var handed: string = ""
+            if terminator.consumes_value {
+                handed =
+                    self.unwind_temp_clear(
+                        function, terminator.value)
+            }
+            return "{output}{self.release_function_cells(function)}{parent_deinit}{handed}  ret {result_type} {value}\n"
         }
         if terminator.kind == "match" {
             return "{output}{self.emit_match(function, block, values, source)}"
@@ -1894,6 +1902,7 @@ partial class LlvmTextEmitter {
                     self.unwind_pad_block(function),
                     self.debug_function_location()))
         }
+        self.unwind_close(function)
         let body: string = chunks.join("")
         let feature_attribute: string =
             if function.required_feature == "" {

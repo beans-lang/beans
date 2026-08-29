@@ -490,6 +490,17 @@ partial class LlvmTextEmitter {
         let consumed: bool =
             instruction.consumes.len() == 3 &&
             instruction.consumes[2]
+        // A consumed temporary is the list's once it is in the slot, and not
+        // before: the bounds check above the store can panic, and then the
+        // cleanup pad still owns the value. The hand-off sits between the
+        // store and the release of the element it replaced, whose deinit
+        // can panic too (src/llvm_unwind.b).
+        var handed: string = ""
+        if consumed {
+            handed =
+                self.unwind_temp_clear(
+                    function, instruction.operands[2])
+        }
         let id: int = self.fresh()
         let okay: int = self.fresh()
         let bad: int = self.fresh()
@@ -515,7 +526,7 @@ partial class LlvmTextEmitter {
                 let publish: string =
                     self.emit_cc_write(
                         list, element, stored, "list")
-                return "{output}{publish}  {old} = load {llvm}, ptr %list.store.slot{id}\n  store {llvm} {stored}, ptr %list.store.slot{id}\n{release}"
+                return "{output}{publish}  {old} = load {llvm}, ptr %list.store.slot{id}\n  store {llvm} {stored}, ptr %list.store.slot{id}\n{handed}{release}"
             }
             return "{output}  store {llvm} {stored}, ptr %list.store.slot{id}\n"
         }
@@ -535,7 +546,7 @@ partial class LlvmTextEmitter {
                 self.emit_cc_write(
                     list, element, stored, "list")
             output =
-                "{output}{publish}  %list.store.old{id} = load i64, ptr %list.store.slot{id}\n  %list.store.old.ptr{id} = inttoptr i64 %list.store.old{id} to ptr\n{converted.setup}  store i64 {converted.value}, ptr %list.store.slot{id}\n  call void @beans_release(ptr %list.store.old.ptr{id})\n"
+                "{output}{publish}  %list.store.old{id} = load i64, ptr %list.store.slot{id}\n  %list.store.old.ptr{id} = inttoptr i64 %list.store.old{id} to ptr\n{converted.setup}  store i64 {converted.value}, ptr %list.store.slot{id}\n{handed}  call void @beans_release(ptr %list.store.old.ptr{id})\n"
             return output
         }
         let converted: LlvmSlotConversion =
@@ -2688,7 +2699,16 @@ partial class LlvmTextEmitter {
             }
             let old: string =
                 "%array.assign.old{id}"
-            return "{output}  {old} = load {element_llvm}, ptr %field.assign.ptr{address}\n  store {element_llvm} {stored}, ptr %field.assign.ptr{address}\n{self.emit_arc_value(element, old, false)}"
+            // as in a list store: the value is the array's once it is in
+            // the slot, after the bounds check and before the release of
+            // the element it replaced (src/llvm_unwind.b)
+            var handed: string = ""
+            if consumed {
+                handed =
+                    self.unwind_temp_clear(
+                        function, instruction.operands[2])
+            }
+            return "{output}  {old} = load {element_llvm}, ptr %field.assign.ptr{address}\n  store {element_llvm} {stored}, ptr %field.assign.ptr{address}\n{handed}{self.emit_arc_value(element, old, false)}"
         }
         return "{output}  store {element_llvm} {stored}, ptr %field.assign.ptr{address}\n"
     }

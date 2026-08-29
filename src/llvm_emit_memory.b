@@ -325,11 +325,17 @@ partial class LlvmTextEmitter {
                     values: Map<int, string>,
                     id: int,
                     instruction: MirInstruction) -> string {
+        // The plan's release is where an in-flight temporary's reference
+        // leaves the frame: its unwind flag clears first, so a deinit that
+        // panics inside this release is not followed by a second release
+        // from the cleanup pad (src/llvm_unwind.b).
+        let handed: string =
+            self.unwind_temp_clear(function, id)
         if self.inout_addresses.contains_key(id) {
-            return ""
+            return handed
         }
         if self.selector_texts.contains_key(id) {
-            return ""
+            return handed
         }
         match self.borrowed_local_of.get(id) {
             some(local_id) => {
@@ -337,7 +343,7 @@ partial class LlvmTextEmitter {
                    local_id < function.locals.len() &&
                    function.locals[
                        local_id].scalar_replaced {
-                    return ""
+                    return handed
                 }
             }
             none => {}
@@ -349,18 +355,17 @@ partial class LlvmTextEmitter {
         if self.iterator_kind.contains_key(id) {
             if self.iterator_collection.contains_key(id) {
                 if self.iterator_collection_borrowed.contains_key(id) {
-                    return ""
+                    return handed
                 }
-                return "  call void @beans_release(ptr {self.iterator_collection[id]})\n"
+                return "{handed}  call void @beans_release(ptr {self.iterator_collection[id]})\n"
             }
-            return ""
+            return handed
         }
         let type: HirType = self.value_type(function, id)
-        if !self.type_has_owned_refs(type) { return "" }
+        if !self.type_has_owned_refs(type) { return handed }
         let released: string =
             self.value(function, values, id, instruction)
-        return self.emit_arc_value(
-            type, released, false)
+        return "{handed}{self.emit_arc_value(type, released, false)}"
     }
 
     fn emit_releases(function: MirFunction,
@@ -973,6 +978,13 @@ partial class LlvmTextEmitter {
                     }
                     output =
                         "{output}  store {self.type_text(instruction.type)} {operand}, ptr {self.phi_slots[instruction.result]}\n"
+                    if consumed {
+                        // the phi owns the reference from here: the
+                        // incoming temporary's unwind flag clears on
+                        // this edge only
+                        output =
+                            "{output}{self.unwind_temp_clear(function, instruction.operands[index])}"
+                    }
                 }
             }
         }
@@ -1011,6 +1023,10 @@ partial class LlvmTextEmitter {
                 for released: int in edge.values {
                     if self.iterator_kind.contains_key(
                            released) {
+                        // the iterator's collection leaves the frame's
+                        // care here, whether or not it is released
+                        output =
+                            "{output}{self.unwind_temp_clear(function, released)}"
                         if self.iterator_collection.contains_key(
                                released) &&
                            !self.iterator_collection_borrowed.contains_key(

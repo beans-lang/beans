@@ -70,6 +70,11 @@ partial class LlvmTextEmitter {
         if function.declaration ||
            function.external { return false }
         if self.defer_sites.len() != 0 { return true }
+        // an owned temporary live across a panic point has to be released by
+        // the pad even when the frame owns no local at all (issue #44)
+        if self.unwind_temp_candidate.len() != 0 {
+            return true
+        }
         for local: MirLocal in function.locals {
             if self.unwind_drops_local(
                    function, local) {
@@ -110,16 +115,31 @@ partial class LlvmTextEmitter {
     }
 
     // The cleanup pad itself. Reached only from an exception edge, so its
-    // code never runs unless this frame is being unwound.
+    // code never runs unless this frame is being unwound. What it runs is the
+    // cleanup a return runs, in the order the tree interpreter walks out of
+    // the frame (spec/CONCURRENCY.md):
+    //
+    //  1. what the failing statement was holding — the in-flight temporaries
+    //     and the locals of the nested scopes the failure sat inside — newest
+    //     first, the way the walker's expression frames and block scopes pop;
+    //  2. the defers, newest first, each at most once;
+    //  3. the function's own locals, newest first;
+    //  4. the value a `return` was carrying when a defer or a deinit on the
+    //     way out panicked — the walker hands it back last;
+    //  5. the cells of the captured trivial locals.
+    //
+    // Every unit is guarded by its own flag: a temporary whose reference
+    // already changed hands, a local of a scope that exited or was never
+    // entered, and a defer that ran (or panicked) all read clear and are
+    // skipped, so the pad never asks where the failure landed.
     fn unwind_pad_block(
         function: MirFunction) -> string {
         let id: int = self.fresh()
         let token: string = "%eh.lp{id}"
         var output: string =
             "{self.unwind_pad}:\n  {token} = landingpad \{ ptr, i32 \}\n          cleanup\n"
-        // The same defers the return path runs, in the same order, guarded by
-        // the same armed flags: a defer whose registration the panic never
-        // reached has a clear flag and does not run.
+        output =
+            "{output}{self.unwind_pad_inner_units(function)}"
         let position: MirInstruction =
             new MirInstruction(
                 "run_defers", -1,
@@ -128,34 +148,21 @@ partial class LlvmTextEmitter {
                 function.col)
         output =
             "{output}{self.emit_run_defers(function, position)}"
-        // Locals newest-first, which is reverse declaration order across
-        // every scope — the order emit_local_drops_from produces at a return.
-        // A local of a scope that already exited has a clear flag (its drop
-        // stored one) and a local of a scope the panic never entered has
-        // never had one set, so both are skipped here without asking where
-        // the failure landed.
         var index: int = function.locals.len()
         for index > 0 {
             index -= 1
             let local: MirLocal =
                 function.locals[index]
+            if local.scope_depth != 0 { continue }
             if !self.unwind_drops_local(
                    function, local) {
                 continue
             }
-            let drop: MirInstruction =
-                new MirInstruction(
-                    "drop_local", -1,
-                    new HirType("unit"), local.name, "",
-                    function.file, function.line,
-                    function.col)
-            drop.local = local.id
-            // 2 is "the flag's value is not known here", which is the truth
-            // at an arbitrary failure point and the only shape that reads it.
-            drop.live_state = 2
             output =
-                "{output}{self.emit_drop_local(function, drop)}"
+                "{output}{self.unwind_pad_drop_local(function, local)}"
         }
+        output =
+            "{output}{self.unwind_pad_return_values(function)}"
         // MIR drops owned locals; a captured *trivial* local still owns its
         // heap cell, and the return path releases those separately. The pad
         // has to release them too or a frame that captured anything leaks its
@@ -164,6 +171,507 @@ partial class LlvmTextEmitter {
         output =
             "{output}{self.release_function_cells(function)}"
         return "{output}  resume \{ ptr, i32 \} {token}\n"
+    }
+
+    // A local's drop as the pad emits it: 2 is "the flag's value is not
+    // known here", which is the truth at an arbitrary failure point and the
+    // only shape that reads the flag.
+    fn unwind_pad_drop_local(function: MirFunction,
+                             local: MirLocal) -> string {
+        let drop: MirInstruction =
+            new MirInstruction(
+                "drop_local", -1,
+                new HirType("unit"), local.name, "",
+                function.file, function.line,
+                function.col)
+        drop.local = local.id
+        drop.live_state = 2
+        return self.emit_drop_local(function, drop)
+    }
+
+    // Phase 1: temporaries (other than a return's) and nested-scope locals,
+    // by the position of their definition, newest first. The two kinds are
+    // ordered together because that is how they were created: a block's
+    // local declared after a temporary of the enclosing statement was made
+    // is dropped before it, as the walker's block scope pops first.
+    fn unwind_pad_inner_units(
+        function: MirFunction) -> string {
+        var ids: List<int> = []
+        var positions: List<int> = []
+        var taken: List<bool> = []
+        for id: int in self.unwind_temp_order {
+            if self.unwind_temp_return.contains_key(id) {
+                continue
+            }
+            ids.push(id)
+            positions.push(self.unwind_temp_position[id])
+            taken.push(false)
+        }
+        for local: MirLocal in function.locals {
+            if local.scope_depth == 0 { continue }
+            if !self.unwind_drops_local(
+                   function, local) {
+                continue
+            }
+            // a nested local the emitted code never initializes has a clear
+            // flag; it sorts last and its drop is skipped
+            ids.push(-(local.id + 1))
+            positions.push(
+                self.unwind_local_position.get(
+                    local.id).or(-1))
+            taken.push(false)
+        }
+        var output: string = ""
+        var remaining: int = ids.len()
+        for remaining > 0 {
+            var best: int = -1
+            for candidate: int in 0..ids.len() {
+                if taken[candidate] { continue }
+                if best < 0 ||
+                   positions[candidate] >= positions[best] {
+                    best = candidate
+                }
+            }
+            taken[best] = true
+            remaining -= 1
+            if ids[best] >= 0 {
+                output =
+                    "{output}{self.unwind_pad_temp_release(function, ids[best])}"
+            } else {
+                output =
+                    "{output}{self.unwind_pad_drop_local(function, function.locals[-ids[best] - 1])}"
+            }
+        }
+        return output
+    }
+
+    // Phase 4: the value a return terminator consumes, if one was in flight.
+    fn unwind_pad_return_values(
+        function: MirFunction) -> string {
+        var output: string = ""
+        var index: int = self.unwind_temp_order.len()
+        for index > 0 {
+            index -= 1
+            let id: int = self.unwind_temp_order[index]
+            if !self.unwind_temp_return.contains_key(id) {
+                continue
+            }
+            output =
+                "{output}{self.unwind_pad_temp_release(function, id)}"
+        }
+        return output
+    }
+
+    // One temporary's guarded release: flagged means the frame still owns
+    // the reference. The flag clears before the release, as a drop's does.
+    fn unwind_pad_temp_release(function: MirFunction,
+                               id: int) -> string {
+        let slot: string = self.unwind_temp_slot[id]
+        let type: string =
+            self.unwind_temp_llvm_type(function, id)
+        let temporary: int = self.fresh()
+        let release_block: int = self.fresh()
+        let merge_block: int = self.fresh()
+        let held: string = "%eh.tmp{temporary}"
+        var release: string = ""
+        if self.iterator_kind.contains_key(id) {
+            release =
+                "  call void @beans_release(ptr {held})\n"
+        } else {
+            release =
+                self.emit_arc_value(
+                    self.value_type(function, id),
+                    held, false)
+        }
+        return "  %eh.tmp.live{temporary} = load i1, ptr {slot}.live\n  br i1 %eh.tmp.live{temporary}, label %eh.tmp.release{release_block}, label %eh.tmp.next{merge_block}\neh.tmp.release{release_block}:\n  {held} = load {type}, ptr {slot}\n  store i1 false, ptr {slot}.live\n{release}  br label %eh.tmp.next{merge_block}\neh.tmp.next{merge_block}:\n"
+    }
+
+    // ---- in-flight owned temporaries ----------------------------------
+    //
+    // A MIR value that holds an owned reference — the result of `new`, a
+    // call, a literal, a retain, the collection an iterator took — and is
+    // still live when a later instruction panics belongs to no local: the
+    // plan releases it after its last use, and a pad that only knows locals
+    // leaks it. The interpreter releases such a value as its expression
+    // frames unwind, so a native build has to as well, in the same order.
+    //
+    // The rule: every such value is stored beside the locals at its
+    // definition, with a flag; the flag clears when the reference changes
+    // hands — at the release the plan scheduled, or when a consumer takes
+    // it — and the pad releases whatever is still flagged.
+    //
+    // When the hand-off happens is what keeps a value from being released
+    // twice. A callee that is emitted Beans code owns a moved argument from
+    // its entry (its own frame drops it if it panics), and a store into a
+    // local or a field is the transfer itself — those clear the flag before
+    // the instruction. A runtime call that can panic does so before it takes
+    // the value (argument validation), so its consumer clears after: a panic
+    // in between leaves the value flagged and the pad releases it, as the
+    // interpreter does. A list index assignment, the one inline consumer
+    // that checks before it stores, clears between its store and the release
+    // of the element it replaced.
+
+    // A class object exists from its allocation, so its own init is the
+    // first call it is live across (a panic inside init must release the
+    // half-built object, fields and all). Handle types are runtime calls.
+    fn unwind_class_new(instruction: MirInstruction) -> bool {
+        if instruction.op != "new" { return false }
+        match self.declaration_for(instruction.type) {
+            some(declaration) => {
+                return declaration.kind == "class"
+            }
+            none => { return false }
+        }
+    }
+
+    // Does this consumer own its consumed operands from its entry?
+    fn unwind_transfer_at_entry(
+        function: MirFunction,
+        instruction: MirInstruction) -> bool {
+        let op: string = instruction.op
+        if op == "call" || op == "method_call" ||
+           op == "closure_call" ||
+           op == "super_init" || op == "super_call" ||
+           op == "runtime_hook_call" ||
+           op == "local_init" {
+            return true
+        }
+        if op == "static_call" {
+            return self.function_symbols.contains_key(
+                instruction.resolved)
+        }
+        if op == "new" {
+            return self.unwind_class_new(instruction)
+        }
+        if op == "assign" {
+            // a list or array element store checks its bounds first, so it
+            // takes the value only once it is in the slot; a map store is
+            // the runtime's from the call
+            if instruction.text.starts_with("index::") &&
+               instruction.operands.len() != 0 {
+                let target: string =
+                    canonical_hir_name(
+                        self.value_type(
+                            function,
+                            instruction.operands[0]).name)
+                return target != "List" && target != "array"
+            }
+            return true
+        }
+        return false
+    }
+
+    // Can this instruction start an unwind? Its own effects say so for the
+    // calls, indexes, casts and `?`; a drop, an assignment and a release run
+    // a deinit, and a deinit can panic.
+    fn unwind_can_panic(instruction: MirInstruction) -> bool {
+        return instruction.effects.contains("panic") ||
+               instruction.op == "drop_local" ||
+               instruction.op == "assign" ||
+               instruction.op == "run_defers" ||
+               instruction.releases.len() != 0
+    }
+
+    fn unwind_consumes(instruction: MirInstruction,
+                       id: int) -> bool {
+        for index: int in 0..instruction.consumes.len() {
+            if instruction.consumes[index] &&
+               index < instruction.operands.len() &&
+               instruction.operands[index] == id {
+                return true
+            }
+        }
+        return false
+    }
+
+    fn unwind_returned_elsewhere(function: MirFunction,
+                                 id: int) -> bool {
+        for block: MirBlock in function.blocks {
+            let terminator: MirTerminator = block.terminator
+            if terminator.kind == "return" &&
+               terminator.consumes_value &&
+               terminator.value == id {
+                return true
+            }
+        }
+        return false
+    }
+
+    // Which values are candidates, from MIR alone and before the body is
+    // emitted, because whether the frame gets a pad depends on it. A value
+    // is a candidate when an instruction that can panic sits between its
+    // definition and its death, when its consumer can panic before taking
+    // it, or — conservatively — when it leaves its block at all. Naming a
+    // value that turns out never to need its slot costs a store or two.
+    fn unwind_scan_temps(function: MirFunction) {
+        for block: MirBlock in function.blocks {
+            if !block.reachable { continue }
+            for index: int in 0..block.instructions.len() {
+                let definition: MirInstruction =
+                    block.instructions[index]
+                if definition.removed ||
+                   definition.result < 0 {
+                    continue
+                }
+                let id: int = definition.result
+                var unit: bool = false
+                if definition.op == "iterate_init" {
+                    unit =
+                        definition.consumes.len() != 0 &&
+                        definition.consumes[0]
+                } else if self.value_ownership(function, id) ==
+                              "owned" &&
+                          self.type_has_owned_refs(
+                              self.value_type(function, id)) {
+                    unit = true
+                }
+                if !unit { continue }
+                var candidate: bool =
+                    self.unwind_class_new(definition)
+                var crossed: bool = false
+                var dead: bool = false
+                var scan: int = index + 1
+                for scan < block.instructions.len() && !dead {
+                    let step: MirInstruction =
+                        block.instructions[scan]
+                    scan += 1
+                    if step.removed { continue }
+                    if self.unwind_consumes(step, id) {
+                        if crossed ||
+                           (!self.unwind_transfer_at_entry(function, step) &&
+                            self.unwind_can_panic(step)) {
+                            candidate = true
+                        }
+                        dead = true
+                    } else if step.releases.contains(id) {
+                        // released after the instruction: live through it,
+                        // and through the releases listed ahead of it
+                        if crossed ||
+                           self.unwind_can_panic(step) {
+                            candidate = true
+                        }
+                        dead = true
+                    } else if self.unwind_can_panic(step) {
+                        crossed = true
+                    }
+                }
+                if !dead {
+                    let terminator: MirTerminator =
+                        block.terminator
+                    if terminator.releases.contains(id) {
+                        if crossed { candidate = true }
+                    } else if terminator.kind == "return" &&
+                              terminator.consumes_value &&
+                              terminator.value == id {
+                        if crossed { candidate = true }
+                        self.unwind_temp_return[id] = true
+                    } else {
+                        candidate = true
+                        if self.unwind_returned_elsewhere(
+                               function, id) {
+                            self.unwind_temp_return[id] = true
+                        }
+                    }
+                }
+                if candidate {
+                    self.unwind_temp_candidate[id] = true
+                }
+            }
+        }
+    }
+
+    fn unwind_temp_llvm_type(function: MirFunction,
+                             id: int) -> string {
+        let type: HirType = self.value_type(function, id)
+        if canonical_hir_name(type.name) == "iterator" {
+            return "ptr"
+        }
+        return self.type_text(type)
+    }
+
+    // The slot of a candidate, made on first mention. A clear can be
+    // emitted before the definition — the plan releases a value on the edge
+    // of a block that precedes its own — and the flag starts clear, so that
+    // order is a harmless store.
+    fn unwind_temp_slot_of(function: MirFunction,
+                           id: int) -> string {
+        match self.unwind_temp_slot.get(id) {
+            some(slot) => { return slot }
+            none => {}
+        }
+        let slot: string = "%eh.tmp.v{id}"
+        let type: HirType = self.value_type(function, id)
+        var alignment: string = ""
+        if canonical_hir_name(type.name) != "iterator" {
+            alignment =
+                self.explicit_alloca_alignment(type)
+        }
+        self.function_allocas.push(
+            "  {slot} = alloca {self.unwind_temp_llvm_type(function, id)}{alignment}\n  {slot}.live = alloca i1\n  store i1 false, ptr {slot}.live\n")
+        self.unwind_temp_slot[id] = slot
+        return slot
+    }
+
+    // Is this candidate one the pad may release? The same skips
+    // emit_release applies: a value that is a scalar-replaced local's alias,
+    // an inout address or a layout selector owns no count, and an iterator
+    // owns its collection only when it took one.
+    fn unwind_temp_wanted(function: MirFunction,
+                          id: int) -> bool {
+        if self.unwind_pad == "" { return false }
+        if !self.unwind_temp_candidate.contains_key(id) {
+            return false
+        }
+        if self.inout_addresses.contains_key(id) {
+            return false
+        }
+        if self.selector_texts.contains_key(id) {
+            return false
+        }
+        match self.borrowed_local_of.get(id) {
+            some(local_id) => {
+                if local_id >= 0 &&
+                   local_id < function.locals.len() &&
+                   function.locals[
+                       local_id].scalar_replaced {
+                    return false
+                }
+            }
+            none => {}
+        }
+        if self.iterator_kind.contains_key(id) {
+            return self.iterator_collection.contains_key(id) &&
+                   !self.iterator_collection_borrowed.contains_key(id)
+        }
+        return true
+    }
+
+    // The definition: the value goes into its slot and the flag comes on.
+    fn unwind_temp_define(function: MirFunction,
+                          instruction: MirInstruction,
+                          values: Map<int, string>) -> string {
+        let id: int = instruction.result
+        if id < 0 { return "" }
+        if self.unwind_temp_defined.contains_key(id) {
+            return ""
+        }
+        if !self.unwind_temp_wanted(function, id) {
+            return ""
+        }
+        var text: string = ""
+        if self.iterator_kind.contains_key(id) {
+            text = self.iterator_collection[id]
+        } else {
+            match values.get(id) {
+                some(found) => { text = found }
+                none => { return "" }
+            }
+        }
+        return self.unwind_temp_define_value(
+            function, id, text)
+    }
+
+    fn unwind_temp_define_value(function: MirFunction,
+                                id: int,
+                                text: string) -> string {
+        let slot: string =
+            self.unwind_temp_slot_of(function, id)
+        self.unwind_temp_defined[id] = true
+        self.unwind_temp_order.push(id)
+        self.unwind_temp_position[id] =
+            self.unwind_position
+        return "  store {self.unwind_temp_llvm_type(function, id)} {text}, ptr {slot}\n  store i1 true, ptr {slot}.live\n"
+    }
+
+    // emit_new's half of the rule: the fresh object goes into its slot
+    // before its init runs, so a panic inside init releases it — deinit and
+    // fields — the way the interpreter does. A stack object owns no count.
+    fn unwind_temp_define_new(function: MirFunction,
+                              instruction: MirInstruction,
+                              result: string,
+                              heap: bool) -> string {
+        if !heap { return "" }
+        if !self.unwind_temp_wanted(
+               function, instruction.result) {
+            return ""
+        }
+        return self.unwind_temp_define_value(
+            function, instruction.result, result)
+    }
+
+    // The hand-off: the frame no longer owns the reference.
+    fn unwind_temp_clear(function: MirFunction,
+                         id: int) -> string {
+        if self.unwind_pad == "" { return "" }
+        if !self.unwind_temp_candidate.contains_key(id) {
+            return ""
+        }
+        let slot: string =
+            self.unwind_temp_slot_of(function, id)
+        self.unwind_temp_cleared[id] = true
+        return "  store i1 false, ptr {slot}.live\n"
+    }
+
+    // The consumed operands of one instruction, cleared before it when it
+    // owns them from its entry and after it otherwise. A phi consumes on
+    // the edge that feeds it, which edge_phi_stores clears.
+    fn unwind_temp_consume(function: MirFunction,
+                           instruction: MirInstruction,
+                           before: bool) -> string {
+        if self.unwind_pad == "" { return "" }
+        if instruction.op == "phi" { return "" }
+        if self.unwind_transfer_at_entry(function, instruction) !=
+           before {
+            return ""
+        }
+        var output: string = ""
+        for index: int in 0..instruction.consumes.len() {
+            if !instruction.consumes[index] ||
+               index >= instruction.operands.len() {
+                continue
+            }
+            output =
+                "{output}{self.unwind_temp_clear(function, instruction.operands[index])}"
+        }
+        return output
+    }
+
+    // Where a nested-scope local was initialized, so phase 1 can order it
+    // among the temporaries by creation.
+    fn unwind_note_local_init(function: MirFunction,
+                              instruction: MirInstruction) {
+        if self.unwind_pad == "" { return }
+        if instruction.op != "local_init" &&
+           instruction.op != "pattern_bind" {
+            return
+        }
+        let local: int = instruction.local
+        if local < 0 || local >= function.locals.len() {
+            return
+        }
+        if function.locals[local].scope_depth == 0 {
+            return
+        }
+        if self.unwind_local_position.contains_key(local) {
+            return
+        }
+        self.unwind_local_position[local] =
+            self.unwind_position
+    }
+
+    // After the body: every temporary that was given a slot has to have had
+    // its hand-off emitted somewhere, or the pad could release it twice or
+    // never. The plan guarantees each owned value is consumed or released;
+    // this checks the emitter honoured that at a site the clear reaches.
+    fn unwind_close(function: MirFunction) {
+        for id: int in self.unwind_temp_order {
+            if self.unwind_temp_cleared.contains_key(id) {
+                continue
+            }
+            self.fail_function(
+                function,
+                "LLVM emitter cannot find where temporary v{id} changes hands, so its unwind cleanup is unsafe")
+        }
     }
 
     // Rewrites one emitted chunk so every call in it can be unwound through.
@@ -275,6 +783,20 @@ partial class LlvmTextEmitter {
         self.unwind_block = ""
         self.unwind_alias_from = []
         self.unwind_alias_to = []
+        self.unwind_temp_candidate = {}
+        self.unwind_temp_return = {}
+        self.unwind_temp_slot = {}
+        self.unwind_temp_defined = {}
+        self.unwind_temp_cleared = {}
+        self.unwind_temp_order = []
+        self.unwind_temp_position = {}
+        self.unwind_local_position = {}
+        self.unwind_position = 0
+        if !self.unwind_enabled() ||
+           function.declaration || function.external {
+            return
+        }
+        self.unwind_scan_temps(function)
         if !self.unwind_function_needs_pad(function) {
             return
         }

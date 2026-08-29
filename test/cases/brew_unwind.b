@@ -165,6 +165,134 @@ fn shield_deinit_panic() -> string {
     }
 }
 
+// ---- what the failing statement was holding (issue #44, B1/B2) ----------
+//
+// A value that holds an owned reference and is still in flight when a later
+// instruction panics belongs to no local: the plan releases it after its
+// last use. The unwind releases it as the interpreter's expression frames
+// do — newest first, before the frame's defers, before its locals.
+
+fn boom() -> int { let empty: List<int> = []; return empty[3] }
+fn mk(tag: string) -> Res { return new Res(tag) }
+fn accept(a: Res, b: Res, n: int) -> int { return n }
+fn accept_one(a: Res, n: int) -> int { return n }
+
+// two temporaries in one argument list, a defer and a local beside them:
+// temporaries newest-first, then the defer, then the local
+fn temps_order() -> int {
+    let local: Res = new Res("t-local")
+    defer io.println("  t defer")
+    return accept(new Res("t-first"), new Res("t-second"), boom())
+}
+
+// an outer call's temporary is live while the inner call's temporary dies
+fn temps_nested() -> int {
+    return accept_one(mk("t-outer"), accept_one(mk("t-inner"), boom()))
+}
+
+// a temporary of the enclosing statement, live across a block that owns a
+// local: the block's local was created later, so it drops first
+fn temps_across_block() -> int {
+    let local: Res = new Res("tb-local")
+    defer io.println("  tb defer")
+    return accept_one(mk("tb-temp"), if true { let inner: Res = mk("tb-inner"); boom() } else { 0 })
+}
+
+// an interpolated piece, then a panicking call
+fn temps_interpolation() -> string { return "{mk("t-piece").tag} {boom()}" }
+
+// list literal elements, then a panicking element
+fn boom_res() -> Res { let empty: List<int> = []; return new Res("never-{empty[0]}") }
+fn temps_list_literal() -> int {
+    let built: List<Res> = [mk("t-elem-1"), mk("t-elem-2"), boom_res()]
+    return built.len()
+}
+
+// a value stored out of range: the list never took it, so it still drops
+fn temps_index_store() -> int {
+    var slots: List<Res> = [mk("t-slot0")]
+    slots[7] = mk("t-assigned")
+    return 0
+}
+
+// the collection a `for` took from a temporary, released when the body
+// panics mid-iteration
+fn make_list() -> List<Res> { return [mk("t-item-a"), mk("t-item-b")] }
+fn temps_iterator() -> int {
+    var seen: int = 0
+    for item: Res in make_list() {
+        seen += 1
+        if seen == 1 { return boom() }
+    }
+    return seen
+}
+
+// a defer that panics on the normal return path while a return value is
+// in flight: the older defer, the locals, then the value being returned
+fn temps_pending_return() -> Res {
+    let local: Res = new Res("pr-local")
+    defer io.println("  pr older defer")
+    defer boom_unit()
+    return mk("pr-retval")
+}
+
+// a panic inside init after one field is assigned: the half-built object
+// is released as a whole — its deinit runs, then its fields drop
+class Half {
+    pub a: Res
+    pub b: Res
+    fn init(fail: bool) {
+        self.a = new Res("half-a")
+        if fail { let empty: List<int> = []; let unused: int = empty[1] }
+        self.b = new Res("half-b")
+    }
+    fn deinit() { io.println("  deinit half, a={self.a.tag}") }
+}
+fn init_after_field() -> int { let h: Half = new Half(true); return 1 }
+
+// a panic inside init before anything is assigned: deinit sees defaults
+class Early {
+    pub tag: string = "default"
+    fn init() { let empty: List<int> = []; let unused: int = empty[0]; self.tag = "set" }
+    fn deinit() { io.println("  deinit early, tag={self.tag}") }
+}
+fn init_before_field() -> int { return accept_one(new Res("e-arg"), new Early().tag.len()) }
+
+// a locals-only frame and a defer-only frame
+fn locals_only() -> int {
+    let first: Res = new Res("lo-first")
+    let second: Res = new Res("lo-second")
+    return boom()
+}
+fn defer_only() -> int {
+    defer io.println("  do defer B")
+    defer io.println("  do defer A")
+    return boom()
+}
+
+fn run_shape(which: int) -> int {
+    if which == 1 { return temps_order() }
+    if which == 2 { return temps_nested() }
+    if which == 3 { return temps_across_block() }
+    if which == 4 { return temps_interpolation().len() }
+    if which == 5 { return temps_list_literal() }
+    if which == 6 { return temps_index_store() }
+    if which == 7 { return temps_iterator() }
+    if which == 8 { let r: Res = temps_pending_return(); return r.tag.len() }
+    if which == 9 { return init_after_field() }
+    if which == 10 { return init_before_field() }
+    if which == 11 { return locals_only() }
+    return defer_only()
+}
+
+fn shield_shape(which: int, label: string) -> string {
+    let child: Brew<int> = brew run_shape(which)
+    match child.join() {
+        ok(v) => { return "{label}: ok {v}" }
+        err(problem) => { return "{label}: {problem.kind}" }
+    }
+}
+
 fn main() {
     let c: Counter = new Counter()
     io.println(shielded(c, "first"))
@@ -179,4 +307,16 @@ fn main() {
     io.println(shield_pipeline())
     io.println(shield_defer_panic())
     io.println(shield_deinit_panic())
+    io.println(shield_shape(1, "temps"))
+    io.println(shield_shape(2, "nested temps"))
+    io.println(shield_shape(3, "temp across block"))
+    io.println(shield_shape(4, "interpolation"))
+    io.println(shield_shape(5, "list literal"))
+    io.println(shield_shape(6, "index store"))
+    io.println(shield_shape(7, "iterator"))
+    io.println(shield_shape(8, "pending return"))
+    io.println(shield_shape(9, "init after field"))
+    io.println(shield_shape(10, "init before field"))
+    io.println(shield_shape(11, "locals only"))
+    io.println(shield_shape(12, "defer only"))
 }

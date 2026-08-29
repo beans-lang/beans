@@ -150,13 +150,15 @@ run_bridge_asan() {
 }
 
 # A contained panic (issue #44) must reclaim everything the fiber owned on the
-# way out — the unwind pad drops each owned local exactly once. Two hundred
-# contained panics, each holding a 64 KiB buffer behind an armed defer, under
-# ASan/UBSan through the real driver (which compiles beans_fiber.c): a missed
-# or doubled drop is a heap error here, and the leaks sweep below proves the
-# same run reclaims every byte.
+# way out — the unwind pad drops each owned local, each in-flight temporary
+# and each half-built object exactly once. Two hundred rounds of three
+# contained panics, each holding a 64 KiB buffer (in a local behind an armed
+# defer, in a temporary argument, and inside an object whose init panicked),
+# under ASan/UBSan through the real driver (which compiles beans_fiber.c): a
+# missed or doubled drop is a heap error here, and the leaks sweep below
+# proves the same run reclaims every byte.
 run_bridge_asan test/cases/brew_unwind_leak.b brew_unwind_leak \
-    'contained 200 panics'
+    'contained 600 panics'
 
 run_bridge_asan test/cases/sock_fuzz.b sockx 'ok sock_fuzz' 1 120
 run_bridge_asan test/cases/http_fuzz.b h1 'ok http_fuzz' 1 80
@@ -355,4 +357,18 @@ if [[ "$(uname -s)" == Darwin ]] && command -v leaks >/dev/null 2>&1; then
         fi
         echo "leaks ok $file"
     done
+    # `leaks` scans every writable mapping, and a finished fiber is pooled
+    # with its stack: a value left in a dead frame's slot is still "reachable"
+    # from that stale stack and never reported. The unwind stress holds every
+    # buffer in exactly such a frame, so its real witness is the resident
+    # set: 600 contained panics that each held (and filled) 64 KiB stand at
+    # 28 MB when the unwind leaks them and under 2 MB when it reclaims them.
+    echo "resident set checking test/cases/brew_unwind_leak.b"
+    rss=$(/usr/bin/time -l "$out/brew_unwind_leak_leaks" 2>&1 >/dev/null \
+        | awk '/maximum resident set size/ { print $1 }')
+    if [[ -z "$rss" ]] || (( rss > 16 * 1024 * 1024 )); then
+        echo "brew_unwind_leak kept ${rss:-?} bytes resident: the unwind is leaking" >&2
+        exit 1
+    fi
+    echo "resident set ok test/cases/brew_unwind_leak.b (${rss} bytes)"
 fi

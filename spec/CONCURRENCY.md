@@ -404,15 +404,34 @@ Landed since:
    `test/cases/brew_unwind.b` is the differential golden. The child's closure
    box is released on both paths.
 
-   The cleanup a frame runs is the one a return runs, in the same order: the
-   locals of the nested blocks drop as their blocks exit, the function's defers
-   run newest-first, the function's own locals drop newest-first
-   (spec/SYNTAX.md, "defer"). A defer runs at most once: one that panics while
-   the frame is exiting normally hands the rest of that frame's cleanup to the
-   unwind, which does not run it again. An object whose deinit panics during a
-   normal exit is abandoned mid-destruction — it is not released a second time
-   by the unwind, and whatever it still held is not released either — while
-   the locals that had not dropped yet still drop.
+   The cleanup a frame runs is the one a return runs, in the order the tree
+   walker leaves the frame, and both backends print it byte for byte:
+
+   1. what the failing statement was holding — every owned value still in
+      flight (a temporary argument already built when the next argument
+      panicked, the pieces of an interpolation, the elements of a literal, the
+      collection a `for` took from a call, a value a store out of range never
+      took) and the locals of the nested blocks the failure sat inside — newest
+      first, the way expression frames and block scopes pop;
+   2. the function's defers, newest first;
+   3. the function's own locals, newest first;
+   4. the value a `return` was carrying, if a defer or a deinit on the way out
+      panicked;
+   5. and, for the frame that was running `new`, the half-built object: it is
+      released as a whole, so its `deinit` runs — seeing each field's default
+      or whatever init had assigned — and then its fields drop.
+
+   A defer runs at most once: one that panics while the frame is exiting
+   normally hands the rest of that frame's cleanup to the unwind, which does
+   not run it again. An object whose deinit panics during a normal exit is
+   abandoned mid-destruction — it is not released a second time by the unwind,
+   and whatever it still held is not released either — while the locals that
+   had not dropped yet still drop. A value handed to a runtime call that
+   panics before taking it (a map store whose key's `hash` panics) is
+   released by the unwind on the native backend only when the runtime had not
+   yet taken it; the interpreter always releases it. That gap is the one
+   place the two can differ, and it is confined to a user callback panicking
+   inside a runtime frame.
 
 Deliberately not yet here, in dependency order:
 

@@ -49,3 +49,43 @@ defer-panic: panic
   deinit bomb panics
   drop first
 deinit-panic: panic
+  drop t-second
+  drop t-first
+  t defer
+  drop t-local
+temps: panic
+  drop t-inner
+  drop t-outer
+nested temps: panic
+  drop tb-inner
+  drop tb-temp
+  tb defer
+  drop tb-local
+temp across block: panic
+  drop t-piece
+interpolation: panic
+  drop t-elem-2
+  drop t-elem-1
+list literal: panic
+  drop t-assigned
+  drop t-slot0
+index store: panic
+  drop t-item-b
+  drop t-item-a
+iterator: panic
+  pr older defer
+  drop pr-local
+  drop pr-retval
+pending return: panic
+  deinit half, a=half-a
+  drop half-a
+init after field: panic
+  deinit early, tag=default
+  drop e-arg
+init before field: panic
+  drop lo-second
+  drop lo-first
+locals only: panic
+  do defer A
+  do defer B
+defer only: panic
