@@ -421,9 +421,15 @@ Landed since:
       released as a whole, so its `deinit` runs — seeing each field's default
       or whatever init had assigned — and then its fields drop.
 
-   A defer runs at most once: one that panics while the frame is exiting
-   normally hands the rest of that frame's cleanup to the unwind, which does
-   not run it again. An object whose deinit panics during a normal exit is
+   The scope join every `brew` synthesizes is one of those defers, so an
+   unwinding frame joins the children it never joined exactly as a return
+   would — after the defers registered later, before its locals drop — and no
+   child outlives its scope on the panic path either. A child whose own panic
+   nobody caught escalates at that join, inside a cleanup the unwind is
+   running: that is the double-panic case, fatal on both backends, and the
+   report names both failures. A defer runs at most once: one that panics
+   while the frame is exiting normally hands the rest of that frame's cleanup
+   to the unwind, which does not run it again. An object whose deinit panics during a normal exit is
    abandoned mid-destruction — it is not released a second time by the unwind,
    and whatever it still held is not released either — while the locals that
    had not dropped yet still drop. A value handed to a runtime call that

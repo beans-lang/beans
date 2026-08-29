@@ -57,6 +57,66 @@ echo "checking an unwind parked in its cleanup survives other fibers finishing"
 diff -u test/cases/brew_unwind_park.out "$tmp/park.interp"
 diff -u test/cases/brew_unwind_park.out "$tmp/park.native.out"
 
+echo "checking a child's panic escalating into its parent's unwind is a double panic"
+# issue #44 (B4): the unwind joins an unjoined child through the synthesized
+# scope join, and a child whose panic nobody caught escalates there — inside
+# a cleanup the unwind is running. That is the one unrecoverable case on
+# both backends: both reports go out and the process stops with the abort
+# status, byte-identical stderr on the two engines.
+cat >"$tmp/escalate_unwind.b" <<'BEANS'
+import std.io
+import std.time
+
+fn child() -> int {
+    time.sleep_millis(20)
+    let empty: List<int> = []
+    return empty[1]
+}
+
+fn parent() -> int {
+    let unjoined: Brew<int> = brew child()
+    io.println("parent panics")
+    let empty: List<int> = []
+    return empty[2]
+}
+
+fn main() {
+    let top: Brew<int> = brew parent()
+    match top.join() {
+        ok(v) => { io.println("ok {v}") }
+        err(problem) => { io.println("caught {problem.kind}") }
+    }
+}
+BEANS
+expect_double_panic() { # <command...>
+    set +e
+    "$@" >"$tmp/escalate_unwind.out" 2>"$tmp/escalate_unwind.err"
+    local status=$?
+    set -e
+    if [ "$status" -ne 134 ]; then
+        echo "a panic escalating into an unwind should abort (134), got $status" >&2
+        cat "$tmp/escalate_unwind.err" >&2
+        exit 1
+    fi
+    printf 'parent panics\n' | diff -u - "$tmp/escalate_unwind.out"
+    grep -q "^double panic during unwind: runtime panic at 11:5: a brewed fiber panicked with no join to catch it: runtime panic at 7:17: list index 1 out of range (len 0)" \
+        "$tmp/escalate_unwind.err" || {
+        echo "double-panic report missing or wrong" >&2
+        cat "$tmp/escalate_unwind.err" >&2
+        exit 1
+    }
+    grep -q "^  while unwinding: runtime panic at 14:17: list index 2 out of range (len 0)" \
+        "$tmp/escalate_unwind.err" || {
+        echo "the interrupted unwind is not named in the report" >&2
+        cat "$tmp/escalate_unwind.err" >&2
+        exit 1
+    }
+}
+expect_double_panic ./build/beansc run "$tmp/escalate_unwind.b"
+./build/beansc build "$tmp/escalate_unwind.b" -o "$tmp/escalate_unwind" \
+    >"$tmp/escalate_unwind.build" 2>&1
+expect_double_panic "$tmp/escalate_unwind"
+
 echo "checking an unjoined panic escalates at the scope exit"
 cat >"$tmp/escalate.b" <<'BEANS'
 import std.io

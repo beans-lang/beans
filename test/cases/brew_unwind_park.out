@@ -10,3 +10,8 @@ child finishes during the parked cleanup: panic
   parent older defer 2
   drop parent-held-2
 sibling panics during the parked cleanup: panic
+  parent defer 3
+  unjoined starts
+  unjoined done
+  drop parent-held-3
+unjoined child at the unwind: panic

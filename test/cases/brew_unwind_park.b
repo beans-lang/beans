@@ -79,6 +79,27 @@ fn parent_sibling_panics() -> int {
     return empty[2]
 }
 
+// An unwinding frame joins the children it never joined, exactly as a return
+// would (B4): the scope join every `brew` synthesizes is a defer, so the
+// unwind runs it with the other defers, newest first — after the defers
+// registered later, before the frame's locals drop. The child's output lands
+// there, and the parent's panic is what the join above reports.
+fn parent_never_joins() -> int {
+    let child: Brew<int> = brew napper("unjoined")
+    let held: Res = new Res("parent-held-3")
+    defer io.println("  parent defer 3")
+    let empty: List<int> = []
+    return empty[3]
+}
+
+fn shield_never_joins() -> string {
+    let top: Brew<int> = brew parent_never_joins()
+    match top.join() {
+        ok(v) => { return "unjoined child at the unwind: ok {v}" }
+        err(problem) => { return "unjoined child at the unwind: {problem.kind}" }
+    }
+}
+
 fn shield_finishes() -> string {
     let top: Brew<int> = brew parent_child_finishes()
     match top.join() {
@@ -98,4 +119,5 @@ fn shield_sibling() -> string {
 fn main() {
     io.println(shield_finishes())
     io.println(shield_sibling())
+    io.println(shield_never_joins())
 }
