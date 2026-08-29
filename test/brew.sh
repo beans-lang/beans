@@ -117,6 +117,56 @@ expect_double_panic ./build/beansc run "$tmp/escalate_unwind.b"
     >"$tmp/escalate_unwind.build" 2>&1
 expect_double_panic "$tmp/escalate_unwind"
 
+echo "checking a brewing program large enough for the parallel backend builds"
+# A module of four megabytes or more of IR is split into chunks that clang
+# compiles concurrently, and every chunk declares the functions the others
+# define. A function that can unwind names its personality routine on its
+# definition, and a declaration must not carry one — every brewing program
+# of that size failed to link with "Function declaration shouldn't have a
+# personality routine" until the declarations were cut before it. No small
+# golden reaches the chunk path, so this one is generated large enough to,
+# and asserts that it did.
+{
+    echo 'import std.io'
+    echo 'fn boom() -> int { let empty: List<int> = []; return empty[1] }'
+    for i in $(seq 1 2600); do
+        echo "fn step_$i(n: int) -> int {"
+        echo "    let held: string = \"step $i {n}\""
+        echo "    defer io.print(\"\")"
+        echo "    if n < 0 { return boom() }"
+        echo "    return held.len() + n"
+        echo "}"
+    done
+    echo 'fn work() -> int {'
+    echo '    var total: int = 0'
+    for i in $(seq 1 2600); do
+        echo "    total += step_$i($i)"
+    done
+    echo '    return total'
+    echo '}'
+    echo 'fn main() {'
+    echo '    let child: Brew<int> = brew work()'
+    echo '    match child.join() {'
+    echo '        ok(v) => { io.println("big {v}") }'
+    echo '        err(problem) => { io.println("big: {problem.kind}") }'
+    echo '    }'
+    echo '}'
+} >"$tmp/big_brew.b"
+./build/beansc llvm "$tmp/big_brew.b" >"$tmp/big_brew.ll"
+ir_bytes=$(wc -c <"$tmp/big_brew.ll" | tr -d ' ')
+if (( ir_bytes < 4194304 )); then
+    echo "big_brew.b emits only $ir_bytes bytes of IR: it no longer reaches the chunked build" >&2
+    exit 1
+fi
+./build/beansc build "$tmp/big_brew.b" -o "$tmp/big_brew" >"$tmp/big_brew.build" 2>&1 || {
+    cat "$tmp/big_brew.build" >&2
+    exit 1
+}
+"$tmp/big_brew" >"$tmp/big_brew.out"
+./build/beansc run "$tmp/big_brew.b" >"$tmp/big_brew.interp"
+diff -u "$tmp/big_brew.interp" "$tmp/big_brew.out"
+grep -q '^big [0-9]' "$tmp/big_brew.out"
+
 echo "checking an unjoined panic escalates at the scope exit"
 cat >"$tmp/escalate.b" <<'BEANS'
 import std.io
