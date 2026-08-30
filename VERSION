@@ -13,9 +13,17 @@
 #
 # The project is still in the public 1.0 bake, so do not call it 1.0.0 until
 # every release gate in ROADMAP.md has passed.
-compiler=0.1.34
+compiler=0.1.35
 language=1.0
 
+# 12: the contained-panic unwind (issue #44, spec/CONCURRENCY.md). A program
+# that brews now emits a fiber-entry cleanup pad that calls
+# beans_fiber_unwind_finish to end the fiber once its frames have run their
+# defers and dropped what they owned. The runtime gained that entry along with
+# beans_fiber_begin_unwind, beans_fiber_unwinding and beans_fiber_message,
+# which start the unwind and report it for the double-panic case. Emitted only
+# for a program that brews on a target whose unwinder the backend uses; every
+# other build keeps the earlier abandon behaviour and links none of it.
 # 11: the fiber runtime landed (spec/CONCURRENCY.md) — the beans_fiber_*
 # core (spawn, park, yield, resume, cancel, join, worker bootstrap) and the
 # brew layer the compiler lowers onto: beans_brew, beans_brew_typed,
@@ -37,4 +45,4 @@ language=1.0
 # caller-owned event buffer instead of returning a fresh one.
 # Version 7 added Bytes.filled, Bytes.append_int_text, and Thread.detach.
 # Version 6 added per-thread runtime-hook guard entry points.
-runtime_abi=11
+runtime_abi=12

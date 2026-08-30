@@ -268,6 +268,12 @@ class MirProgram {
     errors: List<Diagnostic>
     // The entry point's canonical symbol, carried over from the HIR.
     entry_symbol: string
+    // Does this program start a fiber anywhere? Only a brewed fiber can
+    // contain a panic, so this is exactly the question "can a failure ever
+    // have to unwind instead of ending the process" — and the answer gates
+    // every cleanup pad the backend emits. A program that never brews emits
+    // none of it and is byte-for-byte what it was.
+    uses_fibers: bool
 
     fn init(target: TargetDescription) {
         self.target = target
@@ -278,6 +284,7 @@ class MirProgram {
         self.functions = []
         self.errors = []
         self.entry_symbol = package_symbol("main", "main")
+        self.uses_fibers = false
     }
 }
 

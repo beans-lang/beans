@@ -130,6 +130,11 @@ agree test/cases/parity/inherited_defaults.b
 agree test/cases/parity/static_fn_field.b
 agree test/cases/parity/panic_diverges.b
 agree test/cases/parity/super_in_scope.b
+agree test/cases/parity/bind_release.b 111
+agree test/cases/parity/scope_exit_order.b 14
+agree test/cases/parity/sort_panic_state.b
+agree test/cases/parity/map_replace_panic.b
+agree test/cases/parity/assign_eval_order.b
 # `?` crossing an error boundary: the source error is converted through
 # to_error or widened to a supertype, and both backends have to do it once.
 # The two source errors are the pinned construct count.
@@ -140,7 +145,7 @@ agree test/cases/parity/reflect_error_bridge.b
 
 # Every case in the directory has to be listed above with its own expected
 # count; a file added and forgotten would otherwise be silently unchecked.
-listed=17
+listed=22
 present=$(find test/cases/parity -name '*.b' | wc -l | tr -d ' ')
 if [ "$present" != "$listed" ]; then
     echo "test/cases/parity holds $present cases but $listed are run" >&2
@@ -289,5 +294,37 @@ grep -Fq "is not defined for Map<string, int>" "$tmp/mapeq.out" || {
     exit 1
 }
 echo "  refused: comparing two maps, in the caller's own terms"
+
+# A defer is a function-exit hook (spec/SYNTAX.md): registered inside a
+# nested block it would run after the block's locals dropped — the native
+# run-site read a released cell and crashed on any owned capture. The
+# checker refuses the shape; the primitive-capture case that happened to
+# work is refused with it.
+cat >"$tmp/nesteddefer.b" <<'EOF'
+package main
+import std.io
+
+fn late_words(deep: bool) {
+    if deep {
+        let held: string = "kept {deep}"
+        defer io.println("late {held}")
+        io.println("body")
+    }
+}
+
+fn main() {
+    late_words(true)
+}
+EOF
+if ./build/beansc check "$tmp/nesteddefer.b" >"$tmp/nesteddefer.out" 2>&1; then
+    echo "a defer inside a nested block was accepted" >&2
+    exit 1
+fi
+grep -Fq "defer at the function's own scope" "$tmp/nesteddefer.out" || {
+    echo "the nested-defer refusal no longer names the way out" >&2
+    cat "$tmp/nesteddefer.out" >&2
+    exit 1
+}
+echo "  refused: a defer inside a nested block, both backends"
 
 echo "ok backend parity: answers, construct and release counts, refusals"

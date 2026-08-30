@@ -53,6 +53,12 @@ extern "C" fn beans_fiber_cancel(fiber: RawPtr<u8>)
 // and each finishing child's entry tail wakes it — the tree mirror of
 // the native group's done hook and waiter field.
 extern "C" fn beans_fiber_current() -> RawPtr<u8>
+// Non-zero for the root fiber — the promoted worker thread that runs main.
+// A panic on the root leaves the process; a panic on a brewed (non-root)
+// fiber is contained and unwinds its frames. This is the same predicate the
+// native backend's beans_panic uses to decide containment, so both backends
+// agree about which panics run cleanup on the way out.
+extern "C" fn beans_fiber_is_root(fiber: RawPtr<u8>) -> i32
 extern "C" fn beans_fiber_park() -> i32
 extern "C" fn beans_fiber_resume(fiber: RawPtr<u8>)
 extern "C" fn beans_stored_callback_close(
@@ -73,6 +79,22 @@ class TreeInterpreter {
     arguments: List<string>
     failed: bool
     panic_text: string
+    // A contained panic (one raised on a brewed, non-root fiber) does not
+    // abandon its frames: it unwinds them, running each function's defers and
+    // dropping each owned local, exactly as a return would — the same thing
+    // the native backend does with the platform unwinder. The unwind is a
+    // fact about one fiber, so it is kept per fiber, keyed by the address
+    // the fiber core hands out: the entry maps the fiber to the message of
+    // the panic being unwound (kept aside because the cleanup path clears
+    // panic_text while it runs a defer or a deinit), and it is removed when
+    // the fiber's body has unwound to its entry. A fiber parked inside a
+    // cleanup action — a defer that joins, a deinit that sends — lets other
+    // fibers run, finish and panic; none of that touches this fiber's entry,
+    // which is what the native runtime's per-fiber unwind_status gives it. A
+    // panic raised while the *same* fiber is already unwinding is the
+    // double-panic case (a defer or deinit the unwind itself is running has
+    // panicked): unrecoverable, reported and aborted.
+    unwinds: Map<u64, string>
     next_object_id: int
     // Zeroing weak fields: the registry maps a weakly referenced object's
     // id to an inner TreeValue sharing the same fields map, and the
@@ -147,6 +169,7 @@ class TreeInterpreter {
         self.arguments = move arguments
         self.failed = false
         self.panic_text = ""
+        self.unwinds = {}
         self.next_object_id = 0
         self.weak_track = false
         self.weak_registry = {}
@@ -471,10 +494,52 @@ class TreeInterpreter {
 
     fn fail_at(node: HirNode, col: int,
                message: string) -> TreeValue {
+        return self.fail_with_text(
+            "runtime panic at {node.line}:{col}: {message}")
+    }
+
+    // Both engines refuse a callback structurally changing the list it is
+    // sorting (rt_sort_check in beans_rt.c): the merge would otherwise
+    // permute stale storage. The runtime has no source position there, so
+    // it prints 0:0 — this must render the identical line.
+    fn check_sort_shape(receiver: TreeValue, pinned: int) {
+        if self.failed { return }
+        if receiver.items.len() == pinned { return }
+        self.fail_with_text(
+            "runtime panic at 0:0: list changed during sort (length {pinned} -> {receiver.items.len()})")
+    }
+
+    // The full panic line, position already rendered. Everything user-facing
+    // goes through fail/fail_at; the runtime's own position-less refusals
+    // come here directly so both backends print the same bytes.
+    fn fail_with_text(text: string) -> TreeValue {
+        if !self.failed && self.fiber_unwinding() {
+            // A panic raised while THIS fiber is already unwinding a contained
+            // failure, AND while no panic is currently in flight — meaning it
+            // came from a defer or a deinit the unwind is running, which clear
+            // the poison so their body executes. There is no second unwind to
+            // give it — the one unrecoverable case (spec/CONCURRENCY.md) — so
+            // both reports go out and the process stops, the same answer the
+            // native backend gives when beans_panic sees the fiber unwinding.
+            //
+            // The !self.failed guard is what keeps this from firing on the
+            // ordinary poison walk: a node that computes on a poisoned value
+            // and then calls fail (a `?` on the unit a panicked call left, say)
+            // is not a second panic — the poison is already set, so fail below
+            // no-ops and the first panic stands.
+            self.report_double_panic(text)
+        }
         if !self.failed {
             self.failed = true
-            self.panic_text =
-                "runtime panic at {node.line}:{col}: {message}"
+            self.panic_text = text
+            // A panic on a brewed (non-root) fiber is contained: begin a
+            // tree-level unwind so its frames run their defers and drop what
+            // they own on the way out, instead of being abandoned. A panic on
+            // the root fiber (or before any fiber exists) leaves the process,
+            // which is what run() already does — no unwind is armed for it.
+            if self.panic_is_contained() {
+                self.begin_unwind(text)
+            }
             // Stop with the frames still standing, so a person can see what
             // the program was doing when it failed.
             match self.debugger {
@@ -485,6 +550,71 @@ class TreeInterpreter {
             }
         }
         return TreeValue.unit()
+    }
+
+    // The address of the fiber running the walker right now, or 0 before any
+    // fiber exists. Identity, not liveness — used only to tell the fiber that
+    // owns an in-flight unwind apart from a sibling that panics beside it.
+    fn current_fiber_address() -> u64 {
+        unsafe {
+            return beans_fiber_current().address()
+        }
+    }
+
+    // Is the fiber running the walker right now inside a contained unwind?
+    fn fiber_unwinding() -> bool {
+        return self.unwinds.contains_key(
+            self.current_fiber_address())
+    }
+
+    // The message of the panic this fiber is unwinding, or "".
+    fn unwinding_message() -> string {
+        match self.unwinds.get(
+                  self.current_fiber_address()) {
+            some(text) => { return text }
+            none => { return "" }
+        }
+    }
+
+    // Arm the tree-level unwind for the fiber running the walker.
+    fn begin_unwind(text: string) {
+        self.unwinds[self.current_fiber_address()] = text
+    }
+
+    // The fiber's body has unwound to its entry: it is no longer unwinding.
+    // Fiber addresses are reused once a fiber is reaped, so the entry must
+    // not outlive the fiber it describes.
+    fn end_unwind() {
+        self.unwinds.remove(self.current_fiber_address())
+    }
+
+    // Is a panic raised right now contained, i.e. will a `join` catch it?
+    // True exactly when the walker runs on a brewed, non-root fiber. The
+    // native backend's beans_panic asks the identical question of the same
+    // fiber core, so the two backends contain and abandon the same panics.
+    fn panic_is_contained() -> bool {
+        unsafe {
+            let current: RawPtr<u8> =
+                beans_fiber_current()
+            if current.address() == 0 { return false }
+            return beans_fiber_is_root(current) == 0
+        }
+    }
+
+    // The terminal for a panic raised inside a defer or deinit that a
+    // contained unwind is already running. Reports both failures and stops,
+    // matching the native runtime's abort on the same condition.
+    fn report_double_panic(text: string) {
+        // Order the program's own buffered output ahead of this report, and
+        // lay it out the way the native runtime does: the new failure, then
+        // the one it interrupted, then stop with the same exit the runtime's
+        // abort produces.
+        unsafe { beans_out_flush() }
+        io.eprintln(
+            "double panic during unwind: {text}")
+        io.eprintln(
+            "  while unwinding: {self.unwinding_message()}")
+        host_os.exit(134)
     }
 
     fn floating_value(type: HirType,
@@ -3510,7 +3640,25 @@ class TreeInterpreter {
     }
 
     fn deinit_object(object: TreeValue) {
-        if self.failed || object.kind != "object" {
+        if object.kind != "object" { return }
+        if self.failed {
+            // A panic is in flight. During a contained unwind the owned
+            // locals still run their deinit on the way out — that is what the
+            // issue is about — so set the panic aside and run it, then restore
+            // the panic and keep unwinding. An uncontained panic drops the
+            // object without a deinit (spec: it leaves the process). A panic
+            // raised inside the deinit is the double-panic case that fail_at
+            // aborts on; the guards below never re-arm the old panic over it.
+            if !self.fiber_unwinding() { return }
+            let saved: string = self.panic_text
+            self.failed = false
+            self.panic_text = ""
+            self.deinit_chain(object.text, object)
+            if self.failed { return }
+            self.release_fields(object.text, object)
+            if self.failed { return }
+            self.failed = true
+            self.panic_text = saved
             return
         }
         self.deinit_chain(object.text, object)
@@ -8238,17 +8386,21 @@ class TreeInterpreter {
         if receiver.kind == "list" &&
            node.value == "insert" &&
            arguments.len() == 3 {
+            // The bounds are the program's to fail, not this interpreter's:
+            // handing an out-of-range index to the host list panicked the
+            // interpreter itself — the report carried this file's position,
+            // and on a brewed fiber the interpreter's own runtime abandoned
+            // the fiber, so the program's join never returned. The message
+            // is the native runtime's (beans_list_insert), so both backends
+            // print the same report.
             let index: int = arguments[1].int_data
-            if index < 0 ||
-               index > receiver.items.len() {
-                return self.fail_at(
+            if index < 0 || index > receiver.items.len() {
+                return self.fail(
                     node,
-                    node.col,
                     "insert at {index} out of range (len {receiver.items.len()})")
             }
             receiver.items.insert(
-                index,
-                tree_value_copy(arguments[2]))
+                index, tree_value_copy(arguments[2]))
             return TreeValue.unit()
         }
         if receiver.kind == "list" &&
@@ -8396,54 +8548,162 @@ class TreeInterpreter {
            (node.value == "sort" ||
             node.value == "sort_by" ||
             node.value == "sort_by_key") {
+            // The same bottom-up stable merge the native runtime runs
+            // (list_merge_sort in beans_rt.c), block for block: comparisons
+            // read the live items, each merged block lands in a buffer and
+            // is copied back only when the block completes. Structural
+            // identity is the point — an insertion sort gives a different
+            // permutation for a predicate that is not a strict weak
+            // ordering, and the two backends must agree for ANY predicate.
+            // Keys are extracted first, one call per item, before the first
+            // write, exactly as the native sort_by_key does; a stable merge
+            // by those integer keys is the same permutation as its stable
+            // radix.
+            // A panicking comparator or key function leaves the list
+            // exactly as it was (issue #73, spec/CONCURRENCY.md): the
+            // items are snapshotted before the first write and restored in
+            // place if the walk comes back poisoned. `sort` compares with
+            // tree_value_less, which cannot panic, and takes no snapshot.
+            var snapshot: List<TreeValue> = []
+            if node.value != "sort" {
+                for value: TreeValue in receiver.items {
+                    snapshot.push(value)
+                }
+            }
+            let length: int = receiver.items.len()
+            // One key call per item, checked as each returns: a callback
+            // structurally changing the list is refused, exactly as the
+            // native runtime's rt_sort_check refuses it.
             var keys: List<TreeValue> = []
             if node.value == "sort_by_key" &&
                arguments.len() == 2 {
-                for value: TreeValue in receiver.items {
+                var extract: int = 0
+                for extract < length && !self.failed {
                     keys.push(
                         self.invoke_closure(
-                            node, arguments[1], [value]))
+                            node, arguments[1],
+                            [receiver.items[extract]]))
+                    self.check_sort_shape(receiver, length)
+                    extract += 1
                 }
             }
-            var index: int = 1
-            for index < receiver.items.len() {
-                var current: int = index
-                for current > 0 {
-                    var less: bool = false
-                    if node.value == "sort" {
-                        less = tree_value_less(
-                            receiver.items[current],
-                            receiver.items[current - 1])
-                    } else if node.value == "sort_by" &&
-                              arguments.len() == 2 {
-                        let compared: TreeValue =
-                            self.invoke_closure(
-                                node, arguments[1],
-                                [receiver.items[current],
-                                 receiver.items[current - 1]])
-                        less = self.truth(node, compared)
-                    } else if node.value ==
-                                  "sort_by_key" {
-                        less = tree_value_less(
-                            keys[current],
-                            keys[current - 1])
+            var buffer: List<TreeValue> = []
+            for value: TreeValue in receiver.items {
+                buffer.push(value)
+            }
+            var key_buffer: List<TreeValue> = []
+            for key: TreeValue in keys {
+                key_buffer.push(key)
+            }
+            var width: int = 1
+            for width < length && !self.failed {
+                var low: int = 0
+                for low < length && !self.failed {
+                    let mid: int =
+                        if low + width < length {
+                            low + width
+                        } else {
+                            length
+                        }
+                    let high: int =
+                        if low + 2 * width < length {
+                            low + 2 * width
+                        } else {
+                            length
+                        }
+                    if mid < high {
+                        var left: int = low
+                        var right: int = mid
+                        var out: int = low
+                        for left < mid && right < high &&
+                            !self.failed {
+                            // take left unless right is strictly less,
+                            // which keeps the merge stable
+                            var take_right: bool = false
+                            if node.value == "sort" {
+                                take_right = tree_value_less(
+                                    receiver.items[right],
+                                    receiver.items[left])
+                            } else if node.value == "sort_by" &&
+                                      arguments.len() == 2 {
+                                let compared: TreeValue =
+                                    self.invoke_closure(
+                                        node, arguments[1],
+                                        [receiver.items[right],
+                                         receiver.items[left]])
+                                take_right =
+                                    self.truth(node, compared)
+                                self.check_sort_shape(
+                                    receiver, length)
+                            } else {
+                                take_right = tree_value_less(
+                                    keys[right], keys[left])
+                            }
+                            if take_right {
+                                buffer[out] =
+                                    receiver.items[right]
+                                if keys.len() != 0 {
+                                    key_buffer[out] =
+                                        keys[right]
+                                }
+                                right += 1
+                            } else {
+                                buffer[out] =
+                                    receiver.items[left]
+                                if keys.len() != 0 {
+                                    key_buffer[out] =
+                                        keys[left]
+                                }
+                                left += 1
+                            }
+                            out += 1
+                        }
+                        for left < mid {
+                            buffer[out] = receiver.items[left]
+                            if keys.len() != 0 {
+                                key_buffer[out] = keys[left]
+                            }
+                            left += 1
+                            out += 1
+                        }
+                        for right < high {
+                            buffer[out] = receiver.items[right]
+                            if keys.len() != 0 {
+                                key_buffer[out] = keys[right]
+                            }
+                            right += 1
+                            out += 1
+                        }
+                        if !self.failed {
+                            var back: int = low
+                            for back < high {
+                                receiver.items[back] =
+                                    buffer[back]
+                                if keys.len() != 0 {
+                                    keys[back] =
+                                        key_buffer[back]
+                                }
+                                back += 1
+                            }
+                        }
                     }
-                    if !less { break }
-                    let saved: TreeValue =
-                        receiver.items[current - 1]
-                    receiver.items[current - 1] =
-                        receiver.items[current]
-                    receiver.items[current] = saved
-                    if node.value == "sort_by_key" {
-                        let saved_key: TreeValue =
-                            keys[current - 1]
-                        keys[current - 1] =
-                            keys[current]
-                        keys[current] = saved_key
-                    }
-                    current -= 1
+                    low += 2 * width
                 }
-                index += 1
+                width *= 2
+            }
+            if self.failed && node.value != "sort" &&
+               receiver.items.len() == snapshot.len() {
+                // an ordinary comparator panic: put the items back. A
+                // mutation refusal leaves the list as the mutation made it
+                // — the lengths differ and there is nothing coherent to
+                // restore (rt_sort_check stands its guard down the same
+                // way).
+                var restore: int = 0
+                for restore < snapshot.len() {
+                    receiver.items[restore] =
+                        snapshot[restore]
+                    restore += 1
+                }
             }
             return TreeValue.unit()
         }
@@ -11313,9 +11573,13 @@ class TreeInterpreter {
         if node.kind == "try" {
             let result: TreeValue =
                 self.expression(node.children[0], frame)
-            if result.kind == "propagate" {
-                return result
-            }
+            // A panic in the operand leaves a poisoned unit, not a result: the
+            // panic is already in flight, so short-circuit like every other
+            // node rather than mistaking the unit for a non-result and raising
+            // a second failure over the first. (A `?` operand that itself
+            // propagated a `?` bubbles that out unchanged.)
+            if self.failed { return TreeValue.unit() }
+            if result.kind == "propagate" { return result }
             if (result.kind == "ok" ||
                 result.kind == "some") &&
                result.items.len() == 1 {
@@ -11451,6 +11715,23 @@ class TreeInterpreter {
             return TreeExec.next()
         }
         let target: HirNode = node.children[0]
+        // Source order: an index target's receiver and key evaluate before
+        // the right-hand side — the order MIR lowers, so the order a native
+        // build runs. The interpreter evaluated the value first, and a
+        // side-effecting key and value observably swapped on the backends.
+        var index_receiver: TreeValue = TreeValue.unit()
+        var index_key: TreeValue = TreeValue.unit()
+        let index_first: bool =
+            target.kind == "index" &&
+            target.children.len() == 2
+        if index_first {
+            index_receiver =
+                self.place_receiver(
+                    target.children[0], frame)
+            index_key =
+                self.expression(
+                    target.children[1], frame)
+        }
         let written: TreeValue =
             self.expression(node.children[1], frame)
         if written.kind == "propagate" &&
@@ -11460,8 +11741,29 @@ class TreeInterpreter {
         }
         var value: TreeValue = written
         if node.value != "=" {
+            // A compound element read uses the hoisted receiver and key,
+            // so the index expression runs exactly once — as MIR lowers
+            // it. Slices (unsafe) keep the expression fallback; their
+            // count is unchanged (the store below reuses the hoist).
             let current: TreeValue =
-                self.expression(target, frame)
+                if index_first &&
+                   (index_receiver.kind == "list" ||
+                    index_receiver.kind == "array") &&
+                   index_key.kind == "int" {
+                    if index_key.int_data < 0 ||
+                       index_key.int_data >=
+                       index_receiver.items.len() {
+                        self.fail(
+                            target,
+                            "{if index_receiver.kind == "array" { "array" } else { "list" }} index {index_key.int_data} out of range (len {index_receiver.items.len()})")
+                        return TreeExec.next()
+                    }
+                    tree_value_copy(
+                        index_receiver.items[
+                            index_key.int_data])
+                } else {
+                    self.expression(target, frame)
+                }
             let operation: HirNode =
                 new HirNode(
                     "binary",
@@ -11605,11 +11907,19 @@ class TreeInterpreter {
         if target.kind == "index" &&
            target.children.len() == 2 {
             let receiver: TreeValue =
-                self.place_receiver(
-                    target.children[0], frame)
+                if index_first {
+                    index_receiver
+                } else {
+                    self.place_receiver(
+                        target.children[0], frame)
+                }
             let key: TreeValue =
-                self.expression(
-                    target.children[1], frame)
+                if index_first {
+                    index_key
+                } else {
+                    self.expression(
+                        target.children[1], frame)
+                }
             if (receiver.kind == "list" ||
                 receiver.kind == "array") &&
                key.kind == "int" {
@@ -12013,9 +12323,31 @@ class TreeInterpreter {
         for index > 0 {
             index -= 1
             let armed: TreeDeferred = frame.defers[index]
-            // in the scope it was registered in: a nested block's defer
-            // must still see that block's bindings, as native slots do
-            self.expression(armed.expression, armed.frame)
+            if self.failed {
+                // A panic is in flight. Only a contained one runs its defers
+                // on the way out; an uncontained panic leaves the process
+                // without them (spec/SYNTAX.md). For the contained case set
+                // the panic aside so the defer body runs, then restore it and
+                // keep unwinding. A panic inside the defer is the double-panic
+                // case, which fail_at has already turned into an abort.
+                if !self.fiber_unwinding() { continue }
+                let saved: string = self.panic_text
+                self.failed = false
+                self.panic_text = ""
+                self.expression(
+                    armed.expression, armed.frame)
+                if self.failed {
+                    frame.defers = []
+                    return
+                }
+                self.failed = true
+                self.panic_text = saved
+            } else {
+                // in the scope it was registered in: a nested block's defer
+                // must still see that block's bindings, as native slots do
+                self.expression(
+                    armed.expression, armed.frame)
+            }
         }
         // Drop the records now: each holds its registration frame, and
         // that back-reference is a frame cycle — left in place it would
@@ -12027,10 +12359,17 @@ class TreeInterpreter {
 
     fn fail_extern(function: HirFunction,
                    message: string) -> TreeValue {
+        let text: string =
+            "runtime panic at {function.line}:{function.col}: {message}"
+        if !self.failed && self.fiber_unwinding() {
+            self.report_double_panic(text)
+        }
         if !self.failed {
             self.failed = true
-            self.panic_text =
-                "runtime panic at {function.line}:{function.col}: {message}"
+            self.panic_text = text
+            if self.panic_is_contained() {
+                self.begin_unwind(text)
+            }
         }
         return TreeValue.unit()
     }

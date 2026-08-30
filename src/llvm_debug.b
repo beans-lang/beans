@@ -203,10 +203,22 @@ partial class LlvmTextEmitter {
     // the frame pointer while the runtime kept it — visible as
     // DW_AT_APPLE_omit_frame_ptr on Beans frames alone, and as a stack a
     // frame-pointer walker loses at the first Beans call.
+    // A `define` reads attributes, then the personality, then metadata, in
+    // that order — so the two halves are separate: an unwinding function has
+    // `personality` sitting between them.
     fn debug_function_attributes(subprogram: int) -> string {
+        return "{self.debug_function_attribute()}{self.debug_function_metadata(subprogram)}"
+    }
+
+    fn debug_function_attribute() -> string {
         if !self.debug_info { return "" }
-        if subprogram < 0 { return " \"frame-pointer\"=\"all\"" }
-        return " \"frame-pointer\"=\"all\" !dbg !{subprogram}"
+        return " \"frame-pointer\"=\"all\""
+    }
+
+    fn debug_function_metadata(subprogram: int) -> string {
+        if !self.debug_info { return "" }
+        if subprogram < 0 { return "" }
+        return " !dbg !{subprogram}"
     }
 
     // Every named metadata line the module has, written directly under

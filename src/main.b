@@ -1385,7 +1385,8 @@ fn main() {
                                         csrc_selected(
                                             loader.csrc_rows,
                                             loader.cflag_rows,
-                                            selected))
+                                            selected),
+                                        emitter.unwind_enabled())
                                 // The same module split into standalone
                                 // chunks for the parallel backend, or an
                                 // empty list when this build wants the one
