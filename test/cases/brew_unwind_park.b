@@ -116,8 +116,43 @@ fn shield_sibling() -> string {
     }
 }
 
+// A fiber cancelled while parked inside its own cleanup exits through the
+// runtime without ever reaching the walker's tail. The interpreter's
+// per-fiber unwind entry must not survive that: fiber records are pooled,
+// and a later fiber at the same address would start life "unwinding" — its
+// own catchable panic then aborted the whole process as a bogus double
+// panic naming the dead fiber's message. The long sleep never runs to the
+// end; the cancel interrupts it.
+fn cancelled_mid_cleanup() -> int {
+    defer time.sleep_millis(2000)
+    let empty: List<int> = []
+    return empty[0]
+}
+
+fn plain_panics() -> int {
+    let empty: List<int> = []
+    return empty[1]
+}
+
+fn shield_cancelled_then_panic() -> string {
+    let a: Brew<int> = brew cancelled_mid_cleanup()
+    time.sleep_millis(100)
+    a.cancel()
+    var first: string = ""
+    match a.join() {
+        ok(v) => { first = "ok {v}" }
+        err(p) => { first = "{p.kind}" }
+    }
+    let c: Brew<int> = brew plain_panics()
+    match c.join() {
+        ok(v) => { return "cancelled mid-cleanup then a fresh panic: {first} / ok {v}" }
+        err(p) => { return "cancelled mid-cleanup then a fresh panic: {first} / {p.kind}" }
+    }
+}
+
 fn main() {
     io.println(shield_finishes())
     io.println(shield_sibling())
     io.println(shield_never_joins())
+    io.println(shield_cancelled_then_panic())
 }

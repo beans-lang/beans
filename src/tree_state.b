@@ -194,6 +194,16 @@ class TreeBrewState {
         // entry untouched, however many siblings finish or panic while it
         // waits — the same thing the native runtime's per-fiber
         // unwind_status gives it.
+        //
+        // Fiber records are pooled. A fiber cancelled while parked inside
+        // its own cleanup exits through the runtime and never reaches the
+        // end_unwind below, and a later fiber can start life at the same
+        // address; whatever entry sits under this address describes that
+        // dead fiber. Drop it before the body runs — the same zeroing
+        // native's spawn gives a reused record's unwind_status — or an
+        // ordinary catchable panic here becomes a bogus process-wide
+        // double panic naming the dead fiber's message.
+        self.owner.end_unwind()
         let value: TreeValue =
             self.owner.invoke_closure(
                 self.node, self.closure, [])
