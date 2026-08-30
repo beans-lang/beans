@@ -286,4 +286,36 @@ grep -Fq "is not defined for Map<string, int>" "$tmp/mapeq.out" || {
 }
 echo "  refused: comparing two maps, in the caller's own terms"
 
+# A defer is a function-exit hook (spec/SYNTAX.md): registered inside a
+# nested block it would run after the block's locals dropped — the native
+# run-site read a released cell and crashed on any owned capture. The
+# checker refuses the shape; the primitive-capture case that happened to
+# work is refused with it.
+cat >"$tmp/nesteddefer.b" <<'EOF'
+package main
+import std.io
+
+fn late_words(deep: bool) {
+    if deep {
+        let held: string = "kept {deep}"
+        defer io.println("late {held}")
+        io.println("body")
+    }
+}
+
+fn main() {
+    late_words(true)
+}
+EOF
+if ./build/beansc check "$tmp/nesteddefer.b" >"$tmp/nesteddefer.out" 2>&1; then
+    echo "a defer inside a nested block was accepted" >&2
+    exit 1
+fi
+grep -Fq "defer at the function's own scope" "$tmp/nesteddefer.out" || {
+    echo "the nested-defer refusal no longer names the way out" >&2
+    cat "$tmp/nesteddefer.out" >&2
+    exit 1
+}
+echo "  refused: a defer inside a nested block, both backends"
+
 echo "ok backend parity: answers, construct and release counts, refusals"

@@ -11861,6 +11861,15 @@ class ExpressionChecker {
                 node, node.kind, "", new HirType("unit"))
         }
         if node.kind == "defer" {
+            // Spec (SYNTAX.md, defer): a defer is a function-exit hook and
+            // must sit at the top level of the function body. A nested one
+            // runs after its block's locals are gone — the native run-site
+            // reads a released cell.
+            if !self.at_body_floor() {
+                self.fail(
+                    node,
+                    "defer inside a nested block is not allowed — it runs at function exit, after the block's locals are gone. defer at the function's own scope, or do the cleanup at the block's end")
+            }
             let result: HirNode =
                 self.make_node(
                     node, "defer", "", new HirType("unit"))

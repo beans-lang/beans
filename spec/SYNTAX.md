@@ -3087,7 +3087,7 @@ beansc build --target riscv32imac-unknown-none-elf --runtime freestanding f.b --
   so a defer sees the function-level locals still alive and the block-level ones already
   gone. Must sit at the top level of the function body (not inside `if`/`for`/blocks — it
   is a function-exit hook, and nested registration would need runtime capture the native
-  backend does not do). Each defer runs at most once. An *uncontained* panic exits the
+  backend does not do); the checker refuses a nested one. Each defer runs at most once. An *uncontained* panic exits the
   process without running defers. A panic *contained* by `brew`/`join`
   (spec/CONCURRENCY.md) does the opposite: it unwinds the fiber's frames on the way to the
   fiber entry, running each function's defers newest-first and dropping what it owns — the
