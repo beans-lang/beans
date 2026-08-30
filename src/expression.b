@@ -9842,6 +9842,19 @@ class ExpressionChecker {
                             function.result, function,
                             declaration, source)
                     }
+                // The same erasure rule a plain widening obeys
+                // (expect_type, check_try_error_bridge): reaching the
+                // target as a subtype must not shed move-only ownership
+                // along the way.
+                if !hir_types_equal(produced, target) &&
+                   self.is_move_only(produced) &&
+                   !self.is_move_only(target) &&
+                   self.is_subtype(produced, target) {
+                    self.fail(
+                        node,
+                        "can't erase move-only ownership by converting {render_hir_type(produced)} to {render_hir_type(target)}")
+                    return none
+                }
                 if !hir_types_equal(produced, target) &&
                    !self.is_subtype(produced, target) {
                     self.fail(

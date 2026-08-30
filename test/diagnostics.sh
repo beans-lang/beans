@@ -107,4 +107,12 @@ grep -Fq "'?' needs main.Weird.to_error to be an instance method taking no argum
     "$tmp/diagnostics_try_convert_bad_shape_bad"
 test "$(grep -c ': error:' "$tmp/diagnostics_try_convert_bad_shape_bad")" -eq 1
 
+# Reaching the target as a subtype must not shed move-only ownership: a
+# to_error answering a unique class widened to a shared interface is refused
+# in the same words a plain widening uses.
+check_bad diagnostics_try_convert_unique_bad
+grep -Fq "can't erase move-only ownership by converting main.Pinned to main.AppError" \
+    "$tmp/diagnostics_try_convert_unique_bad"
+test "$(grep -c ': error:' "$tmp/diagnostics_try_convert_unique_bad")" -eq 1
+
 echo "ok diagnostics: locations, imports, suggestions, wording, and recovery"

@@ -1666,8 +1666,9 @@ Still refused, deliberately:
   method taking none. A method that misses this is reported, not silently
   skipped.
 - A `to_error` whose result does not itself reach `F`.
-- Erasing move-only ownership: a move-only `E` cannot convert to a
-  non-move-only `F`.
+- Erasing move-only ownership: a move-only `E` cannot widen to a
+  non-move-only `F`, and a `to_error` answering a move-only subtype of a
+  non-move-only `F` is refused the same way.
 - `return err(e)` is **not** a conversion point. It builds this function's own
   `Result`, so `e` must already be an `F` (or a subtype that widens to one);
   `to_error` is never called there. Conversion is a property of `?`, not of
