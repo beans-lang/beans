@@ -79,6 +79,63 @@ fn good_service() -> Result<int> {
     return ok(n + 1)
 }
 
+// The same conversion with the operand a local read, not a call: the bridge
+// hangs off the `?`, so where the Result came from must not matter.
+fn local_service() -> Result<int> {
+    let r: Result<int, DbError> = err(new DbError("stale"))
+    let n: int = r?
+    return ok(n)
+}
+
+// The issue's own shape: a bare `f()?` in statement position. Nothing pushes
+// an expectation at the `?`, and the conversion must run regardless.
+fn ping() -> Result<int, DbError> {
+    return err(new DbError("timeout"))
+}
+
+fn ping_service() -> Result<int> {
+    ping()?
+    return ok(1)
+}
+
+// `??` on a nested Result: each `?` negotiates its own boundary, so a
+// convertible error two layers in converts too. One hop errs at the outer
+// layer, the other at the inner; each source error is built and dropped
+// exactly once and only its own to_error runs.
+class OuterHop {
+    fn init() { io.println("arc+outer") }
+    fn deinit() { io.println("arc-outer") }
+    fn to_error() -> Error {
+        return new Error("outer refused", "outer")
+    }
+}
+
+class InnerHop {
+    fn init() { io.println("arc+inner") }
+    fn deinit() { io.println("arc-inner") }
+    fn to_error() -> Error {
+        return new Error("inner refused", "inner")
+    }
+}
+
+fn hop_outer() -> Result<Result<int, InnerHop>, OuterHop> {
+    return err(new OuterHop())
+}
+
+fn hop_inner() -> Result<Result<int, InnerHop>, OuterHop> {
+    return ok(err(new InnerHop()))
+}
+
+fn hop_outer_service() -> Result<int> {
+    let n: int = hop_outer()??
+    return ok(n)
+}
+
+fn hop_inner_service() -> Result<int> {
+    let n: int = hop_inner()??
+    return ok(n)
+}
+
 fn main() {
     match db_service() {
         ok(n) => { io.println("db ok {n}") }
@@ -91,5 +148,21 @@ fn main() {
     match good_service() {
         ok(n) => { io.println("good ok {n}") }
         err(e) => { io.println("good err {e.kind}") }
+    }
+    match local_service() {
+        ok(n) => { io.println("local ok {n}") }
+        err(e) => { io.println("local err {e.msg} / {e.kind}") }
+    }
+    match ping_service() {
+        ok(n) => { io.println("ping ok {n}") }
+        err(e) => { io.println("ping err {e.msg} / {e.kind}") }
+    }
+    match hop_outer_service() {
+        ok(n) => { io.println("hop-outer ok {n}") }
+        err(e) => { io.println("hop-outer err {e.msg} / {e.kind}") }
+    }
+    match hop_inner_service() {
+        ok(n) => { io.println("hop-inner ok {n}") }
+        err(e) => { io.println("hop-inner err {e.msg} / {e.kind}") }
     }
 }

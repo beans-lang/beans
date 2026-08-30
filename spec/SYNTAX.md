@@ -1650,6 +1650,9 @@ fn service() -> Result<int> {        // Result<int, Error>
 Any other `E` is refused at the `?`, naming both `E` and `F` and the method
 that would let them meet. The conversion runs only on the error path, only
 once — a `to_error` result is never itself put through a second `to_error`.
+Each `?` negotiates its own boundary: `x??` on an
+`x: Result<Result<T, E1>, E2>` crosses `E2` at the first `?` and `E1` at the
+second, each by whichever of the three ways applies to it.
 `std.reflect` relies on this: it answers `Result<T, ReflectError>`, and
 `ReflectError.to_error()` lets a reflection failure cross into a plain
 `Result<T>` carrying the reflect kind as the error slug.

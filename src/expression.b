@@ -71,12 +71,15 @@ class ExpressionChecker {
     // were written but nothing took them.
     call_generics_syntax: Option<AstNode>
     call_generics_taken: bool
-    // The Result expectation a `?` pushed into its own operand, held by
-    // identity. `?` decides for itself whether the callee's error can reach
-    // this function's (check_try_error_bridge), so expect_type must not
-    // refuse a convertible error before the conversion is looked for — it
-    // compares only the ok type, and only against exactly this object.
-    try_expectation: Option<HirType>
+    // The Result expectations open `?`s pushed into their own operands,
+    // held by identity, innermost last. `?` decides for itself whether the
+    // callee's error can reach this function's (check_try_error_bridge), so
+    // expect_type must not refuse a convertible error before the conversion
+    // is looked for — it compares only the ok type, and only against
+    // exactly these objects. A stack, not a slot: in `f()??` the inner
+    // expectation nests the outer one as its ok half, so peeling one layer
+    // lands on the outer object, which must still be open to match.
+    try_expectations: List<HirType>
 
     fn init(signature: SignatureChecker) {
         self.signature = signature
@@ -116,7 +119,7 @@ class ExpressionChecker {
         self.next_binding_id = 0
         self.call_generics_syntax = none
         self.call_generics_taken = true
-        self.try_expectation = none
+        self.try_expectations = []
         for function: HirFunction in self.program.functions {
             if function.owner != "" {
                 self.methods["{function.owner}.{function.name}"] =
@@ -4562,20 +4565,20 @@ class ExpressionChecker {
         // reaches this function's is check_try's own decision, and it now
         // makes it for every `?`, so comparing whole Results here would
         // refuse a convertible error before the conversion was looked for.
-        match self.try_expectation {
-            some(open) => {
-                if expected == open &&
-                   expected.name == "Result" &&
-                   expected.args.len() >= 1 &&
-                   actual.name == "Result" &&
-                   actual.args.len() >= 1 {
-                    self.expect_type(
-                        node, actual.args[0],
-                        expected.args[0])
-                    return
-                }
+        // Every open `?` is a candidate: peeling the ok half of a nested
+        // expectation (`f()??`) hands this comparison the outer object, and
+        // its error half is negotiable exactly while that `?` is open.
+        for open: HirType in self.try_expectations {
+            if expected == open &&
+               expected.name == "Result" &&
+               expected.args.len() >= 1 &&
+               actual.name == "Result" &&
+               actual.args.len() >= 1 {
+                self.expect_type(
+                    node, actual.args[0],
+                    expected.args[0])
+                return
             }
-            none => {}
         }
         if expected.name != "" &&
            !hir_types_equal(actual, expected) &&
@@ -9675,15 +9678,17 @@ class ExpressionChecker {
                   self.current.body_result.args.len() == 1 {
             operand_expected = hir_named("Option", [expected])
         }
-        let outer_expectation: Option<HirType> =
-            self.try_expectation
+        var pushed_expectation: bool = false
         if operand_expected.name == "Result" {
-            self.try_expectation = some(operand_expected)
+            self.try_expectations.push(operand_expected)
+            pushed_expectation = true
         }
         let operand: HirNode =
             self.check_expression(
                 node.children[0], operand_expected)
-        self.try_expectation = outer_expectation
+        if pushed_expectation {
+            self.try_expectations.pop()
+        }
         var result_type: HirType = poison_hir_type()
         var bridge: Option<HirNode> = none
         var bridge_binding: int = -1
