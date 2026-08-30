@@ -1116,6 +1116,22 @@ __attribute__((constructor)) static void arc_setup(void) { atexit(arc_report); }
 // FIN already gone). Count back to 0 after: the husk filter frees a parked
 // shell only when RC_COUNT is 0, so the bump must not outlive the call (it
 // leaked a buffered object's shell once).
+// The deinit body is user code: contained by brew/join, a panic in it
+// unwinds through this frame (issue #44). The object itself stays abandoned
+// mid-destruction — spec'd, and FIN is already off so death cannot run twice
+// — but the in-deinit counters must come back down on that path too:
+// cc_collect refuses to run while one is up, so a stranded count turns one
+// caught panic into a collector that never runs again for the life of the
+// process. The guard fires only on the unwind; the normal path decrements
+// exactly where it always did.
+typedef struct { int armed; } RtDeinitCounters;
+static void rt_deinit_counters_unwound(RtDeinitCounters* g) {
+    if (!g->armed) return;
+#if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
+    beans_local_in_deinit -= 1;
+#endif
+    __atomic_sub_fetch(&beans_in_deinit, 1, __ATOMIC_RELAXED);
+}
 BEANS_DEINIT_ATTR static void beans_do_deinit(
     void* p, BHead* h, long long nrc) {
     rt_rc_store(h, (nrc + 1) & ~RC_FIN);
@@ -1128,7 +1144,10 @@ BEANS_DEINIT_ATTR static void beans_do_deinit(
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
     beans_local_in_deinit += 1;
 #endif
+    __attribute__((cleanup(rt_deinit_counters_unwound)))
+    RtDeinitCounters unwound = {1};
     methods[beans_deinit_sel](p);
+    unwound.armed = 0;
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
     beans_local_in_deinit -= 1;
 #endif
@@ -1565,6 +1584,22 @@ static void cc_visit_push(void* c, void* ctx) {
     cc_push(ctx, c);
 }
 
+// The release cascade's work stack and the collector's buffers stay live
+// across user deinit bodies, and a contained panic there unwinds past
+// their frees (issue #44). Each frame arms one of these and disarms after
+// its own teardown: the normal path is unchanged, and the unwind path
+// frees the grown buffer instead of stranding it. What a panicking pass
+// had not yet destroyed stays abandoned — the stance the spec already
+// takes for the panicking object itself.
+typedef struct {
+    CCStack* st;
+    int armed;
+} RtStackUnwound;
+static void rt_stack_unwound(RtStackUnwound* g) {
+    if (!g->armed) return;
+    if (g->st->v && g->st->v != g->st->local) rt_free(g->st->v);
+}
+
 // Release cascades overwhelmingly walk fixed class objects. Keep this path
 // direct: the collector still uses the generic callback walker, but ordinary
 // ARC death should not pay an indirect call for every child.
@@ -1954,6 +1989,8 @@ void beans_release(void* p) {
     ARC_ADD(arc_release_calls, 1);
     void* local[64];
     CCStack st = {local, 0, 64, local};
+    __attribute__((cleanup(rt_stack_unwound)))
+    RtStackUnwound st_unwound = {&st, 1};
     void* cur = p;
     for (;;) {
         ARC_ADD(arc_release_nodes, 1);
@@ -2024,6 +2061,7 @@ void beans_release(void* p) {
         if (!st.len) break;
         cur = st.v[--st.len];
     }
+    st_unwound.armed = 0;
     if (st.v != local) rt_free(st.v);
 }
 
@@ -2794,6 +2832,15 @@ static long long cc_walk_min = 256; // adaptive gate for trial deletion
 // Mutex, and Channel are hard traversal boundaries. This is an owner-local
 // pause: no worker is stopped or polled, and the global collector remains
 // quiescence-only.
+// Same shape as cc_collecting_unwound: this pass runs user deinits (the
+// cycle bodies, husk releases inside cc_append_roots, the deferred
+// releases), and a contained panic there must not strand the walker count
+// or the collecting flag — both gate every future worker collection.
+static void cc_worker_flags_unwound(int* armed) {
+    if (!*armed) return;
+    cc_worker_collecting = 0;
+    __atomic_sub_fetch(&cc_worker_walkers, 1, __ATOMIC_SEQ_CST);
+}
 static void cc_worker_collect(void) {
     if (!cc_worker_root_batching || cc_worker_collecting) return;
     if (beans_local_in_deinit) return;
@@ -2804,12 +2851,18 @@ static void cc_worker_collect(void) {
         return;
     }
     cc_worker_collecting = 1;
+    __attribute__((cleanup(cc_worker_flags_unwound)))
+    int worker_flags_unwound = 1;
     {
         ARC_ADD(arc_collections, 1);
         void* dlocal[64];
         CCStack deferred = {dlocal, 0, 64, dlocal};
+        __attribute__((cleanup(rt_stack_unwound)))
+        RtStackUnwound deferred_unwound = {&deferred, 1};
         void* glocal[64];
         CCStack global = {glocal, 0, 64, glocal};
+        __attribute__((cleanup(rt_stack_unwound)))
+        RtStackUnwound global_unwound = {&global, 1};
 
         // Cheap pass first: dead parked shells can go immediately. Live
         // purple roots stay until the adaptive trial threshold is reached.
@@ -2834,6 +2887,7 @@ static void cc_worker_collect(void) {
         }
         cc_worker_root_len = n;
         if (global.len) cc_append_roots(global.v, global.len);
+        global_unwound.armed = 0;
         if (global.v != glocal) rt_free(global.v);
 
         if (cc_worker_root_len >= cc_worker_walk_min) {
@@ -2848,6 +2902,10 @@ static void cc_worker_collect(void) {
             if (walked > CC_WORKER_WALK_BUDGET)
                 walked = CC_WORKER_WALK_BUDGET;
             CCStack st = {0, 0, 0}, aux = {0, 0, 0}, dead = {0, 0, 0};
+            // st and aux never cross user code; dead is live across the
+            // cycle deinits, so it alone needs the unwind guard
+            __attribute__((cleanup(rt_stack_unwound)))
+            RtStackUnwound dead_unwound = {&dead, 1};
             int saw_shared = 0;
             for (long long i = 0; i < walked; i++)
                 cc_worker_mark_gray(
@@ -2924,6 +2982,7 @@ static void cc_worker_collect(void) {
                 rt_free(st.v);
                 rt_free(aux.v);
                 rt_free(dead.v);
+                dead.v = 0; // the guard at scope exit must not free it again
             }
         }
 
@@ -2939,8 +2998,10 @@ static void cc_worker_collect(void) {
         // handles any root parked by these deferred releases.
         for (long long i = 0; i < deferred.len; i++)
             beans_release(deferred.v[i]);
+        deferred_unwound.armed = 0;
         if (deferred.v != dlocal) rt_free(deferred.v);
     }
+    worker_flags_unwound = 0;
     cc_worker_collecting = 0;
     if (__atomic_sub_fetch(&cc_worker_walkers, 1, __ATOMIC_SEQ_CST) == 0) {
         // The sweep yields to active walks, and under steady multi-worker
@@ -2955,6 +3016,13 @@ static void cc_worker_collect(void) {
 }
 #endif
 
+// The cycle deinits and the deferred releases below run user code after
+// CC_UNLOCK; a contained panic there unwinds out of the pass. The members
+// not yet destroyed stay abandoned (their holds keep their shells), but
+// cc_collecting gates every future collection, so it must come back down.
+static void cc_collecting_unwound(int* armed) {
+    if (*armed) cc_collecting = 0;
+}
 static void cc_collect(int force) {
     if (cc_collecting) return;
     // a deinit body is user code running mid-cascade: its allocations must
@@ -2963,14 +3031,20 @@ static void cc_collect(int force) {
     if (__atomic_load_n(&beans_in_deinit, __ATOMIC_RELAXED)) return;
     ARC_ADD(arc_collections, 1);
     cc_collecting = 1;
+    __attribute__((cleanup(cc_collecting_unwound)))
+    int collecting_unwound = 1;
     // Children handed back by cc_free_shell (a Shared payload) are released
     // only after CC_UNLOCK: releasing can park a new possible root, which
     // takes cc_mu again, and cc_mu is not recursive.
     void* dlocal[64];
     CCStack deferred = {dlocal, 0, 64, dlocal};
+    __attribute__((cleanup(rt_stack_unwound)))
+    RtStackUnwound deferred_unwound = {&deferred, 1};
     // The white set outlives the lock: deinit bodies are user code that
     // allocates and releases, and parking a possible root takes cc_mu again.
     CCStack doomed = {0, 0, 0};
+    __attribute__((cleanup(rt_stack_unwound)))
+    RtStackUnwound doomed_unwound = {&doomed, 1};
     CC_LOCK();
 
     // keep only live purple candidates; zombies (released while parked)
@@ -3037,8 +3111,12 @@ static void cc_collect(int force) {
     if (!cc_run_cycle_deinits(doomed.v, doomed.len, 0))
         cc_free_cycle_shells(doomed.v, doomed.len, &deferred);
     rt_free(doomed.v);
+    doomed.v = 0; // the guard must not free it again if a release panics
     for (long long i = 0; i < deferred.len; i++) beans_release(deferred.v[i]);
+    deferred_unwound.armed = 0;
+    doomed_unwound.armed = 0;
     if (deferred.v != dlocal) rt_free(deferred.v);
+    collecting_unwound = 0;
     cc_collecting = 0;
 }
 
