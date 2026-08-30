@@ -2032,8 +2032,11 @@ partial class LlvmTextEmitter {
                         argument_setup =
                             "{argument_setup}{self.append_internal_argument(operand_type, operand, arguments)}"
                     }
+                    // the object exists from here: if its init panics
+                    // (contained), the cleanup pad releases it — deinit
+                    // and fields — as the interpreter does
                     output =
-                        "{output}{argument_setup}  call void {initializer}({arguments.join(", ")})\n"
+                        "{output}{argument_setup}{self.unwind_temp_define_new(function, instruction, result, scalar_local < 0)}  call void {initializer}({arguments.join(", ")})\n"
                     // A borrow-passed consumed operand is an
                     // ownership-sink argument: the contraction makes
                     // every such call site pass its own reference
