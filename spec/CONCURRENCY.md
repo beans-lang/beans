@@ -449,15 +449,33 @@ Landed since:
    operation interrupted by a panicking callback leaves the collection
    exactly as it was before the call — same contents, same order — on both
    backends: a sort snapshots the array it permutes in place before the
-   first callback can run, and the unwind puts it back. With no panic at
+   first callback can run, and the unwind puts it back. A callback that
+   *structurally changes* the list mid-sort is refused as the program's own
+   panic instead (`list changed during sort`, spec/SYNTAX.md) — the list
+   then stays as the mutation left it, since the snapshot no longer
+   describes the storage. With no panic at
    all, both backends run the same bottom-up stable merge, so they agree on
    the order for any predicate, one that is not a strict weak ordering
    included. A `deinit` that panics while a runtime replace holds the old
    value (`map[k] = v` over an existing key, `Box.set`) is contained like
-   any other panic: the store stands, the interrupted old value's second
-   release is a no-op rather than a double free, and both backends agree.
+   any other panic, and the store stands: the entry takes the new value
+   and drops the duplicate key first — none of which can panic — and the
+   old value's release runs last, so its panic finds the map already
+   consistent, the old object abandoned mid-destruction, and nothing
+   double-freed. Both backends agree, the caller's key and value
+   included. A declined `insert` releases the incoming value before it
+   touches the duplicate key, for the same reason in mirror image.
 
 Deliberately not yet here, in dependency order:
+
+0. **Native unwinding off elf/macho x86_64/arm64.** The native pads ride the
+   platform unwinder, and only those four target pairs carry it today
+   (src/target.b names them; VERSION's ABI note says the same). Everywhere
+   else — Windows native builds included — a contained panic still abandons
+   the fiber's frames in a native build while the interpreter unwinds, so
+   defer/deinit output under a contained panic differs between the legs on
+   those targets. Differential tests that run there must not pin
+   defer-under-panic output until the pads land per target.
 
 1. **The cancelled-park unwind.** A cancelled park still abandons the fiber's
    frames on *both* backends: unlike a panic, a cancel is delivered from inside
