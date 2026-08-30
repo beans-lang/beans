@@ -6723,6 +6723,16 @@ static void map_insert_miss_typed(BMap* m, long long key, void* value,
 }
 
 // note: the map owns key and value refs; the caller retains before calling
+//
+// Hit-path order is load-bearing (issue #44, spec/CONCURRENCY.md): the old
+// value's release runs user deinit code, and contained by brew/join a panic
+// there unwinds out of this frame. The store must stand on that panic — the
+// interpreter's rule — so the entry takes the new value, the duplicate key
+// is dropped, and the old value's release comes LAST, when everything else
+// is already consistent. Nothing before it can panic: the store and the
+// write barrier are plain code, a duplicate string key frees without user
+// code, and a duplicate class key is the entry's own object (identity hit),
+// so its count is at least two and the release never reaches a deinit.
 void beans_map_set(BMap* m, long long key, long long val, long long kind, void* eq,
                    void* hash) {
     long long (*hf)(long long) = (long long (*)(long long))hash;
@@ -6730,11 +6740,12 @@ void beans_map_set(BMap* m, long long key, long long val, long long kind, void* 
     long long i = map_find(m, key, kind, eq, hf, &h, &slot);
     if (i >= 0) {
         long long flags = (head_of(m)->meta & CC_SHAPE) >> 3;
-        if (flags & 1) beans_release((void*)key); // duplicate key not stored
+        long long old = m->data[i * 2 + 1];
         if (flags & 2) beans_cc_write(m, (void*)(uintptr_t)val);
-        if (flags & 2) beans_release((void*)m->data[i * 2 + 1]);
         m->data[i * 2 + 1] = val;
+        if (flags & 1) beans_release((void*)key); // duplicate key not stored
         if (kind == 4 && (flags & 1)) cc_possible_root(m);
+        if (flags & 2) beans_release((void*)old);
         return;
     }
     map_insert_miss(m, key, val, h, kind, hf, slot);
@@ -6747,13 +6758,29 @@ __attribute__((always_inline)) void beans_map_set_raw(BMap* m, long long key,
     long long i = map_find_raw(m, key, &h, &slot);
     if (i >= 0) {
         long long flags = (head_of(m)->meta & CC_SHAPE) >> 3;
-        if (flags & 1) beans_release((void*)key);
+        // same order rule as beans_map_set: store first, the one
+        // panic-capable release (the old value's) last
+        long long old = m->data[i * 2 + 1];
         if (flags & 2) beans_cc_write(m, (void*)(uintptr_t)val);
-        if (flags & 2) beans_release((void*)m->data[i * 2 + 1]);
         m->data[i * 2 + 1] = val;
+        if (flags & 1) beans_release((void*)key);
+        if (flags & 2) beans_release((void*)old);
         return;
     }
     map_insert_miss(m, key, val, h, 0, NULL, slot);
+}
+
+// swap the entry's wide value with the caller's buffer, byte for byte: the
+// entry takes the new value and the caller's buffer parks the old one for
+// the final release. No allocation, and MSVC has no VLA to spill into.
+static void map_swap_wide(void* entry, void* incoming, size_t n) {
+    unsigned char* a = (unsigned char*)entry;
+    unsigned char* b = (unsigned char*)incoming;
+    for (size_t i = 0; i < n; i++) {
+        unsigned char t = a[i];
+        a[i] = b[i];
+        b[i] = t;
+    }
 }
 
 void beans_map_set_typed(BMap* m, long long key, void* value, long long kind,
@@ -6763,11 +6790,14 @@ void beans_map_set_typed(BMap* m, long long key, void* value, long long kind,
     long long i = map_find(m, key, kind, eq, hf, &h, &slot);
     if (i >= 0) {
         long long flags = (head_of(m)->meta & CC_SHAPE) >> 3;
-        if (flags & 1) beans_release((void*)key);
+        // same order rule as beans_map_set: store first, the old value's
+        // release last, from the caller's buffer the swap parked it in
+        // (the buffer is consumed by this call either way)
         beans_cc_write_typed(m, value, m->value_ptr_mask);
-        map_release_wide_value(m, map_wide_value(m, i));
-        memcpy(map_wide_value(m, i), value, (size_t)m->value_stride);
+        map_swap_wide(map_wide_value(m, i), value, (size_t)m->value_stride);
+        if (flags & 1) beans_release((void*)key);
         if (m->value_cycle_mask || kind == 4) cc_possible_root(m);
+        map_release_wide_value(m, value);
         return;
     }
     map_insert_miss_typed(m, key, value, h, kind, hf, slot);
@@ -6781,11 +6811,13 @@ __attribute__((always_inline)) void beans_map_set_typed_raw(BMap* m,
     long long i = map_find_raw(m, key, &h, &slot);
     if (i >= 0) {
         long long flags = (head_of(m)->meta & CC_SHAPE) >> 3;
-        if (flags & 1) beans_release((void*)key);
+        // same order rule as beans_map_set: store first, the old value's
+        // release last, from the caller's buffer the swap parked it in
         beans_cc_write_typed(m, value, m->value_ptr_mask);
-        map_release_wide_value(m, map_wide_value(m, i));
-        memcpy(map_wide_value(m, i), value, (size_t)m->value_stride);
+        map_swap_wide(map_wide_value(m, i), value, (size_t)m->value_stride);
+        if (flags & 1) beans_release((void*)key);
         if (m->value_cycle_mask) cc_possible_root(m);
+        map_release_wide_value(m, value);
         return;
     }
     map_insert_miss_typed(m, key, value, h, 0, NULL, slot);
@@ -6833,8 +6865,13 @@ long long beans_map_insert(BMap* m, long long key, long long val, long long kind
     unsigned long long h = 0, slot = 0;
     if (map_find(m, key, kind, eq, hf, &h, &slot) >= 0) {
         long long flags = (head_of(m)->meta & CC_SHAPE) >> 3;
-        if (flags & 1) beans_release((void*)key);
+        // declined: the incoming value's release can run a panicking
+        // deinit, so it goes first, while the key is still the caller's
+        // to unwind; the duplicate key's release cannot panic (a string
+        // frees without user code, an identity-hit class key holds at
+        // least two counts)
         if (flags & 2) beans_release((void*)val);
+        if (flags & 1) beans_release((void*)key);
         return 0;
     }
     map_insert_miss(m, key, val, h, kind, hf, slot);
@@ -6846,8 +6883,9 @@ long long beans_map_insert_raw(BMap* m, long long key, long long val) {
     unsigned long long h = 0, slot = 0;
     if (map_find_raw(m, key, &h, &slot) >= 0) {
         long long flags = (head_of(m)->meta & CC_SHAPE) >> 3;
-        if (flags & 1) beans_release((void*)key);
+        // same decline order as beans_map_insert: panic-capable first
         if (flags & 2) beans_release((void*)val);
+        if (flags & 1) beans_release((void*)key);
         return 0;
     }
     map_insert_miss(m, key, val, h, 0, NULL, slot);
@@ -6860,8 +6898,9 @@ long long beans_map_insert_typed(BMap* m, long long key, void* value,
     unsigned long long h = 0, slot = 0;
     if (map_find(m, key, kind, eq, hf, &h, &slot) >= 0) {
         long long flags = (head_of(m)->meta & CC_SHAPE) >> 3;
-        if (flags & 1) beans_release((void*)key);
+        // same decline order as beans_map_insert: panic-capable first
         map_release_wide_value(m, value);
+        if (flags & 1) beans_release((void*)key);
         return 0;
     }
     map_insert_miss_typed(m, key, value, h, kind, hf, slot);
@@ -6873,8 +6912,9 @@ long long beans_map_insert_typed_raw(BMap* m, long long key, void* value) {
     unsigned long long h = 0, slot = 0;
     if (map_find_raw(m, key, &h, &slot) >= 0) {
         long long flags = (head_of(m)->meta & CC_SHAPE) >> 3;
-        if (flags & 1) beans_release((void*)key);
+        // same decline order as beans_map_insert: panic-capable first
         map_release_wide_value(m, value);
+        if (flags & 1) beans_release((void*)key);
         return 0;
     }
     map_insert_miss_typed(m, key, value, h, 0, NULL, slot);

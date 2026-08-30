@@ -57,6 +57,95 @@ echo "checking an unwind parked in its cleanup survives other fibers finishing"
 diff -u test/cases/brew_unwind_park.out "$tmp/park.interp"
 diff -u test/cases/brew_unwind_park.out "$tmp/park.native.out"
 
+echo "checking a map replace under a panicking deinit corrupts nothing"
+# issue #44: the old order released the caller's duplicate key before the
+# old value's panicking release, and the pad then released that key a
+# second time — allocator corruption the pool hides. BEANS_NO_POOL=1 made
+# it crash most runs, so six clean, byte-stable runs bind the fix; the
+# parity golden binds the store-stands semantics.
+./build/beansc build test/cases/parity/map_replace_panic.b \
+    -o "$tmp/map_replace" >"$tmp/map_replace.build" 2>&1
+BEANS_NO_POOL=1 "$tmp/map_replace" >"$tmp/map_replace.first" 2>&1 || {
+    echo "map replace under a panicking deinit failed without the pool" >&2
+    cat "$tmp/map_replace.first" >&2
+    exit 1
+}
+for round in 2 3 4 5 6; do
+    BEANS_NO_POOL=1 "$tmp/map_replace" >"$tmp/map_replace.again" 2>&1 || {
+        echo "map replace run $round crashed without the pool" >&2
+        cat "$tmp/map_replace.again" >&2
+        exit 1
+    }
+    diff "$tmp/map_replace.first" "$tmp/map_replace.again" || {
+        echo "map replace run $round diverged without the pool" >&2
+        exit 1
+    }
+done
+
+echo "checking the cycle collector still runs after a contained deinit panic"
+# issue #44: beans_do_deinit is a runtime frame around user code. A deinit
+# panic contained by join unwinds through it; if the in-deinit counters
+# strand, cc_collect refuses to run for the rest of the process and every
+# later cycle leaks with its deinit silently skipped. The guard restores
+# the counters on the unwind, so the cycle built after the caught panic
+# must still print both node deinits at exit — on both engines. Reverting
+# the runtime guard removes both lines from the native run.
+cat >"$tmp/cc_after_deinit_panic.b" <<'BEANS'
+import std.io
+
+class Bomb {
+    fn deinit() {
+        let empty: List<int> = []
+        io.println("bomb deinit {empty[0]}")
+    }
+}
+
+class Node {
+    pub next: Option<Node>
+    pub tag: int
+    fn init(tag: int) { self.next = none; self.tag = tag }
+    fn deinit() { io.println("node {self.tag} deinit") }
+}
+
+fn make_cycle(tag: int) {
+    let a: Node = new Node(tag)
+    let b: Node = new Node(tag + 1)
+    a.next = some(b)
+    b.next = some(a)
+}
+
+fn bomb_scope() -> int {
+    let held: Bomb = new Bomb()
+    return 7
+}
+
+fn main() {
+    let h: Brew<int> = brew bomb_scope()
+    match h.join() {
+        ok(v) => { io.println("ok {v}") }
+        err(p) => { io.println("caught: {p.kind}") }
+    }
+    make_cycle(3)
+    io.println("end")
+}
+BEANS
+./build/beansc run "$tmp/cc_after_deinit_panic.b" >"$tmp/cc_deinit.interp"
+./build/beansc build "$tmp/cc_after_deinit_panic.b" -o "$tmp/cc_deinit.native" \
+    >"$tmp/cc_deinit.build" 2>&1
+"$tmp/cc_deinit.native" >"$tmp/cc_deinit.native.out"
+for leg in "$tmp/cc_deinit.interp" "$tmp/cc_deinit.native.out"; do
+    grep -q '^caught: panic$' "$leg" || {
+        echo "the deinit panic was not contained in $leg" >&2
+        cat "$leg" >&2
+        exit 1
+    }
+    grep -q '^node 3 deinit$' "$leg" && grep -q '^node 4 deinit$' "$leg" || {
+        echo "the collector never ran the cycle's deinits in $leg" >&2
+        cat "$leg" >&2
+        exit 1
+    }
+done
+
 echo "checking a child's panic escalating into its parent's unwind is a double panic"
 # issue #44 (B4): the unwind joins an unjoined child through the synthesized
 # scope join, and a child whose panic nobody caught escalates there — inside

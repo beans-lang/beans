@@ -133,10 +133,11 @@ agree test/cases/parity/super_in_scope.b
 agree test/cases/parity/bind_release.b 111
 agree test/cases/parity/scope_exit_order.b 14
 agree test/cases/parity/sort_panic_state.b
+agree test/cases/parity/map_replace_panic.b
 
 # Every case in the directory has to be listed above with its own expected
 # count; a file added and forgotten would otherwise be silently unchecked.
-listed=18
+listed=19
 present=$(find test/cases/parity -name '*.b' | wc -l | tr -d ' ')
 if [ "$present" != "$listed" ]; then
     echo "test/cases/parity holds $present cases but $listed are run" >&2

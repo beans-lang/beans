@@ -352,7 +352,7 @@ partial class LlvmTextEmitter {
         instruction: MirInstruction) -> bool {
         let op: string = instruction.op
         if op == "cast" {
-            // `as!` refuses before it produces (inline)
+            // a checked cast refuses before it produces (inline)
             return true
         }
         if op == "unwrap" || op == "propagate" ||
@@ -364,10 +364,19 @@ partial class LlvmTextEmitter {
            instruction.text.starts_with("index::") {
             // list[i] = v, array[i] = v: inline, bounds first; the store
             // clears the flag itself, before the old element's release.
-            // map[k] = v: beans_map_set grows first and places last, and
-            // its hashes and compares are the runtime's own (a class key
-            // hashes by identity), never Beans code.
-            return true
+            // map[k] = v is NOT on this list: the store must stand when
+            // the old value's deinit panics (the interpreter's rule), so
+            // the runtime stores first and releases the old value last —
+            // a panic after the take. The operands ride the leak-safe
+            // clear-before default instead; only a growth failure before
+            // the store can strand them, abandoned like the panicking
+            // object itself.
+            let target: string =
+                canonical_hir_name(
+                    self.value_type(
+                        function,
+                        instruction.operands[0]).name)
+            return target != "Map" && target != "OrderedMap"
         }
         if op != "builtin_method" ||
            instruction.operands.len() == 0 {
@@ -385,8 +394,11 @@ partial class LlvmTextEmitter {
             return method == "push" || method == "insert"
         }
         if receiver == "Map" || receiver == "OrderedMap" {
-            // beans_map_set: as map[k] = v above
-            return method == "set" || method == "insert"
+            // set follows map[k] = v above: store-first, so clear-before.
+            // insert stays: growth fails before it takes, and a declined
+            // insert releases the incoming value first, while the caller
+            // still owns everything the pad would release.
+            return method == "insert"
         }
         if receiver == "Channel" {
             // beans_chan_send declines a closed channel without taking the
