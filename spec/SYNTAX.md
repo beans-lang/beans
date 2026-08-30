@@ -998,7 +998,12 @@ even for a predicate that is not a strict weak ordering; a comparator that reads
 it is sorting (through a captured reference) sees the same intermediate states on both —
 each merged block is committed to the list when it completes; and a comparator or key
 function that panics (contained, spec/CONCURRENCY.md) leaves the list exactly as it was
-before the call, on both backends.
+before the call, on both backends. Reading is as far as it goes: a callback that
+*structurally changes* the list mid-sort (push, remove, clear — anything that moves its
+length or storage) is refused with `list changed during sort (length A -> B)` at the first
+callback return after the change, on both backends — the sort would otherwise permute
+stale storage. The list stays as the mutation left it; there is nothing coherent to
+restore. Writing an element in place (`l[i] = v`) moves nothing and stays allowed.
 
 **Map and OrderedMap methods (v0.5, implemented):** `clone`, `get` → `Option<V>`,
 `set` (also `m[k] = v` sugar), `insert(k, v) -> bool` (false leaves the old value),

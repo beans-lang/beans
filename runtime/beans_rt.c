@@ -2122,6 +2122,37 @@ static void rt_restore_arm(RtRestore* guard, void* target, size_t bytes) {
 }
 // The permutation completed: keep it. The snapshot is still freed.
 static void rt_restore_done(RtRestore* guard) { guard->target = 0; }
+// A comparator or key function can reach the list it is sorting through a
+// captured reference. Reading it is fine — the widened mirror keeps what it
+// sees identical across backends — but a structural change (push, remove,
+// clear: anything that moves the length or the storage) would leave the
+// sort permuting a stale array: a use-after-free on growth, reads past the
+// end on shrink. Both engines refuse it as the program's own panic, checked
+// as each callback returns and before the sort touches the array again.
+// The restore guard is stood down first: with the storage changed there is
+// nothing coherent to put back, so the list stays as the mutation left it.
+typedef struct {
+    BList* list;
+    long long len;
+    void* data;
+    RtRestore* restore;
+} RtSortPin;
+static void rt_sort_pin(RtSortPin* pin, BList* list, RtRestore* restore) {
+    pin->list = list;
+    pin->len = list ? list->len : 0;
+    pin->data = list ? list->data : 0;
+    pin->restore = restore;
+}
+static void rt_sort_check(RtSortPin* pin) {
+    if (!pin->list) return;
+    if (pin->list->len == pin->len && pin->list->data == pin->data) return;
+    long long now = pin->list->len;
+    if (pin->restore) rt_restore_done(pin->restore);
+    char b[96];
+    rt_format(b, sizeof b, "list changed during sort (length %lld -> %lld)",
+              pin->len, now);
+    beans_panic(b, 0, 0);
+}
 // malloc and calloc only promise enough alignment for any ordinary scalar —
 // 16 bytes on both supported targets. An `align(64)` record asked for more than
 // that, so anything stricter has to be requested explicitly or align_of would be
@@ -6278,11 +6309,13 @@ static long long sort_less(long long x, long long y, long long kind, void* thunk
 // interpreter, block for block) commits its own — and the restore guard
 // then snapshots the narrow storage the program can actually see.
 static void list_merge_sort(long long* a, long long n, long long kind, void* thunk,
-                            void* box, BList* mirror) {
+                            void* box, BList* mirror, BList* owner) {
     if (n < 2) return;
     // the kind comparators cannot panic; only a Beans comparator can
     // interrupt the permutation, so only then is the array snapshotted
     RT_RESTORE RtRestore restore = {0, 0, 0};
+    RtSortPin pin;
+    rt_sort_pin(&pin, thunk ? owner : NULL, &restore);
     if (thunk) {
         if (mirror) rt_restore_arm(&restore, mirror->data, (size_t)n * 4);
         else rt_restore_arm(&restore, a, (size_t)n * 8);
@@ -6295,7 +6328,9 @@ static void list_merge_sort(long long* a, long long n, long long kind, void* thu
             if (mid >= hi) continue;
             long long i = lo, j = mid, o = lo;
             while (i < mid && j < hi) {
-                if (!sort_less(a[j], a[i], kind, thunk, box)) buf[o++] = a[i++];
+                long long take_left = !sort_less(a[j], a[i], kind, thunk, box);
+                if (thunk) rt_sort_check(&pin);
+                if (take_left) buf[o++] = a[i++];
                 else buf[o++] = a[j++];
             }
             while (i < mid) buf[o++] = a[i++];
@@ -6376,12 +6411,12 @@ void beans_list_sort(BList* l, long long kind) {
     if (l->stride == 4) {
         RT_SCRATCH long long* wide = list_widen_slots(l);
         if (kind == 0) list_radix_sort_int(wide, l->len);
-        else list_merge_sort(wide, l->len, kind, NULL, NULL, NULL);
+        else list_merge_sort(wide, l->len, kind, NULL, NULL, NULL, NULL);
         list_narrow_slots(l, wide);
         return;
     }
     if (kind == 0) list_radix_sort_int(l->data, l->len);
-    else list_merge_sort(l->data, l->len, kind, NULL, NULL, NULL);
+    else list_merge_sort(l->data, l->len, kind, NULL, NULL, NULL, NULL);
 }
 void beans_list_sort_by(BList* l, void* thunk, void* box) {
     if (l->stride == 4) {
@@ -6390,38 +6425,32 @@ void beans_list_sort_by(BList* l, void* thunk, void* box) {
         // it would over the list's own slots; the copy is unwind-owned
         // scratch and the restore guard inside puts the narrow storage back
         RT_SCRATCH long long* wide = list_widen_slots(l);
-        list_merge_sort(wide, l->len, 0, thunk, box, l);
+        list_merge_sort(wide, l->len, 0, thunk, box, l, l);
         list_narrow_slots(l, wide);
         return;
     }
-    list_merge_sort(l->data, l->len, 0, thunk, box, NULL);
+    list_merge_sort(l->data, l->len, 0, thunk, box, NULL, l);
 }
-void beans_list_sort_by_key(BList* l, void* thunk, void* box) {
-    if (l->stride == 4) {
-        long long saved_len = l->len;
-        RT_SCRATCH long long* wide = list_widen_slots(l);
-        BList slots = *l;
-        slots.data = wide;
-        slots.stride = -8;
-        beans_list_sort_by_key(&slots, thunk, box);
-        l->len = saved_len;
-        list_narrow_slots(l, wide);
-        return;
-    }
+static void list_sort_by_key_slots(BList* l, void* thunk, void* box,
+                                   BList* observed) {
     long long n = l->len;
     if (n < 2) return;
     // every key call runs before the first write to the list, so a
     // panicking key function leaves the list untouched; the scratch is
-    // unwind-owned
+    // unwind-owned. `observed` is the program's own list — for a widened
+    // sort `l` is a slot view over scratch the callback cannot reach.
     RT_SCRATCH long long* keys = rt_alloc((size_t)n * 8);
     RT_SCRATCH long long* val_buf = rt_alloc((size_t)n * 8);
     RT_SCRATCH size_t* count = rt_alloc(65536 * sizeof(size_t));
     RT_SCRATCH size_t* at = rt_alloc(65536 * sizeof(size_t));
     long long (*key_fn)(void*, long long) =
         (long long (*)(void*, long long))thunk;
+    RtSortPin pin;
+    rt_sort_pin(&pin, observed, NULL);
     long long minimum = 0, maximum = 0;
     for (long long i = 0; i < n; i++) {
         keys[i] = key_fn(box, l->data[i]);
+        rt_sort_check(&pin);
         if (i == 0 || keys[i] < minimum) minimum = keys[i];
         if (i == 0 || keys[i] > maximum) maximum = keys[i];
     }
@@ -6460,6 +6489,20 @@ void beans_list_sort_by_key(BList* l, void* thunk, void* box) {
         swap = val_src; val_src = val_dst; val_dst = swap;
     }
     if (val_src != l->data) memcpy(l->data, val_src, (size_t)n * 8);
+}
+void beans_list_sort_by_key(BList* l, void* thunk, void* box) {
+    if (l->stride == 4) {
+        long long saved_len = l->len;
+        RT_SCRATCH long long* wide = list_widen_slots(l);
+        BList slots = *l;
+        slots.data = wide;
+        slots.stride = -8;
+        list_sort_by_key_slots(&slots, thunk, box, l);
+        l->len = saved_len;
+        list_narrow_slots(l, wide);
+        return;
+    }
+    list_sort_by_key_slots(l, thunk, box, l);
 }
 
 // ---- maps ----
@@ -15621,6 +15664,8 @@ static void list_decv_merge_sort(BList* list, void* thunk, void* box) {
     if (n < 2) return;
     BDec* values = (BDec*)list->data;
     RT_RESTORE RtRestore restore = {0, 0, 0};
+    RtSortPin pin;
+    rt_sort_pin(&pin, thunk ? list : NULL, &restore);
     if (thunk) rt_restore_arm(&restore, values, (size_t)n * sizeof(BDec));
     RT_SCRATCH BDec* buffer = rt_alloc((size_t)n * sizeof(BDec));
     if (!buffer) beans_panic("out of memory", 0, 0);
@@ -15630,7 +15675,10 @@ static void list_decv_merge_sort(BList* list, void* thunk, void* box) {
             long long hi = lo + 2 * width < n ? lo + 2 * width : n;
             long long left = lo, right = mid, out = lo;
             while (left < mid && right < hi) {
-                if (!decv_less(&values[right], &values[left], thunk, box))
+                long long take_left =
+                    !decv_less(&values[right], &values[left], thunk, box);
+                if (thunk) rt_sort_check(&pin);
+                if (take_left)
                     buffer[out++] = values[left++];
                 else
                     buffer[out++] = values[right++];
@@ -15655,7 +15703,12 @@ void beans_list_decv_sort_by_key(BList* list, void* thunk, void* box) {
     RT_SCRATCH long long* key_buffer = rt_alloc((size_t)n * sizeof(long long));
     RT_SCRATCH BDec* value_buffer = rt_alloc((size_t)n * sizeof(BDec));
     if (!keys || !key_buffer || !value_buffer) beans_panic("out of memory", 0, 0);
-    for (long long i = 0; i < n; i++) keys[i] = key_fn(box, &values[i]);
+    RtSortPin pin;
+    rt_sort_pin(&pin, list, NULL);
+    for (long long i = 0; i < n; i++) {
+        keys[i] = key_fn(box, &values[i]);
+        rt_sort_check(&pin);
+    }
     for (long long width = 1; width < n; width *= 2) {
         for (long long lo = 0; lo < n; lo += 2 * width) {
             long long mid = lo + width < n ? lo + width : n;
@@ -15696,6 +15749,8 @@ void beans_list_val_sort_by(BList* list, void* thunk, void* box) {
         (long long (*)(void*, void*, void*))thunk;
     char* values = (char*)list->data;
     RT_RESTORE RtRestore restore = {0, 0, 0};
+    RtSortPin pin;
+    rt_sort_pin(&pin, list, &restore);
     rt_restore_arm(&restore, values, (size_t)n * (size_t)stride);
     RT_SCRATCH char* buffer = rt_alloc((size_t)n * (size_t)stride);
     if (!buffer) beans_panic("out of memory", 0, 0);
@@ -15706,11 +15761,11 @@ void beans_list_val_sort_by(BList* list, void* thunk, void* box) {
             long long left = lo, right = mid, out = lo;
             while (left < mid && right < hi) {
                 // taking left unless right is strictly less keeps it stable
-                long long take =
+                long long right_less =
                     less(box, values + (size_t)right * (size_t)stride,
-                         values + (size_t)left * (size_t)stride)
-                        ? right++
-                        : left++;
+                         values + (size_t)left * (size_t)stride);
+                rt_sort_check(&pin);
+                long long take = right_less ? right++ : left++;
                 memcpy(buffer + (size_t)out * (size_t)stride,
                        values + (size_t)take * (size_t)stride,
                        (size_t)stride);
@@ -15748,8 +15803,12 @@ void beans_list_val_sort_by_key(BList* list, void* thunk, void* box) {
     RT_SCRATCH char* value_buffer = rt_alloc((size_t)n * (size_t)stride);
     if (!keys || !key_buffer || !value_buffer)
         beans_panic("out of memory", 0, 0);
-    for (long long i = 0; i < n; i++)
+    RtSortPin pin;
+    rt_sort_pin(&pin, list, NULL);
+    for (long long i = 0; i < n; i++) {
         keys[i] = key_fn(box, values + (size_t)i * (size_t)stride);
+        rt_sort_check(&pin);
+    }
     for (long long width = 1; width < n; width *= 2) {
         for (long long lo = 0; lo < n; lo += 2 * width) {
             long long mid = lo + width < n ? lo + width : n;

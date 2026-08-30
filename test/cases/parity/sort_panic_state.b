@@ -129,6 +129,30 @@ fn key_wide() -> int {
     return 0
 }
 
+fn grow_under_sort() -> int {
+    Store.ints.sort_by(fn(a: int, b: int) -> bool {
+        Store.ints.push(99)
+        return a < b
+    })
+    return 0
+}
+
+fn shrink_under_sort() -> int {
+    Store.ints.sort_by(fn(a: int, b: int) -> bool {
+        if Store.ints.len() > 2 { Store.ints.remove(0) }
+        return a < b
+    })
+    return 0
+}
+
+fn grow_under_keyed_sort() -> int {
+    Store.ints.sort_by_key(fn(a: int) -> int {
+        Store.ints.push(77)
+        return 0 - a
+    })
+    return 0
+}
+
 fn run(which: int) -> int {
     if which == 1 { return sort_ints() }
     if which == 2 { return sort_narrow() }
@@ -137,6 +161,9 @@ fn run(which: int) -> int {
     if which == 5 { return key_first() }
     if which == 6 { return key_mid() }
     if which == 7 { return key_wide() }
+    if which == 9 { return grow_under_sort() }
+    if which == 10 { return shrink_under_sort() }
+    if which == 11 { return grow_under_keyed_sort() }
     return key_last()
 }
 
@@ -268,4 +295,19 @@ fn main() {
     Store.floats = [4.0, 9.0, 2.0, 1.0]
     shield_observer(3, "observed floats panic")
     io.println("observed floats panic after: {view_floats()}")
+    // A callback structurally changing the list it is sorting is refused
+    // as the program's own panic, on both engines, at the first callback
+    // return after the change — the sort would otherwise permute stale
+    // storage (a use-after-free on growth, reads past the end on shrink).
+    // The list stays as the mutation left it; there is nothing coherent
+    // to restore.
+    Store.ints = [8, 7, 6, 5, 4, 3, 2, 1]
+    shield(9, "grow under sort")
+    show_ints("grow under sort after")
+    Store.ints = [8, 7, 6, 5, 4, 3, 2, 1]
+    shield(10, "shrink under sort")
+    show_ints("shrink under sort after")
+    Store.ints = [3, 1, 2, 5, 4, 7, 6, 8]
+    shield(11, "grow under keyed sort")
+    show_ints("grow under keyed sort after")
 }

@@ -494,8 +494,25 @@ class TreeInterpreter {
 
     fn fail_at(node: HirNode, col: int,
                message: string) -> TreeValue {
-        let text: string =
-            "runtime panic at {node.line}:{col}: {message}"
+        return self.fail_with_text(
+            "runtime panic at {node.line}:{col}: {message}")
+    }
+
+    // Both engines refuse a callback structurally changing the list it is
+    // sorting (rt_sort_check in beans_rt.c): the merge would otherwise
+    // permute stale storage. The runtime has no source position there, so
+    // it prints 0:0 — this must render the identical line.
+    fn check_sort_shape(receiver: TreeValue, pinned: int) {
+        if self.failed { return }
+        if receiver.items.len() == pinned { return }
+        self.fail_with_text(
+            "runtime panic at 0:0: list changed during sort (length {pinned} -> {receiver.items.len()})")
+    }
+
+    // The full panic line, position already rendered. Everything user-facing
+    // goes through fail/fail_at; the runtime's own position-less refusals
+    // come here directly so both backends print the same bytes.
+    fn fail_with_text(text: string) -> TreeValue {
         if !self.failed && self.fiber_unwinding() {
             // A panic raised while THIS fiber is already unwinding a contained
             // failure, AND while no panic is currently in flight — meaning it
@@ -8413,15 +8430,6 @@ class TreeInterpreter {
             // write, exactly as the native sort_by_key does; a stable merge
             // by those integer keys is the same permutation as its stable
             // radix.
-            var keys: List<TreeValue> = []
-            if node.value == "sort_by_key" &&
-               arguments.len() == 2 {
-                for value: TreeValue in receiver.items {
-                    keys.push(
-                        self.invoke_closure(
-                            node, arguments[1], [value]))
-                }
-            }
             // A panicking comparator or key function leaves the list
             // exactly as it was (issue #73, spec/CONCURRENCY.md): the
             // items are snapshotted before the first write and restored in
@@ -8434,6 +8442,22 @@ class TreeInterpreter {
                 }
             }
             let length: int = receiver.items.len()
+            // One key call per item, checked as each returns: a callback
+            // structurally changing the list is refused, exactly as the
+            // native runtime's rt_sort_check refuses it.
+            var keys: List<TreeValue> = []
+            if node.value == "sort_by_key" &&
+               arguments.len() == 2 {
+                var extract: int = 0
+                for extract < length && !self.failed {
+                    keys.push(
+                        self.invoke_closure(
+                            node, arguments[1],
+                            [receiver.items[extract]]))
+                    self.check_sort_shape(receiver, length)
+                    extract += 1
+                }
+            }
             var buffer: List<TreeValue> = []
             for value: TreeValue in receiver.items {
                 buffer.push(value)
@@ -8480,6 +8504,8 @@ class TreeInterpreter {
                                          receiver.items[left]])
                                 take_right =
                                     self.truth(node, compared)
+                                self.check_sort_shape(
+                                    receiver, length)
                             } else {
                                 take_right = tree_value_less(
                                     keys[right], keys[left])
@@ -8536,7 +8562,13 @@ class TreeInterpreter {
                 }
                 width *= 2
             }
-            if self.failed && node.value != "sort" {
+            if self.failed && node.value != "sort" &&
+               receiver.items.len() == snapshot.len() {
+                // an ordinary comparator panic: put the items back. A
+                // mutation refusal leaves the list as the mutation made it
+                // — the lengths differ and there is nothing coherent to
+                // restore (rt_sort_check stands its guard down the same
+                // way).
                 var restore: int = 0
                 for restore < snapshot.len() {
                     receiver.items[restore] =
