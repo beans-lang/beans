@@ -1038,7 +1038,10 @@ outside the list, and `map[key]` panics when the key is missing. Use
 Bracket assignment stays `list[i] = value` and `map[key] = value`; List and
 Map bracket assignment does not have compound forms. Fixed arrays support
 numeric compound element assignment because their element is a real inline
-place.
+place. A bracket assignment evaluates left to right — receiver, then index
+or key, then the right-hand side — and a compound form evaluates its index
+once. Both backends run this order; a side-effecting key and value observe
+it.
 
 Map values may be wide structs, fixed arrays, SIMD vectors, slices, inline
 Option/Result values, or decimals. Their nested ARC fields are retained, dropped,

@@ -11537,6 +11537,23 @@ class TreeInterpreter {
             return TreeExec.next()
         }
         let target: HirNode = node.children[0]
+        // Source order: an index target's receiver and key evaluate before
+        // the right-hand side — the order MIR lowers, so the order a native
+        // build runs. The interpreter evaluated the value first, and a
+        // side-effecting key and value observably swapped on the backends.
+        var index_receiver: TreeValue = TreeValue.unit()
+        var index_key: TreeValue = TreeValue.unit()
+        let index_first: bool =
+            target.kind == "index" &&
+            target.children.len() == 2
+        if index_first {
+            index_receiver =
+                self.place_receiver(
+                    target.children[0], frame)
+            index_key =
+                self.expression(
+                    target.children[1], frame)
+        }
         let written: TreeValue =
             self.expression(node.children[1], frame)
         if written.kind == "propagate" &&
@@ -11546,8 +11563,29 @@ class TreeInterpreter {
         }
         var value: TreeValue = written
         if node.value != "=" {
+            // A compound element read uses the hoisted receiver and key,
+            // so the index expression runs exactly once — as MIR lowers
+            // it. Slices (unsafe) keep the expression fallback; their
+            // count is unchanged (the store below reuses the hoist).
             let current: TreeValue =
-                self.expression(target, frame)
+                if index_first &&
+                   (index_receiver.kind == "list" ||
+                    index_receiver.kind == "array") &&
+                   index_key.kind == "int" {
+                    if index_key.int_data < 0 ||
+                       index_key.int_data >=
+                       index_receiver.items.len() {
+                        self.fail(
+                            target,
+                            "{if index_receiver.kind == "array" { "array" } else { "list" }} index {index_key.int_data} out of range (len {index_receiver.items.len()})")
+                        return TreeExec.next()
+                    }
+                    tree_value_copy(
+                        index_receiver.items[
+                            index_key.int_data])
+                } else {
+                    self.expression(target, frame)
+                }
             let operation: HirNode =
                 new HirNode(
                     "binary",
@@ -11691,11 +11729,19 @@ class TreeInterpreter {
         if target.kind == "index" &&
            target.children.len() == 2 {
             let receiver: TreeValue =
-                self.place_receiver(
-                    target.children[0], frame)
+                if index_first {
+                    index_receiver
+                } else {
+                    self.place_receiver(
+                        target.children[0], frame)
+                }
             let key: TreeValue =
-                self.expression(
-                    target.children[1], frame)
+                if index_first {
+                    index_key
+                } else {
+                    self.expression(
+                        target.children[1], frame)
+                }
             if (receiver.kind == "list" ||
                 receiver.kind == "array") &&
                key.kind == "int" {
