@@ -241,6 +241,30 @@ class MirLowerer {
         instruction.ownership = ownership
         instruction.effects =
             mir_effects_for(op, node.resolved)
+        // The effects table is keyed on kind alone, but three shapes
+        // panic natively only for particular operators or operand types:
+        // integer `/` and `%` (zero, signed-minimum overflow), every
+        // decimal operation (the beans_decv_* bridges take a position and
+        // fail on overflow), and a static read (its guard can run the
+        // lazy initialisers). The unwind scan trusts this field to find
+        // every value alive across a panic point, so it must not
+        // understate.
+        if (op == "binary" || op == "unary") &&
+           operands.len() != 0 {
+            let operand_type: HirType =
+                self.current.value_types[operands[0]]
+            if canonical_hir_name(operand_type.name) ==
+                   "decimal" {
+                instruction.effects = "panic"
+            } else if op == "binary" &&
+                      (text == "/" || text == "%") &&
+                      hir_is_integer(operand_type) {
+                instruction.effects = "panic"
+            }
+        }
+        if op == "static_field" {
+            instruction.effects = "panic"
+        }
         self.current.blocks[
             self.current_block].instructions.push(instruction)
         return result

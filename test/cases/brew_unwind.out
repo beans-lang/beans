@@ -94,3 +94,13 @@ defer only: panic
 insert store: panic
   drop cs-sent
 closed send: panic
+  drop dv-held
+div arg: panic
+  drop md-held
+mod arg: panic
+  drop dc-held
+decimal arg: panic
+  drop ld-first
+list literal div: panic
+  drop id-held
+interpolation div: panic

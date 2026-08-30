@@ -288,6 +288,37 @@ fn defer_only() -> int {
     return boom()
 }
 
+// The panic point is an inline operation, not a call: integer / and %
+// guard for zero, and every decimal operation can fail in its bridge.
+// The temp scan must see these as panic points, or the argument built
+// before them leaks on the unwind (it did: the effects table said "none").
+fn int_zero() -> int { return 0 }
+fn dec_zero() -> decimal { return 0.0 }
+fn accept_moved(move a: Res, n: int) -> int { return n }
+fn accept_moved_dec(move a: Res, d: decimal) -> int { return 1 }
+
+fn temps_div_arg() -> int {
+    let z: int = int_zero()
+    return accept_moved(mk("dv-held"), 10 / z)
+}
+fn temps_mod_arg() -> int {
+    let z: int = int_zero()
+    return accept_moved(mk("md-held"), 10 % z)
+}
+fn temps_dec_arg() -> int {
+    let z: decimal = dec_zero()
+    return accept_moved_dec(mk("dc-held"), 4.5 / z)
+}
+fn temps_list_div() -> int {
+    let z: int = int_zero()
+    let items: List<Res> = [mk("ld-first"), mk("ld-div {10 / z}")]
+    return items.len()
+}
+fn temps_interp_div() -> string {
+    let z: int = int_zero()
+    return "made {mk("id-held").tag} then {10 / z}"
+}
+
 fn run_shape(which: int) -> int {
     if which == 1 { return temps_order() }
     if which == 2 { return temps_nested() }
@@ -302,7 +333,12 @@ fn run_shape(which: int) -> int {
     if which == 11 { return locals_only() }
     if which == 12 { return defer_only() }
     if which == 13 { return temps_insert_store() }
-    return temps_closed_send()
+    if which == 14 { return temps_closed_send() }
+    if which == 15 { return temps_div_arg() }
+    if which == 16 { return temps_mod_arg() }
+    if which == 17 { return temps_dec_arg() }
+    if which == 18 { return temps_list_div() }
+    return temps_interp_div().len()
 }
 
 fn shield_shape(which: int, label: string) -> string {
@@ -341,4 +377,9 @@ fn main() {
     io.println(shield_shape(12, "defer only"))
     io.println(shield_shape(13, "insert store"))
     io.println(shield_shape(14, "closed send"))
+    io.println(shield_shape(15, "div arg"))
+    io.println(shield_shape(16, "mod arg"))
+    io.println(shield_shape(17, "decimal arg"))
+    io.println(shield_shape(18, "list literal div"))
+    io.println(shield_shape(19, "interpolation div"))
 }

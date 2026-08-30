@@ -609,7 +609,16 @@ partial class LlvmTextEmitter {
         } else {
             match values.get(id) {
                 some(found) => { text = found }
-                none => { return "" }
+                none => {
+                    // A wanted candidate with no rendered value would get
+                    // no slot and no flag, and the pad would silently leak
+                    // it — the same silent skip unwind_close exists to
+                    // forbid on the clear side. Refuse the build instead.
+                    self.fail_function(
+                        function,
+                        "LLVM emitter has no value text for temporary v{id}, so its unwind slot cannot be defined")
+                    return ""
+                }
             }
         }
         return self.unwind_temp_define_value(
