@@ -184,26 +184,50 @@ fn hir_method_slot(owner: string, name: string,
     return "pkg:{symbol_package(owner)}:{name}"
 }
 
-// A type's own string form, if it declares one: a `to_string(self) -> string`
-// with a body and no argument beyond the receiver. When present, `{obj}`
-// renders through it rather than through the derived Name { field: value }
-// form, so a class that spells out how it reads wins over the default. The
-// checker, the native show emitter and the tree interpreter all ask this one
-// question, so the three agree on which values take the custom path.
-fn hir_string_form(owner: string,
-                   functions: List<HirFunction>) -> Option<HirFunction> {
-    for function: HirFunction in functions {
-        if function.owner == owner &&
-           function.name == "to_string" &&
+// A type's own string form: a `to_string(self) -> string` with a body and no
+// argument beyond the receiver. When present, `{obj}` renders through it
+// rather than through the derived Name { field: value } form, so a class that
+// spells out how it reads wins over the default. The checker, the native show
+// emitter and the tree interpreter all ask this one predicate, so the three
+// agree on which values take the custom path.
+fn hir_is_string_form(function: HirFunction) -> bool {
+    return function.name == "to_string" &&
            function.has_body &&
            !function.is_static &&
            !function.is_abstract &&
            function.parameters.len() == 0 &&
-           canonical_hir_name(function.result.name) == "string" {
+           canonical_hir_name(function.result.name) ==
+               "string"
+}
+
+// The form one owner declares. Linear in the program, so a caller that asks
+// it per value rendered indexes with hir_string_form_index instead.
+fn hir_string_form(owner: string,
+                   functions: List<HirFunction>) -> Option<HirFunction> {
+    for function: HirFunction in functions {
+        if function.owner == owner &&
+           hir_is_string_form(function) {
             return some(function)
         }
     }
     return none
+}
+
+// Every owner's form in one pass. The tree interpreter asks this question
+// once per object it renders and the checker once per class it walks; a scan
+// per question made both linear in the size of the whole program.
+fn hir_string_form_index(
+    functions: List<HirFunction>) ->
+    Map<string, HirFunction> {
+    var index: Map<string, HirFunction> = {}
+    for function: HirFunction in functions {
+        if function.owner != "" &&
+           hir_is_string_form(function) &&
+           !index.contains_key(function.owner) {
+            index[function.owner] = function
+        }
+    }
+    return move index
 }
 
 class HirFunction {

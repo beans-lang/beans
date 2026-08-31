@@ -23,7 +23,9 @@ language=1.0
 # Result, a struct and a class instance added beans_show_map_iter, which
 # pushes a map's entries onto the iterative show driver's stack, and
 # beans_show_enter / beans_show_push_leave, which mark the objects on the
-# path so a reference cycle prints <cycle> instead of running forever.
+# path so a reference cycle prints <cycle> instead of running forever, and
+# beans_list_join_wide, which joins a list whose elements are too wide for
+# one runtime slot by handing the driver each element's address.
 # 12: the contained-panic unwind (issue #44, spec/CONCURRENCY.md). A program
 # that brews now emits a fiber-entry cleanup pad that calls
 # beans_fiber_unwind_finish to end the fiber once its frames have run their

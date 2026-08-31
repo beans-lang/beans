@@ -2,8 +2,10 @@
 {}
 {xs: [1, 2], ys: []}
 {1: some(hi), 2: none}
-{z: 9, a: 2}
-{a: 2, z: 100}
+{z: 9, a: 2, m: 3}
+{p: 1, r: 3, s: 4, q: 100}
+{Point { x: 1, y: 1 }: a, Point { x: 2, y: 2 }: b}
+{1.5: x, 2.25: y}
 Point { x: 1, y: 2 }
 Mix { flag: true, ratio: 1.5, tag: 200, note: hi }
 Person { name: Ada, age: 36 }
@@ -25,5 +27,14 @@ err(nope)
 money(1250)
 [money(1), money(2)]
 Wallet { holder: Ada, balance: money(9999) }
+cell(seven)
+[cell(one), cell(two)]
+cell(one) + cell(two)
+{k: cell(three)}
+[Point { x: 1, y: 2 }, Point { x: 3, y: 4 }, Point { x: 5, y: 6 }]
+Point { x: 1, y: 2 } | Point { x: 3, y: 4 } | Point { x: 5, y: 6 }
+Point { x: 9, y: 9 }
+[]
+some(1) ~ none ~ some(3)
 |Point { x: 1, y: 2 }|
 |        {a: 1, b: 2}|

@@ -37,6 +37,17 @@ class ExpressionChecker {
     // stops instead of recursing forever.
     defaults_checked: Map<string, bool>
     defaults_visiting: Map<string, bool>
+    // A type's own string form, indexed alongside the methods: the derived
+    // rendering asks it once per class it walks, and scanning every function
+    // for the answer made that linear in the size of the whole program.
+    string_forms: Map<string, HirFunction>
+    // Which classes some other class extends. class_render_ready asks this
+    // per class per interpolation; walking every declaration for the answer
+    // made a file full of interpolations quadratic in the declaration count.
+    // Built on first use: declaration_for needs the imports, which init
+    // fills after this point.
+    subclassed: Map<string, bool>
+    subclassed_built: bool
     loop_depth: int
     literal_sign: int
     unsafe_depth: int
@@ -88,6 +99,9 @@ class ExpressionChecker {
         self.current_constraints = []
         self.defaults_checked = {}
         self.defaults_visiting = {}
+        self.string_forms = {}
+        self.subclassed = {}
+        self.subclassed_built = false
         self.loop_depth = 0
         self.literal_sign = 1
         self.unsafe_depth = 0
@@ -114,6 +128,12 @@ class ExpressionChecker {
             if function.owner != "" {
                 self.methods["{function.owner}.{function.name}"] =
                     function
+                if hir_is_string_form(function) &&
+                   !self.string_forms.contains_key(
+                       function.owner) {
+                    self.string_forms[function.owner] =
+                        function
+                }
                 continue
             }
             self.functions[function.qualified] = function
@@ -4839,17 +4859,13 @@ class ExpressionChecker {
         return move lowered
     }
 
-    // Mirrors stage 0's printable walk, widened to maps: lists print as
-    // [a, b], maps as {k: v}, options as some(x)/none, enums as
-    // variant(payload...) — printable when every piece is. A composite is
-    // printable only when each type it is built from is; a leaf the
-    // backends cannot render (a file, a lock, a channel, a closure, a
-    // class, a struct, an interface) makes the whole thing unprintable, so
-    // the checker never hands a backend a shape it cannot emit.
-    //
-    // Result stays out: its err payload is Error — a class — unless spelled
-    // otherwise, which is what keeps Result out of strings. Class and struct
-    // instances stay out too; their derived rendering is not emitted yet.
+    // What a value can look like inside a string: lists as [a, b], maps as
+    // {k: v}, options as some(x)/none, results as ok(x)/err(e), enums as
+    // variant(payload...), structs and leaf classes as Name { field: value }.
+    // A composite is printable only when each type it is built from is; a
+    // leaf the backends cannot render (a file, a lock, a channel, a closure,
+    // an interface, a base class) makes the whole thing unprintable, so the
+    // checker never hands a backend a shape it cannot emit.
     fn printable_in_string(type: HirType) -> bool {
         var seen: Map<string, bool> = {}
         return self.printable_in_string_rec(type, inout seen)
@@ -4940,9 +4956,8 @@ class ExpressionChecker {
                     // A class that spells out its own string form renders
                     // through it, so its fields need not each be printable.
                     if declaration.kind == "class" &&
-                       hir_string_form(
-                           declaration.qualified,
-                           self.program.functions).is_some() {
+                       self.string_forms.contains_key(
+                           declaration.qualified) {
                         return true
                     }
                     for field: HirField in declaration.fields {
@@ -4990,26 +5005,32 @@ class ExpressionChecker {
     // Whether some other declaration extends this class. The rendering of a
     // base-class slot cannot know which subclass fills it, so a base is
     // refused rather than rendered as itself on one backend and as the
-    // subclass on the other.
+    // subclass on the other. Every base in the program is collected on the
+    // first question rather than the whole declaration list being walked for
+    // each one.
     fn class_is_subclassed(qualified: string) -> bool {
-        for other: HirDeclaration in self.program.declarations {
-            var index: int = 0
-            for index < other.relation_kinds.len() {
-                if other.relation_kinds[index] == "extends" {
-                    match self.declaration_for(
-                              other.relations[index]) {
-                        some(base) => {
-                            if base.qualified == qualified {
-                                return true
+        if !self.subclassed_built {
+            self.subclassed_built = true
+            for other: HirDeclaration in
+                self.program.declarations {
+                var index: int = 0
+                for index < other.relation_kinds.len() {
+                    if other.relation_kinds[index] ==
+                           "extends" {
+                        match self.declaration_for(
+                                  other.relations[index]) {
+                            some(base) => {
+                                self.subclassed[
+                                    base.qualified] = true
                             }
+                            none => {}
                         }
-                        none => {}
                     }
+                    index += 1
                 }
-                index += 1
             }
         }
-        return false
+        return self.subclassed.contains_key(qualified)
     }
 
     fn check_literal(node: AstNode,
@@ -8640,6 +8661,20 @@ class ExpressionChecker {
                                 node,
                                 "'{receiver.value}' is already read into '{held}', which still holds its {render_hir_type(receiver.type.args[1])} — a move-only value has one live reader at a time, so finish with '{held}' first")
                         }
+                    }
+                    // join renders each element the way interpolation
+                    // does, so an element with no string form has to be
+                    // refused here. Without this gate the tree interpreter
+                    // rendered [Point { x: 1, y: 2 }] and the native backend
+                    // refused the same call at emit time.
+                    if receiver.type.name == "List" &&
+                       callee.value == "join" &&
+                       receiver.type.args.len() == 1 &&
+                       !self.printable_in_string(
+                           receiver.type.args[0]) {
+                        self.fail(
+                            node,
+                            "can't join a {render_hir_type(receiver.type)} — give {render_hir_type(receiver.type.args[0])} a string form first")
                     }
                     if (receiver.type.name == "RawPtr" &&
                         callee.value != "is_null") ||

@@ -175,6 +175,10 @@ class TreeInterpreter {
     free_function_by_name: Map<string, HirFunction>
     declaration_by_qualified: Map<string, HirDeclaration>
     declaration_by_name: Map<string, HirDeclaration>
+    // A type's own string form, by owner. render_object_for_string asks it
+    // once per object it renders, and a scan of every function per object
+    // made printing a list of them cost the whole program per element.
+    string_form_by_owner: Map<string, HirFunction>
 
     fn init(program: HirProgram,
             move arguments: List<string>) {
@@ -184,6 +188,7 @@ class TreeInterpreter {
         self.free_function_by_name = {}
         self.declaration_by_qualified = {}
         self.declaration_by_name = {}
+        self.string_form_by_owner = {}
         self.arguments = move arguments
         self.failed = false
         self.panic_text = ""
@@ -745,6 +750,9 @@ class TreeInterpreter {
                     declaration.name] = declaration
             }
         }
+        self.string_form_by_owner =
+            hir_string_form_index(
+                self.program.functions)
     }
 
     fn find_function(name: string) -> Option<HirFunction> {
@@ -3864,9 +3872,12 @@ class TreeInterpreter {
                                 inout cycle_path: List<int>) -> string {
         // A class that spells out its own string form renders through it,
         // the same value the native backend calls to_string for.
+        if !self.lookup_index_built {
+            self.build_lookup_index()
+        }
         if value.kind == "object" {
-            match hir_string_form(
-                      value.text, self.program.functions) {
+            match self.string_form_by_owner.get(
+                      value.text) {
                 some(form) => {
                     let rendered: TreeValue =
                         self.invoke(form, [], some(value))
@@ -3880,14 +3891,15 @@ class TreeInterpreter {
             self.render_type_simple_name(value.text)
         match self.declaration_by_qualified.get(value.text) {
             some(declaration) => {
-                var on_path: bool = false
                 if value.kind == "object" {
-                    for seen: int in cycle_path {
-                        if seen == value.object_id {
-                            on_path = true
+                    var probe: int = cycle_path.len()
+                    for probe > 0 {
+                        probe -= 1
+                        if cycle_path[probe] ==
+                               value.object_id {
+                            return "<cycle>"
                         }
                     }
-                    if on_path { return "<cycle>" }
                     cycle_path.push(value.object_id)
                 }
                 var pieces: List<string> = []

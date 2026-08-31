@@ -42,6 +42,16 @@ class Wallet {
     fn init(holder: string, balance: Money) { self.holder = holder; self.balance = balance }
 }
 
+// A generic class with its own string form. Its to_string is a template
+// until a site raises it for these type arguments, and the show step is
+// such a site: the derived form must never stand in for it.
+class Cell<T> {
+    value: T
+    tag: string
+    fn init(value: T, tag: string) { self.value = value; self.tag = tag }
+    fn to_string() -> string { return "cell({self.tag})" }
+}
+
 fn main() {
     // A map, in insertion order, wrapped in braces.
     let basic: Map<string, int> = {"a": 1, "b": 2}
@@ -55,16 +65,38 @@ fn main() {
     let opts: Map<int, Option<string>> = {1: some("hi"), 2: none}
     io.println("{opts}")
 
-    // Insertion order holds across an in-place update and a
-    // delete-then-reinsert.
+    // Insertion order holds across an in-place update: the key keeps the
+    // place it was first given, and both backends agree on it.
     var edited: Map<string, int> = {}
     edited["z"] = 1
     edited["a"] = 2
+    edited["m"] = 3
     edited["z"] = 9
     io.println("{edited}")
-    edited.remove("z")
-    edited["z"] = 100
-    io.println("{edited}")
+
+    // A removal is the one case a plain Map does not hold order through —
+    // it swap-removes, and the two engines do not agree on what that
+    // leaves behind, so nothing here pins it. OrderedMap is the one that
+    // keeps its order across a removal, and both backends walk it alike.
+    var kept: OrderedMap<string, int> = {}
+    kept["p"] = 1
+    kept["q"] = 2
+    kept["r"] = 3
+    kept["s"] = 4
+    kept.remove("q")
+    kept["q"] = 100
+    io.println("{kept}")
+
+    // A key too wide for one runtime slot — a struct, a decimal — is boxed
+    // by the map and rendered from the box, not refused.
+    var wide_keys: Map<Point, string> = {}
+    wide_keys[Point { x: 1, y: 1 }] = "a"
+    wide_keys[Point { x: 2, y: 2 }] = "b"
+    io.println("{wide_keys}")
+    var dec_keys: Map<decimal, string> = {}
+    dec_keys[1.5] = "x"
+    dec_keys[2.25] = "y"
+    io.println("{dec_keys}")
 
     // A struct and a class instance, fields in declaration order.
     let p: Point = Point { x: 1, y: 2 }
@@ -140,6 +172,30 @@ fn main() {
     io.println("{purse}")
     let wallet: Wallet = new Wallet("Ada", new Money(9999))
     io.println("{wallet}")
+
+    let boxed: Cell<int> = new Cell<int>(7, "seven")
+    io.println("{boxed}")
+    let boxes: List<Cell<int>> =
+        [new Cell<int>(1, "one"), new Cell<int>(2, "two")]
+    io.println("{boxes}")
+    io.println(boxes.join(" + "))
+    let by_cell: Map<string, Cell<int>> =
+        {"k": new Cell<int>(3, "three")}
+    io.println("{by_cell}")
+
+    // join renders what interpolation renders, for a wide element too: a
+    // struct does not fit one runtime slot, so it is joined by address.
+    let pts: List<Point> =
+        [Point { x: 1, y: 2 }, Point { x: 3, y: 4 },
+         Point { x: 5, y: 6 }]
+    io.println("{pts}")
+    io.println(pts.join(" | "))
+    let one_pt: List<Point> = [Point { x: 9, y: 9 }]
+    io.println(one_pt.join(" | "))
+    let no_pt: List<Point> = []
+    io.println("[{no_pt.join(" | ")}]")
+    let opts_list: List<Option<int>> = [some(1), none, some(3)]
+    io.println(opts_list.join(" ~ "))
 
     // Width pads the rendered form of any printable value in columns.
     io.println("|{p:16}|")

@@ -849,12 +849,19 @@ partial class LlvmTextEmitter {
             // other wide inline value reaches a show step.
             let key_type: HirType = type.args[0]
             let value_type: HirType = type.args[1]
+            // A wide key is not stored inline: the map boxes it and keeps
+            // the box pointer in the key slot, so the slot the driver hands
+            // the step is already the value's address — the same thing a
+            // wide step reads. Refusing it here left the checker admitting
+            // Map<Point, int> that no backend could emit.
+            var key_step: string = ""
             if self.wide_inline_value(key_type) {
-                self.show_step_functions[key] = ""
-                return ""
+                key_step =
+                    self.request_show_wide_step(key_type)
+            } else {
+                key_step =
+                    self.request_show_step(key_type)
             }
-            let key_step: string =
-                self.request_show_step(key_type)
             if key_step == "" {
                 self.show_step_functions[key] = ""
                 return ""
@@ -1019,15 +1026,6 @@ partial class LlvmTextEmitter {
         var index: int = ordered.len() - 1
         for index >= 0 {
             let field: HirField = ordered[index]
-            let offset: int = field_offsets[field.name]
-            // The concrete field type: for a generic owner the declared
-            // field type is a parameter, and only the layout carries what it
-            // was bound to.
-            var field_type: HirType = field.type
-            match field_types.get(field.name) {
-                some(bound) => { field_type = bound }
-                none => {}
-            }
             let label: string =
                 self.string_pointer("{field.name}: ")
             if field.is_weak {
@@ -1046,6 +1044,15 @@ partial class LlvmTextEmitter {
                 }
                 index -= 1
                 continue
+            }
+            let offset: int = field_offsets[field.name]
+            // The concrete field type: for a generic owner the declared
+            // field type is a parameter, and only the layout carries what it
+            // was bound to.
+            var field_type: HirType = field.type
+            match field_types.get(field.name) {
+                some(bound) => { field_type = bound }
+                none => {}
             }
             let pointer: string =
                 "%show.field.{tag}.{index}"
@@ -1066,6 +1073,59 @@ partial class LlvmTextEmitter {
         return body
     }
 
+    // The symbol of a class's own `to_string`. A non-generic class has one
+    // registered before any body is emitted. A generic one has only a
+    // template until some site raises it for concrete arguments, and the
+    // show step is such a site: without raising it here the step fell
+    // through to the derived `Name { field: value }` form while the tree
+    // interpreter printed what to_string returned, so the two backends
+    // printed different text for the same object. Empty means no symbol can
+    // be named, and the caller refuses rather than rendering a second way.
+    fn class_string_form_symbol(
+        type: HirType,
+        declaration: HirDeclaration) -> string {
+        if declaration.generics.len() == 0 {
+            match self.function_symbols.get(
+                      "{declaration.qualified}.to_string") {
+                some(symbol) => { return symbol }
+                none => { return "" }
+            }
+        }
+        if declaration.generics.len() != type.args.len() {
+            return ""
+        }
+        // An instantiated receiver names its methods by the rendered
+        // instance type, the same key a call site uses.
+        let instance: string =
+            "{render_hir_type(type)}.to_string"
+        match self.function_symbols.get(instance) {
+            some(symbol) => { return symbol }
+            none => {}
+        }
+        let template: string =
+            self.generic_method_template(
+                declaration, "to_string")
+        if !self.generic_templates.contains_key(
+               template) {
+            return ""
+        }
+        var bindings: Map<string, HirType> = {}
+        for index: int in
+            0..declaration.generics.len() {
+            bindings[declaration.generics[index]] =
+                type.args[index]
+        }
+        bindings[declaration.qualified] = type
+        bindings[declaration.name] = type
+        let site: MirInstruction =
+            new MirInstruction(
+                "show_string_form", -1, type, "", "",
+                declaration.file, declaration.line,
+                declaration.col)
+        return self.instantiate_generic(
+            site, template, instance, bindings)
+    }
+
     // The iterative show step body for a class instance. Empty when the
     // class carries a field no backend can render, so the caller refuses.
     fn request_class_show_body(
@@ -1074,20 +1134,20 @@ partial class LlvmTextEmitter {
         // A class that spells out its own string form renders through it:
         // call to_string, append what it returned, release it. No cycle
         // guard — the user's method owns its own recursion.
-        match hir_string_form(
-                  declaration.qualified,
-                  self.program.reflection_functions) {
-            some(form) => {
-                let key: string =
-                    "{declaration.qualified}.to_string"
-                if self.function_symbols.contains_key(key) {
-                    let symbol: string =
-                        self.function_symbols[key]
-                    let sid: int = self.fresh()
-                    return "  %show.form.obj{sid} = inttoptr i64 %v to ptr\n  %show.form.text{sid} = call ptr {symbol}(ptr %show.form.obj{sid})\n  call void @beans_show_append(ptr %c, ptr %show.form.text{sid})\n  call void @beans_release(ptr %show.form.text{sid})\n  ret void\n"
-                }
-            }
-            none => {}
+        //
+        // The checker admits such a class without asking whether its fields
+        // are printable, so there is no derived form to fall back on here:
+        // a missing symbol is a refusal, never a second rendering the tree
+        // interpreter would not print.
+        if hir_string_form(
+               declaration.qualified,
+               self.program.reflection_functions).is_some() {
+            let symbol: string =
+                self.class_string_form_symbol(
+                    type, declaration)
+            if symbol == "" { return "" }
+            let sid: int = self.fresh()
+            return "  %show.form.obj{sid} = inttoptr i64 %v to ptr\n  %show.form.text{sid} = call ptr {symbol}(ptr %show.form.obj{sid})\n  call void @beans_show_append(ptr %c, ptr %show.form.text{sid})\n  call void @beans_release(ptr %show.form.text{sid})\n  ret void\n"
         }
         match self.class_layout(type) {
             some(layout) => {

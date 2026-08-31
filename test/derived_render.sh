@@ -15,8 +15,15 @@ BEANSC=${BEANSC:-./build/beansc}
 run_both() {
     local name=$1
     "$BEANSC" run "test/cases/$name.b" >"$tmp/$name.interp"
-    "$BEANSC" build "test/cases/$name.b" -o "$tmp/$name.native" \
-        >"$tmp/$name.build" 2>&1
+    # A refusal here is the interesting failure — the checker let something
+    # through that an emitter cannot produce — so say what it was instead of
+    # dying on set -e with the reason buried in a temp file.
+    if ! "$BEANSC" build "test/cases/$name.b" -o "$tmp/$name.native" \
+        >"$tmp/$name.build" 2>&1; then
+        echo "$name: the native build refused a checked program:" >&2
+        cat "$tmp/$name.build" >&2
+        exit 1
+    fi
     "$tmp/$name.native" >"$tmp/$name.native.out"
     diff -u "test/cases/$name.out" "$tmp/$name.interp"
     diff -u "test/cases/$name.out" "$tmp/$name.native.out"
@@ -58,5 +65,7 @@ echo "checking a subclassed base is refused"
 refuse_both derived_render_base_bad "give it a string form first"
 echo "checking a class with an unrenderable field is refused"
 refuse_both derived_render_opaque_bad "give it a string form first"
+echo "checking join refuses an element with no string form"
+refuse_both derived_render_join_bad "a string form first"
 
 echo "derived render ok"

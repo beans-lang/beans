@@ -7788,19 +7788,39 @@ void beans_show_list_iter(BShowCtx* c, BList* l, void* elem_step) {
     }
     if (l->len > 0) show_push(c, elem_step, list_slot_at(l, 0), NULL, 0);
 }
+// Drain the work stack into one owned string. Items pop last-in-first-out, so
+// whatever a step pushed under its own closing text comes back out after it.
+static char* show_finish(BShowCtx* c) {
+    while (c->len > 0) {
+        BShowItem it = c->items[--c->len];
+        if (it.fn) ((void (*)(BShowCtx*, long long))it.fn)(c, it.v);
+        else show_out(c, it.text, it.tlen);
+    }
+    char* r = str_make(c->out ? c->out : "", c->olen);
+    rt_free(c->out);
+    rt_free(c->items);
+    rt_free(c->path);
+    return r;
+}
 char* beans_show_run(void* fn, long long v) {
     BShowCtx c = {0, 0, 0, 0, 0, 0, 0, 0, 0};
     show_push(&c, fn, v, NULL, 0);
-    while (c.len > 0) {
-        BShowItem it = c.items[--c.len];
-        if (it.fn) ((void (*)(BShowCtx*, long long))it.fn)(&c, it.v);
-        else show_out(&c, it.text, it.tlen);
+    return show_finish(&c);
+}
+// A list of wide inline values joined the way an interpolation renders it.
+// beans_list_join_show cannot serve these: one eight-byte slot does not hold
+// a struct or a decimal, so each element reaches the driver by its address —
+// the stride is the element size the compiler gave beans_list_new_typed.
+char* beans_list_join_wide(BList* l, char* sep, void* elem_step) {
+    BShowCtx c = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+    long long sl = beans_slen(sep);
+    long long stride = l->stride < 0 ? -l->stride : l->stride;
+    for (long long i = l->len; i-- > 0;) {
+        show_push(&c, elem_step,
+                  (long long)((char*)l->data + i * stride), NULL, 0);
+        if (i > 0) show_push(&c, NULL, 0, sep, sl);
     }
-    char* r = str_make(c.out ? c.out : "", c.olen);
-    rt_free(c.out);
-    rt_free(c.items);
-    rt_free(c.path);
-    return r;
+    return show_finish(&c);
 }
 
 char* beans_show_list(BList* l, char* (*show)(long long)) {

@@ -510,17 +510,23 @@ enums, as `variant` or `variant(payload, ...)`; options as `some(x)` / `none` an
 values, as `{k: v, k: v}`; and structs and class instances, as `Name { field: value, ... }` —
 nesting included, and `join(sep)` renders the same way. A result's default `err` payload is an
 `Error`, which prints as the message a caller passed to `err(...)`; a custom err type prints
-as itself. A map
-renders its entries in **insertion order**, the order `keys()` walks: an updated key keeps
-its place, a removed-then-reinserted one moves to the end, and both backends impose the same
-order so a golden file can pin it. Strings render without quotes, the same as inside a list.
+as itself. A map renders its entries in the order `keys()` walks. For a map only inserted into and
+updated in place that is **insertion order** — an updated key keeps the place it was first
+given — and both backends impose the same one, so a golden file can pin it. A **removal** is
+the exception: a plain `Map` swap-removes, and the two engines do not agree today on the order
+that leaves behind, so nothing should pin the rendering of a `Map` a key has been removed
+from. `OrderedMap` keeps its order across a removal, on both. Strings render without quotes,
+the same as inside a list.
 
 A struct or class instance renders its fields **in declaration order**, using the bare type
 name (`Point { x: 1, y: 2 }`, `Empty {}`). A **class** that declares its own string form —
 a `to_string() -> string` method taking no argument — renders through it instead: `{obj}` and
-every nested position (a list element, a map value, another object's field, `join`) print what
-`to_string` returns, so a class's own form wins over the derived one everywhere. A class with a
-`to_string` is printable even when a field of it is not, since the derived form is never used.
+every nested position (a list element, a map key or value, another object's field, `join`)
+print what `to_string` returns, so a class's own form wins over the derived one everywhere,
+a generic class included. A class with a `to_string` is printable even when a field of it is
+not, since the derived form is never used. A **struct** does not take this path: its
+`to_string` is an ordinary method you can call, and `{p}` still renders the derived form —
+both backends agree on that, and widening it to structs is a separate change.
 When there is no `to_string`, the derived form is the compiler's own view of the value, so:
 
 - A **private** field is shown like any other — hiding half the object would make the debug
@@ -539,6 +545,12 @@ way: a **leaf, standalone class** (not an interface, not `abstract`, not a base 
 interface or an abstract class is refused, because its value's real type is not knowable from
 its declared one and the two backends would render different fields; give it a string form
 first, or match on it.
+
+A key or an element too wide for one runtime slot — a struct, a `decimal`, an inline
+`Option` — is rendered from where it really lives rather than refused, so `{m}` on a
+`Map<Point, string>` and `xs.join(", ")` on a `List<Point>` print what `{xs}` prints.
+`join` refuses exactly what interpolation refuses, at check time and with the same message
+on both backends.
 
 [examples/kv.b](examples/kv.b) is the proof: an append-only KV store with binary records and a
 durable compaction (write temp, sync, rename over, sync the parent dir).

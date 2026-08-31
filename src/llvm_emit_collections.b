@@ -1461,10 +1461,24 @@ partial class LlvmTextEmitter {
         }
         if kind < 0 {
             if self.wide_inline_value(element_type) {
-                self.fail(
-                    instruction,
-                    "LLVM emitter does not support joining List<{element}> yet")
-                return ""
+                // One eight-byte slot does not hold a wide value, so the
+                // element reaches the driver by its address instead — the
+                // same way an interpolation of the list renders it. Without
+                // this, `{xs}` printed a List<Point> and xs.join(", ") on the
+                // very same list was refused by the emitter.
+                let wide: string =
+                    self.request_show_wide_step(
+                        element_type)
+                if wide == "" {
+                    self.fail(
+                        instruction,
+                        "LLVM emitter does not support joining List<{element}> yet")
+                    return ""
+                }
+                self.require_declare(
+                    "beans_list_join_wide",
+                    "ptr @beans_list_join_wide(ptr, ptr, ptr)")
+                return "  {result} = call ptr @beans_list_join_wide(ptr {list}, ptr {separator}, ptr @{wide})\n"
             }
             let shown: string =
                 self.request_show(element_type)
