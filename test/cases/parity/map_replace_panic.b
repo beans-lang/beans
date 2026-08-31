@@ -13,9 +13,6 @@ class Loud {
     pub tag: string
     fn init(tag: string) { self.tag = tag }
     fn deinit() {
-        // "q-" values stay silent so the golden does not depend on when a
-        // static map tears down (the backends disagree on that today)
-        if self.tag.starts_with("q-") { return }
         io.println("  deinit {self.tag}")
         if self.tag.starts_with("boom") {
             let e: List<int> = []
@@ -33,8 +30,11 @@ fn fresh_key(n: int) -> string { return "key-{n * 100}" }
 fn replace_boom() -> int {
     Store.cache[fresh_key(1)] = new Loud("boom-old")
     // same key value, fresh string object: the replace path; the old
-    // value's deinit panics after the new value is already stored
-    Store.cache[fresh_key(1)] = new Loud("q-new")
+    // value's deinit panics after the new value is already stored. The new
+    // value survives in the static map to the end of the program, and no
+    // deinit runs for it on either backend — statics are never torn down
+    // (issue #74, spec/SYNTAX.md), which is why this one can be loud now.
+    Store.cache[fresh_key(1)] = new Loud("replace-new")
     return Store.cache.len()
 }
 

@@ -1315,6 +1315,14 @@ let u: User = new("jul")
   written through its declaring type, such as `User.created += 1`. Static
   fields are initialized once before `main`, in declaration order, and are not
   inherited. Generic classes cannot declare static fields.
+- A static field — and a singleton's fields with it — lives for the whole
+  process and is **never torn down**. What a static still owns when `main`
+  returns is not released, so no `deinit` runs for it. The reverse of `init`
+  at exit has no order to run in that the rest of the language would honour
+  (unwind order is newest-first, but statics initialize oldest-first across
+  files), and it would have to be skipped anyway for the two exits that
+  matter most — `os.exit` and a panic. A process-lifetime resource that must
+  be released closes itself explicitly; `deinit` is for values with owners.
 - `new Class(...)` and target-typed `new(...)` are the class-construction forms.
   Both follow the class's `init` rules. `new(...)` gets its class from the
   declared result, assignment target, return type, or function parameter. It is
@@ -1463,6 +1471,10 @@ can still read them. Deterministic, like C++/Swift: no GC pause, no "sometime la
 - `self` must not escape a `deinit`. The object is being destroyed; storing `self` anywhere
   is use-after-free by definition.
 - A panic inside `deinit` is fatal (same rule as defer).
+- `deinit` runs when the last reference dies, which is a thing that happens
+  *while the program runs*. Leaving the program is not a death: a value a
+  static or a singleton still holds at exit has no `deinit` call, and neither
+  does anything alive when `os.exit` or a panic ends the process.
 - An object that dies **inside a reference cycle** does not get its `deinit` — a cycle never
   drops to zero on its own, so if it owns a resource, break the cycle with a
   `weak` field instead of building it.

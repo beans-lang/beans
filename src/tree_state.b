@@ -103,6 +103,15 @@ class TreeSingletonState {
     }
 }
 
+// Where a finished program's statics and singletons go to stay alive. A
+// static of the compiler's own is the one place with process lifetime in a
+// reference-counted host, and the compiler's statics are not torn down
+// either — the same rule this parks in order to keep (spec/SYNTAX.md, issue
+// #74). One entry per interpreted program, and `beansc run` runs one.
+class TreeExitRoots {
+    pub static kept: List<TreeSingletonState> = []
+}
+
 // These two boxes cross host threads only behind Mutex. Their callers also
 // keep the owning interpreter stopped while the foreign call runs.
 unique class TreeThreadWork implements Send {

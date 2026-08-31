@@ -14482,7 +14482,30 @@ class TreeInterpreter {
         return result
     }
 
+    // Static fields and singletons live for the whole process: nothing
+    // releases them, so nothing runs a deinit for what they still hold
+    // (spec/SYNTAX.md, issue #74). The walker models that the only way a
+    // reference-counted host can — by parking its singleton state in a
+    // static of the compiler's own, which the compiler never tears down for
+    // exactly the same reason. The interpreted values stay reachable to the
+    // last instruction of the process, so their host wrappers never die and
+    // their deinit bodies never run.
+    //
+    // Only reachability changes. Interpreted garbage is left to the host
+    // collector as before: an unreachable cycle is still swept at exit and
+    // still runs each member's deinit, which is what the native collector
+    // does with the same program (examples/ctors.b), and a cycle a static
+    // roots is left standing on both sides.
+    //
+    // Parked on every exit from run(), the failing ones included: native
+    // leaves through beans_panic with those same values still standing.
     fn run() -> bool {
+        let answer: bool = self.run_entry()
+        TreeExitRoots.kept.push(self.singletons)
+        return answer
+    }
+
+    fn run_entry() -> bool {
         if self.failed { return false }
         self.initialize_static_fields()
         if self.failed { return false }
