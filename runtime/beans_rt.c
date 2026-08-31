@@ -1116,6 +1116,22 @@ __attribute__((constructor)) static void arc_setup(void) { atexit(arc_report); }
 // FIN already gone). Count back to 0 after: the husk filter frees a parked
 // shell only when RC_COUNT is 0, so the bump must not outlive the call (it
 // leaked a buffered object's shell once).
+// The deinit body is user code: contained by brew/join, a panic in it
+// unwinds through this frame (issue #44). The object itself stays abandoned
+// mid-destruction — spec'd, and FIN is already off so death cannot run twice
+// — but the in-deinit counters must come back down on that path too:
+// cc_collect refuses to run while one is up, so a stranded count turns one
+// caught panic into a collector that never runs again for the life of the
+// process. The guard fires only on the unwind; the normal path decrements
+// exactly where it always did.
+typedef struct { int armed; } RtDeinitCounters;
+static void rt_deinit_counters_unwound(RtDeinitCounters* g) {
+    if (!g->armed) return;
+#if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
+    beans_local_in_deinit -= 1;
+#endif
+    __atomic_sub_fetch(&beans_in_deinit, 1, __ATOMIC_RELAXED);
+}
 BEANS_DEINIT_ATTR static void beans_do_deinit(
     void* p, BHead* h, long long nrc) {
     rt_rc_store(h, (nrc + 1) & ~RC_FIN);
@@ -1128,7 +1144,10 @@ BEANS_DEINIT_ATTR static void beans_do_deinit(
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
     beans_local_in_deinit += 1;
 #endif
+    __attribute__((cleanup(rt_deinit_counters_unwound)))
+    RtDeinitCounters unwound = {1};
     methods[beans_deinit_sel](p);
+    unwound.armed = 0;
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
     beans_local_in_deinit -= 1;
 #endif
@@ -1565,6 +1584,22 @@ static void cc_visit_push(void* c, void* ctx) {
     cc_push(ctx, c);
 }
 
+// The release cascade's work stack and the collector's buffers stay live
+// across user deinit bodies, and a contained panic there unwinds past
+// their frees (issue #44). Each frame arms one of these and disarms after
+// its own teardown: the normal path is unchanged, and the unwind path
+// frees the grown buffer instead of stranding it. What a panicking pass
+// had not yet destroyed stays abandoned — the stance the spec already
+// takes for the panicking object itself.
+typedef struct {
+    CCStack* st;
+    int armed;
+} RtStackUnwound;
+static void rt_stack_unwound(RtStackUnwound* g) {
+    if (!g->armed) return;
+    if (g->st->v && g->st->v != g->st->local) rt_free(g->st->v);
+}
+
 // Release cascades overwhelmingly walk fixed class objects. Keep this path
 // direct: the collector still uses the generic callback walker, but ordinary
 // ARC death should not pay an indirect call for every child.
@@ -1954,6 +1989,8 @@ void beans_release(void* p) {
     ARC_ADD(arc_release_calls, 1);
     void* local[64];
     CCStack st = {local, 0, 64, local};
+    __attribute__((cleanup(rt_stack_unwound)))
+    RtStackUnwound st_unwound = {&st, 1};
     void* cur = p;
     for (;;) {
         ARC_ADD(arc_release_nodes, 1);
@@ -2024,6 +2061,7 @@ void beans_release(void* p) {
         if (!st.len) break;
         cur = st.v[--st.len];
     }
+    st_unwound.armed = 0;
     if (st.v != local) rt_free(st.v);
 }
 
@@ -2036,6 +2074,84 @@ static void release_masked_value(void* value, long long ptr_mask) {
         void* child = *(void**)RT_SLOT_AT(value, slot);
         if (child) beans_release(child);
     }
+}
+
+// ---- unwind-safe runtime scratch (issue #73) -------------------------------
+//
+// A contained panic unwinds through runtime frames that host Beans callbacks
+// (a sort's comparator or key function, a reflective call). Two guarantees
+// hold there (spec/CONCURRENCY.md): the frame's scratch is freed, and a
+// collection the frame was permuting in place is put back exactly as it was
+// before the call. Both ride __attribute__((cleanup)): the driver compiles
+// this unit with -fexceptions exactly when it defines BEANS_FIBER_UNWIND, so
+// the cleanups run during the forced unwind — the same pairing glibc uses
+// for pthread cleanup handlers — and on the normal path they are ordinary
+// scope exits, which also retires the hand-written frees they replace.
+#ifndef BEANS_FIBER_UNWIND
+#define BEANS_FIBER_UNWIND 0
+#endif
+static void rt_scratch_free(void* slot) { rt_free(*(void**)slot); }
+#define RT_SCRATCH __attribute__((cleanup(rt_scratch_free)))
+typedef struct {
+    void* target; // the array being permuted; NULL once the permutation stands
+    void* saved;  // the pre-call contents, owned by the guard
+    size_t bytes;
+} RtRestore;
+static void rt_restore_fire(RtRestore* guard) {
+    if (!guard->saved) return;
+    if (guard->target) memcpy(guard->target, guard->saved, guard->bytes);
+    rt_free(guard->saved);
+}
+#define RT_RESTORE __attribute__((cleanup(rt_restore_fire)))
+// Arm before the first callback can run: an unwind from here on puts the
+// array back. Costs one allocation and one copy per interruptible sort, and
+// only in a build that can unwind at all — a program that cannot contain a
+// panic pays nothing. Failing the snapshot panics before anything mutates.
+static void rt_restore_arm(RtRestore* guard, void* target, size_t bytes) {
+#if BEANS_FIBER_UNWIND
+    guard->saved = rt_alloc(bytes);
+    if (!guard->saved) beans_panic("out of memory", 0, 0);
+    memcpy(guard->saved, target, bytes);
+    guard->target = target;
+    guard->bytes = bytes;
+#else
+    (void)guard;
+    (void)target;
+    (void)bytes;
+#endif
+}
+// The permutation completed: keep it. The snapshot is still freed.
+static void rt_restore_done(RtRestore* guard) { guard->target = 0; }
+// A comparator or key function can reach the list it is sorting through a
+// captured reference. Reading it is fine — the widened mirror keeps what it
+// sees identical across backends — but a structural change (push, remove,
+// clear: anything that moves the length or the storage) would leave the
+// sort permuting a stale array: a use-after-free on growth, reads past the
+// end on shrink. Both engines refuse it as the program's own panic, checked
+// as each callback returns and before the sort touches the array again.
+// The restore guard is stood down first: with the storage changed there is
+// nothing coherent to put back, so the list stays as the mutation left it.
+typedef struct {
+    BList* list;
+    long long len;
+    void* data;
+    RtRestore* restore;
+} RtSortPin;
+static void rt_sort_pin(RtSortPin* pin, BList* list, RtRestore* restore) {
+    pin->list = list;
+    pin->len = list ? list->len : 0;
+    pin->data = list ? list->data : 0;
+    pin->restore = restore;
+}
+static void rt_sort_check(RtSortPin* pin) {
+    if (!pin->list) return;
+    if (pin->list->len == pin->len && pin->list->data == pin->data) return;
+    long long now = pin->list->len;
+    if (pin->restore) rt_restore_done(pin->restore);
+    char b[96];
+    rt_format(b, sizeof b, "list changed during sort (length %lld -> %lld)",
+              pin->len, now);
+    beans_panic(b, 0, 0);
 }
 // malloc and calloc only promise enough alignment for any ordinary scalar —
 // 16 bytes on both supported targets. An `align(64)` record asked for more than
@@ -2747,6 +2863,15 @@ static long long cc_walk_min = 256; // adaptive gate for trial deletion
 // Mutex, and Channel are hard traversal boundaries. This is an owner-local
 // pause: no worker is stopped or polled, and the global collector remains
 // quiescence-only.
+// Same shape as cc_collecting_unwound: this pass runs user deinits (the
+// cycle bodies, husk releases inside cc_append_roots, the deferred
+// releases), and a contained panic there must not strand the walker count
+// or the collecting flag — both gate every future worker collection.
+static void cc_worker_flags_unwound(int* armed) {
+    if (!*armed) return;
+    cc_worker_collecting = 0;
+    __atomic_sub_fetch(&cc_worker_walkers, 1, __ATOMIC_SEQ_CST);
+}
 static void cc_worker_collect(void) {
     if (!cc_worker_root_batching || cc_worker_collecting) return;
     if (beans_local_in_deinit) return;
@@ -2757,12 +2882,18 @@ static void cc_worker_collect(void) {
         return;
     }
     cc_worker_collecting = 1;
+    __attribute__((cleanup(cc_worker_flags_unwound)))
+    int worker_flags_unwound = 1;
     {
         ARC_ADD(arc_collections, 1);
         void* dlocal[64];
         CCStack deferred = {dlocal, 0, 64, dlocal};
+        __attribute__((cleanup(rt_stack_unwound)))
+        RtStackUnwound deferred_unwound = {&deferred, 1};
         void* glocal[64];
         CCStack global = {glocal, 0, 64, glocal};
+        __attribute__((cleanup(rt_stack_unwound)))
+        RtStackUnwound global_unwound = {&global, 1};
 
         // Cheap pass first: dead parked shells can go immediately. Live
         // purple roots stay until the adaptive trial threshold is reached.
@@ -2787,6 +2918,7 @@ static void cc_worker_collect(void) {
         }
         cc_worker_root_len = n;
         if (global.len) cc_append_roots(global.v, global.len);
+        global_unwound.armed = 0;
         if (global.v != glocal) rt_free(global.v);
 
         if (cc_worker_root_len >= cc_worker_walk_min) {
@@ -2801,6 +2933,10 @@ static void cc_worker_collect(void) {
             if (walked > CC_WORKER_WALK_BUDGET)
                 walked = CC_WORKER_WALK_BUDGET;
             CCStack st = {0, 0, 0}, aux = {0, 0, 0}, dead = {0, 0, 0};
+            // st and aux never cross user code; dead is live across the
+            // cycle deinits, so it alone needs the unwind guard
+            __attribute__((cleanup(rt_stack_unwound)))
+            RtStackUnwound dead_unwound = {&dead, 1};
             int saw_shared = 0;
             for (long long i = 0; i < walked; i++)
                 cc_worker_mark_gray(
@@ -2877,6 +3013,7 @@ static void cc_worker_collect(void) {
                 rt_free(st.v);
                 rt_free(aux.v);
                 rt_free(dead.v);
+                dead.v = 0; // the guard at scope exit must not free it again
             }
         }
 
@@ -2892,8 +3029,10 @@ static void cc_worker_collect(void) {
         // handles any root parked by these deferred releases.
         for (long long i = 0; i < deferred.len; i++)
             beans_release(deferred.v[i]);
+        deferred_unwound.armed = 0;
         if (deferred.v != dlocal) rt_free(deferred.v);
     }
+    worker_flags_unwound = 0;
     cc_worker_collecting = 0;
     if (__atomic_sub_fetch(&cc_worker_walkers, 1, __ATOMIC_SEQ_CST) == 0) {
         // The sweep yields to active walks, and under steady multi-worker
@@ -2908,6 +3047,13 @@ static void cc_worker_collect(void) {
 }
 #endif
 
+// The cycle deinits and the deferred releases below run user code after
+// CC_UNLOCK; a contained panic there unwinds out of the pass. The members
+// not yet destroyed stay abandoned (their holds keep their shells), but
+// cc_collecting gates every future collection, so it must come back down.
+static void cc_collecting_unwound(int* armed) {
+    if (*armed) cc_collecting = 0;
+}
 static void cc_collect(int force) {
     if (cc_collecting) return;
     // a deinit body is user code running mid-cascade: its allocations must
@@ -2916,14 +3062,20 @@ static void cc_collect(int force) {
     if (__atomic_load_n(&beans_in_deinit, __ATOMIC_RELAXED)) return;
     ARC_ADD(arc_collections, 1);
     cc_collecting = 1;
+    __attribute__((cleanup(cc_collecting_unwound)))
+    int collecting_unwound = 1;
     // Children handed back by cc_free_shell (a Shared payload) are released
     // only after CC_UNLOCK: releasing can park a new possible root, which
     // takes cc_mu again, and cc_mu is not recursive.
     void* dlocal[64];
     CCStack deferred = {dlocal, 0, 64, dlocal};
+    __attribute__((cleanup(rt_stack_unwound)))
+    RtStackUnwound deferred_unwound = {&deferred, 1};
     // The white set outlives the lock: deinit bodies are user code that
     // allocates and releases, and parking a possible root takes cc_mu again.
     CCStack doomed = {0, 0, 0};
+    __attribute__((cleanup(rt_stack_unwound)))
+    RtStackUnwound doomed_unwound = {&doomed, 1};
     CC_LOCK();
 
     // keep only live purple candidates; zombies (released while parked)
@@ -2990,8 +3142,12 @@ static void cc_collect(int force) {
     if (!cc_run_cycle_deinits(doomed.v, doomed.len, 0))
         cc_free_cycle_shells(doomed.v, doomed.len, &deferred);
     rt_free(doomed.v);
+    doomed.v = 0; // the guard must not free it again if a release panics
     for (long long i = 0; i < deferred.len; i++) beans_release(deferred.v[i]);
+    deferred_unwound.armed = 0;
+    doomed_unwound.armed = 0;
     if (deferred.v != dlocal) rt_free(deferred.v);
+    collecting_unwound = 0;
     cc_collecting = 0;
 }
 
@@ -3063,6 +3219,21 @@ void beans_panic(const char* msg, long long line, long long col) {
     // where there is no fiber at all) keeps today's report and exit.
     {
         BeansFiber* fiber = beans_fiber_current();
+        if (fiber && beans_fiber_unwinding(fiber)) {
+            // A panic raised while this fiber is already unwinding is a panic
+            // inside a defer or a deinit the unwind itself is running. There
+            // is no second unwind to give it (spec/CONCURRENCY.md calls this
+            // the one unrecoverable case), so both reports go out and the
+            // process stops.
+            rt_write(2, "double panic during unwind: ",
+                     (unsigned long long)28);
+            rt_write(2, text, (unsigned long long)n);
+            rt_write(2, "  while unwinding: ", (unsigned long long)19);
+            const char* first = beans_fiber_message(fiber);
+            rt_write(2, first, (unsigned long long)strlen(first));
+            rt_write(2, "\n", (unsigned long long)1);
+            abort();
+        }
         if (fiber && !beans_fiber_is_root(fiber)) {
             text[n - 1] = '\0'; // the stored message carries no newline
             beans_fiber_panic(text);
@@ -5552,6 +5723,12 @@ static long long reflect_invoke(BReflectInvoke call, void* receiver,
     BReflectValue** values = spilled
         ? (BReflectValue**)rt_zalloc((size_t)count * sizeof(BReflectValue*))
         : value_stack;
+    // the spill is held across the reflective call itself: unwind-owned, so
+    // a panicking callee cannot leak it (issue #73)
+    RT_SCRATCH void* data_spill = spilled ? (void*)data : NULL;
+    RT_SCRATCH void* values_spill = spilled ? (void*)values : NULL;
+    (void)data_spill;
+    (void)values_spill;
     if (!data || !values) beans_panic("out of memory", 0, 0);
     for (long long i = 0; i < count; ++i) {
         values[i] = handles
@@ -5560,11 +5737,9 @@ static long long reflect_invoke(BReflectInvoke call, void* receiver,
             (!beans_str_eq(parameter_types[i], values[i]->type_name) &&
              !beans_reflect_is_assignable_from(
                  parameter_types[i], values[i]->type_name))) {
-            if (spilled) { rt_free(data); rt_free(values); }
             return reflect_fail(4);
         }
         if (parameter_passing[i] == 2) {
-            if (spilled) { rt_free(data); rt_free(values); }
             return reflect_fail(5);
         }
         data[i] = values[i]->data;
@@ -5579,7 +5754,6 @@ static long long reflect_invoke(BReflectInvoke call, void* receiver,
             values[i]->size = 0;
         }
     }
-    if (spilled) { rt_free(data); rt_free(values); }
     return result ? result : reflect_fail(5);
 }
 
@@ -5617,6 +5791,10 @@ static long long reflect_function_invoke(long long id, long long address,
         ? (long long*)rt_zalloc((size_t)(count ? count : 1) *
                                 sizeof(long long))
         : passing_stack;
+    RT_SCRATCH void* types_spill = spilled ? (void*)types : NULL;
+    RT_SCRATCH void* passing_spill = spilled ? (void*)passing : NULL;
+    (void)types_spill;
+    (void)passing_spill;
     if (!types || !passing) beans_panic("out of memory", 0, 0);
     long long expected = -1;
     if (!reflect_function_param_orphans && count >= 0) {
@@ -5643,7 +5821,6 @@ static long long reflect_function_invoke(long long id, long long address,
     long long result = count == expected
         ? reflect_invoke(function->call, 0, address, count, types, passing)
         : reflect_fail(6);
-    if (spilled) { rt_free(types); rt_free(passing); }
     return result;
 }
 
@@ -5694,6 +5871,10 @@ static long long reflect_method_invoke(long long id, char* checked_owner,
         ? (long long*)rt_zalloc((size_t)(count ? count : 1) *
                                 sizeof(long long))
         : passing_stack;
+    RT_SCRATCH void* types_spill = spilled ? (void*)types : NULL;
+    RT_SCRATCH void* passing_spill = spilled ? (void*)passing : NULL;
+    (void)types_spill;
+    (void)passing_spill;
     if (!types || !passing) beans_panic("out of memory", 0, 0);
     long long expected = count < 0 ? -1
         : reflect_fill_method_arguments(id, count, types, passing);
@@ -5714,7 +5895,6 @@ static long long reflect_method_invoke(long long id, char* checked_owner,
         ? reflect_invoke(call, receiver ? receiver->data : 0,
                          address, count, types, passing)
         : reflect_fail(6);
-    if (spilled) { rt_free(types); rt_free(passing); }
     return result;
 }
 
@@ -5751,6 +5931,10 @@ static long long reflect_initializer_invoke(long long type,
         ? (long long*)rt_zalloc((size_t)(count ? count : 1) *
                                 sizeof(long long))
         : passing_stack;
+    RT_SCRATCH void* types_spill = spilled ? (void*)types : NULL;
+    RT_SCRATCH void* passing_spill = spilled ? (void*)passing : NULL;
+    (void)types_spill;
+    (void)passing_spill;
     if (!types || !passing) beans_panic("out of memory", 0, 0);
     for (long long i = 0; i < count; ++i) {
         long long row = reflect_initializer_parameter_id(
@@ -5761,7 +5945,6 @@ static long long reflect_initializer_invoke(long long type,
     }
     long long result = reflect_invoke(
         reflected->initializer, 0, address, count, types, passing);
-    if (spilled) { rt_free(types); rt_free(passing); }
     return result;
 }
 
@@ -6110,18 +6293,34 @@ BList* beans_list_clone(BList* l) {
     return r;
 }
 
-// bottom-up stable merge — structurally identical to the interpreter's
-// stable_merge, so both backends produce the same order for ANY predicate,
-// even one that is not a strict weak ordering
+// bottom-up stable merge — structurally identical to the interpreter's sort
+// branch (src/interpreter.b), block for block, so both backends produce the
+// same order for ANY predicate, even one that is not a strict weak ordering
 static long long sort_less(long long x, long long y, long long kind, void* thunk,
                            void* box) {
     if (thunk) return ((long long (*)(void*, long long, long long))thunk)(box, x, y);
     return slot_cmp(x, y, kind) < 0;
 }
+// `mirror` is the narrow-stride list `a` was widened from, or NULL when `a`
+// is the list's own storage. A Beans comparator can read the list it is
+// sorting through a captured reference, and the two backends must show it
+// the same thing at every call, so a widened sort writes each completed
+// block back through the mirror exactly where the in-place sort (and the
+// interpreter, block for block) commits its own — and the restore guard
+// then snapshots the narrow storage the program can actually see.
 static void list_merge_sort(long long* a, long long n, long long kind, void* thunk,
-                            void* box) {
+                            void* box, BList* mirror, BList* owner) {
     if (n < 2) return;
-    long long* buf = rt_alloc((size_t)n * 8);
+    // the kind comparators cannot panic; only a Beans comparator can
+    // interrupt the permutation, so only then is the array snapshotted
+    RT_RESTORE RtRestore restore = {0, 0, 0};
+    RtSortPin pin;
+    rt_sort_pin(&pin, thunk ? owner : NULL, &restore);
+    if (thunk) {
+        if (mirror) rt_restore_arm(&restore, mirror->data, (size_t)n * 4);
+        else rt_restore_arm(&restore, a, (size_t)n * 8);
+    }
+    RT_SCRATCH long long* buf = rt_alloc((size_t)n * 8);
     for (long long w = 1; w < n; w *= 2) {
         for (long long lo = 0; lo < n; lo += 2 * w) {
             long long mid = lo + w < n ? lo + w : n;
@@ -6129,15 +6328,22 @@ static void list_merge_sort(long long* a, long long n, long long kind, void* thu
             if (mid >= hi) continue;
             long long i = lo, j = mid, o = lo;
             while (i < mid && j < hi) {
-                if (!sort_less(a[j], a[i], kind, thunk, box)) buf[o++] = a[i++];
+                long long take_left = !sort_less(a[j], a[i], kind, thunk, box);
+                if (thunk) rt_sort_check(&pin);
+                if (take_left) buf[o++] = a[i++];
                 else buf[o++] = a[j++];
             }
             while (i < mid) buf[o++] = a[i++];
             while (j < hi) buf[o++] = a[j++];
             memcpy(a + lo, buf + lo, (size_t)(hi - lo) * 8);
+            if (mirror)
+                for (long long back = lo; back < hi; back++) {
+                    unsigned int raw = (unsigned int)a[back];
+                    memcpy((char*)mirror->data + back * 4, &raw, 4);
+                }
         }
     }
-    rt_free(buf);
+    rt_restore_done(&restore);
 }
 // Signed integer slots have a cheaper stable path: one to four 16-bit passes
 // after subtracting the observed minimum. Narrow real-world ranges therefore
@@ -6154,11 +6360,11 @@ static void list_radix_sort_int(long long* a, long long n) {
     unsigned long long span =
         (unsigned long long)maximum - (unsigned long long)minimum;
     int passes = span <= 0xffffULL ? 1 : span <= 0xffffffffULL ? 2 : 4;
-    long long* buf = rt_alloc((size_t)n * 8);
+    RT_SCRATCH long long* buf = rt_alloc((size_t)n * 8);
     long long* src = a;
     long long* dst = buf;
-    size_t* count = rt_alloc(65536 * sizeof(size_t));
-    size_t* at = rt_alloc(65536 * sizeof(size_t));
+    RT_SCRATCH size_t* count = rt_alloc(65536 * sizeof(size_t));
+    RT_SCRATCH size_t* at = rt_alloc(65536 * sizeof(size_t));
     for (int pass = 0; pass < passes; pass++) {
         memset(count, 0, 65536 * sizeof(size_t));
         int shift = pass * 16;
@@ -6182,9 +6388,6 @@ static void list_radix_sort_int(long long* a, long long n) {
         dst = swap;
     }
     if (src != a) memcpy(a, src, (size_t)n * 8);
-    rt_free(count);
-    rt_free(at);
-    rt_free(buf);
 }
 // Sorting speaks eight-byte slots. A 4-byte typed list widens into a
 // temporary slot array, sorts there, and narrows back — the permutation
@@ -6196,63 +6399,65 @@ static long long* list_widen_slots(BList* l) {
     for (long long i = 0; i < n; i++) wide[i] = list_slot_at(l, i);
     return wide;
 }
+// The caller owns `wide` (an RT_SCRATCH local), so an unwind anywhere
+// between widening and narrowing frees it.
 static void list_narrow_slots(BList* l, long long* wide) {
     for (long long i = 0; i < l->len; i++) {
         unsigned int raw = (unsigned int)wide[i];
         memcpy((char*)l->data + i * 4, &raw, 4);
     }
-    rt_free(wide);
 }
 void beans_list_sort(BList* l, long long kind) {
     if (l->stride == 4) {
-        long long* wide = list_widen_slots(l);
+        RT_SCRATCH long long* wide = list_widen_slots(l);
         if (kind == 0) list_radix_sort_int(wide, l->len);
-        else list_merge_sort(wide, l->len, kind, NULL, NULL);
+        else list_merge_sort(wide, l->len, kind, NULL, NULL, NULL, NULL);
         list_narrow_slots(l, wide);
         return;
     }
     if (kind == 0) list_radix_sort_int(l->data, l->len);
-    else list_merge_sort(l->data, l->len, kind, NULL, NULL);
+    else list_merge_sort(l->data, l->len, kind, NULL, NULL, NULL, NULL);
 }
 void beans_list_sort_by(BList* l, void* thunk, void* box) {
     if (l->stride == 4) {
-        long long* wide = list_widen_slots(l);
-        list_merge_sort(wide, l->len, 0, thunk, box);
+        // the merge permutes `wide`, a copy, and mirrors each completed
+        // block into the list, so the comparator observes the same states
+        // it would over the list's own slots; the copy is unwind-owned
+        // scratch and the restore guard inside puts the narrow storage back
+        RT_SCRATCH long long* wide = list_widen_slots(l);
+        list_merge_sort(wide, l->len, 0, thunk, box, l, l);
         list_narrow_slots(l, wide);
         return;
     }
-    list_merge_sort(l->data, l->len, 0, thunk, box);
+    list_merge_sort(l->data, l->len, 0, thunk, box, NULL, l);
 }
-void beans_list_sort_by_key(BList* l, void* thunk, void* box) {
-    if (l->stride == 4) {
-        long long saved_len = l->len;
-        long long* wide = list_widen_slots(l);
-        BList slots = *l;
-        slots.data = wide;
-        slots.stride = -8;
-        beans_list_sort_by_key(&slots, thunk, box);
-        l->len = saved_len;
-        list_narrow_slots(l, wide);
-        return;
-    }
+static void list_sort_by_key_slots(BList* l, void* thunk, void* box,
+                                   BList* observed) {
     long long n = l->len;
     if (n < 2) return;
-    long long* keys = rt_alloc((size_t)n * 8);
-    long long* val_buf = rt_alloc((size_t)n * 8);
-    size_t* count = rt_alloc(65536 * sizeof(size_t));
-    size_t* at = rt_alloc(65536 * sizeof(size_t));
+    // every key call runs before the first write to the list, so a
+    // panicking key function leaves the list untouched; the scratch is
+    // unwind-owned. `observed` is the program's own list — for a widened
+    // sort `l` is a slot view over scratch the callback cannot reach.
+    RT_SCRATCH long long* keys = rt_alloc((size_t)n * 8);
+    RT_SCRATCH long long* val_buf = rt_alloc((size_t)n * 8);
+    RT_SCRATCH size_t* count = rt_alloc(65536 * sizeof(size_t));
+    RT_SCRATCH size_t* at = rt_alloc(65536 * sizeof(size_t));
     long long (*key_fn)(void*, long long) =
         (long long (*)(void*, long long))thunk;
+    RtSortPin pin;
+    rt_sort_pin(&pin, observed, NULL);
     long long minimum = 0, maximum = 0;
     for (long long i = 0; i < n; i++) {
         keys[i] = key_fn(box, l->data[i]);
+        rt_sort_check(&pin);
         if (i == 0 || keys[i] < minimum) minimum = keys[i];
         if (i == 0 || keys[i] > maximum) maximum = keys[i];
     }
     unsigned long long span =
         (unsigned long long)maximum - (unsigned long long)minimum;
     int passes = span <= 0xffffULL ? 1 : span <= 0xffffffffULL ? 2 : 4;
-    long long* key_buf = passes > 1 ? rt_alloc((size_t)n * 8) : NULL;
+    RT_SCRATCH long long* key_buf = passes > 1 ? rt_alloc((size_t)n * 8) : NULL;
     long long* key_src = keys;
     long long* key_dst = key_buf;
     long long* val_src = l->data;
@@ -6284,11 +6489,20 @@ void beans_list_sort_by_key(BList* l, void* thunk, void* box) {
         swap = val_src; val_src = val_dst; val_dst = swap;
     }
     if (val_src != l->data) memcpy(l->data, val_src, (size_t)n * 8);
-    rt_free(keys);
-    rt_free(key_buf);
-    rt_free(val_buf);
-    rt_free(count);
-    rt_free(at);
+}
+void beans_list_sort_by_key(BList* l, void* thunk, void* box) {
+    if (l->stride == 4) {
+        long long saved_len = l->len;
+        RT_SCRATCH long long* wide = list_widen_slots(l);
+        BList slots = *l;
+        slots.data = wide;
+        slots.stride = -8;
+        list_sort_by_key_slots(&slots, thunk, box, l);
+        l->len = saved_len;
+        list_narrow_slots(l, wide);
+        return;
+    }
+    list_sort_by_key_slots(l, thunk, box, l);
 }
 
 // ---- maps ----
@@ -6552,6 +6766,16 @@ static void map_insert_miss_typed(BMap* m, long long key, void* value,
 }
 
 // note: the map owns key and value refs; the caller retains before calling
+//
+// Hit-path order is load-bearing (issue #44, spec/CONCURRENCY.md): the old
+// value's release runs user deinit code, and contained by brew/join a panic
+// there unwinds out of this frame. The store must stand on that panic — the
+// interpreter's rule — so the entry takes the new value, the duplicate key
+// is dropped, and the old value's release comes LAST, when everything else
+// is already consistent. Nothing before it can panic: the store and the
+// write barrier are plain code, a duplicate string key frees without user
+// code, and a duplicate class key is the entry's own object (identity hit),
+// so its count is at least two and the release never reaches a deinit.
 void beans_map_set(BMap* m, long long key, long long val, long long kind, void* eq,
                    void* hash) {
     long long (*hf)(long long) = (long long (*)(long long))hash;
@@ -6559,11 +6783,12 @@ void beans_map_set(BMap* m, long long key, long long val, long long kind, void* 
     long long i = map_find(m, key, kind, eq, hf, &h, &slot);
     if (i >= 0) {
         long long flags = (head_of(m)->meta & CC_SHAPE) >> 3;
-        if (flags & 1) beans_release((void*)key); // duplicate key not stored
+        long long old = m->data[i * 2 + 1];
         if (flags & 2) beans_cc_write(m, (void*)(uintptr_t)val);
-        if (flags & 2) beans_release((void*)m->data[i * 2 + 1]);
         m->data[i * 2 + 1] = val;
+        if (flags & 1) beans_release((void*)key); // duplicate key not stored
         if (kind == 4 && (flags & 1)) cc_possible_root(m);
+        if (flags & 2) beans_release((void*)old);
         return;
     }
     map_insert_miss(m, key, val, h, kind, hf, slot);
@@ -6576,13 +6801,29 @@ __attribute__((always_inline)) void beans_map_set_raw(BMap* m, long long key,
     long long i = map_find_raw(m, key, &h, &slot);
     if (i >= 0) {
         long long flags = (head_of(m)->meta & CC_SHAPE) >> 3;
-        if (flags & 1) beans_release((void*)key);
+        // same order rule as beans_map_set: store first, the one
+        // panic-capable release (the old value's) last
+        long long old = m->data[i * 2 + 1];
         if (flags & 2) beans_cc_write(m, (void*)(uintptr_t)val);
-        if (flags & 2) beans_release((void*)m->data[i * 2 + 1]);
         m->data[i * 2 + 1] = val;
+        if (flags & 1) beans_release((void*)key);
+        if (flags & 2) beans_release((void*)old);
         return;
     }
     map_insert_miss(m, key, val, h, 0, NULL, slot);
+}
+
+// swap the entry's wide value with the caller's buffer, byte for byte: the
+// entry takes the new value and the caller's buffer parks the old one for
+// the final release. No allocation, and MSVC has no VLA to spill into.
+static void map_swap_wide(void* entry, void* incoming, size_t n) {
+    unsigned char* a = (unsigned char*)entry;
+    unsigned char* b = (unsigned char*)incoming;
+    for (size_t i = 0; i < n; i++) {
+        unsigned char t = a[i];
+        a[i] = b[i];
+        b[i] = t;
+    }
 }
 
 void beans_map_set_typed(BMap* m, long long key, void* value, long long kind,
@@ -6592,11 +6833,14 @@ void beans_map_set_typed(BMap* m, long long key, void* value, long long kind,
     long long i = map_find(m, key, kind, eq, hf, &h, &slot);
     if (i >= 0) {
         long long flags = (head_of(m)->meta & CC_SHAPE) >> 3;
-        if (flags & 1) beans_release((void*)key);
+        // same order rule as beans_map_set: store first, the old value's
+        // release last, from the caller's buffer the swap parked it in
+        // (the buffer is consumed by this call either way)
         beans_cc_write_typed(m, value, m->value_ptr_mask);
-        map_release_wide_value(m, map_wide_value(m, i));
-        memcpy(map_wide_value(m, i), value, (size_t)m->value_stride);
+        map_swap_wide(map_wide_value(m, i), value, (size_t)m->value_stride);
+        if (flags & 1) beans_release((void*)key);
         if (m->value_cycle_mask || kind == 4) cc_possible_root(m);
+        map_release_wide_value(m, value);
         return;
     }
     map_insert_miss_typed(m, key, value, h, kind, hf, slot);
@@ -6610,11 +6854,13 @@ __attribute__((always_inline)) void beans_map_set_typed_raw(BMap* m,
     long long i = map_find_raw(m, key, &h, &slot);
     if (i >= 0) {
         long long flags = (head_of(m)->meta & CC_SHAPE) >> 3;
-        if (flags & 1) beans_release((void*)key);
+        // same order rule as beans_map_set: store first, the old value's
+        // release last, from the caller's buffer the swap parked it in
         beans_cc_write_typed(m, value, m->value_ptr_mask);
-        map_release_wide_value(m, map_wide_value(m, i));
-        memcpy(map_wide_value(m, i), value, (size_t)m->value_stride);
+        map_swap_wide(map_wide_value(m, i), value, (size_t)m->value_stride);
+        if (flags & 1) beans_release((void*)key);
         if (m->value_cycle_mask) cc_possible_root(m);
+        map_release_wide_value(m, value);
         return;
     }
     map_insert_miss_typed(m, key, value, h, 0, NULL, slot);
@@ -6662,8 +6908,13 @@ long long beans_map_insert(BMap* m, long long key, long long val, long long kind
     unsigned long long h = 0, slot = 0;
     if (map_find(m, key, kind, eq, hf, &h, &slot) >= 0) {
         long long flags = (head_of(m)->meta & CC_SHAPE) >> 3;
-        if (flags & 1) beans_release((void*)key);
+        // declined: the incoming value's release can run a panicking
+        // deinit, so it goes first, while the key is still the caller's
+        // to unwind; the duplicate key's release cannot panic (a string
+        // frees without user code, an identity-hit class key holds at
+        // least two counts)
         if (flags & 2) beans_release((void*)val);
+        if (flags & 1) beans_release((void*)key);
         return 0;
     }
     map_insert_miss(m, key, val, h, kind, hf, slot);
@@ -6675,8 +6926,9 @@ long long beans_map_insert_raw(BMap* m, long long key, long long val) {
     unsigned long long h = 0, slot = 0;
     if (map_find_raw(m, key, &h, &slot) >= 0) {
         long long flags = (head_of(m)->meta & CC_SHAPE) >> 3;
-        if (flags & 1) beans_release((void*)key);
+        // same decline order as beans_map_insert: panic-capable first
         if (flags & 2) beans_release((void*)val);
+        if (flags & 1) beans_release((void*)key);
         return 0;
     }
     map_insert_miss(m, key, val, h, 0, NULL, slot);
@@ -6689,8 +6941,9 @@ long long beans_map_insert_typed(BMap* m, long long key, void* value,
     unsigned long long h = 0, slot = 0;
     if (map_find(m, key, kind, eq, hf, &h, &slot) >= 0) {
         long long flags = (head_of(m)->meta & CC_SHAPE) >> 3;
-        if (flags & 1) beans_release((void*)key);
+        // same decline order as beans_map_insert: panic-capable first
         map_release_wide_value(m, value);
+        if (flags & 1) beans_release((void*)key);
         return 0;
     }
     map_insert_miss_typed(m, key, value, h, kind, hf, slot);
@@ -6702,8 +6955,9 @@ long long beans_map_insert_typed_raw(BMap* m, long long key, void* value) {
     unsigned long long h = 0, slot = 0;
     if (map_find_raw(m, key, &h, &slot) >= 0) {
         long long flags = (head_of(m)->meta & CC_SHAPE) >> 3;
-        if (flags & 1) beans_release((void*)key);
+        // same decline order as beans_map_insert: panic-capable first
         map_release_wide_value(m, value);
+        if (flags & 1) beans_release((void*)key);
         return 0;
     }
     map_insert_miss_typed(m, key, value, h, 0, NULL, slot);
@@ -15802,7 +16056,11 @@ static void list_decv_merge_sort(BList* list, void* thunk, void* box) {
     long long n = list->len;
     if (n < 2) return;
     BDec* values = (BDec*)list->data;
-    BDec* buffer = rt_alloc((size_t)n * sizeof(BDec));
+    RT_RESTORE RtRestore restore = {0, 0, 0};
+    RtSortPin pin;
+    rt_sort_pin(&pin, thunk ? list : NULL, &restore);
+    if (thunk) rt_restore_arm(&restore, values, (size_t)n * sizeof(BDec));
+    RT_SCRATCH BDec* buffer = rt_alloc((size_t)n * sizeof(BDec));
     if (!buffer) beans_panic("out of memory", 0, 0);
     for (long long width = 1; width < n; width *= 2) {
         for (long long lo = 0; lo < n; lo += 2 * width) {
@@ -15810,7 +16068,10 @@ static void list_decv_merge_sort(BList* list, void* thunk, void* box) {
             long long hi = lo + 2 * width < n ? lo + 2 * width : n;
             long long left = lo, right = mid, out = lo;
             while (left < mid && right < hi) {
-                if (!decv_less(&values[right], &values[left], thunk, box))
+                long long take_left =
+                    !decv_less(&values[right], &values[left], thunk, box);
+                if (thunk) rt_sort_check(&pin);
+                if (take_left)
                     buffer[out++] = values[left++];
                 else
                     buffer[out++] = values[right++];
@@ -15820,7 +16081,7 @@ static void list_decv_merge_sort(BList* list, void* thunk, void* box) {
             memcpy(values + lo, buffer + lo, (size_t)(hi - lo) * sizeof(BDec));
         }
     }
-    rt_free(buffer);
+    rt_restore_done(&restore);
 }
 void beans_list_decv_sort(BList* list) { list_decv_merge_sort(list, NULL, NULL); }
 void beans_list_decv_sort_by(BList* list, void* thunk, void* box) {
@@ -15831,11 +16092,16 @@ void beans_list_decv_sort_by_key(BList* list, void* thunk, void* box) {
     if (n < 2) return;
     BDec* values = (BDec*)list->data;
     long long (*key_fn)(void*, BDec*) = (long long (*)(void*, BDec*))thunk;
-    long long* keys = rt_alloc((size_t)n * sizeof(long long));
-    long long* key_buffer = rt_alloc((size_t)n * sizeof(long long));
-    BDec* value_buffer = rt_alloc((size_t)n * sizeof(BDec));
+    RT_SCRATCH long long* keys = rt_alloc((size_t)n * sizeof(long long));
+    RT_SCRATCH long long* key_buffer = rt_alloc((size_t)n * sizeof(long long));
+    RT_SCRATCH BDec* value_buffer = rt_alloc((size_t)n * sizeof(BDec));
     if (!keys || !key_buffer || !value_buffer) beans_panic("out of memory", 0, 0);
-    for (long long i = 0; i < n; i++) keys[i] = key_fn(box, &values[i]);
+    RtSortPin pin;
+    rt_sort_pin(&pin, list, NULL);
+    for (long long i = 0; i < n; i++) {
+        keys[i] = key_fn(box, &values[i]);
+        rt_sort_check(&pin);
+    }
     for (long long width = 1; width < n; width *= 2) {
         for (long long lo = 0; lo < n; lo += 2 * width) {
             long long mid = lo + width < n ? lo + width : n;
@@ -15860,9 +16126,6 @@ void beans_list_decv_sort_by_key(BList* list, void* thunk, void* box) {
                    (size_t)(hi - lo) * sizeof(BDec));
         }
     }
-    rt_free(keys);
-    rt_free(key_buffer);
-    rt_free(value_buffer);
 }
 // A stable merge sort over inline elements of any width. The decimal pair
 // above is this same algorithm pinned to BDec; this one reads the list's own
@@ -15878,7 +16141,11 @@ void beans_list_val_sort_by(BList* list, void* thunk, void* box) {
     long long (*less)(void*, void*, void*) =
         (long long (*)(void*, void*, void*))thunk;
     char* values = (char*)list->data;
-    char* buffer = rt_alloc((size_t)n * (size_t)stride);
+    RT_RESTORE RtRestore restore = {0, 0, 0};
+    RtSortPin pin;
+    rt_sort_pin(&pin, list, &restore);
+    rt_restore_arm(&restore, values, (size_t)n * (size_t)stride);
+    RT_SCRATCH char* buffer = rt_alloc((size_t)n * (size_t)stride);
     if (!buffer) beans_panic("out of memory", 0, 0);
     for (long long width = 1; width < n; width *= 2) {
         for (long long lo = 0; lo < n; lo += 2 * width) {
@@ -15887,11 +16154,11 @@ void beans_list_val_sort_by(BList* list, void* thunk, void* box) {
             long long left = lo, right = mid, out = lo;
             while (left < mid && right < hi) {
                 // taking left unless right is strictly less keeps it stable
-                long long take =
+                long long right_less =
                     less(box, values + (size_t)right * (size_t)stride,
-                         values + (size_t)left * (size_t)stride)
-                        ? right++
-                        : left++;
+                         values + (size_t)left * (size_t)stride);
+                rt_sort_check(&pin);
+                long long take = right_less ? right++ : left++;
                 memcpy(buffer + (size_t)out * (size_t)stride,
                        values + (size_t)take * (size_t)stride,
                        (size_t)stride);
@@ -15916,7 +16183,7 @@ void beans_list_val_sort_by(BList* list, void* thunk, void* box) {
                    (size_t)(hi - lo) * (size_t)stride);
         }
     }
-    rt_free(buffer);
+    rt_restore_done(&restore);
 }
 void beans_list_val_sort_by_key(BList* list, void* thunk, void* box) {
     long long n = list->len;
@@ -15924,13 +16191,17 @@ void beans_list_val_sort_by_key(BList* list, void* thunk, void* box) {
     long long stride = list_stride(list);
     char* values = (char*)list->data;
     long long (*key_fn)(void*, void*) = (long long (*)(void*, void*))thunk;
-    long long* keys = rt_alloc((size_t)n * sizeof(long long));
-    long long* key_buffer = rt_alloc((size_t)n * sizeof(long long));
-    char* value_buffer = rt_alloc((size_t)n * (size_t)stride);
+    RT_SCRATCH long long* keys = rt_alloc((size_t)n * sizeof(long long));
+    RT_SCRATCH long long* key_buffer = rt_alloc((size_t)n * sizeof(long long));
+    RT_SCRATCH char* value_buffer = rt_alloc((size_t)n * (size_t)stride);
     if (!keys || !key_buffer || !value_buffer)
         beans_panic("out of memory", 0, 0);
-    for (long long i = 0; i < n; i++)
+    RtSortPin pin;
+    rt_sort_pin(&pin, list, NULL);
+    for (long long i = 0; i < n; i++) {
         keys[i] = key_fn(box, values + (size_t)i * (size_t)stride);
+        rt_sort_check(&pin);
+    }
     for (long long width = 1; width < n; width *= 2) {
         for (long long lo = 0; lo < n; lo += 2 * width) {
             long long mid = lo + width < n ? lo + width : n;
@@ -15967,9 +16238,6 @@ void beans_list_val_sort_by_key(BList* list, void* thunk, void* box) {
                    (size_t)(hi - lo) * (size_t)stride);
         }
     }
-    rt_free(keys);
-    rt_free(key_buffer);
-    rt_free(value_buffer);
 }
 char* beans_list_decv_join(BList* list, char* separator) {
     long long separator_len = beans_slen(separator);

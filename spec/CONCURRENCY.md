@@ -5,7 +5,8 @@ Status: **F1 and the F2 core are implemented.** The fiber runtime
 parse, check, both lowerings, `Brew<T>` with join/cancel, the synthesized
 scope join, panic containment and escalation — are in the tree; see the
 "where the implementation stands" section at the end for what deliberately
-remains (unwinds, may-park inference, std park sites). The async v2
+remains (the cancelled-park unwind, may-park inference, std park sites) — the
+contained-panic unwind now lands on both backends. The async v2
 state-machine branch is archived, unmerged, at the tag
 `archive/async-v2-statemachine`; its measured failure is the reason this
 document exists.
@@ -386,14 +387,106 @@ woken into panics, senders panicking on a closed channel, and four
 threads running fleets of their own — every failure a value, both
 engines byte-identical (`test/fiber_soak.sh`).
 
+Landed since:
+
+0. **The contained-panic unwind, both backends** (#44). A panic caught by
+   `brew`/`join` no longer abandons the fiber's frames: every frame between the
+   failure and the fiber entry runs its defers newest-first and drops what it
+   owns — owned, move-only and captured-cell locals alike — exactly as a return
+   would. Native does it with the platform unwinder: `invoke`/`landingpad`
+   cleanup pads (`src/llvm_unwind.b`) walked by `_Unwind_ForcedUnwind`, armed
+   only for a program that brews, ended at the fiber entry thunk. The
+   interpreter does it at tree level: its walker raises a panic by a poison
+   flag, and on a contained one it runs each frame's defers and each local's
+   deinit as the poison returns through the frame, with the panic set aside so
+   the cleanup body runs. A panic inside a defer or deinit during the unwind is
+   the one unrecoverable case — double panic, reported and aborted — on both.
+   `test/cases/brew_unwind.b` is the differential golden. The child's closure
+   box is released on both paths.
+
+   The cleanup a frame runs is the one a return runs, in the order the tree
+   walker leaves the frame, and both backends print it byte for byte:
+
+   1. what the failing statement was holding — every owned value still in
+      flight (a temporary argument already built when the next argument
+      panicked, the pieces of an interpolation, the elements of a literal, the
+      collection a `for` took from a call, a value a store out of range never
+      took) and the locals of the nested blocks the failure sat inside — newest
+      first, the way expression frames and block scopes pop;
+   2. the function's defers, newest first;
+   3. the function's own locals, newest first;
+   4. the value a `return` was carrying, if a defer or a deinit on the way out
+      panicked;
+   5. and, for the frame that was running `new`, the half-built object: it is
+      released as a whole, so its `deinit` runs — seeing each field's default
+      or whatever init had assigned — and then its fields drop.
+
+   The scope join every `brew` synthesizes is one of those defers, so an
+   unwinding frame joins the children it never joined exactly as a return
+   would — after the defers registered later, before its locals drop — and no
+   child outlives its scope on the panic path either. A child whose own panic
+   nobody caught escalates at that join, inside a cleanup the unwind is
+   running: that is the double-panic case, fatal on both backends, and the
+   report names both failures. A defer runs at most once: one that panics
+   while the frame is exiting normally hands the rest of that frame's cleanup
+   to the unwind, which does not run it again. An object whose deinit panics during a normal exit is
+   abandoned mid-destruction — it is not released a second time by the unwind,
+   and whatever it still held is not released either — while the locals that
+   had not dropped yet still drop.
+
+   A value handed to a runtime entry (`push`, `insert`, `set`, `send`, a
+   `map[k] = v`) is released by the unwind when the entry refused it — a store
+   out of range, a send on a closed channel — exactly as the interpreter
+   releases it; once the entry has stored it, it is the collection's. Every
+   such entry validates before it takes, and none runs Beans code after the
+   take: a class used as a map key hashes by identity with the runtime's own
+   hasher, so no user `hash` or `eq` ever runs inside a map operation.
+
+   A runtime frame that calls back into Beans code — a sort's comparator or
+   key function, a reflected callee — owns no heap memory across that call
+   without a cleanup the unwind runs: when a contained panic passes through,
+   the frame's scratch is freed like everything else. And a collection
+   operation interrupted by a panicking callback leaves the collection
+   exactly as it was before the call — same contents, same order — on both
+   backends: a sort snapshots the array it permutes in place before the
+   first callback can run, and the unwind puts it back. A callback that
+   *structurally changes* the list mid-sort is refused as the program's own
+   panic instead (`list changed during sort`, spec/SYNTAX.md) — the list
+   then stays as the mutation left it, since the snapshot no longer
+   describes the storage. With no panic at
+   all, both backends run the same bottom-up stable merge, so they agree on
+   the order for any predicate, one that is not a strict weak ordering
+   included. A `deinit` that panics while a runtime replace holds the old
+   value (`map[k] = v` over an existing key, `Box.set`) is contained like
+   any other panic, and the store stands: the entry takes the new value
+   and drops the duplicate key first — none of which can panic — and the
+   old value's release runs last, so its panic finds the map already
+   consistent, the old object abandoned mid-destruction, and nothing
+   double-freed. Both backends agree, the caller's key and value
+   included. A declined `insert` releases the incoming value before it
+   touches the duplicate key, for the same reason in mirror image.
+
 Deliberately not yet here, in dependency order:
 
-1. **Per-fiber unwinds.** A contained panic (and a cancelled park) abandons
-   the fiber's frames: defers do not run and owned values are not dropped on
-   that path yet. The interpreter, whose walker unwinds at tree level, does
-   run interpreted defers — so differential tests avoid defer-under-panic
-   until the native unwind lands. The child's closure box is also not
-   released on the abandon path.
+0. **Native unwinding off elf/macho x86_64/arm64.** The native pads ride the
+   platform unwinder, and only those four target pairs carry it today
+   (src/target.b names them; VERSION's ABI note says the same). Everywhere
+   else — Windows native builds included — a contained panic still abandons
+   the fiber's frames in a native build while the interpreter unwinds, so
+   defer/deinit output under a contained panic differs between the legs on
+   those targets. Differential tests that run there must not pin
+   defer-under-panic output until the pads land per target.
+
+1. **The cancelled-park unwind.** A cancelled park still abandons the fiber's
+   frames on *both* backends: unlike a panic, a cancel is delivered from inside
+   a runtime park primitive (Gate/channel/join), and the tree interpreter
+   cannot run its tree-level cleanup from there — the primitive is hosting a
+   walk whose defers and deinits are tree data, not pads an unwinder could run.
+   The native runtime could unwind a cancel (the mechanism is the panic's), but
+   doing so while the interpreter abandons it would make the two backends
+   disagree on the same program, which this project holds above the feature —
+   so both abandon until the interpreter's park sites can hand a cancel back to
+   the walker for a tree-level unwind, the way a contained panic already is.
 2. **Cancellation observation.** Cancelled parks exist in the fiber core,
    but compiled code's only park site today is join, and a join waits for
    the child by contract. Until std park sites land (F3), a cancelled child

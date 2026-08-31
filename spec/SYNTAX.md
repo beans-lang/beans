@@ -1052,7 +1052,18 @@ param, trusting its constraint), `contains`, `index_of` → `Option<int>`, `inse
 panics), `sort` (ordered elements), `sort_by(fn(a: T, b: T) -> bool)` (any `T`; the predicate
 is strict less-than), `sort_by_key(fn(T) -> int)` (one key call per item), `join(sep)`.
 Sorts are **stable**. The native backend uses a stable radix path for integers and integer
-keys, and the shared merge semantics for other values and custom predicates.
+keys, and the shared merge semantics for other values and custom predicates. Both backends
+run the same bottom-up stable merge for a custom predicate, so they produce the same order
+even for a predicate that is not a strict weak ordering; a comparator that reads the list
+it is sorting (through a captured reference) sees the same intermediate states on both —
+each merged block is committed to the list when it completes; and a comparator or key
+function that panics (contained, spec/CONCURRENCY.md) leaves the list exactly as it was
+before the call, on both backends. Reading is as far as it goes: a callback that
+*structurally changes* the list mid-sort (push, remove, clear — anything that moves its
+length or storage) is refused with `list changed during sort (length A -> B)` at the first
+callback return after the change, on both backends — the sort would otherwise permute
+stale storage. The list stays as the mutation left it; there is nothing coherent to
+restore. Writing an element in place (`l[i] = v`) moves nothing and stays allowed.
 
 **Map and OrderedMap methods (v0.5, implemented):** `clone`, `get` → `Option<V>`,
 `set` (also `m[k] = v` sugar), `insert(k, v) -> bool` (false leaves the old value),
@@ -1087,7 +1098,10 @@ outside the list, and `map[key]` panics when the key is missing. Use
 Bracket assignment stays `list[i] = value` and `map[key] = value`; List and
 Map bracket assignment does not have compound forms. Fixed arrays support
 numeric compound element assignment because their element is a real inline
-place.
+place. A bracket assignment evaluates left to right — receiver, then index
+or key, then the right-hand side — and a compound form evaluates its index
+once. Both backends run this order; a side-effecting key and value observe
+it.
 
 Map values may be wide structs, fixed arrays, SIMD vectors, slices, inline
 Option/Result values, or decimals. Their nested ARC fields are retained, dropped,
@@ -3135,13 +3149,25 @@ beansc build --target riscv32imac-unknown-none-elf --runtime freestanding f.b --
   logical `closed` flag flips immediately, so same-thread `close()` semantics are unchanged; only
   the OS-level release is deferred, and only while threads run.
 - `defer f.close()` — runs when the function exits normally, including through
-  `return` and `?`, newest first and before local destruction. Must sit at the
-  top level of the function body (not inside `if`/`for`/blocks — it is a function-exit hook,
-  and nested registration would need runtime capture the native backend does not do). A panic
-  exits the process without running defers, and a panic inside a defer is itself fatal.
+  `return` and `?`, newest first. A return leaves every scope it sits in, innermost
+  first: the locals of the nested blocks (`if`, loop bodies, match arms) drop as their
+  blocks exit, *then* the function's defers run, *then* the function's own locals drop —
+  so a defer sees the function-level locals still alive and the block-level ones already
+  gone. Must sit at the top level of the function body (not inside `if`/`for`/blocks — it
+  is a function-exit hook, and nested registration would need runtime capture the native
+  backend does not do); the checker refuses a nested one. Each defer runs at most once. An *uncontained* panic exits the
+  process without running defers. A panic *contained* by `brew`/`join`
+  (spec/CONCURRENCY.md) does the opposite: it unwinds the fiber's frames on the way to the
+  fiber entry, running each function's defers newest-first and dropping what it owns — the
+  same cleanup a return runs, in the same order — and the join reports the failure. A defer
+  that panics while the function is exiting normally is a contained panic like any other
+  when the fiber is brewed: it is not run again, the older defers still run, and the locals
+  still drop. A panic inside a defer *during* a contained unwind is fatal — it aborts the
+  process (the one unrecoverable case — there is no second unwind to give it) — and an
+  uncontained one exits.
   `?` is not allowed inside a deferred expression because the function's
   return path is already being processed.
-  (Go's best idea, minus unwinding.)
+  (Go's best idea, with an unwind only where a panic is caught.)
 - `unsafe { }` — gates low-level operations. The first implemented part is
   `RawPtr<T>` for primitive integer, float, bool, raw-pointer, fixed-array, and
   declared `extern "C" struct`/`union` values. These shapes can nest.

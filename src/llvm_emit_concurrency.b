@@ -412,16 +412,33 @@ partial class LlvmTextEmitter {
     fn spawn_thunk(payload: HirType) -> string {
         let symbol: string =
             "spawn.thunk.{self.fresh()}"
+        // This frame is where a fiber's controlled unwind ends. Every frame
+        // above it has run its defers and dropped what it owned by the time
+        // the pad here is reached, and the pad does not resume: it ends the
+        // fiber. Nothing therefore unwinds out of Beans code into the C
+        // frames that started it — the fiber core's entry trampoline carries
+        // no unwind information and is not a frame to walk through.
+        //
+        // A thread spawn shares this thunk and pays nothing for the pad: a
+        // panic off a fiber ends the process where it happens and starts no
+        // unwind at all, so the edge is never taken.
+        let attributes: string =
+            if self.unwind_enabled() {
+                " uwtable{self.unwind_personality()}"
+            } else {
+                ""
+            }
+        let pad: string = self.spawn_thunk_pad()
         if self.wide_inline_value(payload) {
             let llvm: string = self.type_text(payload)
             self.ffi_functions.push(
-                "define void @{symbol}(ptr %env, ptr %out) \{\n  %fn = load ptr, ptr %env\n  %spawn.ret = call {llvm} %fn(ptr %env)\n  store {llvm} %spawn.ret, ptr %out\n  ret void\n\}\n")
+                "define void @{symbol}(ptr %env, ptr %out){attributes} \{\n  %fn = load ptr, ptr %env\n  %spawn.ret = {self.spawn_thunk_call("{llvm} %fn(ptr %env)")}  store {llvm} %spawn.ret, ptr %out\n  ret void\n{pad}\}\n")
             return symbol
         }
         if canonical_hir_name(payload.name) ==
                "unit" {
             self.ffi_functions.push(
-                "define i64 @{symbol}(ptr %env) \{\n  %fn = load ptr, ptr %env\n  call void %fn(ptr %env)\n  ret i64 0\n\}\n")
+                "define i64 @{symbol}(ptr %env){attributes} \{\n  %fn = load ptr, ptr %env\n  {self.spawn_thunk_call("void %fn(ptr %env)")}  ret i64 0\n{pad}\}\n")
             return symbol
         }
         let llvm: string = self.type_text(payload)
@@ -429,8 +446,26 @@ partial class LlvmTextEmitter {
             self.to_slot(
                 payload, "%spawn.ret", "spawn")
         self.ffi_functions.push(
-            "define i64 @{symbol}(ptr %env) \{\n  %fn = load ptr, ptr %env\n  %spawn.ret = call {llvm} %fn(ptr %env)\n{conversion.setup}  ret i64 {conversion.value}\n\}\n")
+            "define i64 @{symbol}(ptr %env){attributes} \{\n  %fn = load ptr, ptr %env\n  %spawn.ret = {self.spawn_thunk_call("{llvm} %fn(ptr %env)")}{conversion.setup}  ret i64 {conversion.value}\n{pad}\}\n")
         return symbol
+    }
+
+    // The call into the spawned closure, as a plain call where the program
+    // cannot unwind and as the unwind's last invoke where it can. The caller
+    // supplies "<type> <callee>(<arguments>)" and gets a finished line.
+    fn spawn_thunk_call(signature: string) -> string {
+        if !self.unwind_enabled() {
+            return "call {signature}\n"
+        }
+        return "invoke {signature}\n          to label %spawn.done unwind label %spawn.eh\nspawn.done:\n"
+    }
+
+    fn spawn_thunk_pad() -> string {
+        if !self.unwind_enabled() { return "" }
+        self.require_declare(
+            "beans_fiber_unwind_finish",
+            "void @beans_fiber_unwind_finish()")
+        return "spawn.eh:\n  %spawn.lp = landingpad \{ ptr, i32 \}\n          cleanup\n  call void @beans_fiber_unwind_finish()\n  unreachable\n"
     }
 
     // brew — start the fabricated closure on a child fiber of this worker
@@ -1271,8 +1306,14 @@ partial class LlvmTextEmitter {
                 continue
             }
             let id: int = self.fresh()
+            // Disarm before the body runs. A defer runs once: if its body
+            // panics (contained), the cleanup pad walks this same list and
+            // must not run it a second time — that would be a panic raised
+            // during the unwind, reported as a double panic. The interpreter
+            // likewise moves past a defer that panicked and runs the older
+            // ones (issue #44).
             output =
-                "{output}  %defer.armed{id} = load i1, ptr %defer.flag{site.cleanup_id}\n  br i1 %defer.armed{id}, label %defer.run{id}, label %defer.next{id}\ndefer.run{id}:\n{body}  call void {self.function_symbols[cleanup_name]}({arguments.join(", ")})\n  br label %defer.next{id}\ndefer.next{id}:\n"
+                "{output}  %defer.armed{id} = load i1, ptr %defer.flag{site.cleanup_id}\n  br i1 %defer.armed{id}, label %defer.run{id}, label %defer.next{id}\ndefer.run{id}:\n  store i1 0, ptr %defer.flag{site.cleanup_id}\n{body}  call void {self.function_symbols[cleanup_name]}({arguments.join(", ")})\n  br label %defer.next{id}\ndefer.next{id}:\n"
         }
         return move output
     }
