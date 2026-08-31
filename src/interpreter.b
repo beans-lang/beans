@@ -640,6 +640,20 @@ class TreeInterpreter {
         host_os.exit(134)
     }
 
+    // The terminal for a panic that reached the entry of a spawned thread.
+    // Natively thread_main (runtime/beans_rt.c) has no capture, so the panic
+    // walks straight out through beans_panic: the buffered output goes first,
+    // the report goes to stderr, and the process ends with 3. Nothing else is
+    // open to it — Thread<T>.join() answers T, not Result<T>, so a thread's
+    // failure has no value-shaped place to land, and a detached or
+    // never-joined thread has no join at all. Containment is what `brew`
+    // is for (spec/CONCURRENCY.md); a thread is the raw primitive.
+    fn report_thread_panic() {
+        unsafe { beans_out_flush() }
+        io.eprintln(self.panic_text)
+        host_os.exit(3)
+    }
+
     fn floating_value(type: HirType,
                       value: float) -> TreeValue {
         if canonical_hir_name(type.name) == "f32" {
@@ -9353,15 +9367,19 @@ class TreeInterpreter {
             }
             var result: TreeValue =
                 TreeValue.unit()
+            // No failure arrives here. A panic that reaches the entry of a
+            // spawned thread has already ended the process on both backends
+            // (issue #75, spec/CONCURRENCY.md), so join only ever reads the
+            // value a thread that returned normally left behind. The panic
+            // used to be stashed and re-raised here by assigning failed
+            // directly, which armed no unwind: the joining fiber's defers
+            // were skipped, a detached or never-joined thread dropped its
+            // panic on the floor, and the report reached the defensive
+            // branches that discard the remaining defers.
             match receiver.thread_work {
                 some(work) => {
                     work.with_lock(
                         fn(state: TreeThreadWork) {
-                            if state.failed {
-                                self.failed = true
-                                self.panic_text =
-                                    state.panic_text
-                            }
                             match state.result {
                                 some(value) => {
                                     result =
@@ -14482,7 +14500,30 @@ class TreeInterpreter {
         return result
     }
 
+    // Static fields and singletons live for the whole process: nothing
+    // releases them, so nothing runs a deinit for what they still hold
+    // (spec/SYNTAX.md, issue #74). The walker models that the only way a
+    // reference-counted host can — by parking its singleton state in a
+    // static of the compiler's own, which the compiler never tears down for
+    // exactly the same reason. The interpreted values stay reachable to the
+    // last instruction of the process, so their host wrappers never die and
+    // their deinit bodies never run.
+    //
+    // Only reachability changes. Interpreted garbage is left to the host
+    // collector as before: an unreachable cycle is still swept at exit and
+    // still runs each member's deinit, which is what the native collector
+    // does with the same program (examples/ctors.b), and a cycle a static
+    // roots is left standing on both sides.
+    //
+    // Parked on every exit from run(), the failing ones included: native
+    // leaves through beans_panic with those same values still standing.
     fn run() -> bool {
+        let answer: bool = self.run_entry()
+        TreeExitRoots.kept.push(self.singletons)
+        return answer
+    }
+
+    fn run_entry() -> bool {
         if self.failed { return false }
         self.initialize_static_fields()
         if self.failed { return false }
