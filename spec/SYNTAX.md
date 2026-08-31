@@ -349,6 +349,11 @@ fn main() {
 - Format specs ride after a `:` in the braces: `{x:8}` pads to width 8 (right-aligned),
   `{x:-8}` left-aligns, `{pi:.2}` fixes decimals (float/decimal only), `{pi:8.2}` both.
   Width pads anything printable — `{xs:12}` pads a whole list. Same rendering as `std.fmt`.
+- **Width is measured in display columns, not bytes.** `{s:12}` fills until the
+  rendered value occupies twelve terminal columns, so `"café 東京 🍜"` (17 bytes,
+  9 characters, 12 columns) is already full and `"ok"` gets ten spaces. Byte
+  padding lined up only ASCII; there is no caller that wanted it for anything
+  else. `s.width()` is the same measure, spelled out.
 - **There is no `+` for strings.** Building strings happens through interpolation, `std.fmt` (sprintf-style: padding, precision, alignment), or `list.join(sep)`. One way to do it, and it's the readable one.
 - Escapes: `\n \t \r \0 \\ \" \{ \}`. The backslash forms are the *only* brace
   escapes: `{{` is not one. A `{` right after another `{` begins an
@@ -368,6 +373,35 @@ fn main() {
 `count_chars(from, to)` for a checked, allocation-free byte range scan,
 `find_byte(byte, from) -> int` (`-1` when absent), `range_equals(from, to, other)`,
 and `parse_int_range_or(from, to, fallback)` for allocation-free byte-range work.
+
+`width() -> int` is the third measure, beside `len()` in bytes and
+`chars().len()` in characters: how many terminal columns the string occupies.
+It is what `{s:N}` and `std.fmt`'s pads fill to. The rules, from the Unicode
+Character Database (`tools/gen_width_table.py` regenerates the tables in
+`runtime/beans_rt.c`; the shipped ones are Unicode 17.0.0):
+
+- East_Asian_Width `W` and `F`, and anything with `Emoji_Presentation`, take
+  two columns; everything else takes one.
+- Combining marks (`Mn`, `Me`), format characters (`Cf`), control characters
+  (`Cc`), conjoining Hangul jamo (`V`, `T`) and the emoji skin-tone modifiers
+  take none. `U+00AD SOFT HYPHEN` is the one exception: terminals draw it, so
+  it counts one.
+- `U+200D ZERO WIDTH JOINER` welds the next scalar onto the current glyph, so
+  that scalar takes no column either: a four-person family emoji is two
+  columns, not eight.
+- `U+FE0F` promotes the pictograph before it to two columns and `U+FE0E`
+  pulls it back to one, so `❤` is one column and `❤️` is two.
+- Two regional indicators make one flag and two columns; a third starts a new
+  pair.
+- Invalid UTF-8 counts one column per bad byte, which is what a terminal draws
+  for the replacement character it substitutes. A byte is bad when it does not
+  start a well-formed sequence, when its sequence is truncated, and when the
+  bytes are well formed but spell what UTF-8 does not encode — an overlong
+  form, half a surrogate pair, a scalar past the last plane. A bad byte also
+  stands between whatever was joining or pairing across it.
+
+This is a column count, not a grapheme count: a `Mc` spacing mark advances the
+caret and counts one, and no normalization happens first.
 
 ## Bytes (v0.5, implemented)
 
@@ -475,10 +509,52 @@ registry rows remain for low-level allocation/storage, raw bytes, OS calls,
 atomics, and thread entry while more of `core` and `std` move to `.b` files.
 
 **What prints** (same rule for `io.println` and `{x}` interpolation): numbers, bools, strings;
-enums, as `variant` or `variant(payload, ...)`; lists of printable things, as `[a, b, c]`,
-nesting included — and `join(sep)` renders the same way. Maps and class instances don't print
-yet — give them a string form first. (`Result` carries an `Error` object, so it stays
-unprintable too — match on it.)
+enums, as `variant` or `variant(payload, ...)`; options as `some(x)` / `none` and results as
+`ok(x)` / `err(e)`; lists of printable things, as `[a, b, c]`; maps of printable keys and
+values, as `{k: v, k: v}`; and structs and class instances, as `Name { field: value, ... }` —
+nesting included, and `join(sep)` renders the same way. A result's default `err` payload is an
+`Error`, which prints as the message a caller passed to `err(...)`; a custom err type prints
+as itself. A map renders its entries in the order `keys()` walks. For a map only inserted into and
+updated in place that is **insertion order** — an updated key keeps the place it was first
+given — and both backends impose the same one, so a golden file can pin it. A **removal** is
+the exception: a plain `Map` swap-removes, and the two engines do not agree today on the order
+that leaves behind, so nothing should pin the rendering of a `Map` a key has been removed
+from. `OrderedMap` keeps its order across a removal, on both. Strings render without quotes,
+the same as inside a list.
+
+A struct or class instance renders its fields **in declaration order**, using the bare type
+name (`Point { x: 1, y: 2 }`, `Empty {}`). A **class** that declares its own string form —
+a `to_string() -> string` method taking no argument — renders through it instead: `{obj}` and
+every nested position (a list element, a map key or value, another object's field, `join`)
+print what `to_string` returns, so a class's own form wins over the derived one everywhere,
+a generic class included. A class with a `to_string` is printable even when a field of it is
+not, since the derived form is never used. A **struct** does not take this path: its
+`to_string` is an ordinary method you can call, and `{p}` still renders the derived form —
+both backends agree on that, and widening it to structs is a separate change.
+When there is no `to_string`, the derived form is the compiler's own view of the value, so:
+
+- A **private** field is shown like any other — hiding half the object would make the debug
+  form lie.
+- A **move-only** field is shown by borrowing it; rendering never moves or consumes a value.
+- A **weak** field prints as `<weak>` and is **not followed**. It is the one edge the cycle
+  collector refuses to trace, and the printer refuses it too — so a cleared weak cannot fault
+  the printer and a back-reference cannot loop it. Its type need not be printable.
+- Static fields belong to the type, not the instance, and never appear.
+- A **reference cycle** prints `<cycle>` where it closes; a shared value that is not on the
+  current path renders in full each time it is reached.
+
+Only a class whose declared type is the one concrete type a value of it can carry prints this
+way: a **leaf, standalone class** (not an interface, not `abstract`, not a base another class
+`extends`, and — until inherited fields render — not itself extending one). A base, an
+interface or an abstract class is refused, because its value's real type is not knowable from
+its declared one and the two backends would render different fields; give it a string form
+first, or match on it.
+
+A key or an element too wide for one runtime slot — a struct, a `decimal`, an inline
+`Option` — is rendered from where it really lives rather than refused, so `{m}` on a
+`Map<Point, string>` and `xs.join(", ")` on a `List<Point>` print what `{xs}` prints.
+`join` refuses exactly what interpolation refuses, at check time and with the same message
+on both backends.
 
 [examples/kv.b](examples/kv.b) is the proof: an append-only KV store with binary records and a
 durable compaction (write temp, sync, rename over, sync the parent dir).
@@ -507,8 +583,8 @@ one owner may move between threads, but concurrent aliases are forbidden.
 
 Interpolation assembles, fmt formats. No printf — the language has no varargs.
 
-- `pad_left(s, width)` / `pad_right(s, width)` — spaces, byte width; already-wide input
-  comes back unchanged.
+- `pad_left(s, width)` / `pad_right(s, width)` — spaces, **display columns**
+  (`string.width()`, not `len()`); already-wide input comes back unchanged.
 - `float(x, places)` — fixed decimals (`3.14`), places clamped to 0..100.
 - `decimal(d, places)` — exact decimals: rounds half-even when narrowing, zero-pads
   when widening. `fmt.decimal(19.995, 2)` is `"20.00"`.
@@ -3630,7 +3706,7 @@ file declares one, so `package` stays usable as an ordinary identifier.
   then full self; destruction runs at refcount zero before field release,
   subclass then parent, and is skipped for cycle garbage
 - Stdlib v0.5 phase 4 (implemented): Beans-written `std.reader` line reading over positional I/O (the old native `BufReader` is gone), format specs in interpolation (`{x:8.2}` — first top-level `:` in the braces; the same rendering as `std.fmt`), `chars()` for UTF-8, varint + crc32 on `Bytes`, `MMap.resize` (the handle keeps its fd), `Dir.walk` (recursive, sorted, relative), and Beans-written `std.path`
-- Stdlib v0.5 phase 3 (implemented): the List/Map method set with **stable** sorts (`sort_by` takes a less-than closure; both backends run the identical merge), `Bytes` value `==`, advisory file locks, `MMap` (whole-file, shared, drop unmaps, grow = close + reopen), `std.fmt`, and printing widened to enums and lists — `variant(payload)` / `[a, b]` — everywhere strings interpolate; maps, class instances, and `Result` stay unprintable
+- Stdlib v0.5 phase 3 (implemented): the List/Map method set with **stable** sorts (`sort_by` takes a less-than closure; both backends run the identical merge), `Bytes` value `==`, advisory file locks, `MMap` (whole-file, shared, drop unmaps, grow = close + reopen), `std.fmt`, and printing widened to enums and lists — `variant(payload)` / `[a, b]` — everywhere strings interpolate; maps, class instances, and `Result` stayed unprintable until the derived rendering above landed
 - Stdlib v0.5: the string method set, `Bytes`, `File`/`Dir`, `std.os`, and the `std.io` console set (implemented); byte semantics, panics carry positions, byte-owner mutators return `unit`, fs errors carry kind slugs
 - Modules: `beans.pot`, one folder = one package, git imports with a global cache (v0.4, implemented)
 - Block-bodied match arms in statement position (v0.4, implemented)
