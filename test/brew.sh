@@ -340,6 +340,10 @@ expect_wall "brew starts a call on a child fiber"
 expect_wall "a Brew local starts with its brew"
 expect_wall "Brew cannot ride inside another type"
 expect_wall "brew inside a nested block is not ready yet"
+# The wall is the first one anyone writing a server hits, and the way through
+# it is TaskGroup. Saying so is the whole point of the message (#32).
+expect_wall "use TaskGroup<T> for a fiber per loop iteration"
+expect_wall "group.brew(...) on it is legal at any depth"
 
 echo "checking brew stays an ordinary name without a callee"
 cat >"$tmp/name.b" <<'BEANS'

@@ -1667,6 +1667,10 @@ fn parse_age(s: string) -> Result<int> {
   a custom error type carries its own fields, so `err(value)` is the form there. Without
   this a Beans-written package could not produce the slugs the stdlib convention is
   built on; only native builtins could.
+- **`new Error(message)`** and **`new Error(message, kind)`** build the built-in
+  error object itself — the same value `err(message, kind)` wraps, without the
+  `Result` around it. This is what a `to_error` hook (below) returns; before it,
+  no Beans code could name an `Error`, only a `Result` carrying one.
 - `?` propagates. `match` handles. Helpers for the rest:
 
 ```
@@ -1695,6 +1699,52 @@ let count: int = parsed.recover(fn(e: Error) -> int { return 0 })
 in `std.option` or `std.result`. These methods copy the active input payload, so
 its type must implement `Clone`. Their inline, boxed, and null-niche layouts do
 not change.
+
+**`?` across an error boundary.** In a function returning `Result<U, F>`, `x?`
+on an `x: Result<T, E>` requires `E` to *reach* `F`. There are exactly three
+ways, checked at the `?` itself:
+
+1. `E` is `F` — nothing happens, the error propagates unchanged.
+2. `E` is a subtype of `F` (it `implements`/`extends` it) — the reference
+   widens to `F`, the same object read as the wider type. No code runs and
+   nothing is lost, exactly as a plain assignment to an `F` binding would.
+3. `E` declares `fn to_error() -> F` — on the error path `?` calls it on the
+   error and propagates the `F` it returns.
+
+```
+fn query() -> Result<int, DbError>   // DbError has `fn to_error() -> Error`
+fn service() -> Result<int> {        // Result<int, Error>
+    let rows: int = query()?         // ? calls DbError.to_error() on an err
+    return ok(rows)
+}
+```
+
+Any other `E` is refused at the `?`, naming both `E` and `F` and the method
+that would let them meet. The conversion runs only on the error path, only
+once — a `to_error` result is never itself put through a second `to_error`.
+Each `?` negotiates its own boundary: `x??` on an
+`x: Result<Result<T, E1>, E2>` crosses `E2` at the first `?` and `E1` at the
+second, each by whichever of the three ways applies to it.
+`std.reflect` relies on this: it answers `Result<T, ReflectError>`, and
+`ReflectError.to_error()` lets a reflection failure cross into a plain
+`Result<T>` carrying the reflect kind as the error slug.
+
+Still refused, deliberately:
+
+- The built-in `Error` as the *source* `E`. It cannot carry a `to_error`
+  method, so `Error → some custom F` has no hook; unpack it with `match`.
+- A `to_error` that is `static`, takes any parameter, or has type parameters —
+  `?` calls it with no arguments on the error, so it must be a plain instance
+  method taking none. A method that misses this is reported, not silently
+  skipped.
+- A `to_error` whose result does not itself reach `F`.
+- Erasing move-only ownership: a move-only `E` cannot widen to a
+  non-move-only `F`, and a `to_error` answering a move-only subtype of a
+  non-move-only `F` is refused the same way.
+- `return err(e)` is **not** a conversion point. It builds this function's own
+  `Result`, so `e` must already be an `F` (or a subtype that widens to one);
+  `to_error` is never called there. Conversion is a property of `?`, not of
+  `err`.
 
 Native `Option` uses three layouts without changing source semantics: pointer
 payloads use null as `none`, wide inline values such as structs, fixed arrays,

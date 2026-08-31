@@ -124,6 +124,7 @@ test-frontend: $(BIN)
 	bash ./test/abstract_classes.sh
 	bash ./test/generic_interfaces.sh
 	bash ./test/backend_parity.sh
+	bash ./test/panic_position_parity.sh
 	bash ./test/emitter_gaps.sh
 	bash ./test/singleton_classes.sh
 	bash ./test/partial_classes.sh
@@ -299,6 +300,7 @@ test-core: $(BIN)
 	bash ./test/abstract_classes.sh
 	bash ./test/generic_interfaces.sh
 	bash ./test/backend_parity.sh
+	bash ./test/panic_position_parity.sh
 	bash ./test/emitter_gaps.sh
 	bash ./test/singleton_classes.sh
 	bash ./test/partial_classes.sh

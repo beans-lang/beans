@@ -1717,6 +1717,37 @@ partial class LlvmTextEmitter {
                 "ptr @beans_gate_new()")
             return "  {result} = call ptr @beans_gate_new()\n"
         }
+        // `new Error(message)` / `new Error(message, kind)` builds the same
+        // object `err("message", "kind")` does, through the same helper, so
+        // the two spellings are one representation.
+        if handle_name == "Error" {
+            let message: string =
+                self.value(
+                    function, values,
+                    instruction.operands[0],
+                    instruction)
+            let message_consumed: bool =
+                instruction.consumes.len() >= 1 &&
+                instruction.consumes[0]
+            var kind: string = ""
+            var kind_consumed: bool = false
+            if instruction.operands.len() == 2 {
+                kind =
+                    self.value(
+                        function, values,
+                        instruction.operands[1],
+                        instruction)
+                kind_consumed =
+                    instruction.consumes.len() == 2 &&
+                    instruction.consumes[1]
+            }
+            let result: string =
+                "%v{instruction.result}"
+            values[instruction.result] = result
+            return self.emit_make_error(
+                instruction, message, message_consumed,
+                kind, kind_consumed, result)
+        }
         if handle_name == "TaskGroup" {
             let result: string =
                 "%v{instruction.result}"
