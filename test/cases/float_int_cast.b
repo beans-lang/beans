@@ -25,7 +25,7 @@ fn unsigned(label: string, v: float) {
 }
 
 fn narrow(label: string, v: f32) {
-    io.println("{label} f32 {v as i8} {v as i16} {v as i32} {v as int} {v as u8} {v as u32} {v as u64}")
+    io.println("{label} f32 {v as i8} {v as i16} {v as i32} {v as int} {v as u8} {v as u16} {v as u32} {v as u64}")
 }
 
 fn main() {

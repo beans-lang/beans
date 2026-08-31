@@ -192,8 +192,12 @@ fn literal_has_base_prefix(text: string) -> bool {
 
 // The plain decimal digits of a base-prefixed integer literal, for the float,
 // f32 and decimal parsers, which read decimal digits and nothing else. The
-// checker holds such a literal to int's range before this runs, so the
-// accumulation cannot wrap. "" means the text has no base prefix.
+// checker holds such a literal to int's range before this runs, and that range
+// includes -0x8000000000000000, whose magnitude 2^63 is one past int.max — so
+// the accumulator is a u64 and a sign is prepended as text, never applied as
+// arithmetic. Accumulating in an int wrapped that magnitude to int.min and the
+// negation wrapped it back, which handed the value over with its sign flipped
+// off. "" means the text has no base prefix.
 fn base_literal_decimal_text(text: string) -> string {
     let cleaned: string = text.replace("_", "")
     var index: int = 0
@@ -203,7 +207,7 @@ fn base_literal_decimal_text(text: string) -> string {
         index = 1
     }
     if !literal_has_base_prefix(cleaned) { return "" }
-    var base: int = 16
+    var base: u64 = 16
     if cleaned.byte_at(index + 1) == 98 ||
        cleaned.byte_at(index + 1) == 66 {
         base = 2
@@ -212,7 +216,7 @@ fn base_literal_decimal_text(text: string) -> string {
     let digits: string =
         cleaned.slice(index, cleaned.len())
     if digits.len() == 0 { return "" }
-    var value: int = 0
+    var value: u64 = 0
     for position: int in 0..digits.len() {
         let byte: int = digits.byte_at(position)
         var digit: int = -1
@@ -223,10 +227,10 @@ fn base_literal_decimal_text(text: string) -> string {
         } else if byte >= 97 && byte <= 102 {
             digit = byte - 97 + 10
         }
-        if digit < 0 || digit >= base { return "" }
-        value = value * base + digit
+        if digit < 0 || digit as u64 >= base { return "" }
+        value = value * base + (digit as u64)
     }
-    if negative { value = 0 - value }
+    if negative && value != 0 { return "-{value}" }
     return "{value}"
 }
 

@@ -166,6 +166,7 @@ for width in i8 i16 i32 i64; do
     grep -q "call $width @llvm.fptosi.sat.$width.f64(" build/float_int_cast.ll
     grep -q "call $width @llvm.fptoui.sat.$width.f64(" build/float_int_cast.ll
     grep -q "call $width @llvm.fptosi.sat.$width.f32(" build/float_int_cast.ll
+    grep -q "call $width @llvm.fptoui.sat.$width.f32(" build/float_int_cast.ll
 done
 if grep -Eq '= (fptosi|fptoui) ' build/float_int_cast.ll; then
     echo "a bare fptosi/fptoui survived in float_int_cast.ll" >&2

@@ -49,6 +49,14 @@ fn main() {
     io.println("base  {hexf} {hexd} {binf} {0xFF as decimal} {0b1010 as float} {0x10 as f32}")
     io.println("negb  {-0xFF as decimal} {-0b101 as float}")
 
+    // int.min's magnitude is one past int.max, the one value the fit check
+    // admits only with its sign — the digits must not wrap on the way through
+    let minf: float = -0x8000000000000000
+    let mind: decimal = -0x8000000000000000
+    io.println("minb  {minf} {mind} {-0x8000000000000000 as f32}")
+    io.println("minx  {-0x8000000000000000 as float} {-0x8000000000000000 as decimal}")
+    io.println("minn  {-0b1000000000000000000000000000000000000000000000000000000000000000 as decimal}")
+
     // and a float literal cast to an integer still truncates
     io.println("trunc {19.99 as int} {-19.99 as int} {19.99 as i8}")
 }
