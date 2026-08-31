@@ -1116,6 +1116,22 @@ __attribute__((constructor)) static void arc_setup(void) { atexit(arc_report); }
 // FIN already gone). Count back to 0 after: the husk filter frees a parked
 // shell only when RC_COUNT is 0, so the bump must not outlive the call (it
 // leaked a buffered object's shell once).
+// The deinit body is user code: contained by brew/join, a panic in it
+// unwinds through this frame (issue #44). The object itself stays abandoned
+// mid-destruction — spec'd, and FIN is already off so death cannot run twice
+// — but the in-deinit counters must come back down on that path too:
+// cc_collect refuses to run while one is up, so a stranded count turns one
+// caught panic into a collector that never runs again for the life of the
+// process. The guard fires only on the unwind; the normal path decrements
+// exactly where it always did.
+typedef struct { int armed; } RtDeinitCounters;
+static void rt_deinit_counters_unwound(RtDeinitCounters* g) {
+    if (!g->armed) return;
+#if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
+    beans_local_in_deinit -= 1;
+#endif
+    __atomic_sub_fetch(&beans_in_deinit, 1, __ATOMIC_RELAXED);
+}
 BEANS_DEINIT_ATTR static void beans_do_deinit(
     void* p, BHead* h, long long nrc) {
     rt_rc_store(h, (nrc + 1) & ~RC_FIN);
@@ -1128,7 +1144,10 @@ BEANS_DEINIT_ATTR static void beans_do_deinit(
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
     beans_local_in_deinit += 1;
 #endif
+    __attribute__((cleanup(rt_deinit_counters_unwound)))
+    RtDeinitCounters unwound = {1};
     methods[beans_deinit_sel](p);
+    unwound.armed = 0;
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
     beans_local_in_deinit -= 1;
 #endif
@@ -1571,6 +1590,22 @@ static void cc_visit_push(void* c, void* ctx) {
     cc_push(ctx, c);
 }
 
+// The release cascade's work stack and the collector's buffers stay live
+// across user deinit bodies, and a contained panic there unwinds past
+// their frees (issue #44). Each frame arms one of these and disarms after
+// its own teardown: the normal path is unchanged, and the unwind path
+// frees the grown buffer instead of stranding it. What a panicking pass
+// had not yet destroyed stays abandoned — the stance the spec already
+// takes for the panicking object itself.
+typedef struct {
+    CCStack* st;
+    int armed;
+} RtStackUnwound;
+static void rt_stack_unwound(RtStackUnwound* g) {
+    if (!g->armed) return;
+    if (g->st->v && g->st->v != g->st->local) rt_free(g->st->v);
+}
+
 // Release cascades overwhelmingly walk fixed class objects. Keep this path
 // direct: the collector still uses the generic callback walker, but ordinary
 // ARC death should not pay an indirect call for every child.
@@ -1960,6 +1995,8 @@ void beans_release(void* p) {
     ARC_ADD(arc_release_calls, 1);
     void* local[64];
     CCStack st = {local, 0, 64, local};
+    __attribute__((cleanup(rt_stack_unwound)))
+    RtStackUnwound st_unwound = {&st, 1};
     void* cur = p;
     for (;;) {
         ARC_ADD(arc_release_nodes, 1);
@@ -2030,6 +2067,7 @@ void beans_release(void* p) {
         if (!st.len) break;
         cur = st.v[--st.len];
     }
+    st_unwound.armed = 0;
     if (st.v != local) rt_free(st.v);
 }
 
@@ -2042,6 +2080,84 @@ static void release_masked_value(void* value, long long ptr_mask) {
         void* child = *(void**)RT_SLOT_AT(value, slot);
         if (child) beans_release(child);
     }
+}
+
+// ---- unwind-safe runtime scratch (issue #73) -------------------------------
+//
+// A contained panic unwinds through runtime frames that host Beans callbacks
+// (a sort's comparator or key function, a reflective call). Two guarantees
+// hold there (spec/CONCURRENCY.md): the frame's scratch is freed, and a
+// collection the frame was permuting in place is put back exactly as it was
+// before the call. Both ride __attribute__((cleanup)): the driver compiles
+// this unit with -fexceptions exactly when it defines BEANS_FIBER_UNWIND, so
+// the cleanups run during the forced unwind — the same pairing glibc uses
+// for pthread cleanup handlers — and on the normal path they are ordinary
+// scope exits, which also retires the hand-written frees they replace.
+#ifndef BEANS_FIBER_UNWIND
+#define BEANS_FIBER_UNWIND 0
+#endif
+static void rt_scratch_free(void* slot) { rt_free(*(void**)slot); }
+#define RT_SCRATCH __attribute__((cleanup(rt_scratch_free)))
+typedef struct {
+    void* target; // the array being permuted; NULL once the permutation stands
+    void* saved;  // the pre-call contents, owned by the guard
+    size_t bytes;
+} RtRestore;
+static void rt_restore_fire(RtRestore* guard) {
+    if (!guard->saved) return;
+    if (guard->target) memcpy(guard->target, guard->saved, guard->bytes);
+    rt_free(guard->saved);
+}
+#define RT_RESTORE __attribute__((cleanup(rt_restore_fire)))
+// Arm before the first callback can run: an unwind from here on puts the
+// array back. Costs one allocation and one copy per interruptible sort, and
+// only in a build that can unwind at all — a program that cannot contain a
+// panic pays nothing. Failing the snapshot panics before anything mutates.
+static void rt_restore_arm(RtRestore* guard, void* target, size_t bytes) {
+#if BEANS_FIBER_UNWIND
+    guard->saved = rt_alloc(bytes);
+    if (!guard->saved) beans_panic("out of memory", 0, 0);
+    memcpy(guard->saved, target, bytes);
+    guard->target = target;
+    guard->bytes = bytes;
+#else
+    (void)guard;
+    (void)target;
+    (void)bytes;
+#endif
+}
+// The permutation completed: keep it. The snapshot is still freed.
+static void rt_restore_done(RtRestore* guard) { guard->target = 0; }
+// A comparator or key function can reach the list it is sorting through a
+// captured reference. Reading it is fine — the widened mirror keeps what it
+// sees identical across backends — but a structural change (push, remove,
+// clear: anything that moves the length or the storage) would leave the
+// sort permuting a stale array: a use-after-free on growth, reads past the
+// end on shrink. Both engines refuse it as the program's own panic, checked
+// as each callback returns and before the sort touches the array again.
+// The restore guard is stood down first: with the storage changed there is
+// nothing coherent to put back, so the list stays as the mutation left it.
+typedef struct {
+    BList* list;
+    long long len;
+    void* data;
+    RtRestore* restore;
+} RtSortPin;
+static void rt_sort_pin(RtSortPin* pin, BList* list, RtRestore* restore) {
+    pin->list = list;
+    pin->len = list ? list->len : 0;
+    pin->data = list ? list->data : 0;
+    pin->restore = restore;
+}
+static void rt_sort_check(RtSortPin* pin) {
+    if (!pin->list) return;
+    if (pin->list->len == pin->len && pin->list->data == pin->data) return;
+    long long now = pin->list->len;
+    if (pin->restore) rt_restore_done(pin->restore);
+    char b[96];
+    rt_format(b, sizeof b, "list changed during sort (length %lld -> %lld)",
+              pin->len, now);
+    beans_panic(b, 0, 0);
 }
 // malloc and calloc only promise enough alignment for any ordinary scalar —
 // 16 bytes on both supported targets. An `align(64)` record asked for more than
@@ -2753,6 +2869,15 @@ static long long cc_walk_min = 256; // adaptive gate for trial deletion
 // Mutex, and Channel are hard traversal boundaries. This is an owner-local
 // pause: no worker is stopped or polled, and the global collector remains
 // quiescence-only.
+// Same shape as cc_collecting_unwound: this pass runs user deinits (the
+// cycle bodies, husk releases inside cc_append_roots, the deferred
+// releases), and a contained panic there must not strand the walker count
+// or the collecting flag — both gate every future worker collection.
+static void cc_worker_flags_unwound(int* armed) {
+    if (!*armed) return;
+    cc_worker_collecting = 0;
+    __atomic_sub_fetch(&cc_worker_walkers, 1, __ATOMIC_SEQ_CST);
+}
 static void cc_worker_collect(void) {
     if (!cc_worker_root_batching || cc_worker_collecting) return;
     if (beans_local_in_deinit) return;
@@ -2763,12 +2888,18 @@ static void cc_worker_collect(void) {
         return;
     }
     cc_worker_collecting = 1;
+    __attribute__((cleanup(cc_worker_flags_unwound)))
+    int worker_flags_unwound = 1;
     {
         ARC_ADD(arc_collections, 1);
         void* dlocal[64];
         CCStack deferred = {dlocal, 0, 64, dlocal};
+        __attribute__((cleanup(rt_stack_unwound)))
+        RtStackUnwound deferred_unwound = {&deferred, 1};
         void* glocal[64];
         CCStack global = {glocal, 0, 64, glocal};
+        __attribute__((cleanup(rt_stack_unwound)))
+        RtStackUnwound global_unwound = {&global, 1};
 
         // Cheap pass first: dead parked shells can go immediately. Live
         // purple roots stay until the adaptive trial threshold is reached.
@@ -2793,6 +2924,7 @@ static void cc_worker_collect(void) {
         }
         cc_worker_root_len = n;
         if (global.len) cc_append_roots(global.v, global.len);
+        global_unwound.armed = 0;
         if (global.v != glocal) rt_free(global.v);
 
         if (cc_worker_root_len >= cc_worker_walk_min) {
@@ -2807,6 +2939,10 @@ static void cc_worker_collect(void) {
             if (walked > CC_WORKER_WALK_BUDGET)
                 walked = CC_WORKER_WALK_BUDGET;
             CCStack st = {0, 0, 0}, aux = {0, 0, 0}, dead = {0, 0, 0};
+            // st and aux never cross user code; dead is live across the
+            // cycle deinits, so it alone needs the unwind guard
+            __attribute__((cleanup(rt_stack_unwound)))
+            RtStackUnwound dead_unwound = {&dead, 1};
             int saw_shared = 0;
             for (long long i = 0; i < walked; i++)
                 cc_worker_mark_gray(
@@ -2883,6 +3019,7 @@ static void cc_worker_collect(void) {
                 rt_free(st.v);
                 rt_free(aux.v);
                 rt_free(dead.v);
+                dead.v = 0; // the guard at scope exit must not free it again
             }
         }
 
@@ -2898,8 +3035,10 @@ static void cc_worker_collect(void) {
         // handles any root parked by these deferred releases.
         for (long long i = 0; i < deferred.len; i++)
             beans_release(deferred.v[i]);
+        deferred_unwound.armed = 0;
         if (deferred.v != dlocal) rt_free(deferred.v);
     }
+    worker_flags_unwound = 0;
     cc_worker_collecting = 0;
     if (__atomic_sub_fetch(&cc_worker_walkers, 1, __ATOMIC_SEQ_CST) == 0) {
         // The sweep yields to active walks, and under steady multi-worker
@@ -2914,6 +3053,13 @@ static void cc_worker_collect(void) {
 }
 #endif
 
+// The cycle deinits and the deferred releases below run user code after
+// CC_UNLOCK; a contained panic there unwinds out of the pass. The members
+// not yet destroyed stay abandoned (their holds keep their shells), but
+// cc_collecting gates every future collection, so it must come back down.
+static void cc_collecting_unwound(int* armed) {
+    if (*armed) cc_collecting = 0;
+}
 static void cc_collect(int force) {
     if (cc_collecting) return;
     // a deinit body is user code running mid-cascade: its allocations must
@@ -2922,14 +3068,20 @@ static void cc_collect(int force) {
     if (__atomic_load_n(&beans_in_deinit, __ATOMIC_RELAXED)) return;
     ARC_ADD(arc_collections, 1);
     cc_collecting = 1;
+    __attribute__((cleanup(cc_collecting_unwound)))
+    int collecting_unwound = 1;
     // Children handed back by cc_free_shell (a Shared payload) are released
     // only after CC_UNLOCK: releasing can park a new possible root, which
     // takes cc_mu again, and cc_mu is not recursive.
     void* dlocal[64];
     CCStack deferred = {dlocal, 0, 64, dlocal};
+    __attribute__((cleanup(rt_stack_unwound)))
+    RtStackUnwound deferred_unwound = {&deferred, 1};
     // The white set outlives the lock: deinit bodies are user code that
     // allocates and releases, and parking a possible root takes cc_mu again.
     CCStack doomed = {0, 0, 0};
+    __attribute__((cleanup(rt_stack_unwound)))
+    RtStackUnwound doomed_unwound = {&doomed, 1};
     CC_LOCK();
 
     // keep only live purple candidates; zombies (released while parked)
@@ -2996,8 +3148,12 @@ static void cc_collect(int force) {
     if (!cc_run_cycle_deinits(doomed.v, doomed.len, 0))
         cc_free_cycle_shells(doomed.v, doomed.len, &deferred);
     rt_free(doomed.v);
+    doomed.v = 0; // the guard must not free it again if a release panics
     for (long long i = 0; i < deferred.len; i++) beans_release(deferred.v[i]);
+    deferred_unwound.armed = 0;
+    doomed_unwound.armed = 0;
     if (deferred.v != dlocal) rt_free(deferred.v);
+    collecting_unwound = 0;
     cc_collecting = 0;
 }
 
@@ -3069,6 +3225,21 @@ void beans_panic(const char* msg, long long line, long long col) {
     // where there is no fiber at all) keeps today's report and exit.
     {
         BeansFiber* fiber = beans_fiber_current();
+        if (fiber && beans_fiber_unwinding(fiber)) {
+            // A panic raised while this fiber is already unwinding is a panic
+            // inside a defer or a deinit the unwind itself is running. There
+            // is no second unwind to give it (spec/CONCURRENCY.md calls this
+            // the one unrecoverable case), so both reports go out and the
+            // process stops.
+            rt_write(2, "double panic during unwind: ",
+                     (unsigned long long)28);
+            rt_write(2, text, (unsigned long long)n);
+            rt_write(2, "  while unwinding: ", (unsigned long long)19);
+            const char* first = beans_fiber_message(fiber);
+            rt_write(2, first, (unsigned long long)strlen(first));
+            rt_write(2, "\n", (unsigned long long)1);
+            abort();
+        }
         if (fiber && !beans_fiber_is_root(fiber)) {
             text[n - 1] = '\0'; // the stored message carries no newline
             beans_fiber_panic(text);
@@ -3817,8 +3988,34 @@ char* beans_str_repeat(char* s, long long n, long long line, long long col) {
 // Half away from zero, which is what llround does for every value a program can
 // meaningfully round. Written out rather than pulled from libm, which the
 // freestanding profile does not have.
+//
+// A float that has no int to round to saturates at int's own bounds and NaN is
+// zero, the same rule spec/SYNTAX.md gives `as int`: a C cast of an
+// out-of-range double is undefined behaviour, and this answer is an int either
+// way. 2^63 is exact in a double, so the two guards are exact.
+//
+// NaN is recognised from the bits, not by asking whether the value equals
+// itself. On a target with no hardware double — the RV32 and Cortex-M boards
+// this runtime also builds for — an unordered compare lowers to __unorddf2,
+// which is a compiler-rt symbol the freestanding profile does not link and
+// test/freestanding.sh refuses. Reading the exponent and mantissa is the same
+// answer with no libcall, and the ordered compares below are all ordinary
+// soft-float ones the profile already carries.
+static int beans_f64_is_nan(double v) {
+    unsigned long long bits;
+    memcpy(&bits, &v, sizeof bits);
+    return (bits & 0x7ff0000000000000ULL) == 0x7ff0000000000000ULL &&
+           (bits & 0x000fffffffffffffULL) != 0;
+}
+
 long long beans_f64_round(double v) {
-    return v < 0 ? -(long long)(-v + 0.5) : (long long)(v + 0.5);
+    if (beans_f64_is_nan(v)) return 0;
+    if (v >= 9223372036854775808.0) return 9223372036854775807LL;
+    if (v <= -9223372036854775808.0) return -9223372036854775807LL - 1;
+    double rounded = v < 0 ? -(-v + 0.5) : (v + 0.5);
+    if (rounded >= 9223372036854775808.0) return 9223372036854775807LL;
+    if (rounded <= -9223372036854775808.0) return -9223372036854775807LL - 1;
+    return (long long)rounded;
 }
 
 // ---- lists ----
@@ -5578,6 +5775,12 @@ static long long reflect_invoke(BReflectInvoke call, void* receiver,
     BReflectValue** values = spilled
         ? (BReflectValue**)rt_zalloc((size_t)count * sizeof(BReflectValue*))
         : value_stack;
+    // the spill is held across the reflective call itself: unwind-owned, so
+    // a panicking callee cannot leak it (issue #73)
+    RT_SCRATCH void* data_spill = spilled ? (void*)data : NULL;
+    RT_SCRATCH void* values_spill = spilled ? (void*)values : NULL;
+    (void)data_spill;
+    (void)values_spill;
     if (!data || !values) beans_panic("out of memory", 0, 0);
     for (long long i = 0; i < count; ++i) {
         values[i] = handles
@@ -5586,11 +5789,9 @@ static long long reflect_invoke(BReflectInvoke call, void* receiver,
             (!beans_str_eq(parameter_types[i], values[i]->type_name) &&
              !beans_reflect_is_assignable_from(
                  parameter_types[i], values[i]->type_name))) {
-            if (spilled) { rt_free(data); rt_free(values); }
             return reflect_fail(4);
         }
         if (parameter_passing[i] == 2) {
-            if (spilled) { rt_free(data); rt_free(values); }
             return reflect_fail(5);
         }
         data[i] = values[i]->data;
@@ -5605,7 +5806,6 @@ static long long reflect_invoke(BReflectInvoke call, void* receiver,
             values[i]->size = 0;
         }
     }
-    if (spilled) { rt_free(data); rt_free(values); }
     return result ? result : reflect_fail(5);
 }
 
@@ -5643,6 +5843,10 @@ static long long reflect_function_invoke(long long id, long long address,
         ? (long long*)rt_zalloc((size_t)(count ? count : 1) *
                                 sizeof(long long))
         : passing_stack;
+    RT_SCRATCH void* types_spill = spilled ? (void*)types : NULL;
+    RT_SCRATCH void* passing_spill = spilled ? (void*)passing : NULL;
+    (void)types_spill;
+    (void)passing_spill;
     if (!types || !passing) beans_panic("out of memory", 0, 0);
     long long expected = -1;
     if (!reflect_function_param_orphans && count >= 0) {
@@ -5669,7 +5873,6 @@ static long long reflect_function_invoke(long long id, long long address,
     long long result = count == expected
         ? reflect_invoke(function->call, 0, address, count, types, passing)
         : reflect_fail(6);
-    if (spilled) { rt_free(types); rt_free(passing); }
     return result;
 }
 
@@ -5720,6 +5923,10 @@ static long long reflect_method_invoke(long long id, char* checked_owner,
         ? (long long*)rt_zalloc((size_t)(count ? count : 1) *
                                 sizeof(long long))
         : passing_stack;
+    RT_SCRATCH void* types_spill = spilled ? (void*)types : NULL;
+    RT_SCRATCH void* passing_spill = spilled ? (void*)passing : NULL;
+    (void)types_spill;
+    (void)passing_spill;
     if (!types || !passing) beans_panic("out of memory", 0, 0);
     long long expected = count < 0 ? -1
         : reflect_fill_method_arguments(id, count, types, passing);
@@ -5740,7 +5947,6 @@ static long long reflect_method_invoke(long long id, char* checked_owner,
         ? reflect_invoke(call, receiver ? receiver->data : 0,
                          address, count, types, passing)
         : reflect_fail(6);
-    if (spilled) { rt_free(types); rt_free(passing); }
     return result;
 }
 
@@ -5777,6 +5983,10 @@ static long long reflect_initializer_invoke(long long type,
         ? (long long*)rt_zalloc((size_t)(count ? count : 1) *
                                 sizeof(long long))
         : passing_stack;
+    RT_SCRATCH void* types_spill = spilled ? (void*)types : NULL;
+    RT_SCRATCH void* passing_spill = spilled ? (void*)passing : NULL;
+    (void)types_spill;
+    (void)passing_spill;
     if (!types || !passing) beans_panic("out of memory", 0, 0);
     for (long long i = 0; i < count; ++i) {
         long long row = reflect_initializer_parameter_id(
@@ -5787,7 +5997,6 @@ static long long reflect_initializer_invoke(long long type,
     }
     long long result = reflect_invoke(
         reflected->initializer, 0, address, count, types, passing);
-    if (spilled) { rt_free(types); rt_free(passing); }
     return result;
 }
 
@@ -6171,18 +6380,34 @@ BList* beans_list_clone(BList* l) {
     return r;
 }
 
-// bottom-up stable merge — structurally identical to the interpreter's
-// stable_merge, so both backends produce the same order for ANY predicate,
-// even one that is not a strict weak ordering
+// bottom-up stable merge — structurally identical to the interpreter's sort
+// branch (src/interpreter.b), block for block, so both backends produce the
+// same order for ANY predicate, even one that is not a strict weak ordering
 static long long sort_less(long long x, long long y, long long kind, void* thunk,
                            void* box) {
     if (thunk) return ((long long (*)(void*, long long, long long))thunk)(box, x, y);
     return slot_cmp(x, y, kind) < 0;
 }
+// `mirror` is the narrow-stride list `a` was widened from, or NULL when `a`
+// is the list's own storage. A Beans comparator can read the list it is
+// sorting through a captured reference, and the two backends must show it
+// the same thing at every call, so a widened sort writes each completed
+// block back through the mirror exactly where the in-place sort (and the
+// interpreter, block for block) commits its own — and the restore guard
+// then snapshots the narrow storage the program can actually see.
 static void list_merge_sort(long long* a, long long n, long long kind, void* thunk,
-                            void* box) {
+                            void* box, BList* mirror, BList* owner) {
     if (n < 2) return;
-    long long* buf = rt_alloc((size_t)n * 8);
+    // the kind comparators cannot panic; only a Beans comparator can
+    // interrupt the permutation, so only then is the array snapshotted
+    RT_RESTORE RtRestore restore = {0, 0, 0};
+    RtSortPin pin;
+    rt_sort_pin(&pin, thunk ? owner : NULL, &restore);
+    if (thunk) {
+        if (mirror) rt_restore_arm(&restore, mirror->data, (size_t)n * 4);
+        else rt_restore_arm(&restore, a, (size_t)n * 8);
+    }
+    RT_SCRATCH long long* buf = rt_alloc((size_t)n * 8);
     for (long long w = 1; w < n; w *= 2) {
         for (long long lo = 0; lo < n; lo += 2 * w) {
             long long mid = lo + w < n ? lo + w : n;
@@ -6190,15 +6415,22 @@ static void list_merge_sort(long long* a, long long n, long long kind, void* thu
             if (mid >= hi) continue;
             long long i = lo, j = mid, o = lo;
             while (i < mid && j < hi) {
-                if (!sort_less(a[j], a[i], kind, thunk, box)) buf[o++] = a[i++];
+                long long take_left = !sort_less(a[j], a[i], kind, thunk, box);
+                if (thunk) rt_sort_check(&pin);
+                if (take_left) buf[o++] = a[i++];
                 else buf[o++] = a[j++];
             }
             while (i < mid) buf[o++] = a[i++];
             while (j < hi) buf[o++] = a[j++];
             memcpy(a + lo, buf + lo, (size_t)(hi - lo) * 8);
+            if (mirror)
+                for (long long back = lo; back < hi; back++) {
+                    unsigned int raw = (unsigned int)a[back];
+                    memcpy((char*)mirror->data + back * 4, &raw, 4);
+                }
         }
     }
-    rt_free(buf);
+    rt_restore_done(&restore);
 }
 // Signed integer slots have a cheaper stable path: one to four 16-bit passes
 // after subtracting the observed minimum. Narrow real-world ranges therefore
@@ -6215,11 +6447,11 @@ static void list_radix_sort_int(long long* a, long long n) {
     unsigned long long span =
         (unsigned long long)maximum - (unsigned long long)minimum;
     int passes = span <= 0xffffULL ? 1 : span <= 0xffffffffULL ? 2 : 4;
-    long long* buf = rt_alloc((size_t)n * 8);
+    RT_SCRATCH long long* buf = rt_alloc((size_t)n * 8);
     long long* src = a;
     long long* dst = buf;
-    size_t* count = rt_alloc(65536 * sizeof(size_t));
-    size_t* at = rt_alloc(65536 * sizeof(size_t));
+    RT_SCRATCH size_t* count = rt_alloc(65536 * sizeof(size_t));
+    RT_SCRATCH size_t* at = rt_alloc(65536 * sizeof(size_t));
     for (int pass = 0; pass < passes; pass++) {
         memset(count, 0, 65536 * sizeof(size_t));
         int shift = pass * 16;
@@ -6243,9 +6475,6 @@ static void list_radix_sort_int(long long* a, long long n) {
         dst = swap;
     }
     if (src != a) memcpy(a, src, (size_t)n * 8);
-    rt_free(count);
-    rt_free(at);
-    rt_free(buf);
 }
 // Sorting speaks eight-byte slots. A 4-byte typed list widens into a
 // temporary slot array, sorts there, and narrows back — the permutation
@@ -6257,75 +6486,76 @@ static long long* list_widen_slots(BList* l) {
     for (long long i = 0; i < n; i++) wide[i] = list_slot_at(l, i);
     return wide;
 }
+// The caller owns `wide` (an RT_SCRATCH local), so an unwind anywhere
+// between widening and narrowing frees it.
 static void list_narrow_slots(BList* l, long long* wide) {
     for (long long i = 0; i < l->len; i++) {
         unsigned int raw = (unsigned int)wide[i];
         memcpy((char*)l->data + i * 4, &raw, 4);
     }
-    rt_free(wide);
 }
 void beans_list_sort(BList* l, long long kind) {
     if (l->len > 1) list_changed(l, LIST_CHANGE_SORT);
     if (l->stride == 4) {
-        long long* wide = list_widen_slots(l);
+        RT_SCRATCH long long* wide = list_widen_slots(l);
         if (kind == 0) list_radix_sort_int(wide, l->len);
-        else list_merge_sort(wide, l->len, kind, NULL, NULL);
+        else list_merge_sort(wide, l->len, kind, NULL, NULL, NULL, NULL);
         list_narrow_slots(l, wide);
         return;
     }
     if (kind == 0) list_radix_sort_int(l->data, l->len);
-    else list_merge_sort(l->data, l->len, kind, NULL, NULL);
+    else list_merge_sort(l->data, l->len, kind, NULL, NULL, NULL, NULL);
 }
 void beans_list_sort_by(BList* l, void* thunk, void* box) {
     if (l->len > 1) list_changed(l, LIST_CHANGE_SORT);
     if (l->stride == 4) {
-        long long* wide = list_widen_slots(l);
-        list_merge_sort(wide, l->len, 0, thunk, box);
+        // the merge permutes `wide`, a copy, and mirrors each completed
+        // block into the list, so the comparator observes the same states
+        // it would over the list's own slots; the copy is unwind-owned
+        // scratch and the restore guard inside puts the narrow storage back
+        RT_SCRATCH long long* wide = list_widen_slots(l);
+        list_merge_sort(wide, l->len, 0, thunk, box, l, l);
         list_narrow_slots(l, wide);
         return;
     }
-    list_merge_sort(l->data, l->len, 0, thunk, box);
+    list_merge_sort(l->data, l->len, 0, thunk, box, NULL, l);
 }
-void beans_list_sort_by_key(BList* l, void* thunk, void* box) {
-    if (l->len > 1) list_changed(l, LIST_CHANGE_SORT);
-    if (l->stride == 4) {
-        long long saved_len = l->len;
-        long long* wide = list_widen_slots(l);
-        BList slots = *l;
-        slots.data = wide;
-        slots.stride = -8;
-        beans_list_sort_by_key(&slots, thunk, box);
-        l->len = saved_len;
-        list_narrow_slots(l, wide);
-        return;
-    }
+static void list_sort_by_key_slots(BList* l, void* thunk, void* box,
+                                   BList* observed) {
     long long n = l->len;
+    // spec/SYNTAX.md promises one key call per item, and the single item a
+    // one-element list holds is not the exception: returning above this loop
+    // made the native backend skip the call the interpreter made, which only a
+    // call counter can see. Two elements is what the *sort* below needs, and
+    // that exit is under the key loop.
     if (n < 1) return;
-    // Keys first, then the "nothing to sort" exit. spec/SYNTAX.md promises one
-    // key call per item, and a one-element list must not be the exception that
-    // only a call counter can see: returning above this loop made the native
-    // backend skip the call the interpreter made.
-    long long* keys = rt_alloc((size_t)n * 8);
+    // every key call runs before the first write to the list, so a
+    // panicking key function leaves the list untouched; the scratch is
+    // unwind-owned. `observed` is the program's own list — for a widened
+    // sort `l` is a slot view over scratch the callback cannot reach.
+    RT_SCRATCH long long* keys = rt_alloc((size_t)n * 8);
     if (!keys) beans_panic("out of memory", 0, 0);
     long long (*key_fn)(void*, long long) =
         (long long (*)(void*, long long))thunk;
+    RtSortPin pin;
+    rt_sort_pin(&pin, observed, NULL);
     long long minimum = 0, maximum = 0;
     for (long long i = 0; i < n; i++) {
         keys[i] = key_fn(box, l->data[i]);
+        rt_sort_check(&pin);
         if (i == 0 || keys[i] < minimum) minimum = keys[i];
         if (i == 0 || keys[i] > maximum) maximum = keys[i];
     }
-    if (n < 2) {
-        rt_free(keys);
-        return;
-    }
-    long long* val_buf = rt_alloc((size_t)n * 8);
-    size_t* count = rt_alloc(65536 * sizeof(size_t));
-    size_t* at = rt_alloc(65536 * sizeof(size_t));
+    if (n < 2) return; // the keys were the whole job; RT_SCRATCH frees them
+    RT_SCRATCH long long* val_buf = rt_alloc((size_t)n * 8);
+    RT_SCRATCH size_t* count = rt_alloc(65536 * sizeof(size_t));
+    RT_SCRATCH size_t* at = rt_alloc(65536 * sizeof(size_t));
+    if (!val_buf || !count || !at) beans_panic("out of memory", 0, 0);
     unsigned long long span =
         (unsigned long long)maximum - (unsigned long long)minimum;
     int passes = span <= 0xffffULL ? 1 : span <= 0xffffffffULL ? 2 : 4;
-    long long* key_buf = passes > 1 ? rt_alloc((size_t)n * 8) : NULL;
+    RT_SCRATCH long long* key_buf = passes > 1 ? rt_alloc((size_t)n * 8) : NULL;
+    if (passes > 1 && !key_buf) beans_panic("out of memory", 0, 0);
     long long* key_src = keys;
     long long* key_dst = key_buf;
     long long* val_src = l->data;
@@ -6357,11 +6587,21 @@ void beans_list_sort_by_key(BList* l, void* thunk, void* box) {
         swap = val_src; val_src = val_dst; val_dst = swap;
     }
     if (val_src != l->data) memcpy(l->data, val_src, (size_t)n * 8);
-    rt_free(keys);
-    rt_free(key_buf);
-    rt_free(val_buf);
-    rt_free(count);
-    rt_free(at);
+}
+void beans_list_sort_by_key(BList* l, void* thunk, void* box) {
+    if (l->len > 1) list_changed(l, LIST_CHANGE_SORT);
+    if (l->stride == 4) {
+        long long saved_len = l->len;
+        RT_SCRATCH long long* wide = list_widen_slots(l);
+        BList slots = *l;
+        slots.data = wide;
+        slots.stride = -8;
+        list_sort_by_key_slots(&slots, thunk, box, l);
+        l->len = saved_len;
+        list_narrow_slots(l, wide);
+        return;
+    }
+    list_sort_by_key_slots(l, thunk, box, l);
 }
 
 // ---- maps ----
@@ -6625,6 +6865,16 @@ static void map_insert_miss_typed(BMap* m, long long key, void* value,
 }
 
 // note: the map owns key and value refs; the caller retains before calling
+//
+// Hit-path order is load-bearing (issue #44, spec/CONCURRENCY.md): the old
+// value's release runs user deinit code, and contained by brew/join a panic
+// there unwinds out of this frame. The store must stand on that panic — the
+// interpreter's rule — so the entry takes the new value, the duplicate key
+// is dropped, and the old value's release comes LAST, when everything else
+// is already consistent. Nothing before it can panic: the store and the
+// write barrier are plain code, a duplicate string key frees without user
+// code, and a duplicate class key is the entry's own object (identity hit),
+// so its count is at least two and the release never reaches a deinit.
 void beans_map_set(BMap* m, long long key, long long val, long long kind, void* eq,
                    void* hash) {
     long long (*hf)(long long) = (long long (*)(long long))hash;
@@ -6632,11 +6882,12 @@ void beans_map_set(BMap* m, long long key, long long val, long long kind, void* 
     long long i = map_find(m, key, kind, eq, hf, &h, &slot);
     if (i >= 0) {
         long long flags = (head_of(m)->meta & CC_SHAPE) >> 3;
-        if (flags & 1) beans_release((void*)key); // duplicate key not stored
+        long long old = m->data[i * 2 + 1];
         if (flags & 2) beans_cc_write(m, (void*)(uintptr_t)val);
-        if (flags & 2) beans_release((void*)m->data[i * 2 + 1]);
         m->data[i * 2 + 1] = val;
+        if (flags & 1) beans_release((void*)key); // duplicate key not stored
         if (kind == 4 && (flags & 1)) cc_possible_root(m);
+        if (flags & 2) beans_release((void*)old);
         return;
     }
     map_insert_miss(m, key, val, h, kind, hf, slot);
@@ -6649,13 +6900,29 @@ __attribute__((always_inline)) void beans_map_set_raw(BMap* m, long long key,
     long long i = map_find_raw(m, key, &h, &slot);
     if (i >= 0) {
         long long flags = (head_of(m)->meta & CC_SHAPE) >> 3;
-        if (flags & 1) beans_release((void*)key);
+        // same order rule as beans_map_set: store first, the one
+        // panic-capable release (the old value's) last
+        long long old = m->data[i * 2 + 1];
         if (flags & 2) beans_cc_write(m, (void*)(uintptr_t)val);
-        if (flags & 2) beans_release((void*)m->data[i * 2 + 1]);
         m->data[i * 2 + 1] = val;
+        if (flags & 1) beans_release((void*)key);
+        if (flags & 2) beans_release((void*)old);
         return;
     }
     map_insert_miss(m, key, val, h, 0, NULL, slot);
+}
+
+// swap the entry's wide value with the caller's buffer, byte for byte: the
+// entry takes the new value and the caller's buffer parks the old one for
+// the final release. No allocation, and MSVC has no VLA to spill into.
+static void map_swap_wide(void* entry, void* incoming, size_t n) {
+    unsigned char* a = (unsigned char*)entry;
+    unsigned char* b = (unsigned char*)incoming;
+    for (size_t i = 0; i < n; i++) {
+        unsigned char t = a[i];
+        a[i] = b[i];
+        b[i] = t;
+    }
 }
 
 void beans_map_set_typed(BMap* m, long long key, void* value, long long kind,
@@ -6665,11 +6932,14 @@ void beans_map_set_typed(BMap* m, long long key, void* value, long long kind,
     long long i = map_find(m, key, kind, eq, hf, &h, &slot);
     if (i >= 0) {
         long long flags = (head_of(m)->meta & CC_SHAPE) >> 3;
-        if (flags & 1) beans_release((void*)key);
+        // same order rule as beans_map_set: store first, the old value's
+        // release last, from the caller's buffer the swap parked it in
+        // (the buffer is consumed by this call either way)
         beans_cc_write_typed(m, value, m->value_ptr_mask);
-        map_release_wide_value(m, map_wide_value(m, i));
-        memcpy(map_wide_value(m, i), value, (size_t)m->value_stride);
+        map_swap_wide(map_wide_value(m, i), value, (size_t)m->value_stride);
+        if (flags & 1) beans_release((void*)key);
         if (m->value_cycle_mask || kind == 4) cc_possible_root(m);
+        map_release_wide_value(m, value);
         return;
     }
     map_insert_miss_typed(m, key, value, h, kind, hf, slot);
@@ -6683,11 +6953,13 @@ __attribute__((always_inline)) void beans_map_set_typed_raw(BMap* m,
     long long i = map_find_raw(m, key, &h, &slot);
     if (i >= 0) {
         long long flags = (head_of(m)->meta & CC_SHAPE) >> 3;
-        if (flags & 1) beans_release((void*)key);
+        // same order rule as beans_map_set: store first, the old value's
+        // release last, from the caller's buffer the swap parked it in
         beans_cc_write_typed(m, value, m->value_ptr_mask);
-        map_release_wide_value(m, map_wide_value(m, i));
-        memcpy(map_wide_value(m, i), value, (size_t)m->value_stride);
+        map_swap_wide(map_wide_value(m, i), value, (size_t)m->value_stride);
+        if (flags & 1) beans_release((void*)key);
         if (m->value_cycle_mask) cc_possible_root(m);
+        map_release_wide_value(m, value);
         return;
     }
     map_insert_miss_typed(m, key, value, h, 0, NULL, slot);
@@ -6735,8 +7007,13 @@ long long beans_map_insert(BMap* m, long long key, long long val, long long kind
     unsigned long long h = 0, slot = 0;
     if (map_find(m, key, kind, eq, hf, &h, &slot) >= 0) {
         long long flags = (head_of(m)->meta & CC_SHAPE) >> 3;
-        if (flags & 1) beans_release((void*)key);
+        // declined: the incoming value's release can run a panicking
+        // deinit, so it goes first, while the key is still the caller's
+        // to unwind; the duplicate key's release cannot panic (a string
+        // frees without user code, an identity-hit class key holds at
+        // least two counts)
         if (flags & 2) beans_release((void*)val);
+        if (flags & 1) beans_release((void*)key);
         return 0;
     }
     map_insert_miss(m, key, val, h, kind, hf, slot);
@@ -6748,8 +7025,9 @@ long long beans_map_insert_raw(BMap* m, long long key, long long val) {
     unsigned long long h = 0, slot = 0;
     if (map_find_raw(m, key, &h, &slot) >= 0) {
         long long flags = (head_of(m)->meta & CC_SHAPE) >> 3;
-        if (flags & 1) beans_release((void*)key);
+        // same decline order as beans_map_insert: panic-capable first
         if (flags & 2) beans_release((void*)val);
+        if (flags & 1) beans_release((void*)key);
         return 0;
     }
     map_insert_miss(m, key, val, h, 0, NULL, slot);
@@ -6762,8 +7040,9 @@ long long beans_map_insert_typed(BMap* m, long long key, void* value,
     unsigned long long h = 0, slot = 0;
     if (map_find(m, key, kind, eq, hf, &h, &slot) >= 0) {
         long long flags = (head_of(m)->meta & CC_SHAPE) >> 3;
-        if (flags & 1) beans_release((void*)key);
+        // same decline order as beans_map_insert: panic-capable first
         map_release_wide_value(m, value);
+        if (flags & 1) beans_release((void*)key);
         return 0;
     }
     map_insert_miss_typed(m, key, value, h, kind, hf, slot);
@@ -6775,8 +7054,9 @@ long long beans_map_insert_typed_raw(BMap* m, long long key, void* value) {
     unsigned long long h = 0, slot = 0;
     if (map_find_raw(m, key, &h, &slot) >= 0) {
         long long flags = (head_of(m)->meta & CC_SHAPE) >> 3;
-        if (flags & 1) beans_release((void*)key);
+        // same decline order as beans_map_insert: panic-capable first
         map_release_wide_value(m, value);
+        if (flags & 1) beans_release((void*)key);
         return 0;
     }
     map_insert_miss_typed(m, key, value, h, 0, NULL, slot);
@@ -7142,6 +7422,363 @@ __attribute__((always_inline)) long long beans_str_count_chars(
     return count;
 }
 
+// ---- display width -------------------------------------------------------
+// How many terminal columns a string occupies. This is the third measure
+// beside bytes (len) and scalars (chars): a padded column wants neither.
+//
+// The tables below are generated from the Unicode Character Database by
+// tools/gen_width_table.py — see its header for which files and which
+// properties. The rules on top of them are the ones every terminal follows:
+//
+//   * a zero-width scalar (combining mark, control, format character,
+//     conjoining jamo, emoji skin-tone modifier) takes no column;
+//   * East_Asian_Width W and F, and anything with Emoji_Presentation, take
+//     two;
+//   * everything else takes one;
+//   * U+200D ZERO WIDTH JOINER welds the next scalar onto the current
+//     glyph, so that scalar takes no column either — one emoji, one glyph,
+//     however many scalars spell it;
+//   * U+FE0F promotes the pictograph before it from one column to two and
+//     U+FE0E pulls it back to one;
+//   * regional indicators pair into one flag, so the second of each pair
+//     takes no column.
+//
+// Invalid UTF-8 is not silently dropped: each bad byte counts as one column,
+// which is what a terminal draws for the replacement character it substitutes.
+/* BEGIN GENERATED display-width tables — Unicode 17.0.0.
+   Regenerate with tools/gen_width_table.py; do not edit by hand.
+   zero: Mn/Me/Cf marks, Cc controls, Hangul jamo V/T, and the emoji
+   skin-tone modifiers, less U+00AD which terminals draw.
+   wide: East_Asian_Width W and F, plus Emoji_Presentation.
+   pict: Extended_Pictographic, which a variation selector moves. */
+static const unsigned int width_zero_ranges[][2] = {
+    {0x0,0x1F}, {0x7F,0x9F}, {0x300,0x36F}, {0x483,0x489}, {0x591,0x5BD},
+    {0x5BF,0x5BF}, {0x5C1,0x5C2}, {0x5C4,0x5C5}, {0x5C7,0x5C7}, {0x600,0x605},
+    {0x610,0x61A}, {0x61C,0x61C}, {0x64B,0x65F}, {0x670,0x670}, {0x6D6,0x6DD},
+    {0x6DF,0x6E4}, {0x6E7,0x6E8}, {0x6EA,0x6ED}, {0x70F,0x70F}, {0x711,0x711},
+    {0x730,0x74A}, {0x7A6,0x7B0}, {0x7EB,0x7F3}, {0x7FD,0x7FD}, {0x816,0x819},
+    {0x81B,0x823}, {0x825,0x827}, {0x829,0x82D}, {0x859,0x85B}, {0x890,0x891},
+    {0x897,0x89F}, {0x8CA,0x902}, {0x93A,0x93A}, {0x93C,0x93C}, {0x941,0x948},
+    {0x94D,0x94D}, {0x951,0x957}, {0x962,0x963}, {0x981,0x981}, {0x9BC,0x9BC},
+    {0x9C1,0x9C4}, {0x9CD,0x9CD}, {0x9E2,0x9E3}, {0x9FE,0x9FE}, {0xA01,0xA02},
+    {0xA3C,0xA3C}, {0xA41,0xA42}, {0xA47,0xA48}, {0xA4B,0xA4D}, {0xA51,0xA51},
+    {0xA70,0xA71}, {0xA75,0xA75}, {0xA81,0xA82}, {0xABC,0xABC}, {0xAC1,0xAC5},
+    {0xAC7,0xAC8}, {0xACD,0xACD}, {0xAE2,0xAE3}, {0xAFA,0xAFF}, {0xB01,0xB01},
+    {0xB3C,0xB3C}, {0xB3F,0xB3F}, {0xB41,0xB44}, {0xB4D,0xB4D}, {0xB55,0xB56},
+    {0xB62,0xB63}, {0xB82,0xB82}, {0xBC0,0xBC0}, {0xBCD,0xBCD}, {0xC00,0xC00},
+    {0xC04,0xC04}, {0xC3C,0xC3C}, {0xC3E,0xC40}, {0xC46,0xC48}, {0xC4A,0xC4D},
+    {0xC55,0xC56}, {0xC62,0xC63}, {0xC81,0xC81}, {0xCBC,0xCBC}, {0xCBF,0xCBF},
+    {0xCC6,0xCC6}, {0xCCC,0xCCD}, {0xCE2,0xCE3}, {0xD00,0xD01}, {0xD3B,0xD3C},
+    {0xD41,0xD44}, {0xD4D,0xD4D}, {0xD62,0xD63}, {0xD81,0xD81}, {0xDCA,0xDCA},
+    {0xDD2,0xDD4}, {0xDD6,0xDD6}, {0xE31,0xE31}, {0xE34,0xE3A}, {0xE47,0xE4E},
+    {0xEB1,0xEB1}, {0xEB4,0xEBC}, {0xEC8,0xECE}, {0xF18,0xF19}, {0xF35,0xF35},
+    {0xF37,0xF37}, {0xF39,0xF39}, {0xF71,0xF7E}, {0xF80,0xF84}, {0xF86,0xF87},
+    {0xF8D,0xF97}, {0xF99,0xFBC}, {0xFC6,0xFC6}, {0x102D,0x1030},
+    {0x1032,0x1037}, {0x1039,0x103A}, {0x103D,0x103E}, {0x1058,0x1059},
+    {0x105E,0x1060}, {0x1071,0x1074}, {0x1082,0x1082}, {0x1085,0x1086},
+    {0x108D,0x108D}, {0x109D,0x109D}, {0x1160,0x11FF}, {0x135D,0x135F},
+    {0x1712,0x1714}, {0x1732,0x1733}, {0x1752,0x1753}, {0x1772,0x1773},
+    {0x17B4,0x17B5}, {0x17B7,0x17BD}, {0x17C6,0x17C6}, {0x17C9,0x17D3},
+    {0x17DD,0x17DD}, {0x180B,0x180F}, {0x1885,0x1886}, {0x18A9,0x18A9},
+    {0x1920,0x1922}, {0x1927,0x1928}, {0x1932,0x1932}, {0x1939,0x193B},
+    {0x1A17,0x1A18}, {0x1A1B,0x1A1B}, {0x1A56,0x1A56}, {0x1A58,0x1A5E},
+    {0x1A60,0x1A60}, {0x1A62,0x1A62}, {0x1A65,0x1A6C}, {0x1A73,0x1A7C},
+    {0x1A7F,0x1A7F}, {0x1AB0,0x1ADD}, {0x1AE0,0x1AEB}, {0x1B00,0x1B03},
+    {0x1B34,0x1B34}, {0x1B36,0x1B3A}, {0x1B3C,0x1B3C}, {0x1B42,0x1B42},
+    {0x1B6B,0x1B73}, {0x1B80,0x1B81}, {0x1BA2,0x1BA5}, {0x1BA8,0x1BA9},
+    {0x1BAB,0x1BAD}, {0x1BE6,0x1BE6}, {0x1BE8,0x1BE9}, {0x1BED,0x1BED},
+    {0x1BEF,0x1BF1}, {0x1C2C,0x1C33}, {0x1C36,0x1C37}, {0x1CD0,0x1CD2},
+    {0x1CD4,0x1CE0}, {0x1CE2,0x1CE8}, {0x1CED,0x1CED}, {0x1CF4,0x1CF4},
+    {0x1CF8,0x1CF9}, {0x1DC0,0x1DFF}, {0x200B,0x200F}, {0x202A,0x202E},
+    {0x2060,0x2064}, {0x2066,0x206F}, {0x20D0,0x20F0}, {0x2CEF,0x2CF1},
+    {0x2D7F,0x2D7F}, {0x2DE0,0x2DFF}, {0x302A,0x302D}, {0x3099,0x309A},
+    {0xA66F,0xA672}, {0xA674,0xA67D}, {0xA69E,0xA69F}, {0xA6F0,0xA6F1},
+    {0xA802,0xA802}, {0xA806,0xA806}, {0xA80B,0xA80B}, {0xA825,0xA826},
+    {0xA82C,0xA82C}, {0xA8C4,0xA8C5}, {0xA8E0,0xA8F1}, {0xA8FF,0xA8FF},
+    {0xA926,0xA92D}, {0xA947,0xA951}, {0xA980,0xA982}, {0xA9B3,0xA9B3},
+    {0xA9B6,0xA9B9}, {0xA9BC,0xA9BD}, {0xA9E5,0xA9E5}, {0xAA29,0xAA2E},
+    {0xAA31,0xAA32}, {0xAA35,0xAA36}, {0xAA43,0xAA43}, {0xAA4C,0xAA4C},
+    {0xAA7C,0xAA7C}, {0xAAB0,0xAAB0}, {0xAAB2,0xAAB4}, {0xAAB7,0xAAB8},
+    {0xAABE,0xAABF}, {0xAAC1,0xAAC1}, {0xAAEC,0xAAED}, {0xAAF6,0xAAF6},
+    {0xABE5,0xABE5}, {0xABE8,0xABE8}, {0xABED,0xABED}, {0xD7B0,0xD7C6},
+    {0xD7CB,0xD7FB}, {0xFB1E,0xFB1E}, {0xFE00,0xFE0F}, {0xFE20,0xFE2F},
+    {0xFEFF,0xFEFF}, {0xFFF9,0xFFFB}, {0x101FD,0x101FD}, {0x102E0,0x102E0},
+    {0x10376,0x1037A}, {0x10A01,0x10A03}, {0x10A05,0x10A06},
+    {0x10A0C,0x10A0F}, {0x10A38,0x10A3A}, {0x10A3F,0x10A3F},
+    {0x10AE5,0x10AE6}, {0x10D24,0x10D27}, {0x10D69,0x10D6D},
+    {0x10EAB,0x10EAC}, {0x10EFA,0x10EFF}, {0x10F46,0x10F50},
+    {0x10F82,0x10F85}, {0x11001,0x11001}, {0x11038,0x11046},
+    {0x11070,0x11070}, {0x11073,0x11074}, {0x1107F,0x11081},
+    {0x110B3,0x110B6}, {0x110B9,0x110BA}, {0x110BD,0x110BD},
+    {0x110C2,0x110C2}, {0x110CD,0x110CD}, {0x11100,0x11102},
+    {0x11127,0x1112B}, {0x1112D,0x11134}, {0x11173,0x11173},
+    {0x11180,0x11181}, {0x111B6,0x111BE}, {0x111C9,0x111CC},
+    {0x111CF,0x111CF}, {0x1122F,0x11231}, {0x11234,0x11234},
+    {0x11236,0x11237}, {0x1123E,0x1123E}, {0x11241,0x11241},
+    {0x112DF,0x112DF}, {0x112E3,0x112EA}, {0x11300,0x11301},
+    {0x1133B,0x1133C}, {0x11340,0x11340}, {0x11366,0x1136C},
+    {0x11370,0x11374}, {0x113BB,0x113C0}, {0x113CE,0x113CE},
+    {0x113D0,0x113D0}, {0x113D2,0x113D2}, {0x113E1,0x113E2},
+    {0x11438,0x1143F}, {0x11442,0x11444}, {0x11446,0x11446},
+    {0x1145E,0x1145E}, {0x114B3,0x114B8}, {0x114BA,0x114BA},
+    {0x114BF,0x114C0}, {0x114C2,0x114C3}, {0x115B2,0x115B5},
+    {0x115BC,0x115BD}, {0x115BF,0x115C0}, {0x115DC,0x115DD},
+    {0x11633,0x1163A}, {0x1163D,0x1163D}, {0x1163F,0x11640},
+    {0x116AB,0x116AB}, {0x116AD,0x116AD}, {0x116B0,0x116B5},
+    {0x116B7,0x116B7}, {0x1171D,0x1171D}, {0x1171F,0x1171F},
+    {0x11722,0x11725}, {0x11727,0x1172B}, {0x1182F,0x11837},
+    {0x11839,0x1183A}, {0x1193B,0x1193C}, {0x1193E,0x1193E},
+    {0x11943,0x11943}, {0x119D4,0x119D7}, {0x119DA,0x119DB},
+    {0x119E0,0x119E0}, {0x11A01,0x11A0A}, {0x11A33,0x11A38},
+    {0x11A3B,0x11A3E}, {0x11A47,0x11A47}, {0x11A51,0x11A56},
+    {0x11A59,0x11A5B}, {0x11A8A,0x11A96}, {0x11A98,0x11A99},
+    {0x11B60,0x11B60}, {0x11B62,0x11B64}, {0x11B66,0x11B66},
+    {0x11C30,0x11C36}, {0x11C38,0x11C3D}, {0x11C3F,0x11C3F},
+    {0x11C92,0x11CA7}, {0x11CAA,0x11CB0}, {0x11CB2,0x11CB3},
+    {0x11CB5,0x11CB6}, {0x11D31,0x11D36}, {0x11D3A,0x11D3A},
+    {0x11D3C,0x11D3D}, {0x11D3F,0x11D45}, {0x11D47,0x11D47},
+    {0x11D90,0x11D91}, {0x11D95,0x11D95}, {0x11D97,0x11D97},
+    {0x11EF3,0x11EF4}, {0x11F00,0x11F01}, {0x11F36,0x11F3A},
+    {0x11F40,0x11F40}, {0x11F42,0x11F42}, {0x11F5A,0x11F5A},
+    {0x13430,0x13440}, {0x13447,0x13455}, {0x1611E,0x16129},
+    {0x1612D,0x1612F}, {0x16AF0,0x16AF4}, {0x16B30,0x16B36},
+    {0x16D63,0x16D63}, {0x16D67,0x16D6A}, {0x16F4F,0x16F4F},
+    {0x16F8F,0x16F92}, {0x16FE4,0x16FE4}, {0x1BC9D,0x1BC9E},
+    {0x1BCA0,0x1BCA3}, {0x1CF00,0x1CF2D}, {0x1CF30,0x1CF46},
+    {0x1D167,0x1D169}, {0x1D173,0x1D182}, {0x1D185,0x1D18B},
+    {0x1D1AA,0x1D1AD}, {0x1D242,0x1D244}, {0x1DA00,0x1DA36},
+    {0x1DA3B,0x1DA6C}, {0x1DA75,0x1DA75}, {0x1DA84,0x1DA84},
+    {0x1DA9B,0x1DA9F}, {0x1DAA1,0x1DAAF}, {0x1E000,0x1E006},
+    {0x1E008,0x1E018}, {0x1E01B,0x1E021}, {0x1E023,0x1E024},
+    {0x1E026,0x1E02A}, {0x1E08F,0x1E08F}, {0x1E130,0x1E136},
+    {0x1E2AE,0x1E2AE}, {0x1E2EC,0x1E2EF}, {0x1E4EC,0x1E4EF},
+    {0x1E5EE,0x1E5EF}, {0x1E6E3,0x1E6E3}, {0x1E6E6,0x1E6E6},
+    {0x1E6EE,0x1E6EF}, {0x1E6F5,0x1E6F5}, {0x1E8D0,0x1E8D6},
+    {0x1E944,0x1E94A}, {0x1F3FB,0x1F3FF}, {0xE0001,0xE0001},
+    {0xE0020,0xE007F}, {0xE0100,0xE01EF},
+};
+static const unsigned int width_wide_ranges[][2] = {
+    {0x1100,0x115F}, {0x231A,0x231B}, {0x2329,0x232A}, {0x23E9,0x23EC},
+    {0x23F0,0x23F0}, {0x23F3,0x23F3}, {0x25FD,0x25FE}, {0x2614,0x2615},
+    {0x2630,0x2637}, {0x2648,0x2653}, {0x267F,0x267F}, {0x268A,0x268F},
+    {0x2693,0x2693}, {0x26A1,0x26A1}, {0x26AA,0x26AB}, {0x26BD,0x26BE},
+    {0x26C4,0x26C5}, {0x26CE,0x26CE}, {0x26D4,0x26D4}, {0x26EA,0x26EA},
+    {0x26F2,0x26F3}, {0x26F5,0x26F5}, {0x26FA,0x26FA}, {0x26FD,0x26FD},
+    {0x2705,0x2705}, {0x270A,0x270B}, {0x2728,0x2728}, {0x274C,0x274C},
+    {0x274E,0x274E}, {0x2753,0x2755}, {0x2757,0x2757}, {0x2795,0x2797},
+    {0x27B0,0x27B0}, {0x27BF,0x27BF}, {0x2B1B,0x2B1C}, {0x2B50,0x2B50},
+    {0x2B55,0x2B55}, {0x2E80,0x2E99}, {0x2E9B,0x2EF3}, {0x2F00,0x2FD5},
+    {0x2FF0,0x3029}, {0x302E,0x303E}, {0x3041,0x3096}, {0x309B,0x30FF},
+    {0x3105,0x312F}, {0x3131,0x318E}, {0x3190,0x31E5}, {0x31EF,0x321E},
+    {0x3220,0x3247}, {0x3250,0xA48C}, {0xA490,0xA4C6}, {0xA960,0xA97C},
+    {0xAC00,0xD7A3}, {0xF900,0xFAFF}, {0xFE10,0xFE19}, {0xFE30,0xFE52},
+    {0xFE54,0xFE66}, {0xFE68,0xFE6B}, {0xFF01,0xFF60}, {0xFFE0,0xFFE6},
+    {0x16FE0,0x16FE3}, {0x16FF0,0x16FF6}, {0x17000,0x18CD5},
+    {0x18CFF,0x18D1E}, {0x18D80,0x18DF2}, {0x1AFF0,0x1AFF3},
+    {0x1AFF5,0x1AFFB}, {0x1AFFD,0x1AFFE}, {0x1B000,0x1B122},
+    {0x1B132,0x1B132}, {0x1B150,0x1B152}, {0x1B155,0x1B155},
+    {0x1B164,0x1B167}, {0x1B170,0x1B2FB}, {0x1D300,0x1D356},
+    {0x1D360,0x1D376}, {0x1F004,0x1F004}, {0x1F0CF,0x1F0CF},
+    {0x1F18E,0x1F18E}, {0x1F191,0x1F19A}, {0x1F1E6,0x1F202},
+    {0x1F210,0x1F23B}, {0x1F240,0x1F248}, {0x1F250,0x1F251},
+    {0x1F260,0x1F265}, {0x1F300,0x1F320}, {0x1F32D,0x1F335},
+    {0x1F337,0x1F37C}, {0x1F37E,0x1F393}, {0x1F3A0,0x1F3CA},
+    {0x1F3CF,0x1F3D3}, {0x1F3E0,0x1F3F0}, {0x1F3F4,0x1F3F4},
+    {0x1F3F8,0x1F3FA}, {0x1F400,0x1F43E}, {0x1F440,0x1F440},
+    {0x1F442,0x1F4FC}, {0x1F4FF,0x1F53D}, {0x1F54B,0x1F54E},
+    {0x1F550,0x1F567}, {0x1F57A,0x1F57A}, {0x1F595,0x1F596},
+    {0x1F5A4,0x1F5A4}, {0x1F5FB,0x1F64F}, {0x1F680,0x1F6C5},
+    {0x1F6CC,0x1F6CC}, {0x1F6D0,0x1F6D2}, {0x1F6D5,0x1F6D8},
+    {0x1F6DC,0x1F6DF}, {0x1F6EB,0x1F6EC}, {0x1F6F4,0x1F6FC},
+    {0x1F7E0,0x1F7EB}, {0x1F7F0,0x1F7F0}, {0x1F90C,0x1F93A},
+    {0x1F93C,0x1F945}, {0x1F947,0x1F9FF}, {0x1FA70,0x1FA7C},
+    {0x1FA80,0x1FA8A}, {0x1FA8E,0x1FAC6}, {0x1FAC8,0x1FAC8},
+    {0x1FACD,0x1FADC}, {0x1FADF,0x1FAEA}, {0x1FAEF,0x1FAF8},
+    {0x20000,0x2FFFD}, {0x30000,0x3FFFD},
+};
+static const unsigned int width_pict_ranges[][2] = {
+    {0xA9,0xA9}, {0xAE,0xAE}, {0x203C,0x203C}, {0x2049,0x2049},
+    {0x2122,0x2122}, {0x2139,0x2139}, {0x2194,0x2199}, {0x21A9,0x21AA},
+    {0x231A,0x231B}, {0x2328,0x2328}, {0x23CF,0x23CF}, {0x23E9,0x23F3},
+    {0x23F8,0x23FA}, {0x24C2,0x24C2}, {0x25AA,0x25AB}, {0x25B6,0x25B6},
+    {0x25C0,0x25C0}, {0x25FB,0x25FE}, {0x2600,0x2604}, {0x260E,0x260E},
+    {0x2611,0x2611}, {0x2614,0x2615}, {0x2618,0x2618}, {0x261D,0x261D},
+    {0x2620,0x2620}, {0x2622,0x2623}, {0x2626,0x2626}, {0x262A,0x262A},
+    {0x262E,0x262F}, {0x2638,0x263A}, {0x2640,0x2640}, {0x2642,0x2642},
+    {0x2648,0x2653}, {0x265F,0x2660}, {0x2663,0x2663}, {0x2665,0x2666},
+    {0x2668,0x2668}, {0x267B,0x267B}, {0x267E,0x267F}, {0x2692,0x2697},
+    {0x2699,0x2699}, {0x269B,0x269C}, {0x26A0,0x26A1}, {0x26A7,0x26A7},
+    {0x26AA,0x26AB}, {0x26B0,0x26B1}, {0x26BD,0x26BE}, {0x26C4,0x26C5},
+    {0x26C8,0x26C8}, {0x26CE,0x26CF}, {0x26D1,0x26D1}, {0x26D3,0x26D4},
+    {0x26E9,0x26EA}, {0x26F0,0x26F5}, {0x26F7,0x26FA}, {0x26FD,0x26FD},
+    {0x2702,0x2702}, {0x2705,0x2705}, {0x2708,0x270D}, {0x270F,0x270F},
+    {0x2712,0x2712}, {0x2714,0x2714}, {0x2716,0x2716}, {0x271D,0x271D},
+    {0x2721,0x2721}, {0x2728,0x2728}, {0x2733,0x2734}, {0x2744,0x2744},
+    {0x2747,0x2747}, {0x274C,0x274C}, {0x274E,0x274E}, {0x2753,0x2755},
+    {0x2757,0x2757}, {0x2763,0x2764}, {0x2795,0x2797}, {0x27A1,0x27A1},
+    {0x27B0,0x27B0}, {0x27BF,0x27BF}, {0x2934,0x2935}, {0x2B05,0x2B07},
+    {0x2B1B,0x2B1C}, {0x2B50,0x2B50}, {0x2B55,0x2B55}, {0x3030,0x3030},
+    {0x303D,0x303D}, {0x3297,0x3297}, {0x3299,0x3299}, {0x1F004,0x1F004},
+    {0x1F02C,0x1F02F}, {0x1F094,0x1F09F}, {0x1F0AF,0x1F0B0},
+    {0x1F0C0,0x1F0C0}, {0x1F0CF,0x1F0D0}, {0x1F0F6,0x1F0FF},
+    {0x1F170,0x1F171}, {0x1F17E,0x1F17F}, {0x1F18E,0x1F18E},
+    {0x1F191,0x1F19A}, {0x1F1AE,0x1F1E5}, {0x1F201,0x1F20F},
+    {0x1F21A,0x1F21A}, {0x1F22F,0x1F22F}, {0x1F232,0x1F23A},
+    {0x1F23C,0x1F23F}, {0x1F249,0x1F25F}, {0x1F266,0x1F321},
+    {0x1F324,0x1F393}, {0x1F396,0x1F397}, {0x1F399,0x1F39B},
+    {0x1F39E,0x1F3F0}, {0x1F3F3,0x1F3F5}, {0x1F3F7,0x1F3FA},
+    {0x1F400,0x1F4FD}, {0x1F4FF,0x1F53D}, {0x1F549,0x1F54E},
+    {0x1F550,0x1F567}, {0x1F56F,0x1F570}, {0x1F573,0x1F57A},
+    {0x1F587,0x1F587}, {0x1F58A,0x1F58D}, {0x1F590,0x1F590},
+    {0x1F595,0x1F596}, {0x1F5A4,0x1F5A5}, {0x1F5A8,0x1F5A8},
+    {0x1F5B1,0x1F5B2}, {0x1F5BC,0x1F5BC}, {0x1F5C2,0x1F5C4},
+    {0x1F5D1,0x1F5D3}, {0x1F5DC,0x1F5DE}, {0x1F5E1,0x1F5E1},
+    {0x1F5E3,0x1F5E3}, {0x1F5E8,0x1F5E8}, {0x1F5EF,0x1F5EF},
+    {0x1F5F3,0x1F5F3}, {0x1F5FA,0x1F64F}, {0x1F680,0x1F6C5},
+    {0x1F6CB,0x1F6D2}, {0x1F6D5,0x1F6E5}, {0x1F6E9,0x1F6E9},
+    {0x1F6EB,0x1F6F0}, {0x1F6F3,0x1F6FF}, {0x1F7DA,0x1F7FF},
+    {0x1F80C,0x1F80F}, {0x1F848,0x1F84F}, {0x1F85A,0x1F85F},
+    {0x1F888,0x1F88F}, {0x1F8AE,0x1F8AF}, {0x1F8BC,0x1F8BF},
+    {0x1F8C2,0x1F8CF}, {0x1F8D9,0x1F8FF}, {0x1F90C,0x1F93A},
+    {0x1F93C,0x1F945}, {0x1F947,0x1F9FF}, {0x1FA58,0x1FA5F},
+    {0x1FA6E,0x1FAFF}, {0x1FC00,0x1FFFD},
+};
+/* END GENERATED display-width tables */
+
+static int width_in_ranges(const unsigned int (*ranges)[2], long long count,
+                           unsigned int cp) {
+    long long low = 0, high = count - 1;
+    while (low <= high) {
+        long long mid = low + (high - low) / 2;
+        if (cp < ranges[mid][0]) {
+            high = mid - 1;
+        } else if (cp > ranges[mid][1]) {
+            low = mid + 1;
+        } else {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+#define WIDTH_COUNT(table) ((long long)(sizeof(table) / sizeof((table)[0])))
+
+static int width_of_scalar(unsigned int cp) {
+    if (cp < 0x80) return cp < 0x20 || cp == 0x7F ? 0 : 1;
+    if (width_in_ranges(width_zero_ranges, WIDTH_COUNT(width_zero_ranges), cp))
+        return 0;
+    if (width_in_ranges(width_wide_ranges, WIDTH_COUNT(width_wide_ranges), cp))
+        return 2;
+    return 1;
+}
+
+// Decodes one scalar and reports how many bytes it spanned. A byte that does
+// not start a well-formed sequence is not silently dropped and not read as
+// whatever its value happens to be: *bad is set, the walk advances one byte,
+// and the caller charges the one column a terminal draws for the replacement
+// it substitutes. Reading a stray continuation byte as its own scalar counted
+// it zero, because U+0080..U+009F are C1 controls — one bad byte then measured
+// as no column at all.
+static long long width_decode(const char* p, long long n, unsigned int* out,
+                              int* bad) {
+    unsigned char c = (unsigned char)p[0];
+    long long len = c < 0x80           ? 1
+                    : (c >> 5) == 0x6  ? 2
+                    : (c >> 4) == 0xE  ? 3
+                    : (c >> 3) == 0x1E ? 4
+                                       : 0;
+    *bad = 0;
+    if (len == 1) {
+        *out = c;
+        return 1;
+    }
+    if (len == 0 || len > n) {
+        *bad = 1;
+        *out = 0xFFFD;
+        return 1;
+    }
+    unsigned int cp = (unsigned int)(c & (0xFF >> (len + 1)));
+    for (long long k = 1; k < len; k++) {
+        unsigned char t = (unsigned char)p[k];
+        if ((t >> 6) != 0x2) {
+            *bad = 1;
+            *out = 0xFFFD;
+            return 1;
+        }
+        cp = (cp << 6) | (unsigned int)(t & 0x3F);
+    }
+    // Well-formed bytes can still spell something UTF-8 does not encode: an
+    // overlong form, half a surrogate pair, or a scalar past the last plane.
+    if (cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF) ||
+        (len == 2 && cp < 0x80) || (len == 3 && cp < 0x800) ||
+        (len == 4 && cp < 0x10000)) {
+        *bad = 1;
+        *out = 0xFFFD;
+        return 1;
+    }
+    *out = cp;
+    return len;
+}
+
+long long beans_width_utf8(const char* p, long long n) {
+    long long total = 0, i = 0;
+    int joined = 0;     // the previous scalar was a ZWJ
+    int regional = 0;   // parity of the current regional-indicator run
+    int prev_pict = 0;  // the previous scalar was pictographic and drawn
+    int prev_width = 0;
+    if (!p) return 0;
+    while (i < n) {
+        unsigned int cp = 0;
+        int bad = 0;
+        i += width_decode(p + i, n - i, &cp, &bad);
+        if (bad) {
+            // One replacement glyph, one column, and it stands between
+            // whatever was joining or pairing across it.
+            total += 1;
+            joined = 0;
+            regional = 0;
+            prev_pict = 0;
+            prev_width = 1;
+            continue;
+        }
+        if (cp == 0x200D) {
+            joined = 1;
+            prev_pict = 0;
+            regional = 0;
+            continue;
+        }
+        if (cp == 0xFE0F || cp == 0xFE0E) {
+            int wanted = cp == 0xFE0F ? 2 : 1;
+            if (prev_pict && prev_width != wanted) {
+                total += wanted - prev_width;
+                prev_width = wanted;
+            }
+            prev_pict = 0;
+            joined = 0;
+            continue;
+        }
+        int w = width_of_scalar(cp);
+        if (cp >= 0x1F1E6 && cp <= 0x1F1FF) {
+            regional = !regional;
+            if (!regional) w = 0;
+        } else {
+            regional = 0;
+        }
+        if (joined) {
+            w = 0;
+            joined = 0;
+        }
+        total += w;
+        prev_width = w;
+        prev_pict =
+            w != 0 &&
+            width_in_ranges(width_pict_ranges, WIDTH_COUNT(width_pict_ranges), cp);
+    }
+    return total;
+}
+
+long long beans_str_width(char* s) { return beans_width_utf8(s, beans_slen(s)); }
+
 // ---- display through per-type show fns (emitted by the compiler) ----
 // show(slot) returns an owned string; we copy and release it per element
 static char* show_join(BList* l, const char* sep, long long sl,
@@ -7187,6 +7824,11 @@ typedef struct BShowCtx {
     long long len, cap;
     char* out;
     long long olen, ocap;
+    // The class instances whose rendering has begun and not finished. A
+    // reference graph may be a cycle, and a printer that assumes otherwise
+    // runs until the stack is gone.
+    long long* path;
+    long long plen, pcap;
 } BShowCtx;
 static void show_out(BShowCtx* c, const char* p, long long n) {
     if (c->olen + n + 1 > c->ocap) {
@@ -7211,6 +7853,63 @@ void beans_show_push_val(BShowCtx* c, void* fn, long long v) {
 void beans_show_push_lit(BShowCtx* c, char* s) {
     show_push(c, NULL, 0, s, beans_slen(s));
 }
+// A leave item pops the object it names off the path. The generated step
+// pushes it *under* its own closing text, so it comes back out only after
+// everything nested inside that object has been rendered.
+static void show_leave_step(BShowCtx* c, long long v) {
+    (void)v;
+    if (c->plen > 0) c->plen -= 1;
+}
+// 1 when this object is already on the path — the caller prints a cycle
+// marker and pushes no leave. 0 when it has just been put there.
+long long beans_show_enter(BShowCtx* c, long long v) {
+    for (long long i = 0; i < c->plen; i++) {
+        if (c->path[i] == v) return 1;
+    }
+    if (c->plen == c->pcap) {
+        c->pcap = c->pcap ? c->pcap * 2 : 16;
+        c->path = rt_realloc(c->path, (size_t)c->pcap * sizeof(long long));
+        if (!c->path) beans_panic("out of memory", 0, 0);
+    }
+    c->path[c->plen++] = v;
+    return 0;
+}
+void beans_show_push_leave(BShowCtx* c, long long v) {
+    show_push(c, (void*)show_leave_step, v, NULL, 0);
+}
+static long long map_show_value(BMap* m, long long i, long long wide) {
+    if (wide) return (long long)((char*)m->wide_values + i * m->value_stride);
+    return m->data[i * 2 + 1];
+}
+// A map's entries pushed onto the driver's stack as `{k: v, k: v}`, walking
+// the entry storage the way keys() and a direct `for k, v in m` walk it.
+// Map promises no particular order, but it does promise both compilers the
+// same one, which is what a golden file needs. A wide value lives in the
+// parallel buffer and crosses as its address, the way every other wide
+// inline value reaches a show step.
+void beans_show_map_iter(BShowCtx* c, BMap* m, void* key_step, void* val_step,
+                         long long wide) {
+    show_out(c, "{", 1);
+    show_push(c, NULL, 0, "}", 1);
+    long long first = -1;
+    for (long long i = 0; i < m->used; i++) {
+        if (!MAP_DEAD(m, i)) {
+            first = i;
+            break;
+        }
+    }
+    if (first < 0) return;
+    for (long long i = m->used; i-- > first + 1;) {
+        if (MAP_DEAD(m, i)) continue;
+        show_push(c, val_step, map_show_value(m, i, wide), NULL, 0);
+        show_push(c, NULL, 0, ": ", 2);
+        show_push(c, key_step, m->data[i * 2], NULL, 0);
+        show_push(c, NULL, 0, ", ", 2);
+    }
+    show_push(c, val_step, map_show_value(m, first, wide), NULL, 0);
+    show_push(c, NULL, 0, ": ", 2);
+    show_push(c, key_step, m->data[first * 2], NULL, 0);
+}
 void beans_show_list_iter(BShowCtx* c, BList* l, void* elem_step) {
     show_out(c, "[", 1);
     show_push(c, NULL, 0, "]", 1);
@@ -7220,18 +7919,39 @@ void beans_show_list_iter(BShowCtx* c, BList* l, void* elem_step) {
     }
     if (l->len > 0) show_push(c, elem_step, list_slot_at(l, 0), NULL, 0);
 }
-char* beans_show_run(void* fn, long long v) {
-    BShowCtx c = {0, 0, 0, 0, 0, 0};
-    show_push(&c, fn, v, NULL, 0);
-    while (c.len > 0) {
-        BShowItem it = c.items[--c.len];
-        if (it.fn) ((void (*)(BShowCtx*, long long))it.fn)(&c, it.v);
-        else show_out(&c, it.text, it.tlen);
+// Drain the work stack into one owned string. Items pop last-in-first-out, so
+// whatever a step pushed under its own closing text comes back out after it.
+static char* show_finish(BShowCtx* c) {
+    while (c->len > 0) {
+        BShowItem it = c->items[--c->len];
+        if (it.fn) ((void (*)(BShowCtx*, long long))it.fn)(c, it.v);
+        else show_out(c, it.text, it.tlen);
     }
-    char* r = str_make(c.out ? c.out : "", c.olen);
-    rt_free(c.out);
-    rt_free(c.items);
+    char* r = str_make(c->out ? c->out : "", c->olen);
+    rt_free(c->out);
+    rt_free(c->items);
+    rt_free(c->path);
     return r;
+}
+char* beans_show_run(void* fn, long long v) {
+    BShowCtx c = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+    show_push(&c, fn, v, NULL, 0);
+    return show_finish(&c);
+}
+// A list of wide inline values joined the way an interpolation renders it.
+// beans_list_join_show cannot serve these: one eight-byte slot does not hold
+// a struct or a decimal, so each element reaches the driver by its address —
+// the stride is the element size the compiler gave beans_list_new_typed.
+char* beans_list_join_wide(BList* l, char* sep, void* elem_step) {
+    BShowCtx c = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+    long long sl = beans_slen(sep);
+    long long stride = l->stride < 0 ? -l->stride : l->stride;
+    for (long long i = l->len; i-- > 0;) {
+        show_push(&c, elem_step,
+                  (long long)((char*)l->data + i * stride), NULL, 0);
+        if (i > 0) show_push(&c, NULL, 0, sep, sl);
+    }
+    return show_finish(&c);
 }
 
 char* beans_show_list(BList* l, char* (*show)(long long)) {
@@ -11974,6 +12694,11 @@ void* beans_rt_host_symbol(const char* name) {
         return (void*)&beans_net_recv_into_wait;
     if (strcmp(name, "beans_net_send_from_wait") == 0)
         return (void*)&beans_net_send_from_wait;
+    // The tree interpreter measures display width with the very function the
+    // native backend calls, so the two can never answer differently. It has
+    // to reach it by name, and this executable exports nothing.
+    if (strcmp(name, "beans_width_utf8") == 0)
+        return (void*)&beans_width_utf8;
     return (void*)0;
 }
 
@@ -15018,6 +15743,17 @@ static void dec_widen(BDec* out, const BDec* value, long long scale,
         *out = *value;
         return;
     }
+    // A zero has no significant digits to protect. The digit budget stops a
+    // coefficient from growing past 38 because the zeros it appends are
+    // significant; zero appends nothing — 0 at scale 45 is still the one digit
+    // dec_digits128 counts, and scale 45 is well inside BDEC_MAX_SCALE. So a
+    // zero reaches the whole target, which is what makes a + b and b + a agree
+    // when both sides are zero.
+    if (dec_zero(value)) {
+        if (scale > BDEC_MAX_SCALE) dec_overflow(line, col);
+        dec_set(out, (BU128){0, 0}, 0, scale);
+        return;
+    }
     long long room = BDEC_PRECISION - dec_digits128(dec_mag(value));
     long long step = scale - value->s;
     if (step > room) step = room;
@@ -15037,17 +15773,34 @@ void beans_decv_add(BDec* out, const BDec* a, const BDec* b,
     // 0.00 + 233 is 233.00. Handing back the other operand untouched dropped
     // it, which is how a money total that starts at 0.00 lost its cents on the
     // first addition — and money is what this type is for.
+    long long scale = a->s > b->s ? a->s : b->s;
     if (dec_zero(a) || dec_zero(b)) {
-        dec_widen(out, dec_zero(a) ? b : a,
-                  a->s > b->s ? a->s : b->s, line, col);
+        dec_widen(out, dec_zero(a) ? b : a, scale, line, col);
         return;
     }
     BU128 am = dec_mag(a), bm = dec_mag(b);
     int ae = dec_digits128(am) - 1 - (int)a->s;
     int be = dec_digits128(bm) - 1 - (int)b->s;
-    if (ae - be > BDEC_PRECISION) { *out = *a; return; }
-    if (be - ae > BDEC_PRECISION) { *out = *b; return; }
-    long long scale = a->s > b->s ? a->s : b->s;
+    // One operand so much smaller than the other that it cannot reach the
+    // sum's 38 digits. It still decides the sum's scale, so the answer is the
+    // larger operand *widened*, not handed back untouched — that is how
+    // 1231234555555555555555555567456789 - 0.000000001 lost its four decimals.
+    //
+    // The cut is at 39, not 38, because a digit one past the 38-digit window
+    // still lands on the guard: 1 + -9E-39 borrows into the last kept digit and
+    // is 0.99999999999999999999999999999999999999, not 1. From 40 apart the
+    // small side is strictly below the guard, so it can only be sticky — it
+    // rounds a like-signed sum down and moves an opposite-signed one by less
+    // than half a step either way. The general path below stays bounded: at 39
+    // apart the wider operand grows by at most 76 digits, well inside BDecWide.
+    if (ae - be > BDEC_PRECISION + 1) {
+        dec_widen(out, a, scale, line, col);
+        return;
+    }
+    if (be - ae > BDEC_PRECISION + 1) {
+        dec_widen(out, b, scale, line, col);
+        return;
+    }
     BDecWide aw = decw_from128(am), bw = decw_from128(bm);
     decw_mul_pow10(&aw, scale - a->s, line, col);
     decw_mul_pow10(&bw, scale - b->s, line, col);
@@ -15089,7 +15842,17 @@ void beans_decv_mul(BDec* out, const BDec* a, const BDec* b,
 void beans_decv_div(BDec* out, const BDec* a, const BDec* b,
                     long long line, long long col) {
     if (dec_zero(b)) beans_panic("divide by zero", line, col);
-    if (dec_zero(a)) { dec_set(out, (BU128){0, 0}, 0, a->s); return; }
+    // A zero quotient still carries the quotient's scale, which is
+    // scale(a) - scale(b) — the preferred exponent the non-zero path below
+    // already lands on — and never a negative one, because beans has no
+    // negative scale. Keeping the dividend's scale made 0.000 / 0.7 answer
+    // 0.000 where the general decimal arithmetic says 0.00.
+    if (dec_zero(a)) {
+        long long quotient_scale = a->s - b->s;
+        if (quotient_scale < 0) quotient_scale = 0;
+        dec_set(out, (BU128){0, 0}, 0, quotient_scale);
+        return;
+    }
     BU128 numerator = dec_mag(a);
     BU128 denominator = dec_mag(b);
     BU128 integer, remainder;
@@ -15482,7 +16245,11 @@ static void list_decv_merge_sort(BList* list, void* thunk, void* box) {
     long long n = list->len;
     if (n < 2) return;
     BDec* values = (BDec*)list->data;
-    BDec* buffer = rt_alloc((size_t)n * sizeof(BDec));
+    RT_RESTORE RtRestore restore = {0, 0, 0};
+    RtSortPin pin;
+    rt_sort_pin(&pin, thunk ? list : NULL, &restore);
+    if (thunk) rt_restore_arm(&restore, values, (size_t)n * sizeof(BDec));
+    RT_SCRATCH BDec* buffer = rt_alloc((size_t)n * sizeof(BDec));
     if (!buffer) beans_panic("out of memory", 0, 0);
     for (long long width = 1; width < n; width *= 2) {
         for (long long lo = 0; lo < n; lo += 2 * width) {
@@ -15490,7 +16257,10 @@ static void list_decv_merge_sort(BList* list, void* thunk, void* box) {
             long long hi = lo + 2 * width < n ? lo + 2 * width : n;
             long long left = lo, right = mid, out = lo;
             while (left < mid && right < hi) {
-                if (!decv_less(&values[right], &values[left], thunk, box))
+                long long take_left =
+                    !decv_less(&values[right], &values[left], thunk, box);
+                if (thunk) rt_sort_check(&pin);
+                if (take_left)
                     buffer[out++] = values[left++];
                 else
                     buffer[out++] = values[right++];
@@ -15500,7 +16270,7 @@ static void list_decv_merge_sort(BList* list, void* thunk, void* box) {
             memcpy(values + lo, buffer + lo, (size_t)(hi - lo) * sizeof(BDec));
         }
     }
-    rt_free(buffer);
+    rt_restore_done(&restore);
 }
 void beans_list_decv_sort(BList* list) {
     if (list->len > 1) list_changed(list, LIST_CHANGE_SORT);
@@ -15517,11 +16287,16 @@ void beans_list_decv_sort_by_key(BList* list, void* thunk, void* box) {
     if (n > 1) list_changed(list, LIST_CHANGE_SORT);
     BDec* values = (BDec*)list->data;
     long long (*key_fn)(void*, BDec*) = (long long (*)(void*, BDec*))thunk;
-    long long* keys = rt_alloc((size_t)n * sizeof(long long));
-    long long* key_buffer = rt_alloc((size_t)n * sizeof(long long));
-    BDec* value_buffer = rt_alloc((size_t)n * sizeof(BDec));
+    RT_SCRATCH long long* keys = rt_alloc((size_t)n * sizeof(long long));
+    RT_SCRATCH long long* key_buffer = rt_alloc((size_t)n * sizeof(long long));
+    RT_SCRATCH BDec* value_buffer = rt_alloc((size_t)n * sizeof(BDec));
     if (!keys || !key_buffer || !value_buffer) beans_panic("out of memory", 0, 0);
-    for (long long i = 0; i < n; i++) keys[i] = key_fn(box, &values[i]);
+    RtSortPin pin;
+    rt_sort_pin(&pin, list, NULL);
+    for (long long i = 0; i < n; i++) {
+        keys[i] = key_fn(box, &values[i]);
+        rt_sort_check(&pin);
+    }
     for (long long width = 1; width < n; width *= 2) {
         for (long long lo = 0; lo < n; lo += 2 * width) {
             long long mid = lo + width < n ? lo + width : n;
@@ -15546,9 +16321,6 @@ void beans_list_decv_sort_by_key(BList* list, void* thunk, void* box) {
                    (size_t)(hi - lo) * sizeof(BDec));
         }
     }
-    rt_free(keys);
-    rt_free(key_buffer);
-    rt_free(value_buffer);
 }
 // A stable merge sort over inline elements of any width. The decimal pair
 // above is this same algorithm pinned to BDec; this one reads the list's own
@@ -15565,7 +16337,11 @@ void beans_list_val_sort_by(BList* list, void* thunk, void* box) {
     long long (*less)(void*, void*, void*) =
         (long long (*)(void*, void*, void*))thunk;
     char* values = (char*)list->data;
-    char* buffer = rt_alloc((size_t)n * (size_t)stride);
+    RT_RESTORE RtRestore restore = {0, 0, 0};
+    RtSortPin pin;
+    rt_sort_pin(&pin, list, &restore);
+    rt_restore_arm(&restore, values, (size_t)n * (size_t)stride);
+    RT_SCRATCH char* buffer = rt_alloc((size_t)n * (size_t)stride);
     if (!buffer) beans_panic("out of memory", 0, 0);
     for (long long width = 1; width < n; width *= 2) {
         for (long long lo = 0; lo < n; lo += 2 * width) {
@@ -15574,11 +16350,11 @@ void beans_list_val_sort_by(BList* list, void* thunk, void* box) {
             long long left = lo, right = mid, out = lo;
             while (left < mid && right < hi) {
                 // taking left unless right is strictly less keeps it stable
-                long long take =
+                long long right_less =
                     less(box, values + (size_t)right * (size_t)stride,
-                         values + (size_t)left * (size_t)stride)
-                        ? right++
-                        : left++;
+                         values + (size_t)left * (size_t)stride);
+                rt_sort_check(&pin);
+                long long take = right_less ? right++ : left++;
                 memcpy(buffer + (size_t)out * (size_t)stride,
                        values + (size_t)take * (size_t)stride,
                        (size_t)stride);
@@ -15603,7 +16379,7 @@ void beans_list_val_sort_by(BList* list, void* thunk, void* box) {
                    (size_t)(hi - lo) * (size_t)stride);
         }
     }
-    rt_free(buffer);
+    rt_restore_done(&restore);
 }
 void beans_list_val_sort_by_key(BList* list, void* thunk, void* box) {
     long long n = list->len;
@@ -15613,13 +16389,17 @@ void beans_list_val_sort_by_key(BList* list, void* thunk, void* box) {
     long long stride = list_stride(list);
     char* values = (char*)list->data;
     long long (*key_fn)(void*, void*) = (long long (*)(void*, void*))thunk;
-    long long* keys = rt_alloc((size_t)n * sizeof(long long));
-    long long* key_buffer = rt_alloc((size_t)n * sizeof(long long));
-    char* value_buffer = rt_alloc((size_t)n * (size_t)stride);
+    RT_SCRATCH long long* keys = rt_alloc((size_t)n * sizeof(long long));
+    RT_SCRATCH long long* key_buffer = rt_alloc((size_t)n * sizeof(long long));
+    RT_SCRATCH char* value_buffer = rt_alloc((size_t)n * (size_t)stride);
     if (!keys || !key_buffer || !value_buffer)
         beans_panic("out of memory", 0, 0);
-    for (long long i = 0; i < n; i++)
+    RtSortPin pin;
+    rt_sort_pin(&pin, list, NULL);
+    for (long long i = 0; i < n; i++) {
         keys[i] = key_fn(box, values + (size_t)i * (size_t)stride);
+        rt_sort_check(&pin);
+    }
     for (long long width = 1; width < n; width *= 2) {
         for (long long lo = 0; lo < n; lo += 2 * width) {
             long long mid = lo + width < n ? lo + width : n;
@@ -15656,9 +16436,6 @@ void beans_list_val_sort_by_key(BList* list, void* thunk, void* box) {
                    (size_t)(hi - lo) * (size_t)stride);
         }
     }
-    rt_free(keys);
-    rt_free(key_buffer);
-    rt_free(value_buffer);
 }
 char* beans_list_decv_join(BList* list, char* separator) {
     long long separator_len = beans_slen(separator);
@@ -15707,22 +16484,29 @@ char* beans_show_list_decv(BList* list) {
 // pad is a fill, not an allocation primitive; past the cap it is a panic on
 // both backends, not a 1TB alloc the OOM killer reaps
 #define FMT_PAD_MAX 1000000
+// A pad fills to a column count, not to a byte count: aligning a table by
+// bytes misaligns every row holding anything but ASCII, and there is no use
+// for byte padding that a caller could have wanted instead.
 char* beans_fmt_pad_left(char* s, long long w, long long line, long long col) {
     if (w > FMT_PAD_MAX) beans_panic("pad width too large", line, col);
     long long n = beans_slen(s);
-    if (w <= n) return str_make(s, n);
-    char* out = beans_alloc(w + 1, w << 3);
-    memset(out, ' ', (size_t)(w - n));
-    memcpy(out + (w - n), s, (size_t)n);
+    long long shown = beans_width_utf8(s, n);
+    if (w <= shown) return str_make(s, n);
+    long long fill = w - shown, total = n + fill;
+    char* out = beans_alloc(total + 1, total << 3);
+    memset(out, ' ', (size_t)fill);
+    memcpy(out + fill, s, (size_t)n);
     return out;
 }
 char* beans_fmt_pad_right(char* s, long long w, long long line, long long col) {
     if (w > FMT_PAD_MAX) beans_panic("pad width too large", line, col);
     long long n = beans_slen(s);
-    if (w <= n) return str_make(s, n);
-    char* out = beans_alloc(w + 1, w << 3);
+    long long shown = beans_width_utf8(s, n);
+    if (w <= shown) return str_make(s, n);
+    long long fill = w - shown, total = n + fill;
+    char* out = beans_alloc(total + 1, total << 3);
     memcpy(out, s, (size_t)n);
-    memset(out + n, ' ', (size_t)(w - n));
+    memset(out + n, ' ', (size_t)fill);
     return out;
 }
 char* beans_fmt_float(double x, long long p) {

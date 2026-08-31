@@ -90,7 +90,7 @@ src/llvm_emit_memory.b	LLVM emitter does not support local type 'X' yet	1	unknow
 src/llvm_emit_numeric.b	LLVM emitter does not support as? to 'X' yet	1	unknown
 src/llvm_emit_numeric.b	LLVM emitter does not support binary 'X' for X yet	4	interpreter-ok
 src/llvm_emit_numeric.b	LLVM emitter does not support builtin method 'X' yet	1	unknown
-src/llvm_emit_numeric.b	LLVM emitter does not support cast from X to X yet	2	unknown
+src/llvm_emit_numeric.b	LLVM emitter does not support cast from X to X yet	3	unknown
 src/llvm_emit_numeric.b	LLVM emitter does not support decimal method 'X' yet	1	unknown
 src/llvm_emit_numeric.b	LLVM emitter does not support equality for 'X' yet	1	unknown
 src/llvm_emit_numeric.b	LLVM emitter does not support literal type 'X' yet	1	unknown

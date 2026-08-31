@@ -1,0 +1,28 @@
+ascii bytes=3 chars=3 cols=3
+latin1 bytes=5 chars=4 cols=4
+cjk bytes=6 chars=2 cols=4
+mixed bytes=17 chars=9 cols=12
+hangul bytes=6 chars=2 cols=4
+jamo bytes=9 chars=3 cols=2
+combining bytes=3 chars=2 cols=1
+devanagari bytes=12 chars=4 cols=3
+zwj-family bytes=25 chars=7 cols=2
+skin-tone bytes=8 chars=2 cols=2
+flag bytes=8 chars=2 cols=2
+two-flags bytes=16 chars=4 cols=4
+heart-text bytes=3 chars=1 cols=1
+heart-emoji bytes=6 chars=2 cols=2
+heart-vs15 bytes=6 chars=2 cols=1
+zero-width-space bytes=5 chars=3 cols=2
+controls bytes=3 chars=3 cols=2
+empty bytes=0 chars=0 cols=0
+|    café|café    |
+|    東京|東京    |
+|      🍜|🍜      |
+|      ok|ok      |
+|      👨‍👩‍👧|👨‍👩‍👧      |
+[    東京]
+[東京    ]
+[東京][東京]
+[   ]
+|    7|7    |

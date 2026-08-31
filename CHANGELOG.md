@@ -4,7 +4,82 @@ This file records user-facing changes in each Beans release.
 
 ## [Unreleased]
 
+## [0.1.35] - 2026-08-30
+
 ### Fixed
+
+- **A contained panic unwinds its fiber's frames, on both backends.** A panic
+  caught by `brew`/`join` used to abandon every frame between the failure and
+  the fiber entry: defers skipped, deinits skipped, everything the frames held
+  stranded — a server that caught panics leaked by the request. The unwind now
+  runs each function's defers newest-first and at most once, drops every owned
+  local, releases every in-flight temporary and half-built object (the
+  argument built when the next one panics, interpolation pieces, list-literal
+  elements, the collection a `for` took from a call, the object whose `init`
+  panicked), joins the children a frame never joined, and does all of it in
+  the same order on the tree interpreter and a native build, byte for byte. A
+  child's uncaught panic escalating into its parent's unwind is a double
+  panic, reported with both failures named. The panicking `deinit`'s own
+  object stays abandoned mid-destruction — never destroyed twice. (#44)
+
+- **Every removal from an owned structure leaked one node natively.** A
+  pattern arm's bind stored its retained payload without setting the local's
+  live flag, so the guarded drop read the clear flag and skipped the release —
+  one leaked node per unlink, invisible to `leaks --atExit` behind the
+  exit-time pool free. The rule is uniform now: every write that makes a
+  flagged slot hold an owned reference sets the flag, every move-out or drop
+  clears it. The issue's repro went from 2047 leaks to 0, resident set from
+  44.5 MB to 1.6 MB, flat in the number of removals. (#60)
+
+- **A runtime frame survives a panicking callback.** A panic raised in a
+  Beans callback that a runtime C frame was running — a sort's comparator or
+  key function, a reflective call — used to unwind through the frame leaving
+  its merge buffer leaked and the collection half-permuted. The frame's
+  scratch is freed on the way through now, and an interrupted sort puts the
+  list back exactly as it was. A `deinit` panicking inside a map replace
+  leaves the map consistent too: the entry takes the new value and drops the
+  duplicate key before the old value's release runs, so the store stands and
+  nothing is freed twice — the old order freed the caller's key first, and
+  the unwind then released it again. (#73)
+
+- **The backends could sort the same list differently, with no panic
+  anywhere.** The interpreter ran an insertion sort against native's
+  bottom-up merge, so any predicate that is not a strict weak ordering got
+  two different permutations; and a comparator observing a `List<f32>` it was
+  sorting saw the untouched original natively while the interpreter showed it
+  evolving. Both engines run one stable merge now, and a widened sort mirrors
+  each completed block back, so an observing comparator sees the same
+  intermediate states everywhere.
+
+- **One caught deinit panic disabled the cycle collector for the rest of the
+  process.** The in-deinit counters stranded when a contained panic unwound
+  out of a deinit body, and `cc_collect` refuses to run while one is up —
+  every later cycle leaked with its deinit silently skipped, unbounded growth
+  in a long-running program. The counters, the release cascade's work stack
+  and the collector's own flags and buffers all restore on that unwind now.
+
+- **A cancelled fiber's unwind could abort a later, unrelated panic.** The
+  interpreter kept a cancelled-mid-cleanup fiber's unwind entry past its
+  death; a fresh fiber pooled at the same address started life "unwinding",
+  and its ordinary catchable panic became a process-wide double panic naming
+  the dead fiber's message. The entry is cleared when a fiber body starts,
+  the same zeroing native's spawn always gave a reused record.
+
+- **A move argument leaked when the panic point was inline arithmetic.**
+  Integer `/` and `%`, decimal operations and static reads panic natively
+  where the effects table said "none", so a temporary consumed by a move
+  parameter had no unwind slot across them — the interpreter printed the
+  deinit, native skipped it. The table tells the truth at the emit site now.
+
+- **A large brewing program could not build natively at all.** The parallel
+  backend's cross-chunk declarations copied the definition's personality,
+  which LLVM refuses on a declaration — every brewing module past the 4 MiB
+  chunk threshold failed to link. Declarations are cut before both.
+
+- **An out-of-range `List.insert` panicked the interpreter itself** — the
+  position pointed into `interpreter.b`, and on a brewed fiber the join hung
+  forever. It fails as the program's own panic with the native runtime's
+  message now.
 
 - **A stalled download no longer fails the install.** `tools/install-release.sh`
   passed `--retry 3` to curl, which counts only curl's own transient errors — a
@@ -15,6 +90,31 @@ This file records user-facing changes in each Beans release.
   works the same for wget and needs no newer curl than a supported
   distribution already ships, and `--speed-limit`/`--speed-time` turn a stall
   into an abort after thirty seconds rather than nine minutes.
+
+### Changed
+
+- **A `defer` must sit at the top level of the function body, and the checker
+  refuses a nested one.** That was always the spec's rule; the checker
+  accepted the nested shape anyway, and the native run-site then read the
+  captured cell after the block's locals dropped — a segfault on any owned
+  capture. The primitive-capture case only looked like it worked. The refusal
+  names the way out: defer at the function's own scope, or do the cleanup at
+  the block's end.
+
+- **A callback that structurally changes the list it is sorting is refused.**
+  Push, remove, clear — anything that moves the length or the storage — is
+  the program's own panic at the first callback return after the change,
+  `list changed during sort (length A -> B)`, identical on both backends. The
+  sort would otherwise permute stale storage: a use-after-free on growth,
+  reads past the end on shrink, and the interpreter could hang a join
+  forever. The list stays as the mutation left it; writing an element in
+  place (`l[i] = v`) moves nothing and stays allowed.
+
+- **An index assignment evaluates left to right on both backends.** Receiver,
+  then index or key, then the right-hand side — and a compound array
+  assignment evaluates its index once. The interpreter ran the value first
+  and the index twice, so a side-effecting key and value observably swapped
+  between the legs.
 
 ## [0.1.34] - 2026-08-27
 
