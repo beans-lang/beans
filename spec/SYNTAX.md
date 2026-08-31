@@ -394,7 +394,11 @@ Character Database (`tools/gen_width_table.py` regenerates the tables in
 - Two regional indicators make one flag and two columns; a third starts a new
   pair.
 - Invalid UTF-8 counts one column per bad byte, which is what a terminal draws
-  for the replacement character it substitutes.
+  for the replacement character it substitutes. A byte is bad when it does not
+  start a well-formed sequence, when its sequence is truncated, and when the
+  bytes are well formed but spell what UTF-8 does not encode — an overlong
+  form, half a surrogate pair, a scalar past the last plane. A bad byte also
+  stands between whatever was joining or pairing across it.
 
 This is a column count, not a grapheme count: a `Mc` spacing mark advances the
 caret and counts one, and no normalization happens first.

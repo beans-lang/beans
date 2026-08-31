@@ -47,5 +47,16 @@ fn main() {
     expect(2, "pictograph plus vs16", "❤️")
     expect(1, "wide emoji plus vs15", "❤︎")
     expect(4, "unassigned cjk block", from_bytes([227, 144, 128, 227, 144, 129]))
+    // A byte a terminal cannot read draws one replacement, one column —
+    // including a stray continuation byte, whose value alone would read as a
+    // zero-width C1 control.
+    expect(3, "stray continuation", from_bytes([65, 128, 66]))
+    expect(4, "truncated sequence", from_bytes([65, 230, 157, 66]))
+    expect(4, "overlong form", from_bytes([65, 192, 128, 66]))
+    expect(5, "surrogate half", from_bytes([65, 237, 160, 128, 66]))
+    expect(6, "past the last plane", from_bytes([65, 245, 128, 128, 128, 66]))
+    // A bad byte breaks a join rather than being welded into the glyph.
+    expect(3, "joiner across a bad byte",
+           from_bytes([240, 159, 145, 168, 226, 128, 141, 128]))
     io.println("width rules ok")
 }

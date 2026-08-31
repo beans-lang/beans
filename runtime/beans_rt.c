@@ -7573,28 +7573,49 @@ static int width_of_scalar(unsigned int cp) {
     return 1;
 }
 
-// Decodes one scalar and reports how many bytes it spanned. A truncated or
-// malformed sequence yields the lead byte itself over one byte, so the walk
-// always advances and a bad string still measures.
-static long long width_decode(const char* p, long long n, unsigned int* out) {
+// Decodes one scalar and reports how many bytes it spanned. A byte that does
+// not start a well-formed sequence is not silently dropped and not read as
+// whatever its value happens to be: *bad is set, the walk advances one byte,
+// and the caller charges the one column a terminal draws for the replacement
+// it substitutes. Reading a stray continuation byte as its own scalar counted
+// it zero, because U+0080..U+009F are C1 controls — one bad byte then measured
+// as no column at all.
+static long long width_decode(const char* p, long long n, unsigned int* out,
+                              int* bad) {
     unsigned char c = (unsigned char)p[0];
     long long len = c < 0x80           ? 1
                     : (c >> 5) == 0x6  ? 2
                     : (c >> 4) == 0xE  ? 3
                     : (c >> 3) == 0x1E ? 4
-                                       : 1;
-    if (len == 1 || len > n) {
+                                       : 0;
+    *bad = 0;
+    if (len == 1) {
         *out = c;
+        return 1;
+    }
+    if (len == 0 || len > n) {
+        *bad = 1;
+        *out = 0xFFFD;
         return 1;
     }
     unsigned int cp = (unsigned int)(c & (0xFF >> (len + 1)));
     for (long long k = 1; k < len; k++) {
         unsigned char t = (unsigned char)p[k];
         if ((t >> 6) != 0x2) {
-            *out = c;
+            *bad = 1;
+            *out = 0xFFFD;
             return 1;
         }
         cp = (cp << 6) | (unsigned int)(t & 0x3F);
+    }
+    // Well-formed bytes can still spell something UTF-8 does not encode: an
+    // overlong form, half a surrogate pair, or a scalar past the last plane.
+    if (cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF) ||
+        (len == 2 && cp < 0x80) || (len == 3 && cp < 0x800) ||
+        (len == 4 && cp < 0x10000)) {
+        *bad = 1;
+        *out = 0xFFFD;
+        return 1;
     }
     *out = cp;
     return len;
@@ -7609,7 +7630,18 @@ long long beans_width_utf8(const char* p, long long n) {
     if (!p) return 0;
     while (i < n) {
         unsigned int cp = 0;
-        i += width_decode(p + i, n - i, &cp);
+        int bad = 0;
+        i += width_decode(p + i, n - i, &cp, &bad);
+        if (bad) {
+            // One replacement glyph, one column, and it stands between
+            // whatever was joining or pairing across it.
+            total += 1;
+            joined = 0;
+            regional = 0;
+            prev_pict = 0;
+            prev_width = 1;
+            continue;
+        }
         if (cp == 0x200D) {
             joined = 1;
             prev_pict = 0;
