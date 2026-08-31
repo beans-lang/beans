@@ -43,6 +43,63 @@ grep -q 'string' "$tmp/wrong-type"
 
 echo "panic builtin ok"
 
+# A panic that reaches the entry of a spawned thread ends the process, and it
+# ends it the same way on both backends (issue #75, spec/CONCURRENCY.md).
+# Thread<T>.join() answers T, not Result<T>, so there is nowhere to deliver a
+# thread's failure as a value, and a detached or never-joined thread has no
+# join at all. The interpreter used to stash the panic and re-raise it at
+# join by setting its failed flag directly: no unwind was armed, so the
+# joining fiber's defers were skipped, and an unjoined thread's panic was
+# lost outright — that run exited 0.
+#
+# Every mode below is one program dying (or standing) one way. `value` and
+# `contained` are the other half of the claim: a thread that returns normally
+# still delivers, and a panic the thread contains itself with brew/join stays
+# contained, so a fix that simply made every thread fatal fails here.
+thread_panic_source=test/cases/thread_panic.b
+"$compiler" build "$thread_panic_source" -o "$tmp/thread-panic" >/dev/null
+for mode in join brew unjoined detached value contained; do
+    case "$mode" in
+        value | contained) want=0 ;;
+        *) want=3 ;;
+    esac
+    set +e
+    "$compiler" run "$thread_panic_source" -- "$mode" \
+        >"$tmp/thread.$mode.interp" 2>&1
+    interp_status=$?
+    "$tmp/thread-panic" "$mode" >"$tmp/thread.$mode.native" 2>&1
+    native_status=$?
+    set -e
+    if test "$interp_status" -ne "$want" || test "$native_status" -ne "$want"; then
+        echo "thread panic mode $mode: interpreter exited $interp_status," \
+             "native exited $native_status, expected $want" >&2
+        echo "--- interpreter ---" >&2
+        cat "$tmp/thread.$mode.interp" >&2
+        echo "--- native ---" >&2
+        cat "$tmp/thread.$mode.native" >&2
+        exit 1
+    fi
+    diff -u "$tmp/thread.$mode.interp" "$tmp/thread.$mode.native"
+    if test "$want" -eq 3; then
+        grep -q 'list index 0 out of range' "$tmp/thread.$mode.interp"
+        # the panic left through the thread: nothing after the spawn ran, and
+        # the thread's own frames were abandoned rather than unwound
+        for absent in 'unreachable' 'thread defer' 'deinit thread-held' \
+                      'joiner defer' 'deinit joiner-held' 'contained:'; do
+            if grep -q "$absent" "$tmp/thread.$mode.interp"; then
+                echo "thread panic mode $mode: '$absent' survived the panic" >&2
+                cat "$tmp/thread.$mode.interp" >&2
+                exit 1
+            fi
+        done
+    fi
+done
+grep -q '^value 7$' "$tmp/thread.value.interp"
+grep -q '^  thread defer$' "$tmp/thread.contained.interp"
+grep -q '^contained in thread -1$' "$tmp/thread.contained.interp"
+
+echo "thread panic ok"
+
 # A fault is not a panic, and the two things that used to go missing when one
 # happened were the reason it happened and everything the program had already
 # printed: stdout is block-buffered off a tty, so a run that printed for

@@ -640,6 +640,20 @@ class TreeInterpreter {
         host_os.exit(134)
     }
 
+    // The terminal for a panic that reached the entry of a spawned thread.
+    // Natively thread_main (runtime/beans_rt.c) has no capture, so the panic
+    // walks straight out through beans_panic: the buffered output goes first,
+    // the report goes to stderr, and the process ends with 3. Nothing else is
+    // open to it — Thread<T>.join() answers T, not Result<T>, so a thread's
+    // failure has no value-shaped place to land, and a detached or
+    // never-joined thread has no join at all. Containment is what `brew`
+    // is for (spec/CONCURRENCY.md); a thread is the raw primitive.
+    fn report_thread_panic() {
+        unsafe { beans_out_flush() }
+        io.eprintln(self.panic_text)
+        host_os.exit(3)
+    }
+
     fn floating_value(type: HirType,
                       value: float) -> TreeValue {
         if canonical_hir_name(type.name) == "f32" {
@@ -9353,15 +9367,19 @@ class TreeInterpreter {
             }
             var result: TreeValue =
                 TreeValue.unit()
+            // No failure arrives here. A panic that reaches the entry of a
+            // spawned thread has already ended the process on both backends
+            // (issue #75, spec/CONCURRENCY.md), so join only ever reads the
+            // value a thread that returned normally left behind. The panic
+            // used to be stashed and re-raised here by assigning failed
+            // directly, which armed no unwind: the joining fiber's defers
+            // were skipped, a detached or never-joined thread dropped its
+            // panic on the floor, and the report reached the defensive
+            // branches that discard the remaining defers.
             match receiver.thread_work {
                 some(work) => {
                     work.with_lock(
                         fn(state: TreeThreadWork) {
-                            if state.failed {
-                                self.failed = true
-                                self.panic_text =
-                                    state.panic_text
-                            }
                             match state.result {
                                 some(value) => {
                                     result =

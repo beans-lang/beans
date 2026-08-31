@@ -200,6 +200,16 @@ contract:
   the same report as today. Plain programs are unchanged.
 - A **brewed fiber's** panic surfaces at `join()` as `err` kind `panic`, or
   escalates at auto-join (see the scope contract). The process stands.
+- A **spawned thread** is not a fiber, and containment does not reach it: a
+  panic that arrives at the entry of a `thread.spawn` closure **ends the
+  process**, with the same report and the same exit `3` the main fiber's
+  panic gives. `Thread<T>.join()` answers `T`, not `Result<T>`, so a thread
+  has no join-shaped place to deliver a failure as a value — and a thread
+  that is detached, or simply never joined, has no join at all, so a stashed
+  failure would be dropped on the floor rather than reported. The thread's
+  own frames are abandoned, exactly as the main fiber's are. `brew` is the
+  contained form; a thread panicking inside its own `brew` is contained as
+  usual and only reaches the thread entry if it escapes that join.
 - **ARC makes the unwind complete**: a dead fiber's memory is reclaimed
   deterministically by its own unwind — there is no shared heap to corrupt,
   because `Send` + move + pinning mean a fiber cannot have been mutating

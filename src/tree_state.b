@@ -120,8 +120,6 @@ unique class TreeThreadWork implements Send {
     node: HirNode
     singletons: TreeSingletonState
     result: Option<TreeValue>
-    failed: bool
-    panic_text: string
 
     fn init(program: HirProgram,
             closure: TreeValue, node: HirNode,
@@ -131,19 +129,25 @@ unique class TreeThreadWork implements Send {
         self.node = node
         self.singletons = singletons
         self.result = none
-        self.failed = false
-        self.panic_text = ""
     }
 
+    // A thread carries no outcome but its value. A panic that reaches this
+    // entry ends the process here, which is what the native backend does —
+    // thread_main has no capture, so beans_panic reports and exits (issue
+    // #75, spec/CONCURRENCY.md). The failure used to be carried in fields of
+    // its own and re-raised at join, which lost it entirely when the thread
+    // was detached or never joined.
     fn run() {
         let interpreter: TreeInterpreter =
             new TreeInterpreter(self.program, [])
         interpreter.singletons = self.singletons
-        self.result =
-            some(interpreter.invoke_closure(
-                self.node, self.closure, []))
-        self.failed = interpreter.failed
-        self.panic_text = interpreter.panic_text
+        let answer: TreeValue =
+            interpreter.invoke_closure(
+                self.node, self.closure, [])
+        if interpreter.failed {
+            interpreter.report_thread_panic()
+        }
+        self.result = some(answer)
     }
 }
 
