@@ -36,5 +36,7 @@ Point { x: 1, y: 2 } | Point { x: 3, y: 4 } | Point { x: 5, y: 6 }
 Point { x: 9, y: 9 }
 []
 some(1) ~ none ~ some(3)
+1 / 2 / 3
+Point { x: 1, y: 1 } / Point { x: 2, y: 2 }
 |Point { x: 1, y: 2 }|
 |        {a: 1, b: 2}|

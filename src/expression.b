@@ -4896,6 +4896,22 @@ class ExpressionChecker {
     // leaf the backends cannot render (a file, a lock, a channel, a closure,
     // an interface, a base class) makes the whole thing unprintable, so the
     // checker never hands a backend a shape it cannot emit.
+    // Whether a type is still spelled with any type parameter in scope, at
+    // any depth: `T`, `List<T>`, `Wrap<Option<T>>`. Such a type is not yet
+    // any one type, so a rule about what a backend can emit for it has
+    // nothing concrete to decide on — the instantiations are checked where
+    // they are made.
+    fn type_mentions_any_generic(type: HirType) -> bool {
+        for constraint: HirGeneric in
+            self.current_constraints {
+            if self.type_mentions_generic(
+                   type, constraint.name) {
+                return true
+            }
+        }
+        return false
+    }
+
     fn printable_in_string(type: HirType) -> bool {
         var seen: Map<string, bool> = {}
         return self.printable_in_string_rec(type, inout seen)
@@ -8697,9 +8713,16 @@ class ExpressionChecker {
                     // refused here. Without this gate the tree interpreter
                     // rendered [Point { x: 1, y: 2 }] and the native backend
                     // refused the same call at emit time.
+                    //
+                    // An element still spelled with a type parameter is not
+                    // one of those: it is not yet any type, and its
+                    // instantiations are checked where they are made. Only a
+                    // type that is already what it will be is refused here.
                     if receiver.type.name == "List" &&
                        callee.value == "join" &&
                        receiver.type.args.len() == 1 &&
+                       !self.type_mentions_any_generic(
+                           receiver.type.args[0]) &&
                        !self.printable_in_string(
                            receiver.type.args[0]) {
                         self.fail(

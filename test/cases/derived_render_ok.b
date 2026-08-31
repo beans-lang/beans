@@ -52,6 +52,10 @@ class Cell<T> {
     fn to_string() -> string { return "cell({self.tag})" }
 }
 
+// join inside a generic function is not refused: List<T> is not yet any one
+// type, and its instantiations are checked where they are made.
+fn joined<T>(xs: List<T>) -> string { return xs.join(" / ") }
+
 fn main() {
     // A map, in insertion order, wrapped in braces.
     let basic: Map<string, int> = {"a": 1, "b": 2}
@@ -196,6 +200,10 @@ fn main() {
     io.println("[{no_pt.join(" | ")}]")
     let opts_list: List<Option<int>> = [some(1), none, some(3)]
     io.println(opts_list.join(" ~ "))
+
+    io.println(joined<int>([1, 2, 3]))
+    io.println(joined<Point>(
+        [Point { x: 1, y: 1 }, Point { x: 2, y: 2 }]))
 
     // Width pads the rendered form of any printable value in columns.
     io.println("|{p:16}|")
