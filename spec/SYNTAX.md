@@ -1037,7 +1037,18 @@ param, trusting its constraint), `contains`, `index_of` → `Option<int>`, `inse
 panics), `sort` (ordered elements), `sort_by(fn(a: T, b: T) -> bool)` (any `T`; the predicate
 is strict less-than), `sort_by_key(fn(T) -> int)` (one key call per item), `join(sep)`.
 Sorts are **stable**. The native backend uses a stable radix path for integers and integer
-keys, and the shared merge semantics for other values and custom predicates.
+keys, and the shared merge semantics for other values and custom predicates. Both backends
+run the same bottom-up stable merge for a custom predicate, so they produce the same order
+even for a predicate that is not a strict weak ordering; a comparator that reads the list
+it is sorting (through a captured reference) sees the same intermediate states on both —
+each merged block is committed to the list when it completes; and a comparator or key
+function that panics (contained, spec/CONCURRENCY.md) leaves the list exactly as it was
+before the call, on both backends. Reading is as far as it goes: a callback that
+*structurally changes* the list mid-sort (push, remove, clear — anything that moves its
+length or storage) is refused with `list changed during sort (length A -> B)` at the first
+callback return after the change, on both backends — the sort would otherwise permute
+stale storage. The list stays as the mutation left it; there is nothing coherent to
+restore. Writing an element in place (`l[i] = v`) moves nothing and stays allowed.
 
 **Map and OrderedMap methods (v0.5, implemented):** `clone`, `get` → `Option<V>`,
 `set` (also `m[k] = v` sugar), `insert(k, v) -> bool` (false leaves the old value),
@@ -1072,7 +1083,10 @@ outside the list, and `map[key]` panics when the key is missing. Use
 Bracket assignment stays `list[i] = value` and `map[key] = value`; List and
 Map bracket assignment does not have compound forms. Fixed arrays support
 numeric compound element assignment because their element is a real inline
-place.
+place. A bracket assignment evaluates left to right — receiver, then index
+or key, then the right-hand side — and a compound form evaluates its index
+once. Both backends run this order; a side-effecting key and value observe
+it.
 
 Map values may be wide structs, fixed arrays, SIMD vectors, slices, inline
 Option/Result values, or decimals. Their nested ARC fields are retained, dropped,
@@ -1626,6 +1640,10 @@ fn parse_age(s: string) -> Result<int> {
   a custom error type carries its own fields, so `err(value)` is the form there. Without
   this a Beans-written package could not produce the slugs the stdlib convention is
   built on; only native builtins could.
+- **`new Error(message)`** and **`new Error(message, kind)`** build the built-in
+  error object itself — the same value `err(message, kind)` wraps, without the
+  `Result` around it. This is what a `to_error` hook (below) returns; before it,
+  no Beans code could name an `Error`, only a `Result` carrying one.
 - `?` propagates. `match` handles. Helpers for the rest:
 
 ```
@@ -1654,6 +1672,52 @@ let count: int = parsed.recover(fn(e: Error) -> int { return 0 })
 in `std.option` or `std.result`. These methods copy the active input payload, so
 its type must implement `Clone`. Their inline, boxed, and null-niche layouts do
 not change.
+
+**`?` across an error boundary.** In a function returning `Result<U, F>`, `x?`
+on an `x: Result<T, E>` requires `E` to *reach* `F`. There are exactly three
+ways, checked at the `?` itself:
+
+1. `E` is `F` — nothing happens, the error propagates unchanged.
+2. `E` is a subtype of `F` (it `implements`/`extends` it) — the reference
+   widens to `F`, the same object read as the wider type. No code runs and
+   nothing is lost, exactly as a plain assignment to an `F` binding would.
+3. `E` declares `fn to_error() -> F` — on the error path `?` calls it on the
+   error and propagates the `F` it returns.
+
+```
+fn query() -> Result<int, DbError>   // DbError has `fn to_error() -> Error`
+fn service() -> Result<int> {        // Result<int, Error>
+    let rows: int = query()?         // ? calls DbError.to_error() on an err
+    return ok(rows)
+}
+```
+
+Any other `E` is refused at the `?`, naming both `E` and `F` and the method
+that would let them meet. The conversion runs only on the error path, only
+once — a `to_error` result is never itself put through a second `to_error`.
+Each `?` negotiates its own boundary: `x??` on an
+`x: Result<Result<T, E1>, E2>` crosses `E2` at the first `?` and `E1` at the
+second, each by whichever of the three ways applies to it.
+`std.reflect` relies on this: it answers `Result<T, ReflectError>`, and
+`ReflectError.to_error()` lets a reflection failure cross into a plain
+`Result<T>` carrying the reflect kind as the error slug.
+
+Still refused, deliberately:
+
+- The built-in `Error` as the *source* `E`. It cannot carry a `to_error`
+  method, so `Error → some custom F` has no hook; unpack it with `match`.
+- A `to_error` that is `static`, takes any parameter, or has type parameters —
+  `?` calls it with no arguments on the error, so it must be a plain instance
+  method taking none. A method that misses this is reported, not silently
+  skipped.
+- A `to_error` whose result does not itself reach `F`.
+- Erasing move-only ownership: a move-only `E` cannot widen to a
+  non-move-only `F`, and a `to_error` answering a move-only subtype of a
+  non-move-only `F` is refused the same way.
+- `return err(e)` is **not** a conversion point. It builds this function's own
+  `Result`, so `e` must already be an `F` (or a subtype that widens to one);
+  `to_error` is never called there. Conversion is a property of `?`, not of
+  `err`.
 
 Native `Option` uses three layouts without changing source semantics: pointer
 payloads use null as `none`, wide inline values such as structs, fixed arrays,
@@ -3120,13 +3184,25 @@ beansc build --target riscv32imac-unknown-none-elf --runtime freestanding f.b --
   logical `closed` flag flips immediately, so same-thread `close()` semantics are unchanged; only
   the OS-level release is deferred, and only while threads run.
 - `defer f.close()` — runs when the function exits normally, including through
-  `return` and `?`, newest first and before local destruction. Must sit at the
-  top level of the function body (not inside `if`/`for`/blocks — it is a function-exit hook,
-  and nested registration would need runtime capture the native backend does not do). A panic
-  exits the process without running defers, and a panic inside a defer is itself fatal.
+  `return` and `?`, newest first. A return leaves every scope it sits in, innermost
+  first: the locals of the nested blocks (`if`, loop bodies, match arms) drop as their
+  blocks exit, *then* the function's defers run, *then* the function's own locals drop —
+  so a defer sees the function-level locals still alive and the block-level ones already
+  gone. Must sit at the top level of the function body (not inside `if`/`for`/blocks — it
+  is a function-exit hook, and nested registration would need runtime capture the native
+  backend does not do); the checker refuses a nested one. Each defer runs at most once. An *uncontained* panic exits the
+  process without running defers. A panic *contained* by `brew`/`join`
+  (spec/CONCURRENCY.md) does the opposite: it unwinds the fiber's frames on the way to the
+  fiber entry, running each function's defers newest-first and dropping what it owns — the
+  same cleanup a return runs, in the same order — and the join reports the failure. A defer
+  that panics while the function is exiting normally is a contained panic like any other
+  when the fiber is brewed: it is not run again, the older defers still run, and the locals
+  still drop. A panic inside a defer *during* a contained unwind is fatal — it aborts the
+  process (the one unrecoverable case — there is no second unwind to give it) — and an
+  uncontained one exits.
   `?` is not allowed inside a deferred expression because the function's
   return path is already being processed.
-  (Go's best idea, minus unwinding.)
+  (Go's best idea, with an unwind only where a panic is caught.)
 - `unsafe { }` — gates low-level operations. The first implemented part is
   `RawPtr<T>` for primitive integer, float, bool, raw-pointer, fixed-array, and
   declared `extern "C" struct`/`union` values. These shapes can nest.

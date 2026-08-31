@@ -76,8 +76,15 @@ class MirLowerer {
     }
 
     fn emit_local_drops_from(first_scope: int) {
+        self.emit_local_drops_between(
+            first_scope, self.scopes.len())
+    }
+
+    // Drops for the scopes [first_scope, end_scope), innermost first.
+    fn emit_local_drops_between(first_scope: int,
+                                end_scope: int) {
         if !self.block_open() { return }
-        var scope_index: int = self.scopes.len()
+        var scope_index: int = end_scope
         for scope_index > first_scope {
             scope_index -= 1
             let scope: MirScope = self.scopes[scope_index]
@@ -234,6 +241,30 @@ class MirLowerer {
         instruction.ownership = ownership
         instruction.effects =
             mir_effects_for(op, node.resolved)
+        // The effects table is keyed on kind alone, but three shapes
+        // panic natively only for particular operators or operand types:
+        // integer `/` and `%` (zero, signed-minimum overflow), every
+        // decimal operation (the beans_decv_* bridges take a position and
+        // fail on overflow), and a static read (its guard can run the
+        // lazy initialisers). The unwind scan trusts this field to find
+        // every value alive across a panic point, so it must not
+        // understate.
+        if (op == "binary" || op == "unary") &&
+           operands.len() != 0 {
+            let operand_type: HirType =
+                self.current.value_types[operands[0]]
+            if canonical_hir_name(operand_type.name) ==
+                   "decimal" {
+                instruction.effects = "panic"
+            } else if op == "binary" &&
+                      (text == "/" || text == "%") &&
+                      hir_is_integer(operand_type) {
+                instruction.effects = "panic"
+            }
+        }
+        if op == "static_field" {
+            instruction.effects = "panic"
+        }
         self.current.blocks[
             self.current_block].instructions.push(instruction)
         return result
@@ -599,8 +630,18 @@ class MirLowerer {
         if value >= 0 {
             value = self.ensure_owned(node, value)
         }
+        // A return leaves every scope it sits in, innermost first: the
+        // nested scopes' locals drop as their blocks exit, the function's
+        // defers run newest-first, and the function's own locals drop last
+        // (spec/SYNTAX.md, "defer"). The tree interpreter walks out of the
+        // blocks in exactly that order; the native backend used to run the
+        // defers before any local, which made the two disagree about the
+        // deinit order of a local declared inside an `if` or a loop.
+        self.emit_local_drops_between(1, self.scopes.len())
         self.emit_run_defers(node)
-        self.emit_local_drops_from(0)
+        if self.scopes.len() > 0 {
+            self.emit_local_drops_between(0, 1)
+        }
         self.terminate(node, "return", value, [])
         if value >= 0 &&
            self.current.value_ownership[value] == "owned" {
@@ -894,16 +935,28 @@ class MirLowerer {
             [success, propagate])
 
         self.current_block = propagate
-        let failure: int =
-            self.emit(
-                node, "propagate",
-                self.current.result, "",
-                [operand])
-        if operand >= 0 &&
-           self.current.value_ownership[operand] == "owned" {
-            self.consume_operand(self.last_instruction(), 0)
+        if node.children.len() == 2 {
+            // The callee's error does not fit this function's, so the
+            // checker attached a conversion (check_try_error_bridge). Take
+            // the error out of the operand into the try node's binding, run
+            // the conversion on it, and return an err of this function's
+            // own Result type. Nothing new is invented here: the same
+            // pattern_bind an `err(e) =>` arm emits, the conversion as an
+            // ordinary call, and the same err construction a `return
+            // err(...)` writes.
+            self.lower_try_conversion(node, operand)
+        } else {
+            let failure: int =
+                self.emit(
+                    node, "propagate",
+                    self.current.result, "",
+                    [operand])
+            if operand >= 0 &&
+               self.current.value_ownership[operand] == "owned" {
+                self.consume_operand(self.last_instruction(), 0)
+            }
+            self.emit_return(node, failure)
         }
-        self.emit_return(node, failure)
 
         self.current_block = success
         let result: int = self.emit(
@@ -913,6 +966,44 @@ class MirLowerer {
             self.consume_operand(self.last_instruction(), 0)
         }
         return result
+    }
+
+    // The propagate side of a `?` whose error has to be converted. The
+    // operand box stays owned by the try, exactly as it is on the plain
+    // path — the binding takes its own count, the conversion reads it, and
+    // the fresh error goes out in a Result of this function's type.
+    fn lower_try_conversion(node: HirNode, operand: int) {
+        let bridge: HirNode = node.children[1]
+        let carried: HirType =
+            hir_result_error(node.children[0].type)
+        self.push_scope()
+        let local: int = self.add_local(
+            node.binding_id, "$error", carried,
+            false, false, "")
+        let bind: MirInstruction =
+            self.emit_action(
+                node, "pattern_bind", "$error",
+                [operand])
+        bind.local = local
+        bind.resolved = "err.0"
+        var produced: int = self.lower_expression(bridge)
+        if produced >= 0 &&
+           !mir_type_is_trivial(bridge.type) {
+            produced = self.ensure_owned(bridge, produced)
+        }
+        let failure: int =
+            self.emit(
+                node, "err", self.current.result, "",
+                [produced])
+        if produced >= 0 &&
+           self.current.value_ownership[produced] == "owned" {
+            self.consume_operand(self.last_instruction(), 0)
+        }
+        self.pop_scope()
+        // The operand box is deliberately not consumed here: the error was
+        // copied out into the binding, so the box still owns its own count
+        // and the value-lifetime planner releases it at its last use.
+        self.emit_return(node, failure)
     }
 
     fn owns_operands(kind: string) -> bool {
@@ -5143,10 +5234,13 @@ class MirLowerer {
             // emit_local_store always finishes with `store i1 true`
             state.set_flag(local, 1)
         } else if instruction.op == "pattern_bind" {
-            // Option arms bind without touching the flag while enum
-            // and Result arms set it; the emitter picks by payload
-            // type, so from here the flag is simply unknown
-            state.set_flag(local, 2)
+            // every arm — Option, Result, enum, and the Option a cast
+            // makes — stores its payload and then `store i1 true`. An
+            // elided bind stores a borrow the frame never releases, so
+            // the flag it leaves is the clear one the prologue wrote.
+            state.set_flag(
+                local,
+                if instruction.borrow_elided { 0 } else { 1 })
         } else if instruction.op == "move" ||
                   instruction.op == "drop_local" {
             // a move clears the flag as it reads; a drop leaves it
@@ -5433,7 +5527,9 @@ class MirLowerer {
         // the flag, which is the shape the emitter produces today.
         for local: MirLocal in function.locals {
             if local.needs_live_flag {
-                local.live_flag_used = false
+                // A program that can unwind reads every armed flag from the
+                // cleanup pad, so no flag has "no reader left" there.
+                local.live_flag_used = self.mir.uses_fibers
             }
         }
         for block: MirBlock in function.blocks {
@@ -5454,6 +5550,56 @@ class MirLowerer {
                 function.locals[
                     local].live_flag_used = true
             }
+        }
+    }
+
+    // Does anything in this program start a fiber? Only a brewed fiber can
+    // contain a panic — every other failure ends the process — so this is
+    // the question "can a frame ever have to unwind", and the answer decides
+    // whether the backend emits cleanup pads at all. A program that never
+    // brews is compiled exactly as it was before the unwind existed.
+    fn detect_fiber_use() -> bool {
+        for function: MirFunction in self.mir.functions {
+            for block: MirBlock in function.blocks {
+                for instruction: MirInstruction in
+                    block.instructions {
+                    if instruction.removed { continue }
+                    if instruction.op == "brew" ||
+                       instruction.op == "group_brew" {
+                        return true
+                    }
+                }
+            }
+        }
+        return false
+    }
+
+    // A frame that can be unwound needs a runtime answer to "does this local
+    // still hold a reference" at *every* point, not only at the drops the
+    // normal exits carry: a panic can land before a local is initialized,
+    // between its initialization and its move, or after it. The fixpoint
+    // below folds a flag away whenever the drops it can see all know the
+    // answer statically, so the flag is pinned on here — before the fixpoint
+    // runs — for every owned local the cleanup pad will have to consider.
+    // The pins cost stores the optimizer promotes out of memory; they buy
+    // the pad the only thing that makes it safe to run at an arbitrary
+    // instruction.
+    fn arm_unwind_flags(function: MirFunction) {
+        if function.declaration || function.external {
+            return
+        }
+        for local: MirLocal in function.locals {
+            if local.ownership != "owned" { continue }
+            if local.scalar_replaced { continue }
+            if local.stack_closure_id >= 0 { continue }
+            if local.captured || local.escapes {
+                // a cell local's slot is the cleanup unit: the prologue
+                // stores null, every drop stores null back, and releasing
+                // a null cell is nothing — so the slot is already its own
+                // flag and a second one would only disagree with it
+                continue
+            }
+            local.needs_live_flag = true
         }
     }
 
@@ -6022,6 +6168,13 @@ class MirLowerer {
         }
         for function: MirFunction in self.mir.functions {
             self.analyze_scalar_replacements(function)
+        }
+        self.mir.uses_fibers = self.detect_fiber_use()
+        if self.mir.uses_fibers {
+            for function: MirFunction in
+                self.mir.functions {
+                self.arm_unwind_flags(function)
+            }
         }
         for function: MirFunction in self.mir.functions {
             self.mark_reachable(function)

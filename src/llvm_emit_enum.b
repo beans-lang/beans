@@ -322,22 +322,36 @@ partial class LlvmTextEmitter {
                     option_id, instruction)
             let local: MirLocal =
                 function.locals[instruction.local]
+            // The bind is a write that makes the slot hold an owned
+            // reference, so it sets the `.live` flag like every other
+            // such write (local_init, assign, the Result and enum arms).
+            // A guarded drop reads the flag; a bind that left it clear
+            // made every guarded drop of the bound local skip its
+            // release (#60).
+            var live: string = ""
+            if self.type_has_owned_refs(local.type) &&
+               self.live_flag_slot(local) {
+                live =
+                    "  store i1 true, ptr %l{local.id}.live\n"
+            }
             if self.type_is_reference(element) {
                 // MIR elides the pair when the source outlives the match:
-                // no scheduled release for the Option, so no count here.
+                // no scheduled release for the Option, so no count here —
+                // and no owned reference in the slot, so the flag stays
+                // clear, which is what transfer_local_state models.
                 if instruction.borrow_elided {
                     return self.emit_local_bind_store(
                         instruction, local, "ptr",
                         option, "")
                 }
-                return "  call void @beans_retain(ptr {option})\n{self.emit_local_bind_store(instruction, local, "ptr", option, "")}"
+                return "  call void @beans_retain(ptr {option})\n{self.emit_local_bind_store(instruction, local, "ptr", option, live)}"
             }
             // the binding takes its own count, exactly like the
             // pointer arm above and expect's inline arm: the
             // option temporary's scheduled release walks the
             // payload now, so a bare move here double-frees
             let id: int = self.fresh()
-            return "  %pattern.value{id} = extractvalue {self.type_text(option_type)} {option}, 1\n{self.emit_arc_value(element, "%pattern.value{id}", true)}{self.emit_local_bind_store(instruction, local, self.type_text(element), "%pattern.value{id}", "")}"
+            return "  %pattern.value{id} = extractvalue {self.type_text(option_type)} {option}, 1\n{self.emit_arc_value(element, "%pattern.value{id}", true)}{self.emit_local_bind_store(instruction, local, self.type_text(element), "%pattern.value{id}", live)}"
         }
         if canonical_hir_name(option_type.name) ==
                "Result" {
