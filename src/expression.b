@@ -4940,9 +4940,7 @@ class ExpressionChecker {
         } else if node.note == "true" || node.note == "false" {
             type = new HirType("bool")
         } else if node.note == "float" {
-            if expected.name == "decimal" ||
-               canonical_hir_name(expected.name) == "float" ||
-               expected.name == "f32" {
+            if literal_number_target(expected) {
                 type = expected
             } else {
                 type = new HirType("float")
@@ -4961,7 +4959,27 @@ class ExpressionChecker {
                 node,
                 "integer literal {sign}{node.value} does not fit {render_hir_type(type)} ({integer_literal_range(type.name)})")
         }
-        if type.name == "decimal" &&
+        // A base prefix says "this integer, written in another base", and the
+        // real-number types read it as the integer it is. `0xffffffffffffffff`
+        // is a bit pattern, which u64 has a rule for and a float does not, so
+        // a hex or binary literal in a real-number type has to be an int
+        // value. Without this the checker took every one of them and the two
+        // backends went different ways: `let f: float = 0xFF` ran as 255 and
+        // built as 1.26e-321, and `let d: decimal = 0xFF` ran as 0.0 and did
+        // not build at all.
+        let base_prefixed: bool =
+            node.note == "int" &&
+            literal_has_base_prefix(node.value)
+        if base_prefixed && literal_number_target(type) &&
+           !integer_literal_fits(
+               node.value, "int", self.literal_sign < 0) {
+            let sign: string =
+                if self.literal_sign < 0 { "-" } else { "" }
+            self.fail(
+                node,
+                "hex or binary literal {sign}{node.value} does not fit {render_hir_type(type)} — it has to be an int value ({integer_literal_range("int")})")
+        }
+        if type.name == "decimal" && !base_prefixed &&
            !decimal_literal_fits(node.value) {
             self.fail(
                 node,
@@ -9887,11 +9905,28 @@ class ExpressionChecker {
 
     fn check_cast(node: AstNode,
                   expected: HirType) -> HirNode {
-        let value: HirNode =
-            self.check_expression(
-                node.children[0], no_hir_type())
         let target: HirType =
             hir_type_from_ast(node.children[1])
+        // A number literal written straight under `as` is read *in* the target
+        // type, not read in the default type and then converted: `19.99 as
+        // decimal` is the decimal 19.99, exactly like `let p: decimal = 19.99`.
+        // With no demand the literal was an f64 first, so the cast converted
+        // 19.989999999999998436805981327779591083526611328125 and the one type
+        // that exists to have no binary error carried one.
+        //
+        // The demand stops at the real-number types. `rate as decimal` on a
+        // float *variable* still tells the truth about that float, because the
+        // operand is not a literal; and an integer target keeps the low
+        // target-width bits, so `300 as i8` is still 44.
+        var demand: HirType = no_hir_type()
+        if node.value == "as" &&
+           number_literal_syntax(node.children[0]) &&
+           literal_number_target(target) {
+            demand = target
+        }
+        let value: HirNode =
+            self.check_expression(
+                node.children[0], demand)
         var result_type: HirType = target
         if node.value == "as?" {
             result_type = hir_option(target)

@@ -3982,8 +3982,34 @@ char* beans_str_repeat(char* s, long long n, long long line, long long col) {
 // Half away from zero, which is what llround does for every value a program can
 // meaningfully round. Written out rather than pulled from libm, which the
 // freestanding profile does not have.
+//
+// A float that has no int to round to saturates at int's own bounds and NaN is
+// zero, the same rule spec/SYNTAX.md gives `as int`: a C cast of an
+// out-of-range double is undefined behaviour, and this answer is an int either
+// way. 2^63 is exact in a double, so the two guards are exact.
+//
+// NaN is recognised from the bits, not by asking whether the value equals
+// itself. On a target with no hardware double — the RV32 and Cortex-M boards
+// this runtime also builds for — an unordered compare lowers to __unorddf2,
+// which is a compiler-rt symbol the freestanding profile does not link and
+// test/freestanding.sh refuses. Reading the exponent and mantissa is the same
+// answer with no libcall, and the ordered compares below are all ordinary
+// soft-float ones the profile already carries.
+static int beans_f64_is_nan(double v) {
+    unsigned long long bits;
+    memcpy(&bits, &v, sizeof bits);
+    return (bits & 0x7ff0000000000000ULL) == 0x7ff0000000000000ULL &&
+           (bits & 0x000fffffffffffffULL) != 0;
+}
+
 long long beans_f64_round(double v) {
-    return v < 0 ? -(long long)(-v + 0.5) : (long long)(v + 0.5);
+    if (beans_f64_is_nan(v)) return 0;
+    if (v >= 9223372036854775808.0) return 9223372036854775807LL;
+    if (v <= -9223372036854775808.0) return -9223372036854775807LL - 1;
+    double rounded = v < 0 ? -(-v + 0.5) : (v + 0.5);
+    if (rounded >= 9223372036854775808.0) return 9223372036854775807LL;
+    if (rounded <= -9223372036854775808.0) return -9223372036854775807LL - 1;
+    return (long long)rounded;
 }
 
 // ---- lists ----
@@ -15199,6 +15225,17 @@ static void dec_widen(BDec* out, const BDec* value, long long scale,
         *out = *value;
         return;
     }
+    // A zero has no significant digits to protect. The digit budget stops a
+    // coefficient from growing past 38 because the zeros it appends are
+    // significant; zero appends nothing — 0 at scale 45 is still the one digit
+    // dec_digits128 counts, and scale 45 is well inside BDEC_MAX_SCALE. So a
+    // zero reaches the whole target, which is what makes a + b and b + a agree
+    // when both sides are zero.
+    if (dec_zero(value)) {
+        if (scale > BDEC_MAX_SCALE) dec_overflow(line, col);
+        dec_set(out, (BU128){0, 0}, 0, scale);
+        return;
+    }
     long long room = BDEC_PRECISION - dec_digits128(dec_mag(value));
     long long step = scale - value->s;
     if (step > room) step = room;
@@ -15218,17 +15255,34 @@ void beans_decv_add(BDec* out, const BDec* a, const BDec* b,
     // 0.00 + 233 is 233.00. Handing back the other operand untouched dropped
     // it, which is how a money total that starts at 0.00 lost its cents on the
     // first addition — and money is what this type is for.
+    long long scale = a->s > b->s ? a->s : b->s;
     if (dec_zero(a) || dec_zero(b)) {
-        dec_widen(out, dec_zero(a) ? b : a,
-                  a->s > b->s ? a->s : b->s, line, col);
+        dec_widen(out, dec_zero(a) ? b : a, scale, line, col);
         return;
     }
     BU128 am = dec_mag(a), bm = dec_mag(b);
     int ae = dec_digits128(am) - 1 - (int)a->s;
     int be = dec_digits128(bm) - 1 - (int)b->s;
-    if (ae - be > BDEC_PRECISION) { *out = *a; return; }
-    if (be - ae > BDEC_PRECISION) { *out = *b; return; }
-    long long scale = a->s > b->s ? a->s : b->s;
+    // One operand so much smaller than the other that it cannot reach the
+    // sum's 38 digits. It still decides the sum's scale, so the answer is the
+    // larger operand *widened*, not handed back untouched — that is how
+    // 1231234555555555555555555567456789 - 0.000000001 lost its four decimals.
+    //
+    // The cut is at 39, not 38, because a digit one past the 38-digit window
+    // still lands on the guard: 1 + -9E-39 borrows into the last kept digit and
+    // is 0.99999999999999999999999999999999999999, not 1. From 40 apart the
+    // small side is strictly below the guard, so it can only be sticky — it
+    // rounds a like-signed sum down and moves an opposite-signed one by less
+    // than half a step either way. The general path below stays bounded: at 39
+    // apart the wider operand grows by at most 76 digits, well inside BDecWide.
+    if (ae - be > BDEC_PRECISION + 1) {
+        dec_widen(out, a, scale, line, col);
+        return;
+    }
+    if (be - ae > BDEC_PRECISION + 1) {
+        dec_widen(out, b, scale, line, col);
+        return;
+    }
     BDecWide aw = decw_from128(am), bw = decw_from128(bm);
     decw_mul_pow10(&aw, scale - a->s, line, col);
     decw_mul_pow10(&bw, scale - b->s, line, col);
@@ -15270,7 +15324,17 @@ void beans_decv_mul(BDec* out, const BDec* a, const BDec* b,
 void beans_decv_div(BDec* out, const BDec* a, const BDec* b,
                     long long line, long long col) {
     if (dec_zero(b)) beans_panic("divide by zero", line, col);
-    if (dec_zero(a)) { dec_set(out, (BU128){0, 0}, 0, a->s); return; }
+    // A zero quotient still carries the quotient's scale, which is
+    // scale(a) - scale(b) — the preferred exponent the non-zero path below
+    // already lands on — and never a negative one, because beans has no
+    // negative scale. Keeping the dividend's scale made 0.000 / 0.7 answer
+    // 0.000 where the general decimal arithmetic says 0.00.
+    if (dec_zero(a)) {
+        long long quotient_scale = a->s - b->s;
+        if (quotient_scale < 0) quotient_scale = 0;
+        dec_set(out, (BU128){0, 0}, 0, quotient_scale);
+        return;
+    }
     BU128 numerator = dec_mag(a);
     BU128 denominator = dec_mag(b);
     BU128 integer, remainder;
