@@ -29,7 +29,9 @@ class TreeValue {
     map_version: int
     // A list carries the same structural change count a map does, plus the
     // name of the operation that last moved it, so an invalidated loop can
-    // say what changed. Mirrors BList.version in runtime/beans_rt.c.
+    // say what changed. Mirrors BList's change_count and change_kind in
+    // runtime/beans_rt.c -- the same two facts, held as a count and a name
+    // here because a tree value has no ABI to keep.
     list_version: int
     list_change: string
     object_id: int

@@ -9726,6 +9726,8 @@ class TreeInterpreter {
                         node, node.col,
                         "negative reserve capacity {capacity}")
                 }
+                // 1 << 58, the bound beans_list_reserve and
+                // beans_map_reserve refuse above
                 if capacity > 288230376151711744 {
                     return self.fail_at(
                         node, node.col,
@@ -12275,6 +12277,31 @@ class TreeInterpreter {
         return TreeExec.next()
     }
 
+    // One turn of a `for` loop: bind the element, run the body, and say
+    // whether the loop is over. `some(exec)` is what the loop must hand back
+    // — a `return` travels out through it, a `break` ends the loop cleanly —
+    // and `none` means take another turn. Every `for` driver below goes
+    // through this, so the three of them cannot drift on what `break` and
+    // `return` mean, which is the kind of drift that put the list and the
+    // native backend a rule apart in the first place.
+    fn iteration_turn(node: HirNode,
+                      binding: HirNode,
+                      value: TreeValue,
+                      frame: TreeFrame) -> Option<TreeExec> {
+        let iteration: TreeFrame =
+            TreeFrame.scope(frame)
+        iteration.set(binding.binding_id, value)
+        let result: TreeExec =
+            self.block(node.children[2], iteration)
+        if result.kind == "return" {
+            return some(result)
+        }
+        if result.kind == "break" {
+            return some(TreeExec.next())
+        }
+        return none
+    }
+
     // `for x in xs` reads the list itself, one element at a time — the same
     // thing the native loop does. Replacing an element is visible on the next
     // turn; a structural change (push, pop, insert, remove, clear, reverse,
@@ -12298,18 +12325,11 @@ class TreeInterpreter {
                 return TreeExec.stopped("panic")
             }
             if index >= iterable.items.len() { break }
-            let iteration: TreeFrame =
-                TreeFrame.scope(frame)
-            iteration.set(
-                binding.binding_id,
-                iterable.items[index])
-            let result: TreeExec =
-                self.block(node.children[2], iteration)
-            if result.kind == "return" {
-                return result
-            }
-            if result.kind == "break" {
-                return TreeExec.next()
+            match self.iteration_turn(
+                    node, binding,
+                    iterable.items[index], frame) {
+                some(over) => { return over }
+                none => {}
             }
             index += 1
         }
@@ -12340,18 +12360,10 @@ class TreeInterpreter {
                                 ((index *
                                   piece.value.size) as u64),
                             element)
-                    let iteration: TreeFrame =
-                        TreeFrame.scope(frame)
-                    iteration.set(
-                        binding.binding_id, value)
-                    let result: TreeExec =
-                        self.block(
-                            node.children[2], iteration)
-                    if result.kind == "return" {
-                        return result
-                    }
-                    if result.kind == "break" {
-                        return TreeExec.next()
+                    match self.iteration_turn(
+                            node, binding, value, frame) {
+                        some(over) => { return over }
+                        none => {}
                     }
                     index += 1
                 }
@@ -12529,18 +12541,10 @@ class TreeInterpreter {
                     "{iterable.kind} is not iterable")
             }
             for value: TreeValue in values {
-                let iteration: TreeFrame =
-                    TreeFrame.scope(frame)
-                iteration.set(
-                    binding.binding_id, value)
-                let result: TreeExec =
-                    self.block(
-                        node.children[2], iteration)
-                if result.kind == "return" {
-                    return result
-                }
-                if result.kind == "break" {
-                    return TreeExec.next()
+                match self.iteration_turn(
+                        node, binding, value, frame) {
+                    some(over) => { return over }
+                    none => {}
                 }
             }
         }

@@ -1714,13 +1714,16 @@ partial class LlvmTextEmitter {
     }
 
     // pop is the one structural list change generated code makes inline
-    // instead of through the runtime, so it records the change itself. The
-    // low four bits of the count name the operation (2 = pop, see
-    // LIST_CHANGE_POP in runtime/beans_rt.c) and the rest is a change counter,
-    // so `and -16` then `add 18` both names pop and moves the count.
+    // instead of through the runtime, so it records the change itself. A
+    // list's change word is two 32-bit halves: the count at offset 40 and the
+    // operation at 44 (LIST_CHANGE_POP = 2 in runtime/beans_rt.c, pinned there
+    // by a _Static_assert together with both offsets). Two narrow stores after
+    // one narrow load, deliberately: folding both halves into one integer
+    // costs a read-modify-write here, and pop is inlined into every drain
+    // loop a program writes.
     fn emit_list_pop_note(list: string) -> string {
         let id: int = self.fresh()
-        return "  %list.pop.ver.ptr{id} = getelementptr i8, ptr {list}, i64 40\n  %list.pop.ver{id} = load i64, ptr %list.pop.ver.ptr{id}\n  %list.pop.ver.base{id} = and i64 %list.pop.ver{id}, -16\n  %list.pop.ver.next{id} = add i64 %list.pop.ver.base{id}, 18\n  store i64 %list.pop.ver.next{id}, ptr %list.pop.ver.ptr{id}\n"
+        return "  %list.pop.cnt.ptr{id} = getelementptr i8, ptr {list}, i64 40\n  %list.pop.cnt{id} = load i32, ptr %list.pop.cnt.ptr{id}\n  %list.pop.cnt.next{id} = add i32 %list.pop.cnt{id}, 1\n  store i32 %list.pop.cnt.next{id}, ptr %list.pop.cnt.ptr{id}\n  %list.pop.kind.ptr{id} = getelementptr i8, ptr {list}, i64 44\n  store i32 2, ptr %list.pop.kind.ptr{id}\n"
     }
 
     fn emit_list_pop(
@@ -2966,11 +2969,12 @@ partial class LlvmTextEmitter {
     }
 
     // A list loop reads the list itself, so it has to notice the list being
-    // rebuilt underneath it. Both list iterators record the change count and
-    // the length the list carried when the loop started; `iterate_next`
-    // compares the count before it reads anything else. Offsets 8 and 40 are
-    // the list's len and version fields, pinned by a _Static_assert in
-    // runtime/beans_rt.c.
+    // rebuilt underneath it. Both list iterators record the list's change word
+    // and the length it carried when the loop started; `iterate_next` compares
+    // the word before it reads anything else. The word at offset 40 is the
+    // change count and the operation that wrote it, side by side, so either
+    // moving invalidates the loop; offset 8 is the length. Both offsets are
+    // pinned by _Static_asserts in runtime/beans_rt.c.
     fn emit_list_iter_snapshot(
         instruction: MirInstruction,
         collection: string) -> string {

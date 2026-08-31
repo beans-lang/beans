@@ -68,6 +68,14 @@ run_asan examples/box.b box
 run_asan examples/arena.b arena
 run_asan examples/containers.b containers 3
 run_asan test/cases/map_models.b map_models
+# A `for` loop over a List reads the list's own buffer, one element at a time,
+# and refuses a structural change to it. That is where a use-after-free would
+# live: the allowed cases push past the list's first reallocation while a loop
+# holds it (reserve(4096) mid-loop, n = 40), the mutation case panics out of a
+# loop whose buffer just moved, and the slice case reads borrowed memory live.
+run_asan test/cases/list_iteration.b list_iteration
+run_asan test/cases/list_iteration_mutation.b list_iteration_mutation 3
+run_asan test/cases/slice_live_iteration.b slice_live_iteration
 # #60: a pattern-bound node dropped on an early return must be released; under
 # ASan on Linux a missed release is an LSan report and a non-zero exit.
 run_asan test/cases/unlink_leak.b unlink_leak

@@ -1200,6 +1200,14 @@ Everything else is allowed and the loop keeps running:
   change. The check happens before the next element is read, so a loop that
   never reads again never sees it.
 
+This is not the same refusal as `list changed during sort`, and the two do not
+overlap: that one is a *sort callback* changing the list its own sort is
+permuting, and it fires inside the sort whether or not a loop is running. This
+one is a *loop* reading a list something changed, and it fires on the loop's
+next turn. A `sort_by` whose comparator pushes, called from inside a `for` loop
+over that same list, hits the sort's refusal first — the sort never returns to
+the loop.
+
 `xs.slice(from, to)` answers a copy, so `for x: T in xs.slice(from, to)` walks
 that copy and a change to `xs` does not reach it. The compiler may skip
 materializing the copy and walk `xs`'s own storage when it can prove `xs`

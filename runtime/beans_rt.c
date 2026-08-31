@@ -1308,10 +1308,25 @@ typedef struct {
     long long stride, ptr_mask;
     // Structural changes invalidate direct list iterators, the same way they
     // invalidate a map's. Element replacement is safe because each loop turn
-    // reads its own copy. Generated code loads this at offset 40 -- keep it
-    // last, and keep the struct at 48 bytes so a list still fits the 64-byte
-    // allocation class it has always used.
-    long long version;
+    // reads its own copy.
+    //
+    // Two halves of one aligned 8-byte word: a plain change count, and which
+    // operation last moved it so the panic can name it. Split rather than
+    // packed into one integer because packing costs a read-modify-write of
+    // the operation bits on `push` and on the `pop` generated code inlines --
+    // the two hottest list operations there are -- and that measured 16% on a
+    // push loop and 39% on a pop loop. Written as two stores after one load,
+    // it is 2% and 18%.
+    //
+    // A loop loads the whole word at offset 40 and compares it, so either
+    // half moving invalidates it. The count is 32 bits: aliasing needs 2^32
+    // structural changes *inside one loop turn*, ending on the same
+    // operation -- a push-only run of that length wants 32 GiB of list, and
+    // any shorter run has already stopped the loop.
+    //
+    // Keep them last and keep the struct at 48 bytes: a list still fits the
+    // 64-byte allocation class it has always used.
+    unsigned int change_count, change_kind;
 } BList;
 typedef struct {
     long long* data;
@@ -4022,23 +4037,38 @@ long long beans_f64_round(double v) {
 static long long list_stride(BList* l) {
     return l->stride < 0 ? -l->stride : (l->stride ? l->stride : 8);
 }
-// Which operation last changed a list's shape. The code rides in the low four
-// bits of `version` so a structural change is still one store on the hot path,
-// and the panic can name the operation that broke the loop. The rest of the
-// word is a plain change count, so the value always moves.
-// The emitted loop reads the field directly, so its offset is part of the ABI.
-_Static_assert(offsetof(BList, version) == 40,
-               "generated list loops load the change count at offset 40");
-#define LIST_CHANGE_MASK 15
-#define LIST_CHANGE_PUSH 1
-#define LIST_CHANGE_POP 2
-#define LIST_CHANGE_INSERT 3
-#define LIST_CHANGE_REMOVE 4
-#define LIST_CHANGE_CLEAR 5
-#define LIST_CHANGE_REVERSE 6
-#define LIST_CHANGE_SORT 7
-static void list_changed(BList* l, long long what) {
-    l->version = (l->version & ~(long long)LIST_CHANGE_MASK) + 16 + what;
+// Which operation last changed a list's shape, and how many times the shape
+// has changed. Generated code reads both directly, so their offsets and the
+// operation codes are part of the ABI, not an implementation detail:
+//
+//   llvm_emit_collections.b  emit_list_iter_snapshot / emit_list_iter_guard
+//                            load the 8-byte word at offset 40 and compare it
+//   llvm_emit_collections.b  emit_list_pop_note bumps the count at 40 and
+//                            stores the literal LIST_CHANGE_POP at 44
+//
+// These asserts are what makes a reorder or a renumber a build failure here
+// instead of a wrong panic word, or worse, a loop that never notices.
+_Static_assert(offsetof(BList, len) == 8,
+               "generated list loops load the length at offset 8");
+_Static_assert(offsetof(BList, change_count) == 40 &&
+                   offsetof(BList, change_kind) == 44 &&
+                   sizeof(unsigned int) == 4,
+               "llvm_emit_collections.b loads the change word at offset 40 and "
+               "writes the operation at offset 44");
+_Static_assert(sizeof(BList) == 48,
+               "a list must stay inside the 64-byte allocation class");
+#define LIST_CHANGE_PUSH 1u
+#define LIST_CHANGE_POP 2u
+#define LIST_CHANGE_INSERT 3u
+#define LIST_CHANGE_REMOVE 4u
+#define LIST_CHANGE_CLEAR 5u
+#define LIST_CHANGE_REVERSE 6u
+#define LIST_CHANGE_SORT 7u
+_Static_assert(LIST_CHANGE_POP == 2u,
+               "llvm_emit_collections.b emit_list_pop_note stores the literal 2");
+static void list_changed(BList* l, unsigned int what) {
+    l->change_count += 1u;
+    l->change_kind = what;
 }
 static void list_retain_element(BList* l, void* element) {
     int i64_encoded = l->stride < 0;
@@ -6324,7 +6354,7 @@ void beans_list_clear(BList* l) {
 void beans_list_iter_invalid(BList* l, long long was_len, long long line,
                              long long col) {
     const char* what = "change";
-    switch (l->version & LIST_CHANGE_MASK) {
+    switch (l->change_kind) {
         case LIST_CHANGE_PUSH: what = "push"; break;
         case LIST_CHANGE_POP: what = "pop"; break;
         case LIST_CHANGE_INSERT: what = "insert"; break;
@@ -6334,7 +6364,13 @@ void beans_list_iter_invalid(BList* l, long long was_len, long long line,
         case LIST_CHANGE_SORT: what = "sort"; break;
         default: break;
     }
-    char b[96];
+    // The longest this renders is the widest operation word and two
+    // full-width lengths: "list changed during iteration (reverse, length
+    // -9223372036854775808 -> -9223372036854775808)" is 92 bytes and a NUL.
+    // rt_format truncates rather than overruns, so this is not a bound on
+    // safety -- it is what keeps the message itself from being the thing that
+    // gets cut.
+    char b[112];
     if (l->len != was_len)
         rt_format(b, sizeof b,
                   "list changed during iteration (%s, length %lld -> %lld)",
@@ -6546,14 +6582,50 @@ static void list_sort_by_key_slots(BList* l, void* thunk, void* box,
         if (i == 0 || keys[i] < minimum) minimum = keys[i];
         if (i == 0 || keys[i] > maximum) maximum = keys[i];
     }
-    if (n < 2) return; // the keys were the whole job; RT_SCRATCH frees them
+    if (n < 2) return; // the keys are the whole job; RT_SCRATCH frees them
     RT_SCRATCH long long* val_buf = rt_alloc((size_t)n * 8);
-    RT_SCRATCH size_t* count = rt_alloc(65536 * sizeof(size_t));
-    RT_SCRATCH size_t* at = rt_alloc(65536 * sizeof(size_t));
-    if (!val_buf || !count || !at) beans_panic("out of memory", 0, 0);
+    if (!val_buf) beans_panic("out of memory", 0, 0);
     unsigned long long span =
         (unsigned long long)maximum - (unsigned long long)minimum;
     int passes = span <= 0xffffULL ? 1 : span <= 0xffffffffULL ? 2 : 4;
+    // A radix pass costs 65536 bucket clears and a 65536-wide prefix sum
+    // whatever n is, so sorting ten items by key was a megabyte of scratch and
+    // a quarter of a million fixed operations. Below the crossover -- one pass
+    // is ~131k fixed operations against a merge's ~4n*log2(n), so a single
+    // pass turns over near n = 3000 -- take the same stable bottom-up merge
+    // the decimal and inline-struct twins take. Same keys, both stable, so it
+    // is the same permutation: only the work differs.
+    if ((long long)passes * 4096 > n) {
+        RT_SCRATCH long long* key_merge = rt_alloc((size_t)n * 8);
+        if (!key_merge) beans_panic("out of memory", 0, 0);
+        long long* values = l->data;
+        for (long long width = 1; width < n; width *= 2) {
+            for (long long lo = 0; lo < n; lo += 2 * width) {
+                long long mid = lo + width < n ? lo + width : n;
+                long long hi = lo + 2 * width < n ? lo + 2 * width : n;
+                long long left = lo, right = mid, out = lo;
+                while (left < mid && right < hi) {
+                    long long take = keys[right] < keys[left] ? right++ : left++;
+                    key_merge[out] = keys[take];
+                    val_buf[out++] = values[take];
+                }
+                while (left < mid) {
+                    key_merge[out] = keys[left];
+                    val_buf[out++] = values[left++];
+                }
+                while (right < hi) {
+                    key_merge[out] = keys[right];
+                    val_buf[out++] = values[right++];
+                }
+                memcpy(keys + lo, key_merge + lo, (size_t)(hi - lo) * 8);
+                memcpy(values + lo, val_buf + lo, (size_t)(hi - lo) * 8);
+            }
+        }
+        return;
+    }
+    RT_SCRATCH size_t* count = rt_alloc(65536 * sizeof(size_t));
+    RT_SCRATCH size_t* at = rt_alloc(65536 * sizeof(size_t));
+    if (!count || !at) beans_panic("out of memory", 0, 0);
     RT_SCRATCH long long* key_buf = passes > 1 ? rt_alloc((size_t)n * 8) : NULL;
     if (passes > 1 && !key_buf) beans_panic("out of memory", 0, 0);
     long long* key_src = keys;

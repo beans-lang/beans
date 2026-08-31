@@ -241,6 +241,25 @@ agree guard_string_count_chars beans_str_count_chars 'fn main() {
     let c: int = s.count_chars(1, 9)
 }'
 
+# reserve's capacity guard. This was the exclusion below until the interpreter
+# grew the same two checks the runtime makes: `beansc run` silently accepted a
+# negative capacity that a native build refused, so the position was never the
+# question -- the panic did not happen at all (#58).
+agree list_reserve_negative beans_list_reserve 'fn main() {
+    var xs: List<int> = [1, 2, 3]
+    xs.reserve(-1)
+}'
+
+# A loop refusing the list that changed under it. The panic carries the loop's
+# own position on both backends, which is the only position it can carry: the
+# line that changed the list may be in another function entirely.
+agree list_iter_invalid beans_list_iter_invalid 'fn main() {
+    var xs: List<int> = [1, 2, 3, 4, 5]
+    for x: int in xs {
+        xs.push(99)
+    }
+}'
+
 # Regression cases outside the Bytes/List/string/fmt families (indexing panic
 # helpers, the panic primitive): still must agree, but not part of the family
 # coverage assertion.
@@ -270,7 +289,6 @@ declare -A EXCLUDED=(
   [beans_bytes_from_raw]="unsafe raw-pointer constructor, not reachable from safe code"
   [beans_bytes_slice_to_string]="not exposed as a Bytes method (the checker refuses it)"
   [beans_bytes_slice_to_string_full]="not exposed as a Bytes method (the checker refuses it)"
-  [beans_list_reserve]="the interpreter treats list.reserve as a no-op and never panics while native validates negative capacity — a missing-guard behavior divergence, tracked with the negative-capacity guard work, not a position bug"
 )
 
 runtime_family=$(perl -0777 -ne '

@@ -212,12 +212,23 @@ fn decimals_ahead(n: int) {
 
 // spec/SYNTAX.md: sort_by_key is one key call per item. The order is the same
 // either way, so only a call counter can see the one-element case.
+//
+// Three element kinds because sort_by_key is three runtime entry points, and
+// each of them had the same early return above its key loop:
+// beans_list_sort_by_key for slot-sized elements, beans_list_decv_sort_by_key
+// for decimals and beans_list_val_sort_by_key for inline structs. Counting
+// only the first would leave the other two fixed but unguarded.
 class Counter {
     pub calls: int = 0
     pub fn bump(v: int) -> int {
         self.calls += 1
         return v
     }
+}
+
+struct Slot {
+    rank: int
+    tag: int
 }
 
 fn key_calls(n: int) {
@@ -230,6 +241,33 @@ fn key_calls(n: int) {
     let c: Counter = new Counter()
     xs.sort_by_key(fn(v: int) -> int { return c.bump(v) })
     io.println("keys n {n}: calls {c.calls} head {xs.get(0).or(-1)}")
+}
+
+// decimal elements are wider than a slot: beans_list_decv_sort_by_key.
+fn decimal_key_calls(n: int) {
+    var xs: List<decimal> = []
+    var i: int = 0
+    for i < n {
+        xs.push(((n - i) * 7 % 101) as decimal)
+        i += 1
+    }
+    let c: Counter = new Counter()
+    xs.sort_by_key(fn(v: decimal) -> int { return c.bump(v as int) })
+    io.println("deckeys n {n}: calls {c.calls} head {xs.get(0).or(0)}")
+}
+
+// an inline struct sorts by address: beans_list_val_sort_by_key.
+fn struct_key_calls(n: int) {
+    var xs: List<Slot> = []
+    var i: int = 0
+    for i < n {
+        xs.push(Slot { rank: (n - i) * 7 % 101, tag: i })
+        i += 1
+    }
+    let c: Counter = new Counter()
+    xs.sort_by_key(fn(s: Slot) -> int { return c.bump(s.rank) })
+    let head: int = if n == 0 { -1 } else { xs[0].rank }
+    io.println("structkeys n {n}: calls {c.calls} head {head}")
 }
 
 fn main() {
@@ -250,5 +288,7 @@ fn main() {
     }
     for n: int in [0, 1, 2, 3, 4, 5, 8, 9, 64, 65] {
         key_calls(n)
+        decimal_key_calls(n)
+        struct_key_calls(n)
     }
 }
