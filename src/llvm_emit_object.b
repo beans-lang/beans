@@ -694,6 +694,8 @@ partial class LlvmTextEmitter {
         clone.borrow_elided = instruction.borrow_elided
         clone.stack_closure = instruction.stack_closure
         clone.bounds_elided = instruction.bounds_elided
+        clone.list_header_local =
+            instruction.list_header_local
         clone.removed = instruction.removed
         // the flag lattice is over the CFG, not over types, so an
         // instance inherits the template's answer unchanged
@@ -842,6 +844,12 @@ partial class LlvmTextEmitter {
                 }
                 cloned_block.edge_releases.push(
                     cloned_edge)
+            }
+            for flush: MirHeaderFlush in
+                block.header_flushes {
+                cloned_block.header_flushes.push(
+                    new MirHeaderFlush(
+                        flush.target, flush.local))
             }
             clone.blocks.push(cloned_block)
         }

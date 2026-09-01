@@ -1740,6 +1740,15 @@ partial class LlvmTextEmitter {
             for instruction: MirInstruction in
                 block.instructions {
                 if instruction.removed { continue }
+                // Every slot the cache needs is an entry alloca, and
+                // the decision to keep one at all is the element type's,
+                // which only the emitter knows. Both happen here, before
+                // any block that reads the cache is written.
+                if instruction.op ==
+                       "list_header_open" {
+                    self.register_list_header(
+                        function, instruction)
+                }
                 if instruction.op == "defer_register" {
                     self.function_allocas.push(
                         "  %defer.flag{instruction.cleanup_id} = alloca i1\n  store i1 0, ptr %defer.flag{instruction.cleanup_id}\n")
