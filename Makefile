@@ -163,6 +163,7 @@ test-semantics: $(BIN)
 	bash ./test/downcast_borrow.sh
 	bash ./test/math.sh
 	bash ./test/slice_fusion.sh
+	bash ./test/list_header_cache.sh
 	./test/maps.sh
 	./test/traits.sh
 	bash ./test/display_width.sh
@@ -290,6 +291,7 @@ test-core: $(BIN)
 	bash ./test/downcast_borrow.sh
 	bash ./test/math.sh
 	bash ./test/slice_fusion.sh
+	bash ./test/list_header_cache.sh
 	./test/maps.sh
 	./test/traits.sh
 	bash ./test/display_width.sh

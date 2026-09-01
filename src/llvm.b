@@ -54,6 +54,7 @@ partial class LlvmTextEmitter {
     ordered_builtin_declares: List<string>
     borrowed_local_of: Map<int, int>
     borrowed_place_of: Map<int, LlvmBorrowedPlace>
+    list_headers: Map<int, LlvmListHeader>
     inout_addresses: Map<int, bool>
     field_init_names: Map<int, string>
     cleanup_functions: Map<int, MirFunction>
@@ -222,6 +223,7 @@ partial class LlvmTextEmitter {
         self.ordered_builtin_declares = []
         self.borrowed_local_of = {}
         self.borrowed_place_of = {}
+        self.list_headers = {}
         self.inout_addresses = {}
         self.field_init_names = {}
         self.cleanup_functions = {}
@@ -1032,6 +1034,11 @@ partial class LlvmTextEmitter {
                         function,
                         instruction, values)
             }
+        } else if instruction.op ==
+                      "list_header_open" {
+            output =
+                self.emit_list_header_open(
+                    instruction)
         } else if instruction.op == "builtin_method" &&
                   instruction.text == "push" &&
                   instruction.operands.len() != 0 &&

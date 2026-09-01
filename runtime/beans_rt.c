@@ -4043,8 +4043,11 @@ static long long list_stride(BList* l) {
 //
 //   llvm_emit_collections.b  emit_list_iter_snapshot / emit_list_iter_guard
 //                            load the 8-byte word at offset 40 and compare it
-//   llvm_emit_collections.b  emit_list_pop_note bumps the count at 40 and
-//                            stores the literal LIST_CHANGE_POP at 44
+//   llvm_emit_collections.b  list_header_note_change bumps the count at 40
+//                            and stores LIST_CHANGE_PUSH or LIST_CHANGE_POP
+//                            at 44 — in a loop holding the header in
+//                            registers, into that cache instead, written
+//                            back on the edge that leaves the loop
 //
 // These asserts are what makes a reorder or a renumber a build failure here
 // instead of a wrong panic word, or worse, a loop that never notices.
@@ -4064,8 +4067,9 @@ _Static_assert(sizeof(BList) == 48,
 #define LIST_CHANGE_CLEAR 5u
 #define LIST_CHANGE_REVERSE 6u
 #define LIST_CHANGE_SORT 7u
-_Static_assert(LIST_CHANGE_POP == 2u,
-               "llvm_emit_collections.b emit_list_pop_note stores the literal 2");
+_Static_assert(LIST_CHANGE_PUSH == 1u && LIST_CHANGE_POP == 2u,
+               "llvm_emit_collections.b list_header_note_change stores the "
+               "literals 1 (push) and 2 (pop)");
 static void list_changed(BList* l, unsigned int what) {
     l->change_count += 1u;
     l->change_kind = what;

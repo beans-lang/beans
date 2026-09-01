@@ -38,6 +38,38 @@ class LlvmSlotConversion {
     }
 }
 
+// The stack slots a loop holds one list's header in. `data` and `cap` are
+// read-only mirrors — only the runtime's grow path writes them, and the
+// cache reloads all five behind it — so leaving the loop writes back `len`
+// and the change word and nothing else. Every slot is an entry alloca whose
+// address never leaves the frame, which is the whole point: the element
+// store cannot alias it, so LLVM keeps the header in registers across the
+// loop instead of reloading it from the heap object every turn.
+class LlvmListHeader {
+    data: string
+    len: string
+    cap: string
+    count: string
+    kind: string
+    element: HirType
+    inline: bool
+    llvm: string
+
+    fn init(data: string, len: string, cap: string,
+            count: string, kind: string,
+            element: HirType, inline: bool,
+            llvm: string) {
+        self.data = data
+        self.len = len
+        self.cap = cap
+        self.count = count
+        self.kind = kind
+        self.element = element
+        self.inline = inline
+        self.llvm = llvm
+    }
+}
+
 // One step from an enclosing aggregate to the storage the value was read
 // out of: a struct field (gep index into `aggregate`), a class field (byte
 // offset into the object), or a fixed-array element (index register).

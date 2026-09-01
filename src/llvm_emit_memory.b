@@ -924,6 +924,14 @@ partial class LlvmTextEmitter {
                 return "%edge{block.id}.to.{target}"
             }
         }
+        for flush: MirHeaderFlush in
+            block.header_flushes {
+            if flush.target == target &&
+               self.list_headers.contains_key(
+                   flush.local) {
+                return "%edge{block.id}.to.{target}"
+            }
+        }
         if self.edge_phi_count(
                function, block, target) != 0 {
             return "%edge{block.id}.to.{target}"
@@ -1012,11 +1020,22 @@ partial class LlvmTextEmitter {
             let stores: string =
                 self.edge_phi_stores(
                     function, block, values, target)
-            if releases == 0 && stores == "" {
+            // A cached list header is written back on the way out of the
+            // loop, ahead of everything else this edge does: from here on
+            // the object is the only copy again.
+            var flushes: string = ""
+            for flush: MirHeaderFlush in
+                block.header_flushes {
+                if flush.target != target { continue }
+                flushes =
+                    "{flushes}{self.emit_list_header_flush(flush.local)}"
+            }
+            if releases == 0 && stores == "" &&
+               flushes == "" {
                 continue
             }
             output =
-                "{output}edge{block.id}.to.{target}:\n{stores}"
+                "{output}edge{block.id}.to.{target}:\n{flushes}{stores}"
             for edge: MirEdgeRelease in
                 block.edge_releases {
                 if edge.target != target { continue }
