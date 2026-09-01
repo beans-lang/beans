@@ -1713,6 +1713,19 @@ partial class LlvmTextEmitter {
         return output
     }
 
+    // pop is the one structural list change generated code makes inline
+    // instead of through the runtime, so it records the change itself. A
+    // list's change word is two 32-bit halves: the count at offset 40 and the
+    // operation at 44 (LIST_CHANGE_POP = 2 in runtime/beans_rt.c, pinned there
+    // by a _Static_assert together with both offsets). Two narrow stores after
+    // one narrow load, deliberately: folding both halves into one integer
+    // costs a read-modify-write here, and pop is inlined into every drain
+    // loop a program writes.
+    fn emit_list_pop_note(list: string) -> string {
+        let id: int = self.fresh()
+        return "  %list.pop.cnt.ptr{id} = getelementptr i8, ptr {list}, i64 40\n  %list.pop.cnt{id} = load i32, ptr %list.pop.cnt.ptr{id}\n  %list.pop.cnt.next{id} = add i32 %list.pop.cnt{id}, 1\n  store i32 %list.pop.cnt.next{id}, ptr %list.pop.cnt.ptr{id}\n  %list.pop.kind.ptr{id} = getelementptr i8, ptr {list}, i64 44\n  store i32 2, ptr %list.pop.kind.ptr{id}\n"
+    }
+
     fn emit_list_pop(
         function: MirFunction,
         instruction: MirInstruction,
@@ -1761,7 +1774,7 @@ partial class LlvmTextEmitter {
             var output: string =
                 "  %list.pop.len.ptr{id} = getelementptr i8, ptr {list}, i64 8\n  %list.pop.len{id} = load i64, ptr %list.pop.len.ptr{id}\n  %list.pop.has{id} = icmp sgt i64 %list.pop.len{id}, 0\n  br i1 %list.pop.has{id}, label %list.pop.some{some_block}, label %list.pop.none{none_block}\n"
             output =
-                "{output}list.pop.some{some_block}:\n  %list.pop.index{id} = sub i64 %list.pop.len{id}, 1\n  store i64 %list.pop.index{id}, ptr %list.pop.len.ptr{id}\n  %list.pop.data{id} = load ptr, ptr {list}\n  %list.pop.slot{id} = getelementptr {llvm}, ptr %list.pop.data{id}, i64 %list.pop.index{id}\n  %list.pop.value{id} = load {llvm}, ptr %list.pop.slot{id}\n"
+                "{output}list.pop.some{some_block}:\n  %list.pop.index{id} = sub i64 %list.pop.len{id}, 1\n  store i64 %list.pop.index{id}, ptr %list.pop.len.ptr{id}\n{self.emit_list_pop_note(list)}  %list.pop.data{id} = load ptr, ptr {list}\n  %list.pop.slot{id} = getelementptr {llvm}, ptr %list.pop.data{id}, i64 %list.pop.index{id}\n  %list.pop.value{id} = load {llvm}, ptr %list.pop.slot{id}\n"
             let payload: int = self.fresh()
             let some: int = self.fresh()
             output =
@@ -1776,7 +1789,7 @@ partial class LlvmTextEmitter {
         var output: string =
             "  %list.pop.len.ptr{id} = getelementptr i8, ptr {list}, i64 8\n  %list.pop.len{id} = load i64, ptr %list.pop.len.ptr{id}\n  %list.pop.has{id} = icmp sgt i64 %list.pop.len{id}, 0\n  br i1 %list.pop.has{id}, label %list.pop.some{some_block}, label %list.pop.none{none_block}\n"
         output =
-            "{output}list.pop.some{some_block}:\n  %list.pop.index{id} = sub i64 %list.pop.len{id}, 1\n  store i64 %list.pop.index{id}, ptr %list.pop.len.ptr{id}\n  %list.pop.data.ptr{id} = getelementptr i8, ptr {list}, i64 0\n  %list.pop.data{id} = load ptr, ptr %list.pop.data.ptr{id}\n  %list.pop.slot{id} = getelementptr i64, ptr %list.pop.data{id}, i64 %list.pop.index{id}\n  %list.pop.raw{id} = load i64, ptr %list.pop.slot{id}\n"
+            "{output}list.pop.some{some_block}:\n  %list.pop.index{id} = sub i64 %list.pop.len{id}, 1\n  store i64 %list.pop.index{id}, ptr %list.pop.len.ptr{id}\n{self.emit_list_pop_note(list)}  %list.pop.data.ptr{id} = getelementptr i8, ptr {list}, i64 0\n  %list.pop.data{id} = load ptr, ptr %list.pop.data.ptr{id}\n  %list.pop.slot{id} = getelementptr i64, ptr %list.pop.data{id}, i64 %list.pop.index{id}\n  %list.pop.raw{id} = load i64, ptr %list.pop.slot{id}\n"
         let converted: LlvmSlotConversion =
             self.from_slot(
                 element, "%list.pop.raw{id}",
@@ -2955,6 +2968,46 @@ partial class LlvmTextEmitter {
         return ""
     }
 
+    // A list loop reads the list itself, so it has to notice the list being
+    // rebuilt underneath it. Both list iterators record the list's change word
+    // and the length it carried when the loop started; `iterate_next` compares
+    // the word before it reads anything else. The word at offset 40 is the
+    // change count and the operation that wrote it, side by side, so either
+    // moving invalidates the loop; offset 8 is the length. Both offsets are
+    // pinned by _Static_asserts in runtime/beans_rt.c.
+    fn emit_list_iter_snapshot(
+        instruction: MirInstruction,
+        collection: string) -> string {
+        let version: string =
+            self.spill_slot("i64", "iter.list.version")
+        let length: string =
+            self.spill_slot("i64", "iter.list.length")
+        self.iterator_list_version[instruction.result] = version
+        self.iterator_list_length[instruction.result] = length
+        let id: int = self.fresh()
+        return "  %iter.list.version.ptr{id} = getelementptr i8, ptr {collection}, i64 40\n  %iter.list.version0{id} = load i64, ptr %iter.list.version.ptr{id}\n  store i64 %iter.list.version0{id}, ptr {version}\n  %iter.list.length.ptr{id} = getelementptr i8, ptr {collection}, i64 8\n  %iter.list.length0{id} = load i64, ptr %iter.list.length.ptr{id}\n  store i64 %iter.list.length0{id}, ptr {length}\n"
+    }
+
+    fn emit_list_iter_guard(
+        instruction: MirInstruction,
+        iterator: int) -> string {
+        if !self.iterator_list_version.contains_key(iterator) ||
+           !self.iterator_list_length.contains_key(iterator) ||
+           !self.iterator_collection.contains_key(iterator) {
+            self.fail(
+                instruction,
+                "LLVM emitter cannot find the list iterator's change count")
+            return ""
+        }
+        let collection: string =
+            self.iterator_collection[iterator]
+        self.require_declare(
+            "beans_list_iter_invalid",
+            "void @beans_list_iter_invalid(ptr, i64, i64, i64)")
+        let id: int = self.fresh()
+        return "  %iter.list.now.ptr{id} = getelementptr i8, ptr {collection}, i64 40\n  %iter.list.now{id} = load i64, ptr %iter.list.now.ptr{id}\n  %iter.list.was{id} = load i64, ptr {self.iterator_list_version[iterator]}\n  %iter.list.stale{id} = icmp ne i64 %iter.list.now{id}, %iter.list.was{id}\n  br i1 %iter.list.stale{id}, label %iter.list.changed{id}, label %iter.list.same{id}\niter.list.changed{id}:\n  %iter.list.len0{id} = load i64, ptr {self.iterator_list_length[iterator]}\n  call void @beans_list_iter_invalid(ptr {collection}, i64 %iter.list.len0{id}, i64 {instruction.line}, i64 {instruction.col})\n  unreachable\niter.list.same{id}:\n"
+    }
+
     fn emit_iterate_init(
         function: MirFunction,
         instruction: MirInstruction,
@@ -2986,7 +3039,10 @@ partial class LlvmTextEmitter {
             self.require_declare(
                 "beans_list_slice_check",
                 "void @beans_list_slice_check(ptr, i64, i64, i64, i64)")
-            return "  call void @beans_list_slice_check(ptr {collection}, i64 {from}, i64 {to}, i64 {instruction.line}, i64 {instruction.col})\n  store i64 {from}, ptr {current}\n  store i64 {to}, ptr {upper}\n"
+            let snapshot: string =
+                self.emit_list_iter_snapshot(
+                    instruction, collection)
+            return "  call void @beans_list_slice_check(ptr {collection}, i64 {from}, i64 {to}, i64 {instruction.line}, i64 {instruction.col})\n  store i64 {from}, ptr {current}\n  store i64 {to}, ptr {upper}\n{snapshot}"
         }
         if instruction.operands.len() != 1 {
             self.fail(
@@ -3135,7 +3191,10 @@ partial class LlvmTextEmitter {
             self.iterator_collection_borrowed[
                 instruction.result] = true
         }
-        return "  store i64 0, ptr {current}\n"
+        let snapshot: string =
+            self.emit_list_iter_snapshot(
+                instruction, collection)
+        return "  store i64 0, ptr {current}\n{snapshot}"
     }
 
     fn emit_iterate_next(
@@ -3157,6 +3216,9 @@ partial class LlvmTextEmitter {
             return ""
         }
         if self.iterator_kind[iterator] == "list" {
+            let guard: string =
+                self.emit_list_iter_guard(
+                    instruction, iterator)
             let id: int = self.fresh()
             let index: string = "%iter.index{id}"
             let length_pointer: string =
@@ -3165,13 +3227,16 @@ partial class LlvmTextEmitter {
             let result: string =
                 "%v{instruction.result}"
             values[instruction.result] = result
-            return "  {index} = load i64, ptr {self.iterator_current[iterator]}\n  {length_pointer} = getelementptr i8, ptr {self.iterator_collection[iterator]}, i64 8\n  {length} = load i64, ptr {length_pointer}\n  {result} = icmp slt i64 {index}, {length}\n"
+            return "{guard}  {index} = load i64, ptr {self.iterator_current[iterator]}\n  {length_pointer} = getelementptr i8, ptr {self.iterator_collection[iterator]}, i64 8\n  {length} = load i64, ptr {length_pointer}\n  {result} = icmp slt i64 {index}, {length}\n"
         }
         if self.iterator_kind[iterator] == "list_slice" {
+            let guard: string =
+                self.emit_list_iter_guard(
+                    instruction, iterator)
             let id: int = self.fresh()
             let result: string = "%v{instruction.result}"
             values[instruction.result] = result
-            return "  %iter.slice.index{id} = load i64, ptr {self.iterator_current[iterator]}\n  %iter.slice.upper{id} = load i64, ptr {self.iterator_upper[iterator]}\n  {result} = icmp slt i64 %iter.slice.index{id}, %iter.slice.upper{id}\n"
+            return "{guard}  %iter.slice.index{id} = load i64, ptr {self.iterator_current[iterator]}\n  %iter.slice.upper{id} = load i64, ptr {self.iterator_upper[iterator]}\n  {result} = icmp slt i64 %iter.slice.index{id}, %iter.slice.upper{id}\n"
         }
         if self.iterator_kind[iterator] == "array" {
             let id: int = self.fresh()

@@ -580,6 +580,8 @@ partial class LlvmTextEmitter {
         self.iterator_collection_borrowed = {}
         self.iterator_map_version = {}
         self.iterator_map_entry = {}
+        self.iterator_list_version = {}
+        self.iterator_list_length = {}
         self.iterator_slice = {}
         self.iterator_array_slot = {}
         self.iterator_array_length = {}

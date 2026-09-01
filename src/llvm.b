@@ -94,6 +94,10 @@ partial class LlvmTextEmitter {
     iterator_collection_borrowed: Map<int, bool>
     iterator_map_version: Map<int, string>
     iterator_map_entry: Map<int, string>
+    // What a list looked like when its loop started: the change count it must
+    // still carry, and the length the panic message reports it moved from.
+    iterator_list_version: Map<int, string>
+    iterator_list_length: Map<int, string>
     iterator_slice: Map<int, string>
     iterator_array_slot: Map<int, string>
     iterator_array_length: Map<int, int>
@@ -257,6 +261,8 @@ partial class LlvmTextEmitter {
         self.iterator_collection = {}
         self.iterator_map_version = {}
         self.iterator_map_entry = {}
+        self.iterator_list_version = {}
+        self.iterator_list_length = {}
         self.iterator_slice = {}
         self.iterator_array_slot = {}
         self.iterator_array_length = {}

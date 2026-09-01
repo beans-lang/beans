@@ -16,6 +16,17 @@
 compiler=0.1.35
 language=1.0
 
+# 14: `for x in xs` over a List got the invalidation rule maps already had.
+# beans_list_iter_invalid is the panic a loop raises when the list it is
+# reading was structurally changed under it. BList's last word became two:
+# change_count at offset 40 and change_kind at offset 44, which a generated
+# loop loads together as one 8-byte word and compares, and which every
+# structural list entry point (push, push_typed, insert, insert_typed,
+# remove, remove_typed, clear, reverse, sort, sort_by, sort_by_key and their
+# decv_/val_ twins) moves. The struct is still 48 bytes, so a list still fits
+# the 64-byte allocation class it has always used. beans_list_sort_by_key,
+# beans_list_decv_sort_by_key and beans_list_val_sort_by_key now call the key
+# function once per item at n = 1 instead of returning above the key loop.
 # 13: display width became a measure the language has. beans_str_width
 # answers string.width() in columns, and beans_width_utf8 is the same
 # measure over a pointer and a length — the tree interpreter calls it so
@@ -55,4 +66,4 @@ language=1.0
 # caller-owned event buffer instead of returning a fresh one.
 # Version 7 added Bytes.filled, Bytes.append_int_text, and Thread.detach.
 # Version 6 added per-thread runtime-hook guard entry points.
-runtime_abi=13
+runtime_abi=14

@@ -223,6 +223,7 @@ test-runtime: $(BIN)
 	./test/child.sh
 	bash ./test/encoding.sh
 	bash ./test/json_direct.sh
+	bash ./test/list_iteration.sh
 
 test-ffi: $(BIN)
 	./test/raw_slices.sh
@@ -285,6 +286,7 @@ test-core: $(BIN)
 	bash ./test/decimal_conformance.sh
 	./test/moves.sh
 	bash ./test/borrowed_iteration.sh
+	bash ./test/list_iteration.sh
 	bash ./test/downcast_borrow.sh
 	bash ./test/math.sh
 	bash ./test/slice_fusion.sh

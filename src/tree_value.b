@@ -27,6 +27,13 @@ class TreeValue {
     map_keys: List<TreeValue>
     map_values: Map<string, TreeValue>
     map_version: int
+    // A list carries the same structural change count a map does, plus the
+    // name of the operation that last moved it, so an invalidated loop can
+    // say what changed. Mirrors BList's change_count and change_kind in
+    // runtime/beans_rt.c -- the same two facts, held as a count and a name
+    // here because a tree value has no ABI to keep.
+    list_version: int
+    list_change: string
     object_id: int
     closure_node: Option<HirNode>
     closure_frame: Option<TreeFrame>
@@ -71,6 +78,8 @@ class TreeValue {
         self.map_keys = []
         self.map_values = {}
         self.map_version = 0
+        self.list_version = 0
+        self.list_change = ""
         self.object_id = -1
         self.closure_node = none
         self.closure_frame = none
@@ -698,4 +707,24 @@ fn tree_spawn_closure(value: TreeValue) -> TreeValue {
         none => {}
     }
     return result
+}
+
+// A structural change to a list: anything that changes its length or moves an
+// element to a different index. Element replacement is not one, so a `for`
+// loop over the list keeps running and sees the replacement.
+fn tree_list_changed(list: TreeValue, what: string) {
+    list.list_version += 1
+    list.list_change = what
+}
+
+// The interpreter and beans_list_iter_invalid in runtime/beans_rt.c must
+// produce the same sentence.
+fn tree_list_changed_message(
+    what: string, was: int, now: int) -> string {
+    let name: string =
+        if what == "" { "change" } else { what }
+    if was != now {
+        return "list changed during iteration ({name}, length {was} -> {now})"
+    }
+    return "list changed during iteration ({name}, length {was})"
 }

@@ -8605,6 +8605,7 @@ class TreeInterpreter {
            arguments.len() == 2 {
             receiver.items.push(
                 tree_value_copy(arguments[1]))
+            tree_list_changed(receiver, "push")
             return TreeValue.unit()
         }
         if receiver.kind == "list" &&
@@ -8625,6 +8626,7 @@ class TreeInterpreter {
             }
             receiver.items.insert(
                 index, tree_value_copy(arguments[2]))
+            tree_list_changed(receiver, "insert")
             return TreeValue.unit()
         }
         if receiver.kind == "list" &&
@@ -8632,8 +8634,10 @@ class TreeInterpreter {
             if receiver.items.len() == 0 {
                 return TreeValue.option_none()
             }
-            return TreeValue.option_some(
-                receiver.items.pop().expect("non-empty list"))
+            let popped: TreeValue =
+                receiver.items.pop().expect("non-empty list")
+            tree_list_changed(receiver, "pop")
+            return TreeValue.option_some(popped)
         }
         if receiver.kind == "list" &&
            (node.value == "first" ||
@@ -8682,11 +8686,16 @@ class TreeInterpreter {
                     node.col,
                     "list index {index} out of range (len {receiver.items.len()})")
             }
-            return receiver.items.remove(
-                index)
+            let removed: TreeValue =
+                receiver.items.remove(index)
+            tree_list_changed(receiver, "remove")
+            return removed
         }
         if receiver.kind == "list" &&
            node.value == "clear" {
+            if receiver.items.len() != 0 {
+                tree_list_changed(receiver, "clear")
+            }
             receiver.items = []
             return TreeValue.unit()
         }
@@ -8701,6 +8710,9 @@ class TreeInterpreter {
         }
         if receiver.kind == "list" &&
            node.value == "reverse" {
+            if receiver.items.len() > 1 {
+                tree_list_changed(receiver, "reverse")
+            }
             var left: int = 0
             var right: int =
                 receiver.items.len() - 1
@@ -8776,6 +8788,16 @@ class TreeInterpreter {
            (node.value == "sort" ||
             node.value == "sort_by" ||
             node.value == "sort_by_key") {
+            // A sort is a structural change: it moves elements to other
+            // indexes, so it invalidates a `for` loop reading this list, the
+            // same way push does. Recorded before the work and never undone,
+            // exactly as the native runtime records it before it sorts and
+            // leaves it recorded when a panicking callback restores the
+            // elements (the restore puts the storage back, not the fact that
+            // the list was reshaped).
+            if receiver.items.len() > 1 {
+                tree_list_changed(receiver, "sort")
+            }
             // The same bottom-up stable merge the native runtime runs
             // (list_merge_sort in beans_rt.c), block for block: comparisons
             // read the live items, each merged block lands in a buffer and
@@ -9694,6 +9716,24 @@ class TreeInterpreter {
         if (receiver.kind == "map" ||
             receiver.kind == "list") &&
            node.value == "reserve" {
+            // The capacity checks the native runtime makes, made here too: a
+            // program that develops clean under `beansc run` must not die the
+            // first time it ships as a native binary.
+            if arguments.len() == 2 {
+                let capacity: int = arguments[1].int_data
+                if capacity < 0 {
+                    return self.fail_at(
+                        node, node.col,
+                        "negative reserve capacity {capacity}")
+                }
+                // 1 << 58, the bound beans_list_reserve and
+                // beans_map_reserve refuse above
+                if capacity > 288230376151711744 {
+                    return self.fail_at(
+                        node, node.col,
+                        "reserve capacity too large")
+                }
+            }
             if receiver.kind == "map" {
                 receiver.map_version += 1
             }
@@ -12237,6 +12277,102 @@ class TreeInterpreter {
         return TreeExec.next()
     }
 
+    // One turn of a `for` loop: bind the element, run the body, and say
+    // whether the loop is over. `some(exec)` is what the loop must hand back
+    // — a `return` travels out through it, a `break` ends the loop cleanly —
+    // and `none` means take another turn. Every `for` driver below goes
+    // through this, so the three of them cannot drift on what `break` and
+    // `return` mean, which is the kind of drift that put the list and the
+    // native backend a rule apart in the first place.
+    fn iteration_turn(node: HirNode,
+                      binding: HirNode,
+                      value: TreeValue,
+                      frame: TreeFrame) -> Option<TreeExec> {
+        let iteration: TreeFrame =
+            TreeFrame.scope(frame)
+        iteration.set(binding.binding_id, value)
+        let result: TreeExec =
+            self.block(node.children[2], iteration)
+        if result.kind == "return" {
+            return some(result)
+        }
+        if result.kind == "break" {
+            return some(TreeExec.next())
+        }
+        return none
+    }
+
+    // `for x in xs` reads the list itself, one element at a time — the same
+    // thing the native loop does. Replacing an element is visible on the next
+    // turn; a structural change (push, pop, insert, remove, clear, reverse,
+    // sort) is not survivable, so the loop stops before reading again, the
+    // same way a map loop does.
+    fn list_iteration(node: HirNode,
+                      iterable: TreeValue,
+                      binding: HirNode,
+                      frame: TreeFrame) -> TreeExec {
+        let version: int = iterable.list_version
+        let start_length: int = iterable.items.len()
+        var index: int = 0
+        for true {
+            if iterable.list_version != version {
+                self.fail(
+                    node,
+                    tree_list_changed_message(
+                        iterable.list_change,
+                        start_length,
+                        iterable.items.len()))
+                return TreeExec.stopped("panic")
+            }
+            if index >= iterable.items.len() { break }
+            match self.iteration_turn(
+                    node, binding,
+                    iterable.items[index], frame) {
+                some(over) => { return over }
+                none => {}
+            }
+            index += 1
+        }
+        return TreeExec.next()
+    }
+
+    // A Slice is a borrowed {pointer, length} view. Its length cannot change,
+    // so there is nothing to invalidate, but each turn must read the memory as
+    // it is now: a write through the slice during the loop is visible to the
+    // turns that have not happened yet, which is what the native loop does.
+    fn slice_iteration(node: HirNode,
+                       iterable: TreeValue,
+                       binding: HirNode,
+                       frame: TreeFrame) -> TreeExec {
+        let element: HirType =
+            iterable.memory_type.expect(
+                "slice element type")
+        let piece: LayoutAnswer =
+            self.layout(element)
+        match self.pointer_memory(node, iterable) {
+            some(memory) => {
+                var index: int = 0
+                for index < iterable.slice_len {
+                    let value: TreeValue =
+                        self.memory_read_value(
+                            node, memory,
+                            iterable.memory_address +
+                                ((index *
+                                  piece.value.size) as u64),
+                            element)
+                    match self.iteration_turn(
+                            node, binding, value, frame) {
+                        some(over) => { return over }
+                        none => {}
+                    }
+                    index += 1
+                }
+            }
+            none => {}
+        }
+        return TreeExec.next()
+    }
+
     fn loop(node: HirNode,
             frame: TreeFrame) -> TreeExec {
         if node.children.len() == 1 {
@@ -12342,6 +12478,14 @@ class TreeInterpreter {
                     iterable.items[0])
             }
             let binding: HirNode = node.children[1]
+            if iterable.kind == "list" {
+                return self.list_iteration(
+                    node, iterable, binding, frame)
+            }
+            if iterable.kind == "slice" {
+                return self.slice_iteration(
+                    node, iterable, binding, frame)
+            }
             var values: List<TreeValue> = []
             if iterable.kind == "range" &&
                iterable.items.len() == 2 &&
@@ -12383,32 +12527,13 @@ class TreeInterpreter {
                     }
                     value += 1
                 }
-            } else if iterable.kind == "list" ||
-                      iterable.kind == "array" {
+            } else if iterable.kind == "array" {
+                // A fixed array is a value: the loop walks the value the
+                // array had when it started, and a write to the array during
+                // the loop does not reach this copy. Both backends agree —
+                // examples/fixed_arrays.b pins it.
                 for value: TreeValue in iterable.items {
                     values.push(value)
-                }
-            } else if iterable.kind == "slice" {
-                let element: HirType =
-                    iterable.memory_type.expect(
-                        "slice element type")
-                let piece: LayoutAnswer =
-                    self.layout(element)
-                match self.pointer_memory(
-                        node, iterable) {
-                    some(memory) => {
-                        for index: int in
-                            0..iterable.slice_len {
-                            values.push(
-                                self.memory_read_value(
-                                    node, memory,
-                                    iterable.memory_address +
-                                        ((index *
-                                          piece.value.size) as u64),
-                                    element))
-                        }
-                    }
-                    none => {}
                 }
             } else {
                 self.fail(
@@ -12416,18 +12541,10 @@ class TreeInterpreter {
                     "{iterable.kind} is not iterable")
             }
             for value: TreeValue in values {
-                let iteration: TreeFrame =
-                    TreeFrame.scope(frame)
-                iteration.set(
-                    binding.binding_id, value)
-                let result: TreeExec =
-                    self.block(
-                        node.children[2], iteration)
-                if result.kind == "return" {
-                    return result
-                }
-                if result.kind == "break" {
-                    return TreeExec.next()
+                match self.iteration_turn(
+                        node, binding, value, frame) {
+                    some(over) => { return over }
+                    none => {}
                 }
             }
         }
