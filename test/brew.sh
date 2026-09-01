@@ -57,6 +57,36 @@ echo "checking an unwind parked in its cleanup survives other fibers finishing"
 diff -u test/cases/brew_unwind_park.out "$tmp/park.interp"
 diff -u test/cases/brew_unwind_park.out "$tmp/park.native.out"
 
+echo "checking a contained panic leaves every container empty and usable"
+# issue #79: `clear` and `Box.set` release what the container owns, and for a
+# class value that runs user deinit code. The container has to be showing the
+# state it will have afterwards before the first release runs, or a contained
+# panic leaves it reporting elements it has already destroyed. The native
+# runtime updated the container after the releases; the interpreter, which
+# replaces the storage outright, did not. The golden is the interpreter's
+# answer, and all three build modes have to print it.
+./build/beansc run test/cases/container_clear_panic.b >"$tmp/clear.interp"
+./build/beansc build test/cases/container_clear_panic.b -o "$tmp/clear.native" \
+    >"$tmp/clear.build" 2>&1
+"$tmp/clear.native" >"$tmp/clear.native.out"
+./build/beansc build --release --lto test/cases/container_clear_panic.b \
+    -o "$tmp/clear.lto" >"$tmp/clear.lto.build" 2>&1
+"$tmp/clear.lto" >"$tmp/clear.lto.out"
+diff -u test/cases/container_clear_panic.out "$tmp/clear.interp"
+diff -u test/cases/container_clear_panic.out "$tmp/clear.native.out"
+diff -u test/cases/container_clear_panic.out "$tmp/clear.lto.out"
+# The old value the box dropped, and every element the containers dropped,
+# are released exactly once: a second release is allocator corruption the
+# pool hides, so six clean runs without it bind that half.
+for round in 1 2 3 4 5 6; do
+    BEANS_NO_POOL=1 "$tmp/clear.native" >"$tmp/clear.again" 2>&1 || {
+        echo "container clear under a panicking deinit crashed on run $round" >&2
+        cat "$tmp/clear.again" >&2
+        exit 1
+    }
+    diff -u test/cases/container_clear_panic.out "$tmp/clear.again"
+done
+
 echo "checking a map replace under a panicking deinit corrupts nothing"
 # issue #44: the old order released the caller's duplicate key before the
 # old value's panicking release, and the pad then released that key a

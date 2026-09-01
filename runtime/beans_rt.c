@@ -2266,7 +2266,14 @@ void beans_box_set(void* p, long long value) {
     if (((head_of(p)->meta & CC_SHAPE) >> 3) & 1) {
         beans_cc_write(p, (void*)(uintptr_t)value);
         void* old = (void*)box[0];
+        // The store stands (issue #79, spec/CONCURRENCY.md): the old value's
+        // release runs user deinit code, and contained by brew/join a panic
+        // there unwinds out of this frame. Releasing first left the box still
+        // holding the value it had just destroyed and dropped the new one on
+        // the floor; the interpreter, which stores first, kept the new one.
+        box[0] = value;
         if (old) beans_release(old);
+        return;
     }
     box[0] = value;
 }
@@ -2614,21 +2621,22 @@ void beans_arena_at_typed(void* p, long long handle, void* out,
 long long beans_arena_len(void* p) { return ((BArena*)p)->len; }
 void beans_arena_clear(void* p) {
     BArena* arena = p;
-    if (arena->ptr_mask) {
-        int i64_encoded = arena->stride < 0;
-        long long stride = i64_encoded ? -arena->stride
-                                       : (arena->stride ? arena->stride : 8);
-        for (long long i = arena->len; i-- > 0;) {
-            char* value = (char*)arena->data + i * stride;
-            if (i64_encoded) {
-                void* child = rt_i64_slot_child(value);
-                if (child) beans_release(child);
-            } else {
-                release_masked_value(value, arena->ptr_mask);
-            }
+    long long n = arena->len;
+    arena->len = 0; // empty before any deinit runs, as beans_list_clear
+    if (!arena->ptr_mask) return; // nothing to release
+    int i64_encoded = arena->stride < 0;
+    long long stride = i64_encoded ? -arena->stride
+                                   : (arena->stride ? arena->stride : 8);
+    for (long long i = n; i-- > 0;) {
+        if (i < arena->len) break; // a deinit added into this slot
+        char* value = (char*)arena->data + i * stride;
+        if (i64_encoded) {
+            void* child = rt_i64_slot_child(value);
+            if (child) beans_release(child);
+        } else {
+            release_masked_value(value, arena->ptr_mask);
         }
     }
-    arena->len = 0;
 }
 
 // ---- the collector (single mutator: us) ----
@@ -6338,17 +6346,26 @@ void beans_list_reverse(BList* l) {
         l->data[j] = t;
     }
 }
+// Clearing a container that owns references runs user deinit code, so the
+// container has to be showing the program the state it will have afterwards
+// before the first release runs (issue #79). Length goes to zero first; the
+// releases then walk only what the container has given up, and stop the
+// moment a deinit puts something back, because an index the container owns
+// again is no longer this loop's to drop. The interpreter gets there by
+// replacing the storage outright (`items = []`, `map_values = {}`); these
+// keep the buffer, so `reserve` survives a `clear` and nothing allocates.
 void beans_list_clear(BList* l) {
     if (l->len != 0) list_changed(l, LIST_CHANGE_CLEAR);
+    long long n = l->len;
+    l->len = 0;
+    if (!l->ptr_mask) return; // nothing to release
+    long long stride = list_stride(l);
     // last element first — deinit made death order observable, and the
     // interpreter's vector teardown destroys back to front
-    if (l->ptr_mask) {
-        long long stride = list_stride(l);
-        for (long long i = l->len; i-- > 0;) {
-            list_release_element(l, (char*)l->data + i * stride);
-        }
+    for (long long i = n; i-- > 0;) {
+        if (i < l->len) break; // a deinit pushed into this slot
+        list_release_element(l, (char*)l->data + i * stride);
     }
-    l->len = 0;
 }
 // A `for` loop over a list holds the change count it started with. A
 // structural change moves that count, and the next turn stops here instead of
@@ -7453,14 +7470,10 @@ __attribute__((always_inline)) void* beans_map_iter_value_typed(BMap* m, long lo
 void beans_map_clear(BMap* m) {
     long long flags = (head_of(m)->meta & CC_SHAPE) >> 3;
     if (m->len != 0) map_bump_version(m);
-    // reverse, value before key: the interpreter's pair teardown runs members
-    // last-first, entries back to front — observable once a deinit prints
-    for (long long i = m->used; i-- > 0;) { // holes are zeroed: null-skip
-        if (m->wide_values) map_release_wide_value(m, map_wide_value(m, i));
-        else if ((flags & 2) && m->data[i * 2 + 1])
-            beans_release((void*)m->data[i * 2 + 1]);
-        if ((flags & 1) && m->data[i * 2]) beans_release((void*)m->data[i * 2]);
-    }
+    long long used = m->used;
+    // Empty before any deinit runs, as beans_list_clear above. The index and
+    // the hole map go with it: a deinit that inserts into this map builds its
+    // own, and the entry buffer stays, so a reserve survives a clear.
     m->len = 0;
     m->used = 0;
     rt_free(m->deadbits);
@@ -7469,6 +7482,16 @@ void beans_map_clear(BMap* m) {
     m->idx = NULL;
     m->icap = 0;
     m->tombs = 0;
+    if (!(flags & 3) && !m->value_ptr_mask) return; // nothing to release
+    // reverse, value before key: the interpreter's pair teardown runs members
+    // last-first, entries back to front — observable once a deinit prints
+    for (long long i = used; i-- > 0;) { // holes are zeroed: null-skip
+        if (i < m->used) break; // a deinit inserted into this slot
+        if (m->wide_values) map_release_wide_value(m, map_wide_value(m, i));
+        else if ((flags & 2) && m->data[i * 2 + 1])
+            beans_release((void*)m->data[i * 2 + 1]);
+        if ((flags & 1) && m->data[i * 2]) beans_release((void*)m->data[i * 2]);
+    }
 }
 
 // element rendering matches the interpreter's display(): the kind code says

@@ -479,7 +479,12 @@ Landed since:
    first — `len`, `contains_key`, `get` and iteration all see the key
    gone — and only then is the value released, so a panicking `deinit`
    finds no entry still pointing at what it has just destroyed. Both
-   backends agree on the map that survives.
+   backends agree on the map that survives. `clear` is the same rule at
+   container scale, and applies to `List`, `Map`, `OrderedMap` and
+   `Arena` alike: the storage is detached and an empty container
+   published before the first element's release, so a `deinit` that
+   reads the container sees it empty, one that adds to it keeps what it
+   added, and the container is usable the moment the panic is contained.
 
 Deliberately not yet here, in dependency order:
 

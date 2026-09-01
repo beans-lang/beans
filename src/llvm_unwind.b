@@ -406,9 +406,13 @@ partial class LlvmTextEmitter {
             return method == "send"
         }
         if receiver == "Box" {
-            // beans_box_set: releases the old value, then stores; nothing
-            // panics after the store
-            return method == "set"
+            // beans_box_set follows map[k] = v above: the store stands when
+            // the old value's deinit panics (issue #79, the interpreter's
+            // rule), so the runtime stores first and releases the old value
+            // last — a panic after the take, which is clear-before. It used
+            // to release first, and a flag still set past that store had the
+            // pad release a value the box already owned.
+            return false
         }
         if receiver == "Arena" {
             // beans_arena_put(_typed): growth (out-of-memory, capacity)
