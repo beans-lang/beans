@@ -319,6 +319,84 @@ fn temps_interp_div() -> string {
     return "made {mk("id-held").tag} then {10 / z}"
 }
 
+// ---- a panic raised inside a map runtime entry point --------------------
+//
+// `for k, v in m` calls beans_map_iter_next, and a structural change makes
+// that call panic. The entry point is always_inline (runtime/beans_rt.c),
+// so in an --lto build the panic is raised from this frame instead of from
+// a C frame above it, and the emitter's invoke rewrite is what carries the
+// unwind either way. Same for the release beans_map_remove_raw runs when a
+// removed value's deinit fails. test/map_inline.sh runs this whole file
+// again with --lto against this same golden.
+
+fn map_mutated() -> int {
+    let local: Res = new Res("mm-local")
+    defer io.println("  mm defer")
+    var counts: Map<int, int> = {}
+    var i: int = 0
+    for i < 12 { counts[i] = i; i += 1 } // past the linear cutoff: indexed
+    var seen: int = 0
+    for key: int, value: int in counts {
+        seen += value
+        counts[key + 100] = 1 // structural: the next iter_next refuses
+    }
+    return seen
+}
+
+// The map the loop walks is a temporary that owns its values, so the frame
+// releases the whole map when the body panics on the first turn.
+fn make_res_map() -> Map<int, Res> {
+    var built: Map<int, Res> = {}
+    var i: int = 0
+    for i < 10 {
+        built[i] = new Res("rm-{i}")
+        i += 1
+    }
+    return move built
+}
+fn temps_map_iterator() -> int {
+    var seen: int = 0
+    for key: int, value: Res in make_res_map() {
+        seen += 1
+        if seen == 1 { return boom() }
+    }
+    return seen
+}
+
+// A removal whose value deinit panics. The panic surfaces from inside
+// beans_map_remove_raw, so the entry must already be unlinked when it does
+// (issue #44's rule, applied to remove): the map goes on to drop its other
+// eleven values with the removed key gone, not still present. Only one item
+// is loud -- a map full of them would panic again during the unwind, which
+// is the documented double-panic abort and would say nothing about this.
+class MapItem {
+    pub tag: string
+    pub loud: bool
+    fn init(tag: string, loud: bool) {
+        self.tag = tag
+        self.loud = loud
+    }
+    fn deinit() {
+        io.println("  drop item {self.tag}")
+        if self.loud {
+            let empty: List<int> = []
+            let unused: int = empty[0]
+        }
+    }
+}
+fn map_remove_deinit() -> int {
+    let local: Res = new Res("mr-local")
+    defer io.println("  mr defer")
+    var held: Map<int, MapItem> = {}
+    var i: int = 0
+    for i < 12 {
+        held[i] = new MapItem("{i}", i == 5)
+        i += 1
+    }
+    held.remove(5)
+    return 0
+}
+
 fn run_shape(which: int) -> int {
     if which == 1 { return temps_order() }
     if which == 2 { return temps_nested() }
@@ -338,7 +416,10 @@ fn run_shape(which: int) -> int {
     if which == 16 { return temps_mod_arg() }
     if which == 17 { return temps_dec_arg() }
     if which == 18 { return temps_list_div() }
-    return temps_interp_div().len()
+    if which == 19 { return temps_interp_div().len() }
+    if which == 20 { return map_mutated() }
+    if which == 21 { return temps_map_iterator() }
+    return map_remove_deinit()
 }
 
 fn shield_shape(which: int, label: string) -> string {
@@ -382,4 +463,7 @@ fn main() {
     io.println(shield_shape(17, "decimal arg"))
     io.println(shield_shape(18, "list literal div"))
     io.println(shield_shape(19, "interpolation div"))
+    io.println(shield_shape(20, "map iteration"))
+    io.println(shield_shape(21, "map temporary"))
+    io.println(shield_shape(22, "map remove deinit"))
 }

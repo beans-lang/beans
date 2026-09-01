@@ -474,7 +474,12 @@ Landed since:
    consistent, the old object abandoned mid-destruction, and nothing
    double-freed. Both backends agree, the caller's key and value
    included. A declined `insert` releases the incoming value before it
-   touches the duplicate key, for the same reason in mirror image.
+   touches the duplicate key, for the same reason in mirror image. A
+   `remove` is that rule read the other way: the entry leaves the map
+   first — `len`, `contains_key`, `get` and iteration all see the key
+   gone — and only then is the value released, so a panicking `deinit`
+   finds no entry still pointing at what it has just destroyed. Both
+   backends agree on the map that survives.
 
 Deliberately not yet here, in dependency order:
 

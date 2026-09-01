@@ -6970,6 +6970,29 @@ void beans_map_set(BMap* m, long long key, long long val, long long kind, void* 
     if (kind == 4) cc_possible_root(m);
 }
 
+// ---- inlinable map entry points --------------------------------------------
+//
+// A map operation the generated code performs once per loop turn is a handful
+// of instructions around one index probe, and at that size the call itself is
+// a measurable share of it. Every such entry point carries always_inline so an
+// --lto link folds it into the loop. Anything whose own work is unbounded --
+// a linear search, a sort, a grow, a reindex -- does not: there the call is
+// noise and inlining buys only code size.
+//
+// The attribute has to sit on the symbol the emitter actually names.
+// beans_map_get_raw below carried it while every caller went through
+// beans_map_get_raw_out, which did not, so nothing was ever folded; the same
+// held for the whole iterator family, which left `for k, v in m` making three
+// calls per pair to read sixteen bytes out of a flat array. Measured on an M1
+// at --release --lto: iteration 2.51 -> 0.60 ns a pair, the rest about 5%.
+// test/map_inline.sh holds this set to the rule, so the next entry point
+// added here cannot quietly miss it.
+//
+// None of this changes what runs. Inlining a panic (iter_next) or a release
+// (remove_raw, insert_raw, set_raw) keeps its unwind edge: the emitter
+// rewrites every call in a contained frame to an invoke, and LLVM re-points
+// the inlined body's own calls at that same pad.
+
 __attribute__((always_inline)) void beans_map_set_raw(BMap* m, long long key,
                                                        long long val) {
     unsigned long long h = 0, slot = 0;
@@ -7097,7 +7120,8 @@ long long beans_map_insert(BMap* m, long long key, long long val, long long kind
     return 1;
 }
 
-long long beans_map_insert_raw(BMap* m, long long key, long long val) {
+__attribute__((always_inline)) long long beans_map_insert_raw(
+    BMap* m, long long key, long long val) {
     unsigned long long h = 0, slot = 0;
     if (map_find_raw(m, key, &h, &slot) >= 0) {
         long long flags = (head_of(m)->meta & CC_SHAPE) >> 3;
@@ -7126,7 +7150,8 @@ long long beans_map_insert_typed(BMap* m, long long key, void* value,
     return 1;
 }
 
-long long beans_map_insert_typed_raw(BMap* m, long long key, void* value) {
+__attribute__((always_inline)) long long beans_map_insert_typed_raw(
+    BMap* m, long long key, void* value) {
     unsigned long long h = 0, slot = 0;
     if (map_find_raw(m, key, &h, &slot) >= 0) {
         long long flags = (head_of(m)->meta & CC_SHAPE) >> 3;
@@ -7145,9 +7170,14 @@ __attribute__((always_inline)) BOpt beans_map_get_raw(BMap* m, long long key) {
     long long i = map_find_raw(m, key, &h, NULL);
     return i >= 0 ? (BOpt){m->data[i * 2 + 1], 1} : (BOpt){0, 0};
 }
-long long beans_map_get_raw_out(BMap* m, long long key, long long* has_out) { BOpt o = beans_map_get_raw(m, key); *has_out = o.has; return o.val; }
+__attribute__((always_inline)) long long beans_map_get_raw_out(
+    BMap* m, long long key, long long* has_out) {
+    BOpt o = beans_map_get_raw(m, key);
+    *has_out = o.has;
+    return o.val;
+}
 
-long long beans_map_contains_raw(BMap* m, long long key) {
+__attribute__((always_inline)) long long beans_map_contains_raw(BMap* m, long long key) {
     unsigned long long h = 0;
     return map_find_raw(m, key, &h, NULL) >= 0;
 }
@@ -7167,22 +7197,20 @@ long long beans_map_get_typed(BMap* m, long long key, long long kind, void* out,
     memcpy(out, map_wide_value(m, i), (size_t)m->value_stride);
     return 1;
 }
-long long beans_map_get_typed_raw(BMap* m, long long key, void* out) {
+__attribute__((always_inline)) long long beans_map_get_typed_raw(
+    BMap* m, long long key, void* out) {
     unsigned long long h = 0;
     long long i = map_find_raw(m, key, &h, NULL);
     if (i < 0) return 0;
     memcpy(out, map_wide_value(m, i), (size_t)m->value_stride);
     return 1;
 }
-static long long map_remove_found(BMap* m, long long i,
-                                  unsigned long long slot, long long kind,
-                                  long long (*hf)(long long)) {
-    map_bump_version(m);
-    long long flags = (head_of(m)->meta & CC_SHAPE) >> 3;
-    if ((flags & 1) && m->data[i * 2]) beans_release((void*)m->data[i * 2]);
-    if (m->wide_values) map_release_wide_value(m, map_wide_value(m, i));
-    else if ((flags & 2) && m->data[i * 2 + 1])
-        beans_release((void*)m->data[i * 2 + 1]);
+// Takes the entry out of every view of the map: the index, the length, the
+// entry array and, for an OrderedMap, the hole bitmap. After this the key is
+// gone as far as len, get, contains and iteration are concerned.
+__attribute__((always_inline)) static void map_unlink_entry(
+    BMap* m, long long i, unsigned long long slot, long long kind,
+    long long (*hf)(long long)) {
     if (!m->idx) {
         if (m->ordered) {
             memmove(m->data + i * 2, m->data + (i + 1) * 2,
@@ -7201,9 +7229,7 @@ static long long map_remove_found(BMap* m, long long i,
             memset(map_wide_value(m, m->used - 1), 0, (size_t)m->value_stride);
         m->len -= 1;
         m->used -= 1;
-        return 1;
-    }
-    if (!m->ordered) {
+    } else if (!m->ordered) {
         long long last = m->used - 1;
         m->idx[slot] = 1;
         m->tombs += 1;
@@ -7232,23 +7258,77 @@ static long long map_remove_found(BMap* m, long long i,
         m->len -= 1;
         m->used -= 1;
         if (m->tombs > m->len) map_reindex(m, kind, hf);
-        return 1;
+    } else {
+        // indexed: zero the pair into a hole — no entry moves, so no index
+        // position needs fixing and delete is O(1). Reindex compacts once
+        // holes outnumber live entries, so the cost is amortized.
+        m->data[i * 2] = 0;
+        m->data[i * 2 + 1] = 0;
+        if (m->wide_values)
+            memset(map_wide_value(m, i), 0, (size_t)m->value_stride);
+        if (!m->deadbits) m->deadbits = rt_zalloc((unsigned long long)((size_t)((m->cap + 63) >> 6)) * (8));
+        m->deadbits[i >> 6] |= 1ULL << (i & 63);
+        m->len -= 1;
+        m->idx[slot] = 1; // map_find landed on the hit's slot
+        m->tombs += 1;
+        if (m->used > m->len * 2) map_reindex(m, kind, hf);
     }
-    // indexed: zero the pair into a hole — no entry moves, so no index
-    // position needs fixing and delete is O(1). Reindex compacts once
-    // holes outnumber live entries, so the cost is amortized.
-    m->data[i * 2] = 0;
-    m->data[i * 2 + 1] = 0;
-    if (m->wide_values)
-        memset(map_wide_value(m, i), 0, (size_t)m->value_stride);
-    if (!m->deadbits) m->deadbits = rt_zalloc((unsigned long long)((size_t)((m->cap + 63) >> 6)) * (8));
-    m->deadbits[i >> 6] |= 1ULL << (i & 63);
-    m->len -= 1;
-    m->idx[slot] = 1; // map_find landed on the hit's slot
-    m->tombs += 1;
-    if (m->used > m->len * 2) map_reindex(m, kind, hf);
+}
+
+// A wide value's children have to be copied out, because the unlink
+// overwrites or zeroes the slot they live in. That array is why this is its
+// own frame and stays out of line: beans_map_remove_raw is always_inline,
+// and a map of slot values -- the common one -- must not carry half a
+// kilobyte of frame into a caller's loop for a branch it never takes.
+__attribute__((noinline)) static long long map_remove_found_wide(
+    BMap* m, long long i, unsigned long long slot, long long kind,
+    long long (*hf)(long long), long long flags) {
+    void* dead_children[RT_MASK_SLOTS];
+    int dead_count = 0;
+    void* value = map_wide_value(m, i);
+    for (int child = RT_MASK_SLOTS; child-- > 0;) { // last-field-first
+        if (!((m->value_ptr_mask >> child) & 1)) continue;
+        void* held = *(void**)RT_SLOT_AT(value, child);
+        if (held) dead_children[dead_count++] = held;
+    }
+    long long dead_key = (flags & 1) ? m->data[i * 2] : 0;
+    map_unlink_entry(m, i, slot, kind, hf);
+    // The map is consistent again; only now can user code run.
+    if (dead_key) beans_release((void*)dead_key);
+    for (int child = 0; child < dead_count; child++)
+        beans_release(dead_children[child]);
     return 1;
 }
+
+// Removal order is the rule beans_map_set states above (issue #44,
+// spec/CONCURRENCY.md): a release here runs user deinit code, and contained
+// by brew/join a panic in it unwinds out of this frame. Everything the map
+// shows the program has to be settled before that can happen.
+//
+// Releasing first, as this did, left the native backend holding an entry
+// whose value had already been destroyed -- len unchanged, contains_key
+// true, and get handing the half-torn object back to the program -- while
+// the interpreter, which unlinks before it drops, reported the entry gone.
+// One checked program, two answers (issue #79); test/cases/map_inline_remove.b
+// pins it.
+//
+// So: take what has to be released, unlink, and release last.
+static long long map_remove_found(BMap* m, long long i,
+                                  unsigned long long slot, long long kind,
+                                  long long (*hf)(long long)) {
+    map_bump_version(m);
+    long long flags = (head_of(m)->meta & CC_SHAPE) >> 3;
+    if (m->wide_values)
+        return map_remove_found_wide(m, i, slot, kind, hf, flags);
+    long long dead_key = (flags & 1) ? m->data[i * 2] : 0;
+    long long dead_value = (flags & 2) ? m->data[i * 2 + 1] : 0;
+    map_unlink_entry(m, i, slot, kind, hf);
+    // The map is consistent again; only now can user code run.
+    if (dead_key) beans_release((void*)dead_key);
+    if (dead_value) beans_release((void*)dead_value);
+    return 1;
+}
+
 long long beans_map_remove(BMap* m, long long key, long long kind, void* eq,
                            void* hash) {
     long long (*hf)(long long) = (long long (*)(long long))hash;
@@ -7256,7 +7336,7 @@ long long beans_map_remove(BMap* m, long long key, long long kind, void* eq,
     long long i = map_find(m, key, kind, eq, hf, &h, &slot);
     return i < 0 ? 0 : map_remove_found(m, i, slot, kind, hf);
 }
-long long beans_map_remove_raw(BMap* m, long long key) {
+__attribute__((always_inline)) long long beans_map_remove_raw(BMap* m, long long key) {
     unsigned long long h = 0, slot = 0;
     long long i = map_find_raw(m, key, &h, &slot);
     return i < 0 ? 0 : map_remove_found(m, i, slot, 0, NULL);
@@ -7347,10 +7427,10 @@ BList* beans_map_values(BMap* m) {
     }
     return l;
 }
-long long beans_map_iter_version(BMap* m) {
+__attribute__((always_inline)) long long beans_map_iter_version(BMap* m) {
     return m->version;
 }
-long long beans_map_iter_next(BMap* m, long long cursor,
+__attribute__((always_inline)) long long beans_map_iter_next(BMap* m, long long cursor,
                               long long version,
                               long long line, long long col) {
     if (m->version != version)
@@ -7358,16 +7438,16 @@ long long beans_map_iter_next(BMap* m, long long cursor,
     while (cursor < m->used && MAP_DEAD(m, cursor)) cursor += 1;
     return cursor < m->used ? cursor : -1;
 }
-long long beans_map_iter_key(BMap* m, long long entry) {
+__attribute__((always_inline)) long long beans_map_iter_key(BMap* m, long long entry) {
     return m->data[entry * 2];
 }
-void* beans_map_iter_key_typed(BMap* m, long long entry) {
+__attribute__((always_inline)) void* beans_map_iter_key_typed(BMap* m, long long entry) {
     return (void*)m->data[entry * 2];
 }
-long long beans_map_iter_value(BMap* m, long long entry) {
+__attribute__((always_inline)) long long beans_map_iter_value(BMap* m, long long entry) {
     return m->data[entry * 2 + 1];
 }
-void* beans_map_iter_value_typed(BMap* m, long long entry) {
+__attribute__((always_inline)) void* beans_map_iter_value_typed(BMap* m, long long entry) {
     return map_wide_value(m, entry);
 }
 void beans_map_clear(BMap* m) {

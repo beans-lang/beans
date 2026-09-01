@@ -1,0 +1,19 @@
+plain 40 1640 80 14 66 3230 66
+wide 40 2340 2400 30
+keyed 3160 40
+ordered 729713 9880 20
+drop t5
+drop t0
+owned 10
+model 0 146 3000 146
+cleared 0
+drop t9
+drop t8
+drop t7
+drop t6
+drop t11
+drop t4
+drop t3
+drop t2
+drop t1
+drop t10

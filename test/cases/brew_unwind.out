@@ -104,3 +104,32 @@ decimal arg: panic
 list literal div: panic
   drop id-held
 interpolation div: panic
+  mm defer
+  drop mm-local
+map iteration: panic
+  drop rm-9
+  drop rm-8
+  drop rm-7
+  drop rm-6
+  drop rm-5
+  drop rm-4
+  drop rm-3
+  drop rm-2
+  drop rm-1
+  drop rm-0
+map temporary: panic
+  drop item 5
+  mr defer
+  drop item 10
+  drop item 9
+  drop item 8
+  drop item 7
+  drop item 6
+  drop item 11
+  drop item 4
+  drop item 3
+  drop item 2
+  drop item 1
+  drop item 0
+  drop mr-local
+map remove deinit: panic
