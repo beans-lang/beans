@@ -7,6 +7,28 @@ import std.io
 import std.os
 import std.collections
 
+// The two algebra sets are built from an index, and a bare index would be a
+// gift to the C++ side. `std::hash<int64_t>` is the identity, so consecutive
+// keys land in consecutive buckets and never collide with each other; libc++
+// goes further and skips the modulo altogether, because `__constrain_hash`
+// answers `h < bucket_count() ? h : h % bucket_count()`. Measured on libc++ at
+// n = 1,000,000, all 250,000 keys took that no-modulo path and no bucket ever
+// held more than one key — std::unordered_set was a direct-index array — while
+// Beans ran mix64 on every one of them.
+//
+// `scatter` is a bijection on [0, 2^40): a multiply by an odd constant modulo
+// 2^40, then an xor-shift finalizer. Both sides run the identical function on
+// the identical indices, so `a` and `b` hold exactly the members they held
+// before under another name — the sizes, the overlap and every count in the
+// checksum are unchanged, and the row's expected hash did not move — but the
+// keys now sit far above any bucket count, and they hash into a distribution
+// indistinguishable from a random one (54.5% empty buckets, against 54.5% for
+// keys drawn from std::mt19937_64 and 54.5% for the Poisson ideal).
+fn scatter(index: int) -> int {
+    let mixed: int = (index * 2654435761) & 1099511627775
+    return mixed ^ (mixed >> 20)
+}
+
 fn main() {
     let args: List<string> = os.args()
     let n: int = args.get(0).or("").to_int().or(1_000_000)
@@ -40,8 +62,8 @@ fn main() {
     var b: collections.Set<int> = new()
     i = 0
     for i < n / 4 {
-        a.add(i)
-        b.add(i + n / 8)
+        a.add(scatter(i))
+        b.add(scatter(i + n / 8))
         i += 1
     }
     let u: collections.Set<int> = a.union_with(b)

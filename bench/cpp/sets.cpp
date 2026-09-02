@@ -12,6 +12,17 @@
 // way vector::operator[] versus at() differ. Beans' Set does no element
 // indexing either, so the tuned and the matched twin are the same program.
 
+// The same bijection bench/sets.b uses to build the two algebra sets, so both
+// sides hold identical members. Consecutive keys are a special case for this
+// container: std::hash<int64_t> is the identity, so they never collide, and
+// libc++'s __constrain_hash answers `h < bucket_count() ? h : h % bucket_count()`,
+// so small ones skip the modulo entirely. See the comment in sets.b.
+static inline int64_t scatter(int64_t index) {
+    const uint64_t mixed =
+        static_cast<uint64_t>(index) * 2654435761ULL & 1099511627775ULL;
+    return static_cast<int64_t>(mixed ^ (mixed >> 20));
+}
+
 int main(int argc, char** argv) {
     const auto n = bench_arg(argc, argv, 0, 1000000);
     const auto seed = bench_arg(argc, argv, 1, 1);
@@ -34,8 +45,8 @@ int main(int argc, char** argv) {
 
     std::unordered_set<int64_t> a, b;
     for (int64_t i = 0; i < n / 4; ++i) {
-        a.insert(i);
-        b.insert(i + n / 8);
+        a.insert(scatter(i));
+        b.insert(scatter(i + n / 8));
     }
     // union: clone the larger, insert the smaller — the same shape Set uses.
     std::unordered_set<int64_t> u(a.size() >= b.size() ? a : b);
