@@ -70,6 +70,14 @@ check_bad test/cases/generic_calls_pkg_bad/main.b \
 # different arguments, two links below such a base, a receiver whose `new` is
 # in sight, a call through `self`, a `priv` template of the subclass's own,
 # and several instantiations off one inherited template.
+#
+# One shape there is the reason the interpreter's runtime-class walk now
+# requires a dispatch slot rather than treating an absent one as "any body of
+# this name": `priv` scopes a name to its exact declaring type, so Base and
+# Sub may each declare `mark<T>`, and that is the only way one family can
+# hold two generic methods under one name. `shows` dispatches and so runs
+# Base's body on a Sub receiver; the `mark<T>` that body calls does not
+# dispatch, so it stays Base's — matching by name would have answered Sub's.
 run_all_ways test/cases/generic_method_inherit.b \
     test/cases/generic_method_inherit.out
 

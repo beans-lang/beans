@@ -16,5 +16,9 @@ Sub.own
 a
 false
 3
+Base.mark
+Base.mark
+Base.mark
+Sub.mark
 Sub.plain
 Leaf.plain

@@ -31,6 +31,15 @@ class Base {
     fn label<T>(value: T) -> string { return "{self.tag}.label" }
 
     fn plain() -> string { return "{self.tag}.plain" }
+
+    // `priv` scopes a name to its exact declaring type, so a subclass may
+    // wear it too — the only way one family can now hold two generic
+    // methods under one name. The body this calls is Base's whatever the
+    // receiver's runtime class is: the method holds no row, so the runtime
+    // class never enters into it.
+    priv fn mark<T>(value: T) -> string { return "Base.mark" }
+
+    fn shows() -> string { return self.mark<int>(1) }
 }
 
 class Sub extends Base {
@@ -44,6 +53,10 @@ class Sub extends Base {
     priv fn own<T>(value: T) -> string { return "Sub.own" }
 
     fn via_own() -> string { return self.own<int>(1) }
+
+    priv fn mark<T>(value: T) -> string { return "Sub.mark" }
+
+    fn via_mark() -> string { return self.mark<int>(2) }
 }
 
 class Mid extends Base {
@@ -82,6 +95,10 @@ class DeepIntHolder extends IntHolder {
 }
 
 fn ask_sub(value: Sub) -> int { return value.pick<int>(1) }
+
+// `shows` dispatches, so a Sub receiver runs Base's body; the generic method
+// that body calls does not, so it stays Base's too
+fn ask_shows(value: Base) -> string { return value.shows() }
 
 fn ask_leaf(value: Leaf) -> string { return value.pick<string>("leaf") }
 
@@ -130,6 +147,13 @@ fn main() {
     io.println(new Sub().pick<string>("a"))
     io.println("{new Sub().pick<bool>(false)}")
     io.println("{new Sub().pick<int>(3)}")
+
+    // a dispatching body reaching its own `priv` template, on a receiver
+    // whose runtime class declares one of the same name
+    io.println(ask_shows(new Base("Base")))
+    io.println(ask_shows(new Sub()))
+    io.println(ask_shows(new Leaf()))
+    io.println(new Sub().via_mark())
 
     // and the ordinary method beside it still dispatches
     io.println(new Sub().plain())
