@@ -440,13 +440,18 @@ Landed since:
    report names both failures. A defer runs at most once: one that panics
    while the frame is exiting normally hands the rest of that frame's cleanup
    to the unwind, which does not run it again. An object whose deinit panics
-   is the same shape one level down: its `deinit` does not run again, and the
-   locals that had not dropped yet still drop.
+   is the same shape one level down: the unwind does not release it a second
+   time and its `deinit` does not run again, the locals that had not dropped
+   yet still drop, and what the object itself still held is released by the
+   death it was in the middle of — see the entry below.
 
    A value handed to a runtime entry (`push`, `insert`, `set`, `send`, a
    `map[k] = v`) is released by the unwind when the entry refused it — a store
    out of range, a send on a closed channel — exactly as the interpreter
-   releases it; once the entry has stored it, it is the collection's. Every
+   releases it; once the entry has stored it, it is the collection's. A
+   declined `insert` is the exception the #81 entry below records: refusing
+   runs the value's `deinit`, so that entry owns the value by then and
+   releases it itself. Every
    such entry validates before it takes, and none runs Beans code after the
    take: a class used as a map key hashes by identity with the runtime's own
    hasher, so no user `hash` or `eq` ever runs inside a map operation.
@@ -515,6 +520,17 @@ Landed since:
    list-element walker used to go first-field-first, which made a two-field
    element print its deinits in the opposite order from the interpreter with
    no panic anywhere near it; one walker now serves every masked aggregate.
+
+   A declined `Map`/`OrderedMap` `insert` is the one runtime entry whose
+   refusal releases what it was handed rather than leaving it to the unwind.
+   Refusing runs the value's `deinit`, so the entry has to own the value by
+   then — otherwise the frame's cleanup releases what the entry has already
+   destroyed, which is a double release, invisible only while a panicking
+   `deinit` left its object abandoned and a use-after-free the moment that
+   object's shell started coming back. Every map entry point owns its key and
+   value from the call in exchange, and is complete about them: whatever it
+   does not store, it releases, on the decline path and on a growth refusal
+   alike.
 
    `Box.set` on a wide value now follows the store-stands rule its narrow
    half already followed (#79): it swaps the new value in before releasing

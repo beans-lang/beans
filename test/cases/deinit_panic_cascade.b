@@ -151,8 +151,6 @@ fn remove_wide(m: Map<int, Trio>) -> int { m.remove(1); return 0 }
 // field. A panicking payload deinit must not cost the handles under it.
 fn wipe_shared(l: List<Shared<Item>>) -> int { l.clear(); return 0 }
 
-fn outcome(problem: string) -> string { return problem }
-
 fn main() {
     // 1. clear() on each container the runtime tears down itself.
     var l: List<Item> = twelve()

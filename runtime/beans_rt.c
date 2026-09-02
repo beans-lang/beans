@@ -3015,21 +3015,6 @@ static void cc_worker_restore_edge(void* c, void* ctx) {
 }
 #endif
 
-// A cycle's members die like any other object, deinit included — but a deinit
-// body is user code, and user code needs the counts it can see to be true.
-// Trial deletion destroyed them for this set, so give them back first: the
-// cycle becomes ordinary uncollected garbage again, with working retain,
-// release and death for everything a body touches.
-//
-// Nothing here is freed. The set is parked as candidates instead and the next
-// collection re-derives it from scratch — with the deinits already run and
-// RC_FIN off so they cannot run twice, and with anything a body resurrected
-// now genuinely reachable and no longer part of the answer. One extra
-// collection buys a body that may allocate, may drop what it owns, and may
-// hand a reference to something that outlives it.
-//
-// Returns non-zero when it took the set over, which means the caller must not
-// free those shells.
 // The deinit bodies of one dead cycle, and the holds that keep the set
 // standing while they run. Both halves live here so the unwind guard below
 // can finish exactly what the normal path does: the cursor steps before each
@@ -3067,6 +3052,21 @@ static void rt_cycle_deinits_unwound(RtCycleDeinits* g) {
     g->armed = 0;
     rt_cycle_deinits_finish(g);
 }
+// A cycle's members die like any other object, deinit included — but a deinit
+// body is user code, and user code needs the counts it can see to be true.
+// Trial deletion destroyed them for this set, so give them back first: the
+// cycle becomes ordinary uncollected garbage again, with working retain,
+// release and death for everything a body touches.
+//
+// Nothing here is freed. The set is parked as candidates instead and the next
+// collection re-derives it from scratch — with the deinits already run and
+// RC_FIN off so they cannot run twice, and with anything a body resurrected
+// now genuinely reachable and no longer part of the answer. One extra
+// collection buys a body that may allocate, may drop what it owns, and may
+// hand a reference to something that outlives it.
+//
+// Returns non-zero when it took the set over, which means the caller must not
+// free those shells.
 static int cc_run_cycle_deinits(void** dead, long long len, int owner_local) {
     long long i = 0;
     for (i = 0; i < len; i++)
