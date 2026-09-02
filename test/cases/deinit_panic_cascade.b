@@ -146,6 +146,11 @@ fn swap_wide_box(b: Box<Trio>) -> int {
 
 fn remove_wide(m: Map<int, Trio>) -> int { m.remove(1); return 0 }
 
+// A Shared handle hands its payload back as the handle's shell is freed, so
+// the payload joins the cascade's work stack rather than being walked as a
+// field. A panicking payload deinit must not cost the handles under it.
+fn wipe_shared(l: List<Shared<Item>>) -> int { l.clear(); return 0 }
+
 fn outcome(problem: string) -> string { return problem }
 
 fn main() {
@@ -289,7 +294,19 @@ fn main() {
     }
     io.println("wide map len={wm.len()}")
 
-    // 8. Every container is still usable afterwards.
+    // 8. Shared handles: the payload comes back through the cascade's stack.
+    var sh: List<Shared<Item>> = []
+    i = 0
+    for i < 6 { sh.push(new Shared(new Item(i, i == 4))); i += 1 }
+    Tally.reset()
+    let sx: Brew<int> = brew wipe_shared(sh)
+    match sx.join() {
+        ok(v) => { report("shared clear", "ok", Tally.gone) }
+        err(p) => { report("shared clear", p.kind, Tally.gone) }
+    }
+    io.println("shared len={sh.len()}")
+
+    // 9. Every container is still usable afterwards.
     l.push(new Item(100, false))
     m[100] = new Item(101, false)
     om[100] = new Item(102, false)
