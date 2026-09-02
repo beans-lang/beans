@@ -116,6 +116,9 @@ has(+0.0): true
 has(1.0) still: true
 has(3.0) still: true
 int container: len=2 keys=[1, 5]
+== a SIMD vector is arithmetic, so its lanes stay IEEE ==
+simd(+nan) == simd(+nan): false
+simd(-0.0) == simd(+0.0): true
 == decimal has neither NaN nor a negative zero, so it is untouched ==
 decimal keys len=1 get=some(2)
 decimal -0.0 == 0.0: true

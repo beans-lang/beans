@@ -438,6 +438,17 @@ fn main() {
     integers.insert(5)
     io.println("int container: len={integers.len()} keys={integers.keys}")
 
+    io.println("== a SIMD vector is arithmetic, so its lanes stay IEEE ==")
+    unsafe {
+        let lanes: Simd2f64 = Simd2f64.splat(pos_nan)
+        let lanes_again: Simd2f64 = Simd2f64.splat(pos_nan)
+        let lanes_minus: Simd2f64 = Simd2f64.splat(neg_zero)
+        let lanes_plus: Simd2f64 = Simd2f64.splat(pos_zero)
+        show("simd(+nan) == simd(+nan)", lanes == lanes_again)
+        show("simd(-0.0) == simd(+0.0)",
+             lanes_minus == lanes_plus)
+    }
+
     io.println("== decimal has neither NaN nor a negative zero, so it is untouched ==")
     let d_zero: decimal = 0.0
     let d_neg_zero: decimal = -0.0

@@ -903,8 +903,20 @@ cmp "$tmp/c-records.first.ll" \
 # size, while record equality walks fields instead of padding
 grep -q '^%bs[.][^ ]* = type {i64, \[8 x i8\]}' \
     "$tmp/c-records.first.ll"
-grep -q 'fcmp oeq float %inline.leftrecord' \
+# A float field compares by its bits, not with fcmp: a struct's `==` is
+# the Eq interface, and Eq on a float is the equality that goes with
+# totalOrder (issue #84, spec/SYNTAX.md "Number rules"). An fcmp here
+# called two NaN-carrying records different, which made one of them
+# unfindable in its own map.
+grep -q 'bitcast float %inline.leftrecord[0-9]* to i32' \
     "$tmp/c-records.first.ll"
+grep -q 'icmp eq i32 %inline.eq.lwrecord' \
+    "$tmp/c-records.first.ll"
+if grep -q 'fcmp oeq float %inline.leftrecord' \
+    "$tmp/c-records.first.ll"; then
+    echo "record equality went back to an IEEE float compare" >&2
+    exit 1
+fi
 # Build once to write the generated C ABI wrapper. Its test-only
 # foreign symbols are linked explicitly below.
 ./build/beansc-next build \

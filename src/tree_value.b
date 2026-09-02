@@ -543,9 +543,24 @@ fn tree_value_total_equal(left: TreeValue,
        left.text != right.text {
         return false
     }
-    if left.kind == "simd" &&
-       left.text != right.text {
-        return false
+    if left.kind == "simd" {
+        // A SIMD vector is arithmetic, not a container: it is neither Eq nor
+        // Hash, nothing sorts it, and it cannot be a key. Its `==` is the
+        // lane-wise IEEE compare the native backend emits (fcmp oeq per lane,
+        // and-ed), so its lanes take the operator's equality, not the
+        // interface's. Anything else would be a backend split.
+        if left.text != right.text { return false }
+        if left.items.len() != right.items.len() {
+            return false
+        }
+        for index: int in 0..left.items.len() {
+            if !tree_value_equal(
+                   left.items[index],
+                   right.items[index]) {
+                return false
+            }
+        }
+        return true
     }
     if left.kind == "variant" ||
        left.kind == "some" ||
@@ -553,7 +568,6 @@ fn tree_value_total_equal(left: TreeValue,
        left.kind == "err" ||
        left.kind == "list" ||
        left.kind == "array" ||
-       left.kind == "simd" ||
        left.kind == "range" {
         if left.items.len() != right.items.len() {
             return false
