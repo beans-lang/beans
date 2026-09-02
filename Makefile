@@ -177,6 +177,7 @@ test-semantics: $(BIN)
 	bash ./test/mir.sh
 	bash ./test/devirtualize.sh
 	bash ./test/default_eval_order.sh
+	bash ./test/release_order.sh
 	./test/inline_options.sh
 	./test/inline_results.sh
 	bash ./test/wide_lists.sh
@@ -362,6 +363,7 @@ test-core: $(BIN)
 	bash ./test/mir.sh
 	bash ./test/devirtualize.sh
 	bash ./test/default_eval_order.sh
+	bash ./test/release_order.sh
 	./test/lsp_probe.sh
 	./test/lsp_server.sh
 	./test/lsp_semantic.sh

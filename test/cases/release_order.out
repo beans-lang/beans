@@ -1,0 +1,49 @@
+-- generic parameter fields --
+built 1
+drop 6
+drop 5
+drop 4
+drop 3
+drop 2
+drop 1
+-- composites over a class --
+built 1
+drop 16
+drop 17
+drop 15
+drop 14
+drop 13
+drop 12
+drop 11
+-- class and interface fields --
+built 21
+drop 23
+drop 22
+drop 21
+-- base and derived fields --
+built true
+drop 36
+drop 35
+drop 34
+drop 33
+drop 32
+drop 31
+-- one field --
+built true
+drop 41
+-- written after construction --
+built true
+drop 52
+drop 51
+-- struct literal out of declaration order --
+built 61
+drop 62
+drop 61
+-- default evaluation order --
+default base 1
+default base 2
+default derived 1
+default derived 2
+base init
+derived init
+sum 4
