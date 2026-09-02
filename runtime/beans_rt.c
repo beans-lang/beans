@@ -1646,6 +1646,13 @@ typedef struct {
 static void rt_owed_stack_drain(RtOwedStackUnwound* g) {
     while (g->next < g->st->len) beans_release(g->st->v[g->next++]);
 }
+static void rt_owed_stack_unwound(RtOwedStackUnwound* g) {
+    if (!g->armed) return;
+    g->armed = 0;
+    rt_owed_stack_drain(g);
+    if (g->st->v && g->st->v != g->st->local) rt_free(g->st->v);
+}
+
 // The same rule for a plain array a frame copied out before it could run
 // user code — a wide map value's children, say — where a CCStack would be
 // more machinery than the array is.
@@ -1663,6 +1670,7 @@ static void rt_owed_children_unwound(RtOwedChildren* g) {
     g->armed = 0;
     rt_owed_children_release(g);
 }
+
 // Two references a runtime entry owes a release to, in order. The first
 // release can run a deinit that panics; the guard releases the second on the
 // way out, so a declined insert cannot lose its duplicate key to the value's
@@ -1684,12 +1692,6 @@ static void rt_owed_pair_unwound(RtOwedPair* g) {
     if (!g->armed) return;
     g->armed = 0;
     rt_owed_pair_release(g);
-}
-static void rt_owed_stack_unwound(RtOwedStackUnwound* g) {
-    if (!g->armed) return;
-    g->armed = 0;
-    rt_owed_stack_drain(g);
-    if (g->st->v && g->st->v != g->st->local) rt_free(g->st->v);
 }
 
 // Release cascades overwhelmingly walk fixed class objects. Keep this path
