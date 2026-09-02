@@ -173,11 +173,18 @@ pub class Deque<T implements Clone> {
 
     /// Drop every element.
     pub fn clear() {
+        // Settle the deque before dropping what it owns: an element's deinit
+        // can read this deque (directly, or from another fiber while this one
+        // parks), and a panic from one aborts the rest of the clear. Zeroing
+        // the counters first means every such observer sees an empty deque
+        // rather than the old length over storage that is already gone, and a
+        // contained panic leaves it empty rather than permanently torn. This
+        // is the rule the runtime containers follow.
+        self.front_count = 0
+        self.back_count = 0
         self.front.clear()
         self.back.clear()
         self.spare.clear()
-        self.front_count = 0
-        self.back_count = 0
     }
 
     /// Every element, head first, as a new list.

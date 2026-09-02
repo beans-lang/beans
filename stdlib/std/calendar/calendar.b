@@ -450,8 +450,7 @@ pub struct DateTime {
     pub fn plus_nanos(nanos: int) -> Result<DateTime> {
         let days: int = floor_div(nanos, nanos_per_day())
         let rest: int = nanos - days * nanos_per_day()
-        let moved: DateTime = self.shift_days(days)?
-        return moved.shift_nanos_within_day(rest)
+        return self.shift_days_and_nanos(days, rest, "{nanos} nanoseconds")
     }
 
     /// This moment plus `seconds` seconds; `err` with kind `range` when the
@@ -459,8 +458,8 @@ pub struct DateTime {
     pub fn plus_seconds(seconds: int) -> Result<DateTime> {
         let days: int = floor_div(seconds, seconds_per_day())
         let rest: int = seconds - days * seconds_per_day()
-        let moved: DateTime = self.shift_days(days)?
-        return moved.shift_nanos_within_day(rest * nanos_per_second())
+        return self.shift_days_and_nanos(
+            days, rest * nanos_per_second(), "{seconds} seconds")
     }
 
     /// This moment plus `minutes` minutes.
@@ -504,20 +503,33 @@ pub struct DateTime {
         })
     }
 
-    // Add a nanosecond count smaller in magnitude than one day, carrying into
-    // the date when the time of day wraps.
-    fn shift_nanos_within_day(nanos: int) -> Result<DateTime> {
+    // Move by whole days plus a nanosecond remainder in [0, one day). The
+    // remainder is folded into the day count BEFORE the range is checked, so
+    // the check measures the moment the caller actually asked for. Checking
+    // the intermediate instead refused in-range answers: a negative operand
+    // borrows a whole day through floor_div, so `0001-01-01T12:00 - 1h` used
+    // to fail on a year-0 intermediate that the final result never reaches.
+    // `subject` names the caller's own unit so the error talks about the call
+    // rather than about this decomposition.
+    fn shift_days_and_nanos(days: int, nanos: int,
+                            subject: string) -> Result<DateTime> {
         let start: int =
             self.hour * seconds_per_hour() * nanos_per_second() +
             self.minute * seconds_per_minute() * nanos_per_second() +
             self.second * nanos_per_second() + self.nanosecond
+        // `start` is under one day and `nanos` is too, so this cannot overflow.
         let total: int = start + nanos
         let carry: int = floor_div(total, nanos_per_day())
         let within: int = total - carry * nanos_per_day()
-        var moved: DateTime = self
-        if carry != 0 {
-            moved = self.shift_days(carry)?
+        let first: int = days_from_civil(min_year(), 1, 1)
+        let last: int = days_from_civil(max_year(), 12, 31)
+        let here: int = self.epoch_day()
+        // `first`, `last`, `here` and `carry` are all small, so the bounds are
+        // computed without overflow and `days` is compared, never added, first.
+        if days < first - here - carry || days > last - here - carry {
+            return err("adding {subject} leaves the calendar", "range")
         }
+        let moved: CivilDate = civil_from_days(here + days + carry)
         let whole: int = within / nanos_per_second()
         return ok(DateTime {
             year: moved.year, month: moved.month, day: moved.day,

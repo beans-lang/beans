@@ -5,9 +5,8 @@
 # test/cases/collections_models.b; the golden pins the result and both backends
 # must print it byte for byte. Two sanitizer lanes then run: the leak-clean
 # subset (collections_leakcheck.b) under full ASan + UBSan + LeakSanitizer, and
-# the whole model — which exercises SortedMap.remove — under ASan + UBSan with
-# LeakSanitizer off, because a structural remove leaks in the native ARC codegen
-# (#60). On Linux ASan bundles LeakSanitizer and runs it by default, so the
+# the whole model — which exercises SortedMap.remove — under the same three.
+# On Linux ASan bundles LeakSanitizer and runs it by default, so the
 # check greps for AddressSanitizer, UndefinedBehaviorSanitizer and LeakSanitizer
 # and treats a non-zero exit as failure — a leak here must be loud, not silent.
 # The bounded element/key rules — Clone for every value read back, Order for a
@@ -52,28 +51,38 @@ if grep -Eq 'AddressSanitizer|UndefinedBehaviorSanitizer|LeakSanitizer' \
 fi
 diff -u "$tmp/leak.interp" "$tmp/leak.asan.out"
 
-echo "checking the full model, incl. SortedMap.remove, under ASan+UBSan (LSan off, #60)"
+echo "checking the full model, incl. SortedMap.remove, under ASan, UBSan and LeakSanitizer"
 clang -O1 -g -pthread -fsanitize=address,undefined -fno-sanitize-recover=undefined \
     -Wno-override-module build/collections_models.ll build/beans_rt.c -lm \
     -o "$tmp/model.asan"
-# SortedMap.remove leaks in the native ARC codegen (#60), which LeakSanitizer
-# catches on Linux. Disable LeakSanitizer for this one program so ASan and UBSan
-# still guard the remove path against use-after-free and undefined behaviour;
-# detect_leaks=0 is also the value Apple's ASan needs, so this is safe on both
-# platforms. Full leak coverage of remove returns when #60 lands, and every
-# other structure keeps LeakSanitizer through the leak-clean lane above.
-if ! ASAN_OPTIONS=detect_leaks=0 BEANS_NO_POOL=1 "$tmp/model.asan" \
+# This lane used to run with detect_leaks=0 because SortedMap.remove leaked in
+# the native ARC codegen (#60). #60 has landed, so the structural remove path
+# is leak-checked like everything else: LeakSanitizer is on by default under
+# ASan on Linux, and a leak here fails the run.
+if ! BEANS_NO_POOL=1 "$tmp/model.asan" \
         >"$tmp/model.asan.out" 2>"$tmp/model.asan.err"; then
     cat "$tmp/model.asan.err" >&2
     echo "collections_models exited non-zero under ASan/UBSan" >&2
     exit 1
 fi
-if grep -Eq 'AddressSanitizer|UndefinedBehaviorSanitizer' "$tmp/model.asan.err"
-then
+if grep -Eq 'AddressSanitizer|UndefinedBehaviorSanitizer|LeakSanitizer' \
+    "$tmp/model.asan.err"; then
     cat "$tmp/model.asan.err" >&2
     exit 1
 fi
 diff -u "$tmp/interp" "$tmp/model.asan.out"
+
+echo "checking what a container does while it drops what it owns"
+./build/beansc run   test/cases/collections_teardown.b >"$tmp/teardown.interp"
+./build/beansc build test/cases/collections_teardown.b -o "$tmp/teardown.native" \
+    >"$tmp/teardown.build"
+"$tmp/teardown.native" >"$tmp/teardown.native.out"
+diff -u test/cases/collections_teardown.out "$tmp/teardown.interp"
+diff -u "$tmp/teardown.interp" "$tmp/teardown.native.out"
+# A tear is a container answering its old shape over storage it has already
+# released; an inconsistent answer is `remove` reporting what it did not do.
+grep -q '^total tears 0$' "$tmp/teardown.interp"
+grep -q '^consistent answers 1 of 1$' "$tmp/teardown.interp"
 
 echo "checking a move-only value is refused at the type"
 if ./build/beansc check test/cases/collections_move_only_bad.b \

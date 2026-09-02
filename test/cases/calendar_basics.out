@@ -42,3 +42,14 @@ leap 2000=true 1900=false 2024=true
 days feb2024=29 feb2023=28 apr=30
 weekday Sunday short Sun num 0
 day_of_year 310 epoch_day 9075
+== boundary arithmetic ==
+y1 -1h    : 0001-01-01T11:00:00Z
+y1 -60m   : 0001-01-01T11:00:00Z
+y1 -3600s : 0001-01-01T11:00:00Z
+y1 -1ns   : 0001-01-01T11:59:59.999999999Z
+y1 +1h    : 0001-01-01T13:00:00Z
+y1 -4d1h  : 0001-01-01T11:00:00Z
+under -1s : err(range) adding -1 seconds leaves the calendar
+under -1ns: err(range) adding -1 nanoseconds leaves the calendar
+over  +1s : err(range) adding 1 seconds leaves the calendar
+over  +1d : err(range) adding 1 days leaves the calendar

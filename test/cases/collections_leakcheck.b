@@ -1,10 +1,9 @@
-// The leak-clean subset of std.collections, for the macOS `leaks` sweep in
-// test/sanitize.sh: every operation here frees what it drops. Set, Deque and
-// PriorityQueue remove through the builtin Map or List, which are leak-clean;
-// SortedMap is built, queried and torn down but not removed from, because a
-// structural remove from its owned node tree trips the native ARC codegen leak
-// filed as #60. When #60 is fixed, collections_models.b (which does remove)
-// joins the leaks sweep and this file can fold into it.
+// std.collections under the macOS `leaks` sweep in test/sanitize.sh: every
+// operation here frees what it drops, including SortedMap's structural remove.
+// That removal used to be left out — it tripped the native ARC codegen leak
+// filed as #60 — so the one path most likely to leak was the one path nothing
+// swept. #60 has landed, collections_models.b joins the sweep alongside this
+// file, and a leak from any of it is a real regression.
 import std.io
 import std.collections
 
@@ -34,8 +33,10 @@ fn exercise() {
         queue.push(value % 50, step)
         if step % 4 == 0 { queue.pop() }
 
-        // SortedMap: build and query only — no structural remove (see #60).
+        // SortedMap: build, query and remove. The removal walks the owned
+        // node tree and unlinks a node, which is the shape that leaked.
         map.set(value, step)
+        if step % 6 == 0 { map.remove(value) }
         step += 1
     }
 

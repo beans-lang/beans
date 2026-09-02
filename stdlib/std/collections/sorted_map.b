@@ -86,15 +86,18 @@ pub class SortedMap<K implements Order & Clone, V implements Clone> {
 
     /// Store `value` under `key`, replacing any value already there.
     pub fn set(key: K, value: V) {
-        self.root = some(self.insert_into(self.root, key, value, true))
+        var added: bool = false
+        self.root =
+            some(self.insert_into(self.root, key, value, true, inout added))
     }
 
     /// Store `value` under `key` only when the key is new. False leaves the
     /// old value in place, matching `Map.insert`.
     pub fn insert(key: K, value: V) -> bool {
-        let before: int = self.len()
-        self.root = some(self.insert_into(self.root, key, value, false))
-        return self.len() != before
+        var added: bool = false
+        self.root =
+            some(self.insert_into(self.root, key, value, false, inout added))
+        return added
     }
 
     /// The value stored under `key`, or `none`.
@@ -137,15 +140,10 @@ pub class SortedMap<K implements Order & Clone, V implements Clone> {
 
     /// Remove `key`. True when it was there.
     ///
-    /// Known limitation: on the native backend this currently leaks the removed
-    /// node. The cause is a bug in the recursive-removal ARC codegen (#60) —
-    /// `field = recurse(field)` never frees an unlinked node — not in this tree;
-    /// the interpreter is unaffected and every answer is correct on both
-    /// backends. The note goes when #60 lands.
     pub fn remove(key: K) -> bool {
-        let before: int = self.len()
-        self.root = self.remove_from(self.root, key)
-        return self.len() != before
+        var unlinked: bool = false
+        self.root = self.remove_from(self.root, key, inout unlinked)
+        return unlinked
     }
 
     /// Every key, ascending.
@@ -352,37 +350,55 @@ pub class SortedMap<K implements Order & Clone, V implements Clone> {
         return node
     }
 
+    // `added` is the answer `insert` reports, and it is an `inout` on the
+    // caller's own local rather than a field or a size difference. A stored
+    // value's `deinit` can run while this recursion is in flight and mutate
+    // the same map, so anything shared between the two calls — a field, or
+    // `len()` read before and after — is not a record of what THIS call did.
     fn insert_into(node: Option<SortedNode<K, V>>, key: K, value: V,
-                   replace: bool) -> SortedNode<K, V> {
+                   replace: bool,
+                   inout added: bool) -> SortedNode<K, V> {
         match node {
             some(current) => {
                 if key < current.key {
                     current.left =
-                        some(self.insert_into(current.left, key, value, replace))
+                        some(self.insert_into(current.left, key, value,
+                                              replace, inout added))
                 } else if current.key < key {
                     current.right =
-                        some(self.insert_into(current.right, key, value, replace))
+                        some(self.insert_into(current.right, key, value,
+                                              replace, inout added))
                 } else {
                     // The key is already here. Nothing structural changes, so
-                    // there is nothing to rebalance.
+                    // there is nothing to rebalance and nothing was added.
                     if replace { current.value = value }
                     return current
                 }
                 return self.rebalance(current)
             }
-            none => { return new SortedNode<K, V>(key, value) }
+            none => {
+                added = true
+                return new SortedNode<K, V>(key, value)
+            }
         }
     }
 
-    fn remove_from(node: Option<SortedNode<K, V>>,
-                   key: K) -> Option<SortedNode<K, V>> {
+    // `unlinked` reports whether THIS call took the key out, for the same
+    // reason `insert_into` carries `added`: a value's `deinit` runs as its
+    // node is dropped and may mutate this map, so a size read before and
+    // after the recursion measures that reentrant call as well as this one.
+    fn remove_from(node: Option<SortedNode<K, V>>, key: K,
+                   inout unlinked: bool) -> Option<SortedNode<K, V>> {
         match node {
             some(current) => {
                 if key < current.key {
-                    current.left = self.remove_from(current.left, key)
+                    current.left =
+                        self.remove_from(current.left, key, inout unlinked)
                 } else if current.key < key {
-                    current.right = self.remove_from(current.right, key)
+                    current.right =
+                        self.remove_from(current.right, key, inout unlinked)
                 } else {
+                    unlinked = true
                     // Found it. With one child or none, the child takes this
                     // node's place. With two, the in-order successor's entry
                     // moves up here and the successor is removed instead —
@@ -398,8 +414,12 @@ pub class SortedMap<K implements Order & Clone, V implements Clone> {
                             current.right.expect("a two-child node has a right child"))
                     current.key = successor.key
                     current.value = successor.value
+                    // The successor's own removal is part of this one; it
+                    // must not be able to clear the answer already recorded.
+                    var moved: bool = false
                     current.right =
-                        self.remove_from(current.right, successor.key)
+                        self.remove_from(current.right, successor.key,
+                                         inout moved)
                 }
                 return some(self.rebalance(current))
             }

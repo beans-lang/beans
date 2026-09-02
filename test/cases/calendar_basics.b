@@ -99,4 +99,35 @@ fn main() {
     io.println("days feb2024={calendar.days_in_month(2024, 2)} feb2023={calendar.days_in_month(2023, 2)} apr={calendar.days_in_month(2024, 4)}")
     io.println("weekday {example.weekday().name()} short {example.weekday().short_name()} num {example.weekday().number()}")
     io.println("day_of_year {example.day_of_year()} epoch_day {example.epoch_day()}")
+
+    // --- arithmetic at the ends of the calendar -----------------------------
+    // Every `plus_*` decomposes into whole days plus a sub-day remainder, and
+    // `floor_div` makes that remainder non-negative — so a negative operand
+    // borrows a day. The range has to be measured on the moment the caller
+    // asked for, not on the borrowed intermediate: subtracting an hour from
+    // midday on the first day of year 1 lands at 11:00 the same day, which is
+    // inside the calendar even though the intermediate is not. The generated
+    // vectors never come near this boundary.
+    io.println("== boundary arithmetic ==")
+    let first_day: calendar.DateTime =
+        calendar.DateTime.of(1, 1, 1, 12, 0, 0, 0).expect("valid")
+    show("y1 -1h    ", first_day.plus_hours(-1))
+    show("y1 -60m   ", first_day.plus_minutes(-60))
+    show("y1 -3600s ", first_day.plus_seconds(-3600))
+    show("y1 -1ns   ", first_day.plus_nanos(-1))
+    show("y1 +1h    ", first_day.plus_hours(1))
+    // Landing on the first day from further away, remainder still non-zero.
+    let fifth_day: calendar.DateTime =
+        calendar.DateTime.of(1, 1, 5, 12, 0, 0, 0).expect("valid")
+    show("y1 -4d1h  ", fifth_day.plus_seconds(-(4 * 86400 + 3600)))
+    // And what is genuinely outside still has to be refused, naming the unit
+    // the caller used rather than the day count this decomposes into.
+    let year_one: calendar.DateTime =
+        calendar.DateTime.of(1, 1, 1, 0, 0, 0, 0).expect("valid")
+    show("under -1s ", year_one.plus_seconds(-1))
+    show("under -1ns", year_one.plus_nanos(-1))
+    let year_end: calendar.DateTime =
+        calendar.DateTime.of(9999, 12, 31, 23, 59, 59, 0).expect("valid")
+    show("over  +1s ", year_end.plus_seconds(1))
+    show("over  +1d ", year_end.plus_days(1))
 }
