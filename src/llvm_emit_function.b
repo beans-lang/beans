@@ -1354,6 +1354,24 @@ partial class LlvmTextEmitter {
         instruction: MirInstruction,
         values: Map<int, string>,
         target: HirDeclaration) -> string {
+        // A table that can only ever hold one symbol for this slot decides
+        // nothing, so read the answer here and call it. The receiver being
+        // a class of its own is not what makes this safe — a base-typed
+        // receiver, an interface-typed one and `self` are all covered, and
+        // an overridden method or a second implementor takes the guarded
+        // path below exactly as before.
+        let settled: string =
+            self.static_dispatch_symbol(
+                target,
+                if instruction.dispatch_slot != "" {
+                    instruction.dispatch_slot
+                } else {
+                    "pub:{instruction.text}"
+                })
+        if settled != "" {
+            return self.emit_direct_call(
+                function, instruction, values, settled)
+        }
         var candidates: List<HirDeclaration> = []
         var symbols: List<string> = []
         for declaration: HirDeclaration in

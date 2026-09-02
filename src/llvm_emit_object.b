@@ -596,33 +596,6 @@ partial class LlvmTextEmitter {
         return ""
     }
 
-    fn class_descends_from(
-        declaration: HirDeclaration,
-        ancestor: string) -> bool {
-        var current: HirDeclaration = declaration
-        var depth: int = 0
-        for self.class_base_index(current) >= 0 {
-            depth += 1
-            if depth > 32 { return false }
-            let base_index: int =
-                self.class_base_index(current)
-            match self.declaration_for(
-                      current.relations[base_index]) {
-                some(base) => {
-                    if base.qualified == ancestor {
-                        return true
-                    }
-                    current = base
-                }
-                none => { return false }
-            }
-        }
-        return false
-    }
-
-    // a resolved direct call is only right while no subclass redefines
-    // the method; deinit never goes through here — the runtime
-    // dispatches it by descriptor
     // ---- generic instantiation ----
 
     fn clone_generic_instruction(
@@ -1072,29 +1045,119 @@ partial class LlvmTextEmitter {
         return false
     }
 
-    fn method_overridden(
-        declaration: HirDeclaration,
-        name: string) -> bool {
-        for candidate: HirDeclaration in
-            self.program.declarations {
-            if candidate.kind != "class" {
-                continue
-            }
-            if candidate.qualified ==
-               declaration.qualified {
-                continue
-            }
-            if !self.class_descends_from(
-                   candidate,
-                   declaration.qualified) {
-                continue
-            }
-            if self.function_symbols.contains_key(
-                   "{candidate.qualified}.{name}") {
-                return true
+    // Whether every symbol this class's descriptor rows can name is
+    // already decided. A class whose own shape, base chain or interfaces
+    // are all non-generic takes each row from the symbol pre-pass, which
+    // runs before any body is emitted and never changes an entry. A
+    // generic link anywhere raises method instances on demand instead, so
+    // the row a call reads mid-emit need not be the row the descriptor
+    // ends up holding — that class's rows are not settled and no caller
+    // may bind against them.
+    fn class_relations_are_plain(
+        declaration: HirDeclaration) -> bool {
+        match self.plain_dispatch_classes.get(
+                  declaration.qualified) {
+            some(known) => { return known }
+            none => {}
+        }
+        var plain: bool = declaration.generics.len() == 0
+        var pending: List<HirType> = []
+        if plain {
+            for relation: HirType in declaration.relations {
+                pending.push(relation)
             }
         }
-        return false
+        var seen: Map<string, bool> = {}
+        for plain && pending.len() != 0 {
+            let current: HirType =
+                pending.pop().expect("class relation")
+            if seen.contains_key(current.name) {
+                continue
+            }
+            seen[current.name] = true
+            match self.declaration_for(current) {
+                some(parent) => {
+                    if parent.generics.len() != 0 {
+                        plain = false
+                    } else {
+                        for relation: HirType in
+                            parent.relations {
+                            pending.push(relation)
+                        }
+                    }
+                }
+                // a relation with no declaration behind it is a shape
+                // this emitter does not model, so treat it as unsettled
+                none => { plain = false }
+            }
+        }
+        self.plain_dispatch_classes[
+            declaration.qualified] = plain
+        return plain
+    }
+
+    // The one method a call on this receiver type can reach, or "" when
+    // more than one could.
+    //
+    // A receiver's runtime class is always some class that conforms to the
+    // call's static receiver type, and a non-generic class's descriptor row
+    // for a dispatch slot is exactly `method_slot_symbol(class, slot)` —
+    // the same question asked here. So when every class that could stand
+    // behind the receiver answers one symbol, every table this call could
+    // read holds that symbol, and the indirect call is that call. Beans
+    // compiles whole programs and a dynamic library publishes C functions
+    // only, so no later class can join the set.
+    //
+    // Anything that leaves a row unaccounted for answers "": a declaration
+    // that is not a class does not carry a class table at all, a class
+    // whose rows are not settled may still change, and a null row means
+    // this slot has no implementation to name.
+    fn static_dispatch_symbol(
+        target: HirDeclaration,
+        slot: string) -> string {
+        let key: string = "{target.qualified}|{slot}"
+        match self.static_dispatch_symbols.get(key) {
+            some(known) => { return known }
+            none => {}
+        }
+        var resolved: string = ""
+        for declaration: HirDeclaration in
+            self.program.declarations {
+            // an interface is a name for a set of classes, never the
+            // class a receiver's descriptor names
+            if declaration.kind == "interface" ||
+               !self.class_conforms(declaration, target) {
+                continue
+            }
+            if declaration.kind != "class" {
+                resolved = ""
+                break
+            }
+            // an abstract class cannot be built, so it is never the
+            // class behind a receiver
+            if declaration.is_abstract { continue }
+            if !self.class_relations_are_plain(
+                   declaration) {
+                resolved = ""
+                break
+            }
+            let symbol: string =
+                self.method_slot_symbol(declaration, slot)
+            if symbol == "null" {
+                resolved = ""
+                break
+            }
+            if resolved == "" {
+                resolved = symbol
+                continue
+            }
+            if resolved != symbol {
+                resolved = ""
+                break
+            }
+        }
+        self.static_dispatch_symbols[key] = resolved
+        return resolved
     }
 
     fn class_layout(
