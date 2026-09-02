@@ -158,4 +158,53 @@ if [ -e "$tmp/enum_relation" ]; then
     exit 1
 fi
 
+# A `static fn` has no `self`, so no receiver can pick it and no descriptor
+# row may name it (#88). Every declaration here checked clean before, and the
+# subclass's static then took over the base's instance dispatch slot: a
+# dynamic call through a base-typed reference handed a receiver to a function
+# that declares none, and both backends agreed on the wrong call.
+check_bad diagnostics_static_slot_bad
+# the reported shape, and the same shape two links up, which a rule reading
+# only the immediate base would miss
+grep -Fq ":34:12: error: 'label' is declared static here, but Base declares it as an instance method — a name is either a static or an instance method throughout a class family, and a static has no receiver to be dispatched on" \
+    "$tmp/diagnostics_static_slot_bad"
+grep -Fq ":45:12: error: 'label' is declared static here, but Base declares it as an instance method" \
+    "$tmp/diagnostics_static_slot_bad"
+# `override static fn` used to be accepted and mean nothing: override
+# checking returned early for a static, so nothing was ever replaced
+grep -Fq ":53:21: error: 'label' is declared static here, but Base declares it as an instance method" \
+    "$tmp/diagnostics_static_slot_bad"
+# the mirror — a static in the base, an instance method below it — which
+# left `Stamped.stamp()` and `restamped.stamp()` naming different code
+grep -Fq ":68:5: error: 'stamp' is declared as an instance method here, but Stamped declares it static — a name is either a static or an instance method throughout a class family, and a static has no receiver to be dispatched on" \
+    "$tmp/diagnostics_static_slot_bad"
+# an interface the class implements, and an interface default kept one link
+# further down
+grep -Fq ":75:12: error: 'show' is declared static here, but Shows declares it as an instance method" \
+    "$tmp/diagnostics_static_slot_bad"
+grep -Fq ":86:12: error: 'name' is declared static here, but Named declares it as an instance method" \
+    "$tmp/diagnostics_static_slot_bad"
+# and with no collision at all: reaching a static through an instance
+# receiver passed the receiver to a function that declares no parameter for
+# it, which only worked because the extra register is ignored on this ABI
+grep -Fq ":98:49: error: 'tag' is a static method of Solo — a static has no receiver, so call it on the type: Solo.tag(...)" \
+    "$tmp/diagnostics_static_slot_bad"
+# six declarations refused, one `must implement` for the class whose only
+# `show` is the refused static, and six calls that used to reach a backend
+test "$(grep -c ': error:' "$tmp/diagnostics_static_slot_bad")" -eq 13
+# the instance method that legally replaces nothing is not reported
+if grep -Fq "104:" "$tmp/diagnostics_static_slot_bad"; then
+    echo "a legal instance call was reported" >&2
+    exit 1
+fi
+if ./build/beansc build test/cases/diagnostics_static_slot_bad.b \
+       -o "$tmp/static_slot" >/dev/null 2>&1; then
+    echo "a static in an instance dispatch slot still built" >&2
+    exit 1
+fi
+if [ -e "$tmp/static_slot" ]; then
+    echo "a static in an instance dispatch slot produced a binary" >&2
+    exit 1
+fi
+
 echo "ok diagnostics: locations, imports, suggestions, wording, and recovery"

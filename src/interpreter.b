@@ -2261,11 +2261,23 @@ class TreeInterpreter {
                                     return TreeValue.integer(0)
                                 }
                                 receiver = some(value)
+                                // Prefer the body the receiver's runtime
+                                // class declares — but only one a receiver
+                                // can pick. A `static fn` wearing the same
+                                // name declares no `self`, so substituting
+                                // it handed the receiver to a function with
+                                // no parameter for it (#88). The checker
+                                // refuses that pair wherever a call could
+                                // name it; a `priv static`, which is exempt
+                                // there because it shares no dispatch slot
+                                // with anything, reached it only here.
                                 match self.reflect_method(
                                           actual, callable_name) {
                                     some(actual_method) => {
-                                        callable = some(
-                                            actual_method.callable)
+                                        if !actual_method.callable.is_static {
+                                            callable = some(
+                                                actual_method.callable)
+                                        }
                                     }
                                     none => {}
                                 }

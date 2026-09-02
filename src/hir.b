@@ -278,12 +278,6 @@ class HirFunction {
         self.is_private = is_private
         self.is_override = false
         self.dispatch_slots = []
-        if owner != "" && name != "init" &&
-           name != "deinit" {
-            self.dispatch_slots.push(
-                hir_method_slot(
-                    owner, name, is_public, is_private))
-        }
         self.generics = []
         self.generic_constraints = []
         self.parameters = []
@@ -307,6 +301,40 @@ class HirFunction {
         self.annotations = []
         self.runtime_start = false
         self.runtime_stop = false
+        self.assign_dispatch_slot()
+    }
+
+    // A dispatch slot is the identity a receiver's runtime class picks a
+    // body through, so only a method a receiver can pick has one. Every
+    // reader agrees on that: the descriptor row for a slot is filled from
+    // the nearest owner in the receiver's chain that declares the slot, the
+    // selector table numbers one row per slot, and the interpreter's
+    // runtime-class walk accepts a body only when it carries the slot.
+    //
+    // Three kinds of method are handed no receiver to pick with, and none
+    // of them may sit in a row:
+    //
+    //   - a free function, which has no owner;
+    //   - `init`, which runs on storage that has no descriptor yet, and
+    //     `deinit`, whose row is the one @beans_deinit_sel publishes;
+    //   - a `static fn`, which declares no `self` at all — its row named a
+    //     receiverless function and every dynamic call through the slot
+    //     handed it one anyway (#88).
+    //
+    // Modifiers are read after construction, so lower_function calls this
+    // again once `static` is known.
+    fn assign_dispatch_slot() {
+        self.dispatch_slots = []
+        if self.owner == "" ||
+           self.name == "init" ||
+           self.name == "deinit" ||
+           self.is_static {
+            return
+        }
+        self.dispatch_slots.push(
+            hir_method_slot(
+                self.owner, self.name,
+                self.is_public, self.is_private))
     }
 }
 
@@ -1357,6 +1385,9 @@ class SignatureChecker {
             module_words(node.value).contains("abstract")
         function.is_override =
             module_words(node.value).contains("override")
+        // `static` is read above, after construction, and it decides
+        // whether this method can sit in a dispatch row at all.
+        function.assign_dispatch_slot()
         function.required_feature =
             required_feature_from_value(node.value)
         for child: AstNode in node.children {

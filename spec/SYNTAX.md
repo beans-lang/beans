@@ -1496,8 +1496,11 @@ let u: User = new("jul")
 
 - Methods are instance methods by default. Their `self` binding is implicit and
   available in the body; it is never written in the parameter list.
-- `static fn` is required for class statics. A static method has no `self` and is
-  not inherited.
+- `static fn` is required for class statics. A static method has no `self`, is
+  not inherited, and is not dispatched: it is called on the type that declares
+  it, as `User.guest()`, and `u.guest()` on a value is refused. See
+  *Inheritance and interfaces* for the rule that follows from it — one name in
+  a class family is a static or an instance method, never both.
 - An unmarked method is package-visible, `pub fn` is visible from other
   packages, and `priv fn` is visible only inside its exact declaring class or
   struct. The same rule applies to `priv static fn`, `priv inout fn`, and
@@ -1760,6 +1763,18 @@ cannot declare private methods. Beans has no `final` yet.
 `extends` and `implements` belong to classes and interfaces. A struct, union
 or enum that names either is refused at the declaration: an interface value is
 an object whose first word is its descriptor, and a value type has none.
+
+Only an instance method is dispatched. A `static fn` declares no `self`, so no
+receiver picks it: it is called on its type, `value.some_static()` is refused,
+and it holds no row in any class's method table. Within one class family a
+name is therefore either a static or an instance method, never both — a
+`static fn` beside an instance method the class inherits, and an instance
+method beside a static a base declares, are each refused at the declaration
+naming the other. A `priv` method is outside this rule in both directions: it
+belongs to its exact declaring type, is never inherited and shares no slot, so
+a subclass writing the same name is already a separate method. Reflection
+follows the same rule: `Method.call` prefers the body the receiver's runtime
+class declares, and a static is never one of those.
 
 **Generic interfaces.** An interface may take type parameters, and an
 implementor binds them at the `implements` site: `class IntBox implements
