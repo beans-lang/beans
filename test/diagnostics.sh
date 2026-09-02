@@ -16,8 +16,14 @@ check_bad() {
 check_bad diagnostics_interpolation_bad
 grep -Fq ":4:22: error: unknown name 'missing_first'" \
     "$tmp/diagnostics_interpolation_bad"
-grep -Fq ":5:18: error: unknown name 'missing_piece'" \
+# A piece that is one unresolvable name reads far more often as a brace
+# somebody meant literally than as a typo, so the hint replaces the bare
+# "unknown name" rather than following it — at the same column, which is
+# what this file is here to hold: three errors for three names, each on the
+# bytes the user wrote.
+grep -Fq ":5:18: error: '{missing_piece}' in a string is an interpolation" \
     "$tmp/diagnostics_interpolation_bad"
+test "$(grep -c ': error:' "$tmp/diagnostics_interpolation_bad")" -eq 3
 grep -Fq ":6:21: error: unknown name 'missing_last'" \
     "$tmp/diagnostics_interpolation_bad"
 
@@ -80,5 +86,39 @@ fi
 check_bad diagnostics_brace_piece_bad
 grep -Fq "'{{' is not an escape" "$tmp/diagnostics_brace_piece_bad"
 test "$(grep -c ': error:' "$tmp/diagnostics_brace_piece_bad")" -eq 1
+
+# #46: `?` may only cross an error boundary when the callee's error reaches the
+# caller's — same type, a subtype, or a `to_error` hook. Every other shape is
+# refused here, at the `?`, with a message about the program: one error each,
+# naming both types and what is missing. It used to be accepted for a bare
+# `f()?` and left to a backend the interpreter got wrong and native could not
+# emit.
+check_bad diagnostics_try_convert_no_hook_bad
+grep -Fq "'?' can't turn main.DbError into Error — give main.DbError a \`fn to_error() -> Error\` method, or match on the Result and build the error yourself" \
+    "$tmp/diagnostics_try_convert_no_hook_bad"
+test "$(grep -c ': error:' "$tmp/diagnostics_try_convert_no_hook_bad")" -eq 1
+
+check_bad diagnostics_try_convert_builtin_src_bad
+grep -Fq "'?' can't turn the builtin Error into main.MyErr — Error is a builtin and cannot carry a to_error method" \
+    "$tmp/diagnostics_try_convert_builtin_src_bad"
+test "$(grep -c ': error:' "$tmp/diagnostics_try_convert_builtin_src_bad")" -eq 1
+
+check_bad diagnostics_try_convert_wrong_return_bad
+grep -Fq "main.Weird.to_error() answers int, which doesn't reach this function's error type Error" \
+    "$tmp/diagnostics_try_convert_wrong_return_bad"
+test "$(grep -c ': error:' "$tmp/diagnostics_try_convert_wrong_return_bad")" -eq 1
+
+check_bad diagnostics_try_convert_bad_shape_bad
+grep -Fq "'?' needs main.Weird.to_error to be an instance method taking no arguments and no type parameters" \
+    "$tmp/diagnostics_try_convert_bad_shape_bad"
+test "$(grep -c ': error:' "$tmp/diagnostics_try_convert_bad_shape_bad")" -eq 1
+
+# Reaching the target as a subtype must not shed move-only ownership: a
+# to_error answering a unique class widened to a shared interface is refused
+# in the same words a plain widening uses.
+check_bad diagnostics_try_convert_unique_bad
+grep -Fq "can't erase move-only ownership by converting main.Pinned to main.AppError" \
+    "$tmp/diagnostics_try_convert_unique_bad"
+test "$(grep -c ': error:' "$tmp/diagnostics_try_convert_unique_bad")" -eq 1
 
 echo "ok diagnostics: locations, imports, suggestions, wording, and recovery"

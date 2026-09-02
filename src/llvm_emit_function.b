@@ -1639,7 +1639,15 @@ partial class LlvmTextEmitter {
                 self.value(
                     function, values,
                     terminator.value, source)
-            return "{output}{self.release_function_cells(function)}{parent_deinit}  ret {result_type} {value}\n"
+            // the caller owns the returned reference from here; an in-flight
+            // temporary this return consumes leaves the frame's care last
+            var handed: string = ""
+            if terminator.consumes_value {
+                handed =
+                    self.unwind_temp_clear(
+                        function, terminator.value)
+            }
+            return "{output}{self.release_function_cells(function)}{parent_deinit}{handed}  ret {result_type} {value}\n"
         }
         if terminator.kind == "match" {
             return "{output}{self.emit_match(function, block, values, source)}"
@@ -1732,6 +1740,15 @@ partial class LlvmTextEmitter {
             for instruction: MirInstruction in
                 block.instructions {
                 if instruction.removed { continue }
+                // Every slot the cache needs is an entry alloca, and
+                // the decision to keep one at all is the element type's,
+                // which only the emitter knows. Both happen here, before
+                // any block that reads the cache is written.
+                if instruction.op ==
+                       "list_header_open" {
+                    self.register_list_header(
+                        function, instruction)
+                }
                 if instruction.op == "defer_register" {
                     self.function_allocas.push(
                         "  %defer.flag{instruction.cleanup_id} = alloca i1\n  store i1 0, ptr %defer.flag{instruction.cleanup_id}\n")
@@ -1853,18 +1870,25 @@ partial class LlvmTextEmitter {
         // blocks are emitted first so spill slots they request can land as
         // entry allocas — a mid-loop alloca would grow the stack every pass
         var values: Map<int, string> = {}
+        // The cleanup pad has to exist by name before the body is written:
+        // every call in it is rewritten to name the pad as its exception
+        // edge (src/llvm_unwind.b).
+        self.unwind_open(function)
         // chunks, joined once below: re-interpolating "{body}{next}" per
         // instruction recopied the whole function text every time
         var chunks: List<string> = []
         for block: MirBlock in function.blocks {
             if !block.reachable { continue }
             chunks.push("bb{block.id}:\n")
+            self.unwind_block = "bb{block.id}"
             for instruction: MirInstruction in
                 block.instructions {
                 if instruction.removed { continue }
                 let errors_before: int = self.errors.len()
                 chunks.push(
-                    self.emit_instruction(function, instruction, values))
+                    self.unwind_chunk(
+                        self.emit_instruction(
+                            function, instruction, values)))
                 // An instruction that failed still defines its
                 // destination: the first error is the diagnosis, and a
                 // "cannot find vN" per downstream use would only bury it.
@@ -1875,8 +1899,19 @@ partial class LlvmTextEmitter {
                 }
             }
             chunks.push(
-                self.emit_terminator(function, block, values, is_main))
+                self.unwind_chunk(
+                    self.emit_terminator(
+                        function, block, values, is_main)))
         }
+        // Only after the body: a pad no call named has no predecessor, and a
+        // landing pad without an incoming exception edge does not verify.
+        if self.unwind_used {
+            chunks.push(
+                llvm_attach_dbg(
+                    self.unwind_pad_block(function),
+                    self.debug_function_location()))
+        }
+        self.unwind_close(function)
         let body: string = chunks.join("")
         let feature_attribute: string =
             if function.required_feature == "" {
@@ -1884,8 +1919,19 @@ partial class LlvmTextEmitter {
             } else {
                 " \"target-features\"=\"+{function.required_feature}\""
             }
+        // `uwtable` is what makes the unwinder able to step through this
+        // frame at all — clang adds it for C, but IR handed to it as text
+        // carries only what the emitter wrote.
+        let unwind_attribute: string =
+            if self.unwind_enabled() { " uwtable" } else { "" }
+        let personality: string =
+            if self.unwind_used {
+                self.unwind_personality()
+            } else {
+                ""
+            }
         var output: string =
-            "; {display_symbol(function.name)}\ndefine {result_type} {symbol}({parameters.join(", ")}){feature_attribute}{self.debug_function_attributes(subprogram)} \{\nentry:\n"
+            "; {display_symbol(function.name)}\ndefine {result_type} {symbol}({parameters.join(", ")}){unwind_attribute}{feature_attribute}{self.debug_function_attribute()}{personality}{self.debug_function_metadata(subprogram)} \{\nentry:\n"
         if is_main {
             output =
                 "{output}  call void @beans_os_init(i32 %beans.argc, ptr %beans.argv)\n{self.reflection_initializers()}{self.static_field_initializers()}{self.singleton_initializers()}"

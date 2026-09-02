@@ -117,6 +117,7 @@ test-frontend: $(BIN)
 	bash ./test/syntax_v07.sh
 	bash ./test/language_gaps.sh
 	bash ./test/crema_findings.sh
+	bash ./test/string_literals.sh
 	bash ./test/generic_calls.sh
 	bash ./test/named_imports.sh
 	bash ./test/private_fields.sh
@@ -124,6 +125,7 @@ test-frontend: $(BIN)
 	bash ./test/abstract_classes.sh
 	bash ./test/generic_interfaces.sh
 	bash ./test/backend_parity.sh
+	bash ./test/panic_position_parity.sh
 	bash ./test/emitter_gaps.sh
 	bash ./test/singleton_classes.sh
 	bash ./test/partial_classes.sh
@@ -155,17 +157,23 @@ test-semantics: $(BIN)
 	./test/differential.sh
 	./test/panic.sh
 	./test/numerics.sh
+	bash ./test/decimal_conformance.sh
 	./test/moves.sh
 	bash ./test/ownership_fuzz.sh smoke
 	bash ./test/borrowed_iteration.sh
 	bash ./test/downcast_borrow.sh
 	bash ./test/math.sh
 	bash ./test/slice_fusion.sh
+	bash ./test/list_header_cache.sh
 	./test/maps.sh
+	bash ./test/map_inline.sh
 	./test/traits.sh
 	bash ./test/calendar.sh
 	bash ./test/collections.sh
 	bash ./test/collections_fuzz.sh smoke
+	bash ./test/display_width.sh
+	bash ./test/derived_render.sh
+	bash ./test/module_consts.sh
 	./test/fixed_arrays.sh
 	bash ./test/closure_captures.sh
 	bash ./test/send_functions.sh
@@ -222,6 +230,7 @@ test-runtime: $(BIN)
 	./test/child.sh
 	bash ./test/encoding.sh
 	bash ./test/json_direct.sh
+	bash ./test/list_iteration.sh
 
 test-ffi: $(BIN)
 	./test/raw_slices.sh
@@ -281,19 +290,27 @@ test-core: $(BIN)
 	./test/version.sh
 	./test/deterministic_build.sh
 	./test/numerics.sh
+	bash ./test/decimal_conformance.sh
 	./test/moves.sh
 	bash ./test/borrowed_iteration.sh
+	bash ./test/list_iteration.sh
 	bash ./test/downcast_borrow.sh
 	bash ./test/math.sh
 	bash ./test/slice_fusion.sh
+	bash ./test/list_header_cache.sh
 	./test/maps.sh
+	bash ./test/map_inline.sh
 	./test/traits.sh
 	bash ./test/calendar.sh
 	bash ./test/collections.sh
 	bash ./test/collections_fuzz.sh smoke
+	bash ./test/display_width.sh
+	bash ./test/derived_render.sh
+	bash ./test/module_consts.sh
 	bash ./test/syntax_v07.sh
 	bash ./test/language_gaps.sh
 	bash ./test/crema_findings.sh
+	bash ./test/string_literals.sh
 	bash ./test/generic_calls.sh
 	bash ./test/named_imports.sh
 	bash ./test/private_fields.sh
@@ -301,6 +318,7 @@ test-core: $(BIN)
 	bash ./test/abstract_classes.sh
 	bash ./test/generic_interfaces.sh
 	bash ./test/backend_parity.sh
+	bash ./test/panic_position_parity.sh
 	bash ./test/emitter_gaps.sh
 	bash ./test/singleton_classes.sh
 	bash ./test/partial_classes.sh

@@ -176,6 +176,20 @@ fn cli_ast_declaration(node: AstNode) -> string {
     if node.kind == "fn" {
         return "{cli_ast_function(node, 0)}\n"
     }
+    if node.kind == "const" {
+        var type: string = "?"
+        var value: string = ""
+        for child: AstNode in node.children {
+            if child.kind == "type" ||
+               child.kind == "array_type" ||
+               child.kind == "fn_type" {
+                type = cli_ast_type(child)
+            } else {
+                value = cli_ast_expression(child, 0)
+            }
+        }
+        return "{cli_ast_annotations(node, 0)}{node.value}: {type} = {value}\n\n"
+    }
     if node.kind == "c_global" {
         var type: string = "?"
         var alias: string = ""

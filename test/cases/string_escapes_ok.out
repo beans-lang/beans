@@ -1,8 +1,33 @@
-A: {} n=7
-B: {n} and 8
-C:    7 {pad}
-D: {7}
-E: x{y z
-F: {{ }} done
-G: tab	here "quoted" back\slash
-H: closer } alone
+0 1 9 27 127
+128 195 169 254 255
+171 171 205
+6
+0
+127
+194 128
+223 191
+224 160 128
+237 159 191
+238 128 128
+239 191 191
+240 144 128 128
+244 143 191 191
+72 73
+aé中😀z
+11 5
+1,2,3,4,1
+true true true
+a{b7c}d
+{7}
+{{7}}
+{7}
+pad    7|{
+esc
+newline
+e-acute
+brace
+high
+other
+true true true
+1 true true
+true

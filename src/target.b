@@ -48,6 +48,29 @@ class TargetDescription {
 
     fn pointer_size() -> int { return self.pointer_bits / 8 }
 
+    // Does this target carry the controlled unwind a contained panic needs
+    // (spec/CONCURRENCY.md)? The mechanism is the Itanium C++ ABI unwinder —
+    // `invoke`/`landingpad` cleanup pads walked by _Unwind_ForcedUnwind with
+    // __gcc_personality_v0 — so it needs a DWARF-EH object format and an
+    // architecture whose _Unwind_Exception matches that ABI. COFF wants SEH
+    // funclets instead of landing pads, wasm has no unwinder and no fibers,
+    // and 32-bit ARM's EHABI is a different personality with a wider
+    // exception record. Those keep the earlier behaviour: a contained panic
+    // ends the fiber without unwinding its frames, which leaks what they
+    // held. Widening this list means proving the pairing on that target
+    // first, not assuming it.
+    fn supports_unwind() -> bool {
+        if self.object_format != "elf" &&
+           self.object_format != "macho" {
+            return false
+        }
+        if self.os == "wasi" || self.os == "none" {
+            return false
+        }
+        return self.arch == "x86_64" ||
+               self.arch == "arm64"
+    }
+
     fn supports_atomic(width: int) -> bool {
         return self.atomic_widths.contains(width)
     }

@@ -210,6 +210,7 @@ class Resolver {
                     }
                     if declaration.kind != "fn" &&
                        declaration.kind != "c_global" &&
+                       declaration.kind != "const" &&
                        declaration.kind != "class" &&
                        declaration.kind != "struct" &&
                        declaration.kind != "union" &&
@@ -224,6 +225,7 @@ class Resolver {
                     // declaration by that name stays refused.
                     if declaration.kind != "fn" &&
                        declaration.kind != "c_global" &&
+                       declaration.kind != "const" &&
                        (builtin_type(name) ||
                         name == "Self") {
                         self.fail(file.path, declaration,
@@ -496,6 +498,11 @@ class Resolver {
            symbol.kind == "c_global" {
             self.fail(file.path, node,
                       "'{name}' is a function, not a type")
+            return "poison"
+        }
+        if symbol.kind == "const" {
+            self.fail(file.path, node,
+                      "'{name}' is a constant, not a type")
             return "poison"
         }
         // Visibility is decided by Package ID equality, never by a declared

@@ -694,6 +694,8 @@ partial class LlvmTextEmitter {
         clone.borrow_elided = instruction.borrow_elided
         clone.stack_closure = instruction.stack_closure
         clone.bounds_elided = instruction.bounds_elided
+        clone.list_header_local =
+            instruction.list_header_local
         clone.removed = instruction.removed
         // the flag lattice is over the CFG, not over types, so an
         // instance inherits the template's answer unchanged
@@ -842,6 +844,12 @@ partial class LlvmTextEmitter {
                 }
                 cloned_block.edge_releases.push(
                     cloned_edge)
+            }
+            for flush: MirHeaderFlush in
+                block.header_flushes {
+                cloned_block.header_flushes.push(
+                    new MirHeaderFlush(
+                        flush.target, flush.local))
             }
             clone.blocks.push(cloned_block)
         }
@@ -1717,6 +1725,37 @@ partial class LlvmTextEmitter {
                 "ptr @beans_gate_new()")
             return "  {result} = call ptr @beans_gate_new()\n"
         }
+        // `new Error(message)` / `new Error(message, kind)` builds the same
+        // object `err("message", "kind")` does, through the same helper, so
+        // the two spellings are one representation.
+        if handle_name == "Error" {
+            let message: string =
+                self.value(
+                    function, values,
+                    instruction.operands[0],
+                    instruction)
+            let message_consumed: bool =
+                instruction.consumes.len() >= 1 &&
+                instruction.consumes[0]
+            var kind: string = ""
+            var kind_consumed: bool = false
+            if instruction.operands.len() == 2 {
+                kind =
+                    self.value(
+                        function, values,
+                        instruction.operands[1],
+                        instruction)
+                kind_consumed =
+                    instruction.consumes.len() == 2 &&
+                    instruction.consumes[1]
+            }
+            let result: string =
+                "%v{instruction.result}"
+            values[instruction.result] = result
+            return self.emit_make_error(
+                instruction, message, message_consumed,
+                kind, kind_consumed, result)
+        }
         if handle_name == "TaskGroup" {
             let result: string =
                 "%v{instruction.result}"
@@ -2032,8 +2071,11 @@ partial class LlvmTextEmitter {
                         argument_setup =
                             "{argument_setup}{self.append_internal_argument(operand_type, operand, arguments)}"
                     }
+                    // the object exists from here: if its init panics
+                    // (contained), the cleanup pad releases it — deinit
+                    // and fields — as the interpreter does
                     output =
-                        "{output}{argument_setup}  call void {initializer}({arguments.join(", ")})\n"
+                        "{output}{argument_setup}{self.unwind_temp_define_new(function, instruction, result, scalar_local < 0)}  call void {initializer}({arguments.join(", ")})\n"
                     // A borrow-passed consumed operand is an
                     // ownership-sink argument: the contraction makes
                     // every such call site pass its own reference

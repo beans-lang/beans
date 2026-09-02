@@ -15,41 +15,26 @@ fn llvm_record_instance_name(type: HirType) -> string {
     return llvm_record_name(render_hir_type(type))
 }
 
-fn llvm_unquote(source: string) -> string {
-    var start: int = 0
-    var end: int = source.len()
-    if source.len() >= 2 &&
-       source.starts_with("\"") &&
-       source.ends_with("\"") {
-        start = 1
-        end -= 1
-    }
-    var result: string = ""
-    var index: int = start
-    for index < end {
-        let byte: int = source.byte_at(index)
-        if byte != 92 || index + 1 >= end {
-            result =
-                "{result}{source.slice(index, index + 1)}"
-            index += 1
-            continue
-        }
-        let escaped: int = source.byte_at(index + 1)
-        if escaped == 110 {
-            result = "{result}\n"
-        } else if escaped == 114 {
-            result = "{result}\r"
-        } else if escaped == 116 {
-            result = "{result}\t"
-        } else if escaped == 48 {
-            result = "{result}\0"
-        } else {
-            result =
-                "{result}{source.slice(index + 1, index + 2)}"
-        }
-        index += 2
-    }
-    return result
+// LLVM's IR is not Beans' integer syntax: `0x…` there is a hexadecimal
+// *floating-point* constant, `0b…` is not a form it has, and `_` is not a
+// digit separator. A match pattern used to carry the source's own spelling
+// straight into an `icmp`, so `match n { 0xFF => … }` checked, ran under the
+// tree interpreter, and then failed at build time inside LLVM's parser —
+// a program the checker accepted that a backend could not emit. Patterns
+// come through here instead and leave as one decimal integer: the same bits
+// under every spelling, and the only spelling LLVM reads.
+fn llvm_integer_pattern(text: string) -> string {
+    // `bool` is an integer type to LLVM, so `match flag() { true => … }`
+    // arrives here too, and `true` is already the constant LLVM wants.
+    // Only a numeric spelling is re-rendered; everything else leaves the
+    // way it came in.
+    if text.len() == 0 { return text }
+    let first: int = text.byte_at(0)
+    let numeric: bool =
+        (first >= 48 && first <= 57) ||
+        first == 45 || first == 43
+    if !numeric { return text }
+    return "{tree_parse_int(text)}"
 }
 
 fn llvm_hex_digit(value: int) -> string {
@@ -177,7 +162,25 @@ fn llvm_declaration_for(body: string,
         cut -= 1
     }
     if cut <= offset + 7 + width { return "" }
-    return "declare {body.slice(offset + 7 + width, cut)}\n"
+    var header: string =
+        body.slice(offset + 7 + width, cut)
+    // A definition that can unwind names its personality routine, and a
+    // definition with debug info names its subprogram; neither belongs on a
+    // declaration — LLVM refuses both — so the header is cut before them.
+    // Attributes (uwtable, frame-pointer) stay: a declaration may carry them.
+    for marker: string in [" personality ", " !dbg "] {
+        match header.find(marker) {
+            some(at) => {
+                header = header.slice(0, at)
+            }
+            none => {}
+        }
+    }
+    var trimmed: int = header.len()
+    for trimmed > 0 && header.byte_at(trimmed - 1) == 32 {
+        trimmed -= 1
+    }
+    return "declare {header.slice(0, trimmed)}\n"
 }
 
 // Which chunk owns a group — a source file, or a lone symbol when the body

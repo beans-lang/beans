@@ -71,6 +71,27 @@ pub class ReflectError {
 
     pub fn kind() -> ErrorKind { return self.error_kind }
     pub fn message() -> string { return self.error_message }
+
+    /// The same failure as a builtin `Error`, so `?` can carry a reflection
+    /// failure out of a plain `Result<T>` function. `kind` is the slug of
+    /// this error's own `ErrorKind`; the message is kept whole.
+    pub fn to_error() -> Error {
+        return new Error(
+            "reflect: {self.error_message}",
+            error_kind_slug(self.error_kind))
+    }
+}
+
+fn error_kind_slug(kind: ErrorKind) -> string {
+    return match kind {
+        missing => "missing",
+        inaccessible => "inaccessible",
+        receiver_type => "receiver_type",
+        value_type => "value_type",
+        unsupported => "unsupported",
+        argument_count => "argument_count",
+        failed => "failed",
+    }
 }
 
 fn runtime_error() -> ReflectError {

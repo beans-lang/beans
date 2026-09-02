@@ -24,6 +24,7 @@ simd_kernel	compute	0	200000000	17	1b42d531bce36fab	1
 deep_teardown	allocation	0	4000000	17	2c33871cf7044e67	1
 cycles	allocation	0	2000000	17	1919bdeb4bdd7f62	1	manual-cycle-break
 sequence_churn	sequences	0	1000000	17	eeb1871f9b9c6615	1
+list_growth	sequences	1	200000000	17	547ab86dd919fe42	1
 sort_objects	sequences	0	2000000	17	bc5cfe6b47726d5b	1
 priority_queue	sequences	0	1000000	17	f3ec544c6b4e2951	1
 decimal_kernel	text	0	100000000	17	7c06f462b48df2b3	1	beans-overflow-checks

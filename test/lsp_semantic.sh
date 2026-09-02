@@ -517,6 +517,59 @@ done
 echo "ok semantic completion: receiver members, builtins, scopes, prefixes"
 
 # ---------------------------------------------------------------------------
+# Module constants are first-class semantic symbols (#37)
+# ---------------------------------------------------------------------------
+# A `const` answers hover with its type and folded value, a use resolves to
+# its declaration, its references are found, and it completes by name — the
+# three editor features the feature is not done without.
+echo "checking module constant semantics"
+
+cat >"$scratch/consts.b" <<'BEANS'
+package main
+import std.io
+
+const MAX_FRAME: int = 1 << 20
+pub const GREETING: string = "hello"
+
+fn main() {
+    let n: int = MAX_FRAME
+    io.println("{n} {GREETING}")
+    let m: int = MAX
+}
+BEANS
+
+# Hover on the use: it is a const, its detail carries the folded value, and it
+# names the declaration to jump to — go-to-definition without guessing.
+expect_line symbol "$scratch/consts.b:8:18" 'symbol const:main::MAX_FRAME'
+expect_line symbol "$scratch/consts.b:8:18" 'kind const'
+expect_line symbol "$scratch/consts.b:8:18" \
+    'detail const MAX_FRAME: int = 1048576'
+expect_line symbol "$scratch/consts.b:8:18" \
+    "decl $scratch/consts.b:4:7"
+# The declaration itself, and pub carried through to the editor.
+expect_line symbol "$scratch/consts.b:4:7" 'declaration yes'
+expect_line symbol "$scratch/consts.b:5:11" 'visibility pub'
+expect_line symbol "$scratch/consts.b:5:11" \
+    'detail const GREETING: string = "hello"'
+
+# References: the declaration and the one read, and nothing else.
+refs=$(probe refs "$scratch/consts.b:4:7")
+grep -q "consts.b:4:7+9 decl" <<<"$refs" ||
+    fail "const declaration is not its own reference:
+$refs"
+grep -q "consts.b:8:18+9 read" <<<"$refs" ||
+    fail "const use is not found as a reference:
+$refs"
+
+# Completion offers the const by name, with the constant kind.
+got=$(complete "$scratch/consts.b:10:21")
+grep -q '^item constant MAX_FRAME const:main::MAX_FRAME$' <<<"$got" ||
+    fail "completion should offer the module constant:
+$got"
+
+echo "ok module constants: hover, definition, references, completion"
+
+# ---------------------------------------------------------------------------
 # The built-in member table cannot drift from the checker
 # ---------------------------------------------------------------------------
 echo "checking the built-in member list covers the checker"

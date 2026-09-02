@@ -93,6 +93,10 @@ class MirInstruction {
     // checked HIR. Empty unless the source wrote type arguments.
     type_argument_names: List<string>
     type_arguments: List<HirType>
+    // The list local whose header this operation reads out of registers
+    // instead of the heap object, or -1. analyze_list_header_cache sets it
+    // on every operation inside a loop it proved nobody else can reach.
+    list_header_local: int
 
     fn init(op: string, result: int, type: HirType,
             text: string, resolved: string,
@@ -128,6 +132,7 @@ class MirInstruction {
         self.live_state = 2
         self.type_argument_names = []
         self.type_arguments = []
+        self.list_header_local = -1
     }
 }
 
@@ -165,12 +170,27 @@ class MirEdgeRelease {
     }
 }
 
+// One cached list header written back on the edge that leaves the loop
+// holding it. The write-back rides the edge rather than the exiting block,
+// because the block a loop exits from is usually its head: a flush placed
+// there would run every turn and cost exactly what the cache saves.
+class MirHeaderFlush {
+    target: int
+    local: int
+
+    fn init(target: int, local: int) {
+        self.target = target
+        self.local = local
+    }
+}
+
 class MirBlock {
     id: int
     instructions: List<MirInstruction>
     terminator: MirTerminator
     reachable: bool
     edge_releases: List<MirEdgeRelease>
+    header_flushes: List<MirHeaderFlush>
 
     fn init(id: int) {
         self.id = id
@@ -178,6 +198,7 @@ class MirBlock {
         self.terminator = new MirTerminator()
         self.reachable = false
         self.edge_releases = []
+        self.header_flushes = []
     }
 }
 
@@ -268,6 +289,12 @@ class MirProgram {
     errors: List<Diagnostic>
     // The entry point's canonical symbol, carried over from the HIR.
     entry_symbol: string
+    // Does this program start a fiber anywhere? Only a brewed fiber can
+    // contain a panic, so this is exactly the question "can a failure ever
+    // have to unwind instead of ending the process" — and the answer gates
+    // every cleanup pad the backend emits. A program that never brews emits
+    // none of it and is byte-for-byte what it was.
+    uses_fibers: bool
 
     fn init(target: TargetDescription) {
         self.target = target
@@ -278,6 +305,7 @@ class MirProgram {
         self.functions = []
         self.errors = []
         self.entry_symbol = package_symbol("main", "main")
+        self.uses_fibers = false
     }
 }
 

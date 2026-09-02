@@ -78,6 +78,9 @@ expect_wall "closure cannot capture TaskGroup"
 expect_wall "TaskGroup cannot ride inside another type"
 expect_wall "group.brew starts a user function or method on a child fiber"
 expect_wall "inside a nested block is not ready yet"
+# Whoever lands here got here from the brew wall, so the message has to say
+# that moving the group out does not mean moving the brew out with it (#32).
+expect_wall "group.brew(...) on it stays legal at any depth"
 
 echo "checking a fleet nobody can wake reports a deadlock"
 cat >"$tmp/dead.b" <<'BEANS'

@@ -27,7 +27,17 @@
 
 #include "beans_fiber.h"
 
+// Whether this build carries the controlled unwind (see the unwind section
+// below). The build driver defines it to 1 for a program that can contain a
+// panic on a target whose unwinder we use; every other build keeps F1's
+// abandoned frames. Defaulted here so the file compiles standalone —
+// test/fiber_core.c builds it with no driver at all.
+#ifndef BEANS_FIBER_UNWIND
+#define BEANS_FIBER_UNWIND 0
+#endif
+
 #include <stdatomic.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -125,6 +135,21 @@ struct BeansFiber {
 
     int status; // BEANS_FIBER_OK / _PANICKED / _CANCELLED once DONE
     char message[BEANS_FIBER_MSG_MAX];
+
+    // Controlled unwind (spec/CONCURRENCY.md). unwind_status is the ending
+    // the unwind carries — 0 while the fiber is running normally, so it
+    // doubles as "this fiber is unwinding" and a panic raised during one is
+    // the double-panic case. unwind_exc is storage for the platform's
+    // _Unwind_Exception: it must outlive every frame the unwind pops, so it
+    // cannot sit on the stack being unwound, and one per fiber is enough
+    // because a fiber unwinds at most once. The record wants 16-byte
+    // alignment and this struct comes from calloc, which promises only
+    // max_align_t's — 8 on a 32-bit target — so the storage is over-allocated
+    // and the record is aligned where it is used, not declared _Alignas on
+    // the member: a declared alignment the allocator does not honour is
+    // undefined behaviour in every memset and store of the struct.
+    int unwind_status;
+    unsigned char unwind_exc[64 + 16];
 
     BeansFiber* joiner;    // parked fiber waiting on this one, if any
     int forgotten;         // nobody will join; reclaim on finish
@@ -1293,15 +1318,109 @@ static void fiber_finish(int status) {
     __builtin_unreachable();
 }
 
+// ---- controlled unwind -----------------------------------------------------
+//
+// A contained failure does not abandon the fiber's stack: it runs every
+// frame's cleanup on the way out, so defers fire newest-first and owned
+// values drop exactly as a return would drop them. The mechanism is the
+// platform's forced unwind — the compiler emits `invoke`/`landingpad`
+// cleanup pads and marks each frame with __gcc_personality_v0, and this
+// walks them. Nothing is executed on the non-failing path: the pads are
+// side tables, reached only from here.
+//
+// BEANS_FIBER_UNWIND is defined by the build driver for a program that can
+// actually contain a panic (it brews) on a target whose unwinder we use. A
+// build without it keeps F1's behaviour, and says so rather than pretending.
+
+int beans_fiber_unwinding(BeansFiber* fiber) {
+    return fiber && fiber->unwind_status != 0;
+}
+
+const char* beans_fiber_message(BeansFiber* fiber) {
+    return fiber ? fiber->message : "";
+}
+
+#if BEANS_FIBER_UNWIND
+#include <unwind.h>
+
+// The unwind is one-phase and forced, because there is no handler to search
+// for: every Beans frame carries cleanup only. The stop function is the
+// backstop, not the exit — the emitted pad on the fiber's entry frame calls
+// beans_fiber_unwind_finish and never resumes, so END_OF_STACK is reached
+// only when the frames above carry no cleanup at all (a fiber entered from
+// something the compiler did not emit). Ending the fiber there is exactly
+// F1's answer, which beats letting the unwinder abort the process.
+static _Unwind_Reason_Code fiber_unwind_stop(
+    int version, _Unwind_Action actions, _Unwind_Exception_Class cls,
+    struct _Unwind_Exception* exception, struct _Unwind_Context* context,
+    void* argument) {
+    (void)version;
+    (void)cls;
+    (void)exception;
+    (void)context;
+    (void)argument;
+    if (actions & _UA_END_OF_STACK) {
+        BeansFiber* fiber = tls_worker->current;
+        fiber_finish(fiber->unwind_status);
+    }
+    return _URC_NO_REASON;
+}
+
+void beans_fiber_begin_unwind(int status) {
+    BeansFiber* fiber = tls_worker->current;
+    fiber->unwind_status = status;
+    // Align the record inside the over-allocated scratch (see the member).
+    _Static_assert(sizeof(struct _Unwind_Exception) + 16 <=
+                       sizeof fiber->unwind_exc,
+                   "fiber unwind scratch is too small for an aligned _Unwind_Exception");
+    _Static_assert(_Alignof(struct _Unwind_Exception) <= 16,
+                   "_Unwind_Exception wants more than 16-byte alignment here");
+    uintptr_t raw = (uintptr_t)fiber->unwind_exc;
+    raw = (raw + 15u) & ~(uintptr_t)15u;
+    struct _Unwind_Exception* exception =
+        (struct _Unwind_Exception*)raw;
+    memset(exception, 0, sizeof *exception);
+    exception->exception_class = 0x4245414e53554e57ULL; // "BEANSUNW"
+    _Unwind_ForcedUnwind(exception, fiber_unwind_stop, NULL);
+    // The unwinder only returns here when it could not start; the fiber
+    // still has to end, so end it the way F1 did.
+    fiber_finish(status);
+    __builtin_unreachable();
+}
+#else
+void beans_fiber_begin_unwind(int status) {
+    BeansFiber* fiber = tls_worker->current;
+    fiber->unwind_status = status;
+    fiber_finish(status);
+    __builtin_unreachable();
+}
+#endif
+
+void beans_fiber_unwind_finish(void) {
+    fiber_finish(tls_worker->current->unwind_status);
+    __builtin_unreachable();
+}
+
 void beans_fiber_panic(const char* message) {
     BeansFiber* fiber = tls_worker->current;
     strncpy(fiber->message, message ? message : "",
             sizeof fiber->message - 1);
-    fiber_finish(BEANS_FIBER_PANICKED);
+    beans_fiber_begin_unwind(BEANS_FIBER_PANICKED);
     __builtin_unreachable();
 }
 
 void beans_fiber_exit_cancelled(void) {
+    // Cancel abandons the fiber's frames rather than unwinding them, on every
+    // build. The panic unwind above runs frames the compiler emitted cleanup
+    // pads for, but a cancel is delivered here by a runtime park primitive
+    // (Gate/channel/join), and in the tree interpreter that primitive is
+    // hosting a tree walk whose defers and deinits are tree-level data, not
+    // pads this unwinder could run. Unwinding a cancel natively while the
+    // interpreter abandons it would make the two backends disagree on the same
+    // program — the invariant this project holds above the feature. So both
+    // abandon, and the cancellation unwind (spec/CONCURRENCY.md) waits until
+    // the interpreter's park sites can hand a cancel back to the walker for a
+    // tree-level unwind, the same way a contained panic already is (#44).
     fiber_finish(BEANS_FIBER_CANCELLED);
     __builtin_unreachable();
 }

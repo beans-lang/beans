@@ -10,7 +10,7 @@ partial class LlvmTextEmitter {
         pattern: string) -> List<string> {
         var result: List<string> = []
         if pattern.starts_with("pattern_literal:\"") {
-            result.push(llvm_unquote(
+            result.push(string_literal_decode(
                 pattern.slice(16, pattern.len())))
             return move result
         }
@@ -42,7 +42,7 @@ partial class LlvmTextEmitter {
                 end += 1
             }
             if !closed { return [] }
-            result.push(llvm_unquote(
+            result.push(string_literal_decode(
                 inner.slice(literal_start, end)))
             if end == inner.len() {
                 cursor = end
@@ -120,35 +120,18 @@ partial class LlvmTextEmitter {
         List<LlvmInterpolationPiece> {
         var pieces: List<LlvmInterpolationPiece> = []
         let source: string = instruction.text
-        var start: int = 0
-        var end: int = source.len()
-        if source.len() >= 2 &&
-           source.starts_with("\"") &&
-           source.ends_with("\"") {
-            start = 1
-            end -= 1
-        }
+        let start: int = string_literal_body_start(source)
+        let end: int = string_literal_body_end(source)
         var literal: string = ""
         var operand: int = 0
         var index: int = start
         for index < end {
             let byte: int = source.byte_at(index)
             if byte == 92 && index + 1 < end {
-                let escaped: int =
-                    source.byte_at(index + 1)
-                if escaped == 110 {
-                    literal = "{literal}\n"
-                } else if escaped == 114 {
-                    literal = "{literal}\r"
-                } else if escaped == 116 {
-                    literal = "{literal}\t"
-                } else if escaped == 48 {
-                    literal = "{literal}\0"
-                } else {
-                    literal =
-                        "{literal}{source.slice(index + 1, index + 2)}"
-                }
-                index += 2
+                literal =
+                    "{literal}{string_escape_text(source, index, end)}"
+                index +=
+                    string_escape_length(source, index, end)
                 continue
             }
             if byte != 123 {
@@ -165,15 +148,23 @@ partial class LlvmTextEmitter {
             }
             var depth: int = 1
             var in_string: bool = false
-            var formatted: bool = false
-            var format_start: int = -1
             var cursor: int = index + 1
             for cursor < end && depth > 0 {
                 let current: int =
                     source.byte_at(cursor)
                 if current == 92 &&
                    cursor + 1 < end {
-                    cursor += 2
+                    cursor += string_escape_length(
+                        source, cursor, end)
+                    continue
+                }
+                // A raw literal nested in the slot is bytes: step over it
+                // whole so a brace in a route template or a hashed raw body
+                // does not nest the slot.
+                if !in_string &&
+                   raw_open_at(source, cursor, end) {
+                    cursor = raw_literal_end(
+                        source, cursor, end)
                     continue
                 }
                 if in_string {
@@ -186,12 +177,6 @@ partial class LlvmTextEmitter {
                     depth += 1
                 } else if current == 125 {
                     depth -= 1
-                } else if current == 58 &&
-                          depth == 1 {
-                    formatted = true
-                    if format_start < 0 {
-                        format_start = cursor + 1
-                    }
                 }
                 cursor += 1
             }
@@ -202,12 +187,19 @@ partial class LlvmTextEmitter {
                 index = end
                 continue
             }
-            var format: string = ""
-            if format_start >= 0 {
-                format =
-                    source.slice(
-                        format_start, cursor - 1)
-            }
+            // The slot ends at its own `}`, found by counting braces the
+            // way the checker's splitter does. Where the expression ends
+            // and the format spec begins is a second question, and it is
+            // asked of the one walk the checker and the tree interpreter
+            // also ask (src/interpolation.b) — a `:` inside `(` or `[` is
+            // part of the expression, and this loop is not counting those.
+            let segment: string =
+                source.slice(index + 1, cursor - 1)
+            let colon: int =
+                interpolation_format_colon(segment)
+            let formatted: bool = colon >= 0
+            let format: string =
+                interpolation_format_spec(segment)
             pieces.push(
                 new LlvmInterpolationPiece(
                     "", operand, formatted, format))
