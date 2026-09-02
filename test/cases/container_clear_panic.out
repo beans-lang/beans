@@ -1,0 +1,16 @@
+  deinit l5 panics
+list panic
+list len=1 first=after
+  deinit m5 panics
+map panic
+map len=1 has9=false has7=true
+  deinit o5 panics
+ordered panic
+ordered len=1 3:after;
+  deinit a5 panics
+arena panic
+arena len=1 handle=0
+  deinit old panics
+box panic
+box holds=new
+box holds=newer

@@ -165,6 +165,7 @@ test-semantics: $(BIN)
 	bash ./test/slice_fusion.sh
 	bash ./test/list_header_cache.sh
 	./test/maps.sh
+	bash ./test/map_inline.sh
 	./test/traits.sh
 	bash ./test/display_width.sh
 	bash ./test/derived_render.sh
@@ -293,6 +294,7 @@ test-core: $(BIN)
 	bash ./test/slice_fusion.sh
 	bash ./test/list_header_cache.sh
 	./test/maps.sh
+	bash ./test/map_inline.sh
 	./test/traits.sh
 	bash ./test/display_width.sh
 	bash ./test/derived_render.sh
