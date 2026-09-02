@@ -82,6 +82,39 @@ f32 struct keys len=4 get(+nan)=some(10) get(-nan)=some(2) get(-0.0)=some(3)
 [f32 nan, -0.0] array == [nan, +0.0]: false
 some(f32 +nan) == some(f32 +nan): true
 some(f32 +nan) == some(f32 -nan): false
+== Order and Eq over a type parameter are the interface ==
+less(+nan, 1.0): false
+less(1.0, +nan): true
+less(-nan, -inf): true
+less(-inf, -nan): false
+less(-0.0, +0.0): true
+less(+0.0, -0.0): false
+at_most(+nan, +nan): true
+greater(+nan, 1.0): true
+at_least(1.0, +nan): false
+alike(+nan, +nan): true
+alike(+nan, -nan): false
+differs(-0.0, +0.0): true
+f32 less(+nan, 1.0): false
+f32 alike(+nan, +nan): true
+f32 alike(-0.0, +0.0): false
+int less(1, 2): true
+int alike(3, 3): true
+string less(a, b): true
+decimal less(1.0, 2.0): true
+== an ordered container written in Beans keeps a NaN key ==
+numbers only: len=3 keys=[1, 2, 3]
+with +nan: len=4 keys=[1, 2, 3, +nan]
+has(+nan): true
+has(2.0) still: true
++nan twice: len=4 keys=[1, 2, 3, +nan]
+with -nan and both zeros: len=7 keys=[-nan, -0.0, +0.0, 1, 2, 3, +nan]
+has(-nan): true
+has(-0.0): true
+has(+0.0): true
+has(1.0) still: true
+has(3.0) still: true
+int container: len=2 keys=[1, 5]
 == decimal has neither NaN nor a negative zero, so it is untouched ==
 decimal keys len=1 get=some(2)
 decimal -0.0 == 0.0: true

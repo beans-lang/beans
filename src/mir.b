@@ -228,6 +228,7 @@ class MirLowerer {
                 op, result, type, text, node.resolved,
                 node.file, node.line, node.col)
         instruction.dispatch_slot = node.dispatch_slot
+        instruction.total_order = node.total_order
         for index: int in 0..node.type_argument_names.len() {
             instruction.type_argument_names.push(
                 node.type_argument_names[index])

@@ -873,6 +873,17 @@ partial class LlvmTextEmitter {
                 return "  {result} = {opcode} {type} {left}, {right}\n"
             }
         } else if llvm_type_is_float(operand_type) {
+            if instruction.total_order {
+                let total: string =
+                    self.emit_total_float_compare(
+                        instruction, type, left,
+                        right, result)
+                if total != "" {
+                    values[instruction.result] =
+                        result
+                    return total
+                }
+            }
             let compare: string =
                 self.float_compare_predicate(
                     instruction.text)
@@ -906,6 +917,59 @@ partial class LlvmTextEmitter {
             instruction,
             "LLVM emitter does not support binary '{instruction.text}' for {render_hir_type(operand_type)} yet")
         return ""
+    }
+
+    // A comparison the source made over a type parameter compares through the
+    // `Order`/`Eq` interface, and for a float that is IEEE 754 totalOrder and
+    // bit equality rather than the IEEE operators (spec/SYNTAX.md, "Number
+    // rules"): a container written in Beans keeps `K implements Order` sorted
+    // by exactly this, and under a partial order its descent reads "neither
+    // less nor greater" as "found it" and overwrites an unrelated key.
+    // Flipping the magnitude bits of a negative lays the float line out as
+    // signed integers in totalOrder — the same key rt_f64_total_key builds in
+    // runtime/beans_rt.c and tree_float_total_key builds for the interpreter.
+    fn emit_total_float_compare(
+        instruction: MirInstruction,
+        type: string,
+        left: string,
+        right: string,
+        result: string) -> string {
+        let narrow: bool = type == "float"
+        let word: string =
+            if narrow { "i32" } else { "i64" }
+        let magnitude: string =
+            if narrow {
+                "2147483647"
+            } else {
+                "9223372036854775807"
+            }
+        let shift: string =
+            if narrow { "31" } else { "63" }
+        let id: int = self.fresh()
+        let setup: string =
+            "  %total.lb{id} = bitcast {type} {left} to {word}\n  %total.rb{id} = bitcast {type} {right} to {word}\n"
+        if instruction.text == "==" ||
+           instruction.text == "!=" {
+            let same: string =
+                if instruction.text == "==" {
+                    "eq"
+                } else {
+                    "ne"
+                }
+            return "{setup}  {result} = icmp {same} {word} %total.lb{id}, %total.rb{id}\n"
+        }
+        var predicate: string = ""
+        if instruction.text == "<" {
+            predicate = "slt"
+        } else if instruction.text == "<=" {
+            predicate = "sle"
+        } else if instruction.text == ">" {
+            predicate = "sgt"
+        } else if instruction.text == ">=" {
+            predicate = "sge"
+        }
+        if predicate == "" { return "" }
+        return "{setup}  %total.ls{id} = ashr {word} %total.lb{id}, {shift}\n  %total.lm{id} = and {word} %total.ls{id}, {magnitude}\n  %total.lk{id} = xor {word} %total.lb{id}, %total.lm{id}\n  %total.rs{id} = ashr {word} %total.rb{id}, {shift}\n  %total.rm{id} = and {word} %total.rs{id}, {magnitude}\n  %total.rk{id} = xor {word} %total.rb{id}, %total.rm{id}\n  {result} = icmp {predicate} {word} %total.lk{id}, %total.rk{id}\n"
     }
 
     // The runtime's slot_eq kind for an element, with the comparator thunk

@@ -77,6 +77,56 @@ fn tags(values: List<float>) -> string {
     return "[{pieces.join(", ")}]"
 }
 
+// What `Order` and `Eq` mean when the thing being compared is a type
+// parameter: the interface's comparison, not the operators of whatever the
+// instantiation binds.
+fn less<T implements Order>(a: T, b: T) -> bool { return a < b }
+fn at_most<T implements Order>(a: T, b: T) -> bool { return a <= b }
+fn greater<T implements Order>(a: T, b: T) -> bool { return a > b }
+fn at_least<T implements Order>(a: T, b: T) -> bool { return a >= b }
+fn alike<T implements Eq>(a: T, b: T) -> bool { return a == b }
+fn differs<T implements Eq>(a: T, b: T) -> bool { return a != b }
+
+// The shape an ordered container has: a binary descent over `K implements
+// Order`, which under a partial order stops on "neither less nor greater"
+// and calls an unrelated key a match. This is `SortedMap` in miniature.
+class Sorted<K implements Order & Clone> {
+    keys: List<K> = []
+
+    fn init() {}
+
+    fn seek(key: K) -> int {
+        var low: int = 0
+        var high: int = self.keys.len()
+        for low < high {
+            let mid: int = (low + high) / 2
+            if self.keys[mid] < key {
+                low = mid + 1
+            } else {
+                high = mid
+            }
+        }
+        return low
+    }
+
+    fn has(key: K) -> bool {
+        let at: int = self.seek(key)
+        return at < self.keys.len() &&
+               !(key < self.keys[at])
+    }
+
+    fn insert(key: K) {
+        let at: int = self.seek(key)
+        if at < self.keys.len() &&
+           !(key < self.keys[at]) {
+            return
+        }
+        self.keys.insert(at, key)
+    }
+
+    fn len() -> int { return self.keys.len() }
+}
+
 fn show(label: string, value: bool) {
     io.println("{label}: {value}")
 }
@@ -334,6 +384,58 @@ fn main() {
          narrow_option == narrow_option_same)
     show("some(f32 +nan) == some(f32 -nan)",
          narrow_option == narrow_option_other)
+
+    io.println("== Order and Eq over a type parameter are the interface ==")
+    show("less(+nan, 1.0)", less(pos_nan, 1.0))
+    show("less(1.0, +nan)", less(1.0, pos_nan))
+    show("less(-nan, -inf)", less(neg_nan, neg_inf))
+    show("less(-inf, -nan)", less(neg_inf, neg_nan))
+    show("less(-0.0, +0.0)", less(neg_zero, pos_zero))
+    show("less(+0.0, -0.0)", less(pos_zero, neg_zero))
+    show("at_most(+nan, +nan)", at_most(pos_nan, pos_nan))
+    show("greater(+nan, 1.0)", greater(pos_nan, 1.0))
+    show("at_least(1.0, +nan)", at_least(1.0, pos_nan))
+    show("alike(+nan, +nan)", alike(pos_nan, pos_nan))
+    show("alike(+nan, -nan)", alike(pos_nan, neg_nan))
+    show("differs(-0.0, +0.0)", differs(neg_zero, pos_zero))
+    show("f32 less(+nan, 1.0)",
+         less(f32_pos_nan, 1.0 as f32))
+    show("f32 alike(+nan, +nan)",
+         alike(f32_pos_nan, f32_pos_nan))
+    show("f32 alike(-0.0, +0.0)",
+         alike(f32_neg_zero, f32_pos_zero))
+    show("int less(1, 2)", less(1, 2))
+    show("int alike(3, 3)", alike(3, 3))
+    show("string less(a, b)", less("a", "b"))
+    show("decimal less(1.0, 2.0)",
+         less(1.0 as decimal, 2.0 as decimal))
+
+    io.println("== an ordered container written in Beans keeps a NaN key ==")
+    var tree: Sorted<float> = new Sorted<float>()
+    tree.insert(2.0)
+    tree.insert(1.0)
+    tree.insert(3.0)
+    io.println("numbers only: len={tree.len()} keys={tags(tree.keys)}")
+    tree.insert(pos_nan)
+    io.println("with +nan: len={tree.len()} keys={tags(tree.keys)}")
+    show("has(+nan)", tree.has(pos_nan))
+    show("has(2.0) still", tree.has(2.0))
+    tree.insert(pos_nan)
+    io.println("+nan twice: len={tree.len()} keys={tags(tree.keys)}")
+    tree.insert(neg_nan)
+    tree.insert(neg_zero)
+    tree.insert(pos_zero)
+    io.println("with -nan and both zeros: len={tree.len()} keys={tags(tree.keys)}")
+    show("has(-nan)", tree.has(neg_nan))
+    show("has(-0.0)", tree.has(neg_zero))
+    show("has(+0.0)", tree.has(pos_zero))
+    show("has(1.0) still", tree.has(1.0))
+    show("has(3.0) still", tree.has(3.0))
+    var integers: Sorted<int> = new Sorted<int>()
+    integers.insert(5)
+    integers.insert(1)
+    integers.insert(5)
+    io.println("int container: len={integers.len()} keys={integers.keys}")
 
     io.println("== decimal has neither NaN nor a negative zero, so it is untouched ==")
     let d_zero: decimal = 0.0

@@ -1222,7 +1222,14 @@ Primitives (all unboxed in codegen):
   - `List.sort`, `max`, `min`, `contains`, `index_of`, and `List == List`;
   - `Map` and `OrderedMap` keys — lookup, replacement, removal and hashing;
   - the structural `==` of a struct, fixed array, `Option` or enum that holds
-    a float, and the same value used as a wide map key.
+    a float, and the same value used as a wide map key;
+  - `<`, `<=`, `>`, `>=`, `==` and `!=` applied to a value whose type is a
+    **type parameter**, which is how a container written in Beans compares
+    the keys it was handed. `fn less<T implements Order>(a: T, b: T) -> bool
+    { return a < b }` answers `true` for `less(1.0, nan)`, while a bare
+    `1.0 < nan` in the same program answers `false`: one is the interface,
+    the other is the operator. Only `float` and `f32` read differently
+    between the two — every other `Order` type has one order.
 
   A bare `float == float` or `float < float` stays IEEE in every one of those
   spots. Which NaN an operation produces is the platform's business, as it is

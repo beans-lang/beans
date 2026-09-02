@@ -97,6 +97,10 @@ class MirInstruction {
     // instead of the heap object, or -1. analyze_list_header_cache sets it
     // on every operation inside a loop it proved nobody else can reach.
     list_header_local: int
+    // Carried from the checked HIR: this comparison is the `Order`/`Eq`
+    // interface over a type parameter, not the operators of the type the
+    // instantiation binds. Only float and f32 read differently under it.
+    total_order: bool
 
     fn init(op: string, result: int, type: HirType,
             text: string, resolved: string,
@@ -133,6 +137,7 @@ class MirInstruction {
         self.type_argument_names = []
         self.type_arguments = []
         self.list_header_local = -1
+        self.total_order = false
     }
 }
 

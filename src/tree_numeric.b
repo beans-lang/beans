@@ -28,6 +28,25 @@ fn tree_float_total_less(left: float,
            tree_float_total_key(right)
 }
 
+// The relational operators as the `Order` interface means them. `<=` is the
+// negation of the reversed `<` and so on, which is exactly what comparing the
+// two integer keys with sle/sgt/sge gives natively — totalOrder is total, so
+// the four follow from one.
+fn tree_float_total_compare(operation: string,
+                            left: float,
+                            right: float) -> bool {
+    if operation == "<" {
+        return tree_float_total_less(left, right)
+    }
+    if operation == "<=" {
+        return !tree_float_total_less(right, left)
+    }
+    if operation == ">" {
+        return tree_float_total_less(right, left)
+    }
+    return !tree_float_total_less(left, right)
+}
+
 fn tree_float_total_equal(left: float,
                           right: float) -> bool {
     if left == right {

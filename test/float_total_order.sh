@@ -30,6 +30,10 @@ grep -q '^issue case \[1, 2, 3, +nan\]$' "$tmp/interp"
 grep -q '^whole line \[-nan, -inf, -1, -0.0, +0.0, 1, inf, +nan\]$' "$tmp/interp"
 grep -q '^after 2nd NaN insert: len=2 get=some(100)$' "$tmp/interp"
 grep -q '^1000 inserts -> len=1 get=some(999)$' "$tmp/interp"
+grep -q '^less(1.0, +nan): true$' "$tmp/interp"
+grep -q '^alike(+nan, +nan): true$' "$tmp/interp"
+grep -q '^with -nan and both zeros: len=7 keys=\[-nan, -0.0, +0.0, 1, 2, 3, +nan\]$' \
+    "$tmp/interp"
 
 echo "checking the runtime key path under AddressSanitizer"
 clang -O1 -g -pthread -fsanitize=address -Wno-override-module \

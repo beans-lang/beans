@@ -704,6 +704,7 @@ class ExpressionChecker {
         result.resolved = node.resolved
         result.binding_id = node.binding_id
         result.dispatch_slot = node.dispatch_slot
+        result.total_order = node.total_order
         for annotation: HirAnnotation in node.annotations {
             result.annotations.push(annotation)
         }
@@ -841,6 +842,25 @@ class ExpressionChecker {
             self.current_constraints {
             if constraint.name != type.name { continue }
             return self.trait_satisfied(type, "Order")
+        }
+        return false
+    }
+
+    // True when what is being compared is a type parameter rather than a
+    // concrete type. The comparison then means what the *interface* means,
+    // which for `float` and `f32` is not what their operators mean: `Order`
+    // is IEEE 754 totalOrder and `Eq` is bit equality, while `a < b` and
+    // `a == b` on a bare float stay IEEE (spec/SYNTAX.md, "Number rules").
+    // A container written in Beans — one that keeps `K implements Order`
+    // sorted, or hashes `K implements Eq` — compares its keys through here,
+    // and a partial order under it silently overwrites an unrelated key
+    // rather than merely mis-ordering.
+    fn parameter_comparison(type: HirType) -> bool {
+        for constraint: HirGeneric in
+            self.current_constraints {
+            if constraint.name == type.name {
+                return true
+            }
         }
         return false
     }
@@ -5797,6 +5817,12 @@ class ExpressionChecker {
         self.expect_type(node, type, expected)
         let result: HirNode =
             self.make_node(node, "binary", operation, type)
+        if (operation == "<" || operation == "<=" ||
+            operation == ">" || operation == ">=" ||
+            operation == "==" || operation == "!=") &&
+           self.parameter_comparison(left.type) {
+            result.total_order = true
+        }
         result.children.push(left)
         result.children.push(right)
         return result

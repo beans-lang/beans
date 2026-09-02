@@ -675,6 +675,10 @@ partial class LlvmTextEmitter {
         clone.capture_value_mask =
             instruction.capture_value_mask
         clone.dispatch_slot = instruction.dispatch_slot
+        // The flag says how the source asked for the comparison, which the
+        // substitution does not change: the instance still compares through
+        // the interface even though its operand type is concrete now.
+        clone.total_order = instruction.total_order
         for index: int in
             0..instruction.type_argument_names.len() {
             clone.type_argument_names.push(

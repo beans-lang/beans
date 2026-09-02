@@ -4416,8 +4416,16 @@ class TreeInterpreter {
             self.expression(node.children[1], frame)
         if right.kind == "propagate" { return right }
         if node.value == "==" || node.value == "!=" {
+            // A comparison over a type parameter is the `Eq` interface, not
+            // the operators of whatever the instantiation bound: a float
+            // compares by its bits there, the same as it does inside a
+            // container (spec/SYNTAX.md, "Number rules").
             let equal: bool =
-                tree_value_equal(left, right)
+                if node.total_order {
+                    tree_value_total_equal(left, right)
+                } else {
+                    tree_value_equal(left, right)
+                }
             return TreeValue.boolean(
                 if node.value == "==" {
                     equal
@@ -4482,21 +4490,32 @@ class TreeInterpreter {
                 return TreeValue.boolean(
                     left.float_data != right.float_data)
             }
-            if node.value == "<" {
-                return TreeValue.boolean(
-                    left.float_data < right.float_data)
-            }
-            if node.value == "<=" {
-                return TreeValue.boolean(
-                    left.float_data <= right.float_data)
-            }
-            if node.value == ">" {
-                return TreeValue.boolean(
-                    left.float_data > right.float_data)
-            }
-            if node.value == ">=" {
-                return TreeValue.boolean(
-                    left.float_data >= right.float_data)
+            if node.value == "<" ||
+               node.value == "<=" ||
+               node.value == ">" ||
+               node.value == ">=" {
+                // The one place a float's relational operator is not IEEE:
+                // through a type parameter it is the `Order` interface, and
+                // `Order` on a float is totalOrder.
+                if node.total_order {
+                    return TreeValue.boolean(
+                        tree_float_total_compare(
+                            node.value,
+                            left.float_data,
+                            right.float_data))
+                }
+                let a: float = left.float_data
+                let b: float = right.float_data
+                if node.value == "<" {
+                    return TreeValue.boolean(a < b)
+                }
+                if node.value == "<=" {
+                    return TreeValue.boolean(a <= b)
+                }
+                if node.value == ">" {
+                    return TreeValue.boolean(a > b)
+                }
+                return TreeValue.boolean(a >= b)
             }
         }
         if left.kind == "decimal" &&
