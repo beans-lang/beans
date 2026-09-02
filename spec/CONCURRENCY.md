@@ -485,6 +485,12 @@ Landed since:
    published before the first element's release, so a `deinit` that
    reads the container sees it empty, one that adds to it keeps what it
    added, and the container is usable the moment the panic is contained.
+   For a map that covers **both halves of an entry**. Keys and values are
+   detached together, so no accessor can answer out of a half the clear
+   has not reached — `len`, `is_empty` and `contains_key` cannot report
+   entries that `keys` says are gone, or the reverse — and a class key's
+   `deinit` sees exactly what a class value's does. The releases then run
+   entry by entry from the back, a value before its own key.
 
 Deliberately not yet here, in dependency order:
 

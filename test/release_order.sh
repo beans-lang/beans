@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# The order a dying object releases its fields (beans #82).
+# The order a dying object releases its fields, and the order a container
+# publishes itself before releasing what it held (beans #82, #83).
 #
+# #82:
 # The interpreter had a canonical order written down -- the object's own class
 # first, fields in reverse declaration order, then each base up the chain --
 # and reached it only for objects whose field types spelled a class name at the
@@ -17,12 +19,32 @@
 # Field defaults evaluate in that same order, which is what the native backend
 # already did.
 #
+# #83: `clear()` on a Map or an OrderedMap stored a fresh key list, releasing
+# every class key, while the value map -- the field `len`, `is_empty` and
+# `contains_key` all read -- was still full. spec/CONCURRENCY.md says the
+# opposite and the native backend does the opposite: the storage is detached
+# and an empty container published before the first element's release. Both
+# halves of an entry are set aside first now, so no accessor can answer out of
+# the half the clear has not reached, and the second store can no longer wipe
+# what a deinit put back.
+#
 # What this pins:
 #   1. every field shape releases in the canonical order, on both backends,
 #      against one golden file (test/cases/release_order.b);
 #   2. the cascade stays iterative -- a 200k-link generic chain is dropped at
 #      once and must not smash the host stack on either backend
-#      (test/cases/release_order_deep.b).
+#      (test/cases/release_order_deep.b);
+#   3. a container is empty by every accessor before the first element release
+#      runs, for class keys as well as class values, over clear, remove,
+#      reassignment and nested containers, at n = 1, 2 and 6
+#      (test/cases/container_settle.b).
+#
+# NOT pinned here, and still a live split: a Map dropped or reassigned while it
+# holds class keys AND class values releases all values and then all keys in
+# the interpreter, where the native runtime releases each entry's value before
+# its own key. The tree map keeps keys and values in two separate fields, and
+# the host releases one field after the other; interleaving them needs the two
+# halves stored as one entry. Reported, not fixed.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -53,4 +75,13 @@ printf 'alive -1\n' >"$tmp/deep.expected"
 diff -u "$tmp/deep.expected" "$tmp/deep.interp"
 diff -u "$tmp/deep.expected" "$tmp/deep.native.out"
 
-echo "ok field release order and iterative cascade"
+# 3. A container settles before it releases what it owned -- keys included.
+echo "checking a container is empty before the first element release"
+"$beansc" run test/cases/container_settle.b >"$tmp/settle.interp"
+"$beansc" build test/cases/container_settle.b -o "$tmp/settle.native" \
+    >"$tmp/settle.build" 2>&1
+"$tmp/settle.native" >"$tmp/settle.native.out"
+diff -u test/cases/container_settle.out "$tmp/settle.interp"
+diff -u test/cases/container_settle.out "$tmp/settle.native.out"
+
+echo "ok field release order, iterative cascade, container settle"

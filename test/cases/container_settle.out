@@ -1,0 +1,151 @@
+[one] clear plain
+one-p0: plain=0/0 ordered=1/1 valued=1 both=1/1 items=1 slab=1
+[one] clear ordered
+one-o0: plain=0/0 ordered=0/0 valued=1 both=1/1 items=1 slab=1
+[one] clear valued
+one-v0: plain=0/0 ordered=0/0 valued=0 both=1/1 items=1 slab=1
+[one] clear both
+one-bv0: plain=0/0 ordered=0/0 valued=0 both=0/0 items=1 slab=1
+one-bk0: plain=0/0 ordered=0/0 valued=0 both=0/0 items=1 slab=1
+[one] clear items
+one-l0: plain=0/0 ordered=0/0 valued=0 both=0/0 items=0 slab=1
+[one] clear slab
+one-a0: plain=0/0 ordered=0/0 valued=0 both=0/0 items=0 slab=0
+[one] cleared
+[two] clear plain
+two-p1: plain=0/0 ordered=2/2 valued=2 both=2/2 items=2 slab=2
+two-p0: plain=0/0 ordered=2/2 valued=2 both=2/2 items=2 slab=2
+[two] clear ordered
+two-o1: plain=0/0 ordered=0/0 valued=2 both=2/2 items=2 slab=2
+two-o0: plain=0/0 ordered=0/0 valued=2 both=2/2 items=2 slab=2
+[two] clear valued
+two-v1: plain=0/0 ordered=0/0 valued=0 both=2/2 items=2 slab=2
+two-v0: plain=0/0 ordered=0/0 valued=0 both=2/2 items=2 slab=2
+[two] clear both
+two-bv1: plain=0/0 ordered=0/0 valued=0 both=0/0 items=2 slab=2
+two-bk1: plain=0/0 ordered=0/0 valued=0 both=0/0 items=2 slab=2
+two-bv0: plain=0/0 ordered=0/0 valued=0 both=0/0 items=2 slab=2
+two-bk0: plain=0/0 ordered=0/0 valued=0 both=0/0 items=2 slab=2
+[two] clear items
+two-l1: plain=0/0 ordered=0/0 valued=0 both=0/0 items=0 slab=2
+two-l0: plain=0/0 ordered=0/0 valued=0 both=0/0 items=0 slab=2
+[two] clear slab
+two-a1: plain=0/0 ordered=0/0 valued=0 both=0/0 items=0 slab=0
+two-a0: plain=0/0 ordered=0/0 valued=0 both=0/0 items=0 slab=0
+[two] cleared
+[many] clear plain
+many-p5: plain=0/0 ordered=6/6 valued=6 both=6/6 items=6 slab=6
+many-p4: plain=0/0 ordered=6/6 valued=6 both=6/6 items=6 slab=6
+many-p3: plain=0/0 ordered=6/6 valued=6 both=6/6 items=6 slab=6
+many-p2: plain=0/0 ordered=6/6 valued=6 both=6/6 items=6 slab=6
+many-p1: plain=0/0 ordered=6/6 valued=6 both=6/6 items=6 slab=6
+many-p0: plain=0/0 ordered=6/6 valued=6 both=6/6 items=6 slab=6
+[many] clear ordered
+many-o5: plain=0/0 ordered=0/0 valued=6 both=6/6 items=6 slab=6
+many-o4: plain=0/0 ordered=0/0 valued=6 both=6/6 items=6 slab=6
+many-o3: plain=0/0 ordered=0/0 valued=6 both=6/6 items=6 slab=6
+many-o2: plain=0/0 ordered=0/0 valued=6 both=6/6 items=6 slab=6
+many-o1: plain=0/0 ordered=0/0 valued=6 both=6/6 items=6 slab=6
+many-o0: plain=0/0 ordered=0/0 valued=6 both=6/6 items=6 slab=6
+[many] clear valued
+many-v5: plain=0/0 ordered=0/0 valued=0 both=6/6 items=6 slab=6
+many-v4: plain=0/0 ordered=0/0 valued=0 both=6/6 items=6 slab=6
+many-v3: plain=0/0 ordered=0/0 valued=0 both=6/6 items=6 slab=6
+many-v2: plain=0/0 ordered=0/0 valued=0 both=6/6 items=6 slab=6
+many-v1: plain=0/0 ordered=0/0 valued=0 both=6/6 items=6 slab=6
+many-v0: plain=0/0 ordered=0/0 valued=0 both=6/6 items=6 slab=6
+[many] clear both
+many-bv5: plain=0/0 ordered=0/0 valued=0 both=0/0 items=6 slab=6
+many-bk5: plain=0/0 ordered=0/0 valued=0 both=0/0 items=6 slab=6
+many-bv4: plain=0/0 ordered=0/0 valued=0 both=0/0 items=6 slab=6
+many-bk4: plain=0/0 ordered=0/0 valued=0 both=0/0 items=6 slab=6
+many-bv3: plain=0/0 ordered=0/0 valued=0 both=0/0 items=6 slab=6
+many-bk3: plain=0/0 ordered=0/0 valued=0 both=0/0 items=6 slab=6
+many-bv2: plain=0/0 ordered=0/0 valued=0 both=0/0 items=6 slab=6
+many-bk2: plain=0/0 ordered=0/0 valued=0 both=0/0 items=6 slab=6
+many-bv1: plain=0/0 ordered=0/0 valued=0 both=0/0 items=6 slab=6
+many-bk1: plain=0/0 ordered=0/0 valued=0 both=0/0 items=6 slab=6
+many-bv0: plain=0/0 ordered=0/0 valued=0 both=0/0 items=6 slab=6
+many-bk0: plain=0/0 ordered=0/0 valued=0 both=0/0 items=6 slab=6
+[many] clear items
+many-l5: plain=0/0 ordered=0/0 valued=0 both=0/0 items=0 slab=6
+many-l4: plain=0/0 ordered=0/0 valued=0 both=0/0 items=0 slab=6
+many-l3: plain=0/0 ordered=0/0 valued=0 both=0/0 items=0 slab=6
+many-l2: plain=0/0 ordered=0/0 valued=0 both=0/0 items=0 slab=6
+many-l1: plain=0/0 ordered=0/0 valued=0 both=0/0 items=0 slab=6
+many-l0: plain=0/0 ordered=0/0 valued=0 both=0/0 items=0 slab=6
+[many] clear slab
+many-a5: plain=0/0 ordered=0/0 valued=0 both=0/0 items=0 slab=0
+many-a4: plain=0/0 ordered=0/0 valued=0 both=0/0 items=0 slab=0
+many-a3: plain=0/0 ordered=0/0 valued=0 both=0/0 items=0 slab=0
+many-a2: plain=0/0 ordered=0/0 valued=0 both=0/0 items=0 slab=0
+many-a1: plain=0/0 ordered=0/0 valued=0 both=0/0 items=0 slab=0
+many-a0: plain=0/0 ordered=0/0 valued=0 both=0/0 items=0 slab=0
+[many] cleared
+[rm] removing valued 1
+rm-v1: plain=3/3 ordered=3/3 valued=2 both=3/3 items=3 slab=3
+[rm] removed, valued=2
+[rm] clear plain
+rm-p2: plain=0/0 ordered=3/3 valued=2 both=3/3 items=3 slab=3
+rm-p1: plain=0/0 ordered=3/3 valued=2 both=3/3 items=3 slab=3
+rm-p0: plain=0/0 ordered=3/3 valued=2 both=3/3 items=3 slab=3
+[rm] clear ordered
+rm-o2: plain=0/0 ordered=0/0 valued=2 both=3/3 items=3 slab=3
+rm-o1: plain=0/0 ordered=0/0 valued=2 both=3/3 items=3 slab=3
+rm-o0: plain=0/0 ordered=0/0 valued=2 both=3/3 items=3 slab=3
+[rm] clear valued
+rm-v2: plain=0/0 ordered=0/0 valued=0 both=3/3 items=3 slab=3
+rm-v0: plain=0/0 ordered=0/0 valued=0 both=3/3 items=3 slab=3
+[rm] clear both
+rm-bv2: plain=0/0 ordered=0/0 valued=0 both=0/0 items=3 slab=3
+rm-bk2: plain=0/0 ordered=0/0 valued=0 both=0/0 items=3 slab=3
+rm-bv1: plain=0/0 ordered=0/0 valued=0 both=0/0 items=3 slab=3
+rm-bk1: plain=0/0 ordered=0/0 valued=0 both=0/0 items=3 slab=3
+rm-bv0: plain=0/0 ordered=0/0 valued=0 both=0/0 items=3 slab=3
+rm-bk0: plain=0/0 ordered=0/0 valued=0 both=0/0 items=3 slab=3
+[rm] clear items
+rm-l2: plain=0/0 ordered=0/0 valued=0 both=0/0 items=0 slab=3
+rm-l1: plain=0/0 ordered=0/0 valued=0 both=0/0 items=0 slab=3
+rm-l0: plain=0/0 ordered=0/0 valued=0 both=0/0 items=0 slab=3
+[rm] clear slab
+rm-a2: plain=0/0 ordered=0/0 valued=0 both=0/0 items=0 slab=0
+rm-a1: plain=0/0 ordered=0/0 valued=0 both=0/0 items=0 slab=0
+rm-a0: plain=0/0 ordered=0/0 valued=0 both=0/0 items=0 slab=0
+[rm] cleared
+[re] reassigning plain
+re-p1: plain=0/0 ordered=2/2 valued=2 both=2/2 items=2 slab=2
+re-p0: plain=0/0 ordered=2/2 valued=2 both=2/2 items=2 slab=2
+[re] reassigned, plain=0
+[re] clear plain
+[re] clear ordered
+re-o1: plain=0/0 ordered=0/0 valued=2 both=2/2 items=2 slab=2
+re-o0: plain=0/0 ordered=0/0 valued=2 both=2/2 items=2 slab=2
+[re] clear valued
+re-v1: plain=0/0 ordered=0/0 valued=0 both=2/2 items=2 slab=2
+re-v0: plain=0/0 ordered=0/0 valued=0 both=2/2 items=2 slab=2
+[re] clear both
+re-bv1: plain=0/0 ordered=0/0 valued=0 both=0/0 items=2 slab=2
+re-bk1: plain=0/0 ordered=0/0 valued=0 both=0/0 items=2 slab=2
+re-bv0: plain=0/0 ordered=0/0 valued=0 both=0/0 items=2 slab=2
+re-bk0: plain=0/0 ordered=0/0 valued=0 both=0/0 items=2 slab=2
+[re] clear items
+re-l1: plain=0/0 ordered=0/0 valued=0 both=0/0 items=0 slab=2
+re-l0: plain=0/0 ordered=0/0 valued=0 both=0/0 items=0 slab=2
+[re] clear slab
+re-a1: plain=0/0 ordered=0/0 valued=0 both=0/0 items=0 slab=0
+re-a0: plain=0/0 ordered=0/0 valued=0 both=0/0 items=0 slab=0
+[re] cleared
+[nested] clearing outer, nested=2
+nest-1b: plain=0/0 ordered=0/0 valued=0 both=0/0 items=0 slab=0
+nest-1a: plain=0/0 ordered=0/0 valued=0 both=0/0 items=0 slab=0
+nest-0b: plain=0/0 ordered=0/0 valued=0 both=0/0 items=0 slab=0
+nest-0a: plain=0/0 ordered=0/0 valued=0 both=0/0 items=0 slab=0
+[nested] cleared, nested=0
+[refill] clearing, plain=2
+refill-a2: plain=0/0 ordered=0/0 valued=0 both=0/0 items=0 slab=0
+refill-a1: plain=0/0 ordered=0/0 valued=0 both=0/0 items=0 slab=0
+[refill] cleared, plain=1
+[refill] reusable, plain=2
+refill-b1: plain=0/0 ordered=0/0 valued=0 both=0/0 items=0 slab=0
+planted: plain=0/0 ordered=0/0 valued=0 both=0/0 items=0 slab=0
+[refill] done, plain=0

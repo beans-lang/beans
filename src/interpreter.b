@@ -9068,8 +9068,43 @@ class TreeInterpreter {
             if receiver.map_values.len() != 0 {
                 receiver.map_version += 1
             }
+            // spec/CONCURRENCY.md: the storage is detached and an empty
+            // container published before the first element's release, so a
+            // deinit that reads the container sees it empty and one that adds
+            // to it keeps what it added. A tree map keeps an entry in two
+            // fields, and storing a fresh one of either releases that half
+            // against a container the other half still fills: publishing the
+            // key list first ran every class key's deinit while len(),
+            // is_empty() and contains_key() -- all of which read map_values --
+            // still answered the old count, and the second store then wiped
+            // whatever those deinits had put back. Publishing the value map
+            // first would only move the hole to keys(). So both halves are
+            // taken aside before either store runs.
+            var dead_keys: List<TreeValue> = []
+            var dead_values: List<TreeValue> = []
+            for key: TreeValue in receiver.map_keys {
+                dead_keys.push(key)
+                match receiver.map_values.get(
+                          tree_value_key(key)) {
+                    some(value) => {
+                        dead_values.push(value)
+                    }
+                    none => {
+                        dead_values.push(
+                            TreeValue.unit())
+                    }
+                }
+            }
             receiver.map_keys = []
             receiver.map_values = {}
+            // Released the way beans_map_clear releases a native map: entries
+            // back to front, a value before its own key.
+            var dying: int = dead_keys.len()
+            for dying > 0 {
+                dying -= 1
+                dead_values.pop()
+                dead_keys.pop()
+            }
             return TreeValue.unit()
         }
         if receiver.kind == "map" &&
