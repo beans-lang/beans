@@ -17,6 +17,14 @@ struct Point {
     y: int
 }
 
+// The f32 twin of Point: a narrow float inside an aggregate takes a different
+// route through both backends (a 32-bit compare, and a 32-bit slot in a wide
+// map key) than a bare f32 does.
+struct Sample {
+    a: f32
+    b: int
+}
+
 enum Reading {
     missing
     level(value: float)
@@ -298,6 +306,34 @@ fn main() {
     io.println("f32 sort {tags(narrow_tags)}")
     show("f32 contains(-nan)", narrow_sort.contains(f32_neg_nan))
     show("f32 -0.0 == 0.0 operator", f32_neg_zero == f32_pos_zero)
+    show("f32 nan == nan operator", f32_pos_nan == f32_pos_nan)
+    let sample_nan: Sample = Sample { a: f32_pos_nan, b: 1 }
+    let sample_same: Sample = Sample { a: f32_pos_nan, b: 1 }
+    let sample_other: Sample = Sample { a: f32_neg_nan, b: 1 }
+    let sample_minus: Sample = Sample { a: f32_neg_zero, b: 1 }
+    let sample_plus: Sample = Sample { a: f32_pos_zero, b: 1 }
+    show("Sample(+nan) == Sample(+nan)", sample_nan == sample_same)
+    show("Sample(+nan) == Sample(-nan)", sample_nan == sample_other)
+    show("Sample(-0.0) == Sample(+0.0)", sample_minus == sample_plus)
+    var samples: Map<Sample, int> = {}
+    samples[sample_nan] = 1
+    samples[sample_other] = 2
+    samples[sample_minus] = 3
+    samples[sample_plus] = 4
+    samples[sample_nan] = 10
+    io.println("f32 struct keys len={samples.len()} get(+nan)={samples.get(sample_same)} get(-nan)={samples.get(sample_other)} get(-0.0)={samples.get(sample_minus)}")
+    let narrow_pair: [f32; 2] = [f32_pos_nan, f32_neg_zero]
+    let narrow_pair_same: [f32; 2] = [f32_pos_nan, f32_neg_zero]
+    let narrow_pair_zero: [f32; 2] = [f32_pos_nan, f32_pos_zero]
+    show("[f32 nan, -0.0] array == itself", narrow_pair == narrow_pair_same)
+    show("[f32 nan, -0.0] array == [nan, +0.0]", narrow_pair == narrow_pair_zero)
+    let narrow_option: Option<f32> = some(f32_pos_nan)
+    let narrow_option_same: Option<f32> = some(f32_pos_nan)
+    let narrow_option_other: Option<f32> = some(f32_neg_nan)
+    show("some(f32 +nan) == some(f32 +nan)",
+         narrow_option == narrow_option_same)
+    show("some(f32 +nan) == some(f32 -nan)",
+         narrow_option == narrow_option_other)
 
     io.println("== decimal has neither NaN nor a negative zero, so it is untouched ==")
     let d_zero: decimal = 0.0

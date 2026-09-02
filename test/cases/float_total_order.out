@@ -73,6 +73,15 @@ f32 keys len=4 get(+nan)=some(10) get(-nan)=some(2) get(-0.0)=some(4)
 f32 sort [-nan, -1, -0.0, +0.0, 1, +nan]
 f32 contains(-nan): true
 f32 -0.0 == 0.0 operator: true
+f32 nan == nan operator: false
+Sample(+nan) == Sample(+nan): true
+Sample(+nan) == Sample(-nan): false
+Sample(-0.0) == Sample(+0.0): false
+f32 struct keys len=4 get(+nan)=some(10) get(-nan)=some(2) get(-0.0)=some(3)
+[f32 nan, -0.0] array == itself: true
+[f32 nan, -0.0] array == [nan, +0.0]: false
+some(f32 +nan) == some(f32 +nan): true
+some(f32 +nan) == some(f32 -nan): false
 == decimal has neither NaN nor a negative zero, so it is untouched ==
 decimal keys len=1 get=some(2)
 decimal -0.0 == 0.0: true
