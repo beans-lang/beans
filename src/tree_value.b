@@ -546,9 +546,13 @@ fn tree_value_equal(left: TreeValue,
     }
     if left.kind == "record" {
         if left.text != right.text ||
-           left.fields.written() != right.fields.written() {
+           left.fields.entries.len() !=
+               right.fields.entries.len() {
             return false
         }
+        // A reserved slot on one side and a written one on the other are as
+        // different as two written values that disagree; two reserved slots
+        // are the same absence.
         for name: string in left.fields.entries.keys() {
             match left.fields.value(name) {
                 some(mine) => {
@@ -561,7 +565,11 @@ fn tree_value_equal(left: TreeValue,
                         none => { return false }
                     }
                 }
-                none => {}
+                none => {
+                    if right.fields.value(name).is_some() {
+                        return false
+                    }
+                }
             }
         }
         return true
