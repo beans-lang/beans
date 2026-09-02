@@ -1670,8 +1670,8 @@ can still read them. Deterministic, like C++/Swift: no GC pause, no "sometime la
   directly, one holding `Option<C>`, `Result<C, E>`, `List<C>`, `Map<K, C>`, a struct with a
   class inside, or a generic parameter bound to a class all release at their declared
   position. A struct value releases its own fields by the same reverse-declaration rule,
-  wherever it is stored and whatever order a literal named them in. The release cascade is iterative, so a chain a million links long is dropped
-  without recursion.
+  wherever it is stored and whatever order a literal named them in. The release cascade is
+  iterative, so a chain a million links long is dropped without recursion.
 - `self` must not escape a `deinit`. The object is being destroyed; storing `self` anywhere
   is use-after-free by definition.
 - A panic inside `deinit` is fatal (same rule as defer).

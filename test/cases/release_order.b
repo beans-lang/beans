@@ -125,6 +125,27 @@ class ChainDerived extends ChainBase {
     }
 }
 
+// An enum payload and a Box are two more composite shapes whose declared type
+// never spells a class name, and each reaches the emitter by its own path.
+enum Carried {
+    empty
+    one(item: Loud)
+}
+
+class Held {
+    one: Carried = Carried.empty
+    two: Box<Loud>
+    three: Option<Loud> = none
+    four: Carried = Carried.empty
+
+    pub fn init(a: Loud, b: Loud, c: Loud, d: Loud) {
+        self.four = Carried.one(d)
+        self.three = some(c)
+        self.two = new Box<Loud>(b)
+        self.one = Carried.one(a)
+    }
+}
+
 // One field: n=1 proves nothing on its own, but a rule that only works from
 // two fields up is worth catching.
 class Single {
@@ -203,6 +224,13 @@ fn inherited() {
     io.println("built {value.d1.is_some()}")
 }
 
+fn held() {
+    io.println("-- enum payload and Box fields --")
+    var value: Held =
+        new Held(new Loud(71), new Loud(72), new Loud(73), new Loud(74))
+    io.println("built {value.three.is_some()}")
+}
+
 fn single() {
     io.println("-- one field --")
     var value: Single = new Single(new Loud(41))
@@ -235,6 +263,7 @@ fn main() {
     wrapped()
     named()
     inherited()
+    held()
     single()
     late()
     record_literal()

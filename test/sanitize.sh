@@ -68,6 +68,13 @@ run_asan examples/box.b box
 run_asan examples/arena.b arena
 run_asan examples/containers.b containers 3
 run_asan test/cases/map_models.b map_models
+# #82/#83: the order an object releases its fields, and a container that
+# publishes itself empty before it releases what it held -- class keys as well
+# as class values. Both walk release paths that only run when something with a
+# deinit dies, and container_settle drops keys out of a map while a zeroing
+# weak back-reference into the owner is live.
+run_asan test/cases/release_order.b release_order
+run_asan test/cases/container_settle.b container_settle
 # A `for` loop over a List reads the list's own buffer, one element at a time,
 # and refuses a structural change to it. That is where a use-after-free would
 # live: the allowed cases push past the list's first reallocation while a loop

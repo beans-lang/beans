@@ -28,6 +28,12 @@ drop 34
 drop 33
 drop 32
 drop 31
+-- enum payload and Box fields --
+built true
+drop 74
+drop 73
+drop 72
+drop 71
 -- one field --
 built true
 drop 41
