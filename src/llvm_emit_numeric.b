@@ -348,8 +348,20 @@ partial class LlvmTextEmitter {
                                  type: HirType) -> string {
         if operator == "==" { return "eq" }
         if operator == "!=" { return "ne" }
+        // A bool is an i1, where the signed reading of `true` is -1, so a
+        // signed predicate answered `false < true` with false. `Order` on a
+        // bool is false before true (the interpreter's tree_value_less says
+        // so, and List<bool>.sort and max/min have always agreed), and only
+        // a generic body can spell the comparison — a bare `false < true` is
+        // refused as an unordered operand.
         let prefix: string =
-            if llvm_type_is_unsigned(type) { "u" } else { "s" }
+            if llvm_type_is_unsigned(type) ||
+               canonical_hir_name(type.name) ==
+                   "bool" {
+                "u"
+            } else {
+                "s"
+            }
         if operator == "<" { return "{prefix}lt" }
         if operator == "<=" { return "{prefix}le" }
         if operator == ">" { return "{prefix}gt" }

@@ -2131,6 +2131,10 @@ totalOrder and bit equality, not the IEEE operators (see *Number rules*).
 User interfaces, including imported interfaces, may also be bounds. Generic
 code may call the instance methods promised by those interfaces.
 
+`Order` on a `bool` is `false` before `true`, which `sort`, `max` and `min`
+have always answered; a generic body is the only place the comparison can be
+written, since a bare `a < b` on two bools is refused as an unordered operand.
+
 `Map<K, V>` and `OrderedMap<K, V>` require `K implements Eq & Hash`. Collection
 `clone()` is available only when every stored type is `Clone`; ordering and
 equality methods likewise require `Order` or `Eq`. Unknown interfaces are errors,

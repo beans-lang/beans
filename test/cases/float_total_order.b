@@ -409,6 +409,7 @@ fn main() {
     show("string less(a, b)", less("a", "b"))
     show("decimal less(1.0, 2.0)",
          less(1.0 as decimal, 2.0 as decimal))
+    show("bool less(false, true)", less(false, true))
 
     io.println("== an ordered container written in Beans keeps a NaN key ==")
     var tree: Sorted<float> = new Sorted<float>()

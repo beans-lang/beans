@@ -32,6 +32,7 @@ grep -q '^after 2nd NaN insert: len=2 get=some(100)$' "$tmp/interp"
 grep -q '^1000 inserts -> len=1 get=some(999)$' "$tmp/interp"
 grep -q '^less(1.0, +nan): true$' "$tmp/interp"
 grep -q '^alike(+nan, +nan): true$' "$tmp/interp"
+grep -q '^bool less(false, true): true$' "$tmp/interp"
 grep -q '^with -nan and both zeros: len=7 keys=\[-nan, -0.0, +0.0, 1, 2, 3, +nan\]$' \
     "$tmp/interp"
 

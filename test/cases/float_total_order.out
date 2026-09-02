@@ -102,6 +102,7 @@ int less(1, 2): true
 int alike(3, 3): true
 string less(a, b): true
 decimal less(1.0, 2.0): true
+bool less(false, true): true
 == an ordered container written in Beans keeps a NaN key ==
 numbers only: len=3 keys=[1, 2, 3]
 with +nan: len=4 keys=[1, 2, 3, +nan]

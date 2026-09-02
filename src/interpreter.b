@@ -4590,6 +4590,25 @@ class TreeInterpreter {
                 return TreeValue.boolean(
                     left.bool_data != right.bool_data)
             }
+            // `Order` on a bool is false before true — what
+            // tree_value_less has always answered for sort, max and min.
+            // Only a generic body reaches these: a bare `a < b` on two
+            // bools is refused as an unordered operand. Without them the
+            // tree panicked where the native backend answered.
+            let low: bool = left.bool_data
+            let high: bool = right.bool_data
+            if node.value == "<" {
+                return TreeValue.boolean(!low && high)
+            }
+            if node.value == "<=" {
+                return TreeValue.boolean(!low || high)
+            }
+            if node.value == ">" {
+                return TreeValue.boolean(low && !high)
+            }
+            if node.value == ">=" {
+                return TreeValue.boolean(low || !high)
+            }
         }
         if left.kind == "object" &&
            right.kind == "object" &&
