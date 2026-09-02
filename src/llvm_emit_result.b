@@ -819,7 +819,10 @@ partial class LlvmTextEmitter {
                         kind_consumed, stored)
             } else if
                 render_hir_type(operand_type) !=
-                    render_hir_type(payload) {
+                    render_hir_type(payload) &&
+                !(!is_ok &&
+                  self.error_payload_fits(
+                      operand_type, payload)) {
                 self.fail(
                     instruction,
                     "LLVM emitter does not support {if is_ok { "ok" } else { "err" }} payload '{render_hir_type(operand_type)}' yet")
@@ -918,8 +921,8 @@ partial class LlvmTextEmitter {
             stored = "%result.error{id}"
             output =
                 "{output}{self.emit_make_error(instruction, operand, consumed, kind, kind_consumed, stored)}"
-        } else if render_hir_type(operand_type) ==
-                      render_hir_type(error_type) &&
+        } else if self.error_payload_fits(
+                      operand_type, error_type) &&
                   self.type_is_reference(error_type) {
             output =
                 "  {result} = call ptr @beans_alloc(i64 16, i64 {self.result_ref_meta()})\n  store i64 1, ptr {result}\n"
@@ -935,8 +938,8 @@ partial class LlvmTextEmitter {
                 result_type, error_type,
                 operand, false, result,
                 "result.err{id}")
-        } else if render_hir_type(operand_type) ==
-                      render_hir_type(error_type) &&
+        } else if self.error_payload_fits(
+                      operand_type, error_type) &&
                   self.slot_compatible(error_type) {
             if !consumed &&
                self.type_is_reference(error_type) {
@@ -959,6 +962,24 @@ partial class LlvmTextEmitter {
             self.to_slot(
                 error_type, stored, "err{id}")
         return "{output}{converted.setup}  %result.err.slot{id} = getelementptr i8, ptr {result}, i64 8\n  store i64 {converted.value}, ptr %result.err.slot{id}\n"
+    }
+
+    // An error value stored into a Result's error slot. The checker settles
+    // whether the value belongs there: it accepts the exact type, and it
+    // accepts a subtype, because a class or interface reference widens
+    // wherever one is expected. Both sides are then one pointer, and the
+    // widening is the identity — so the emitter asks about representation,
+    // not spelling, and only refuses a shape it genuinely cannot store.
+    fn error_payload_fits(operand_type: HirType,
+                          error_type: HirType) -> bool {
+        if render_hir_type(operand_type) ==
+               render_hir_type(error_type) {
+            return true
+        }
+        return self.type_is_reference(operand_type) &&
+               self.type_is_reference(error_type) &&
+               self.type_text(operand_type) == "ptr" &&
+               self.type_text(error_type) == "ptr"
     }
 
     fn emit_result_unwrap(

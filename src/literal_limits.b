@@ -150,6 +150,90 @@ fn integer_literal_syntax(node: AstNode) -> bool {
            integer_literal_syntax(node.children[0])
 }
 
+// A number written in the source, as opposed to a value computed from one.
+// `as` demands its target type of these and of nothing else: the difference
+// between `19.99 as decimal` and `rate as decimal` is that the first one's f64
+// never had to exist, while the second one's is the thing being described.
+// A leading '-' is part of the number here: parse_prefix hoists the sign
+// inside an unparenthesized cast, so `-19.99 as decimal` reaches the checker
+// as a cast whose operand is `-19.99`.
+fn number_literal_syntax(node: AstNode) -> bool {
+    if node.kind == "literal" &&
+       (node.note == "int" || node.note == "float") {
+        return true
+    }
+    return node.kind == "unary" && node.value == "-" &&
+           node.children.len() == 1 &&
+           number_literal_syntax(node.children[0])
+}
+
+// The types a number literal can be written in directly — the real-number
+// types, where the literal is read into the type rather than converted into
+// it. Integer targets are deliberately absent: an integer cast keeps the low
+// target-width bits, and `300 as i8` has to stay 44.
+fn literal_number_target(type: HirType) -> bool {
+    return type.name == "decimal" ||
+           canonical_hir_name(type.name) == "float" ||
+           type.name == "f32"
+}
+
+fn literal_has_base_prefix(text: string) -> bool {
+    let cleaned: string = text.replace("_", "")
+    var index: int = 0
+    if cleaned.starts_with("-") { index = 1 }
+    if index + 2 > cleaned.len() ||
+       cleaned.byte_at(index) != 48 {
+        return false
+    }
+    let marker: int = cleaned.byte_at(index + 1)
+    return marker == 120 || marker == 88 ||
+           marker == 98 || marker == 66
+}
+
+// The plain decimal digits of a base-prefixed integer literal, for the float,
+// f32 and decimal parsers, which read decimal digits and nothing else. The
+// checker holds such a literal to int's range before this runs, and that range
+// includes -0x8000000000000000, whose magnitude 2^63 is one past int.max — so
+// the accumulator is a u64 and a sign is prepended as text, never applied as
+// arithmetic. Accumulating in an int wrapped that magnitude to int.min and the
+// negation wrapped it back, which handed the value over with its sign flipped
+// off. "" means the text has no base prefix.
+fn base_literal_decimal_text(text: string) -> string {
+    let cleaned: string = text.replace("_", "")
+    var index: int = 0
+    var negative: bool = false
+    if cleaned.starts_with("-") {
+        negative = true
+        index = 1
+    }
+    if !literal_has_base_prefix(cleaned) { return "" }
+    var base: u64 = 16
+    if cleaned.byte_at(index + 1) == 98 ||
+       cleaned.byte_at(index + 1) == 66 {
+        base = 2
+    }
+    index += 2
+    let digits: string =
+        cleaned.slice(index, cleaned.len())
+    if digits.len() == 0 { return "" }
+    var value: u64 = 0
+    for position: int in 0..digits.len() {
+        let byte: int = digits.byte_at(position)
+        var digit: int = -1
+        if byte >= 48 && byte <= 57 {
+            digit = byte - 48
+        } else if byte >= 65 && byte <= 70 {
+            digit = byte - 65 + 10
+        } else if byte >= 97 && byte <= 102 {
+            digit = byte - 97 + 10
+        }
+        if digit < 0 || digit as u64 >= base { return "" }
+        value = value * base + (digit as u64)
+    }
+    if negative && value != 0 { return "-{value}" }
+    return "{value}"
+}
+
 fn decimal_exponent_fits(value: string,
                          negative: bool) -> bool {
     return decimal_magnitude_at_most(

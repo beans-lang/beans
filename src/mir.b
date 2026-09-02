@@ -76,8 +76,15 @@ class MirLowerer {
     }
 
     fn emit_local_drops_from(first_scope: int) {
+        self.emit_local_drops_between(
+            first_scope, self.scopes.len())
+    }
+
+    // Drops for the scopes [first_scope, end_scope), innermost first.
+    fn emit_local_drops_between(first_scope: int,
+                                end_scope: int) {
         if !self.block_open() { return }
-        var scope_index: int = self.scopes.len()
+        var scope_index: int = end_scope
         for scope_index > first_scope {
             scope_index -= 1
             let scope: MirScope = self.scopes[scope_index]
@@ -234,6 +241,30 @@ class MirLowerer {
         instruction.ownership = ownership
         instruction.effects =
             mir_effects_for(op, node.resolved)
+        // The effects table is keyed on kind alone, but three shapes
+        // panic natively only for particular operators or operand types:
+        // integer `/` and `%` (zero, signed-minimum overflow), every
+        // decimal operation (the beans_decv_* bridges take a position and
+        // fail on overflow), and a static read (its guard can run the
+        // lazy initialisers). The unwind scan trusts this field to find
+        // every value alive across a panic point, so it must not
+        // understate.
+        if (op == "binary" || op == "unary") &&
+           operands.len() != 0 {
+            let operand_type: HirType =
+                self.current.value_types[operands[0]]
+            if canonical_hir_name(operand_type.name) ==
+                   "decimal" {
+                instruction.effects = "panic"
+            } else if op == "binary" &&
+                      (text == "/" || text == "%") &&
+                      hir_is_integer(operand_type) {
+                instruction.effects = "panic"
+            }
+        }
+        if op == "static_field" {
+            instruction.effects = "panic"
+        }
         self.current.blocks[
             self.current_block].instructions.push(instruction)
         return result
@@ -599,8 +630,18 @@ class MirLowerer {
         if value >= 0 {
             value = self.ensure_owned(node, value)
         }
+        // A return leaves every scope it sits in, innermost first: the
+        // nested scopes' locals drop as their blocks exit, the function's
+        // defers run newest-first, and the function's own locals drop last
+        // (spec/SYNTAX.md, "defer"). The tree interpreter walks out of the
+        // blocks in exactly that order; the native backend used to run the
+        // defers before any local, which made the two disagree about the
+        // deinit order of a local declared inside an `if` or a loop.
+        self.emit_local_drops_between(1, self.scopes.len())
         self.emit_run_defers(node)
-        self.emit_local_drops_from(0)
+        if self.scopes.len() > 0 {
+            self.emit_local_drops_between(0, 1)
+        }
         self.terminate(node, "return", value, [])
         if value >= 0 &&
            self.current.value_ownership[value] == "owned" {
@@ -894,16 +935,28 @@ class MirLowerer {
             [success, propagate])
 
         self.current_block = propagate
-        let failure: int =
-            self.emit(
-                node, "propagate",
-                self.current.result, "",
-                [operand])
-        if operand >= 0 &&
-           self.current.value_ownership[operand] == "owned" {
-            self.consume_operand(self.last_instruction(), 0)
+        if node.children.len() == 2 {
+            // The callee's error does not fit this function's, so the
+            // checker attached a conversion (check_try_error_bridge). Take
+            // the error out of the operand into the try node's binding, run
+            // the conversion on it, and return an err of this function's
+            // own Result type. Nothing new is invented here: the same
+            // pattern_bind an `err(e) =>` arm emits, the conversion as an
+            // ordinary call, and the same err construction a `return
+            // err(...)` writes.
+            self.lower_try_conversion(node, operand)
+        } else {
+            let failure: int =
+                self.emit(
+                    node, "propagate",
+                    self.current.result, "",
+                    [operand])
+            if operand >= 0 &&
+               self.current.value_ownership[operand] == "owned" {
+                self.consume_operand(self.last_instruction(), 0)
+            }
+            self.emit_return(node, failure)
         }
-        self.emit_return(node, failure)
 
         self.current_block = success
         let result: int = self.emit(
@@ -913,6 +966,44 @@ class MirLowerer {
             self.consume_operand(self.last_instruction(), 0)
         }
         return result
+    }
+
+    // The propagate side of a `?` whose error has to be converted. The
+    // operand box stays owned by the try, exactly as it is on the plain
+    // path — the binding takes its own count, the conversion reads it, and
+    // the fresh error goes out in a Result of this function's type.
+    fn lower_try_conversion(node: HirNode, operand: int) {
+        let bridge: HirNode = node.children[1]
+        let carried: HirType =
+            hir_result_error(node.children[0].type)
+        self.push_scope()
+        let local: int = self.add_local(
+            node.binding_id, "$error", carried,
+            false, false, "")
+        let bind: MirInstruction =
+            self.emit_action(
+                node, "pattern_bind", "$error",
+                [operand])
+        bind.local = local
+        bind.resolved = "err.0"
+        var produced: int = self.lower_expression(bridge)
+        if produced >= 0 &&
+           !mir_type_is_trivial(bridge.type) {
+            produced = self.ensure_owned(bridge, produced)
+        }
+        let failure: int =
+            self.emit(
+                node, "err", self.current.result, "",
+                [produced])
+        if produced >= 0 &&
+           self.current.value_ownership[produced] == "owned" {
+            self.consume_operand(self.last_instruction(), 0)
+        }
+        self.pop_scope()
+        // The operand box is deliberately not consumed here: the error was
+        // copied out into the binding, so the box still owns its own count
+        // and the value-lifetime planner releases it at its last use.
+        self.emit_return(node, failure)
     }
 
     fn owns_operands(kind: string) -> bool {
@@ -4011,6 +4102,431 @@ class MirLowerer {
         return owner_initializers == 1
     }
 
+
+    // ---- loop-private list headers ----
+    //
+    // A list keeps `data`, `len` and `cap` in a heap object behind a pointer
+    // that escapes, so LLVM has to assume the element store can alias them:
+    // a loop that mutates a list reloads all three every turn and writes
+    // `len` and the change word back every operation. `for i < n { xs.push(i) }`
+    // becomes thirteen instructions against `std::vector::push_back`'s six,
+    // and the per-operation change-word store is what stops a `pop` drain
+    // from vectorizing. The runtime call is not the cost — the escaping
+    // header is.
+    //
+    // When nothing else in a loop can reach the list, the loop may hold the
+    // header in registers and touch the object only where the values have to
+    // be visible: the grow path, which hands the list to the runtime, and the
+    // edges that leave the loop. Proving "nothing else can reach it" is the
+    // same question `slice_source_stays_stable` asks of a reading loop, asked
+    // of a mutating one, and the answer has to be stronger: a reader only
+    // needs the list to stay put, a writer needs every other reader gone.
+    fn analyze_list_header_cache(function: MirFunction) {
+        if function.declaration || function.external ||
+           function.blocks.len() == 0 {
+            return
+        }
+        var predecessors: List<MirBlockEdges> = []
+        for unused: MirBlock in function.blocks {
+            predecessors.push(new MirBlockEdges())
+        }
+        for block: MirBlock in function.blocks {
+            if !block.reachable { continue }
+            for target: int in
+                block.terminator.targets {
+                if target >= 0 &&
+                   target < predecessors.len() {
+                    predecessors[target].sources.push(
+                        block.id)
+                }
+            }
+        }
+        let dominance: List<MirValueSet> =
+            self.dominators(function)
+        var heads: List<int> = []
+        var extents: List<int> = []
+        for head: MirBlock in function.blocks {
+            if !head.reachable { continue }
+            var back_edge: bool = false
+            for source: int in
+                predecessors[head.id].sources {
+                if source >= 0 &&
+                   source < dominance.len() &&
+                   dominance[source].contains(head.id) {
+                    back_edge = true
+                }
+            }
+            if !back_edge { continue }
+            let members: MirValueSet =
+                self.loop_blocks_of(
+                    function, predecessors,
+                    dominance, head.id)
+            var extent: int = 0
+            for member: MirBlock in function.blocks {
+                if members.contains(member.id) {
+                    extent += 1
+                }
+            }
+            heads.push(head.id)
+            extents.push(extent)
+        }
+        // Outermost first: a nested loop over the same list is already
+        // covered by its parent's cache, and opening a second one inside
+        // would read a header the parent has not written back yet.
+        for outer: int in 0..heads.len() {
+            var best: int = outer
+            for inner: int in outer..heads.len() {
+                if extents[inner] > extents[best] {
+                    best = inner
+                }
+            }
+            let swap_head: int = heads[outer]
+            let swap_extent: int = extents[outer]
+            heads[outer] = heads[best]
+            extents[outer] = extents[best]
+            heads[best] = swap_head
+            extents[best] = swap_extent
+        }
+        var taken_locals: List<int> = []
+        var taken_members: List<MirValueSet> = []
+        for head: int in heads {
+            let members: MirValueSet =
+                self.loop_blocks_of(
+                    function, predecessors,
+                    dominance, head)
+            for source: int in
+                self.list_header_candidates(
+                    function, members) {
+                var overlaps: bool = false
+                for index: int in
+                    0..taken_locals.len() {
+                    if taken_locals[index] != source {
+                        continue
+                    }
+                    for member: MirBlock in
+                        function.blocks {
+                        if members.contains(member.id) &&
+                           taken_members[index].contains(
+                               member.id) {
+                            overlaps = true
+                        }
+                    }
+                }
+                if overlaps { continue }
+                if !self.list_header_stays_private(
+                       function, members, source) {
+                    continue
+                }
+                if !self.apply_list_header_cache(
+                       function, predecessors,
+                       members, head, source) {
+                    continue
+                }
+                taken_locals.push(source)
+                taken_members.push(members)
+            }
+        }
+    }
+
+    // Every list local a loop borrows, in block order and without repeats.
+    fn list_header_candidates(
+        function: MirFunction,
+        members: MirValueSet) -> List<int> {
+        var found: List<int> = []
+        for block: MirBlock in function.blocks {
+            if !members.contains(block.id) { continue }
+            for instruction: MirInstruction in
+                block.instructions {
+                if instruction.removed ||
+                   instruction.op != "borrow" ||
+                   instruction.local < 0 ||
+                   instruction.local >=
+                       function.locals.len() {
+                    continue
+                }
+                let local: MirLocal =
+                    function.locals[instruction.local]
+                if canonical_hir_name(
+                       local.type.name) != "List" ||
+                   local.type.args.len() != 1 {
+                    continue
+                }
+                if !found.contains(instruction.local) {
+                    found.push(instruction.local)
+                }
+            }
+        }
+        return move found
+    }
+
+    // The proof. A cached header is a lie to every other reader of the list,
+    // so the loop may contain no other reader at all: no second name for the
+    // list, no iterator walking it, no call that could be handed it, and no
+    // operation the cache does not serve itself.
+    fn list_header_stays_private(
+        function: MirFunction,
+        members: MirValueSet,
+        source: int) -> bool {
+        let local: MirLocal = function.locals[source]
+        if local.captured || local.parameter ||
+           local.escapes || local.scalar_replaced ||
+           local.scalar_replaced_owner >= 0 ||
+           local.borrows_from >= 0 {
+            return false
+        }
+        var iterators: List<int> = []
+        var mutates: bool = false
+        for block: MirBlock in function.blocks {
+            let inside: bool =
+                members.contains(block.id)
+            for instruction: MirInstruction in
+                block.instructions {
+                if instruction.removed { continue }
+                for capture: int in
+                    instruction.capture_locals {
+                    if capture == source { return false }
+                }
+                if instruction.local != source {
+                    continue
+                }
+                if instruction.op != "borrow" {
+                    // Initialization, assignment, move and the scope drop
+                    // all rewrite or retire the slot the cache mirrors.
+                    // Outside the loop they are free: the cache is opened
+                    // on the way in and written back on the way out.
+                    if inside { return false }
+                    continue
+                }
+                // Where the borrow is read decides which rule it answers
+                // to, and it may not answer to both: `apply` marks exactly
+                // the borrows this loop owns, so one that reaches across
+                // the boundary — read inside a loop it was taken outside
+                // of, or the reverse — would leave a read on the wrong
+                // side of the cache.
+                let uses: List<MirPosition> =
+                    self.uses_for(
+                        function, instruction.result)
+                var read_inside: bool = false
+                var read_outside: bool = false
+                for use: MirPosition in uses {
+                    if members.contains(use.block) {
+                        read_inside = true
+                    } else {
+                        read_outside = true
+                    }
+                }
+                if read_inside && read_outside {
+                    return false
+                }
+                if read_inside && !inside { return false }
+                for use: MirPosition in uses {
+                    if read_inside {
+                        if !self.list_header_cached_use(
+                               instruction.result,
+                               use.instruction) {
+                            return false
+                        }
+                        if self.list_header_mutating_use(
+                               use.instruction) {
+                            mutates = true
+                        }
+                    } else {
+                        let walker: int =
+                            self.list_header_outside_use(
+                                function,
+                                instruction.result,
+                                use.instruction)
+                        if walker == -2 { return false }
+                        if walker >= 0 &&
+                           !iterators.contains(walker) {
+                            iterators.push(walker)
+                        }
+                    }
+                }
+            }
+        }
+        if !mutates { return false }
+        // An iterator opened before the loop still reads the list's own
+        // length and change word every turn, so it must not be advanced
+        // while a cache holds them.
+        for block: MirBlock in function.blocks {
+            if !members.contains(block.id) { continue }
+            for instruction: MirInstruction in
+                block.instructions {
+                if instruction.removed { continue }
+                for operand: int in instruction.operands {
+                    if iterators.contains(operand) {
+                        return false
+                    }
+                }
+            }
+        }
+        return true
+    }
+
+    // The operations the cache serves: the ones whose generated code reads
+    // `data`, `len` or the change word out of the list object directly.
+    // Everything else — insert, remove, sort, clear, a slice, the list
+    // handed to anything at all — reaches the object through the runtime
+    // and would read what the cache is still holding.
+    fn list_header_cached_use(borrowed: int,
+                              user: MirInstruction) -> bool {
+        if user.operands.len() == 0 ||
+           user.operands[0] != borrowed {
+            return false
+        }
+        if user.op == "builtin_method" {
+            return user.resolved.starts_with("List<") &&
+                   (user.text == "push" ||
+                    user.text == "pop" ||
+                    user.text == "len" ||
+                    user.text == "is_empty")
+        }
+        if user.op == "index" {
+            return user.operands.len() == 2
+        }
+        if user.op == "assign" {
+            return user.text == "index::=" &&
+                   user.operands.len() == 3
+        }
+        return false
+    }
+
+    fn list_header_mutating_use(
+        user: MirInstruction) -> bool {
+        if user.op == "assign" { return true }
+        return user.op == "builtin_method" &&
+               (user.text == "push" ||
+                user.text == "pop")
+    }
+
+    // Outside the loop the list may be used freely, with one exception: a
+    // use may not hand out a second name for it that survives into the loop.
+    // The shape of this whitelist is `stable_iterable_use`'s, for the same
+    // reason — a call taking the list could store it, and then something the
+    // loop calls could read the length the cache is holding.
+    // -2 rejects the loop; -1 accepts the use; anything else accepts it and
+    // names an iterator this list now has, which the caller refuses to let
+    // the loop advance.
+    fn list_header_outside_use(
+        function: MirFunction,
+        borrowed: int,
+        user: MirInstruction) -> int {
+        if user.op == "iterate_init" {
+            return user.result
+        }
+        if user.op == "retain" {
+            // only as the +1 handed straight to an iterator
+            let uses: List<MirPosition> =
+                self.uses_for(function, user.result)
+            if uses.len() != 1 ||
+               uses[0].instruction.op != "iterate_init" {
+                return -2
+            }
+            return uses[0].instruction.result
+        }
+        if user.operands.len() == 0 ||
+           user.operands[0] != borrowed {
+            return -2
+        }
+        if user.op == "builtin_method" {
+            if user.resolved.starts_with("List<") {
+                return -1
+            }
+            return -2
+        }
+        if user.op == "index" ||
+           (user.op == "assign" &&
+            user.text.starts_with("index:")) {
+            return -1
+        }
+        return -2
+    }
+
+    // Open the cache on every edge into the loop, write it back on every
+    // edge out, and mark the operations that read it. The write-back rides
+    // the edge, not the exiting block: a loop usually leaves from its head,
+    // and a flush placed there would run every turn.
+    fn apply_list_header_cache(
+        function: MirFunction,
+        predecessors: List<MirBlockEdges>,
+        members: MirValueSet,
+        head: int,
+        source: int) -> bool {
+        var entries: List<int> = []
+        for entry: int in predecessors[head].sources {
+            if members.contains(entry) ||
+               entry < 0 ||
+               entry >= function.blocks.len() {
+                continue
+            }
+            if !entries.contains(entry) {
+                entries.push(entry)
+            }
+        }
+        if entries.len() == 0 { return false }
+        var marked: int = 0
+        var file: string = ""
+        var line: int = 0
+        var col: int = 0
+        for block: MirBlock in function.blocks {
+            if !members.contains(block.id) { continue }
+            for instruction: MirInstruction in
+                block.instructions {
+                if instruction.removed ||
+                   instruction.op != "borrow" ||
+                   instruction.local != source {
+                    continue
+                }
+                for use: MirPosition in
+                    self.uses_for(
+                        function, instruction.result) {
+                    // Only the reads inside the loop: the proof classified
+                    // this borrow by where it is read, and a read that
+                    // landed outside answers to the object, not the cache.
+                    if !members.contains(use.block) {
+                        continue
+                    }
+                    use.instruction.list_header_local =
+                        source
+                    if marked == 0 {
+                        file = use.instruction.file
+                        line = use.instruction.line
+                        col = use.instruction.col
+                    }
+                    marked += 1
+                }
+            }
+        }
+        if marked == 0 { return false }
+        for entry: int in entries {
+            let open: MirInstruction =
+                new MirInstruction(
+                    "list_header_open", -1,
+                    new HirType("unit"), "", "",
+                    file, line, col)
+            open.list_header_local = source
+            open.effects = "none"
+            function.blocks[
+                entry].instructions.push(open)
+        }
+        for block: MirBlock in function.blocks {
+            if !members.contains(block.id) { continue }
+            var flushed: List<int> = []
+            for target: int in
+                block.terminator.targets {
+                if members.contains(target) ||
+                   flushed.contains(target) {
+                    continue
+                }
+                flushed.push(target)
+                block.header_flushes.push(
+                    new MirHeaderFlush(target, source))
+            }
+        }
+        return true
+    }
+
     // The narrow counted-loop proof behind bounds-free Slice indexing:
     //
     //     i = 0
@@ -5148,10 +5664,13 @@ class MirLowerer {
             // emit_local_store always finishes with `store i1 true`
             state.set_flag(local, 1)
         } else if instruction.op == "pattern_bind" {
-            // Option arms bind without touching the flag while enum
-            // and Result arms set it; the emitter picks by payload
-            // type, so from here the flag is simply unknown
-            state.set_flag(local, 2)
+            // every arm — Option, Result, enum, and the Option a cast
+            // makes — stores its payload and then `store i1 true`. An
+            // elided bind stores a borrow the frame never releases, so
+            // the flag it leaves is the clear one the prologue wrote.
+            state.set_flag(
+                local,
+                if instruction.borrow_elided { 0 } else { 1 })
         } else if instruction.op == "move" ||
                   instruction.op == "drop_local" {
             // a move clears the flag as it reads; a drop leaves it
@@ -5438,7 +5957,9 @@ class MirLowerer {
         // the flag, which is the shape the emitter produces today.
         for local: MirLocal in function.locals {
             if local.needs_live_flag {
-                local.live_flag_used = false
+                // A program that can unwind reads every armed flag from the
+                // cleanup pad, so no flag has "no reader left" there.
+                local.live_flag_used = self.mir.uses_fibers
             }
         }
         for block: MirBlock in function.blocks {
@@ -5459,6 +5980,56 @@ class MirLowerer {
                 function.locals[
                     local].live_flag_used = true
             }
+        }
+    }
+
+    // Does anything in this program start a fiber? Only a brewed fiber can
+    // contain a panic — every other failure ends the process — so this is
+    // the question "can a frame ever have to unwind", and the answer decides
+    // whether the backend emits cleanup pads at all. A program that never
+    // brews is compiled exactly as it was before the unwind existed.
+    fn detect_fiber_use() -> bool {
+        for function: MirFunction in self.mir.functions {
+            for block: MirBlock in function.blocks {
+                for instruction: MirInstruction in
+                    block.instructions {
+                    if instruction.removed { continue }
+                    if instruction.op == "brew" ||
+                       instruction.op == "group_brew" {
+                        return true
+                    }
+                }
+            }
+        }
+        return false
+    }
+
+    // A frame that can be unwound needs a runtime answer to "does this local
+    // still hold a reference" at *every* point, not only at the drops the
+    // normal exits carry: a panic can land before a local is initialized,
+    // between its initialization and its move, or after it. The fixpoint
+    // below folds a flag away whenever the drops it can see all know the
+    // answer statically, so the flag is pinned on here — before the fixpoint
+    // runs — for every owned local the cleanup pad will have to consider.
+    // The pins cost stores the optimizer promotes out of memory; they buy
+    // the pad the only thing that makes it safe to run at an arbitrary
+    // instruction.
+    fn arm_unwind_flags(function: MirFunction) {
+        if function.declaration || function.external {
+            return
+        }
+        for local: MirLocal in function.locals {
+            if local.ownership != "owned" { continue }
+            if local.scalar_replaced { continue }
+            if local.stack_closure_id >= 0 { continue }
+            if local.captured || local.escapes {
+                // a cell local's slot is the cleanup unit: the prologue
+                // stores null, every drop stores null back, and releasing
+                // a null cell is nothing — so the slot is already its own
+                // flag and a second one would only disagree with it
+                continue
+            }
+            local.needs_live_flag = true
         }
     }
 
@@ -6028,6 +6599,13 @@ class MirLowerer {
         for function: MirFunction in self.mir.functions {
             self.analyze_scalar_replacements(function)
         }
+        self.mir.uses_fibers = self.detect_fiber_use()
+        if self.mir.uses_fibers {
+            for function: MirFunction in
+                self.mir.functions {
+                self.arm_unwind_flags(function)
+            }
+        }
         for function: MirFunction in self.mir.functions {
             self.mark_reachable(function)
             self.mark_last_uses(function)
@@ -6038,6 +6616,10 @@ class MirLowerer {
             self.plan_value_lifetimes(function)
             self.verify_function(function)
             self.verify_local_ownership(function)
+            // Last: this one adds instructions and edge write-backs the
+            // verifiers above have no rule for, and it reads the borrow
+            // graph every pass before it has already settled.
+            self.analyze_list_header_cache(function)
         }
         var closure_ids: Map<int, bool> = {}
         var cleanup_ids: Map<int, bool> = {}

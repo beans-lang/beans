@@ -90,6 +90,14 @@ fn hir_result(value: HirType) -> HirType {
         "Result", [value, new HirType("Error")])
 }
 
+// The error a Result carries. `Result<T>` leaves the slot unwritten and
+// means the builtin `Error` (spec/SYNTAX.md, "Option and Result"), so every
+// reader has to fill it in the same way.
+fn hir_result_error(type: HirType) -> HirType {
+    if type.args.len() >= 2 { return type.args[1] }
+    return new HirType("Error")
+}
+
 fn hir_function(parameters: List<HirType>,
                 result_type: HirType) -> HirType {
     let result: HirType = new HirType("fn")

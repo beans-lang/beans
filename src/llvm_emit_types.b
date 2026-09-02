@@ -561,6 +561,7 @@ partial class LlvmTextEmitter {
         self.function_allocas = []
         self.borrowed_local_of = {}
         self.borrowed_place_of = {}
+        self.list_headers = {}
         self.inout_addresses = {}
         self.field_init_names = {}
         self.defer_sites = []
@@ -580,6 +581,8 @@ partial class LlvmTextEmitter {
         self.iterator_collection_borrowed = {}
         self.iterator_map_version = {}
         self.iterator_map_entry = {}
+        self.iterator_list_version = {}
+        self.iterator_list_length = {}
         self.iterator_slice = {}
         self.iterator_array_slot = {}
         self.iterator_array_length = {}

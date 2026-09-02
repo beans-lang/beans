@@ -9,14 +9,23 @@ class Item {
     fn init(value: int) { self.value = value }
 }
 
-// The loop body clears the list while `item` is still live. The
-// binding must keep the element alive: borrowing here would free the
-// item before the field read.
+// The loop body clears the list while `item` is still live, then leaves
+// before the loop would notice the list changed -- spec/SYNTAX.md allows
+// exactly that: the check runs before the next element is read, so a loop
+// that never reads again never sees the change. The `break` is what keeps
+// this case legal; without it the next turn panics.
+//
+// What it pins is ARC, not the rule: the binding must keep its element alive
+// past the clear. Two items so the clear does both things at once -- it drops
+// the only reference to the second item, which dies there, while the first is
+// still held by `item` and must survive to the field read. Borrowing instead
+// of binding would free it first.
 fn mutation_during_iteration() {
-    var items: List<Item> = [new Item(7)]
+    var items: List<Item> = [new Item(7), new Item(8)]
     for item: Item in items {
         items.clear()
         io.println("mutated {item.value}")
+        break
     }
 }
 

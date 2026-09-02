@@ -1,0 +1,17 @@
+in scope: scoped-local
+  deinit scoped-local
+borrowed: direct
+removing item-1
+took item-1, list holds 2
+dropping map-a
+  deinit map-a
+removed: true
+overwriting the swapped static
+  deinit swapped-first
+clearing the singleton bag
+  deinit bag-1
+  deinit bag-0
+end: 2 items, 2 entries, swapped-second
+  deinit item-1
+  ring down
+  ring down

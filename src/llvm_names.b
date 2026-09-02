@@ -140,7 +140,25 @@ fn llvm_declaration_for(body: string,
         cut -= 1
     }
     if cut <= offset + 7 + width { return "" }
-    return "declare {body.slice(offset + 7 + width, cut)}\n"
+    var header: string =
+        body.slice(offset + 7 + width, cut)
+    // A definition that can unwind names its personality routine, and a
+    // definition with debug info names its subprogram; neither belongs on a
+    // declaration — LLVM refuses both — so the header is cut before them.
+    // Attributes (uwtable, frame-pointer) stay: a declaration may carry them.
+    for marker: string in [" personality ", " !dbg "] {
+        match header.find(marker) {
+            some(at) => {
+                header = header.slice(0, at)
+            }
+            none => {}
+        }
+    }
+    var trimmed: int = header.len()
+    for trimmed > 0 && header.byte_at(trimmed - 1) == 32 {
+        trimmed -= 1
+    }
+    return "declare {header.slice(0, trimmed)}\n"
 }
 
 // Which chunk owns a group — a source file, or a lone symbol when the body
