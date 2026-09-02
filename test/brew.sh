@@ -124,8 +124,11 @@ echo "checking the finished cascade returns every byte it took"
 # The counts above say every deinit ran; this says the memory came back.
 # Two round counts an order of magnitude apart, each in its own
 # -DBEANS_ARC_STATS build: allocations must equal frees in both, so a
-# per-panic leak would show as a gap that grows with the rounds. Before the
-# guard the fifty-round build ended 1000 allocations short of its frees.
+# per-panic leak would show as a gap that grows with the rounds. A round
+# does both shapes that lose memory this way — a container clear whose
+# element deinit panics, and a declined map insert whose refused value's
+# deinit panics while the duplicate key is still owed a release. Before the
+# guards the fifty-round build ended 1000 and 50 allocations short.
 arc_rounds() { # <rounds>
     local rounds=$1
     sed "s/ROUNDS/$rounds/g" >"$tmp/arc_$rounds.b" <<'BEANS'
@@ -143,17 +146,30 @@ class Item {
 
 fn wipe(l: List<Item>) -> int { l.clear(); return 0 }
 
-fn round() {
+// A declined insert releases the value it refused and then the duplicate
+// key. That first release runs a deinit, so the key rides the entry's guard;
+// without it the key string is lost once per round.
+fn decline(m: Map<string, Item>, n: int) -> int {
+    m.insert("dup-{n}", new Item(n, true))
+    return 0
+}
+
+fn round(n: int) {
     var l: List<Item> = []
     var i: int = 0
     for i < 40 { l.push(new Item(i, i == 20)); i += 1 }
     let h: Brew<int> = brew wipe(l)
     match h.join() { ok(v) => {} err(problem) => {} }
+
+    var m: Map<string, Item> = {}
+    m["dup-{n}"] = new Item(n, false)
+    let d: Brew<int> = brew decline(m, n)
+    match d.join() { ok(v) => {} err(problem) => {} }
 }
 
 fn main() {
     var r: int = 0
-    for r < ROUNDS { round(); r += 1 }
+    for r < ROUNDS { round(r); r += 1 }
     io.println("rounds=ROUNDS")
 }
 BEANS
