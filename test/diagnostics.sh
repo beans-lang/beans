@@ -121,4 +121,41 @@ grep -Fq "can't erase move-only ownership by converting main.Pinned to main.AppE
     "$tmp/diagnostics_try_convert_unique_bad"
 test "$(grep -c ': error:' "$tmp/diagnostics_try_convert_unique_bad")" -eq 1
 
+# Only a class is an interface value, and an enum was the one record kind
+# with no rule saying so (#87). Every spelling is refused at the declaration
+# and names the enum and the type it reached for, including the shapes a rule
+# written only for the reported case would have missed: two interfaces at
+# once, payload variants, `enum(u8)` — whose value is a bare one-byte tag
+# with no room for a descriptor at all — a generic enum, and a base class.
+check_bad diagnostics_enum_relation_bad
+grep -Fq "enum 'Colour' cannot implement 'main.Shows' — an interface value is an object with a descriptor and an enum value is a tag, so only a class can implement one" \
+    "$tmp/diagnostics_enum_relation_bad"
+grep -Fq "enum 'Signal' cannot implement 'main.Shows'" \
+    "$tmp/diagnostics_enum_relation_bad"
+grep -Fq "enum 'Signal' cannot implement 'main.Names'" \
+    "$tmp/diagnostics_enum_relation_bad"
+grep -Fq "enum 'Payment' cannot implement 'main.Shows'" \
+    "$tmp/diagnostics_enum_relation_bad"
+grep -Fq "enum 'Display' cannot implement 'main.Shows'" \
+    "$tmp/diagnostics_enum_relation_bad"
+grep -Fq "enum 'Cell' cannot implement 'main.Shows'" \
+    "$tmp/diagnostics_enum_relation_bad"
+grep -Fq "enum 'Rooted' cannot extend 'main.Holder' — enums have no base type" \
+    "$tmp/diagnostics_enum_relation_bad"
+# one per relation named, and nothing else: the uses further down the file —
+# an interface parameter, a List element, a Map value, an interpolation — are
+# the shapes that used to reach a backend, and the declaration is where they
+# are stopped
+test "$(grep -c ': error:' "$tmp/diagnostics_enum_relation_bad")" -eq 7
+# and the refusal really does stop a build, not just `check`
+if ./build/beansc build test/cases/diagnostics_enum_relation_bad.b \
+       -o "$tmp/enum_relation" >/dev/null 2>&1; then
+    echo "an enum naming a relation still built" >&2
+    exit 1
+fi
+if [ -e "$tmp/enum_relation" ]; then
+    echo "an enum naming a relation produced a binary" >&2
+    exit 1
+fi
+
 echo "ok diagnostics: locations, imports, suggestions, wording, and recovery"

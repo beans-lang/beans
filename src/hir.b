@@ -1664,6 +1664,37 @@ class SignatureChecker {
                 }
             }
         }
+        // Only a class is an interface value. An interface receiver is
+        // dispatched by reading a descriptor out of the object's first
+        // word, and no value type carries one: `let x: Eq = 5` is refused,
+        // a struct or union naming a relation is refused just above, and
+        // `enum(u8)` is committed to the bare one-byte tag with no pointer
+        // bits at all. An enum satisfies `Eq`, `Hash` and `Order` bounds
+        // and works as a map key without naming them, so nothing is lost.
+        //
+        // Enums were the one record kind with no rule here, so
+        // `enum Colour implements Shows` checked clean and then answered
+        // unit under the interpreter and read a tag word as a descriptor
+        // natively (#87).
+        if node.kind == "enum" {
+            for index: int in
+                0..declaration.relations.len() {
+                let relation: HirType =
+                    declaration.relations[index]
+                let is_base: bool =
+                    index <
+                        declaration.relation_kinds.len() &&
+                    declaration.relation_kinds[index] ==
+                        "extends"
+                self.fail(
+                    file.path, node,
+                    if is_base {
+                        "enum '{declaration.name}' cannot extend '{render_hir_type(relation)}' — enums have no base type"
+                    } else {
+                        "enum '{declaration.name}' cannot implement '{render_hir_type(relation)}' — an interface value is an object with a descriptor and an enum value is a tag, so only a class can implement one"
+                    })
+            }
+        }
         self.hir.declarations.push(declaration)
     }
 

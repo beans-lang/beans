@@ -1757,6 +1757,10 @@ Private methods are not inherited and never satisfy or replace class or
 interface contracts, so they cannot be `abstract` or `override`. Interfaces
 cannot declare private methods. Beans has no `final` yet.
 
+`extends` and `implements` belong to classes and interfaces. A struct, union
+or enum that names either is refused at the declaration: an interface value is
+an object whose first word is its descriptor, and a value type has none.
+
 **Generic interfaces.** An interface may take type parameters, and an
 implementor binds them at the `implements` site: `class IntBox implements
 Producer<int>` requires `fn make() -> int`, not the interface's own `T`. A
@@ -1861,6 +1865,11 @@ fn describe(p: Payment) -> string {
 
 Enums are objects too — they can carry methods (`fn label() -> string { ... }`
 inside the enum body, with implicit `self`).
+
+An enum has no base type and cannot implement an interface: the checker refuses
+`enum Colour implements Shows` at the declaration, naming the enum and the
+interface. Nothing is lost by it — an enum satisfies `Eq`, `Hash` and `Order`
+bounds and works as a map key without ever naming them.
 
 ### Fixed representation: `enum(u8)`
 
