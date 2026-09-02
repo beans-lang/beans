@@ -18,6 +18,7 @@
 // container of one element, or two, cannot tell "stopped at the panic" from
 // "finished".
 import std.io
+import std.collections
 
 class Tally {
     pub static gone: int = 0
@@ -100,6 +101,32 @@ fn twelve() -> List<Item> {
 fn report(label: string, outcome: string, count: int) {
     io.println("{label}: {outcome}, {count} destroyed")
 }
+
+
+// std.collections is four containers built on List and Map, so the rule has
+// to reach them too — and reverting the container-clear guards shows it does:
+// PriorityQueue (a List of entries) and Set (a Map) drop to five destroyed of
+// twelve, while Deque (fixed blocks) and SortedMap (a node tree) hand their
+// storage to the cascade guard instead and stay at twelve. Counts and the
+// emptied container only: the order these tear down in is std.collections'
+// business, not this rule's, so pinning it here would freeze an internal.
+class Quiet {
+    pub id: int = 0
+    pub bomb: bool = false
+    pub fn init(id: int, bomb: bool) {
+        self.id = id
+        self.bomb = bomb
+    }
+    fn deinit() {
+        Tally.gone += 1
+        if self.bomb { panic("deinit bomb {self.id}") }
+    }
+}
+
+fn wipe_deque(d: collections.Deque<Quiet>) -> int { d.clear(); return 0 }
+fn wipe_pq(q: collections.PriorityQueue<int, Quiet>) -> int { q.clear(); return 0 }
+fn wipe_set(s: collections.Set<Quiet>) -> int { s.clear(); return 0 }
+fn wipe_sorted(m: collections.SortedMap<int, Quiet>) -> int { m.clear(); return 0 }
 
 fn wipe_list(l: List<Item>) -> int { l.clear(); return 0 }
 fn wipe_map(m: Map<int, Item>) -> int { m.clear(); return 0 }
@@ -304,7 +331,53 @@ fn main() {
     }
     io.println("shared len={sh.len()}")
 
-    // 9. Every container is still usable afterwards.
+
+    // 9. std.collections: the same rule through the four library containers.
+    var dq: collections.Deque<Quiet> = new()
+    i = 0
+    for i < 12 { dq.push_back(new Quiet(i, i == 7)); i += 1 }
+    Tally.reset()
+    let t1: Brew<int> = brew wipe_deque(dq)
+    match t1.join() {
+        ok(v) => { report("deque clear", "ok", Tally.gone) }
+        err(p) => { report("deque clear", p.kind, Tally.gone) }
+    }
+    io.println("deque len={dq.len()}")
+
+    var pq: collections.PriorityQueue<int, Quiet> = new collections.PriorityQueue<int, Quiet>()
+    i = 0
+    for i < 12 { pq.push(i, new Quiet(i, i == 7)); i += 1 }
+    Tally.reset()
+    let t2: Brew<int> = brew wipe_pq(pq)
+    match t2.join() {
+        ok(v) => { report("pq clear", "ok", Tally.gone) }
+        err(p) => { report("pq clear", p.kind, Tally.gone) }
+    }
+    io.println("pq len={pq.len()}")
+
+    var st: collections.Set<Quiet> = new()
+    i = 0
+    for i < 12 { st.add(new Quiet(i, i == 7)); i += 1 }
+    Tally.reset()
+    let t3: Brew<int> = brew wipe_set(st)
+    match t3.join() {
+        ok(v) => { report("set clear", "ok", Tally.gone) }
+        err(p) => { report("set clear", p.kind, Tally.gone) }
+    }
+    io.println("set len={st.len()}")
+
+    var sm: collections.SortedMap<int, Quiet> = new collections.SortedMap<int, Quiet>()
+    i = 0
+    for i < 12 { sm.set(i, new Quiet(i, i == 7)); i += 1 }
+    Tally.reset()
+    let t4: Brew<int> = brew wipe_sorted(sm)
+    match t4.join() {
+        ok(v) => { report("sorted clear", "ok", Tally.gone) }
+        err(p) => { report("sorted clear", p.kind, Tally.gone) }
+    }
+    io.println("sorted len={sm.len()}")
+
+    // 10. Every container is still usable afterwards.
     l.push(new Item(100, false))
     m[100] = new Item(101, false)
     om[100] = new Item(102, false)

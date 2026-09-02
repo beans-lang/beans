@@ -130,6 +130,14 @@ wide map len=1
   drop 0
 shared clear: panic, 6 destroyed
 shared len=0
+deque clear: panic, 12 destroyed
+deque len=0
+pq clear: panic, 12 destroyed
+pq len=0
+set clear: panic, 12 destroyed
+set len=0
+sorted clear: panic, 12 destroyed
+sorted len=0
 reused list=1 map=1 ordered=1 arena=1
 end
   drop 35
