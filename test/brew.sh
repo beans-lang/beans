@@ -355,10 +355,15 @@ echo "checking a collector pass finishes the white set a member's panic interrup
 # object in it — holds up, shells never freed, deinits never run — for the
 # life of the process. When a collection runs is each backend's own business
 # (the two trigger on different budgets), so this leg is native only and
-# asserts the pass, not a golden: the count must be the set, not the member,
-# and the arc stats must come back level. Reverting the guard drops this
-# program from 512 deinits and 519 frees to 41 and 7.
-cat >"$tmp/cycle_panic.b" <<'BEANS'
+# asserts the pass rather than a golden. The same program is built twice,
+# once with the bomb armed and once without, so the comparison calibrates
+# itself: whatever a clean run still holds at exit, the caught panic may
+# hold at most two more. Measured here: the clean run ends level (804 of
+# 804 freed) and the caught one one short. Revert the pass guard and it ends
+# 513 short; revert the count beans_do_deinit settles on the unwind and it
+# ends three short, because a parked shell is only freed at count zero.
+cycle_stats() { # <name> <bomb condition>
+    sed "s/BOMB/$2/" >"$tmp/$1.b" <<'BEANS'
 import std.io
 
 class Tally { pub static gone: int = 0 }
@@ -369,7 +374,7 @@ class Node {
     pub fn init(id: int) { self.id = id }
     fn deinit() {
         Tally.gone += 1
-        if self.id == 41 { panic("deinit bomb") }
+        if BOMB { panic("deinit bomb") }
     }
 }
 
@@ -394,14 +399,31 @@ fn main() {
     io.println("gone={Tally.gone}")
 }
 BEANS
-./build/beansc build --emit ir "$tmp/cycle_panic.b" >/dev/null 2>&1
-clang -O1 -pthread -DBEANS_ARC_STATS -DBEANS_FIBER_UNWIND=1 \
-    -fexceptions -funwind-tables -Wno-override-module \
-    build/cycle_panic.ll build/beans_rt.c -lm -o "$tmp/cycle_panic"
-"$tmp/cycle_panic" >"$tmp/cycle_panic.out" 2>"$tmp/cycle_panic.stats"
+    ./build/beansc build --emit ir "$tmp/$1.b" >/dev/null 2>&1
+    clang -O1 -pthread -DBEANS_ARC_STATS -DBEANS_FIBER_UNWIND=1 \
+        -fexceptions -funwind-tables -Wno-override-module \
+        "build/$1.ll" build/beans_rt.c -lm -o "$tmp/$1"
+    "$tmp/$1" >"$tmp/$1.out" 2>"$tmp/$1.stats"
+    local allocations frees
+    allocations=$(sed -n 's/.*allocations=\([0-9][0-9]*\).*/\1/p' "$tmp/$1.stats")
+    frees=$(sed -n 's/.* frees=\([0-9][0-9]*\).*/\1/p' "$tmp/$1.stats")
+    if [ -z "$allocations" ] || [ -z "$frees" ]; then
+        echo "no arc stats from the $1 build" >&2
+        cat "$tmp/$1.stats" >&2
+        exit 1
+    fi
+    echo $((allocations - frees))
+}
+cycle_clean=$(cycle_stats cycle_clean "false")
+cycle_panicking=$(cycle_stats cycle_panic "self.id == 41")
 grep -q '^caught panic$' "$tmp/cycle_panic.out" || {
     echo "the collector's deinit panic was not contained" >&2
     cat "$tmp/cycle_panic.out" >&2
+    exit 1
+}
+grep -q '^ok$' "$tmp/cycle_clean.out" || {
+    echo "the control run panicked" >&2
+    cat "$tmp/cycle_clean.out" >&2
     exit 1
 }
 cycle_gone=$(sed -n 's/^gone=\([0-9][0-9]*\)$/\1/p' "$tmp/cycle_panic.out")
@@ -410,17 +432,10 @@ if [ -z "$cycle_gone" ] || [ "$cycle_gone" -lt 256 ]; then
     cat "$tmp/cycle_panic.out" >&2
     exit 1
 fi
-cycle_allocations=$(sed -n 's/.*allocations=\([0-9][0-9]*\).*/\1/p' \
-    "$tmp/cycle_panic.stats")
-cycle_frees=$(sed -n 's/.* frees=\([0-9][0-9]*\).*/\1/p' "$tmp/cycle_panic.stats")
-if [ -z "$cycle_allocations" ] || [ -z "$cycle_frees" ]; then
-    echo "no arc stats from the collector build" >&2
-    cat "$tmp/cycle_panic.stats" >&2
-    exit 1
-fi
-if [ $((cycle_allocations - cycle_frees)) -gt 8 ]; then
+if [ "$cycle_panicking" -gt $((cycle_clean + 2)) ]; then
     echo "the interrupted collector pass stranded its white set:" \
-         "$cycle_allocations allocated, $cycle_frees freed" >&2
+         "$cycle_panicking objects held at exit against $cycle_clean" \
+         "for the same program without the panic" >&2
     cat "$tmp/cycle_panic.stats" >&2
     exit 1
 fi
