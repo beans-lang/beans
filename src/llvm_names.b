@@ -15,6 +15,28 @@ fn llvm_record_instance_name(type: HirType) -> string {
     return llvm_record_name(render_hir_type(type))
 }
 
+// LLVM's IR is not Beans' integer syntax: `0x…` there is a hexadecimal
+// *floating-point* constant, `0b…` is not a form it has, and `_` is not a
+// digit separator. A match pattern used to carry the source's own spelling
+// straight into an `icmp`, so `match n { 0xFF => … }` checked, ran under the
+// tree interpreter, and then failed at build time inside LLVM's parser —
+// a program the checker accepted that a backend could not emit. Patterns
+// come through here instead and leave as one decimal integer: the same bits
+// under every spelling, and the only spelling LLVM reads.
+fn llvm_integer_pattern(text: string) -> string {
+    // `bool` is an integer type to LLVM, so `match flag() { true => … }`
+    // arrives here too, and `true` is already the constant LLVM wants.
+    // Only a numeric spelling is re-rendered; everything else leaves the
+    // way it came in.
+    if text.len() == 0 { return text }
+    let first: int = text.byte_at(0)
+    let numeric: bool =
+        (first >= 48 && first <= 57) ||
+        first == 45 || first == 43
+    if !numeric { return text }
+    return "{tree_parse_int(text)}"
+}
+
 fn llvm_hex_digit(value: int) -> string {
     let digits: string = "0123456789ABCDEF"
     return digits.slice(value, value + 1)

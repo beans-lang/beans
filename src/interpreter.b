@@ -11264,16 +11264,26 @@ class TreeInterpreter {
                    value.text ==
                        string_literal_decode(pattern.value)
         }
-        if pattern.value.contains(".") ||
-           pattern.value.contains("e") ||
-           pattern.value.contains("E") {
+        // The same rule the checker classified this pattern with: a based
+        // literal is an integer however its digits look.
+        if literal_is_float_syntax(pattern.value) {
             return value.kind == "float" &&
                    value.float_data ==
                        pattern.value.to_float().or(0.0)
         }
-        return value.kind == "int" &&
-               value.int_data ==
-                   tree_parse_int(pattern.value)
+        if value.kind != "int" { return false }
+        // An unsigned subject compares in u64 space, the way a range
+        // pattern below already does and the way the emitter's icmp does.
+        // Reading `int_data` sign-extends everything above the signed
+        // maximum, so 255u8 read as -1 and matched no literal at all —
+        // the arm ran under the native backend and fell through to the
+        // wildcard here, on the same program.
+        if value.int_unsigned {
+            return value.uint_data ==
+                   tree_parse_unsigned(pattern.value)
+        }
+        return value.int_data ==
+               tree_parse_int(pattern.value)
     }
 
     fn pattern_matches(pattern: HirNode,

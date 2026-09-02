@@ -522,8 +522,9 @@ fn type_child(node: AstNode) -> Option<AstNode> {
 }
 
 // The whole constant-expression grammar for parameter defaults: a
-// literal, a negated numeric literal, or `none`. Anything computed
-// belongs at the call site.
+// literal, a negated numeric literal, or `none`. A module constant is not
+// one, and cannot be until constant initializers fold before signatures
+// are checked — the same pass an array length waits on (issue #59).
 fn constant_default(node: AstNode) -> bool {
     if node.kind == "literal" { return true }
     if node.kind == "name" && node.value == "none" { return true }
@@ -1392,8 +1393,18 @@ class SignatureChecker {
                                     self.fail(file.path, part,
                                               "a defaulted parameter passes by value, not '{passing}'")
                                 } else if !constant_default(value) {
-                                    self.fail(file.path, part,
-                                              "a parameter default must be a constant literal")
+                                    // A name is the mistake worth naming:
+                                    // a module constant reads like it
+                                    // should work here, and the reason it
+                                    // does not is an ordering the message
+                                    // has to state (issue #59).
+                                    if value.kind == "name" {
+                                        self.fail(file.path, part,
+                                                  "a parameter default must be a literal, not the name '{value.value}' — a default is read while signatures are checked, which happens before any constant is folded, so a module const cannot be one yet")
+                                    } else {
+                                        self.fail(file.path, part,
+                                                  "a parameter default must be a constant literal")
+                                    }
                                 } else {
                                     lowered.default_syntax = some(value)
                                 }
@@ -2408,9 +2419,17 @@ fn render_hir_type(type: HirType) -> string {
 
 fn render_hir(program: HirProgram) -> string {
     var lines: List<string> = []
+    // The value is the expression checker's answer, and `beansc hir` prints
+    // this the moment signatures are checked — before any constant is
+    // folded. Rendering `= {constant.text}` unconditionally therefore
+    // printed an empty value for every constant in the program. A stage
+    // dump says what the stage knows: the value appears only once there is
+    // one.
     for constant: HirConst in program.consts {
+        let value: string =
+            if constant.folded { " = {constant.text}" } else { "" }
         lines.push(
-            "const {constant.qualified} {render_hir_type(constant.type)} = {constant.text}")
+            "const {constant.qualified} {render_hir_type(constant.type)}{value}")
     }
     for global: HirCGlobal in program.c_globals {
         let mutability: string =

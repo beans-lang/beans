@@ -28,5 +28,13 @@ other
 [p"}:q]
 len 4
 fmt z|  42
+[     8]
+[10    ]
+[4]
+[   3]
+[   6]
+[     a:b]
+[   p"}:q]
+[   1.500] [1.5     ]
 show = /users/{id}
 nested = /users/{id}/posts/{slug}

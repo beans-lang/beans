@@ -928,8 +928,11 @@ cannot be assigned to, and `&`-style address-taking never applied to it.
   result is narrowed to its own type, so `const X: i32 = 1 << 31` is `i32`'s
   smallest value, not an error. Division or modulo by zero, a shift count
   outside `0..bits-1`, and dividing a signed minimum by `-1` are refused. `u64`
-  is the one type the fold cannot carry whole — a `u64` value at or above
-  `2^63` must be written as a literal rather than computed.
+  is the one type the fold cannot carry whole: a `u64` value at or above
+  `2^63` may be **declared** and used like any other constant, but no
+  operator may fold with one — arithmetic, shifts and comparisons alike are
+  refused, because the fold computes in signed 64 bits and would otherwise
+  answer with signed order for a number the program never holds.
 - Floats and decimals fold a literal and unary minus, and no arithmetic. The
   compiler will not re-round a value the source did not write.
 - A constant that names itself, directly or through another constant, is
@@ -949,12 +952,17 @@ match n {
 - `size_of`, `align_of` and `offset_of` are **not** constant expressions: they
   are answered after layout, which runs later than a constant is folded, so
   they cannot appear in a `const` initializer.
-- A `const` cannot **size a fixed array**. An array's length is read while
-  types are laid out, which is before the checker folds constants, so the
-  length is still an integer literal (`[int; 128]`, not `[int; LIMIT]`). Using
-  a constant there is refused at that point, naming the constant. Lifting this
-  would mean folding constant initializers before type layout; it is the one
-  use in the original request that is not yet delivered.
+- Two places still take a literal and not a constant, for one reason: both
+  are read before any constant is folded.
+  - A `const` cannot **size a fixed array** — a length is read while types
+    are laid out (`[int; 128]`, not `[int; LIMIT]`).
+  - A `const` cannot be a **parameter default** — a default is read while
+    signatures are checked (`fn f(n: int = 128)`, not `= LIMIT`).
+
+  Both are refused where they are written, with a message that names the
+  name and the ordering. Lifting either means folding constant initializers
+  in an earlier pass, which is one change in one phase covering both; it is
+  the part of the original request that is not yet delivered.
 - `const` is contextual. It is a declaration keyword only in `const <NAME>` at
   the start of a module-level declaration, and stays an ordinary identifier
   everywhere else.

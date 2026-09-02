@@ -18,4 +18,6 @@ bool false true true true true true true
 str [hello] [/users/{id}] esc=12 uni=4
 raw-eq true esc-eq true
 public 1048576
+u64 18446744073709551615 18446744073709551615 9223372036854775808
+u64-eq true true true true true
 classify base quad tail other

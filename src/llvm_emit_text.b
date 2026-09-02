@@ -148,8 +148,6 @@ partial class LlvmTextEmitter {
             }
             var depth: int = 1
             var in_string: bool = false
-            var formatted: bool = false
-            var format_start: int = -1
             var cursor: int = index + 1
             for cursor < end && depth > 0 {
                 let current: int =
@@ -161,8 +159,8 @@ partial class LlvmTextEmitter {
                     continue
                 }
                 // A raw literal nested in the slot is bytes: step over it
-                // whole so a brace or a `:` in a route template or a hashed
-                // raw body neither nests the slot nor starts a format spec.
+                // whole so a brace in a route template or a hashed raw body
+                // does not nest the slot.
                 if !in_string &&
                    raw_open_at(source, cursor, end) {
                     cursor = raw_literal_end(
@@ -179,12 +177,6 @@ partial class LlvmTextEmitter {
                     depth += 1
                 } else if current == 125 {
                     depth -= 1
-                } else if current == 58 &&
-                          depth == 1 {
-                    formatted = true
-                    if format_start < 0 {
-                        format_start = cursor + 1
-                    }
                 }
                 cursor += 1
             }
@@ -195,12 +187,19 @@ partial class LlvmTextEmitter {
                 index = end
                 continue
             }
-            var format: string = ""
-            if format_start >= 0 {
-                format =
-                    source.slice(
-                        format_start, cursor - 1)
-            }
+            // The slot ends at its own `}`, found by counting braces the
+            // way the checker's splitter does. Where the expression ends
+            // and the format spec begins is a second question, and it is
+            // asked of the one walk the checker and the tree interpreter
+            // also ask (src/interpolation.b) — a `:` inside `(` or `[` is
+            // part of the expression, and this loop is not counting those.
+            let segment: string =
+                source.slice(index + 1, cursor - 1)
+            let colon: int =
+                interpolation_format_colon(segment)
+            let formatted: bool = colon >= 0
+            let format: string =
+                interpolation_format_spec(segment)
             pieces.push(
                 new LlvmInterpolationPiece(
                     "", operand, formatted, format))

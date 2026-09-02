@@ -942,15 +942,19 @@ class Parser {
             let array: AstNode = self.node("array_type", "", start)
             array.add(self.parse_type())
             self.expect(";", "expected ';'")
-            // A fixed array's length is laid out before the checker folds a
-            // constant, so a `const` cannot size an array — the length is an
-            // integer literal. Name that instead of cascading three parse
-            // errors off a token the grammar did not expect here.
+            // A name here is a parse error worth naming, because the
+            // grammar otherwise cascades three errors off a token it did
+            // not expect. The parser has no symbol table, so the message
+            // must hold for every name that can appear — a local, a type,
+            // a typo, a module constant — and may not claim to know which
+            // one this is. A length is laid out before any constant is
+            // folded, so the reason no name works is the same for all of
+            // them, and it is the reason worth stating.
             if self.check("ident") {
                 let name: Token = self.current()
                 self.fail(
                     name,
-                    "an array length must be an integer literal — a module const is folded after types are laid out, so '{name.text}' cannot size an array")
+                    "an array length must be an integer literal, not the name '{name.text}' — a length is read while types are laid out, which happens before any name has a value, module constants included")
                 self.advance()
                 array.value = "0"
                 self.expect("]", "expected ']'")

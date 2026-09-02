@@ -4894,6 +4894,7 @@ class ExpressionChecker {
                     expression, node.line, node.col + start - 1)
                 self.qualify_unresolved_types(expression)
                 node.interpolations.push(expression)
+                let piece_errors: int = self.errors.len()
                 let piece: HirNode = self.check_expression(
                     expression, no_hir_type())
                 // A piece that is one bare name nothing answers is far
@@ -4901,12 +4902,24 @@ class ExpressionChecker {
                 // template, a regex, a printf format — than a typo. The
                 // resolver's "unknown name" is true and useless on its
                 // own: it never mentions the brace that made it a name.
+                //
+                // It replaces that line rather than following it. One
+                // mistake is one diagnostic, and it belongs on the word,
+                // not on the quote that opens the literal — `"/users/{id}/
+                // posts/{slug}"` said four things where it had two to say.
+                // Only the single unknown-name error is taken back; when
+                // the piece failed for more reasons than that, every one
+                // of them still stands and this is added to them.
                 if expression.kind == "name" &&
                    piece.kind == "error" &&
                    piece.resolved == "" &&
                    piece.type.name == "poison" {
+                    if self.errors.len() ==
+                       piece_errors + 1 {
+                        self.errors.pop()
+                    }
                     self.fail(
-                        node,
+                        expression,
                         "'\{{segment}\}' in a string is an interpolation, so '{segment}' has to name something; for a literal brace write \\\{{segment}\\\} or make the whole literal raw: r\"...\"")
                 }
                 // Stage 0 refuses non-printable pieces at check time;
@@ -10677,17 +10690,8 @@ class ExpressionChecker {
                 // MIR match tables are read back as ordinary literals.
                 result.value =
                     string_literal_cook(pattern.value)
-            } else if pattern.value.contains(".") ||
-                      (!pattern.value.starts_with("0x") &&
-                       !pattern.value.starts_with("0X") &&
-                       !pattern.value.starts_with("0b") &&
-                       !pattern.value.starts_with("0B") &&
-                       !pattern.value.starts_with("-0x") &&
-                       !pattern.value.starts_with("-0X") &&
-                       !pattern.value.starts_with("-0b") &&
-                       !pattern.value.starts_with("-0B") &&
-                       (pattern.value.contains("e") ||
-                        pattern.value.contains("E"))) {
+            } else if literal_is_float_syntax(
+                          pattern.value) {
                 literal_type = new HirType("float")
                 is_float_literal = true
             }
@@ -13151,6 +13155,21 @@ class ExpressionChecker {
                 }
             return const_value_bool(value)
         }
+        // A u64 operand at or above 2^63 is a negative bit pattern in the
+        // fold's signed accumulator. That has to stop every operator, not
+        // just the arithmetic ones: a comparison would answer with signed
+        // order, and `MAX_U64 > 2^63 - 1` is true unsigned and false
+        // signed. The guard therefore sits above the comparison dispatch,
+        // where both kinds of operator still pass through it.
+        let type: HirType = node.children[0].type
+        if left.kind == "int" && right.kind == "int" &&
+           const_unsigned_64(type) &&
+           (left.number < 0 || right.number < 0) {
+            self.const_failure(
+                site, name,
+                "a u64 at or above 2^63 is past the signed 64 bits this fold computes in, so '{operation}' has no compile-time answer here — a constant that large can be declared and used, just not folded into another one")
+            return const_value_failed()
+        }
         if operation == "==" || operation == "!=" ||
            operation == "<" || operation == "<=" ||
            operation == ">" || operation == ">=" {
@@ -13161,14 +13180,6 @@ class ExpressionChecker {
             self.const_failure(
                 site, name,
                 "'{operation}' folds integers; a {left.kind} constant is the literal it was written as")
-            return const_value_failed()
-        }
-        let type: HirType = node.children[0].type
-        if const_unsigned_64(type) &&
-           (left.number < 0 || right.number < 0) {
-            self.const_failure(
-                site, name,
-                "this folds past 2^63 in u64, which the checker cannot compute — write the value as a literal")
             return const_value_failed()
         }
         if operation == "+" {

@@ -58,4 +58,35 @@ check_bad interp_brace_bad.b \
     "in a string is an interpolation" \
     'for a literal brace write \{id\} or make the whole literal raw: r"..."'
 
+# One mistake is one diagnostic, and it lands on the word rather than on the
+# quote that opens the literal. The resolver's bare "unknown name" is taken
+# back, not followed: `"/users/{id}/posts/{slug}"` said four things where it
+# had two to say.
+./build/beansc check test/cases/interp_brace_bad.b >"$tmp/brace" 2>&1 || true
+if grep -q "unknown name" "$tmp/brace"; then
+    echo "the brace hint should replace 'unknown name', not follow it:" >&2
+    cat "$tmp/brace" >&2
+    exit 1
+fi
+if [ "$(grep -c ': error:' "$tmp/brace")" != "1" ]; then
+    echo "one unresolvable piece should be one diagnostic:" >&2
+    cat "$tmp/brace" >&2
+    exit 1
+fi
+grep -q ':6:25: error:' "$tmp/brace" ||
+    { echo "the hint should point at the name, not at the literal:" >&2
+      cat "$tmp/brace" >&2; exit 1; }
+
+# The lexer and every walker re-reading a string token find raw literals in
+# the same places: `r` after an identifier byte is not a prefix, inside an
+# interpolation as much as at the top level.
+check_bad raw_open_bad.b \
+    "string not closed before end of line"
+./build/beansc check test/cases/raw_open_bad.b >"$tmp/rawopen" 2>&1 || true
+if grep -q "in string piece" "$tmp/rawopen"; then
+    echo "the lexer and the checker split this token differently:" >&2
+    cat "$tmp/rawopen" >&2
+    exit 1
+fi
+
 echo "ok string literals: raw forms and byte/codepoint escapes, both backends"

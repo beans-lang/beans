@@ -249,10 +249,17 @@ class Lexer {
             // it whole, the same way the top level does, so the outer
             // string's structure survives — `"{r"\d+"}"` must keep `\d` a
             // regex, not read it as an unknown escape.
+            //
+            // `raw_open_at`, not `raw_hashes_at`: at the top level a name is
+            // scanned whole before `r"` is ever looked for, so `str"…"` is a
+            // name and a string there. Inside an interpolation this loop
+            // walks byte by byte and would meet that `r` on its own, so the
+            // rule the top level keeps has to be asked for by name — and it
+            // is the rule every walker re-reading this token applies.
             if interpolation_depth > 0 && !inner_string &&
-               raw_hashes_at(
+               raw_open_at(
                    self.source, self.pos,
-                   self.source.len()) >= 0 {
+                   self.source.len()) {
                 self.consume_raw_literal()
                 continue
             }

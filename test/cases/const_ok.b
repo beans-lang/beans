@@ -28,6 +28,16 @@ const C_I64: i64 = (1 << 62) + (1 << 62) - 1
 // 200 and answer 100, which no backend computes.
 const C_CHAIN: i8 = (100 + 100) / 2
 
+// A u64 at or above 2^63 is the one value the fold cannot compute with, so
+// it must still be declarable and usable — the spelling a use site
+// materializes is the source's own, not the fold's accumulator. Both
+// spellings of the same number, because a decimal magnitude past i64 comes
+// back from `to_int()` as i64's maximum rather than as a failure, and the
+// two used to answer differently.
+const U64_MAX_DEC: u64 = 18446744073709551615
+const U64_MAX_HEX: u64 = 0xFFFFFFFFFFFFFFFF
+const U64_HALF: u64 = 9223372036854775808
+
 // A constant may name another, declared above or below, in any order.
 const BASE: int = 10
 const DOUBLE: int = BASE * 2
@@ -111,6 +121,13 @@ fn main() {
 
     // pub const is a value like any other
     io.println("public {PUBLIC_MAX}")
+
+    // A u64 past 2^63 materializes the number, not the accumulator's edge.
+    let r_max: u64 = 18446744073709551615
+    let r_hex: u64 = 0xFFFFFFFFFFFFFFFF
+    let r_half: u64 = 9223372036854775808
+    io.println("u64 {U64_MAX_DEC} {U64_MAX_HEX} {U64_HALF}")
+    io.println("u64-eq {U64_MAX_DEC == r_max} {U64_MAX_HEX == r_hex} {U64_HALF == r_half} {U64_MAX_DEC > U64_HALF} {U64_HALF > 9223372036854775807}")
 
     // match arms
     io.println("classify {classify(10)} {classify(40)} {classify(100)} {classify(7)}")

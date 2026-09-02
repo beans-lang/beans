@@ -86,6 +86,28 @@ fn nested_in_interpolation() {
     io.println("fmt {r"z"}|{42:4}")
 }
 
+// Where a slot's expression ends and its format spec begins is one walk,
+// asked by the checker, the tree interpreter and the LLVM emitter. When the
+// emitter counted only braces it stopped at the first `:` at brace depth 1
+// — a closure parameter's type, a map key, a named argument — and dropped
+// the real spec, so the two compilers printed different widths for one
+// literal. Every line here holds a `:` that is not a separator.
+fn twice(v: int) -> int { return v * 2 }
+fn call(f: fn(int) -> int, v: int) -> int { return f(v) }
+
+fn format_specs() {
+    io.println("[{call(fn(x: int) -> int { return x - 1 }, 9):6}]")
+    io.println("[{call(fn(x: int) -> int { return x + 1 }, 9):-6}]")
+    io.println("[{call(fn(x: int) -> int { return x }, 4)}]")
+    let table: Map<string, int> = {"a:b": 3}
+    io.println("[{table["a:b"]:4}]")
+    io.println("[{twice(3):04}]")
+    io.println("[{r"a:b":8}]")
+    io.println("[{r#"p"}:q"#:8}]")
+    let ratio: f64 = 1.5
+    io.println("[{ratio:8.3}] [{ratio:-8.1}]")
+}
+
 fn annotations() {
     let shape: reflect.Type = type_of(Api)
     for method: reflect.Method in shape.methods() {
@@ -106,5 +128,6 @@ fn main() {
     equality()
     patterns()
     nested_in_interpolation()
+    format_specs()
     annotations()
 }

@@ -38,10 +38,11 @@ fn raw_hashes_at(source: string, index: int, end: int) -> int {
 
 // A raw literal opens at `index`, and its `r` is a fresh token: the byte
 // before it is not an identifier byte, so a name that ends in `r` — `str`,
-// `ptr` — right before a `"` is not read as a raw prefix. This is the rule
-// the lexer already keeps by scanning a whole identifier before it ever
-// looks for `r"`, restated so a walker re-reading a string token agrees with
-// how that token was lexed.
+// `ptr` — right before a `"` is not read as a raw prefix. At the top level
+// the lexer keeps this by scanning a whole identifier before it ever looks
+// for `r"`; inside an interpolation it walks byte by byte and asks here.
+// One rule, so the lexer and every walker re-reading a string token find
+// the same raw literals in the same places.
 fn raw_open_at(source: string, index: int, end: int) -> bool {
     if raw_hashes_at(source, index, end) < 0 { return false }
     if index > 0 && is_ident_byte(source.byte_at(index - 1)) {

@@ -202,6 +202,23 @@ fn tree_parse_int(source: string) -> int {
                     clean.slice(1, clean.len())),
             64)
     }
+    // `to_int()` answers the nearest representable value rather than an
+    // error when the digits run past i64, so the wrapping branch below is
+    // unreachable through it: "18446744073709551615" comes back as i64's
+    // maximum, not as a failure. A magnitude too large for i64 is therefore
+    // decided from the digits, and its bit pattern is what comes back — a
+    // u64 literal at or above 2^63 is the whole reason this function must
+    // answer bits and not a nearest number.
+    let negative: bool = clean.starts_with("-")
+    let magnitude: string =
+        if negative { clean.slice(1, clean.len()) } else { clean }
+    if !integer_literal_fits(magnitude, "int", negative) {
+        let bits: u64 = tree_parse_unsigned(magnitude)
+        if negative {
+            return tree_signed_from_bits((0 as u64) - bits, 64)
+        }
+        return tree_signed_from_bits(bits, 64)
+    }
     match clean.to_int() {
         ok(value) => { return value }
         err(error) => {
