@@ -141,6 +141,19 @@ class Named extends Boxed {
     override fn tag() -> string { return "named" }
 }
 
+// Deep writes nothing of its own either, so its copy of the inherited body
+// is raised when main builds one — after shelf_tag has been emitted.
+class Deep extends Boxed {
+    fn init() { super.init() }
+}
+
+// This runs first and raises Boxed's copy, which is what makes the hazard
+// live: with no raise at all the row reads null and the class drops out on
+// its own, but with Boxed's copy in hand a rule that did not ask whether the
+// row was fixed would hand Deep the symbol raised for Boxed, and Deep's
+// descriptor ends up holding its own.
+fn warm_shelf() -> string { return new Boxed().tag() }
+
 fn shelf_tag(value: Boxed) -> string { return value.tag() }
 
 // ---- another instantiation is another receiver --------------------------
@@ -263,8 +276,10 @@ fn main() {
     }
     io.println(quint_line)
 
+    io.println(warm_shelf())
     io.println(shelf_tag(new Boxed()))
     io.println(shelf_tag(new Named()))
+    io.println(shelf_tag(new Deep()))
 
     io.println("{read_int(new IntSource())}")
     io.println(read_text(new TextSource()))
