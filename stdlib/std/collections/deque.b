@@ -21,6 +21,10 @@
 //     and its lone emptied block is handed to `spare`, never left in place;
 //   * front_count + back_count == len().
 //
+// The first two hold at every method boundary. Inside a pop, a block sits
+// empty for the two statements between the element leaving it and the block
+// leaving the side; no reader depends on it, because of the first rule below.
+//
 // ---- why the shape lives in one object ------------------------------------
 //
 // A user's `deinit` can run in the middle of any method here. The cycle
@@ -49,25 +53,29 @@
 // which made `first()` read slot -1. This costs nothing: the claimed size is a
 // subtract where the block's length was a load.
 //
-// **A rebalance publishes a whole new shape with a single store.** Moving half
+// **A crossover publishes a whole new shape with a single store.** Moving half
 // of one end to the other changes all four cells, and no ordering of four
-// writes leaves the content right at every step — the elements would have to
-// be claimed by both sides at once, or by neither. So `rebalance` never writes
-// the live shape at all: it reads it, builds a complete replacement beside it,
-// and swaps it in with `self.shape = built`. Before that store this deque is
-// entirely the old shape and after it entirely the new one; there is no third
-// state for a deinit to find. Everything the rebuild allocates is allocated
-// while the deque is still exactly what it says it is.
+// writes leaves the content right at every step — the moved elements would
+// have to be claimed by both sides at once, or by neither. So
+// `crossover_to_front` and `crossover_to_back` never write the live shape at
+// all: each reads it, builds a complete replacement beside it, and swaps it in
+// with `self.shape = built`. Before that store this deque is entirely the old
+// shape and after it entirely the new one; there is no third state for a
+// deinit to find. Everything the rebuild allocates is allocated while the
+// deque is still exactly what it says it is.
 //
-// The rebuild copies the elements rather than carrying blocks across by their
-// handle. It has to: a block changing sides must have its contents reversed,
-// and reversing it in place is a write to storage the live shape is still
-// answering from — and a `List` block cannot be in two block maps at once, so
-// it cannot be shared with the replacement either. The copy is O(n) at a
-// rebalance, which the halving keeps to O(1) per pop amortized: draining n
-// elements from the far end copies n + n/2 + n/4 + ... = 2n in total, two
+// The replacement copies its blocks — `slice` or `clone`, one bulk copy per
+// block — rather than carrying them across by their handle. It has to: a block
+// changing sides must have its contents reversed, and reversing it where it
+// lies is a write to storage the live shape is still answering from, while a
+// `List` block cannot sit in two block maps at once, so the blocks that stay
+// cannot be shared with the replacement either. That copies the whole of one
+// side per crossover, which the halving keeps to O(1) per pop amortized:
+// draining n elements from the far end copies n + n/2 + n/4 + ... = 2n, two
 // element copies per pop. Moving ALL of the far end instead would let pops
-// alternating between the two ends pay O(n) every turn.
+// alternating between the two ends pay O(n) every turn. On `bench/deque.b` the
+// whole row costs about a fifth more than the torn version it replaces, and
+// the indexed-read phase is unchanged.
 
 package collections
 
