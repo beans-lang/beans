@@ -2927,6 +2927,83 @@ partial class LlvmTextEmitter {
         return "{output}  store {llvm} {result}, ptr {address.value}\n"
     }
 
+    // A method that declares type parameters of its own binds them at the
+    // call site, so it holds no dispatch row and nothing can replace it: the
+    // receiver's static type alone decides which body runs, and that body
+    // may be one a base declares. Walk the receiver's chain nearest owner
+    // first for the template — the same walk method_slot_symbol makes for
+    // symbols — pinning each link's own arguments on the way, and raise the
+    // instance from there.
+    //
+    // Reading only the receiver's own declaration left an inherited generic
+    // method with no template to raise: the call fell through to dispatch
+    // and read a row that was never going to be filled (#89).
+    //
+    // `none` means no link declares it, so the caller carries on; `some("")`
+    // is a raise that failed and has already reported.
+    fn emit_inherited_generic_call(
+        function: MirFunction,
+        instruction: MirInstruction,
+        values: Map<int, string>,
+        declaration: HirDeclaration,
+        receiver: HirType) -> Option<string> {
+        let chain: List<HirDeclaration> =
+            self.class_chain(declaration)
+        let chain_types: List<HirType> =
+            self.class_chain_types(declaration, receiver)
+        if chain.len() != chain_types.len() { return none }
+        var index: int = chain.len()
+        for index > 0 {
+            index -= 1
+            let link: HirDeclaration = chain[index]
+            let template: string =
+                "{link.qualified}.{instruction.text}"
+            var owns_generics: bool = false
+            match self.generic_templates.get(template) {
+                some(body) => {
+                    owns_generics = body.generics.len() != 0
+                }
+                none => {}
+            }
+            // Every method of a generic class is a template, but only one
+            // that declares type parameters of its own is bound here: the
+            // rest hold rows and are raised under the inheriting class's
+            // own name, so a subclass's override must win over the base's
+            // body exactly as it does for any other method.
+            if !owns_generics { continue }
+            let link_type: HirType = chain_types[index]
+            var bindings: Map<string, HirType> = {}
+            // A non-generic owner is its own instance, so its qualified
+            // name is the whole key. A generic one needs the arguments the
+            // `extends` pinned in the key as well, or two subclasses that
+            // pin one base differently would raise different bodies under
+            // one name.
+            var base_name: string = template
+            if link.generics.len() != 0 {
+                if link.generics.len() !=
+                       link_type.args.len() {
+                    self.fail(
+                        instruction,
+                        "LLVM emitter needs the receiver's type arguments")
+                    return some("")
+                }
+                for slot: int in 0..link.generics.len() {
+                    bindings[link.generics[slot]] =
+                        link_type.args[slot]
+                }
+                bindings[link.qualified] = link_type
+                bindings[link.name] = link_type
+                base_name =
+                    "{render_hir_type(link_type)}.{instruction.text}"
+            }
+            return some(
+                self.emit_generic_method_instance(
+                    function, instruction, values,
+                    template, base_name, bindings))
+        }
+        return none
+    }
+
     // Instantiate one generic method call: explicit type arguments seed
     // the bindings — the only way to bind a generic the signature never
     // mentions — unification against the concrete operand and result
@@ -3055,6 +3132,22 @@ partial class LlvmTextEmitter {
                             method_template,
                             bindings)
                     }
+                    // The exact class may inherit the template rather than
+                    // declare it. Only a call with no slot is bound this
+                    // way — anything that holds a row is found through the
+                    // row. A generic exact class already returned above, so
+                    // its own qualified name is the whole instance here and
+                    // the chain climbs from there.
+                    if instruction.dispatch_slot == "" {
+                        match self.emit_inherited_generic_call(
+                                  function, instruction,
+                                  values, declaration,
+                                  new HirType(
+                                      declaration.qualified)) {
+                            some(text) => { return text }
+                            none => {}
+                        }
+                    }
                     let slot: string =
                         if instruction.dispatch_slot != "" {
                             instruction.dispatch_slot
@@ -3175,6 +3268,28 @@ partial class LlvmTextEmitter {
                         method_template,
                         method_template,
                         bindings)
+                }
+                // A call with no slot holds no row to read, so the body
+                // is the one the receiver's static type names: the
+                // receiver may inherit the template, from a plain base or
+                // from one pinned at an argument. Anything that does hold
+                // a row falls through to the table below, where a
+                // subclass's override wins.
+                if instruction.dispatch_slot == "" {
+                    match self.emit_inherited_generic_call(
+                              function, instruction, values,
+                              declaration, receiver_type) {
+                        some(text) => { return text }
+                        none => {}
+                    }
+                    // Nothing left to try: dispatching would load whatever
+                    // the row happens to contain. The checker refuses every
+                    // program that reaches here, so this is the assertion
+                    // that it did, not a shape left unhandled.
+                    self.fail(
+                        instruction,
+                        "LLVM emitter cannot find a body for '{render_hir_type(receiver_type)}.{instruction.text}'")
+                    return ""
                 }
                 if declaration.kind == "class" {
                     return self.emit_guarded_dynamic_call(

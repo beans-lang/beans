@@ -177,10 +177,11 @@ expect_dispatch main.Job.start reads-the-table      # two concrete subclasses
 expect_dispatch main.via_caller reads-the-table     # the default is overridden
 expect_dispatch main.Caller.shout reads-the-table
 expect_dispatch main.via_producer reads-the-table   # a generic implementor
-# A method with generics of its own has no row: its symbol is raised per
-# instantiation, at whatever point in the emit some call site asks for it.
-# Settling on it would hand this call another call site's type arguments.
-expect_dispatch main.ask_generic reads-the-table
+# A method with generics of its own has no row at all: its symbol is raised
+# per instantiation, so the body is the one the receiver's static type names
+# and the call is settled on that instantiation — this call's own type
+# arguments, never the ones raise_tally raised first (#89).
+expect_dispatch main.ask_generic settled
 # A body inherited from a generic base is raised under each subclass's own
 # name, partway through the emit, so no answer taken before the raise stands.
 expect_dispatch main.via_intstore reads-the-table

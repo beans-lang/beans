@@ -184,6 +184,18 @@ fn hir_method_slot(owner: string, name: string,
     return "pkg:{symbol_package(owner)}:{name}"
 }
 
+// The slot a call that statically resolved to this method dispatches
+// through, or "" when the method holds no row to dispatch through. A method
+// with no slot is bound where it was resolved, and both backends read the
+// same empty string to mean it: the native emitter names the body it
+// resolved and the tree interpreter skips its runtime-class walk.
+fn hir_call_dispatch_slot(function: HirFunction) -> string {
+    if function.dispatch_slots.len() == 0 { return "" }
+    return hir_method_slot(
+        function.owner, function.name,
+        function.is_public, function.is_private)
+}
+
 // A type's own string form: a `to_string(self) -> string` with a body and no
 // argument beyond the receiver. When present, `{obj}` renders through it
 // rather than through the derived Name { field: value } form, so a class that
@@ -311,24 +323,28 @@ class HirFunction {
     // selector table numbers one row per slot, and the interpreter's
     // runtime-class walk accepts a body only when it carries the slot.
     //
-    // Three kinds of method are handed no receiver to pick with, and none
-    // of them may sit in a row:
+    // Four kinds of method have no single body a row could hold, and none
+    // of them may sit in one:
     //
     //   - a free function, which has no owner;
     //   - `init`, which runs on storage that has no descriptor yet, and
     //     `deinit`, whose row is the one @beans_deinit_sel publishes;
     //   - a `static fn`, which declares no `self` at all — its row named a
     //     receiverless function and every dynamic call through the slot
-    //     handed it one anyway (#88).
+    //     handed it one anyway (#88);
+    //   - a method that declares type parameters of its own, which is a
+    //     template with one function per instantiation: a row holds one
+    //     pointer, so it stayed null and the call jumped through it (#89).
     //
     // Modifiers are read after construction, so lower_function calls this
-    // again once `static` is known.
+    // again once `static` and the type parameters are known.
     fn assign_dispatch_slot() {
         self.dispatch_slots = []
         if self.owner == "" ||
            self.name == "init" ||
            self.name == "deinit" ||
-           self.is_static {
+           self.is_static ||
+           self.generics.len() != 0 {
             return
         }
         self.dispatch_slots.push(
@@ -1385,9 +1401,26 @@ class SignatureChecker {
             module_words(node.value).contains("abstract")
         function.is_override =
             module_words(node.value).contains("override")
-        // `static` is read above, after construction, and it decides
-        // whether this method can sit in a dispatch row at all.
+        // `static` and the method's own type parameters are read above,
+        // after construction, and both decide whether this method can sit
+        // in a dispatch row at all.
         function.assign_dispatch_slot()
+        // A method that declares type parameters of its own binds them at
+        // the call site, so it is a template with one function per
+        // instantiation and no single body a row could hold. Both forms
+        // below exist only to be reached through a row, and both checked
+        // clean before #89 and then jumped through a null one.
+        if function.generics.len() != 0 {
+            if owner_is_interface {
+                self.fail(
+                    file.path, node,
+                    "interface method '{name}' can't declare type parameters of its own — an interface is reached only through a dispatch row, which holds one body, and this method has one per instantiation; put the parameter on the interface as 'interface {symbol_name(owner)}<{function.generics.join(", ")}>' or declare the method on the class")
+            } else if function.is_abstract {
+                self.fail(
+                    file.path, node,
+                    "abstract method '{name}' can't declare type parameters of its own — an abstract method exists to be replaced and reached through a dispatch row, which holds one body, and this method has one per instantiation")
+            }
+        }
         function.required_feature =
             required_feature_from_value(node.value)
         for child: AstNode in node.children {

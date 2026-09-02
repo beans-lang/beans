@@ -3747,10 +3747,18 @@ class TreeInterpreter {
     //
     // Breadth-first from the runtime type, so a nearer override wins over the
     // one it overrides, and both relation kinds are followed.
+    //
+    // The slot is what makes a body a candidate, so it is required: only a
+    // method that holds a row is picked by a receiver's runtime class, and
+    // the caller does not ask when the call carries no slot. Accepting ""
+    // as "any body of this name" would have matched a static or a template
+    // the native backend binds statically, which is the disagreement #88
+    // and #89 were.
     fn dynamic_method(type_name: string,
                       method: string,
                       dispatch_slot: string) ->
         Option<HirFunction> {
+        if dispatch_slot == "" { return none }
         var pending: List<string> = [type_name]
         var seen: Map<string, bool> = {}
         var cursor: int = 0
@@ -3765,9 +3773,8 @@ class TreeInterpreter {
                     // a declaration without a body is the interface saying
                     // the method exists, not supplying one to run
                     if function.has_body &&
-                       (dispatch_slot == "" ||
-                        function.dispatch_slots.contains(
-                            dispatch_slot)) {
+                       function.dispatch_slots.contains(
+                           dispatch_slot) {
                         return some(function)
                     }
                 }

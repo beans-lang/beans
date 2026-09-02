@@ -58,6 +58,52 @@ check_bad test/cases/generic_calls_pkg_bad/main.b \
 check_bad test/cases/generic_calls_pkg_bad/main.b \
     "package 'tools' (app.tools) has no function 'missing'"
 
+# A method that declares type parameters of its own binds them at the call
+# site, so it is a template with one function per instantiation and holds no
+# dispatch row. The receiver's static type decides which body runs, and that
+# body may be one a base declares — read only under the receiver's own
+# declaration, an inherited one had no template to raise, so the call fell
+# through to dispatch and read a row that was never going to be filled (#89).
+#
+# The interpreter answered the whole time, so the golden is its answers and
+# both builds have to reach them: one link, two links, a base pinned at two
+# different arguments, two links below such a base, a receiver whose `new` is
+# in sight, a call through `self`, a `priv` template of the subclass's own,
+# and several instantiations off one inherited template.
+run_all_ways test/cases/generic_method_inherit.b \
+    test/cases/generic_method_inherit.out
+
+# And every form that exists only to be reached through a row is refused at
+# the declaration. Each of these checked clean before: the interface and
+# abstract ones jumped through a null row natively while the interpreter
+# answered, and a replaced body split the backends the other way — native
+# bound whichever template the receiver's static type named while the
+# interpreter dispatched on the runtime class, from a program the checker had
+# just asked to mark `override`.
+check_bad test/cases/diagnostics_generic_dispatch_bad.b \
+    "interface method 'pick' can't declare type parameters of its own"
+check_bad test/cases/diagnostics_generic_dispatch_bad.b \
+    "interface method 'choose' can't declare type parameters of its own"
+check_bad test/cases/diagnostics_generic_dispatch_bad.b \
+    "interface method 'make' can't declare type parameters of its own"
+check_bad test/cases/diagnostics_generic_dispatch_bad.b \
+    "abstract method 'pick' can't declare type parameters of its own"
+check_bad test/cases/diagnostics_generic_dispatch_bad.b \
+    "'pick' declares type parameters of its own, so it binds them at the call site and holds no dispatch row — it cannot replace, or be replaced by, the 'pick' on Carrier"
+check_bad test/cases/diagnostics_generic_dispatch_bad.b \
+    "Carrier's 'pick' declares type parameters of its own"
+check_bad test/cases/diagnostics_generic_dispatch_bad.b \
+    "'plain' declares type parameters of its own"
+# eight declarations, eight errors: no cascade, and nothing else refused
+./build/beansc check test/cases/diagnostics_generic_dispatch_bad.b \
+    >"$tmp/generic_dispatch" 2>&1 || true
+test "$(grep -c ': error:' "$tmp/generic_dispatch")" -eq 8
+if ./build/beansc build test/cases/diagnostics_generic_dispatch_bad.b \
+       -o "$tmp/generic_dispatch_bin" >/dev/null 2>&1; then
+    echo "a generic method in a dispatch row still built" >&2
+    exit 1
+fi
+
 # Seeded differential: programs that lean on the `<` ambiguity — chained
 # comparisons beside generic calls, nested argument lists, both operand
 # orders — with the expected output computed by the generator. The

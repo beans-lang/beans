@@ -1785,9 +1785,20 @@ instantiation's argument. Either way the interface stands as a type of its
 own: `Producer<int>` is a variable, parameter and element type that
 dispatches dynamically, and `Producer<int>` and `Producer<string>` are two
 unrelated types. A chain pins arguments the same way, so `interface
-IntProducer extends Producer<int>` answers `int`. A method that declares
-generics of its own binds them at the call site and so cannot be reached
-through an interface.
+IntProducer extends Producer<int>` answers `int`.
+
+**A method that declares generics of its own does not dispatch.** It binds
+them at the call site, so it is a template with one function per
+instantiation and there is no single body a method table could hold. The
+checker refuses every form that exists only to be reached through one: an
+interface may not declare such a method, with or without a default body; an
+`abstract fn` may not declare one; and a subclass may not replace one, nor
+replace a plain method with one — each is refused at the declaration naming
+the method it collides with. What stays is the ordinary case: the receiver's
+static type picks the body, walking its base chain the way any other name
+lookup does, so a subclass inherits its base's generic method and a base
+pinned at an argument — `class IntHolder extends Holder<int>` — raises the
+instantiation that argument names.
 
 A generic bound carries type arguments the same way: `fn read<P implements
 Producer<int>>(p: P)` accepts only implementors pinned to `int`, and a bound

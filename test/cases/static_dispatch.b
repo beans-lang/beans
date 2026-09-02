@@ -250,17 +250,20 @@ class Point implements Eq {
 //
 // `raise_tally` runs first and raises the int instantiation, so by the time
 // `ask_generic` is emitted the template's own name does hold a symbol —
-// which is the whole hazard, and without the check `ask_generic` would bind
-// to it and pass a string where that instantiation reads an int.
+// which is the whole hazard: binding to it would pass a string where that
+// instantiation reads an int. The bodies below read their argument, so the
+// two instantiations answer different numbers and a mixed-up binding is a
+// wrong answer rather than a lucky one.
 //
-// `ask_generic` is deliberately never called: dispatching an inherited
-// generic method through a subclass reads a row that was never filled, and
-// that is a separate native fault. What is pinned here is the emitted form.
+// The call is settled because there is nothing to settle: a method with
+// generics of its own holds no row, so the body is the one the receiver's
+// static type names — found by walking that type's base chain, which is how
+// `SubTally` reaches `Tally.pick` at all (#89).
 
 class Tally {
     fn init() {}
 
-    fn pick<T>(value: T) -> int { return 1 }
+    fn pick<T>(value: T) -> T { return value }
 
     fn count() -> int { return 3 }
 }
@@ -270,11 +273,11 @@ class SubTally extends Tally {
 }
 
 fn raise_tally(value: Tally) -> int {
-    return value.pick<int>(1)
+    return value.pick<int>(1234)
 }
 
-fn ask_generic(value: SubTally) -> int {
-    return value.pick<string>("s")
+fn ask_generic(value: SubTally) -> string {
+    return value.pick<string>("picked")
 }
 
 // ---- a generic base raises its bodies on demand --------------------------
@@ -375,6 +378,10 @@ fn main() {
     io.println(via_point(new Point(4)))
     io.println(via_tally(new SubTally()))
     io.println(raise_tally(new Tally()))
+    // an inherited generic method reached through the subclass: the answer
+    // has to be this call's own instantiation, not the one raise_tally
+    // raised first
+    io.println(ask_generic(new SubTally()))
     io.println(via_intstore(new IntStore()))
     io.println(via_deepstore(new DeepStore()))
 

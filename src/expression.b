@@ -2673,6 +2673,31 @@ class ExpressionChecker {
             }
             return
         }
+        // A method that declares type parameters of its own binds them at
+        // the call site, so it is a template with one function per
+        // instantiation and holds no dispatch row. Nothing can replace it
+        // and it can replace nothing: before #89 this pair checked clean
+        // and then split the backends — the native build bound whichever
+        // template the receiver's static type named, while the interpreter
+        // dispatched on the runtime class and answered the subclass's — a
+        // silent wrong answer on one side, from a program the checker had
+        // just asked to mark `override`.
+        for inherited: InheritedMethod in parents {
+            if function.generics.len() == 0 &&
+               inherited.function.generics.len() == 0 {
+                continue
+            }
+            let generic_side: string =
+                if function.generics.len() != 0 {
+                    "'{function.name}' declares type parameters of its own"
+                } else {
+                    "{self.diagnostic_symbol(inherited.function.owner)}'s '{function.name}' declares type parameters of its own"
+                }
+            self.fail(
+                function.syntax,
+                "{generic_side}, so it binds them at the call site and holds no dispatch row — it cannot replace, or be replaced by, the '{function.name}' on {self.diagnostic_symbol(inherited.function.owner)}; give one of them a different name")
+            return
+        }
         var needs_override: bool = false
         for inherited: InheritedMethod in parents {
                 let parent: HirFunction = inherited.function
@@ -9120,12 +9145,12 @@ class ExpressionChecker {
                                     node, "method_call",
                                     function.name, result_type)
                             result.resolved = function.qualified
+                            // "" when this method holds no row: a
+                            // method with type parameters of its own is a
+                            // template, so the body is the one resolved
+                            // here and neither backend looks further.
                             result.dispatch_slot =
-                                hir_method_slot(
-                                    function.owner,
-                                    function.name,
-                                    function.is_public,
-                                    function.is_private)
+                                hir_call_dispatch_slot(function)
                             if declaration.kind == "struct" &&
                                function.is_inout {
                                 if receiver_syntax.kind != "name" {
@@ -10268,10 +10293,7 @@ class ExpressionChecker {
                         function.name, produced)
                 call.resolved = function.qualified
                 call.dispatch_slot =
-                    hir_method_slot(
-                        function.owner, function.name,
-                        function.is_public,
-                        function.is_private)
+                    hir_call_dispatch_slot(function)
                 call.children.push(carried)
                 return some(call)
             }
