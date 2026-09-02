@@ -3713,10 +3713,15 @@ class TreeInterpreter {
         self.release_fields(object.text, object)
     }
 
+    // A map key is an Eq key, not an `==` operand: two NaNs with the same
+    // bits are one key and the two zeros are two, matching slot_eq kind 1 in
+    // runtime/beans_rt.c. With IEEE equality here a NaN key matched nothing
+    // stored and the key string it fell back to happened to collide, so the
+    // tree replaced where the native backend appended.
     fn map_key(map: TreeValue,
                key: TreeValue) -> string {
         for stored: TreeValue in map.map_keys {
-            if tree_value_equal(stored, key) {
+            if tree_value_total_equal(stored, key) {
                 return tree_value_key(stored)
             }
         }
@@ -8658,7 +8663,8 @@ class TreeInterpreter {
             node.value == "index_of") &&
            arguments.len() == 2 {
             for index: int in 0..receiver.items.len() {
-                if tree_value_equal(
+                // Eq, not `==`: the native scan is slot_eq
+                if tree_value_total_equal(
                        receiver.items[index],
                        arguments[1]) {
                     if node.value == "contains" {

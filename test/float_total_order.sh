@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# `Order` and `Eq` on a float are IEEE 754 totalOrder and bit equality, while
+# the operators stay IEEE (issue #84, spec/SYNTAX.md "Number rules").
+#
+# The transcript is checked three ways on purpose. Interpreter against native
+# catches the half of #84 where the two disagreed — a NaN map key was
+# write-only natively and every re-insert appended. Both against a committed
+# golden catches the other half, where both backends agreed and both were
+# wrong: a partial order silently mis-sorts and silently overwrites, and no
+# parity diff can see that. ASan covers the runtime's new key path.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/beans-float-total-order.XXXXXX")
+trap 'rm -rf "$tmp"' EXIT
+
+echo "checking float/f32 totalOrder in containers and sorts"
+./build/beansc run test/cases/float_total_order.b >"$tmp/interp"
+./build/beansc build test/cases/float_total_order.b -o "$tmp/native" >"$tmp/build"
+"$tmp/native" >"$tmp/native.out"
+diff -u test/cases/float_total_order.out "$tmp/interp"
+diff -u "$tmp/interp" "$tmp/native.out"
+
+# Guard the two rules the transcript exists for, so a regenerated golden that
+# quietly went back to IEEE still fails here.
+grep -q '^nan == nan: false$' "$tmp/interp"
+grep -q '^nan < 1.0: false$' "$tmp/interp"
+grep -q '^-0.0 == 0.0: true$' "$tmp/interp"
+grep -q '^issue case \[1, 2, 3, +nan\]$' "$tmp/interp"
+grep -q '^whole line \[-nan, -inf, -1, -0.0, +0.0, 1, inf, +nan\]$' "$tmp/interp"
+grep -q '^after 2nd NaN insert: len=2 get=some(100)$' "$tmp/interp"
+grep -q '^1000 inserts -> len=1 get=some(999)$' "$tmp/interp"
+
+echo "checking the runtime key path under AddressSanitizer"
+clang -O1 -g -pthread -fsanitize=address -Wno-override-module \
+    build/float_total_order.ll build/beans_rt.c -lm -o "$tmp/asan"
+BEANS_NO_POOL=1 "$tmp/asan" >"$tmp/asan.out" 2>"$tmp/asan.err"
+if grep -q 'AddressSanitizer' "$tmp/asan.err"; then
+    cat "$tmp/asan.err" >&2
+    exit 1
+fi
+diff -u "$tmp/interp" "$tmp/asan.out"
+
+echo "float total order ok"

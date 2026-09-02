@@ -167,6 +167,7 @@ test-semantics: $(BIN)
 	bash ./test/list_header_cache.sh
 	./test/maps.sh
 	bash ./test/map_inline.sh
+	bash ./test/float_total_order.sh
 	./test/traits.sh
 	bash ./test/display_width.sh
 	bash ./test/derived_render.sh
@@ -297,6 +298,7 @@ test-core: $(BIN)
 	bash ./test/list_header_cache.sh
 	./test/maps.sh
 	bash ./test/map_inline.sh
+	bash ./test/float_total_order.sh
 	./test/traits.sh
 	bash ./test/display_width.sh
 	bash ./test/derived_render.sh

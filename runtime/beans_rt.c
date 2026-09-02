@@ -4200,11 +4200,27 @@ long long beans_is_a(long long id, long long target) {
 struct BDec;
 int beans_dec_cmp(struct BDec* a, struct BDec* b);
 #endif
+// IEEE 754 totalOrder as an integer key. `<` on a float is IEEE — NaN is
+// unordered with everything, and the two zeros compare equal — which is not
+// an order at all, so a container that binary-searches or sorts on it gives
+// wrong answers rather than unsorted ones. Flipping the magnitude bits of a
+// negative turns the whole float line into signed integers that compare in
+// totalOrder: -NaN < -inf < ... < -0.0 < +0.0 < ... < +inf < +NaN. Two floats
+// share a key exactly when they share their bits, so key equality is the
+// equality that goes with this order.
+static long long rt_f64_total_key(long long raw) {
+    unsigned long long bits = (unsigned long long)raw;
+    unsigned long long flip = 0ULL - (bits >> 63); // all ones when negative
+    return (long long)(bits ^ (flip & 0x7fffffffffffffffULL));
+}
+static int rt_f32_total_key(unsigned bits) {
+    unsigned flip = 0u - (bits >> 31);
+    return (int)(bits ^ (flip & 0x7fffffffu));
+}
 static int slot_cmp(long long a, long long b, long long kind) {
     if (kind == 1) {
-        double x, y;
-        memcpy(&x, &a, 8);
-        memcpy(&y, &b, 8);
+        long long x = rt_f64_total_key(a);
+        long long y = rt_f64_total_key(b);
         return x < y ? -1 : x > y ? 1 : 0;
     }
     if (kind == 2) return beans_str_cmp((char*)a, (char*)b);
@@ -4218,10 +4234,8 @@ static int slot_cmp(long long a, long long b, long long kind) {
         return x < y ? -1 : x > y ? 1 : 0;
     }
     if (kind == 6) {
-        unsigned aa = (unsigned)a, bb = (unsigned)b;
-        float x, y;
-        memcpy(&x, &aa, 4);
-        memcpy(&y, &bb, 4);
+        int x = rt_f32_total_key((unsigned)a);
+        int y = rt_f32_total_key((unsigned)b);
         return x < y ? -1 : x > y ? 1 : 0;
     }
     return a < b ? -1 : a > b ? 1 : 0;
@@ -4234,30 +4248,24 @@ long long beans_str_eq(char* a, char* b) {
 }
 // equality kinds (separate lattice from the ordering kinds above), matching
 // the interpreter's value_eq arm for arm: 0 raw slot (ints, bools, pointer
-// identity), 1 f64 by IEEE value (NaN equals nothing), 2 string content,
-// 3 decimal value, 4 caller-supplied structural eq (enums, Bytes), 5 never
-// equal (maps and resource handles — value_eq's default arm)
+// identity), 1 f64 by bit pattern, 2 string content, 3 decimal value,
+// 4 caller-supplied structural eq (enums, Bytes), 5 never equal (maps and
+// resource handles — value_eq's default arm), 6 f32 by bit pattern.
+// A float compares by its bits here, not by `==`: this is the equality that
+// belongs with slot_cmp's totalOrder above, and IEEE `==` is not one — it
+// made a NaN key write-only (it never equals the key already stored, so
+// every re-insert appended and no read could ever find it) while calling
+// -0.0 and +0.0 one key that sorts as two.
 static long long slot_eq(long long a, long long b, long long kind,
                          long long (*eq)(long long, long long)) {
     if (kind == 0) return a == b;
-    if (kind == 1) {
-        double x, y;
-        memcpy(&x, &a, 8);
-        memcpy(&y, &b, 8);
-        return x == y;
-    }
+    if (kind == 1) return a == b;
     if (kind == 2) return beans_str_eq((char*)a, (char*)b);
 #if BEANS_RT_DECIMAL
     if (kind == 3) return beans_dec_cmp((struct BDec*)a, (struct BDec*)b) == 0;
 #endif
     if (kind == 4) return eq(a, b) != 0;
-    if (kind == 6) {
-        unsigned aa = (unsigned)a, bb = (unsigned)b;
-        float x, y;
-        memcpy(&x, &aa, 4);
-        memcpy(&y, &bb, 4);
-        return x == y;
-    }
+    if (kind == 6) return (unsigned)a == (unsigned)b;
     return 0;
 }
 // hashes for the map index, one per equality kind. The contract is only that
@@ -4274,18 +4282,15 @@ static unsigned long long beans_mix64(unsigned long long x) {
     return x;
 }
 long long beans_slot_mix(long long v) { return (long long)beans_mix64((unsigned long long)v); }
+// Equal keys hash equal, and a float's equality is its bits (slot_eq kind 1),
+// so the bits are the whole hash. This used to fold -0.0 onto +0.0 because
+// they were one key then; they are two now, and folding them would only cost
+// a collision.
 long long beans_f64_hash(long long v) {
-    double x;
-    memcpy(&x, &v, 8);
-    if (x == 0.0) return (long long)beans_mix64(0); // -0.0 == 0.0
     return (long long)beans_mix64((unsigned long long)v);
 }
 long long beans_f32_hash(long long v) {
-    unsigned bits = (unsigned)v;
-    float x;
-    memcpy(&x, &bits, 4);
-    if (x == 0.0f) return (long long)beans_mix64(0);
-    return (long long)beans_mix64(bits);
+    return (long long)beans_mix64((unsigned long long)(unsigned)v);
 }
 long long beans_str_hash(char* s) {
     long long n = beans_slen(s);

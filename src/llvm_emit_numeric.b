@@ -631,11 +631,21 @@ partial class LlvmTextEmitter {
             let element_llvm: string =
                 self.type_text(element)
             var compare: string = ""
+            // An element compares the way `Eq` compares it, so a float
+            // element goes through its bits — the same rule emit_inline_equal
+            // states, reached here because a bare array `==` never builds one.
+            var compared_llvm: string = element_llvm
             if llvm_type_is_integer(element) ||
                self.type_is_raw_pointer(element) {
                 compare = "icmp eq"
             } else if llvm_type_is_float(element) {
-                compare = "fcmp oeq"
+                compare = "icmp eq"
+                compared_llvm =
+                    if element_llvm == "float" {
+                        "i32"
+                    } else {
+                        "i64"
+                    }
             }
             if llvm == "" || compare == "" {
                 self.fail(
@@ -649,7 +659,19 @@ partial class LlvmTextEmitter {
                 0..operand_type.array_length {
                 let id: int = self.fresh()
                 output =
-                    "{output}  %array.eq.left{id} = extractvalue {llvm} {left}, {index}\n  %array.eq.right{id} = extractvalue {llvm} {right}, {index}\n  %array.eq.same{id} = {compare} {element_llvm} %array.eq.left{id}, %array.eq.right{id}\n"
+                    "{output}  %array.eq.left{id} = extractvalue {llvm} {left}, {index}\n  %array.eq.right{id} = extractvalue {llvm} {right}, {index}\n"
+                var left_word: string =
+                    "%array.eq.left{id}"
+                var right_word: string =
+                    "%array.eq.right{id}"
+                if compared_llvm != element_llvm {
+                    output =
+                        "{output}  %array.eq.lw{id} = bitcast {element_llvm} {left_word} to {compared_llvm}\n  %array.eq.rw{id} = bitcast {element_llvm} {right_word} to {compared_llvm}\n"
+                    left_word = "%array.eq.lw{id}"
+                    right_word = "%array.eq.rw{id}"
+                }
+                output =
+                    "{output}  %array.eq.same{id} = {compare} {compared_llvm} {left_word}, {right_word}\n"
                 if all == "" {
                     all = "%array.eq.same{id}"
                 } else {

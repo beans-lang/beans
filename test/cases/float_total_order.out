@@ -1,0 +1,80 @@
+== operators stay IEEE ==
+nan == nan: false
+nan != nan: true
+nan < 1.0: false
+nan > 1.0: false
+nan <= 1.0: false
+nan >= 1.0: false
+1.0 < nan: false
+-0.0 == 0.0: true
+-0.0 < 0.0: false
+0.0 <= -0.0: true
+-nan == nan: false
+1.0 < 2.0: true
+inf > 1.0: true
+-inf < -1.0: true
+== issue #84 repro: Map<float, int> keyed on a NaN ==
+len=2 get=some(99) contains=true
+after 2nd NaN insert: len=2 get=some(100)
+iterated keys=2
+== a NaN key stays one key however often it is written ==
+1000 inserts -> len=1 get=some(999)
+== +NaN, -NaN and a NaN payload are separate keys ==
+len=3
+get(+nan)=some(1) get(-nan)=some(2) get(payload)=some(3)
+replace -nan -> len=3 get=some(20)
+keys=[-nan, +nan, +nan(payload)]
+remove(-nan)=true len=2 get(-nan)=none get(+nan)=some(1)
+remove(-nan) again=false len=2
+== the two zeros are two keys ==
+len=2 get(+0.0)=some(1) get(-0.0)=some(2)
+keys=[-0.0, +0.0]
+remove(+0.0)=true len=1 get(-0.0)=some(2)
+== OrderedMap agrees ==
+len=3 get(nan)=some(4) get(-0.0)=some(2)
+insertion order=+nan=4, -0.0=2, +0.0=3
+== sort: n = 1, 2, many ==
+n=1 [+nan]
+n=2 nan first [1, +nan]
+n=2 nan last [1, +nan]
+issue case [1, 2, 3, +nan]
+several nans [-nan, 1, 2, 3, +nan, +nan]
+all nans [-nan, +nan, +nan, +nan(payload)] len=4
+whole line [-nan, -inf, -1, -0.0, +0.0, 1, inf, +nan]
+max=+nan min=-nan
+empty max=none min=none
+== a big sort keeps every NaN and orders the rest ==
+len=5000 -nan first=390 +nan last=715 numbers=3895 ascending=true
+== contains, index_of and list equality use Eq ==
+contains(+nan): true
+contains(-nan): true
+contains(payload nan): false
+index_of(+nan)=some(1) index_of(-nan)=some(3)
+contains(-0.0): true
+contains(+0.0): false
+[1, +nan, -0.0] == itself: true
+[1, +nan, -0.0] == [1, +nan, +0.0]: false
+[1, +nan, -0.0] == [1, -nan, -0.0]: false
+== a float inside an aggregate compares by Eq too ==
+Point(+nan) == Point(+nan): true
+Point(+nan) == Point(-nan): false
+Point(-0.0) == Point(+0.0): false
+point keys len=4 get(+nan)=some(10) get(-nan)=some(2) get(-0.0)=some(3)
+[nan, -0.0] array == itself: true
+[nan, -0.0] array == [nan, +0.0]: false
+some(+nan) == some(+nan): true
+some(+nan) == some(-nan): false
+option keys len=2 get=some(3)
+level(+nan) == level(+nan): true
+level(+nan) == level(-nan): false
+enum keys len=2 get=some(3)
+== f32 follows the same rule ==
+f32 keys len=4 get(+nan)=some(10) get(-nan)=some(2) get(-0.0)=some(4)
+f32 sort [-nan, -1, -0.0, +0.0, 1, +nan]
+f32 contains(-nan): true
+f32 -0.0 == 0.0 operator: true
+== decimal has neither NaN nor a negative zero, so it is untouched ==
+decimal keys len=1 get=some(2)
+decimal -0.0 == 0.0: true
+decimal -0.0 < 0.0: false
+decimal sort=[1.0, 2.0, 3.0]
