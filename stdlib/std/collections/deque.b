@@ -42,8 +42,11 @@
 // never one fewer, and readers decode the layout from the *counters*: the head
 // block's claimed size is `front_count - head * BLOCK`, not the block's own
 // length. An uncounted element sits past the end of what every reader looks
-// at. `to_list()` walks to the counters for the same reason. This makes both
-// windows in every push and pop invisible, at no cost — the claimed size is a
+// at. `to_list()` walks to the counters for the same reason, `first` and
+// `last` answer through `get` so the layout is decoded in one place, and no
+// empty block is ever attached — a new block is filled before it is linked in,
+// where `open_block_*` used to link an empty one and then allocate its storage,
+// which made `first()` read slot -1. This costs nothing: the claimed size is a
 // subtract where the block's length was a load.
 //
 // **A rebalance publishes a whole new shape with a single store.** Moving half
@@ -159,20 +162,20 @@ pub class Deque<T implements Clone> {
             self.crossover_to_front()
         }
         let head: int = self.shape.front.len() - 1
-        let filled: int = self.shape.front[head].len()
-        // The count comes down first: the deque must never claim an element
-        // that has already left the storage. `remove` then hands the element
-        // straight back, where `pop` would wrap it in an `Option` first and
-        // building that `Option` allocates.
+        // The count comes down first. `pop` builds an `Option` to hand the
+        // element back and building it allocates, which is a place the
+        // collector runs a deinit; with the count already down, the element
+        // it is about to take is one this deque no longer claims, so that
+        // deinit reads the deque the pop is on its way to leaving behind.
         self.shape.front_count -= 1
-        let got: T = self.shape.front[head].remove(filled - 1)
-        if filled == 1 {
+        let got: Option<T> = self.shape.front[head].pop()
+        if self.shape.front[head].len() == 0 {
             let empty: List<T> = self.shape.front.remove(head)
             // Settled: recycling the emptied block may allocate, and that is
             // fine now.
             if self.spare.len() == 0 { self.spare.push(move empty) }
         }
-        return some(got)
+        return got
     }
 
     /// Remove and answer the tail, or `none` when the deque is empty.
@@ -182,14 +185,13 @@ pub class Deque<T implements Clone> {
             self.crossover_to_back()
         }
         let tail: int = self.shape.back.len() - 1
-        let filled: int = self.shape.back[tail].len()
         self.shape.back_count -= 1
-        let got: T = self.shape.back[tail].remove(filled - 1)
-        if filled == 1 {
+        let got: Option<T> = self.shape.back[tail].pop()
+        if self.shape.back[tail].len() == 0 {
             let empty: List<T> = self.shape.back.remove(tail)
             if self.spare.len() == 0 { self.spare.push(move empty) }
         }
-        return some(got)
+        return got
     }
 
     /// The head without removing it.
