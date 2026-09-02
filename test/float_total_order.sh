@@ -34,6 +34,15 @@ grep -q '^less(1.0, +nan): true$' "$tmp/interp"
 grep -q '^alike(+nan, +nan): true$' "$tmp/interp"
 grep -q '^bool less(false, true): true$' "$tmp/interp"
 grep -q '^simd(+nan) == simd(+nan): false$' "$tmp/interp"
+grep -q '^SortedMap len=4 keys=\[1, 2, 3, +nan\] values=\[1, 2, 3, 99\]$' \
+    "$tmp/interp"
+grep -q '^get(+nan)=some(99) get(2.0)=some(2) contains(+nan)=true$' \
+    "$tmp/interp"
+grep -q '^PriorityQueue drain=-nan, -inf, -0.0, +0.0, one, two, inf, +nan$' \
+    "$tmp/interp"
+grep -q '^Set len=4 contains(+nan)=true' "$tmp/interp"
+grep -q '^get(+nan)=some(100) get(-nan)=some(101) get(payload)=some(102)$' \
+    "$tmp/interp"
 grep -q '^with -nan and both zeros: len=7 keys=\[-nan, -0.0, +0.0, 1, 2, 3, +nan\]$' \
     "$tmp/interp"
 

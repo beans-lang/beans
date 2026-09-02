@@ -30,9 +30,21 @@ remove(-nan) again=false len=2
 len=2 get(+0.0)=some(1) get(-0.0)=some(2)
 keys=[-0.0, +0.0]
 remove(+0.0)=true len=1 get(-0.0)=some(2)
+== past the linear threshold, where lookup hashes ==
+len=36
+get(+nan)=some(100) get(-nan)=some(101) get(payload)=some(102)
+get(-0.0)=some(103) get(+0.0)=some(0) get(inf)=some(104) get(-inf)=some(105)
+lowest=-nan highest=+nan(payload)
+replace +nan: len=36 get=some(200)
+clone len=36 get(+nan)=some(200) get(-nan)=some(101) get(-0.0)=some(103)
+remove(+nan)=true remove(-0.0)=true len=34
+after removal get(+nan)=none get(-nan)=some(101) get(+0.0)=some(0)
+walked=34
 == OrderedMap agrees ==
 len=3 get(nan)=some(4) get(-0.0)=some(2)
 insertion order=+nan=4, -0.0=2, +0.0=3
+ordered past threshold: len=15 get(+nan)=some(4) get(-nan)=some(1) get(-0.0)=some(3)
+ordered remove(-nan)=true len=14 get(+nan)=some(4) get(+0.0)=some(0)
 == sort: n = 1, 2, many ==
 n=1 [+nan]
 n=2 nan first [1, +nan]
@@ -116,6 +128,18 @@ has(+0.0): true
 has(1.0) still: true
 has(3.0) still: true
 int container: len=2 keys=[1, 5]
+== the ordered containers store a NaN key instead of overwriting one ==
+SortedMap len=4 keys=[1, 2, 3, +nan] values=[1, 2, 3, 99]
+get(+nan)=some(99) get(2.0)=some(2) contains(+nan)=true
+SortedMap with -nan and both zeros: len=7 keys=[-nan, -0.0, +0.0, 1, 2, 3, +nan]
+values=[88, 77, 66, 1, 2, 3, 99] first=-nan last=+nan
+re-set +nan: len=7 get=some(100)
+remove(+nan)=true len=6 keys=[-nan, -0.0, +0.0, 1, 2, 3] values=[88, 77, 66, 1, 2, 3]
+remove(+nan) again=false get(2.0)=some(2) get(3.0)=some(3)
+PriorityQueue drain=-nan, -inf, -0.0, +0.0, one, two, inf, +nan
+Set add(+nan)=true again=false
+Set len=4 contains(+nan)=true contains(-nan)=true contains(-0.0)=true contains(+0.0)=true
+Set remove(+nan)=true len=3 contains(+nan)=false contains(-nan)=true
 == a SIMD vector is arithmetic, so its lanes stay IEEE ==
 simd(+nan) == simd(+nan): false
 simd(-0.0) == simd(+0.0): true

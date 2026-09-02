@@ -10,6 +10,7 @@
 // arm64 a positive one. The transcript must not depend on that.
 
 import std.io
+import std.collections
 import std.encoding.binary
 
 struct Point {
@@ -203,6 +204,36 @@ fn main() {
     io.println("keys={sorted_keys(zeros.keys())}")
     io.println("remove(+0.0)={zeros.remove(pos_zero)} len={zeros.len()} get(-0.0)={zeros.get(neg_zero)}")
 
+    io.println("== past the linear threshold, where lookup hashes ==")
+    // Under nine entries a map has no index and scans with slot_eq alone, so
+    // every case above missed the hash probe entirely. A NaN key has to
+    // survive that path too, and a reindex has to place it.
+    var wide: Map<float, int> = {}
+    for index: int in 0..30 {
+        wide[index as float] = index
+    }
+    wide[pos_nan] = 100
+    wide[neg_nan] = 101
+    wide[payload_nan] = 102
+    wide[neg_zero] = 103
+    wide[inf] = 104
+    wide[neg_inf] = 105
+    io.println("len={wide.len()}")
+    io.println("get(+nan)={wide.get(pos_nan)} get(-nan)={wide.get(neg_nan)} get(payload)={wide.get(payload_nan)}")
+    io.println("get(-0.0)={wide.get(neg_zero)} get(+0.0)={wide.get(pos_zero)} get(inf)={wide.get(inf)} get(-inf)={wide.get(neg_inf)}")
+    var ranked: List<float> = wide.keys()
+    ranked.sort()
+    io.println("lowest={tag(ranked[0])} highest={tag(ranked[ranked.len() - 1])}")
+    wide[pos_nan] = 200
+    io.println("replace +nan: len={wide.len()} get={wide.get(pos_nan)}")
+    var copied: Map<float, int> = wide.clone()
+    io.println("clone len={copied.len()} get(+nan)={copied.get(pos_nan)} get(-nan)={copied.get(neg_nan)} get(-0.0)={copied.get(neg_zero)}")
+    io.println("remove(+nan)={wide.remove(pos_nan)} remove(-0.0)={wide.remove(neg_zero)} len={wide.len()}")
+    io.println("after removal get(+nan)={wide.get(pos_nan)} get(-nan)={wide.get(neg_nan)} get(+0.0)={wide.get(pos_zero)}")
+    var walked: int = 0
+    for key: float, value: int in wide { walked += 1 }
+    io.println("walked={walked}")
+
     io.println("== OrderedMap agrees ==")
     var ordered: OrderedMap<float, int> = {}
     ordered[pos_nan] = 1
@@ -215,6 +246,16 @@ fn main() {
         order.push("{tag(key)}={value}")
     }
     io.println("insertion order={order.join(", ")}")
+    var wide_ordered: OrderedMap<float, int> = {}
+    for index: int in 0..12 {
+        wide_ordered[index as float] = index
+    }
+    wide_ordered[neg_nan] = 1
+    wide_ordered[pos_nan] = 2
+    wide_ordered[neg_zero] = 3
+    wide_ordered[pos_nan] = 4
+    io.println("ordered past threshold: len={wide_ordered.len()} get(+nan)={wide_ordered.get(pos_nan)} get(-nan)={wide_ordered.get(neg_nan)} get(-0.0)={wide_ordered.get(neg_zero)}")
+    io.println("ordered remove(-nan)={wide_ordered.remove(neg_nan)} len={wide_ordered.len()} get(+nan)={wide_ordered.get(pos_nan)} get(+0.0)={wide_ordered.get(pos_zero)}")
 
     io.println("== sort: n = 1, 2, many ==")
     var one: List<float> = [pos_nan]
@@ -437,6 +478,55 @@ fn main() {
     integers.insert(1)
     integers.insert(5)
     io.println("int container: len={integers.len()} keys={integers.keys}")
+
+    io.println("== the ordered containers store a NaN key instead of overwriting one ==")
+    // These are the shapes issue #84 named. Before the rule changed, every
+    // descent read "neither less nor greater" as "this is the key": set(NaN)
+    // overwrote 2.0's value, get(NaN) read it back, remove(NaN) deleted it,
+    // and the drain order was arbitrary. Both backends agreed and both were
+    // wrong, which is why the golden matters more than the parity diff here.
+    var sorted_map: collections.SortedMap<float, int> = new()
+    sorted_map.set(1.0, 1)
+    sorted_map.set(2.0, 2)
+    sorted_map.set(3.0, 3)
+    sorted_map.set(pos_nan, 99)
+    io.println("SortedMap len={sorted_map.len()} keys={tags(sorted_map.keys())} values={sorted_map.values()}")
+    io.println("get(+nan)={sorted_map.get(pos_nan)} get(2.0)={sorted_map.get(2.0)} contains(+nan)={sorted_map.contains_key(pos_nan)}")
+    sorted_map.set(neg_nan, 88)
+    sorted_map.set(neg_zero, 77)
+    sorted_map.set(pos_zero, 66)
+    io.println("SortedMap with -nan and both zeros: len={sorted_map.len()} keys={tags(sorted_map.keys())}")
+    io.println("values={sorted_map.values()} first={tag(sorted_map.first_key().or(1.0))} last={tag(sorted_map.last_key().or(1.0))}")
+    sorted_map.set(pos_nan, 100)
+    io.println("re-set +nan: len={sorted_map.len()} get={sorted_map.get(pos_nan)}")
+    io.println("remove(+nan)={sorted_map.remove(pos_nan)} len={sorted_map.len()} keys={tags(sorted_map.keys())} values={sorted_map.values()}")
+    io.println("remove(+nan) again={sorted_map.remove(pos_nan)} get(2.0)={sorted_map.get(2.0)} get(3.0)={sorted_map.get(3.0)}")
+
+    var queue: collections.PriorityQueue<float, string> = new()
+    queue.push(2.0, "two")
+    queue.push(pos_nan, "+nan")
+    queue.push(1.0, "one")
+    queue.push(neg_nan, "-nan")
+    queue.push(neg_zero, "-0.0")
+    queue.push(pos_zero, "+0.0")
+    queue.push(inf, "inf")
+    queue.push(neg_inf, "-inf")
+    var drained: List<string> = []
+    for queue.len() > 0 {
+        match queue.pop() {
+            some(payload) => { drained.push(payload) }
+            none => {}
+        }
+    }
+    io.println("PriorityQueue drain={drained.join(", ")}")
+
+    var unique: collections.Set<float> = new()
+    io.println("Set add(+nan)={unique.add(pos_nan)} again={unique.add(pos_nan)}")
+    unique.add(neg_nan)
+    unique.add(neg_zero)
+    unique.add(pos_zero)
+    io.println("Set len={unique.len()} contains(+nan)={unique.contains(pos_nan)} contains(-nan)={unique.contains(neg_nan)} contains(-0.0)={unique.contains(neg_zero)} contains(+0.0)={unique.contains(pos_zero)}")
+    io.println("Set remove(+nan)={unique.remove(pos_nan)} len={unique.len()} contains(+nan)={unique.contains(pos_nan)} contains(-nan)={unique.contains(neg_nan)}")
 
     io.println("== a SIMD vector is arithmetic, so its lanes stay IEEE ==")
     unsafe {

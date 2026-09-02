@@ -9,6 +9,12 @@ package main
 // -NaN < -inf < ... < -0.0 < +0.0 < ... < +inf < +NaN. Two floats share a key
 // exactly when they share their bits, so key equality is the equality that
 // belongs with this order.
+//
+// The runtime and the emitter spell the same order the other way round --
+// flip the magnitude bits of a negative and compare signed -- because they
+// have a wrapping conversion to a signed word and Beans does not. The two
+// keys are the same permutation of the float line; only the word they land
+// in differs.
 fn tree_float_total_key(value: float) -> u64 {
     let bits: u64 = tree_float_bits(value, 64)
     if bits >> 63 == 1 {
