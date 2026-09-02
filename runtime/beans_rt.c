@@ -3038,9 +3038,10 @@ typedef struct {
     void** dead;
     long long len;
     long long next;
+    long long dropped;
     int armed;
 } RtCycleDeinits;
-static void rt_cycle_deinits_bodies(RtCycleDeinits* g) {
+static void rt_cycle_deinits_finish(RtCycleDeinits* g) {
     while (g->next < g->len) {
         void* member = g->dead[g->next++];
         BHead* h = head_of(member);
@@ -3049,16 +3050,22 @@ static void rt_cycle_deinits_bodies(RtCycleDeinits* g) {
         // once whether it happens here or through an ordinary release.
         if (rc & RC_FIN) beans_do_deinit(member, h, rc);
     }
-}
-static void rt_cycle_deinits_drop_holds(void** dead, long long len) {
-    for (long long i = 0; i < len; i++) cc_possible_root(dead[i]);
-    for (long long i = 0; i < len; i++) beans_release(dead[i]);
+    // Park before dropping the hold: a member that dies on the release below
+    // then finds itself buffered and leaves its shell for the collector,
+    // exactly as any other parked death does. Only the members still held —
+    // a resumed pass must not touch one it has already let go — and parking
+    // is idempotent, so repeating it for those costs nothing.
+    for (long long i = g->dropped; i < g->len; i++) cc_possible_root(g->dead[i]);
+    // A release here can still reach user code: a member whose deinit body
+    // dropped an internal edge dies on its own hold, and its children go with
+    // it. So the cursor steps before the release and the whole pass, both
+    // halves, stays under one guard.
+    while (g->dropped < g->len) beans_release(g->dead[g->dropped++]);
 }
 static void rt_cycle_deinits_unwound(RtCycleDeinits* g) {
     if (!g->armed) return;
     g->armed = 0;
-    rt_cycle_deinits_bodies(g);
-    rt_cycle_deinits_drop_holds(g->dead, g->len);
+    rt_cycle_deinits_finish(g);
 }
 static int cc_run_cycle_deinits(void** dead, long long len, int owner_local) {
     long long i = 0;
@@ -3086,13 +3093,9 @@ static int cc_run_cycle_deinits(void** dead, long long len, int owner_local) {
     // guard runs the deinits the loop had not reached and then drops the
     // holds, which is the only path back out of that retain.
     __attribute__((cleanup(rt_cycle_deinits_unwound)))
-    RtCycleDeinits pass = {dead, len, 0, 1};
-    rt_cycle_deinits_bodies(&pass);
+    RtCycleDeinits pass = {dead, len, 0, 0, 1};
+    rt_cycle_deinits_finish(&pass);
     pass.armed = 0;
-    // Park before dropping the hold: a member that dies on the release below
-    // then finds itself buffered and leaves its shell for the collector,
-    // exactly as any other parked death does.
-    rt_cycle_deinits_drop_holds(dead, len);
     return 1;
 }
 
