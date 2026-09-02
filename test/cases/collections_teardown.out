@@ -1,0 +1,9 @@
+clear() seen mid-drop — deque tears 0
+deque after contained panic: len 0 empty true first false
+list  after contained panic: len 0
+sortedmap remove under reentrancy: answered true, key gone true
+sortedmap remove of an absent key: false
+sortedmap insert new true duplicate false value some(10)
+crossover churn done: len 0
+consistent answers 1 of 1
+total tears 0

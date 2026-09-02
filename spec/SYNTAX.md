@@ -354,7 +354,13 @@ fn main() {
   9 characters, 12 columns) is already full and `"ok"` gets ten spaces. Byte
   padding lined up only ASCII; there is no caller that wanted it for anything
   else. `s.width()` is the same measure, spelled out.
-- **There is no `+` for strings.** Building strings happens through interpolation, `std.fmt` (sprintf-style: padding, precision, alignment), or `list.join(sep)`. One way to do it, and it's the readable one.
+- **There is no `+` for strings.** To render *one* string, use interpolation
+  (`"hi {name}"`) or `std.fmt` (sprintf-style: padding, precision, alignment).
+  To *accumulate* a string across a loop, use `fmt.StringBuilder` (push the
+  pieces, `to_string()` once) or `list.join(sep)` — never `text = "{text}piece"`
+  in a loop, which rebuilds the whole string every turn and so costs O(n²) in
+  the total length. Interpolation is the readable tool for a single value and
+  the wrong one for a growing buffer; a builder is the other way round.
 - Escapes: `\n \t \r \0 \\ \" \{ \} \xNN \u{...}`. Anything else after a
   backslash is an error, not the character itself — `"C:\Users"` says so
   instead of quietly becoming `C:Users`. The backslash forms are the *only*
@@ -639,6 +645,10 @@ Interpolation assembles, fmt formats. No printf — the language has no varargs.
 - `hex(n)` / `binary(n)` — the 64-bit two's-complement pattern, lowercase, no prefix:
   `hex(-1)` is 16 f's.
 - `group_digits(n, sep)` — thousands grouping: `group_digits(1234567, ",")` is `"1,234,567"`.
+- `StringBuilder` — accumulate a string across a loop into one growing buffer:
+  `push(text)`, `push_int`, `push_bool`, `push_line`, `push_byte`, then
+  `to_string()` (or `to_bytes()`) once. `text = "{text}piece"` in a loop rebuilds
+  the whole string every turn — O(n²) in the length; a builder is O(n).
 
 ## std.encoding (v0.9, implemented)
 
