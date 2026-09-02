@@ -132,7 +132,12 @@ pub class Deque<T implements Clone> {
     /// Add `value` at the head.
     pub fn push_front(value: T) {
         let head: int = self.shape.front.len() - 1
-        if head < 0 || self.shape.front[head].len() == 512 {
+        // "is the head block full" asked of the counter, which is the
+        // authority everywhere else in this class: the head block's claimed
+        // size is `front_count - head * 512`, so it is full exactly when
+        // `front_count` has reached `(head + 1) * 512`. Walking to the block
+        // for its own length would be two more loads and a bounds check.
+        if head < 0 || self.shape.front_count == (head + 1) * 512 {
             // Build the block, put the value in it and make room for its
             // handle first, while the deque is still exactly what its
             // counters say. Attaching the block raises no count, so until the
@@ -151,7 +156,7 @@ pub class Deque<T implements Clone> {
     /// Add `value` at the tail.
     pub fn push_back(value: T) {
         let tail: int = self.shape.back.len() - 1
-        if tail < 0 || self.shape.back[tail].len() == 512 {
+        if tail < 0 || self.shape.back_count == (tail + 1) * 512 {
             var block: List<T> = self.take_block()
             self.shape.back.reserve(self.shape.back.len() + 1)
             block.push(value)
@@ -177,7 +182,9 @@ pub class Deque<T implements Clone> {
         // deinit reads the deque the pop is on its way to leaving behind.
         self.shape.front_count -= 1
         let got: Option<T> = self.shape.front[head].pop()
-        if self.shape.front[head].len() == 0 {
+        // Empty exactly when its claimed size reached zero. Every front block
+        // below the head is full, so that is `front_count == head * 512`.
+        if self.shape.front_count == head * 512 {
             let empty: List<T> = self.shape.front.remove(head)
             // Settled: recycling the emptied block may allocate, and that is
             // fine now.
@@ -195,7 +202,7 @@ pub class Deque<T implements Clone> {
         let tail: int = self.shape.back.len() - 1
         self.shape.back_count -= 1
         let got: Option<T> = self.shape.back[tail].pop()
-        if self.shape.back[tail].len() == 0 {
+        if self.shape.back_count == tail * 512 {
             let empty: List<T> = self.shape.back.remove(tail)
             if self.spare.len() == 0 { self.spare.push(move empty) }
         }
