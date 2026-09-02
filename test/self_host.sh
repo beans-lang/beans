@@ -2199,10 +2199,13 @@ diff -u "$tmp/decimal-nan.expected" \
     >"$tmp/dispatch.second.ll"
 cmp "$tmp/dispatch.first.ll" "$tmp/dispatch.second.ll"
 # an interface call loads its selector slot from the receiver's own
-# descriptor — byte offset 8 plus the slot at pointer stride
-grep -q '%dispatch.desc[0-9]* = load ptr, ptr ' \
+# descriptor — byte offset 8 plus the slot at pointer stride. Either
+# spelling: when few enough classes can be behind the receiver the call
+# switches on the class id first and this read is the fallback arm, which is
+# the same read under the devirt name.
+grep -qE '%(dispatch|devirt)\.desc[0-9]* = load ptr, ptr ' \
     "$tmp/dispatch.first.ll"
-grep -q '%dispatch.slot[0-9]* = getelementptr i8, ptr %dispatch.desc' \
+grep -qE '%(dispatch|devirt)\.slot[0-9]* = getelementptr i8, ptr %(dispatch|devirt)\.desc' \
     "$tmp/dispatch.first.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
