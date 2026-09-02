@@ -426,6 +426,84 @@ fn main() {
     show("some(f32 +nan) == some(f32 -nan)",
          narrow_option == narrow_option_other)
 
+    io.println("== aggregate keys past the threshold: equal must hash equal ==")
+    // Under nine entries a map keeps no index and never calls its hash at
+    // all, so every aggregate-key case above compared without ever hashing.
+    // These carry the index, and each lookup below builds a *fresh* equal
+    // key: if the generated equality and the generated hash ever disagreed
+    // about a float field, the probe would land in the wrong bucket and the
+    // read would miss while the entry sat in the table. A re-insert would
+    // then append instead of replacing, which the lengths here would show.
+    var point_keys: Map<Point, int> = {}
+    for index: int in 0..30 {
+        point_keys[Point { x: index as float, y: index }] = index
+    }
+    point_keys[Point { x: pos_nan, y: 1 }] = 100
+    point_keys[Point { x: neg_nan, y: 1 }] = 101
+    point_keys[Point { x: payload_nan, y: 1 }] = 102
+    point_keys[Point { x: neg_zero, y: 1 }] = 103
+    point_keys[Point { x: pos_zero, y: 1 }] = 104
+    io.println("struct keys len={point_keys.len()}")
+    io.println("fresh get(+nan)={point_keys.get(Point { x: pos_nan, y: 1 })} get(-nan)={point_keys.get(Point { x: neg_nan, y: 1 })} get(payload)={point_keys.get(Point { x: payload_nan, y: 1 })}")
+    io.println("fresh get(-0.0)={point_keys.get(Point { x: neg_zero, y: 1 })} get(+0.0)={point_keys.get(Point { x: pos_zero, y: 1 })} get(7.0)={point_keys.get(Point { x: 7.0, y: 7 })}")
+    point_keys[Point { x: pos_nan, y: 1 }] = 200
+    point_keys[Point { x: neg_zero, y: 1 }] = 203
+    io.println("struct re-insert: len={point_keys.len()} get(+nan)={point_keys.get(Point { x: pos_nan, y: 1 })} get(-0.0)={point_keys.get(Point { x: neg_zero, y: 1 })}")
+    io.println("struct remove(+nan)={point_keys.remove(Point { x: pos_nan, y: 1 })} len={point_keys.len()} get(-nan)={point_keys.get(Point { x: neg_nan, y: 1 })} get(+0.0)={point_keys.get(Point { x: pos_zero, y: 1 })}")
+
+    var sample_keys: Map<Sample, int> = {}
+    for index: int in 0..30 {
+        sample_keys[Sample { a: index as f32, b: index }] = index
+    }
+    sample_keys[Sample { a: f32_pos_nan, b: 1 }] = 100
+    sample_keys[Sample { a: f32_neg_nan, b: 1 }] = 101
+    sample_keys[Sample { a: f32_neg_zero, b: 1 }] = 102
+    sample_keys[Sample { a: f32_pos_zero, b: 1 }] = 103
+    io.println("f32 struct keys len={sample_keys.len()} get(+nan)={sample_keys.get(Sample { a: f32_pos_nan, b: 1 })} get(-nan)={sample_keys.get(Sample { a: f32_neg_nan, b: 1 })}")
+    io.println("f32 struct get(-0.0)={sample_keys.get(Sample { a: f32_neg_zero, b: 1 })} get(+0.0)={sample_keys.get(Sample { a: f32_pos_zero, b: 1 })}")
+    sample_keys[Sample { a: f32_pos_nan, b: 1 }] = 200
+    io.println("f32 struct re-insert: len={sample_keys.len()} get={sample_keys.get(Sample { a: f32_pos_nan, b: 1 })}")
+
+    var pair_keys: Map<[float; 2], int> = {}
+    for index: int in 0..30 {
+        pair_keys[[index as float, 1.0]] = index
+    }
+    pair_keys[[pos_nan, 1.0]] = 100
+    pair_keys[[neg_nan, 1.0]] = 101
+    pair_keys[[neg_zero, 1.0]] = 102
+    pair_keys[[pos_zero, 2.0]] = 103
+    io.println("array keys len={pair_keys.len()} get(+nan)={pair_keys.get([pos_nan, 1.0])} get(-nan)={pair_keys.get([neg_nan, 1.0])}")
+    io.println("array get(-0.0)={pair_keys.get([neg_zero, 1.0])} get(+0.0)={pair_keys.get([pos_zero, 1.0])} get(+0.0 second lane)={pair_keys.get([pos_zero, 2.0])}")
+    pair_keys[[pos_nan, 1.0]] = 200
+    io.println("array re-insert: len={pair_keys.len()} get={pair_keys.get([pos_nan, 1.0])}")
+
+    let missing: Option<float> = none
+    var option_keys: Map<Option<float>, int> = {}
+    for index: int in 0..30 {
+        option_keys[some(index as float)] = index
+    }
+    option_keys[some(pos_nan)] = 100
+    option_keys[some(neg_nan)] = 101
+    option_keys[some(neg_zero)] = 102
+    option_keys[missing] = 103
+    io.println("option keys len={option_keys.len()} get(+nan)={option_keys.get(some(pos_nan))} get(-nan)={option_keys.get(some(neg_nan))}")
+    io.println("option get(-0.0)={option_keys.get(some(neg_zero))} get(+0.0)={option_keys.get(some(pos_zero))} get(none)={option_keys.get(missing)}")
+    option_keys[some(pos_nan)] = 200
+    io.println("option re-insert: len={option_keys.len()} get={option_keys.get(some(pos_nan))}")
+
+    var reading_keys: Map<Reading, int> = {}
+    for index: int in 0..30 {
+        reading_keys[Reading.level(index as float)] = index
+    }
+    reading_keys[Reading.level(pos_nan)] = 100
+    reading_keys[Reading.level(neg_nan)] = 101
+    reading_keys[Reading.level(neg_zero)] = 102
+    reading_keys[Reading.missing] = 103
+    io.println("enum keys len={reading_keys.len()} get(+nan)={reading_keys.get(Reading.level(pos_nan))} get(-nan)={reading_keys.get(Reading.level(neg_nan))}")
+    io.println("enum get(-0.0)={reading_keys.get(Reading.level(neg_zero))} get(+0.0)={reading_keys.get(Reading.level(pos_zero))} get(missing)={reading_keys.get(Reading.missing)}")
+    reading_keys[Reading.level(pos_nan)] = 200
+    io.println("enum re-insert: len={reading_keys.len()} get={reading_keys.get(Reading.level(pos_nan))}")
+
     io.println("== Order and Eq over a type parameter are the interface ==")
     show("less(+nan, 1.0)", less(pos_nan, 1.0))
     show("less(1.0, +nan)", less(1.0, pos_nan))

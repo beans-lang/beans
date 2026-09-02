@@ -94,6 +94,24 @@ f32 struct keys len=4 get(+nan)=some(10) get(-nan)=some(2) get(-0.0)=some(3)
 [f32 nan, -0.0] array == [nan, +0.0]: false
 some(f32 +nan) == some(f32 +nan): true
 some(f32 +nan) == some(f32 -nan): false
+== aggregate keys past the threshold: equal must hash equal ==
+struct keys len=35
+fresh get(+nan)=some(100) get(-nan)=some(101) get(payload)=some(102)
+fresh get(-0.0)=some(103) get(+0.0)=some(104) get(7.0)=some(7)
+struct re-insert: len=35 get(+nan)=some(200) get(-0.0)=some(203)
+struct remove(+nan)=true len=34 get(-nan)=some(101) get(+0.0)=some(104)
+f32 struct keys len=34 get(+nan)=some(100) get(-nan)=some(101)
+f32 struct get(-0.0)=some(102) get(+0.0)=some(103)
+f32 struct re-insert: len=34 get=some(200)
+array keys len=34 get(+nan)=some(100) get(-nan)=some(101)
+array get(-0.0)=some(102) get(+0.0)=some(0) get(+0.0 second lane)=some(103)
+array re-insert: len=34 get=some(200)
+option keys len=34 get(+nan)=some(100) get(-nan)=some(101)
+option get(-0.0)=some(102) get(+0.0)=some(0) get(none)=some(103)
+option re-insert: len=34 get=some(200)
+enum keys len=34 get(+nan)=some(100) get(-nan)=some(101)
+enum get(-0.0)=some(102) get(+0.0)=some(0) get(missing)=some(103)
+enum re-insert: len=34 get=some(200)
 == Order and Eq over a type parameter are the interface ==
 less(+nan, 1.0): false
 less(1.0, +nan): true

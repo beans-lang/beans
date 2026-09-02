@@ -419,10 +419,25 @@ fn tree_value_key(value: TreeValue) -> string {
         }
         return result
     }
+    // Every kind whose equality tree_value_total_equal decides structurally
+    // gets a structural key, built from its elements' keys rather than from
+    // its rendering. A fixed array is the one that bit: `[nan, 1.0]` and
+    // `[-nan, 1.0]` are two keys the native backend keeps apart, and both
+    // render "array:[nan, 1]", so the tree collapsed them into one and the
+    // second insert replaced the first. Every element is length-prefixed, so
+    // no two element sequences can run together into the same string.
+    //
+    // `simd` is deliberately not here. Its lanes compare with IEEE `==`, not
+    // by their bits (see tree_value_total_equal), so a bit-exact key would
+    // separate two vectors the language calls equal. It is not a valid map
+    // key either — the checker refuses one for want of `Hash`.
     if value.kind == "variant" ||
        value.kind == "some" ||
        value.kind == "ok" ||
-       value.kind == "err" {
+       value.kind == "err" ||
+       value.kind == "list" ||
+       value.kind == "array" ||
+       value.kind == "range" {
         var result: string =
             "v:{value.kind.len()}:{value.kind}:{value.text.len()}:{value.text}"
         for item: TreeValue in value.items {

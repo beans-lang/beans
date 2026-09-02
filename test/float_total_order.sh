@@ -43,6 +43,24 @@ grep -q '^PriorityQueue drain=-nan, -inf, -0.0, +0.0, one, two, inf, +nan$' \
 grep -q '^Set len=4 contains(+nan)=true' "$tmp/interp"
 grep -q '^get(+nan)=some(100) get(-nan)=some(101) get(payload)=some(102)$' \
     "$tmp/interp"
+# Equal aggregate keys must hash equal, or a lookup lands in the wrong bucket
+# and misses an entry that is sitting in the table. These maps are all past
+# MAP_LINEAR_MAX, so the index is live and every read below actually hashes.
+grep -q '^struct keys len=35$' "$tmp/interp"
+grep -q '^fresh get(+nan)=some(100) get(-nan)=some(101) get(payload)=some(102)$' \
+    "$tmp/interp"
+grep -q '^fresh get(-0.0)=some(103) get(+0.0)=some(104) get(7.0)=some(7)$' \
+    "$tmp/interp"
+grep -q '^struct re-insert: len=35 ' "$tmp/interp"
+grep -q '^f32 struct keys len=34 get(+nan)=some(100) get(-nan)=some(101)$' \
+    "$tmp/interp"
+grep -q '^array keys len=34 get(+nan)=some(100) get(-nan)=some(101)$' \
+    "$tmp/interp"
+grep -q '^array re-insert: len=34 get=some(200)$' "$tmp/interp"
+grep -q '^option keys len=34 get(+nan)=some(100) get(-nan)=some(101)$' \
+    "$tmp/interp"
+grep -q '^enum keys len=34 get(+nan)=some(100) get(-nan)=some(101)$' \
+    "$tmp/interp"
 grep -q '^with -nan and both zeros: len=7 keys=\[-nan, -0.0, +0.0, 1, 2, 3, +nan\]$' \
     "$tmp/interp"
 
