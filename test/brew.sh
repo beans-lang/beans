@@ -349,6 +349,82 @@ for leg in "$tmp/cc_deinit.interp" "$tmp/cc_deinit.native.out"; do
     }
 done
 
+echo "checking a collector pass finishes the white set a member's panic interrupted"
+# issue #81 in the collector: cc_run_cycle_deinits retains the whole white
+# set across the deinit bodies, so a member that panics used to strand every
+# object in it — holds up, shells never freed, deinits never run — for the
+# life of the process. When a collection runs is each backend's own business
+# (the two trigger on different budgets), so this leg is native only and
+# asserts the pass, not a golden: the count must be the set, not the member,
+# and the arc stats must come back level. Reverting the guard drops this
+# program from 512 deinits and 519 frees to 41 and 7.
+cat >"$tmp/cycle_panic.b" <<'BEANS'
+import std.io
+
+class Tally { pub static gone: int = 0 }
+
+class Node {
+    pub id: int = 0
+    pub next: Option<Node> = none
+    pub fn init(id: int) { self.id = id }
+    fn deinit() {
+        Tally.gone += 1
+        if self.id == 41 { panic("deinit bomb") }
+    }
+}
+
+fn build() -> int {
+    var i: int = 0
+    for i < 400 {
+        let a: Node = new Node(i * 2)
+        let b: Node = new Node(i * 2 + 1)
+        a.next = some(b)
+        b.next = some(a)
+        i += 1
+    }
+    return 0
+}
+
+fn main() {
+    let h: Brew<int> = brew build()
+    match h.join() {
+        ok(v) => { io.println("ok") }
+        err(problem) => { io.println("caught {problem.kind}") }
+    }
+    io.println("gone={Tally.gone}")
+}
+BEANS
+./build/beansc build --emit ir "$tmp/cycle_panic.b" >/dev/null 2>&1
+clang -O1 -pthread -DBEANS_ARC_STATS -DBEANS_FIBER_UNWIND=1 \
+    -fexceptions -funwind-tables -Wno-override-module \
+    build/cycle_panic.ll build/beans_rt.c -lm -o "$tmp/cycle_panic"
+"$tmp/cycle_panic" >"$tmp/cycle_panic.out" 2>"$tmp/cycle_panic.stats"
+grep -q '^caught panic$' "$tmp/cycle_panic.out" || {
+    echo "the collector's deinit panic was not contained" >&2
+    cat "$tmp/cycle_panic.out" >&2
+    exit 1
+}
+cycle_gone=$(sed -n 's/^gone=\([0-9][0-9]*\)$/\1/p' "$tmp/cycle_panic.out")
+if [ -z "$cycle_gone" ] || [ "$cycle_gone" -lt 256 ]; then
+    echo "a collector pass stopped at its panicking member: ${cycle_gone:-none} deinits" >&2
+    cat "$tmp/cycle_panic.out" >&2
+    exit 1
+fi
+cycle_allocations=$(sed -n 's/.*allocations=\([0-9][0-9]*\).*/\1/p' \
+    "$tmp/cycle_panic.stats")
+cycle_frees=$(sed -n 's/.* frees=\([0-9][0-9]*\).*/\1/p' "$tmp/cycle_panic.stats")
+if [ -z "$cycle_allocations" ] || [ -z "$cycle_frees" ]; then
+    echo "no arc stats from the collector build" >&2
+    cat "$tmp/cycle_panic.stats" >&2
+    exit 1
+fi
+if [ $((cycle_allocations - cycle_frees)) -gt 8 ]; then
+    echo "the interrupted collector pass stranded its white set:" \
+         "$cycle_allocations allocated, $cycle_frees freed" >&2
+    cat "$tmp/cycle_panic.stats" >&2
+    exit 1
+fi
+
 echo "checking a child's panic escalating into its parent's unwind is a double panic"
 # issue #44 (B4): the unwind joins an unjoined child through the synthesized
 # scope join, and a child whose panic nobody caught escalates there — inside
