@@ -26,6 +26,7 @@ cycles	allocation	0	2000000	17	1919bdeb4bdd7f62	1	manual-cycle-break
 sequence_churn	sequences	0	1000000	17	eeb1871f9b9c6615	1
 list_growth	sequences	1	200000000	17	547ab86dd919fe42	1
 sort_objects	sequences	0	2000000	17	bc5cfe6b47726d5b	1
+priority_queue	sequences	0	1000000	17	f3ec544c6b4e2951	1
 decimal_kernel	text	0	100000000	17	7c06f462b48df2b3	1	beans-overflow-checks
 thread_spawn	concurrency	0	10000	17	8241d640705458a9	1
 atomic_contention	concurrency	0	10000000	17	df7cc31da4082998	1
@@ -39,3 +40,6 @@ mixed_app	application	0	1500000	17	c33415ba8983fab1	1
 box_churn	allocation	0	10000000	17	678d22d606680bbe	1
 arena_churn	allocation	0	20000000	17	8b66806880cd52b2	1
 ordered_maps	maps	0	2000000	17	51f2e7118c978719	1
+deque	sequences	0	2000000	17	1c1f50408ae57b6e	1
+sets	maps	0	1000000	17	97573726be96cf15	1
+sorted_map	maps	0	400000	17	b30c880df65b7dfc	1

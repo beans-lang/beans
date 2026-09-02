@@ -169,6 +169,9 @@ test-semantics: $(BIN)
 	bash ./test/map_inline.sh
 	bash ./test/float_total_order.sh
 	./test/traits.sh
+	bash ./test/calendar.sh
+	bash ./test/collections.sh
+	bash ./test/collections_fuzz.sh smoke
 	bash ./test/display_width.sh
 	bash ./test/derived_render.sh
 	bash ./test/module_consts.sh
@@ -300,6 +303,9 @@ test-core: $(BIN)
 	bash ./test/map_inline.sh
 	bash ./test/float_total_order.sh
 	./test/traits.sh
+	bash ./test/calendar.sh
+	bash ./test/collections.sh
+	bash ./test/collections_fuzz.sh smoke
 	bash ./test/display_width.sh
 	bash ./test/derived_render.sh
 	bash ./test/module_consts.sh
