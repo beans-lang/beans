@@ -144,10 +144,15 @@ agree test/cases/parity/error_conversion.b 6
 # std failing its own users — a std.reflect failure crossing into a plain
 # Result<T> through ReflectError.to_error, on both the ok and err paths.
 agree test/cases/parity/reflect_error_bridge.b
+# A call the emitter names outright has to do the same work as the call
+# through the table it replaces: the guarded path writes the receiver as a
+# bare pointer while the direct one runs every operand, receiver included,
+# through the internal-argument packer. Ten objects built, ten released.
+agree test/cases/parity/settled_dispatch.b 10
 
 # Every case in the directory has to be listed above with its own expected
 # count; a file added and forgotten would otherwise be silently unchecked.
-listed=23
+listed=24
 present=$(find test/cases/parity -name '*.b' | wc -l | tr -d ' ')
 if [ "$present" != "$listed" ]; then
     echo "test/cases/parity holds $present cases but $listed are run" >&2
