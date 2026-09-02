@@ -12,6 +12,10 @@
 //   * `SortedMap.remove` reported its answer by comparing `len()` before and
 //     after the recursion, so a reentrant mutation from a value's `deinit`
 //     made it answer `false` for a key it had just removed.
+//   * every `Deque` rebalance allocated between its first storage write and
+//     its last counter write, so a `deinit` the cycle collector ran at one of
+//     those allocations read a length that did not match the storage, or the
+//     contents backwards, or indexed past a block that had just been drained.
 //
 // The rule both break is the one the runtime containers already follow:
 // a container is settled before it drops anything, and it stays usable after a
@@ -44,6 +48,7 @@ class DequeWatcher {
 class Seen {
     pub static torn_deque: int = 0
     pub static answers: int = 0
+    pub static crossover_probes: int = 0
 }
 
 fn clear_watching_deque() {
@@ -134,44 +139,117 @@ fn reentrant_remove() {
     io.println("sortedmap insert new {first} duplicate {again} value {plain.get(1)}")
 }
 
-// ---- part 4: the crossover, observed from an element being dropped --------
+// ---- part 4: the crossover, observed from a deinit the collector runs -----
 
-class CrossWatcher {
+// The crossover moves half of one end across to the other, and it changes
+// `front`, `back`, `front_count` and `back_count` to do it. No two of those can
+// be written at once, so between the first write and the last the deque
+// describes a shape it does not have. That window used to allocate -- a fresh
+// block, its `reserve(512)`, the `push` that grew an empty handle list, and the
+// `Option` every `pop()` builds -- and an allocation is where the cycle
+// collector runs, so a `deinit` landed inside it and read the lie. #86.
+//
+// This probe holds the deque from inside a two-node cycle, which only the
+// collector can free, so the deinit fires at whatever allocation crosses the
+// collector's threshold rather than at a point the program chose.
+class CrossProbe {
+    peer: Option<CrossProbe> = none
     owner: Option<collections.Deque<int>> = none
-    expect: int = 0
     pub fn init() {}
     fn deinit() {
         match self.owner {
-            some(d) => { if d.len() != self.expect { Seen.torn_deque += 1 } }
+            some(d) => {
+                Seen.crossover_probes += 1
+                let n: int = d.len()
+                if n > 0 {
+                    // The driver keeps one ascending run in the deque at all
+                    // times, so this holds exactly when the deque is telling
+                    // the truth. It compares the deque against itself and not
+                    // against a snapshot, so no legal change can make it lie --
+                    // the mistake that made the first probe for this report
+                    // read clean.
+                    let lo: int = d.get(0).or(0)
+                    let hi: int = d.get(n - 1).or(0)
+                    if hi - lo != n - 1 { Seen.torn_deque += 1 }
+                    if d.first().or(0) != lo { Seen.torn_deque += 1 }
+                    if d.last().or(0) != hi { Seen.torn_deque += 1 }
+                }
+            }
             none => {}
         }
     }
 }
 
-// Crossover churn with objects being released throughout: every pop here comes
-// off the empty end, so each one rebalances. This is coverage of the crossover
-// under concurrent release, not a guard on any specific defect — nothing in it
-// fails today whether the crossover's allocations are hoisted out of its
-// stale-counter window or not.
+fn watch(d: collections.Deque<int>) {
+    var a: CrossProbe = new CrossProbe()
+    var b: CrossProbe = new CrossProbe()
+    a.owner = some(d)
+    b.owner = some(d)
+    a.peer = some(b)
+    b.peer = some(a)
+    // a and b are garbage now, and only the collector can prove it.
+}
+
+// Every pop here comes off the empty end, so each one rebalances. The size
+// walks, and that matters: with rounds that repeat exactly, the collector's
+// threshold lands on the same allocation every time and the probe samples one
+// point of the window forever -- 800k collector-driven reads of a torn deque
+// saw nothing that way. A size that never repeats moves the landing point
+// around the window instead.
 fn crossover_under_release() {
     var d: collections.Deque<int> = new()
     var round: int = 0
-    for round < 40 {
+    var fill: int = 1
+    for round < 26 {
+        fill = fill + 1
+        if fill > 300 { fill = 1 }
+
+        // one block, drained from the empty end: crossover_to_front splits it
+        var n: int = 0
         var i: int = 0
-        for i < 1300 { d.push_back(i); i += 1 }
-        // Drain from the empty end so every pop crosses over.
+        for i < fill { d.push_back(n); n += 1; i += 1 }
         var seen: int = 0
-        for seen < 1300 {
-            var w: CrossWatcher = new CrossWatcher()
-            w.owner = some(d)
-            w.expect = d.len()
+        for seen < fill {
+            watch(d)
             match d.pop_front() { some(v) => {} none => {} }
-            w.expect = d.len()
+            seen += 1
+        }
+
+        // the mirror: filled at the head, drained from the tail
+        var m: int = fill - 1
+        for m >= 0 { d.push_front(m); m -= 1 }
+        seen = 0
+        for seen < fill {
+            watch(d)
+            match d.pop_back() { some(v) => {} none => {} }
+            seen += 1
+        }
+
+        // past 512, so blocks move as handles and the multi-block branch runs
+        let wide: int = 1100 + fill * 6
+        n = 0
+        i = 0
+        for i < wide { d.push_back(n); n += 1; i += 1 }
+        seen = 0
+        for seen < wide {
+            watch(d)
+            match d.pop_front() { some(v) => {} none => {} }
+            seen += 1
+        }
+        m = wide - 1
+        for m >= 0 { d.push_front(m); m -= 1 }
+        seen = 0
+        for seen < wide {
+            watch(d)
+            match d.pop_back() { some(v) => {} none => {} }
             seen += 1
         }
         round += 1
     }
     io.println("crossover churn done: len {d.len()}")
+    // A probe that never runs proves nothing, so say so rather than reporting
+    // a silent zero.
+    io.println("crossover observed under collection: {Seen.crossover_probes > 1000}")
 }
 
 fn main() {

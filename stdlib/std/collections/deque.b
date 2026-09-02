@@ -21,18 +21,66 @@
 //     and its lone emptied block is handed to `spare`, never left in place;
 //   * front_count + back_count == len().
 //
-// A pop from an empty end does not rebuild the other end element by element;
-// it moves HALF of it across as block handles (`remove(len-1)` + `push(move)`,
-// O(1) each) and flips each moved block's contents with one C `reverse`, never
-// a Beans-level per-element copy. That C reverse still touches the elements it
-// moves, so a single crossover is O(k) in the k elements it carries — up to
-// O(n) for one unlucky pop. Halving is what amortizes it: across a run of pops
-// each element is carried across at most O(1) times (n/2 + n/4 + ... = n), so
-// the amortized cost stays O(1) per pop. Moving ALL of the far end instead
-// would let pops alternating between the two ends pay O(n) every turn. A lone
-// block is split down its middle rather than moved.
+// ---- why the shape lives in one object ------------------------------------
+//
+// A user's `deinit` can run in the middle of any method here. The cycle
+// collector runs deinits, an allocation is where the collector runs, and under
+// the tree interpreter essentially every operation allocates — so between any
+// two writes this class makes, code that reads this deque may run. A shape
+// spread over four cells (`front`, `back`, `front_count`, `back_count`) is
+// therefore torn for as long as it takes to write the second of them, and
+// `len()`, `get()`, `first()`, `last()` and `to_list()` answer from that tear:
+// a length over storage that no longer matches it, the contents backwards, or
+// an index straight past a block that was just drained. That was #86.
+//
+// Two rules close it, and between them every state this class can be caught in
+// is a deque that is telling the truth.
+//
+// **The counters never claim more than the storage holds.** A push writes the
+// element and then raises the count; a pop lowers the count and then takes the
+// element out. So the storage may hold one more element than the deque claims,
+// never one fewer, and readers decode the layout from the *counters*: the head
+// block's claimed size is `front_count - head * BLOCK`, not the block's own
+// length. An uncounted element sits past the end of what every reader looks
+// at. `to_list()` walks to the counters for the same reason. This makes both
+// windows in every push and pop invisible, at no cost — the claimed size is a
+// subtract where the block's length was a load.
+//
+// **A rebalance publishes a whole new shape with a single store.** Moving half
+// of one end to the other changes all four cells, and no ordering of four
+// writes leaves the content right at every step — the elements would have to
+// be claimed by both sides at once, or by neither. So `rebalance` never writes
+// the live shape at all: it reads it, builds a complete replacement beside it,
+// and swaps it in with `self.shape = built`. Before that store this deque is
+// entirely the old shape and after it entirely the new one; there is no third
+// state for a deinit to find. Everything the rebuild allocates is allocated
+// while the deque is still exactly what it says it is.
+//
+// The rebuild copies the elements rather than carrying blocks across by their
+// handle. It has to: a block changing sides must have its contents reversed,
+// and reversing it in place is a write to storage the live shape is still
+// answering from — and a `List` block cannot be in two block maps at once, so
+// it cannot be shared with the replacement either. The copy is O(n) at a
+// rebalance, which the halving keeps to O(1) per pop amortized: draining n
+// elements from the far end copies n + n/2 + n/4 + ... = 2n in total, two
+// element copies per pop. Moving ALL of the far end instead would let pops
+// alternating between the two ends pay O(n) every turn.
 
 package collections
+
+// The four cells that describe a deque's shape, together, so a rebalance can
+// publish all of them with one store. Nothing outside `Deque` sees this type.
+class DequeShape<T implements Clone> {
+    // front[len-1] is the head block; a front block is stored reversed.
+    front: List<List<T>> = []
+    // back[len-1] is the tail block; a back block is stored in order.
+    back: List<List<T>> = []
+    // Element counts per side. Never larger than the storage holds.
+    front_count: int = 0
+    back_count: int = 0
+
+    pub fn init() {}
+}
 
 /// A double-ended queue: push and pop at either end in amortized O(1), and
 /// indexed reads in O(1).
@@ -51,119 +99,138 @@ package collections
 /// Elements live in fixed 512-slot blocks held by two stacks of block handles,
 /// the front stack reversed so both ends grow by `push`. An element body is
 /// written once on a push and read once on a pop; it is never shifted by an
-/// insert or a remove. A rebalance across the middle moves whole blocks by
-/// their handle and flips a moved block's contents with one C `reverse`, rather
-/// than copying elements across one at a time. `get`, `first`, `last`, `len`
-/// and `is_empty` are O(1); `push_*` and `pop_*` are amortized O(1) — a pop that
-/// triggers a rebalance is O(k) in the elements it carries but such carries
-/// amortize to O(1) per pop; `clear` and `to_list` are O(n).
+/// insert or a remove. `get`, `first`, `last`, `len` and `is_empty` are O(1);
+/// `push_*` and `pop_*` are amortized O(1) — a pop that empties its end
+/// rebalances, which is O(k) in the k elements the deque holds, but such
+/// rebalances halve and so amortize to O(1) per pop; `clear` and `to_list`
+/// are O(n).
+///
+/// Every state this deque can be caught in is a deque that is telling the
+/// truth, so a `deinit` the cycle collector runs part-way through a push, a
+/// pop or a rebalance reads exactly what the deque holds at that moment.
 pub class Deque<T implements Clone> {
-    // front[len-1] is the head block; a front block is stored reversed.
-    front: List<List<T>> = []
-    // back[len-1] is the tail block; a back block is stored in order.
-    back: List<List<T>> = []
+    shape: DequeShape<T> = new()
     // At most one recycled empty block, reserved to BLOCK, to keep a
-    // push/pop straddling a block boundary free of allocation.
+    // push/pop straddling a block boundary free of allocation. Not part of
+    // the shape: no reader can see it, so it may be touched at any time.
     spare: List<List<T>> = []
-    // Element counts per side; block counts are front.len()/back.len().
-    front_count: int = 0
-    back_count: int = 0
 
     /// An empty deque.
     pub fn init() {}
 
     /// Add `value` at the head.
     pub fn push_front(value: T) {
-        if self.front.len() == 0 ||
-           self.front[self.front.len() - 1].len() == 512 {
-            self.open_block_front()
+        let head: int = self.shape.front.len() - 1
+        if head < 0 || self.shape.front[head].len() == 512 {
+            // Build the block, put the value in it and make room for its
+            // handle first, while the deque is still exactly what its
+            // counters say. Attaching the block raises no count, so until the
+            // line below it holds an element the deque does not claim.
+            var block: List<T> = self.take_block()
+            self.shape.front.reserve(self.shape.front.len() + 1)
+            block.push(value)
+            self.shape.front.push(move block)
+            self.shape.front_count += 1
+            return
         }
-        self.front[self.front.len() - 1].push(value)
-        self.front_count += 1
+        self.shape.front[head].push(value)
+        self.shape.front_count += 1
     }
 
     /// Add `value` at the tail.
     pub fn push_back(value: T) {
-        if self.back.len() == 0 ||
-           self.back[self.back.len() - 1].len() == 512 {
-            self.open_block_back()
+        let tail: int = self.shape.back.len() - 1
+        if tail < 0 || self.shape.back[tail].len() == 512 {
+            var block: List<T> = self.take_block()
+            self.shape.back.reserve(self.shape.back.len() + 1)
+            block.push(value)
+            self.shape.back.push(move block)
+            self.shape.back_count += 1
+            return
         }
-        self.back[self.back.len() - 1].push(value)
-        self.back_count += 1
+        self.shape.back[tail].push(value)
+        self.shape.back_count += 1
     }
 
     /// Remove and answer the head, or `none` when the deque is empty.
     pub fn pop_front() -> Option<T> {
-        if self.front_count == 0 {
-            if self.back_count == 0 { return none }
+        if self.shape.front_count == 0 {
+            if self.shape.back_count == 0 { return none }
             self.crossover_to_front()
         }
-        let head: int = self.front.len() - 1
-        let got: Option<T> = self.front[head].pop()
-        self.front_count -= 1
-        if self.front[head].len() == 0 {
-            let empty: List<T> = self.front.remove(head)
+        let head: int = self.shape.front.len() - 1
+        let filled: int = self.shape.front[head].len()
+        // The count comes down first: the deque must never claim an element
+        // that has already left the storage. `remove` then hands the element
+        // straight back, where `pop` would wrap it in an `Option` first and
+        // building that `Option` allocates.
+        self.shape.front_count -= 1
+        let got: T = self.shape.front[head].remove(filled - 1)
+        if filled == 1 {
+            let empty: List<T> = self.shape.front.remove(head)
+            // Settled: recycling the emptied block may allocate, and that is
+            // fine now.
             if self.spare.len() == 0 { self.spare.push(move empty) }
         }
-        return got
+        return some(got)
     }
 
     /// Remove and answer the tail, or `none` when the deque is empty.
     pub fn pop_back() -> Option<T> {
-        if self.back_count == 0 {
-            if self.front_count == 0 { return none }
+        if self.shape.back_count == 0 {
+            if self.shape.front_count == 0 { return none }
             self.crossover_to_back()
         }
-        let tail: int = self.back.len() - 1
-        let got: Option<T> = self.back[tail].pop()
-        self.back_count -= 1
-        if self.back[tail].len() == 0 {
-            let empty: List<T> = self.back.remove(tail)
+        let tail: int = self.shape.back.len() - 1
+        let filled: int = self.shape.back[tail].len()
+        self.shape.back_count -= 1
+        let got: T = self.shape.back[tail].remove(filled - 1)
+        if filled == 1 {
+            let empty: List<T> = self.shape.back.remove(tail)
             if self.spare.len() == 0 { self.spare.push(move empty) }
         }
-        return got
+        return some(got)
     }
 
     /// The head without removing it.
     pub fn first() -> Option<T> {
-        if self.front_count != 0 {
-            let head: int = self.front.len() - 1
-            return some(self.front[head][self.front[head].len() - 1])
-        }
-        if self.back_count == 0 { return none }
-        return some(self.back[0][0])
+        return self.get(0)
     }
 
     /// The tail without removing it.
     pub fn last() -> Option<T> {
-        if self.back_count != 0 {
-            let tail: int = self.back.len() - 1
-            return some(self.back[tail][self.back[tail].len() - 1])
-        }
-        if self.front_count == 0 { return none }
-        return some(self.front[0][0])
+        return self.get(self.len() - 1)
     }
 
     /// The element `index` places from the head, or `none` when `index` is
     /// outside the deque.
     pub fn get(index: int) -> Option<T> {
-        if index < 0 || index >= self.len() { return none }
-        if index < self.front_count {
-            let head: int = self.front.len() - 1
-            let filled: int = self.front[head].len()
+        if index < 0 ||
+           index >= self.shape.front_count + self.shape.back_count {
+            return none
+        }
+        if index < self.shape.front_count {
+            let head: int = self.shape.front.len() - 1
+            // The head block's CLAIMED size, from the counter — not the
+            // block's own length. A push writes its element before it raises
+            // the count and a pop lowers the count before it takes its element
+            // out, so the block may physically hold one more than the deque
+            // claims; that one sits past `filled` and no reader reaches it.
+            let filled: int = self.shape.front_count - head * 512
             if index < filled {
-                return some(self.front[head][filled - 1 - index])
+                return some(self.shape.front[head][filled - 1 - index])
             }
             let rest: int = index - filled
-            return some(self.front[head - 1 - rest / 512][512 - 1 - rest % 512])
+            let deep: int = head - 1 - rest / 512
+            return some(self.shape.front[deep][512 - 1 - rest % 512])
         }
-        let offset: int = index - self.front_count
-        return some(self.back[offset / 512][offset % 512])
+        let offset: int = index - self.shape.front_count
+        return some(self.shape.back[offset / 512][offset % 512])
     }
 
     /// How many elements.
     pub fn len() -> int {
-        return self.front_count + self.back_count
+        return self.shape.front_count + self.shape.back_count
     }
 
     /// True while the deque holds nothing.
@@ -180,10 +247,10 @@ pub class Deque<T implements Clone> {
         // rather than the old length over storage that is already gone, and a
         // contained panic leaves it empty rather than permanently torn. This
         // is the rule the runtime containers follow.
-        self.front_count = 0
-        self.back_count = 0
-        self.front.clear()
-        self.back.clear()
+        self.shape.front_count = 0
+        self.shape.back_count = 0
+        self.shape.front.clear()
+        self.shape.back.clear()
         self.spare.clear()
     }
 
@@ -192,153 +259,174 @@ pub class Deque<T implements Clone> {
         var out: List<T> = []
         out.reserve(self.len())
         // Front blocks, head block (outermost) first; each is read back to
-        // front because a front block is stored reversed.
-        var block: int = self.front.len() - 1
-        for block >= 0 {
-            var slot: int = self.front[block].len() - 1
+        // front because a front block is stored reversed. The head block is
+        // read from its claimed size, exactly as `get` reads it.
+        let head: int = self.shape.front.len() - 1
+        if head >= 0 {
+            var slot: int = self.shape.front_count - head * 512 - 1
             for slot >= 0 {
-                out.push(self.front[block][slot])
+                out.push(self.shape.front[head][slot])
                 slot -= 1
             }
-            block -= 1
+            var block: int = head - 1
+            for block >= 0 {
+                var deep: int = 511
+                for deep >= 0 {
+                    out.push(self.shape.front[block][deep])
+                    deep -= 1
+                }
+                block -= 1
+            }
         }
-        // Back blocks, innermost first; each is read in order.
+        // Back blocks, innermost first, in order, stopping at what the back
+        // side claims rather than at what its last block happens to hold.
+        var taken: int = 0
         var index: int = 0
-        for index < self.back.len() {
-            let filled: int = self.back[index].len()
+        for taken < self.shape.back_count {
+            var room: int = self.shape.back_count - taken
+            if room > 512 { room = 512 }
             var slot: int = 0
-            for slot < filled {
-                out.push(self.back[index][slot])
+            for slot < room {
+                out.push(self.shape.back[index][slot])
                 slot += 1
             }
+            taken += room
             index += 1
         }
         return move out
     }
 
-    // Put a fresh block at the head of `front`, reusing the spare if there is
-    // one so a boundary-straddling push does not allocate.
-    fn open_block_front() {
+    // A 512-slot block to fill: the recycled spare when there is one, a fresh
+    // one otherwise. `spare` is scratch, not shape, so taking from it changes
+    // no answer — which is the point, because this is where the allocation
+    // goes.
+    fn take_block() -> List<T> {
         if self.spare.len() > 0 {
-            let block: List<T> = self.spare.remove(self.spare.len() - 1)
-            self.front.push(move block)
-        } else {
-            self.front.push([])
-            self.front[self.front.len() - 1].reserve(512)
+            var recycled: List<T> = self.spare.remove(self.spare.len() - 1)
+            recycled.reserve(512)
+            return move recycled
         }
-    }
-
-    fn open_block_back() {
-        if self.spare.len() > 0 {
-            let block: List<T> = self.spare.remove(self.spare.len() - 1)
-            self.back.push(move block)
-        } else {
-            self.back.push([])
-            self.back[self.back.len() - 1].reserve(512)
-        }
+        var block: List<T> = []
+        block.reserve(512)
+        return move block
     }
 
     // `front` is empty and `back` is not: move the head half of `back` to the
-    // front side. One block is split; two or more move as whole handles.
+    // front side. One block is split down its middle; two or more move a block
+    // at a time, as the original did — the halving is what keeps a rebalance
+    // to O(1) per pop amortized.
+    //
+    // Every block is COPIED into the replacement, with `slice`, which is one
+    // bulk copy per block rather than a Beans-level loop. It has to be a copy:
+    // a block changing sides must have its contents reversed, and reversing it
+    // where it lies is a write to storage the live shape is still answering
+    // from; a `List` block cannot sit in two block maps at once either, so the
+    // blocks that stay cannot be shared with the replacement.
     fn crossover_to_front() {
-        if self.back.len() == 1 {
-            // Split the lone block down the middle. `back[0]` is in order, so
-            // reverse it and pop the head half; those come off in deque order,
-            // so reverse the new head block into a front block's reversed
-            // storage, then restore what is left of the tail block.
-            self.back[0].reverse()
-            let total: int = self.back[0].len()
+        var built: DequeShape<T> = new()
+        let blocks: int = self.shape.back.len()
+        if blocks == 1 {
+            let total: int = self.shape.back_count
             let moved: int = (total + 1) / 2
-            var head_block: List<T> = []
-            head_block.reserve(512)
-            var taken: int = 0
-            for taken < moved {
-                match self.back[0].pop() {
-                    some(value) => { head_block.push(value) }
-                    none => {}
-                }
-                taken += 1
-            }
+            // `back[0]` is in order, so the head half is its first `moved`
+            // slots; a front block is stored reversed, so flip the copy.
+            var head_block: List<T> = self.shape.back[0].slice(0, moved)
             head_block.reverse()
-            self.back[0].reverse()
-            self.front.push(move head_block)
-            self.front_count = moved
-            self.back_count = total - moved
-            if self.back[0].len() == 0 {
-                let empty: List<T> = self.back.remove(0)
-                if self.spare.len() == 0 { self.spare.push(move empty) }
+            head_block.reserve(512)
+            built.front.reserve(1)
+            built.front.push(move head_block)
+            built.front_count = moved
+            if total > moved {
+                var tail_block: List<T> =
+                    self.shape.back[0].slice(moved, total)
+                tail_block.reserve(512)
+                built.back.reserve(1)
+                built.back.push(move tail_block)
+                built.back_count = total - moved
             }
-        } else {
-            // Move the innermost ceil(k/2) blocks — all full — as handles.
-            let blocks: int = self.back.len()
-            let moved_blocks: int = (blocks + 1) / 2
-            self.back.reverse()
-            var moved_elems: int = 0
-            var taken: int = 0
-            for taken < moved_blocks {
-                let block: List<T> = self.back.remove(self.back.len() - 1)
-                moved_elems += block.len()
-                self.front.push(move block)
-                taken += 1
-            }
-            self.back.reverse()
-            // The moved blocks are now front[0..], innermost first; the head
-            // block must be outermost, and each block's order must flip to a
-            // front block's reversed storage.
-            self.front.reverse()
-            var index: int = 0
-            for index < self.front.len() {
-                self.front[index].reverse()
-                index += 1
-            }
-            self.front_count = moved_elems
-            self.back_count = self.back_count - moved_elems
+            self.shape = built
+            return
         }
+        // The innermost ceil(k/2) blocks — all full, since only a side's
+        // outermost may be short — become the front side.
+        let moved_blocks: int = (blocks + 1) / 2
+        built.front.reserve(moved_blocks)
+        var moved_elems: int = 0
+        var index: int = 0
+        for index < moved_blocks {
+            var block: List<T> = self.shape.back[index].clone()
+            moved_elems += block.len()
+            block.reverse()
+            built.front.push(move block)
+            index += 1
+        }
+        // Pushed innermost first; the head block must be outermost.
+        built.front.reverse()
+        built.front_count = moved_elems
+        built.back.reserve(blocks - moved_blocks)
+        index = moved_blocks
+        for index < blocks {
+            var block: List<T> = self.shape.back[index].clone()
+            built.back.push(move block)
+            index += 1
+        }
+        // Only a side's outermost block can ever be pushed to, and `slice`
+        // and `clone` hand back a list sized to what they copied.
+        built.back[built.back.len() - 1].reserve(512)
+        built.back_count = self.shape.back_count - moved_elems
+        self.shape = built
     }
 
-    // The mirror image: `back` is empty and `front` is not: move the tail half
-    // of `front` to the back side.
+    // The mirror image: `back` is empty and `front` is not, so the tail half
+    // of `front` moves to the back side.
     fn crossover_to_back() {
-        if self.front.len() == 1 {
-            self.front[0].reverse()
-            let total: int = self.front[0].len()
+        var built: DequeShape<T> = new()
+        let blocks: int = self.shape.front.len()
+        if blocks == 1 {
+            let total: int = self.shape.front_count
             let moved: int = (total + 1) / 2
-            var tail_block: List<T> = []
-            tail_block.reserve(512)
-            var taken: int = 0
-            for taken < moved {
-                match self.front[0].pop() {
-                    some(value) => { tail_block.push(value) }
-                    none => {}
-                }
-                taken += 1
-            }
+            // `front[0]` is stored reversed, so the deque's tail half is its
+            // first `moved` slots; a back block is stored in order.
+            var tail_block: List<T> = self.shape.front[0].slice(0, moved)
             tail_block.reverse()
-            self.front[0].reverse()
-            self.back.push(move tail_block)
-            self.back_count = moved
-            self.front_count = total - moved
-            if self.front[0].len() == 0 {
-                let empty: List<T> = self.front.remove(0)
-                if self.spare.len() == 0 { self.spare.push(move empty) }
+            tail_block.reserve(512)
+            built.back.reserve(1)
+            built.back.push(move tail_block)
+            built.back_count = moved
+            if total > moved {
+                var head_block: List<T> =
+                    self.shape.front[0].slice(moved, total)
+                head_block.reserve(512)
+                built.front.reserve(1)
+                built.front.push(move head_block)
+                built.front_count = total - moved
             }
-        } else {
-            let blocks: int = self.front.len()
-            let moved_blocks: int = (blocks + 1) / 2
-            self.front.reverse()
-            var moved_elems: int = 0
-            var taken: int = 0
-            for taken < moved_blocks {
-                let block: List<T> = self.front.remove(self.front.len() - 1)
-                moved_elems += block.len()
-                block.reverse()
-                self.back.push(move block)
-                taken += 1
-            }
-            self.front.reverse()
-            self.back.reverse()
-            self.back_count = moved_elems
-            self.front_count = self.front_count - moved_elems
+            self.shape = built
+            return
         }
+        let moved_blocks: int = (blocks + 1) / 2
+        built.back.reserve(moved_blocks)
+        var moved_elems: int = 0
+        // front[0] holds the deque's last elements, so the moved blocks go to
+        // the back side outermost first: back[0] is front[moved_blocks-1].
+        var index: int = moved_blocks - 1
+        for index >= 0 {
+            var block: List<T> = self.shape.front[index].clone()
+            moved_elems += block.len()
+            block.reverse()
+            built.back.push(move block)
+            index -= 1
+        }
+        built.back_count = moved_elems
+        built.front.reserve(blocks - moved_blocks)
+        index = moved_blocks
+        for index < blocks {
+            var block: List<T> = self.shape.front[index].clone()
+            built.front.push(move block)
+            index += 1
+        }
+        built.front[built.front.len() - 1].reserve(512)
+        built.front_count = self.shape.front_count - moved_elems
+        self.shape = built
     }
 }
