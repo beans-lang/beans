@@ -365,32 +365,49 @@ for leg in "$tmp/cc_deinit.interp" "$tmp/cc_deinit.native.out"; do
     }
 done
 
-echo "checking a collector pass finishes the white set a member's panic interrupted"
+echo "checking a collector pass finishes the white set a panic interrupted"
 # issue #81 in the collector: cc_run_cycle_deinits retains the whole white
-# set across the deinit bodies, so a member that panics used to strand every
-# object in it — holds up, shells never freed, deinits never run — for the
-# life of the process. When a collection runs is each backend's own business
-# (the two trigger on different budgets), so this leg is native only and
-# asserts the pass rather than a golden. The same program is built twice,
-# once with the bomb armed and once without, so the comparison calibrates
-# itself: whatever a clean run still holds at exit, the caught panic may
-# hold at most two more. Measured here: the clean run ends level (804 of
-# 804 freed) and the caught one one short. Revert the pass guard and it ends
-# 513 short; revert the count beans_do_deinit settles on the unwind and it
-# ends three short, because a parked shell is only freed at count zero.
-cycle_stats() { # <name> <bomb condition>
-    sed "s/BOMB/$2/" >"$tmp/$1.b" <<'BEANS'
+# set across the deinit bodies, so a panic anywhere in the pass used to
+# strand every object in it — holds up, shells never freed, deinits never
+# run — for the life of the process. Two places in one pass can reach user
+# code, and both are covered here: a member's own deinit body, and the
+# release that drops the holds afterwards (a member whose body dropped its
+# internal edge dies right there, and a child it built during the body goes
+# with it). When a collection runs is each backend's own business — the two
+# trigger on their own budgets — so this leg is native only and asserts the
+# pass rather than a golden. The same program is built three times, once
+# clean and once with each bomb, so the comparison calibrates itself:
+# whatever a clean run still holds at exit, a caught panic may hold at most
+# two more. Measured here: 1604 of 1604 freed clean, one short with either
+# bomb. Revert the bodies half and the member run drops to 41 deinits and 7
+# frees; revert the holds half and the child run ends 943 objects short.
+cycle_stats() { # <name> <node bomb> <leaf bomb>
+    sed "s/NODEBOMB/$2/;s/LEAFBOMB/$3/" >"$tmp/$1.b" <<'BEANS'
 import std.io
 
 class Tally { pub static gone: int = 0 }
 
-class Node {
+class Leaf {
     pub id: int = 0
-    pub next: Option<Node> = none
     pub fn init(id: int) { self.id = id }
     fn deinit() {
         Tally.gone += 1
-        if BOMB { panic("deinit bomb") }
+        if LEAFBOMB { panic("leaf bomb") }
+    }
+}
+
+class Node {
+    pub id: int = 0
+    pub next: Option<Node> = none
+    pub made: Option<Leaf> = none
+    pub fn init(id: int) { self.id = id }
+    fn deinit() {
+        Tally.gone += 1
+        // Drop the internal edge and build a child the white set never saw,
+        // so this member dies on its own hold and takes the child with it.
+        self.next = none
+        self.made = some(new Leaf(self.id))
+        if NODEBOMB { panic("node bomb") }
     }
 }
 
@@ -430,31 +447,39 @@ BEANS
     fi
     echo $((allocations - frees))
 }
-cycle_clean=$(cycle_stats cycle_clean "false")
-cycle_panicking=$(cycle_stats cycle_panic "self.id == 41")
-grep -q '^caught panic$' "$tmp/cycle_panic.out" || {
-    echo "the collector's deinit panic was not contained" >&2
-    cat "$tmp/cycle_panic.out" >&2
-    exit 1
-}
+cycle_clean=$(cycle_stats cycle_clean "false" "false")
 grep -q '^ok$' "$tmp/cycle_clean.out" || {
     echo "the control run panicked" >&2
     cat "$tmp/cycle_clean.out" >&2
     exit 1
 }
-cycle_gone=$(sed -n 's/^gone=\([0-9][0-9]*\)$/\1/p' "$tmp/cycle_panic.out")
-if [ -z "$cycle_gone" ] || [ "$cycle_gone" -lt 256 ]; then
-    echo "a collector pass stopped at its panicking member: ${cycle_gone:-none} deinits" >&2
-    cat "$tmp/cycle_panic.out" >&2
-    exit 1
-fi
-if [ "$cycle_panicking" -gt $((cycle_clean + 2)) ]; then
-    echo "the interrupted collector pass stranded its white set:" \
-         "$cycle_panicking objects held at exit against $cycle_clean" \
-         "for the same program without the panic" >&2
-    cat "$tmp/cycle_panic.stats" >&2
-    exit 1
-fi
+cycle_bombed() { # <which> <node bomb> <leaf bomb>
+    local which=$1
+    local held
+    held=$(cycle_stats "cycle_$which" "$2" "$3")
+    grep -q '^caught panic$' "$tmp/cycle_$which.out" || {
+        echo "the collector's $which deinit panic was not contained" >&2
+        cat "$tmp/cycle_$which.out" >&2
+        exit 1
+    }
+    local gone
+    gone=$(sed -n 's/^gone=\([0-9][0-9]*\)$/\1/p' "$tmp/cycle_$which.out")
+    if [ -z "$gone" ] || [ "$gone" -lt 256 ]; then
+        echo "the pass stopped at its panicking $which: ${gone:-none} deinits" >&2
+        cat "$tmp/cycle_$which.out" >&2
+        exit 1
+    fi
+    if [ "$held" -gt $((cycle_clean + 2)) ]; then
+        echo "the interrupted collector pass stranded its white set:" \
+             "$held objects held at exit against $cycle_clean for the same" \
+             "program without the $which panic" >&2
+        cat "$tmp/cycle_$which.stats" >&2
+        exit 1
+    fi
+}
+# a member's own deinit body, then the release that drops the holds
+cycle_bombed member "self.id == 41" "false"
+cycle_bombed child "false" "self.id == 41"
 
 echo "checking a child's panic escalating into its parent's unwind is a double panic"
 # issue #44 (B4): the unwind joins an unjoined child through the synthesized
