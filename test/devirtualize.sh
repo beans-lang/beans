@@ -251,32 +251,66 @@ expect_arms main.tone_note 2          # built only on a path never taken
 
 # An arm for a class that cannot be behind this receiver would call a method
 # whose result type is not the call's. Reading the whole module catches it
-# wherever it comes from, not only in the calls named above.
-awk '
-    /^define / {
-        line = $0
-        sub(/^define (internal )?/, "", line)
-        split(line, parts, " ")
-        symbol = parts[2]
-        sub(/\(.*/, "", symbol)
-        defined[symbol] = parts[1]
-        next
-    }
-    /^[ \t]+(%[^ ]+ = )?call / {
-        line = $0
-        sub(/^[ \t]+(%[^ ]+ = )?call /, "", line)
-        split(line, parts, " ")
-        symbol = parts[2]
-        sub(/\(.*/, "", symbol)
-        if (symbol ~ /^@/ && (symbol in defined) &&
-            defined[symbol] != parts[1]) {
-            printf "call %s %s but defined as %s\n",
-                parts[1], symbol, defined[symbol]
-            bad += 1
+# wherever it comes from, not only in the calls named above. The file is read
+# twice because a call may come before the definition it names.
+signature_check() {
+    awk '
+        NR == FNR {
+            if ($0 ~ /^define /) {
+                line = $0
+                sub(/^define (internal )?/, "", line)
+                split(line, parts, " ")
+                symbol = parts[2]
+                sub(/\(.*/, "", symbol)
+                defined[symbol] = parts[1]
+            }
+            next
         }
-    }
-    END { exit bad != 0 }
-' build/guarded_dispatch.ll
+        /^[ \t]+(%[^ ]+ = )?call / {
+            line = $0
+            sub(/^[ \t]+(%[^ ]+ = )?call /, "", line)
+            split(line, parts, " ")
+            symbol = parts[2]
+            sub(/\(.*/, "", symbol)
+            if (symbol ~ /^@/ && (symbol in defined) &&
+                defined[symbol] != parts[1]) {
+                printf "%s calls %s as %s, defined as %s\n",
+                    FILENAME, symbol, parts[1], defined[symbol]
+                bad += 1
+            }
+        }
+        END { exit bad != 0 }
+    ' "$1" "$1"
+}
+
+# the check itself has to be able to fail: a module with two definitions and
+# a call naming the wrong one must be reported
+scratch=build/test-guarded-signature-probe.ll
+cat >"$scratch" <<'PROBE'
+define i64 @a() {
+entry:
+  ret i64 0
+}
+define ptr @b() {
+entry:
+  %x = call ptr @a()
+  ret ptr %x
+}
+PROBE
+if signature_check "$scratch" >/dev/null; then
+    echo "the signature check passed a module that calls @a as ptr" >&2
+    exit 1
+fi
+
+signature_check build/guarded_dispatch.ll
+
+# generic_interfaces_ok.b is where such a call really did appear: seventeen of
+# them, each an arm for a class implementing another instantiation of the same
+# generic interface. Unreachable, because the checker never puts one behind
+# the other, but emitted all the same.
+./build/beansc llvm test/cases/generic_interfaces_ok.b \
+    >build/test-guarded-generic-interfaces.ll
+signature_check build/test-guarded-generic-interfaces.ll
 
 diff <(./build/beansc run "$guarded_source" 2>&1) <("$guarded_binary" 2>&1)
 diff -u test/cases/guarded_dispatch.out <("$guarded_binary" 2>&1)

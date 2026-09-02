@@ -121,7 +121,7 @@ fn quint_name(value: Quint) -> string { return value.name() }
 //
 // The receiver is written at Boxed, not at Shelf<int>: a receiver written at
 // a generic base calls the base body directly on the native backend today,
-// which is issue #98 and has nothing to do with this.
+// which is issue #103 and has nothing to do with this.
 
 class Shelf<T> {
     held: T
