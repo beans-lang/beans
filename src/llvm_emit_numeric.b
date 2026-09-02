@@ -53,7 +53,7 @@ partial class LlvmTextEmitter {
                     function, instruction, values)
             }
             let text: string =
-                llvm_unquote(instruction.text)
+                string_literal_decode(instruction.text)
             self.selector_texts[
                 instruction.result] = text
             values[instruction.result] =
@@ -1358,9 +1358,9 @@ partial class LlvmTextEmitter {
     }
 
     // literals, alternatives, inclusive and exclusive ranges, and a
-    // trailing wildcard or binding, tested as a branch chain; the
-    // literal text drops straight into the compare, so nothing is
-    // parsed back into numbers
+    // trailing wildcard or binding, tested as a branch chain. Every
+    // literal is re-rendered as a decimal integer on the way into the
+    // compare (llvm_integer_pattern): LLVM reads no other spelling.
     fn emit_integer_match(
         function: MirFunction,
         block: MirBlock,
@@ -1407,7 +1407,8 @@ partial class LlvmTextEmitter {
             if pattern.starts_with(
                    "pattern_literal:") {
                 let text: string =
-                    pattern.slice(16, pattern.len())
+                    llvm_integer_pattern(
+                        pattern.slice(16, pattern.len()))
                 condition = "%int.match{id}"
                 output =
                     "{output}  {condition} = icmp eq {llvm} {subject}, {text}\n"
@@ -1435,7 +1436,8 @@ partial class LlvmTextEmitter {
                         return ""
                     }
                     let text: string =
-                        piece.slice(16, piece.len())
+                        llvm_integer_pattern(
+                            piece.slice(16, piece.len()))
                     let leg: int = self.fresh()
                     output =
                         "{output}  %int.match.leg{leg} = icmp eq {llvm} {subject}, {text}\n"
@@ -1481,9 +1483,11 @@ partial class LlvmTextEmitter {
                     return ""
                 }
                 let low_text: string =
-                    low.slice(16, low.len())
+                    llvm_integer_pattern(
+                        low.slice(16, low.len()))
                 let high_text: string =
-                    high.slice(16, high.len())
+                    llvm_integer_pattern(
+                        high.slice(16, high.len()))
                 // unsigned subjects need unsigned predicates:
                 // 150u8 sits inside 100..=200 only under uge/ule
                 let is_unsigned: bool =

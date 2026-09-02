@@ -16,8 +16,14 @@ check_bad() {
 check_bad diagnostics_interpolation_bad
 grep -Fq ":4:22: error: unknown name 'missing_first'" \
     "$tmp/diagnostics_interpolation_bad"
-grep -Fq ":5:18: error: unknown name 'missing_piece'" \
+# A piece that is one unresolvable name reads far more often as a brace
+# somebody meant literally than as a typo, so the hint replaces the bare
+# "unknown name" rather than following it — at the same column, which is
+# what this file is here to hold: three errors for three names, each on the
+# bytes the user wrote.
+grep -Fq ":5:18: error: '{missing_piece}' in a string is an interpolation" \
     "$tmp/diagnostics_interpolation_bad"
+test "$(grep -c ': error:' "$tmp/diagnostics_interpolation_bad")" -eq 3
 grep -Fq ":6:21: error: unknown name 'missing_last'" \
     "$tmp/diagnostics_interpolation_bad"
 

@@ -46,7 +46,7 @@ partial class LlvmTextEmitter {
         if syntax.kind != "literal" || syntax.note != "string" {
             return ""
         }
-        return llvm_unquote(syntax.value)
+        return string_literal_decode(syntax.value)
     }
 
     fn json_camel_case(name: string) -> string {

@@ -1231,6 +1231,11 @@ class MirLowerer {
             }
             return result
         }
+        // A module constant has no storage: it lowered to its own value in
+        // the checker, so there is nothing left to emit but that value.
+        if node.kind == "const" && node.children.len() == 1 {
+            return self.lower_expression(node.children[0])
+        }
         if node.kind == "c_global" {
             let result: int =
                 self.emit(

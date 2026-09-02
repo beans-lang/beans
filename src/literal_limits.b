@@ -132,6 +132,24 @@ fn integer_literal_fits(text: string,
     return first == 8 && power_of_two_edge(digits, 8)
 }
 
+// Whether a numeric literal's spelling is a float's. A based literal never
+// is, however its digits look: `0xFE` and `0xBEEF` hold an `e` that is a
+// hex digit, not an exponent. The checker classifies a match pattern with
+// this rule and the tree interpreter compares one with it, so it lives in
+// one place — when the interpreter sniffed for `.`/`e`/`E` on its own,
+// every hex arm holding an `e` was compared as a float and matched nothing
+// while the native backend matched it.
+fn literal_is_float_syntax(text: string) -> bool {
+    if text.contains(".") { return true }
+    if text.starts_with("0x") || text.starts_with("0X") ||
+       text.starts_with("0b") || text.starts_with("0B") ||
+       text.starts_with("-0x") || text.starts_with("-0X") ||
+       text.starts_with("-0b") || text.starts_with("-0B") {
+        return false
+    }
+    return text.contains("e") || text.contains("E")
+}
+
 fn integer_literal_range(type_name: string) -> string {
     let bits: int = integer_literal_bits(type_name)
     let signed: bool = integer_literal_signed(type_name)

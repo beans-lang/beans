@@ -355,11 +355,59 @@ fn main() {
   padding lined up only ASCII; there is no caller that wanted it for anything
   else. `s.width()` is the same measure, spelled out.
 - **There is no `+` for strings.** Building strings happens through interpolation, `std.fmt` (sprintf-style: padding, precision, alignment), or `list.join(sep)`. One way to do it, and it's the readable one.
-- Escapes: `\n \t \r \0 \\ \" \{ \}`. The backslash forms are the *only* brace
-  escapes: `{{` is not one. A `{` right after another `{` begins an
+- Escapes: `\n \t \r \0 \\ \" \{ \} \xNN \u{...}`. Anything else after a
+  backslash is an error, not the character itself — `"C:\Users"` says so
+  instead of quietly becoming `C:Users`. The backslash forms are the *only*
+  brace escapes: `{{` is not one. A `{` right after another `{` begins an
   interpolation whose expression starts with a map literal, so `"{{}}"` is an
   (illegal) empty-map piece, not a literal `{}`. Both compilers render every
   escape identically, in and out of interpolated strings.
+- `\xNN` is exactly two hex digits and stands for **one raw byte**, whatever
+  that byte is. `"\x1b[2J"` is the ANSI clear-screen sequence. A value at or
+  above `\x80` puts a byte in the string that is not valid UTF-8 on its own,
+  and that is the point: a string is binary-safe (`\0` has always been
+  spellable), so a protocol byte is written as the byte. `chars()` hands such
+  a byte back one at a time, the same as any other malformed sequence.
+- `\u{...}` is one to six hex digits and stands for a **Unicode scalar**,
+  encoded UTF-8: `"\u{1f600}"` is four bytes. The value must be at most
+  `10FFFF`, and the surrogate range `D800`–`DFFF` is refused because it has no
+  UTF-8 form. This is `chars()`'s inverse: every element `chars()` returns for
+  well-formed text can be written back with `\u{...}`.
+- There is no `\e`. `\x1b` already names that byte, in the spelling C, C++,
+  Rust and Python all use; a second name for one byte would reserve a letter
+  forever and buy nothing.
+
+### Raw string literals
+
+```
+r"/users/{id}"           // a route template, brace and all
+r"\d+"                   // a regex, backslash and all
+r#"say "hi""#            // n hashes when the body holds a quote
+r##"…"#…"##              // more hashes when the body holds `"#`
+```
+
+A raw literal is bytes, not syntax. Nothing in it is an escape and nothing in
+it opens an interpolation, so a literal meant to be read by something other
+than Beans — a route template, a regex, a Windows path, a printf format, a
+JSON fixture — is written the way its own reader spells it. The opener is `r`
+followed by any number of `#`, then `"`; the terminator is `"` followed by the
+same number of `#`. A raw literal may span lines: the terminator is explicit,
+so there is no end of line to guess at.
+
+`r` is only a prefix when the quote follows it with nothing in between, so `r`
+stays an ordinary name everywhere else.
+
+Rawness is a spelling, not a kind. The two forms make the same string, they
+are the same type, they compare equal, and below the checker there is one
+spelling: a raw literal used as a match pattern or folded into a `const` is
+rewritten with ordinary escapes, so nothing downstream ever meets a second
+shape. A raw literal is a compile-time constant, so it works where one is
+required — an annotation argument most of all:
+
+```
+@route(path: r"/users/{id}")
+pub fn show(id: int) -> int { return id }
+```
 
 **Methods (v0.5, implemented, byte-based — unicode arrives later as explicit `chars()`, `len` stays bytes forever):**
 `len`, `is_empty`, `first(n)`, `last(n)`, `slice(from, to)` (half-open, panics out of range),
@@ -848,6 +896,76 @@ var total: decimal = 0.0    // can be reassigned
 ```
 
 `let` means the *variable* can't be rebound. The object it points to can still change inside (Java-style — no borrow checker, no `mut` markers).
+
+### Module constants (v0.9, implemented)
+
+`let` and `var` are statements and live inside a function. A named value that
+belongs to the module is a `const`:
+
+```
+const TERMIOS_BYTES: int = 128
+const TCSAFLUSH: i32 = 2
+const O_NONBLOCK: i32 = 1 << 11
+const GREETING: string = "hello"
+pub const MAX_FRAME: int = 1 << 20      // pub, for a library package
+```
+
+A `const` has **no storage and no address**. The checker folds the initializer
+once, and every use is that value written where the use is — so a constant
+costs exactly what typing the literal there would cost, in both backends. It
+cannot be assigned to, and `&`-style address-taking never applied to it.
+
+- The type is written out and is a number, `bool` or `string`. There is no
+  composite constant: with no storage there is nothing for a list or an object
+  to live in.
+- The initializer is a **constant expression**: literals; other constants,
+  including ones declared further down the file or in another package
+  (`pkg.NAME`, or selected with `import {NAME} from pkg`); unary `-`, `!`, `~`;
+  and the binary operators `+ - * / % & | ^ << >> && || == != < <= > >=`.
+  Anything else is refused with a message that names what was not constant —
+  a call, a local, a field read, an `as` cast, a `{}` piece in a string.
+- Integer folding answers what the same expression answers at run time: every
+  result is narrowed to its own type, so `const X: i32 = 1 << 31` is `i32`'s
+  smallest value, not an error. Division or modulo by zero, a shift count
+  outside `0..bits-1`, and dividing a signed minimum by `-1` are refused. `u64`
+  is the one type the fold cannot carry whole: a `u64` value at or above
+  `2^63` may be **declared** and used like any other constant, but no
+  operator may fold with one — arithmetic, shifts and comparisons alike are
+  refused, because the fold computes in signed 64 bits and would otherwise
+  answer with signed order for a number the program never holds.
+- Floats and decimals fold a literal and unary minus, and no arithmetic. The
+  compiler will not re-round a value the source did not write.
+- A constant that names itself, directly or through another constant, is
+  refused.
+- A constant stands where a literal stands. That includes match arms and
+  annotation arguments:
+
+```
+const LIMIT: int = 128
+
+match n {
+    LIMIT => { … }
+    _ => { … }
+}
+```
+
+- `size_of`, `align_of` and `offset_of` are **not** constant expressions: they
+  are answered after layout, which runs later than a constant is folded, so
+  they cannot appear in a `const` initializer.
+- Two places still take a literal and not a constant, for one reason: both
+  are read before any constant is folded.
+  - A `const` cannot **size a fixed array** — a length is read while types
+    are laid out (`[int; 128]`, not `[int; LIMIT]`).
+  - A `const` cannot be a **parameter default** — a default is read while
+    signatures are checked (`fn f(n: int = 128)`, not `= LIMIT`).
+
+  Both are refused where they are written, with a message that names the
+  name and the ordering. Lifting either means folding constant initializers
+  in an earlier pass, which is one change in one phase covering both; it is
+  the part of the original request that is not yet delivered.
+- `const` is contextual. It is a declaration keyword only in `const <NAME>` at
+  the start of a module-level declaration, and stays an ordinary identifier
+  everywhere else.
 
 `move name` moves the value out of a local binding. The old binding cannot be
 read again unless it is a `var` and gets a new value first:
@@ -3618,7 +3736,10 @@ self true false unique abstract singleton
 library function, not a keyword. `async` and `await` are ordinary
 identifiers — the effect system that once gave them contextual meaning was
 removed. `package` is contextual — only `package <name>` at the top of a
-file declares one, so `package` stays usable as an ordinary identifier.
+file declares one, so `package` stays usable as an ordinary identifier. So is
+`const`: only `const <NAME>` starting a module-level declaration declares one.
+`r` is a string prefix only when a `"` follows it immediately, and a name
+everywhere else.
 
 ## Decided
 
