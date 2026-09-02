@@ -82,6 +82,15 @@ partial class LlvmTextEmitter {
     static_dispatch_symbols: Map<string, string>
     // class_dispatch_is_settled, keyed "{class}|{method}"
     settled_dispatch_classes: Map<string, bool>
+    // Classes this program builds an object of, read off the whole MIR
+    // before anything is emitted. A guarded call speculates on these, so
+    // the answer must not depend on how far the emit has got.
+    constructed_classes: Map<string, bool>
+    // method_dispatch_slots as the symbol pre-pass left it, keyed
+    // "{function}|{slot}". method_dispatch_slots itself grows as raised
+    // instances register their selectors; this one is the set of names the
+    // MIR itself carries, so it answers the same before and after any raise.
+    declared_dispatch_slots: Map<string, bool>
     generic_templates: Map<string, MirFunction>
     generic_queue: List<MirFunction>
     generic_count: int
@@ -253,6 +262,8 @@ partial class LlvmTextEmitter {
         self.method_dispatch_slots = {}
         self.static_dispatch_symbols = {}
         self.settled_dispatch_classes = {}
+        self.constructed_classes = {}
+        self.declared_dispatch_slots = {}
         self.generic_templates = {}
         self.generic_queue = []
         self.generic_count = 0
@@ -302,11 +313,46 @@ partial class LlvmTextEmitter {
                     declaration.qualified] = record_id
                 record_id += 1
             }
+            // A singleton's object is built by its accessor, which every
+            // program that declares one runs, so it is constructed without
+            // any `new` naming it.
+            if declaration.kind == "class" &&
+               declaration.is_singleton {
+                self.constructed_classes[
+                    declaration.qualified] = true
+            }
         }
         for function: MirFunction in program.functions {
             for slot: string in function.dispatch_slots {
                 self.method_dispatch_slots[
                     "{function.name}|{slot}"] = true
+            }
+            // Which classes the program builds is a whole-program fact and
+            // is read here, not accumulated as bodies come out: a guarded
+            // call emitted before the body holding the `new` must speculate
+            // on the same set as one emitted after it. A template counts —
+            // its instances carry its `new` instructions — and the blocks
+            // and instructions skipped here are exactly the ones
+            // emit_function skips.
+            for block: MirBlock in function.blocks {
+                if !block.reachable { continue }
+                for instruction: MirInstruction in
+                    block.instructions {
+                    if instruction.removed ||
+                       instruction.op != "new" {
+                        continue
+                    }
+                    match self.declarations.get(
+                              instruction.type.name) {
+                        some(built) => {
+                            if built.kind == "class" {
+                                self.constructed_classes[
+                                    built.qualified] = true
+                            }
+                        }
+                        none => {}
+                    }
+                }
             }
         }
         self.class_id_count = class_id
