@@ -1045,30 +1045,37 @@ partial class LlvmTextEmitter {
         return false
     }
 
-    // Whether every symbol this class's descriptor rows can name is
-    // already decided. A class whose own shape, base chain or interfaces
-    // are all non-generic takes each row from the symbol pre-pass, which
-    // runs before any body is emitted and never changes an entry. A
-    // generic link anywhere raises method instances on demand instead, so
+    // Whether the symbol this class's descriptor row for `method` names is
+    // decided already. Plain class methods are handed their symbols by a
+    // pre-pass that runs before any body is emitted and never revises an
+    // entry, so their rows are fixed. Every entry that arrives later is an
+    // instance raised on demand, and each kind is visible from here: a
+    // method of a generic base or a generic interface's default is raised
+    // under this class's own name, and a method carrying generics of its
+    // own is raised under its template's name. With any of those in reach
     // the row a call reads mid-emit need not be the row the descriptor
-    // ends up holding — that class's rows are not settled and no caller
-    // may bind against them.
-    fn class_relations_are_plain(
-        declaration: HirDeclaration) -> bool {
-        match self.plain_dispatch_classes.get(
-                  declaration.qualified) {
+    // ends up holding, and no caller may bind against it.
+    fn class_dispatch_is_settled(
+        declaration: HirDeclaration,
+        method: string) -> bool {
+        let key: string =
+            "{declaration.qualified}|{method}"
+        match self.settled_dispatch_classes.get(key) {
             some(known) => { return known }
             none => {}
         }
-        var plain: bool = declaration.generics.len() == 0
+        var settled: bool =
+            declaration.generics.len() == 0 &&
+            !self.generic_templates.contains_key(
+                "{declaration.qualified}.{method}")
         var pending: List<HirType> = []
-        if plain {
+        if settled {
             for relation: HirType in declaration.relations {
                 pending.push(relation)
             }
         }
         var seen: Map<string, bool> = {}
-        for plain && pending.len() != 0 {
+        for settled && pending.len() != 0 {
             let current: HirType =
                 pending.pop().expect("class relation")
             if seen.contains_key(current.name) {
@@ -1077,8 +1084,10 @@ partial class LlvmTextEmitter {
             seen[current.name] = true
             match self.declaration_for(current) {
                 some(parent) => {
-                    if parent.generics.len() != 0 {
-                        plain = false
+                    if parent.generics.len() != 0 ||
+                       self.generic_templates.contains_key(
+                           "{parent.qualified}.{method}") {
+                        settled = false
                     } else {
                         for relation: HirType in
                             parent.relations {
@@ -1086,14 +1095,14 @@ partial class LlvmTextEmitter {
                         }
                     }
                 }
-                // a relation with no declaration behind it is a shape
-                // this emitter does not model, so treat it as unsettled
-                none => { plain = false }
+                // A relation with no declaration is a compiler-known
+                // interface: it owns no method bodies, so nothing can be
+                // raised under it and it cannot move a row.
+                none => {}
             }
         }
-        self.plain_dispatch_classes[
-            declaration.qualified] = plain
-        return plain
+        self.settled_dispatch_classes[key] = settled
+        return settled
     }
 
     // The one method a call on this receiver type can reach, or "" when
@@ -1136,8 +1145,9 @@ partial class LlvmTextEmitter {
             // an abstract class cannot be built, so it is never the
             // class behind a receiver
             if declaration.is_abstract { continue }
-            if !self.class_relations_are_plain(
-                   declaration) {
+            if !self.class_dispatch_is_settled(
+                   declaration,
+                   self.dispatch_method(slot)) {
                 resolved = ""
                 break
             }

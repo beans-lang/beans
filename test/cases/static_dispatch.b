@@ -223,6 +223,83 @@ class Harshly implements Caller {
     override fn shout() -> string { return "RUDE" }
 }
 
+// ---- a compiler-known interface owns no rows -----------------------------
+// `Eq` has no declaration of its own, so it can hold no body and move no
+// row. A class that names one settles like any other, which the whole
+// standard library depends on: `implements Eq & Hash & Clone` is how a type
+// becomes a map key.
+
+class Point implements Eq {
+    x: int
+
+    fn init(x: int) { self.x = x }
+
+    priv fn doubled() -> int { return self.x * 2 }
+
+    fn equals(other: Point) -> bool { return self.x == other.x }
+
+    fn shown() -> string { return "Point{self.doubled()}" }
+}
+
+// ---- a method with generics of its own is raised, not tabled -------------
+// `pick` has no descriptor row at all: it binds its own type at each call
+// site, so its symbol is raised per instantiation under the template's own
+// name and can appear at any point in the emit. A subclass receiver must
+// not settle on whichever instantiation happened to be raised first — the
+// answer would be another call site's type arguments.
+//
+// `raise_tally` runs first and raises the int instantiation, so by the time
+// `ask_generic` is emitted the template's own name does hold a symbol —
+// which is the whole hazard, and without the check `ask_generic` would bind
+// to it and pass a string where that instantiation reads an int.
+//
+// `ask_generic` is deliberately never called: dispatching an inherited
+// generic method through a subclass reads a row that was never filled, and
+// that is a separate native fault. What is pinned here is the emitted form.
+
+class Tally {
+    fn init() {}
+
+    fn pick<T>(value: T) -> int { return 1 }
+
+    fn count() -> int { return 3 }
+}
+
+class SubTally extends Tally {
+    fn init() { super.init() }
+}
+
+fn raise_tally(value: Tally) -> int {
+    return value.pick<int>(1)
+}
+
+fn ask_generic(value: SubTally) -> int {
+    return value.pick<string>("s")
+}
+
+// ---- a generic base raises its bodies on demand --------------------------
+// A class extending a generic base has no symbol for the inherited body
+// until some call site raises the instance under that subclass's own name,
+// which happens partway through the emit and separately for each subclass.
+// The row a call reads before the raise is not the row the descriptor ends
+// up holding, so nothing in this family may settle.
+
+class Store<T> {
+    held: T
+
+    fn init(held: T) { self.held = held }
+
+    fn note() -> string { return "Store.note" }
+}
+
+class IntStore extends Store<int> {
+    fn init() { super.init(1) }
+}
+
+class DeepStore extends IntStore {
+    fn init() { super.init() }
+}
+
 // ---- reached through a parameter, never through an allocation ------------
 
 fn via_ledger(value: Ledger) -> string { return value.record() }
@@ -255,6 +332,14 @@ fn via_greeter(value: Greeter) -> string { return value.greet() }
 
 fn via_caller(value: Caller) -> string { return value.shout() }
 
+fn via_point(value: Point) -> string { return value.shown() }
+
+fn via_tally(value: SubTally) -> int { return value.count() }
+
+fn via_intstore(value: IntStore) -> string { return value.note() }
+
+fn via_deepstore(value: DeepStore) -> string { return value.note() }
+
 fn main() {
     io.println(via_ledger(new Ledger("base")))
     io.println(via_ledger(new SubLedger("sub")))
@@ -286,6 +371,12 @@ fn main() {
     io.println(via_producer(new PlainMaker()))
     io.println(via_producer(new BoxMaker<int>(1)))
     io.println(via_producer(new BoxMaker<string>("x")))
+
+    io.println(via_point(new Point(4)))
+    io.println(via_tally(new SubTally()))
+    io.println(raise_tally(new Tally()))
+    io.println(via_intstore(new IntStore()))
+    io.println(via_deepstore(new DeepStore()))
 
     io.println(via_greeter(new OneGreeter()))
     io.println(via_caller(new Softly()))

@@ -80,7 +80,8 @@ partial class LlvmTextEmitter {
     // Every input it reads is fixed once the symbol pre-pass has run, so
     // one answer per receiver-and-slot stands for the whole emit.
     static_dispatch_symbols: Map<string, string>
-    plain_dispatch_classes: Map<string, bool>
+    // class_dispatch_is_settled, keyed "{class}|{method}"
+    settled_dispatch_classes: Map<string, bool>
     generic_templates: Map<string, MirFunction>
     generic_queue: List<MirFunction>
     generic_count: int
@@ -251,7 +252,7 @@ partial class LlvmTextEmitter {
         self.selector_order = []
         self.method_dispatch_slots = {}
         self.static_dispatch_symbols = {}
-        self.plain_dispatch_classes = {}
+        self.settled_dispatch_classes = {}
         self.generic_templates = {}
         self.generic_queue = []
         self.generic_count = 0

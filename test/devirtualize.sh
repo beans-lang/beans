@@ -110,41 +110,44 @@ static_source=test/cases/static_dispatch.b
 static_binary=build/test-static-dispatch-native
 ./build/beansc build "$static_source" -o "$static_binary" >/dev/null
 
-# body <name> — the emitted body of one function, found by the IR comment that
-# names it by its import path
-body() {
-    awk -v want="; $1" '
+# emitted <file> <name> — the body of one function, found by the IR comment
+# that names it by its import path. A name that is not there is a broken
+# check, not a passing one, so it stops the run.
+emitted() {
+    local file=$1 name=$2 text
+    text=$(awk -v want="; $name" '
         $0 == want { inside = 1 }
         inside { print }
         inside && /^}/ { exit }
-    ' build/static_dispatch.ll
+    ' "$file")
+    if [ -z "$text" ]; then
+        echo "no function '$name' in $file" >&2
+        exit 1
+    fi
+    printf '%s\n' "$text"
 }
 
 # A settled call names its target; an unsettled one loads the receiver's
 # descriptor first, whether it then switches on the class id or calls through
-# the row.
-settled() {
-    local name=$1 text
-    text=$(body "$name")
-    if [ -z "$text" ]; then
-        echo "no function '$name' in build/static_dispatch.ll" >&2
+# the row. Called as a plain command so that a failure ends the run.
+expect_dispatch_in() {
+    local file=$1 name=$2 want=$3 text got
+    text=$(emitted "$file" "$name") || exit 1
+    if [ -z "$text" ]; then exit 1; fi
+    if printf '%s\n' "$text" | grep -qE '%(dispatch|devirt)\.desc'; then
+        got=reads-the-table
+    else
+        got=settled
+    fi
+    if [ "$got" != "$want" ]; then
+        echo "$name: expected $want, emitted $got" >&2
+        printf '%s\n' "$text" >&2
         exit 1
     fi
-    if printf '%s' "$text" | grep -qE '%(dispatch|devirt)\.desc'; then
-        echo "reads-the-table"
-        return
-    fi
-    echo "settled"
 }
 
 expect_dispatch() {
-    local name=$1 want=$2 got
-    got=$(settled "$name")
-    if [ "$got" != "$want" ]; then
-        echo "$name: expected $want, emitted $got" >&2
-        body "$name" >&2
-        exit 1
-    fi
+    expect_dispatch_in build/static_dispatch.ll "$1" "$2"
 }
 
 # settled: nothing in the program can put a second symbol in the row
@@ -163,6 +166,9 @@ expect_dispatch main.Task.go settled
 expect_dispatch main.via_job settled             # start is never replaced
 expect_dispatch main.via_greeter settled         # a kept interface default
 expect_dispatch main.Greeter.greet settled
+expect_dispatch main.via_point settled           # implements a known Eq
+expect_dispatch main.Point.shown settled
+expect_dispatch main.via_tally settled           # beside a generic method
 
 # reads the table: a second symbol really can turn up in the row
 expect_dispatch main.Animal.twice reads-the-table   # five bodies share speak
@@ -171,6 +177,14 @@ expect_dispatch main.Job.start reads-the-table      # two concrete subclasses
 expect_dispatch main.via_caller reads-the-table     # the default is overridden
 expect_dispatch main.Caller.shout reads-the-table
 expect_dispatch main.via_producer reads-the-table   # a generic implementor
+# A method with generics of its own has no row: its symbol is raised per
+# instantiation, at whatever point in the emit some call site asks for it.
+# Settling on it would hand this call another call site's type arguments.
+expect_dispatch main.ask_generic reads-the-table
+# A body inherited from a generic base is raised under each subclass's own
+# name, partway through the emit, so no answer taken before the raise stands.
+expect_dispatch main.via_intstore reads-the-table
+expect_dispatch main.via_deepstore reads-the-table
 
 diff <(./build/beansc run "$static_source" 2>&1) <("$static_binary" 2>&1)
 diff -u test/cases/static_dispatch.out <("$static_binary" 2>&1)
@@ -199,6 +213,7 @@ mkdir -p "$tmp/project/meter"
 cat >"$tmp/project/beans.pot" <<'MANIFEST'
 module slotcheck
 MANIFEST
+mkdir -p "$tmp/project/dial"
 cat >"$tmp/project/meter/meter.b" <<'LIBRARY'
 package meter
 
@@ -209,13 +224,41 @@ pub class Meter {
 
     pub fn read() -> string { return "read/{self.label()}" }
 }
+
+// the same short name as dial.Widget, and this one is never subclassed
+pub class Widget {
+    pub fn init() {}
+
+    pub fn tag() -> string { return "meter.Widget.tag" }
+}
+LIBRARY
+cat >"$tmp/project/dial/dial.b" <<'LIBRARY'
+package dial
+
+pub interface Spin {
+    fn spin() -> string
+}
+
+pub class Turner implements Spin {
+    pub fn init() {}
+
+    pub fn spin() -> string { return "dial.Turner.spin" }
+}
+
+pub class Widget {
+    pub fn init() {}
+
+    pub fn tag() -> string { return "dial.Widget.tag" }
+}
 LIBRARY
 cat >"$tmp/project/main.b" <<'PROGRAM'
 package main
 
 import std.io
 import slotcheck.meter
+import slotcheck.dial
 
+// a package-private method the base keeps to itself
 class Gauge extends meter.Meter {
     pub fn init() { super.init() }
 
@@ -224,12 +267,37 @@ class Gauge extends meter.Meter {
     pub fn own() -> string { return "own/{self.label()}" }
 }
 
+// a real override, one package away from the base
+class Bigger extends dial.Widget {
+    pub fn init() { super.init() }
+
+    pub override fn tag() -> string { return "main.Bigger.tag" }
+}
+
+// a second implementor of an interface declared elsewhere
+class Spinner implements dial.Spin {
+    pub fn init() {}
+
+    pub fn spin() -> string { return "main.Spinner.spin" }
+}
+
 fn ask(value: meter.Meter) -> string { return value.read() }
+
+fn tag_meter(value: meter.Widget) -> string { return value.tag() }
+
+fn tag_dial(value: dial.Widget) -> string { return value.tag() }
+
+fn turn(value: dial.Spin) -> string { return value.spin() }
 
 fn main() {
     io.println(ask(new meter.Meter()))
     io.println(ask(new Gauge()))
     io.println(new Gauge().own())
+    io.println(tag_meter(new meter.Widget()))
+    io.println(tag_dial(new dial.Widget()))
+    io.println(tag_dial(new Bigger()))
+    io.println(turn(new dial.Turner()))
+    io.println(turn(new Spinner()))
 }
 PROGRAM
 ( cd "$tmp/project" && "$root/build/beansc" run main.b ) >"$tmp/slot.interp"
@@ -241,6 +309,19 @@ diff -u - "$tmp/slot.interp" <<'EXPECTED'
 read/meter.Meter.label
 read/meter.Meter.label
 own/main.Gauge.label
+meter.Widget.tag
+dial.Widget.tag
+main.Bigger.tag
+dial.Turner.spin
+main.Spinner.spin
 EXPECTED
+
+# The two Widgets share a short name, and only one of them is subclassed.
+# Reading the hierarchy by short name would settle the wrong one: a call on
+# dial.Widget would miss main.Bigger and answer dial.Widget.tag for it.
+cross=$tmp/project/build/main.ll
+expect_dispatch_in "$cross" slotcheck.tag_meter settled
+expect_dispatch_in "$cross" slotcheck.tag_dial reads-the-table
+expect_dispatch_in "$cross" slotcheck.turn reads-the-table
 
 echo "ok exact receivers call directly, safe objects use the stack, settled slots skip the table, and dynamic or mutating receivers keep fallbacks"
