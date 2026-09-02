@@ -1,0 +1,139 @@
+  drop 11
+  drop 10
+  drop 9
+  drop 8
+  drop 7
+  drop 6
+  drop 5
+  drop 4
+  drop 3
+  drop 2
+  drop 1
+  drop 0
+list clear: panic, 12 destroyed
+list len=0
+  drop 11
+  drop 10
+  drop 9
+  drop 8
+  drop 7
+  drop 6
+  drop 5
+  drop 4
+  drop 3
+  drop 2
+  drop 1
+  drop 0
+map clear: panic, 12 destroyed
+map len=0
+  drop 11
+  drop 10
+  drop 9
+  drop 8
+  drop 7
+  drop 6
+  drop 5
+  drop 4
+  drop 3
+  drop 2
+  drop 1
+  drop 0
+ordered clear: panic, 12 destroyed
+ordered len=0
+  drop 11
+  drop 10
+  drop 9
+  drop 8
+  drop 7
+  drop 6
+  drop 5
+  drop 4
+  drop 3
+  drop 2
+  drop 1
+  drop 0
+arena clear: panic, 12 destroyed
+arena len=0
+  drop 11
+  drop 10
+  drop 9
+  drop 8
+  drop 7
+  drop 6
+  drop 5
+  drop 4
+  drop 3
+  drop 2
+  drop 1
+  drop 0
+list scope: panic, 12 destroyed
+  drop link 11
+  drop link 10
+  drop link 9
+  drop link 8
+  drop link 7
+  drop link 6
+  drop link 5
+  drop link 4
+  drop link 3
+  drop link 2
+  drop link 1
+  drop link 0
+graph: panic, 12 destroyed
+  drop 22
+  drop 21
+  drop 20
+  drop 12
+  drop 11
+  drop 10
+  drop 2
+  drop 1
+  drop 0
+nested: panic, 9 destroyed
+nested len=0
+  drop 9
+  drop 8
+  drop 7
+  drop 6
+  drop 5
+  drop 4
+  drop 3
+  drop 2
+  drop 1
+wide clear: panic, 9 destroyed
+wide len=0
+  drop owner 1
+  drop leaf 11
+  drop leaf 10
+  drop leaf 99
+owner fields: panic, 4 destroyed
+  drop owner 1
+  drop leaf 11
+  drop leaf 10
+box set: panic, 3 destroyed
+box holds=2
+  drop 12
+  drop 11
+  drop 10
+wide box set: panic, 3 destroyed
+wide box holds=20,21,22
+  drop 32
+  drop 31
+  drop 30
+wide remove: panic, 3 destroyed
+wide map len=1
+reused list=1 map=1 ordered=1 arena=1
+end
+  drop 35
+  drop 34
+  drop 33
+  drop 22
+  drop 21
+  drop 20
+  drop owner 2
+  drop leaf 21
+  drop leaf 20
+  drop 103
+  drop 102
+  drop 101
+  drop 100

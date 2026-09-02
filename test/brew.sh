@@ -87,6 +87,179 @@ for round in 1 2 3 4 5 6; do
     diff -u test/cases/container_clear_panic.out "$tmp/clear.again"
 done
 
+echo "checking a panicking deinit does not stop the destruction it was running"
+# issue #81: contained by brew/join, a deinit panic unwinds out of whatever
+# runtime frame was tearing something down. Native stopped there — the
+# elements a `clear` had not reached were never destroyed and never freed,
+# while the container already reported itself empty, so nothing in the
+# program could reach them either. The interpreter, whose panic is a poison
+# flag rather than a stack unwind, destroyed all of them: one checked
+# program, two answers, and O(n) leaked per caught panic on the native side.
+# The golden is the interpreter's answer — counts and death order — across
+# every container, a scope death, a plain object graph, nested containers, a
+# wide record, the panicking object's own fields, both Box.set shapes and a
+# wide remove. Revert any half of the runtime guard and the counts drop.
+./build/beansc run test/cases/deinit_panic_cascade.b >"$tmp/cascade.interp"
+./build/beansc build test/cases/deinit_panic_cascade.b \
+    -o "$tmp/cascade.native" >"$tmp/cascade.build" 2>&1
+"$tmp/cascade.native" >"$tmp/cascade.native.out"
+./build/beansc build --release --lto test/cases/deinit_panic_cascade.b \
+    -o "$tmp/cascade.lto" >"$tmp/cascade.lto.build" 2>&1
+"$tmp/cascade.lto" >"$tmp/cascade.lto.out"
+diff -u test/cases/deinit_panic_cascade.out "$tmp/cascade.interp"
+diff -u test/cases/deinit_panic_cascade.out "$tmp/cascade.native.out"
+diff -u test/cases/deinit_panic_cascade.out "$tmp/cascade.lto.out"
+# Nothing is released twice on the way: a second release is allocator
+# corruption the pool hides, so three clean runs without it bind that half.
+for round in 1 2 3; do
+    BEANS_NO_POOL=1 "$tmp/cascade.native" >"$tmp/cascade.again" 2>&1 || {
+        echo "the finished cascade crashed on run $round without the pool" >&2
+        cat "$tmp/cascade.again" >&2
+        exit 1
+    }
+    diff -u test/cases/deinit_panic_cascade.out "$tmp/cascade.again"
+done
+
+echo "checking the finished cascade returns every byte it took"
+# The counts above say every deinit ran; this says the memory came back.
+# Two round counts an order of magnitude apart, each in its own
+# -DBEANS_ARC_STATS build: allocations must equal frees in both, so a
+# per-panic leak would show as a gap that grows with the rounds. Before the
+# guard the fifty-round build ended 1000 allocations short of its frees.
+arc_rounds() { # <rounds>
+    local rounds=$1
+    sed "s/ROUNDS/$rounds/g" >"$tmp/arc_$rounds.b" <<'BEANS'
+import std.io
+
+class Item {
+    pub id: int = 0
+    pub bomb: bool = false
+    pub fn init(id: int, bomb: bool) {
+        self.id = id
+        self.bomb = bomb
+    }
+    fn deinit() { if self.bomb { panic("deinit bomb") } }
+}
+
+fn wipe(l: List<Item>) -> int { l.clear(); return 0 }
+
+fn round() {
+    var l: List<Item> = []
+    var i: int = 0
+    for i < 40 { l.push(new Item(i, i == 20)); i += 1 }
+    let h: Brew<int> = brew wipe(l)
+    match h.join() { ok(v) => {} err(problem) => {} }
+}
+
+fn main() {
+    var r: int = 0
+    for r < ROUNDS { round(); r += 1 }
+    io.println("rounds=ROUNDS")
+}
+BEANS
+    ./build/beansc build --emit ir "$tmp/arc_$rounds.b" >/dev/null 2>&1
+    # the same pairing the driver uses for a program that can contain a panic
+    clang -O1 -pthread -DBEANS_ARC_STATS -DBEANS_FIBER_UNWIND=1 \
+        -fexceptions -funwind-tables -Wno-override-module \
+        "build/arc_$rounds.ll" build/beans_rt.c -lm -o "$tmp/arc_$rounds"
+    "$tmp/arc_$rounds" >"$tmp/arc_$rounds.out" 2>"$tmp/arc_$rounds.stats"
+    grep -q "^rounds=$rounds\$" "$tmp/arc_$rounds.out" || {
+        echo "the arc-stats build did not run $rounds rounds" >&2
+        cat "$tmp/arc_$rounds.out" >&2
+        exit 1
+    }
+    local allocations frees
+    allocations=$(sed -n 's/.*allocations=\([0-9][0-9]*\).*/\1/p' \
+        "$tmp/arc_$rounds.stats")
+    frees=$(sed -n 's/.* frees=\([0-9][0-9]*\).*/\1/p' "$tmp/arc_$rounds.stats")
+    if [ -z "$allocations" ] || [ -z "$frees" ]; then
+        echo "no arc stats from the $rounds-round build" >&2
+        cat "$tmp/arc_$rounds.stats" >&2
+        exit 1
+    fi
+    if [ "$allocations" -ne "$frees" ]; then
+        echo "a caught deinit panic leaked: $rounds rounds allocated" \
+             "$allocations and freed $frees" >&2
+        cat "$tmp/arc_$rounds.stats" >&2
+        exit 1
+    fi
+    if [ "$allocations" -lt $((rounds * 40)) ]; then
+        echo "the $rounds-round build never built its elements" >&2
+        cat "$tmp/arc_$rounds.stats" >&2
+        exit 1
+    fi
+}
+arc_rounds 50
+arc_rounds 500
+
+echo "checking a second panicking deinit in one cascade is the double panic"
+# The destruction that finishes runs while the fiber is already unwinding,
+# which is exactly the condition both backends call unrecoverable. So the
+# element the finishing walk reaches next, panicking in its own deinit,
+# aborts with both reports — and the elements between the two panics have
+# already printed, which is what says the walk really did continue.
+cat >"$tmp/double_deinit.b" <<'BEANS'
+import std.io
+
+class Item {
+    pub id: int = 0
+    pub fn init(id: int) { self.id = id }
+    fn deinit() {
+        io.println("drop {self.id}")
+        if self.id == 7 { panic("first bomb") }
+        if self.id == 3 { panic("second bomb") }
+    }
+}
+
+fn wipe(l: List<Item>) -> int {
+    l.clear()
+    return 0
+}
+
+fn main() {
+    var l: List<Item> = []
+    var i: int = 0
+    for i < 12 {
+        l.push(new Item(i))
+        i += 1
+    }
+    let h: Brew<int> = brew wipe(l)
+    match h.join() {
+        ok(v) => { io.println("ok") }
+        err(problem) => { io.println("caught") }
+    }
+}
+BEANS
+expect_double_deinit() { # <command...>
+    set +e
+    "$@" >"$tmp/double_deinit.out" 2>"$tmp/double_deinit.err"
+    local status=$?
+    set -e
+    if [ "$status" -ne 134 ]; then
+        echo "a second panicking deinit should abort (134), got $status" >&2
+        cat "$tmp/double_deinit.err" >&2
+        exit 1
+    fi
+    printf 'drop 11\ndrop 10\ndrop 9\ndrop 8\ndrop 7\ndrop 6\ndrop 5\ndrop 4\ndrop 3\n' \
+        | diff -u - "$tmp/double_deinit.out"
+    grep -q "^double panic during unwind: runtime panic at 9:32: second bomb\$" \
+        "$tmp/double_deinit.err" || {
+        echo "the second deinit panic is not reported as a double panic" >&2
+        cat "$tmp/double_deinit.err" >&2
+        exit 1
+    }
+    grep -q "^  while unwinding: runtime panic at 8:32: first bomb\$" \
+        "$tmp/double_deinit.err" || {
+        echo "the interrupted unwind is not named in the report" >&2
+        cat "$tmp/double_deinit.err" >&2
+        exit 1
+    }
+}
+expect_double_deinit ./build/beansc run "$tmp/double_deinit.b"
+./build/beansc build "$tmp/double_deinit.b" -o "$tmp/double_deinit" \
+    >"$tmp/double_deinit.build" 2>&1
+expect_double_deinit "$tmp/double_deinit"
+
 echo "checking a map replace under a panicking deinit corrupts nothing"
 # issue #44: the old order released the caller's duplicate key before the
 # old value's panicking release, and the pad then released that key a
