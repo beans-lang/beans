@@ -168,6 +168,9 @@ test-semantics: $(BIN)
 	./test/maps.sh
 	bash ./test/map_inline.sh
 	./test/traits.sh
+	bash ./test/calendar.sh
+	bash ./test/collections.sh
+	bash ./test/collections_fuzz.sh smoke
 	bash ./test/display_width.sh
 	bash ./test/derived_render.sh
 	bash ./test/module_consts.sh
@@ -299,6 +302,9 @@ test-core: $(BIN)
 	./test/maps.sh
 	bash ./test/map_inline.sh
 	./test/traits.sh
+	bash ./test/calendar.sh
+	bash ./test/collections.sh
+	bash ./test/collections_fuzz.sh smoke
 	bash ./test/display_width.sh
 	bash ./test/derived_render.sh
 	bash ./test/module_consts.sh
