@@ -353,6 +353,7 @@ if [[ "$(uname -s)" == Darwin ]] && command -v leaks >/dev/null 2>&1; then
     for file in bench/trees.b examples/box.b examples/arena.b examples/fmt.b \
                 test/cases/brew_unwind_leak.b \
                 test/cases/sort_unwind_leak.b \
+                test/cases/deinit_panic_cascade.b \
                 test/cases/unlink_leak.b \
                 examples/shared_weak.b examples/inline_results.b examples/wide_lists.b \
                 examples/wide_maps.b examples/wide_enums.b examples/enum_repr.b \
