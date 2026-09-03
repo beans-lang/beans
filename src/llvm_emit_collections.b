@@ -46,6 +46,14 @@ partial class LlvmTextEmitter {
                     "@.next.fn{next_id}"
                 }
             self.function_symbols[function.name] = symbol
+            // The slots this name answers to before any instance is
+            // raised. A later raise files under a name nothing holds yet
+            // and registers that name's slots then, so a name recorded
+            // here keeps the same slots for the whole emit.
+            for slot: string in function.dispatch_slots {
+                self.declared_dispatch_slots[
+                    "{function.name}|{slot}"] = true
+            }
             if function.cleanup_id >= 0 {
                 self.cleanup_functions[
                     function.cleanup_id] = function

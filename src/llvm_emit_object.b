@@ -1105,6 +1105,93 @@ partial class LlvmTextEmitter {
         return settled
     }
 
+    // Whether method_slot_symbol(declaration, slot) already names the
+    // symbol this class's descriptor row will end up holding, asked
+    // without reference to how far the emit has got. A guarded arm names
+    // that symbol directly, so an arm may only be built for a class this
+    // answers yes for.
+    //
+    // Two ways to know. Either nothing in the class's reach can be raised
+    // at all, which is the question a settled row asks. Or the MIR carries
+    // this method under the class's own name: a raise files under that
+    // name and only when nothing holds it yet, and the class's own name is
+    // the first place the chain walk looks, so a row that resolves there
+    // is the row that stands. An inherited body is the case neither
+    // covers — a generic base raises it per subclass, partway through the
+    // emit — and it keeps the fallback.
+    fn class_dispatch_row_is_fixed(
+        declaration: HirDeclaration,
+        slot: string) -> bool {
+        let method: string = self.dispatch_method(slot)
+        if self.class_dispatch_is_settled(
+               declaration, method) {
+            return true
+        }
+        return self.declared_dispatch_slots.contains_key(
+            "{declaration.qualified}.{method}|{slot}")
+    }
+
+    // Whether an object of `candidate` can stand behind a receiver written
+    // `instance`, whose declaration is `target`. class_conforms answers by
+    // name alone, which is all a settled row needs — a wider set there only
+    // makes that answer stricter. A guarded arm binds the other way: an arm
+    // for a class that cannot be behind this receiver is unreachable code
+    // calling a method whose signature is not the call's, so a
+    // `Producer<int>` receiver must not reach a class that implements
+    // `Producer<string>`. Same name test as class_conforms, and the walk
+    // carries each link's arguments down so a relation written in an
+    // interface's own parameters is compared after binding.
+    fn class_conforms_to_instance(
+        candidate: HirDeclaration,
+        target: HirDeclaration,
+        instance: HirType) -> bool {
+        if candidate.qualified == target.qualified {
+            return true
+        }
+        var pending: List<HirType> = []
+        for relation: HirType in candidate.relations {
+            pending.push(relation)
+        }
+        var seen: Map<string, bool> = {}
+        for pending.len() != 0 {
+            let current: HirType =
+                pending.pop().expect("class relation")
+            if current.name == target.qualified ||
+               current.name == target.name {
+                // the names are compared the way class_conforms compares
+                // them, so only the arguments are read off the types
+                var same: bool =
+                    current.args.len() ==
+                        instance.args.len()
+                for index: int in
+                    0..current.args.len() {
+                    if index >= instance.args.len() ||
+                       !hir_types_equal(
+                            current.args[index],
+                            instance.args[index]) {
+                        same = false
+                    }
+                }
+                if same { return true }
+            }
+            let key: string = hir_type_key(current)
+            if seen.contains_key(key) { continue }
+            seen[key] = true
+            match self.declaration_for(current) {
+                some(parent) => {
+                    for relation: HirType in
+                        parent.relations {
+                        pending.push(
+                            self.substitute_class_type(
+                                relation, parent, current))
+                    }
+                }
+                none => {}
+            }
+        }
+        return false
+    }
+
     // The one method a call on this receiver type can reach, or "" when
     // more than one could.
     //
@@ -1992,9 +2079,6 @@ partial class LlvmTextEmitter {
             self.class_layout(instruction.type)
         match found {
             some(layout) => {
-                self.used_builtin_symbols[
-                    "devirt:{layout.declaration.qualified}"] =
-                    true
                 if layout.declaration.generics.len() !=
                        0 &&
                    self.class_has_deinit(
@@ -3166,7 +3250,7 @@ partial class LlvmTextEmitter {
                 if declaration.kind == "interface" {
                     return self.emit_guarded_dynamic_call(
                         function, instruction, values,
-                        declaration)
+                        declaration, receiver_type)
                 }
                 if declaration.kind != "class" &&
                    declaration.kind != "enum" &&
@@ -3237,7 +3321,7 @@ partial class LlvmTextEmitter {
                 if declaration.kind == "class" {
                     return self.emit_guarded_dynamic_call(
                         function, instruction, values,
-                        declaration)
+                        declaration, receiver_type)
                 }
             }
             none => {

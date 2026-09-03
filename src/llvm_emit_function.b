@@ -1353,7 +1353,14 @@ partial class LlvmTextEmitter {
         function: MirFunction,
         instruction: MirInstruction,
         values: Map<int, string>,
-        target: HirDeclaration) -> string {
+        target: HirDeclaration,
+        receiver_type: HirType) -> string {
+        let dispatch_slot: string =
+            if instruction.dispatch_slot != "" {
+                instruction.dispatch_slot
+            } else {
+                "pub:{instruction.text}"
+            }
         // A table that can only ever hold one symbol for this slot decides
         // nothing, so read the answer here and call it. The receiver being
         // a class of its own is not what makes this safe — a base-typed
@@ -1362,38 +1369,44 @@ partial class LlvmTextEmitter {
         // path below exactly as before.
         let settled: string =
             self.static_dispatch_symbol(
-                target,
-                if instruction.dispatch_slot != "" {
-                    instruction.dispatch_slot
-                } else {
-                    "pub:{instruction.text}"
-                })
+                target, dispatch_slot)
         if settled != "" {
             return self.emit_direct_call(
                 function, instruction, values, settled)
         }
+        // Speculate on the classes this program builds that can stand
+        // behind this receiver. Which classes the program builds is a
+        // whole-program fact, read before any body was emitted, so the same
+        // call gets the same arms wherever its body happens to sit in the
+        // emit order.
+        //
+        // Missing an arm costs nothing but the fallback, which reads the
+        // row the way an unguarded call does; that is what covers a class
+        // only reflection builds, a generic instantiation, an inherited
+        // body raised on demand, and anything past the arm limit. An arm
+        // that names the wrong symbol would call the wrong method, so a
+        // class only gets one when its row for this method is already
+        // fixed and its own type arguments are the receiver's.
         var candidates: List<HirDeclaration> = []
         var symbols: List<string> = []
         for declaration: HirDeclaration in
             self.program.declarations {
             if declaration.kind != "class" ||
                declaration.generics.len() != 0 ||
+               declaration.is_abstract ||
                !self.class_ids.contains_key(
                    declaration.qualified) ||
-               !self.used_builtin_symbols.contains_key(
-                    "devirt:{declaration.qualified}") ||
-               !self.class_conforms(
-                   declaration, target) {
+               !self.constructed_classes.contains_key(
+                   declaration.qualified) ||
+               !self.class_conforms_to_instance(
+                   declaration, target, receiver_type) ||
+               !self.class_dispatch_row_is_fixed(
+                   declaration, dispatch_slot) {
                 continue
             }
             let symbol: string =
                 self.method_slot_symbol(
-                    declaration,
-                    if instruction.dispatch_slot != "" {
-                        instruction.dispatch_slot
-                    } else {
-                        "pub:{instruction.text}"
-                    })
+                    declaration, dispatch_slot)
             if symbol == "null" { continue }
             candidates.push(declaration)
             symbols.push(symbol)
@@ -1481,12 +1494,6 @@ partial class LlvmTextEmitter {
         }
 
         var slot: int = -1
-        let dispatch_slot: string =
-            if instruction.dispatch_slot != "" {
-                instruction.dispatch_slot
-            } else {
-                "pub:{instruction.text}"
-            }
         match self.selector_indices.get(
                   dispatch_slot) {
             some(found) => { slot = found }

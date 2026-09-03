@@ -189,6 +189,132 @@ expect_dispatch main.via_deepstore reads-the-table
 diff <(./build/beansc run "$static_source" 2>&1) <("$static_binary" 2>&1)
 diff -u test/cases/static_dispatch.out <("$static_binary" 2>&1)
 
+# ---------------------------------------------------------------------------
+# A call the table really does decide still speculates, and which classes it
+# speculates on is a property of the program. Every call in guarded_dispatch.b
+# is declared before anything builds the classes it names, so a rule that
+# counted only the classes whose `new` had already been emitted found nothing
+# for any of them — early_op below emitted a plain descriptor read while
+# late_op, its twin one function later, emitted the switch.
+#
+# An arm is a direct call chosen by class id, so a wrong one is the wrong
+# method or a call that does not match the callee's signature. Each count is
+# pinned exactly.
+
+guarded_source=test/cases/guarded_dispatch.b
+guarded_binary=build/test-guarded-dispatch-native
+./build/beansc build "$guarded_source" -o "$guarded_binary" >/dev/null
+
+# arms_in <file> <name> — how many class ids the call in <name> names.
+# awk counts rather than `grep -c`, which exits 1 on none and would end the
+# run before the zero could be compared.
+arms_in() {
+    local file=$1 name=$2 text
+    text=$(emitted "$file" "$name") || exit 1
+    printf '%s\n' "$text" |
+        awk '{ found += gsub(/label %devirt\.case[0-9]+/, "") }
+             END { print found + 0 }'
+}
+
+expect_arms_in() {
+    local file=$1 name=$2 want=$3 got
+    got=$(arms_in "$file" "$name")
+    if [ "$got" != "$want" ]; then
+        echo "$name: expected $want devirtualized arms, emitted $got" >&2
+        emitted "$file" "$name" >&2
+        exit 1
+    fi
+}
+
+expect_arms() {
+    expect_arms_in build/guarded_dispatch.ll "$1" "$2"
+}
+
+# the same call on both sides of the only function that builds an Op
+expect_arms main.early_op 2
+expect_arms main.late_op 2
+if [ "$(arms_in build/guarded_dispatch.ll main.early_op)" != \
+     "$(arms_in build/guarded_dispatch.ll main.late_op)" ]; then
+    echo "the same call speculated differently either side of a \`new\`" >&2
+    exit 1
+fi
+
+expect_arms main.quad_name 4          # exactly at the arm limit
+expect_arms main.quint_name 0         # one past it: the table decides
+expect_dispatch_in build/guarded_dispatch.ll main.quint_name reads-the-table
+expect_arms main.shelf_tag 1          # the raised row keeps the fallback
+expect_arms main.read_int 1           # Source<string> is another receiver
+expect_arms main.read_text 1
+expect_arms main.sound 2              # a singleton is built without a `new`
+expect_arms main.node_label 1         # abstract, and a subclass nobody builds
+expect_arms main.tone_note 2          # built only on a path never taken
+
+# An arm for a class that cannot be behind this receiver would call a method
+# whose result type is not the call's. Reading the whole module catches it
+# wherever it comes from, not only in the calls named above. The file is read
+# twice because a call may come before the definition it names.
+signature_check() {
+    awk '
+        NR == FNR {
+            if ($0 ~ /^define /) {
+                line = $0
+                sub(/^define (internal )?/, "", line)
+                split(line, parts, " ")
+                symbol = parts[2]
+                sub(/\(.*/, "", symbol)
+                defined[symbol] = parts[1]
+            }
+            next
+        }
+        /^[ \t]+(%[^ ]+ = )?call / {
+            line = $0
+            sub(/^[ \t]+(%[^ ]+ = )?call /, "", line)
+            split(line, parts, " ")
+            symbol = parts[2]
+            sub(/\(.*/, "", symbol)
+            if (symbol ~ /^@/ && (symbol in defined) &&
+                defined[symbol] != parts[1]) {
+                printf "%s calls %s as %s, defined as %s\n",
+                    FILENAME, symbol, parts[1], defined[symbol]
+                bad += 1
+            }
+        }
+        END { exit bad != 0 }
+    ' "$1" "$1"
+}
+
+# the check itself has to be able to fail: a module with two definitions and
+# a call naming the wrong one must be reported
+scratch=build/test-guarded-signature-probe.ll
+cat >"$scratch" <<'PROBE'
+define i64 @a() {
+entry:
+  ret i64 0
+}
+define ptr @b() {
+entry:
+  %x = call ptr @a()
+  ret ptr %x
+}
+PROBE
+if signature_check "$scratch" >/dev/null; then
+    echo "the signature check passed a module that calls @a as ptr" >&2
+    exit 1
+fi
+
+signature_check build/guarded_dispatch.ll
+
+# generic_interfaces_ok.b is where such a call really did appear: seventeen of
+# them, each an arm for a class implementing another instantiation of the same
+# generic interface. Unreachable, because the checker never puts one behind
+# the other, but emitted all the same.
+./build/beansc llvm test/cases/generic_interfaces_ok.b \
+    >build/test-guarded-generic-interfaces.ll
+signature_check build/test-guarded-generic-interfaces.ll
+
+diff <(./build/beansc run "$guarded_source" 2>&1) <("$guarded_binary" 2>&1)
+diff -u test/cases/guarded_dispatch.out <("$guarded_binary" 2>&1)
+
 # A settled call still leaves the method in its class's descriptor, which is
 # what reflection reads. Losing a row here would be invisible to every check
 # above.
@@ -245,6 +371,9 @@ pub class Turner implements Spin {
     pub fn spin() -> string { return "dial.Turner.spin" }
 }
 
+// the only place a Turner is built, and it is not main's package
+pub fn made() -> Spin { return new Turner() }
+
 pub class Widget {
     pub fn init() {}
 
@@ -296,7 +425,7 @@ fn main() {
     io.println(tag_meter(new meter.Widget()))
     io.println(tag_dial(new dial.Widget()))
     io.println(tag_dial(new Bigger()))
-    io.println(turn(new dial.Turner()))
+    io.println(turn(dial.made()))
     io.println(turn(new Spinner()))
 }
 PROGRAM
@@ -324,4 +453,9 @@ expect_dispatch_in "$cross" slotcheck.tag_meter settled
 expect_dispatch_in "$cross" slotcheck.tag_dial reads-the-table
 expect_dispatch_in "$cross" slotcheck.turn reads-the-table
 
-echo "ok exact receivers call directly, safe objects use the stack, settled slots skip the table, and dynamic or mutating receivers keep fallbacks"
+# Both implementors of dial.Spin are named in the switch, and the one main
+# never writes a `new` for is built inside the dial package: which classes a
+# program builds is read off the whole program, not off one package's bodies.
+expect_arms_in "$cross" slotcheck.turn 2
+
+echo "ok exact receivers call directly, safe objects use the stack, settled slots skip the table, guarded arms are the classes the program builds, and dynamic or mutating receivers keep fallbacks"
