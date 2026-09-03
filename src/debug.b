@@ -132,7 +132,7 @@ fn dap_value_expandable(value: TreeValue) -> bool {
 fn dap_child_count(value: TreeValue) -> int {
     if value.kind == "list" { return value.items.len() }
     if value.kind == "map" { return value.map_keys.len() }
-    if value.kind == "object" { return value.fields.entries.keys().len() }
+    if value.kind == "object" { return value.fields.written() }
     if value.kind == "enum" { return value.items.len() }
     return 0
 }
@@ -597,12 +597,26 @@ class DebugSession {
             return move found
         }
         if value.kind == "object" {
-            var names: List<string> = value.fields.entries.keys()
+            // A reserved-but-unwritten slot holds a field's place in the
+            // object's storage order; it is not a value, so the debugger
+            // does not list it — the same field is invisible to a read.
+            var names: List<string> = []
+            for candidate: string in
+                value.fields.entries.keys() {
+                if value.fields.value(candidate).is_some() {
+                    names.push(candidate)
+                }
+            }
             names.sort()
             for index: int in from..limit {
                 let name: string = names[index]
-                found.push(
-                    self.describe(name, value.fields.entries[name]))
+                match value.fields.value(name) {
+                    some(stored) => {
+                        found.push(
+                            self.describe(name, stored))
+                    }
+                    none => {}
+                }
             }
             return move found
         }
@@ -666,7 +680,7 @@ class DebugSession {
                 let field: string = tokens[at].text
                 at += 1
                 if value.kind != "object" { return none }
-                match value.fields.entries.get(field) {
+                match value.fields.value(field) {
                     some(next) => {
                         value = self.resolve_value(next)
                     }

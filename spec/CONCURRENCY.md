@@ -492,6 +492,13 @@ Landed since:
    Every element it detached is destroyed, the ones after the panicking
    one included — see the entry below.
 
+   For a map that covers **both halves of an entry**. Keys and values are
+   detached together, so no accessor can answer out of a half the clear
+   has not reached — `len`, `is_empty` and `contains_key` cannot report
+   entries that `keys` says are gone, or the reverse — and a class key's
+   `deinit` sees exactly what a class value's does. The releases then run
+   entry by entry from the back, a value before its own key.
+
 0. **A panicking `deinit` does not stop the destruction it was running**
    (#81). The rule the two backends now share: the release that was under way
    finishes. The object whose `deinit` panicked does not run its `deinit` a

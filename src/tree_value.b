@@ -3,11 +3,43 @@ package main
 // One object's field storage, boxed so several host-level wrappers can
 // stand for one interpreted object (zeroing weak revival) while the map
 // itself keeps a single owner.
+//
+// The entry order of this map IS the object's storage order, because the
+// host runtime releases a map's entries back to front — so it has to be
+// the order a native build lays the same class out in: every declared
+// field takes its slot when the object is built, base class first and in
+// declaration order within each class. A slot nothing has written yet
+// holds `unset`, which reads as an absent field everywhere; that keeps
+// the position without inventing a value for it.
 class TreeFields {
     entries: Map<string, TreeValue>
 
     fn init() {
         self.entries = {}
+    }
+
+    // The written value in a slot, or none for a slot that is only
+    // reserved. Every reader of a field goes through this, so a reserved
+    // slot is indistinguishable from a field that was never stored.
+    fn value(name: string) -> Option<TreeValue> {
+        match self.entries.get(name) {
+            some(stored) => {
+                if stored.kind == "unset" { return none }
+                return some(stored)
+            }
+            none => { return none }
+        }
+    }
+
+    // How many fields actually hold a value; reserved slots do not count.
+    fn written() -> int {
+        var total: int = 0
+        for name: string in self.entries.keys() {
+            if self.entries[name].kind != "unset" {
+                total += 1
+            }
+        }
+        return total
     }
 }
 
@@ -105,6 +137,14 @@ class TreeValue {
 
     static fn unit() -> TreeValue {
         return new TreeValue("unit")
+    }
+
+    // A field slot reserved by construction and not written yet. It is not
+    // a value: TreeFields.value hides it, so a read still reports the field
+    // as uninitialized. It exists only to fix where the field sits in the
+    // object's storage, and therefore where it lands in the release order.
+    static fn unset() -> TreeValue {
+        return new TreeValue("unset")
     }
 
     static fn boolean(value: bool) -> TreeValue {
@@ -409,10 +449,15 @@ fn tree_value_key(value: TreeValue) -> string {
         var result: string =
             "r:{value.text.len()}:{value.text}"
         for name: string in names {
-            let field_key: string =
-                tree_value_key(value.fields.entries[name])
-            result =
-                "{result}:{name.len()}:{name}:{field_key.len()}:{field_key}"
+            match value.fields.value(name) {
+                some(stored) => {
+                    let field_key: string =
+                        tree_value_key(stored)
+                    result =
+                        "{result}:{name.len()}:{name}:{field_key.len()}:{field_key}"
+                }
+                none => {}
+            }
         }
         return result
     }
@@ -501,18 +546,30 @@ fn tree_value_equal(left: TreeValue,
     }
     if left.kind == "record" {
         if left.text != right.text ||
-           left.fields.entries.len() != right.fields.entries.len() {
+           left.fields.entries.len() !=
+               right.fields.entries.len() {
             return false
         }
+        // A reserved slot on one side and a written one on the other are as
+        // different as two written values that disagree; two reserved slots
+        // are the same absence.
         for name: string in left.fields.entries.keys() {
-            match right.fields.entries.get(name) {
-                some(value) => {
-                    if !tree_value_equal(
-                           left.fields.entries[name], value) {
+            match left.fields.value(name) {
+                some(mine) => {
+                    match right.fields.value(name) {
+                        some(value) => {
+                            if !tree_value_equal(mine, value) {
+                                return false
+                            }
+                        }
+                        none => { return false }
+                    }
+                }
+                none => {
+                    if right.fields.value(name).is_some() {
                         return false
                     }
                 }
-                none => { return false }
             }
         }
         return true

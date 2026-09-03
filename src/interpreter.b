@@ -983,7 +983,7 @@ class TreeInterpreter {
                                field.annotations, "ignore").is_some() {
                             continue
                         }
-                        match value.fields.entries.get(field.name) {
+                        match value.fields.value(field.name) {
                             some(field_value) => {
                                 if written != 0 { output = "{output}," }
                                 if indent != 0 {
@@ -1917,7 +1917,7 @@ class TreeInterpreter {
                                 self.reflect_error_message =
                                     "receiver type does not match"
                             } else if name == "field_get" {
-                                match receiver.fields.entries.get(field_name) {
+                                match receiver.fields.value(field_name) {
                                     some(value) => {
                                         let handle: int =
                                             self.next_reflect_value
@@ -3201,7 +3201,7 @@ class TreeInterpreter {
                 }
                 for field: HirField in
                     declaration.fields {
-                    match value.fields.entries.get(field.name) {
+                    match value.fields.value(field.name) {
                         some(field_value) => {
                             match record.offsets.get(
                                     field.name) {
@@ -3950,7 +3950,7 @@ class TreeInterpreter {
                         pieces.push("{field.name}: <weak>")
                         continue
                     }
-                    match value.fields.entries.get(field.name) {
+                    match value.fields.value(field.name) {
                         some(item) => {
                             pieces.push(
                                 "{field.name}: {self.render_for_string(item, inout cycle_path)}")
@@ -9087,8 +9087,43 @@ class TreeInterpreter {
             if receiver.map_values.len() != 0 {
                 receiver.map_version += 1
             }
+            // spec/CONCURRENCY.md: the storage is detached and an empty
+            // container published before the first element's release, so a
+            // deinit that reads the container sees it empty and one that adds
+            // to it keeps what it added. A tree map keeps an entry in two
+            // fields, and storing a fresh one of either releases that half
+            // against a container the other half still fills: publishing the
+            // key list first ran every class key's deinit while len(),
+            // is_empty() and contains_key() -- all of which read map_values --
+            // still answered the old count, and the second store then wiped
+            // whatever those deinits had put back. Publishing the value map
+            // first would only move the hole to keys(). So both halves are
+            // taken aside before either store runs.
+            var dead_keys: List<TreeValue> = []
+            var dead_values: List<TreeValue> = []
+            for key: TreeValue in receiver.map_keys {
+                dead_keys.push(key)
+                match receiver.map_values.get(
+                          tree_value_key(key)) {
+                    some(value) => {
+                        dead_values.push(value)
+                    }
+                    none => {
+                        dead_values.push(
+                            TreeValue.unit())
+                    }
+                }
+            }
             receiver.map_keys = []
             receiver.map_values = {}
+            // Released the way beans_map_clear releases a native map: entries
+            // back to front, a value before its own key.
+            var dying: int = dead_keys.len()
+            for dying > 0 {
+                dying -= 1
+                dead_values.pop()
+                dead_keys.pop()
+            }
             return TreeValue.unit()
         }
         if receiver.kind == "map" &&
@@ -10962,7 +10997,7 @@ class TreeInterpreter {
         if receiver.kind == "propagate" {
             return receiver
         }
-        match receiver.fields.entries.get(node.value) {
+        match receiver.fields.value(node.value) {
             some(stored) => {
                 if stored.kind != "weak_ref" {
                     return TreeValue.option_none()
@@ -11117,6 +11152,48 @@ class TreeInterpreter {
         }
     }
 
+    // Every declared field takes its slot before anything writes a value,
+    // base class first and in declaration order within each class — the
+    // order a native build lays the same object out in. The host runtime
+    // releases a map's entries back to front, so fixing the storage order
+    // here is what makes the interpreter's field release order the
+    // canonical one: own class first, fields in reverse declaration order,
+    // then each base up the chain. Without it the order was whatever order
+    // construction happened to write the fields in, which is derived-before-
+    // base for defaults and initializer-statement order for the rest.
+    //
+    // Classes take their slots through apply_field_defaults, which reserves
+    // and defaults in the same walk. This standalone form is for a record
+    // literal, which writes its fields in whatever order the source names
+    // them.
+    fn reserve_field_slots(name: string,
+                           object: TreeValue) {
+        match self.declaration(name) {
+            some(declaration) => {
+                for index: int in
+                    0..declaration.relations.len() {
+                    if index <
+                           declaration.relation_kinds.len() &&
+                       declaration.relation_kinds[index] ==
+                           "extends" {
+                        self.reserve_field_slots(
+                            declaration.relations[index].name,
+                            object)
+                        break
+                    }
+                }
+                for field: HirField in declaration.fields {
+                    if !object.fields.entries.contains_key(
+                            field.name) {
+                        object.fields.entries[field.name] =
+                            TreeValue.unset()
+                    }
+                }
+            }
+            none => {}
+        }
+    }
+
     fn apply_field_defaults(
         name: string,
         object: TreeValue,
@@ -11133,20 +11210,16 @@ class TreeInterpreter {
         }
     }
 
+    // One walk, base class first, that both evaluates defaults and reserves
+    // the slots for the fields the initializer will write. Base first is the
+    // order a native build evaluates defaults in — an object's fields
+    // initialize in declaration order, and a base class's fields are
+    // declared first — and it is the order they must sit in storage for the
+    // release cascade to run them last-first.
     fn apply_declaration_defaults(
         declaration: HirDeclaration,
         object: TreeValue,
         frame: TreeFrame) {
-        for field: HirField in declaration.fields {
-            match field.default_value {
-                some(value) => {
-                    object.fields.entries[field.name] =
-                        tree_value_copy(
-                            self.expression(value, frame))
-                }
-                none => {}
-            }
-        }
         for index: int in
             0..declaration.relations.len() {
             if index <
@@ -11156,6 +11229,23 @@ class TreeInterpreter {
                 self.apply_field_defaults(
                     declaration.relations[index].name,
                     object, frame)
+                break
+            }
+        }
+        for field: HirField in declaration.fields {
+            match field.default_value {
+                some(value) => {
+                    object.fields.entries[field.name] =
+                        tree_value_copy(
+                            self.expression(value, frame))
+                }
+                none => {
+                    if !object.fields.entries.contains_key(
+                            field.name) {
+                        object.fields.entries[field.name] =
+                            TreeValue.unset()
+                    }
+                }
             }
         }
     }
@@ -11170,7 +11260,7 @@ class TreeInterpreter {
         if receiver.kind == "propagate" {
             return receiver
         }
-        match receiver.fields.entries.get(node.value) {
+        match receiver.fields.value(node.value) {
             some(value) => {
                 return tree_value_copy(value)
             }
@@ -11581,6 +11671,22 @@ class TreeInterpreter {
             result.text = node.type.name
             result.object_id = self.next_object_id
             self.next_object_id += 1
+            // A literal may name the fields in any order, and the checker
+            // pushes the defaulted ones ahead of the written ones. Reserve
+            // the slots in declaration order first so the record's storage
+            // order is its declaration order, the way a native struct is
+            // laid out — a record's fields are released back to front.
+            // A union stores one active field over shared bytes, so it has
+            // no per-field storage order to fix.
+            match self.declaration(node.type.name) {
+                some(record_declaration) => {
+                    if record_declaration.kind != "union" {
+                        self.reserve_field_slots(
+                            node.type.name, result)
+                    }
+                }
+                none => {}
+            }
             for field: HirNode in node.children {
                 if field.kind == "field_init" &&
                    field.children.len() == 1 {
@@ -11990,7 +12096,7 @@ class TreeInterpreter {
                     node.children[0], frame)
             if base.kind == "propagate" { return base }
             if self.failed { return base }
-            match base.fields.entries.get(node.value) {
+            match base.fields.value(node.value) {
                 some(value) => { return value }
                 none => {
                     return self.fail(
@@ -12986,14 +13092,20 @@ class TreeInterpreter {
                         match record.offsets.get(
                                 field.name) {
                             some(offset) => {
-                                if !self.ffi_memory_write_value(
-                                       function, memory,
-                                       address +
-                                           (offset as u64),
-                                       field.type,
-                                       value.fields.entries[field.name],
-                                       bridges) {
-                                    return false
+                                match value.fields.value(
+                                        field.name) {
+                                    some(stored) => {
+                                        if !self.ffi_memory_write_value(
+                                               function, memory,
+                                               address +
+                                                   (offset as u64),
+                                               field.type,
+                                               stored,
+                                               bridges) {
+                                            return false
+                                        }
+                                    }
+                                    none => {}
                                 }
                             }
                             none => {}

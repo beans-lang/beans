@@ -68,6 +68,13 @@ run_asan examples/box.b box
 run_asan examples/arena.b arena
 run_asan examples/containers.b containers 3
 run_asan test/cases/map_models.b map_models
+# #82/#83: the order an object releases its fields, and a container that
+# publishes itself empty before it releases what it held -- class keys as well
+# as class values. Both walk release paths that only run when something with a
+# deinit dies, and container_settle drops keys out of a map while a zeroing
+# weak back-reference into the owner is live.
+run_asan test/cases/release_order.b release_order
+run_asan test/cases/container_settle.b container_settle
 run_asan test/cases/collections_leakcheck.b collections_leakcheck
 run_asan test/cases/collections_models.b collections_models
 run_asan test/cases/calendar_basics.b calendar_basics

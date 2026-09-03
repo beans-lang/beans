@@ -1661,7 +1661,10 @@ let c: Conn = new Conn("db1")
 ```
 
 - `init` returns nothing and runs on a fresh object: fields with defaults start at them, the
-  rest start unassigned. **Until every field is assigned, the body is a straight-line prefix**:
+  rest start unassigned. Every default in the class chain is evaluated before any `init` body
+  runs, in declaration order with the base class's fields first — so a default whose
+  expression has an effect (a call that prints, a counter) has one order, not one per
+  backend. **Until every field is assigned, the body is a straight-line prefix**:
   each statement either assigns a field (`self.f = ...`) or touches `self` only by reading
   fields already assigned — no method calls, no passing `self` on, no `return`, and no string
   interpolation (its pieces are checked too late to prove them safe). The checker proves all
@@ -1712,6 +1715,16 @@ can still read them. Deterministic, like C++/Swift: no GC pause, no "sometime la
 - No parameters, no return value, never called by hand: construction calls `init`, death
   calls `deinit`.
 - A subclass `deinit` runs first, then its parent's, automatically — no `override`, ever.
+- Once the whole `deinit` chain has run, the object's fields are released in **reverse
+  declaration order**: the object's own class first, then each base class up the chain, and
+  within each class the last-declared field goes first. Each field's release finishes — its
+  own `deinit`, its own fields, the whole subtree it owned — before the next field is
+  touched. The declared *type* of a field does not change this: a field holding a class
+  directly, one holding `Option<C>`, `Result<C, E>`, `List<C>`, `Map<K, C>`, a struct with a
+  class inside, or a generic parameter bound to a class all release at their declared
+  position. A struct value releases its own fields by the same reverse-declaration rule,
+  wherever it is stored and whatever order a literal named them in. The release cascade is
+  iterative, so a chain a million links long is dropped without recursion.
 - `self` must not escape a `deinit`. The object is being destroyed; storing `self` anywhere
   is use-after-free by definition.
 - A panic inside `deinit` is the same rule as one inside a `defer`: uncontained it ends
