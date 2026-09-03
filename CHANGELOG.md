@@ -4,6 +4,8 @@ This file records user-facing changes in each Beans release.
 
 ## [Unreleased]
 
+## [0.1.36] - 2026-09-03
+
 ### Added
 
 - **`_` is a discard, not a name.** It works wherever a name is bound — `let`,
@@ -42,6 +44,62 @@ This file records user-facing changes in each Beans release.
   the field responsible, following the chain down to the one that actually
   fails. (#48, #112)
 
+- **A float orders and compares by totalOrder wherever `Order` and `Eq` do the
+  work.** IEEE comparison is not an order — NaN is unordered with everything —
+  and three things were built on it: `Map<float, _>` disagreed across backends
+  (native made a NaN key write-only and grew the map without bound on every
+  re-insert, the interpreter replaced), `SortedMap` and `PriorityQueue` read
+  "neither less nor greater" as "found it" and so `set(NaN, v)` overwrote
+  whichever key the descent stopped at, and `[3.0, 1.0, NaN, 2.0].sort()`
+  answered `[1, 3, nan, 2]`. `float` and `f32` now order by IEEE 754
+  totalOrder — `-NaN < -inf < ... < -0.0 < +0.0 < ... < +inf < +NaN` — with bit
+  equality as the equality that belongs to that order, so two NaNs are one
+  value when sign and payload match and the two zeros are two map keys. **The
+  operators are untouched**: `nan < 1.0` and `nan == nan` are still false,
+  `-0.0 == 0.0` is still true, and arithmetic is unchanged — the same split
+  Java draws between `a < b` on a `double` and `Double.compare`. See
+  `examples/float_order.b`. (#84)
+
+- **A panicking `deinit` does not stop the destruction it was running.** A
+  panic contained by `brew` used to stop the native release cascade where it
+  stood: for a list of 40 with a failing `deinit` at index 20, the interpreter
+  ran 40 deinits and a native build ran 20, leaking the other 20 with the list
+  reporting `len 0`. O(n) leaked per caught panic, and the two backends
+  disagreeing. The release that was under way now finishes on both — the
+  remaining elements of a container being cleared, the rest of a dying graph's
+  worklist, the rest of a white set the collector killed — in the order it
+  would have run in anyway, and only then does the panic continue to the join.
+  The object whose `deinit` panicked is never destroyed twice. (#81)
+
+- **An enum cannot implement an interface or extend a class.** An interface
+  value is an object with a descriptor and an enum value is a tag, so only a
+  class can implement one. Every spelling is refused at the declaration now —
+  two interfaces at once, payload variants, `enum(u8)`, a generic enum, a base
+  class — rather than reaching a backend. (#87)
+
+- **A dispatch slot belongs to a method that can fill it.** A `static fn` in a
+  subclass silently took over an inherited instance method's slot, so
+  `b.greet()` on a `Base` holding a `Sub` called a function with a receiver its
+  signature does not declare — on both backends. A generic method took a slot
+  it has no single body to fill. Both are refused at the declaration with a
+  message about the program, and the reflective path, which a `priv static`
+  reached without passing the checker, now checks too. (#88, #89)
+
+- **A settled call goes straight to its method.** A call is provably one method
+  when every non-abstract class that could stand behind the receiver answers
+  the same dispatch symbol — which settles a leaf class, an unreplaced
+  inherited body, an abstract class with one concrete subclass, a sole
+  interface implementor and a kept interface default in one condition. Those
+  calls no longer go through the object descriptor, which also unblocks
+  inlining the callee. What still dispatches dynamically is unchanged. (#85)
+
+- **Guarded devirtualization speculates on the classes the program builds.** It
+  used to fire only when a class had already been registered by an emitted
+  `new`, so whether a call took the fast path depended on the order the
+  compiler happened to emit things — the same program, different codegen. The
+  set of classes a program builds is computed up front now. The guard itself is
+  unchanged and still checks. (#90)
+
 ### Fixed
 
 - **A record field store through a captured local wrote over the capture.** A
@@ -75,6 +133,27 @@ This file records user-facing changes in each Beans release.
   `next()` and everything after it on the `none` path. It returns the
   propagated value now, from the target's receiver, an index key, and a weak
   field alike.
+
+- **The interpreter releases what an object owns in the order its storage
+  says.** It decided release order from a predicate about *types*: a field
+  whose type is a generic parameter, or an `Option` wrapping a class, never
+  matched, so the canonical order never ran for that object and
+  `SortedMap<int, Loud>.clear()` printed `1 / 2 / 0` interpreted against
+  `2 / 0 / 1` natively. Every declared field's slot is reserved when the object
+  is built now — base class first, declaration order within each class, the
+  order a native build lays it out — so the host's back-to-front release of
+  that map *is* the canonical order, for every field shape. A `clear()` on a
+  `Map` or `OrderedMap` also sets both halves of an entry aside before
+  releasing either, so no accessor can answer out of a half the clear has not
+  reached. (#82, #83)
+
+- **A deque tells the truth at every point a `deinit` can read it.** The
+  crossover window mutated storage before updating the counters that `len()`,
+  `get()`, `first()`, `last()` and both `pop_*` read, and the window allocates
+  — which is where the cycle collector runs, so a `deinit` can be scheduled
+  precisely inside it. A probe holding the deque from inside a cycle saw 1,622
+  order tears in 316,810 reads natively and panicked inside the stdlib under
+  the interpreter. See `examples/deque.b`. (#86)
 
 ## [0.1.35] - 2026-08-30
 
