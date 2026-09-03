@@ -596,33 +596,6 @@ partial class LlvmTextEmitter {
         return ""
     }
 
-    fn class_descends_from(
-        declaration: HirDeclaration,
-        ancestor: string) -> bool {
-        var current: HirDeclaration = declaration
-        var depth: int = 0
-        for self.class_base_index(current) >= 0 {
-            depth += 1
-            if depth > 32 { return false }
-            let base_index: int =
-                self.class_base_index(current)
-            match self.declaration_for(
-                      current.relations[base_index]) {
-                some(base) => {
-                    if base.qualified == ancestor {
-                        return true
-                    }
-                    current = base
-                }
-                none => { return false }
-            }
-        }
-        return false
-    }
-
-    // a resolved direct call is only right while no subclass redefines
-    // the method; deinit never goes through here — the runtime
-    // dispatches it by descriptor
     // ---- generic instantiation ----
 
     fn clone_generic_instruction(
@@ -1072,29 +1045,129 @@ partial class LlvmTextEmitter {
         return false
     }
 
-    fn method_overridden(
+    // Whether the symbol this class's descriptor row for `method` names is
+    // decided already. Plain class methods are handed their symbols by a
+    // pre-pass that runs before any body is emitted and never revises an
+    // entry, so their rows are fixed. Every entry that arrives later is an
+    // instance raised on demand, and each kind is visible from here: a
+    // method of a generic base or a generic interface's default is raised
+    // under this class's own name, and a method carrying generics of its
+    // own is raised under its template's name. With any of those in reach
+    // the row a call reads mid-emit need not be the row the descriptor
+    // ends up holding, and no caller may bind against it.
+    fn class_dispatch_is_settled(
         declaration: HirDeclaration,
-        name: string) -> bool {
-        for candidate: HirDeclaration in
-            self.program.declarations {
-            if candidate.kind != "class" {
-                continue
-            }
-            if candidate.qualified ==
-               declaration.qualified {
-                continue
-            }
-            if !self.class_descends_from(
-                   candidate,
-                   declaration.qualified) {
-                continue
-            }
-            if self.function_symbols.contains_key(
-                   "{candidate.qualified}.{name}") {
-                return true
+        method: string) -> bool {
+        let key: string =
+            "{declaration.qualified}|{method}"
+        match self.settled_dispatch_classes.get(key) {
+            some(known) => { return known }
+            none => {}
+        }
+        var settled: bool =
+            declaration.generics.len() == 0 &&
+            !self.generic_templates.contains_key(
+                "{declaration.qualified}.{method}")
+        var pending: List<HirType> = []
+        if settled {
+            for relation: HirType in declaration.relations {
+                pending.push(relation)
             }
         }
-        return false
+        var seen: Map<string, bool> = {}
+        for settled && pending.len() != 0 {
+            let current: HirType =
+                pending.pop().expect("class relation")
+            if seen.contains_key(current.name) {
+                continue
+            }
+            seen[current.name] = true
+            match self.declaration_for(current) {
+                some(parent) => {
+                    if parent.generics.len() != 0 ||
+                       self.generic_templates.contains_key(
+                           "{parent.qualified}.{method}") {
+                        settled = false
+                    } else {
+                        for relation: HirType in
+                            parent.relations {
+                            pending.push(relation)
+                        }
+                    }
+                }
+                // A relation with no declaration is a compiler-known
+                // interface: it owns no method bodies, so nothing can be
+                // raised under it and it cannot move a row.
+                none => {}
+            }
+        }
+        self.settled_dispatch_classes[key] = settled
+        return settled
+    }
+
+    // The one method a call on this receiver type can reach, or "" when
+    // more than one could.
+    //
+    // A receiver's runtime class is always some class that conforms to the
+    // call's static receiver type, and a non-generic class's descriptor row
+    // for a dispatch slot is exactly `method_slot_symbol(class, slot)` —
+    // the same question asked here. So when every class that could stand
+    // behind the receiver answers one symbol, every table this call could
+    // read holds that symbol, and the indirect call is that call. Beans
+    // compiles whole programs and a dynamic library publishes C functions
+    // only, so no later class can join the set.
+    //
+    // Anything that leaves a row unaccounted for answers "": a declaration
+    // that is not a class does not carry a class table at all, a class
+    // whose rows are not settled may still change, and a null row means
+    // this slot has no implementation to name.
+    fn static_dispatch_symbol(
+        target: HirDeclaration,
+        slot: string) -> string {
+        let key: string = "{target.qualified}|{slot}"
+        match self.static_dispatch_symbols.get(key) {
+            some(known) => { return known }
+            none => {}
+        }
+        var resolved: string = ""
+        for declaration: HirDeclaration in
+            self.program.declarations {
+            // an interface is a name for a set of classes, never the
+            // class a receiver's descriptor names
+            if declaration.kind == "interface" ||
+               !self.class_conforms(declaration, target) {
+                continue
+            }
+            if declaration.kind != "class" {
+                resolved = ""
+                break
+            }
+            // an abstract class cannot be built, so it is never the
+            // class behind a receiver
+            if declaration.is_abstract { continue }
+            if !self.class_dispatch_is_settled(
+                   declaration,
+                   self.dispatch_method(slot)) {
+                resolved = ""
+                break
+            }
+            let symbol: string =
+                self.method_slot_symbol(declaration, slot)
+            if symbol == "null" {
+                resolved = ""
+                break
+            }
+            if resolved == "" {
+                resolved = symbol
+                continue
+            }
+            if resolved != symbol {
+                resolved = ""
+                break
+            }
+        }
+        self.static_dispatch_symbols[key] = resolved
+        return resolved
     }
 
     fn class_layout(

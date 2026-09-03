@@ -93,4 +93,235 @@ diff <(./build/beansc run "$scalar_source" 2>&1) \
      <("$scalar_binary" 2>&1)
 diff -u test/cases/scalar_interface.out <("$scalar_binary" 2>&1)
 
-echo "ok exact receivers call directly, safe objects use the stack, and dynamic or mutating receivers keep fallbacks"
+
+# ---------------------------------------------------------------------------
+# A receiver nothing traced to an allocation still names one method when the
+# descriptor row for the call's slot can only ever hold one symbol. That is a
+# property of the whole class hierarchy, not of the receiver, so the cases
+# below are all reached through a parameter: the exact-receiver analysis above
+# cannot see them and the table is the only thing left to ask.
+#
+# The danger of getting this wrong is not a slow program, it is the WRONG
+# METHOD, so each shape is pinned two ways: the emitted form (settled or
+# reading the descriptor) and the answer, against the interpreter, which
+# dispatches through the object every time and never devirtualizes anything.
+
+static_source=test/cases/static_dispatch.b
+static_binary=build/test-static-dispatch-native
+./build/beansc build "$static_source" -o "$static_binary" >/dev/null
+
+# emitted <file> <name> — the body of one function, found by the IR comment
+# that names it by its import path. A name that is not there is a broken
+# check, not a passing one, so it stops the run.
+emitted() {
+    local file=$1 name=$2 text
+    text=$(awk -v want="; $name" '
+        $0 == want { inside = 1 }
+        inside { print }
+        inside && /^}/ { exit }
+    ' "$file")
+    if [ -z "$text" ]; then
+        echo "no function '$name' in $file" >&2
+        exit 1
+    fi
+    printf '%s\n' "$text"
+}
+
+# A settled call names its target; an unsettled one loads the receiver's
+# descriptor first, whether it then switches on the class id or calls through
+# the row. Called as a plain command so that a failure ends the run.
+expect_dispatch_in() {
+    local file=$1 name=$2 want=$3 text got
+    text=$(emitted "$file" "$name") || exit 1
+    if [ -z "$text" ]; then exit 1; fi
+    if printf '%s\n' "$text" | grep -qE '%(dispatch|devirt)\.desc'; then
+        got=reads-the-table
+    else
+        got=settled
+    fi
+    if [ "$got" != "$want" ]; then
+        echo "$name: expected $want, emitted $got" >&2
+        printf '%s\n' "$text" >&2
+        exit 1
+    fi
+}
+
+expect_dispatch() {
+    expect_dispatch_in build/static_dispatch.ll "$1" "$2"
+}
+
+# settled: nothing in the program can put a second symbol in the row
+expect_dispatch main.via_ledger settled          # record is never replaced
+expect_dispatch main.Ledger.record settled       # priv: the slot is Ledger's
+expect_dispatch main.SubLedger.own settled       # and the subclass has its own
+expect_dispatch main.via_animal settled          # twice is never replaced
+expect_dispatch main.via_dog settled             # even three links down
+expect_dispatch main.via_root settled            # kind is the only body
+expect_dispatch main.via_mid settled
+expect_dispatch main.via_leaf settled
+expect_dispatch main.via_solo settled            # a class with no family
+expect_dispatch main.via_only settled            # the sole implementor
+expect_dispatch main.via_task settled            # abstract, one subclass
+expect_dispatch main.Task.go settled
+expect_dispatch main.via_job settled             # start is never replaced
+expect_dispatch main.via_greeter settled         # a kept interface default
+expect_dispatch main.Greeter.greet settled
+expect_dispatch main.via_point settled           # implements a known Eq
+expect_dispatch main.Point.shown settled
+expect_dispatch main.via_tally settled           # beside a generic method
+
+# reads the table: a second symbol really can turn up in the row
+expect_dispatch main.Animal.twice reads-the-table   # five bodies share speak
+expect_dispatch main.via_sink reads-the-table       # two implementors
+expect_dispatch main.Job.start reads-the-table      # two concrete subclasses
+expect_dispatch main.via_caller reads-the-table     # the default is overridden
+expect_dispatch main.Caller.shout reads-the-table
+expect_dispatch main.via_producer reads-the-table   # a generic implementor
+# A method with generics of its own has no row: its symbol is raised per
+# instantiation, at whatever point in the emit some call site asks for it.
+# Settling on it would hand this call another call site's type arguments.
+expect_dispatch main.ask_generic reads-the-table
+# A body inherited from a generic base is raised under each subclass's own
+# name, partway through the emit, so no answer taken before the raise stands.
+expect_dispatch main.via_intstore reads-the-table
+expect_dispatch main.via_deepstore reads-the-table
+
+diff <(./build/beansc run "$static_source" 2>&1) <("$static_binary" 2>&1)
+diff -u test/cases/static_dispatch.out <("$static_binary" 2>&1)
+
+# A settled call still leaves the method in its class's descriptor, which is
+# what reflection reads. Losing a row here would be invisible to every check
+# above.
+reflect_source=test/cases/static_dispatch_reflect.b
+reflect_binary=build/test-static-dispatch-reflect-native
+./build/beansc build "$reflect_source" -o "$reflect_binary" >/dev/null
+diff <(./build/beansc run "$reflect_source" 2>&1) <("$reflect_binary" 2>&1)
+diff -u test/cases/static_dispatch_reflect.out <("$reflect_binary" 2>&1)
+
+# A package-private method's slot carries its own package, so a subclass in
+# another package that spells the same name is a different method and the
+# base's body keeps calling its own. One package cannot show that.
+root=$(pwd -P)
+export BEANS_RUNTIME="$root/runtime/beans_rt.c"
+export BEANS_STDLIB="$root/stdlib/std"
+export BEANS_ENCODING="$root/runtime/encoding"
+export BEANS_NET="$root/runtime/net"
+export BEANS_LOG="$root/runtime/log"
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/beans-devirt.XXXXXX")
+trap 'rm -rf "$tmp"' EXIT
+mkdir -p "$tmp/project/meter"
+cat >"$tmp/project/beans.pot" <<'MANIFEST'
+module slotcheck
+MANIFEST
+mkdir -p "$tmp/project/dial"
+cat >"$tmp/project/meter/meter.b" <<'LIBRARY'
+package meter
+
+pub class Meter {
+    pub fn init() {}
+
+    fn label() -> string { return "meter.Meter.label" }
+
+    pub fn read() -> string { return "read/{self.label()}" }
+}
+
+// the same short name as dial.Widget, and this one is never subclassed
+pub class Widget {
+    pub fn init() {}
+
+    pub fn tag() -> string { return "meter.Widget.tag" }
+}
+LIBRARY
+cat >"$tmp/project/dial/dial.b" <<'LIBRARY'
+package dial
+
+pub interface Spin {
+    fn spin() -> string
+}
+
+pub class Turner implements Spin {
+    pub fn init() {}
+
+    pub fn spin() -> string { return "dial.Turner.spin" }
+}
+
+pub class Widget {
+    pub fn init() {}
+
+    pub fn tag() -> string { return "dial.Widget.tag" }
+}
+LIBRARY
+cat >"$tmp/project/main.b" <<'PROGRAM'
+package main
+
+import std.io
+import slotcheck.meter
+import slotcheck.dial
+
+// a package-private method the base keeps to itself
+class Gauge extends meter.Meter {
+    pub fn init() { super.init() }
+
+    fn label() -> string { return "main.Gauge.label" }
+
+    pub fn own() -> string { return "own/{self.label()}" }
+}
+
+// a real override, one package away from the base
+class Bigger extends dial.Widget {
+    pub fn init() { super.init() }
+
+    pub override fn tag() -> string { return "main.Bigger.tag" }
+}
+
+// a second implementor of an interface declared elsewhere
+class Spinner implements dial.Spin {
+    pub fn init() {}
+
+    pub fn spin() -> string { return "main.Spinner.spin" }
+}
+
+fn ask(value: meter.Meter) -> string { return value.read() }
+
+fn tag_meter(value: meter.Widget) -> string { return value.tag() }
+
+fn tag_dial(value: dial.Widget) -> string { return value.tag() }
+
+fn turn(value: dial.Spin) -> string { return value.spin() }
+
+fn main() {
+    io.println(ask(new meter.Meter()))
+    io.println(ask(new Gauge()))
+    io.println(new Gauge().own())
+    io.println(tag_meter(new meter.Widget()))
+    io.println(tag_dial(new dial.Widget()))
+    io.println(tag_dial(new Bigger()))
+    io.println(turn(new dial.Turner()))
+    io.println(turn(new Spinner()))
+}
+PROGRAM
+( cd "$tmp/project" && "$root/build/beansc" run main.b ) >"$tmp/slot.interp"
+( cd "$tmp/project" \
+  && "$root/build/beansc" build main.b -o "$tmp/slot" >/dev/null )
+"$tmp/slot" >"$tmp/slot.native"
+diff -u "$tmp/slot.interp" "$tmp/slot.native"
+diff -u - "$tmp/slot.interp" <<'EXPECTED'
+read/meter.Meter.label
+read/meter.Meter.label
+own/main.Gauge.label
+meter.Widget.tag
+dial.Widget.tag
+main.Bigger.tag
+dial.Turner.spin
+main.Spinner.spin
+EXPECTED
+
+# The two Widgets share a short name, and only one of them is subclassed.
+# Reading the hierarchy by short name would settle the wrong one: a call on
+# dial.Widget would miss main.Bigger and answer dial.Widget.tag for it.
+cross=$tmp/project/build/main.ll
+expect_dispatch_in "$cross" slotcheck.tag_meter settled
+expect_dispatch_in "$cross" slotcheck.tag_dial reads-the-table
+expect_dispatch_in "$cross" slotcheck.turn reads-the-table
+
+echo "ok exact receivers call directly, safe objects use the stack, settled slots skip the table, and dynamic or mutating receivers keep fallbacks"
