@@ -1,5 +1,73 @@
 package main
 
+// IEEE 754 totalOrder as an unsigned key, the twin of rt_f64_total_key in
+// runtime/beans_rt.c. `<` and `==` on a float are IEEE — NaN is unordered
+// with everything and the two zeros compare equal — which is not an order,
+// so a container that sorts or binary-searches on it answers wrongly rather
+// than merely unhelpfully. Inverting a negative and setting the top bit of a
+// positive lays the whole float line out as unsigned integers in totalOrder:
+// -NaN < -inf < ... < -0.0 < +0.0 < ... < +inf < +NaN. Two floats share a key
+// exactly when they share their bits, so key equality is the equality that
+// belongs with this order.
+//
+// The runtime and the emitter spell the same order the other way round --
+// flip the magnitude bits of a negative and compare signed -- because they
+// have a wrapping conversion to a signed word and Beans does not. The two
+// keys are the same permutation of the float line; only the word they land
+// in differs.
+fn tree_float_total_key(value: float) -> u64 {
+    let bits: u64 = tree_float_bits(value, 64)
+    if bits >> 63 == 1 {
+        return bits ^ 18446744073709551615
+    }
+    return bits | 9223372036854775808
+}
+
+// Reading the bits costs an allocation, so the IEEE comparison answers first
+// wherever it already agrees with totalOrder: a strict `<` or `>` settles
+// every pair that is neither a NaN nor the two zeros.
+fn tree_float_total_less(left: float,
+                         right: float) -> bool {
+    if left < right { return true }
+    if left > right { return false }
+    return tree_float_total_key(left) <
+           tree_float_total_key(right)
+}
+
+// The relational operators as the `Order` interface means them. `<=` is the
+// negation of the reversed `<` and so on, which is exactly what comparing the
+// two integer keys with sle/sgt/sge gives natively — totalOrder is total, so
+// the four follow from one.
+fn tree_float_total_compare(operation: string,
+                            left: float,
+                            right: float) -> bool {
+    if operation == "<" {
+        return tree_float_total_less(left, right)
+    }
+    if operation == "<=" {
+        return !tree_float_total_less(right, left)
+    }
+    if operation == ">" {
+        return tree_float_total_less(right, left)
+    }
+    return !tree_float_total_less(left, right)
+}
+
+fn tree_float_total_equal(left: float,
+                          right: float) -> bool {
+    if left == right {
+        // every value but the two zeros has one encoding
+        if left != 0.0 { return true }
+        return tree_float_total_key(left) ==
+               tree_float_total_key(right)
+    }
+    // unequal numbers are different keys; two NaNs are one key only when
+    // their sign and payload match
+    if left == left || right == right { return false }
+    return tree_float_total_key(left) ==
+           tree_float_total_key(right)
+}
+
 fn tree_float_bits(value: float, bits: int) -> u64 {
     unsafe {
         if bits == 32 {

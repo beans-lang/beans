@@ -946,8 +946,10 @@ partial class LlvmTextEmitter {
     }
 
     // Structural equality for inline records and fixed arrays. Padding is
-    // never compared, and floats keep IEEE equality, matching production's
-    // inline_equal rather than treating the aggregate as raw bytes.
+    // never compared, and a float field compares by its bits rather than by
+    // IEEE `==`: structural equality is the `Eq` interface, and `Eq` on a
+    // float is the equality that belongs with totalOrder (spec/SYNTAX.md,
+    // "Number rules"). Only a bare `float == float` stays IEEE.
     fn emit_inline_equal(
         type: HirType,
         left: string,
@@ -969,8 +971,10 @@ partial class LlvmTextEmitter {
                 "%inline.eq{tag}{id}")
         }
         if llvm_type_is_float(type) {
+            let word: string =
+                if llvm == "float" { "i32" } else { "i64" }
             return new LlvmSlotConversion(
-                "  %inline.eq{tag}{id} = fcmp oeq {llvm} {left}, {right}\n",
+                "  %inline.eq.lw{tag}{id} = bitcast {llvm} {left} to {word}\n  %inline.eq.rw{tag}{id} = bitcast {llvm} {right} to {word}\n  %inline.eq{tag}{id} = icmp eq {word} %inline.eq.lw{tag}{id}, %inline.eq.rw{tag}{id}\n",
                 "%inline.eq{tag}{id}")
         }
         if name == "string" {

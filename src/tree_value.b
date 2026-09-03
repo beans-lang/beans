@@ -434,7 +434,10 @@ fn tree_value_key(value: TreeValue) -> string {
         return if value.bool_data { "b:1" } else { "b:0" }
     }
     if value.kind == "float" {
-        return "f:{value.float_data}"
+        // the bits, not the rendering: a map key is compared with
+        // tree_value_total_equal, which separates -0.0 from +0.0 and one NaN
+        // from another, and both of those render the same text
+        return "f:{tree_float_total_key(value.float_data)}"
     }
     if value.kind == "decimal" {
         return "d:{value.decimal_data}"
@@ -461,10 +464,25 @@ fn tree_value_key(value: TreeValue) -> string {
         }
         return result
     }
+    // Every kind whose equality tree_value_total_equal decides structurally
+    // gets a structural key, built from its elements' keys rather than from
+    // its rendering. A fixed array is the one that bit: `[nan, 1.0]` and
+    // `[-nan, 1.0]` are two keys the native backend keeps apart, and both
+    // render "array:[nan, 1]", so the tree collapsed them into one and the
+    // second insert replaced the first. Every element is length-prefixed, so
+    // no two element sequences can run together into the same string.
+    //
+    // `simd` is deliberately not here. Its lanes compare with IEEE `==`, not
+    // by their bits (see tree_value_total_equal), so a bit-exact key would
+    // separate two vectors the language calls equal. It is not a valid map
+    // key either — the checker refuses one for want of `Hash`.
     if value.kind == "variant" ||
        value.kind == "some" ||
        value.kind == "ok" ||
-       value.kind == "err" {
+       value.kind == "err" ||
+       value.kind == "list" ||
+       value.kind == "array" ||
+       value.kind == "range" {
         var result: string =
             "v:{value.kind.len()}:{value.kind}:{value.text.len()}:{value.text}"
         for item: TreeValue in value.items {
@@ -488,8 +506,26 @@ fn tree_type_label(name: string) -> string {
     return name
 }
 
+// `==` and `!=` as the source wrote them. A bare float pair is the one place
+// IEEE still decides: `nan == nan` is false and `-0.0 == 0.0` is true, which
+// is what numeric code needs. Everything else — including a struct, list,
+// Option or enum that happens to hold a float — is the `Eq` interface, and
+// `Eq` on a float is bit equality (spec/SYNTAX.md, "Number rules"), because
+// that is the equality that belongs with the totalOrder `Order` uses.
 fn tree_value_equal(left: TreeValue,
                     right: TreeValue) -> bool {
+    if left.kind == "float" &&
+       right.kind == "float" {
+        return left.float_data == right.float_data
+    }
+    return tree_value_total_equal(left, right)
+}
+
+// The `Eq` interface: map and set keys, `contains`, `index_of`, and every
+// structural comparison. Mirrors slot_eq and the .next.eq thunks in the
+// native backend arm for arm.
+fn tree_value_total_equal(left: TreeValue,
+                          right: TreeValue) -> bool {
     if left.kind != right.kind { return false }
     if left.kind == "unit" ||
        left.kind == "none" {
@@ -507,7 +543,8 @@ fn tree_value_equal(left: TreeValue,
         return left.int_data == right.int_data
     }
     if left.kind == "float" {
-        return left.float_data == right.float_data
+        return tree_float_total_equal(
+            left.float_data, right.float_data)
     }
     if left.kind == "decimal" {
         return left.decimal_data ==
@@ -558,7 +595,8 @@ fn tree_value_equal(left: TreeValue,
                 some(mine) => {
                     match right.fields.value(name) {
                         some(value) => {
-                            if !tree_value_equal(mine, value) {
+                            if !tree_value_total_equal(
+                                   mine, value) {
                                 return false
                             }
                         }
@@ -578,9 +616,24 @@ fn tree_value_equal(left: TreeValue,
        left.text != right.text {
         return false
     }
-    if left.kind == "simd" &&
-       left.text != right.text {
-        return false
+    if left.kind == "simd" {
+        // A SIMD vector is arithmetic, not a container: it is neither Eq nor
+        // Hash, nothing sorts it, and it cannot be a key. Its `==` is the
+        // lane-wise IEEE compare the native backend emits (fcmp oeq per lane,
+        // and-ed), so its lanes take the operator's equality, not the
+        // interface's. Anything else would be a backend split.
+        if left.text != right.text { return false }
+        if left.items.len() != right.items.len() {
+            return false
+        }
+        for index: int in 0..left.items.len() {
+            if !tree_value_equal(
+                   left.items[index],
+                   right.items[index]) {
+                return false
+            }
+        }
+        return true
     }
     if left.kind == "variant" ||
        left.kind == "some" ||
@@ -588,13 +641,12 @@ fn tree_value_equal(left: TreeValue,
        left.kind == "err" ||
        left.kind == "list" ||
        left.kind == "array" ||
-       left.kind == "simd" ||
        left.kind == "range" {
         if left.items.len() != right.items.len() {
             return false
         }
         for index: int in 0..left.items.len() {
-            if !tree_value_equal(
+            if !tree_value_total_equal(
                    left.items[index],
                    right.items[index]) {
                 return false
@@ -618,7 +670,12 @@ fn tree_value_less(left: TreeValue,
     }
     if left.kind == "float" &&
        right.kind == "float" {
-        return left.float_data < right.float_data
+        // sort, min and max order through the Order interface, and Order is
+        // total: IEEE `<` leaves NaN unordered with everything, which sorted
+        // [3, 1, nan, 2] to [1, 3, nan, 2]. totalOrder, matching slot_cmp
+        // kind 1 in runtime/beans_rt.c.
+        return tree_float_total_less(
+            left.float_data, right.float_data)
     }
     if left.kind == "decimal" &&
        right.kind == "decimal" {

@@ -1232,6 +1232,45 @@ Primitives (all unboxed in codegen):
   the native backend answered `!=` with an ordered compare — every implementation
   now agrees.) Casting NaN or an infinity to `decimal` panics as `decimal
   overflow`, the same as any float whose magnitude exceeds 38 digits.
+- **`Order` and `Eq` on a float are total, and the operators above are not.**
+  IEEE comparison is not an order: NaN is unordered with everything, so
+  `[3.0, 1.0, nan, 2.0].sort()` answered `[1, 3, nan, 2]`, a map read `nan`
+  as equal to no key including itself — every re-insert appended and no read
+  could ever find it — and anything that binary-searches read "neither less
+  nor greater" as "found it" and overwrote an unrelated key. `float` and
+  `f32` therefore order by IEEE 754 **totalOrder** wherever the comparing is
+  done by the `Order` or `Eq` interface rather than by an operator:
+
+  ```
+  -NaN < -inf < ... < -1.0 < -0.0 < +0.0 < 1.0 < ... < +inf < +NaN
+  ```
+
+  The equality that belongs with that order is **bit equality**. Two NaNs are
+  one value when their sign and payload match, and `-0.0` and `+0.0` are two
+  values — so they are two map keys, they do not find each other, and a sort
+  puts `-0.0` first. This is the same split Java draws between `a < b` on a
+  `double` and `Double.compare`/`Double.equals`, and it reaches:
+
+  - `List.sort`, `max`, `min`, `contains`, `index_of`, and `List == List`;
+  - `Map` and `OrderedMap` keys — lookup, replacement, removal and hashing;
+  - the structural `==` of a struct, fixed array, `Option` or enum that holds
+    a float, and the same value used as a wide map key;
+  - `<`, `<=`, `>`, `>=`, `==` and `!=` applied to a value whose type is a
+    **type parameter**, which is how a container written in Beans compares
+    the keys it was handed. `fn less<T implements Order>(a: T, b: T) -> bool
+    { return a < b }` answers `true` for `less(1.0, nan)`, while a bare
+    `1.0 < nan` in the same program answers `false`: one is the interface,
+    the other is the operator. Only `float` and `f32` read differently
+    between the two — every other `Order` type has one order.
+
+  A bare `float == float` or `float < float` stays IEEE in every one of those
+  spots. Which NaN an operation produces is the platform's business, as it is
+  everywhere; totalOrder only promises a defined answer for the bits it is
+  given.
+
+  `decimal` needs none of this and gets none: it has no NaN and no negative
+  zero (see *decimal* above — a scale below 0 is 0, and `-0` and `0` are one
+  value), so its order is already total and its comparison is unchanged.
 
 The native backend uses exact LLVM integer, float, and decimal types for locals,
 parameters, returns, arithmetic, and packed class fields. List keeps its old
@@ -2202,8 +2241,15 @@ fn index<K implements Eq & Hash, V>(key: K, value: V) -> Map<K, V> { ... }
 The compiler-known interfaces are `Clone`, `Eq`, `Hash`, `Order`, `Send`, and `Sync`.
 Bounds are checked when a generic function or type is used, and generic bodies
 can only use operations promised by their bounds. `Order` also promises `Eq`.
+**`Order` is a total order and `Eq` is the equality that goes with it**, for
+every type that has them — which for `float` and `f32` means IEEE 754
+totalOrder and bit equality, not the IEEE operators (see *Number rules*).
 User interfaces, including imported interfaces, may also be bounds. Generic
 code may call the instance methods promised by those interfaces.
+
+`Order` on a `bool` is `false` before `true`, which `sort`, `max` and `min`
+have always answered; a generic body is the only place the comparison can be
+written, since a bare `a < b` on two bools is refused as an unordered operand.
 
 `Map<K, V>` and `OrderedMap<K, V>` require `K implements Eq & Hash`. Collection
 `clone()` is available only when every stored type is `Clone`; ordering and

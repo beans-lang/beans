@@ -69,11 +69,16 @@ partial class LlvmTextEmitter {
         } else if kind == "never" {
             body = "{body}  ret i64 0\n"
         } else if kind == "f64" {
+            // Eq on a float is bit equality, the equality that belongs with
+            // totalOrder (spec/SYNTAX.md, "Number rules"). An IEEE compare
+            // here made a NaN key unfindable in its own map and let a struct
+            // holding -0.0 answer equal to one holding +0.0 while the two
+            // sort apart.
             body =
-                "{body}  %x = bitcast i64 %a to double\n  %y = bitcast i64 %b to double\n  %same = fcmp oeq double %x, %y\n  %bit = zext i1 %same to i64\n  ret i64 %bit\n"
+                "{body}  %same = icmp eq i64 %a, %b\n  %bit = zext i1 %same to i64\n  ret i64 %bit\n"
         } else if kind == "f32" {
             body =
-                "{body}  %a32 = trunc i64 %a to i32\n  %b32 = trunc i64 %b to i32\n  %x = bitcast i32 %a32 to float\n  %y = bitcast i32 %b32 to float\n  %same = fcmp oeq float %x, %y\n  %bit = zext i1 %same to i64\n  ret i64 %bit\n"
+                "{body}  %a32 = trunc i64 %a to i32\n  %b32 = trunc i64 %b to i32\n  %same = icmp eq i32 %a32, %b32\n  %bit = zext i1 %same to i64\n  ret i64 %bit\n"
         } else if kind == "string" {
             body =
                 "{body}  %p = inttoptr i64 %a to ptr\n  %q = inttoptr i64 %b to ptr\n  %same = call i64 @beans_str_eq(ptr %p, ptr %q)\n  ret i64 %same\n"

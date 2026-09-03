@@ -3725,10 +3725,15 @@ class TreeInterpreter {
         self.release_fields(object.text, object)
     }
 
+    // A map key is an Eq key, not an `==` operand: two NaNs with the same
+    // bits are one key and the two zeros are two, matching slot_eq kind 1 in
+    // runtime/beans_rt.c. With IEEE equality here a NaN key matched nothing
+    // stored and the key string it fell back to happened to collide, so the
+    // tree replaced where the native backend appended.
     fn map_key(map: TreeValue,
                key: TreeValue) -> string {
         for stored: TreeValue in map.map_keys {
-            if tree_value_equal(stored, key) {
+            if tree_value_total_equal(stored, key) {
                 return tree_value_key(stored)
             }
         }
@@ -4430,8 +4435,16 @@ class TreeInterpreter {
             self.expression(node.children[1], frame)
         if right.kind == "propagate" { return right }
         if node.value == "==" || node.value == "!=" {
+            // A comparison over a type parameter is the `Eq` interface, not
+            // the operators of whatever the instantiation bound: a float
+            // compares by its bits there, the same as it does inside a
+            // container (spec/SYNTAX.md, "Number rules").
             let equal: bool =
-                tree_value_equal(left, right)
+                if node.total_order {
+                    tree_value_total_equal(left, right)
+                } else {
+                    tree_value_equal(left, right)
+                }
             return TreeValue.boolean(
                 if node.value == "==" {
                     equal
@@ -4496,21 +4509,32 @@ class TreeInterpreter {
                 return TreeValue.boolean(
                     left.float_data != right.float_data)
             }
-            if node.value == "<" {
-                return TreeValue.boolean(
-                    left.float_data < right.float_data)
-            }
-            if node.value == "<=" {
-                return TreeValue.boolean(
-                    left.float_data <= right.float_data)
-            }
-            if node.value == ">" {
-                return TreeValue.boolean(
-                    left.float_data > right.float_data)
-            }
-            if node.value == ">=" {
-                return TreeValue.boolean(
-                    left.float_data >= right.float_data)
+            if node.value == "<" ||
+               node.value == "<=" ||
+               node.value == ">" ||
+               node.value == ">=" {
+                // The one place a float's relational operator is not IEEE:
+                // through a type parameter it is the `Order` interface, and
+                // `Order` on a float is totalOrder.
+                if node.total_order {
+                    return TreeValue.boolean(
+                        tree_float_total_compare(
+                            node.value,
+                            left.float_data,
+                            right.float_data))
+                }
+                let a: float = left.float_data
+                let b: float = right.float_data
+                if node.value == "<" {
+                    return TreeValue.boolean(a < b)
+                }
+                if node.value == "<=" {
+                    return TreeValue.boolean(a <= b)
+                }
+                if node.value == ">" {
+                    return TreeValue.boolean(a > b)
+                }
+                return TreeValue.boolean(a >= b)
             }
         }
         if left.kind == "decimal" &&
@@ -4584,6 +4608,25 @@ class TreeInterpreter {
             if node.value == "!=" {
                 return TreeValue.boolean(
                     left.bool_data != right.bool_data)
+            }
+            // `Order` on a bool is false before true — what
+            // tree_value_less has always answered for sort, max and min.
+            // Only a generic body reaches these: a bare `a < b` on two
+            // bools is refused as an unordered operand. Without them the
+            // tree panicked where the native backend answered.
+            let low: bool = left.bool_data
+            let high: bool = right.bool_data
+            if node.value == "<" {
+                return TreeValue.boolean(!low && high)
+            }
+            if node.value == "<=" {
+                return TreeValue.boolean(!low || high)
+            }
+            if node.value == ">" {
+                return TreeValue.boolean(low && !high)
+            }
+            if node.value == ">=" {
+                return TreeValue.boolean(low || !high)
             }
         }
         if left.kind == "object" &&
@@ -8677,7 +8720,8 @@ class TreeInterpreter {
             node.value == "index_of") &&
            arguments.len() == 2 {
             for index: int in 0..receiver.items.len() {
-                if tree_value_equal(
+                // Eq, not `==`: the native scan is slot_eq
+                if tree_value_total_equal(
                        receiver.items[index],
                        arguments[1]) {
                     if node.value == "contains" {
