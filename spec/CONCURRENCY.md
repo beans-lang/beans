@@ -439,15 +439,19 @@ Landed since:
    running: that is the double-panic case, fatal on both backends, and the
    report names both failures. A defer runs at most once: one that panics
    while the frame is exiting normally hands the rest of that frame's cleanup
-   to the unwind, which does not run it again. An object whose deinit panics during a normal exit is
-   abandoned mid-destruction — it is not released a second time by the unwind,
-   and whatever it still held is not released either — while the locals that
-   had not dropped yet still drop.
+   to the unwind, which does not run it again. An object whose deinit panics
+   is the same shape one level down: the unwind does not release it a second
+   time and its `deinit` does not run again, the locals that had not dropped
+   yet still drop, and what the object itself still held is released by the
+   death it was in the middle of — see the entry below.
 
    A value handed to a runtime entry (`push`, `insert`, `set`, `send`, a
    `map[k] = v`) is released by the unwind when the entry refused it — a store
    out of range, a send on a closed channel — exactly as the interpreter
-   releases it; once the entry has stored it, it is the collection's. Every
+   releases it; once the entry has stored it, it is the collection's. A
+   declined `insert` is the exception the #81 entry below records: refusing
+   runs the value's `deinit`, so that entry owns the value by then and
+   releases it itself. Every
    such entry validates before it takes, and none runs Beans code after the
    take: a class used as a map key hashes by identity with the runtime's own
    hasher, so no user `hash` or `eq` ever runs inside a map operation.
@@ -485,6 +489,60 @@ Landed since:
    published before the first element's release, so a `deinit` that
    reads the container sees it empty, one that adds to it keeps what it
    added, and the container is usable the moment the panic is contained.
+   Every element it detached is destroyed, the ones after the panicking
+   one included — see the entry below.
+
+0. **A panicking `deinit` does not stop the destruction it was running**
+   (#81). The rule the two backends now share: the release that was under way
+   finishes. The object whose `deinit` panicked does not run its `deinit` a
+   second time, but its fields are released and its shell freed like any other
+   death, and everything else that release still owed — the remaining elements
+   of a container being cleared, the rest of a dying object graph's worklist,
+   the rest of a white set the collector killed, the remaining fields of a
+   wide record — is destroyed exactly as it would have been with no panic.
+   Only then does the panic continue on its way out, to the join. Natively
+   that is one guard per runtime frame that holds references mid-release
+   (`runtime/beans_rt.c`: the cascade in `beans_release`, the three container
+   clears, the masked-slot walker, `cc_run_cycle_deinits` and the collector's
+   deferred stacks); the tree interpreter's poison flag never stopped its host
+   cascade, so it already did this and is the golden. Before it, native
+   stopped where it stood: the elements a `clear` had not reached were never
+   destroyed and never freed, unreachable from the program — O(n) leaked per
+   caught panic, and the two backends printed different deinit counts for one
+   checked program. `test/cases/deinit_panic_cascade.b` is the differential
+   golden. A *second* `deinit` panicking before the first has been delivered
+   stays the double-panic case: the finishing destruction runs while the fiber
+   is already unwinding, so it aborts with both reports, on both backends.
+
+   The order that destruction runs in is the order it would have run in
+   anyway, and both backends print it byte for byte: a container back to
+   front, a record last field first, a cascade's worklist newest first. The
+   list-element walker used to go first-field-first, which made a two-field
+   element print its deinits in the opposite order from the interpreter with
+   no panic anywhere near it; one walker now serves every masked aggregate.
+
+   A declined `Map`/`OrderedMap` `insert` is the one runtime entry whose
+   refusal releases what it was handed rather than leaving it to the unwind.
+   Refusing runs the value's `deinit`, so the entry has to own the value by
+   then — otherwise the frame's cleanup releases what the entry has already
+   destroyed, which is a double release, invisible only while a panicking
+   `deinit` left its object abandoned and a use-after-free the moment that
+   object's shell started coming back. Every map entry point owns its key and
+   value from the call in exchange, and is complete about them: whatever it
+   does not store, it releases, on the decline path and on a growth refusal
+   alike.
+
+   `Box.set` on a wide value now follows the store-stands rule its narrow
+   half already followed (#79): it swaps the new value in before releasing
+   the old, because releasing first left a panicking deinit with the box
+   pointing at the bytes it had just destroyed and the new value never
+   stored — `box.get()` handed the program freed memory.
+
+   What is *not* a rule either backend keeps: **when** a cycle collection
+   runs. The two collectors trigger on their own budgets, so the number of
+   cycle members destroyed at a given point in a program differs between the
+   legs with no panic in sight. Only what a pass does once it starts is
+   settled here.
 
 Deliberately not yet here, in dependency order:
 

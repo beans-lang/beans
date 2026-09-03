@@ -1117,20 +1117,31 @@ __attribute__((constructor)) static void arc_setup(void) { atexit(arc_report); }
 // shell only when RC_COUNT is 0, so the bump must not outlive the call (it
 // leaked a buffered object's shell once).
 // The deinit body is user code: contained by brew/join, a panic in it
-// unwinds through this frame (issue #44). The object itself stays abandoned
-// mid-destruction — spec'd, and FIN is already off so death cannot run twice
-// — but the in-deinit counters must come back down on that path too:
-// cc_collect refuses to run while one is up, so a stranded count turns one
+// unwinds through this frame (issue #44). The death itself does not stop
+// there (issue #81, spec/CONCURRENCY.md) — beans_release finishes it on the
+// way out — so this frame has to leave behind exactly what a returning body
+// leaves behind. Two things: the in-deinit counters must come back down
+// (cc_collect refuses to run while one is up, so a stranded count turns one
 // caught panic into a collector that never runs again for the life of the
-// process. The guard fires only on the unwind; the normal path decrements
-// exactly where it always did.
-typedef struct { int armed; } RtDeinitCounters;
+// process), and the count must settle back to zero with FIN off, because the
+// husk filter frees a parked shell only when RC_COUNT is 0 and a stranded
+// bump strands the shell. By the time this runs, the body's own cleanup pad
+// has already dropped whatever it had retained, so the count is back where
+// the normal path finds it. The guard fires only on the unwind; the normal
+// path does both exactly where it always did.
+typedef struct {
+    BHead* h;
+    long long nrc;
+    int armed;
+} RtDeinitCounters;
 static void rt_deinit_counters_unwound(RtDeinitCounters* g) {
     if (!g->armed) return;
+    g->armed = 0;
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
     beans_local_in_deinit -= 1;
 #endif
     __atomic_sub_fetch(&beans_in_deinit, 1, __ATOMIC_RELAXED);
+    rt_rc_store(g->h, g->nrc & ~RC_FIN);
 }
 BEANS_DEINIT_ATTR static void beans_do_deinit(
     void* p, BHead* h, long long nrc) {
@@ -1145,7 +1156,7 @@ BEANS_DEINIT_ATTR static void beans_do_deinit(
     beans_local_in_deinit += 1;
 #endif
     __attribute__((cleanup(rt_deinit_counters_unwound)))
-    RtDeinitCounters unwound = {1};
+    RtDeinitCounters unwound = {h, nrc, 1};
     methods[beans_deinit_sel](p);
     unwound.armed = 0;
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
@@ -1621,6 +1632,68 @@ static void rt_stack_unwound(RtStackUnwound* g) {
     if (g->st->v && g->st->v != g->st->local) rt_free(g->st->v);
 }
 
+// A stack of references the frame still owes a release to — the children a
+// collector pass deferred past its lock, say. Those are not marking work:
+// dropping them on an unwind loses the objects for good. So this guard
+// finishes the drain (issue #81), and the drain itself is the same function
+// the normal path calls, with the cursor stepped before each release so
+// nothing is released twice.
+typedef struct {
+    CCStack* st;
+    long long next;
+    int armed;
+} RtOwedStackUnwound;
+static void rt_owed_stack_drain(RtOwedStackUnwound* g) {
+    while (g->next < g->st->len) beans_release(g->st->v[g->next++]);
+}
+static void rt_owed_stack_unwound(RtOwedStackUnwound* g) {
+    if (!g->armed) return;
+    g->armed = 0;
+    rt_owed_stack_drain(g);
+    if (g->st->v && g->st->v != g->st->local) rt_free(g->st->v);
+}
+
+// The same rule for a plain array a frame copied out before it could run
+// user code — a wide map value's children, say — where a CCStack would be
+// more machinery than the array is.
+typedef struct {
+    void** v;
+    int len;
+    int next;
+    int armed;
+} RtOwedChildren;
+static void rt_owed_children_release(RtOwedChildren* g) {
+    while (g->next < g->len) beans_release(g->v[g->next++]);
+}
+static void rt_owed_children_unwound(RtOwedChildren* g) {
+    if (!g->armed) return;
+    g->armed = 0;
+    rt_owed_children_release(g);
+}
+
+// Two references a runtime entry owes a release to, in order. The first
+// release can run a deinit that panics; the guard releases the second on the
+// way out, so a declined insert cannot lose its duplicate key to the value's
+// panicking deinit (issue #81).
+typedef struct {
+    void* first;
+    void* second;
+    int armed;
+} RtOwedPair;
+static void rt_owed_pair_release(RtOwedPair* g) {
+    void* first = g->first;
+    g->first = NULL;
+    if (first) beans_release(first);
+    void* second = g->second;
+    g->second = NULL;
+    if (second) beans_release(second);
+}
+static void rt_owed_pair_unwound(RtOwedPair* g) {
+    if (!g->armed) return;
+    g->armed = 0;
+    rt_owed_pair_release(g);
+}
+
 // Release cascades overwhelmingly walk fixed class objects. Keep this path
 // direct: the collector still uses the generic callback walker, but ordinary
 // ARC death should not pay an indirect call for every child.
@@ -1846,6 +1919,8 @@ static void cc_sweep_husks(void) {
     }
     void* local[64];
     CCStack deferred = {local, 0, 64, local};
+    __attribute__((cleanup(rt_owed_stack_unwound)))
+    RtOwedStackUnwound deferred_unwound = {&deferred, 0, 1};
     CC_LOCK();
     if (cc_len < cc_threshold) {
         // nothing due — this attempt came from a walk exit re-arming the
@@ -1887,7 +1962,8 @@ static void cc_sweep_husks(void) {
     __atomic_store_n(&cc_sweeping, 0, __ATOMIC_RELEASE);
     // released outside the lock: a release can park new possible roots,
     // and cc_mu is not recursive
-    for (long long i = 0; i < deferred.len; i++) beans_release(deferred.v[i]);
+    rt_owed_stack_drain(&deferred_unwound);
+    deferred_unwound.armed = 0;
     if (deferred.v != local) rt_free(deferred.v);
 }
 
@@ -2005,13 +2081,72 @@ static void cc_possible_root(void* p) {
 static void rt_weak_invalidate(void* obj);
 static int weak_live;
 
+// The rest of a death, after the deinit body has run: hand the children to
+// the cascade's work stack and give the shell back (or park it, if a
+// collector buffer still points at it). Its own frame because the release
+// cascade reaches it twice — once on the ordinary path, once from the
+// unwind guard below.
+__attribute__((always_inline)) static inline void rt_finish_death(
+    void* p, CCStack* st) {
+    BHead* h = head_of(p);
+    long long meta = cc_meta(h);
+    cc_release_children(p, meta, st);
+    if (meta & CC_BUF) {
+        // parked — the buffer still points here, so a collector
+        // or husk sweep frees the shell later; mark black: this
+        // is a dead husk. The blacken is this thread's last
+        // access, and the fence orders everything before it so a
+        // sweeping thread that acquires on the black color may
+        // free the shell.
+#if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
+        __atomic_thread_fence(__ATOMIC_RELEASE);
+#endif
+        rt_w_and(&h->meta, ~CC_COLOR);
+    } else {
+        void* child = cc_free_shell(p, meta);
+        if (child) cc_push(st, child);
+    }
+}
+
+// A deinit that panics does not stop the death that was running it (issue
+// #81, spec/CONCURRENCY.md). Contained by brew/join, that panic unwinds out
+// of beans_do_deinit and through this frame, and everything the cascade had
+// not reached — the object's own fields, its shell, and every node still on
+// the work stack — would be lost with it: unreachable from the program and
+// never freed, O(n) per caught panic, while the tree interpreter destroyed
+// all of it. So the guard finishes the cascade instead of abandoning it.
+// The destruction runs while the fiber is already unwinding, which is
+// exactly the double-panic condition: a second deinit panicking in here is
+// reported and stops the process, the same answer both backends give for a
+// defer that panics during an unwind.
+// Draining through beans_release keeps this non-recursive: each entry starts
+// a fresh cascade of its own with its own stack, so a million-node chain
+// interrupted halfway still unwinds in constant C stack (examples/deep.b).
+typedef struct {
+    CCStack* st;
+    void* dying; // whose deinit is running right now, or NULL
+    int armed;
+} RtCascadeUnwound;
+static void rt_cascade_unwound(RtCascadeUnwound* g) {
+    if (!g->armed) return;
+    g->armed = 0;
+    CCStack* st = g->st;
+    if (g->dying) {
+        void* dying = g->dying;
+        g->dying = NULL;
+        rt_finish_death(dying, st);
+    }
+    while (st->len) beans_release(st->v[--st->len]);
+    if (st->v && st->v != st->local) rt_free(st->v);
+}
+
 void beans_release(void* p) {
     if (!p) return;
     ARC_ADD(arc_release_calls, 1);
     void* local[64];
     CCStack st = {local, 0, 64, local};
-    __attribute__((cleanup(rt_stack_unwound)))
-    RtStackUnwound st_unwound = {&st, 1};
+    __attribute__((cleanup(rt_cascade_unwound)))
+    RtCascadeUnwound st_unwound = {&st, NULL, 1};
     void* cur = p;
     for (;;) {
         ARC_ADD(arc_release_nodes, 1);
@@ -2044,7 +2179,6 @@ void beans_release(void* p) {
                 // can run and try to resurrect the dying object
                 if (__atomic_load_n(&weak_live, __ATOMIC_RELAXED))
                     rt_weak_invalidate(cur);
-                long long meta = cc_meta(h);
                 // FIN is only ever set on class objects, so it alone decides
                 // `!= 0` is load-bearing, not style. __builtin_expect takes
                 // `long`, which is 32 bits on a 32-bit target, so passing the
@@ -2052,25 +2186,13 @@ void beans_release(void* p) {
                 // dead: every deinit was silently skipped on RV32 and thumb.
                 // Comparing first hands it a 0 or a 1, which no width can lose.
                 if (__builtin_expect((nrc & RC_FIN) != 0, 0)) {
+                    // A panic in there leaves the rest of this death, and
+                    // the rest of the cascade, to the guard above.
+                    st_unwound.dying = cur;
                     beans_do_deinit(cur, h, nrc);
-                    meta = cc_meta(h); // colors can move while user code runs
+                    st_unwound.dying = NULL;
                 }
-                cc_release_children(cur, meta, &st);
-                if (meta & CC_BUF) {
-                    // parked — the buffer still points here, so a collector
-                    // or husk sweep frees the shell later; mark black: this
-                    // is a dead husk. The blacken is this thread's last
-                    // access, and the fence orders everything before it so a
-                    // sweeping thread that acquires on the black color may
-                    // free the shell.
-#if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
-                    __atomic_thread_fence(__ATOMIC_RELEASE);
-#endif
-                    rt_w_and(&h->meta, ~CC_COLOR);
-                } else {
-                    void* child = cc_free_shell(cur, meta);
-                    if (child) cc_push(&st, child);
-                }
+                rt_finish_death(cur, &st);
             } else {
                 // could this shape sit on a cycle? leaves, pointer-free
                 // containers, and objects with an empty pointer mask never can
@@ -2089,12 +2211,78 @@ void beans_release(void* p) {
 // Checked Beans treats Box/Arena handles as move-only. Wide values keep their
 // real byte layout; pointer masks let the common collector walk their nested
 // ARC fields without a type-specific destructor.
-static void release_masked_value(void* value, long long ptr_mask) {
-    for (int slot = 58; slot-- > 0;) {
-        if (!((ptr_mask >> slot) & 1)) continue;
-        void* child = *(void**)RT_SLOT_AT(value, slot);
+//
+// One walker for every masked aggregate in the runtime — a list element, a
+// map's wide value, a box, an arena slot — so they cannot drift apart. Two
+// rules ride here:
+//
+//   * last field first, the order a generated struct destructor uses and the
+//     order the tree interpreter tears a record down in. The list element
+//     walker went the other way, so a two-field element printed its deinits
+//     in the opposite order from the interpreter with no panic anywhere near
+//     it (issue #81);
+//   * a deinit in one of these slots can panic, and contained by brew/join
+//     that panic unwinds out of this frame. The death does not stop there:
+//     the guard releases the slots the walk had not reached, so a record
+//     loses no field to a caught panic.
+//
+// The cursor is decremented before the release, so a panic in slot k leaves
+// the guard resuming at k-1 and nothing is released twice.
+typedef struct {
+    void* value;
+    long long ptr_mask;
+    int slot;
+    int i64_encoded;
+    int armed;
+} RtMaskedUnwound;
+static void rt_masked_release_from(RtMaskedUnwound* g) {
+    while (g->slot > 0) {
+        int slot = --g->slot;
+        if (!((g->ptr_mask >> slot) & 1)) continue;
+        void* child = rt_masked_child(g->value, slot, g->i64_encoded);
         if (child) beans_release(child);
     }
+}
+static void rt_masked_unwound(RtMaskedUnwound* g) {
+    if (!g->armed) return;
+    g->armed = 0;
+    rt_masked_release_from(g);
+}
+// One past the highest set slot, so a two-pointer record walks two slots and
+// not fifty-eight. Written as a shift loop because the targets include one
+// compiler without __builtin_clzll.
+static int rt_mask_top(long long ptr_mask) {
+    int top = 0;
+    for (unsigned long long m = (unsigned long long)ptr_mask; m; m >>= 1) {
+        top += 1;
+    }
+    return top > RT_MASK_SLOTS ? RT_MASK_SLOTS : top;
+}
+static void release_masked_slots(void* value, long long ptr_mask,
+                                 int i64_encoded) {
+    __attribute__((cleanup(rt_masked_unwound)))
+    RtMaskedUnwound g = {value, ptr_mask, rt_mask_top(ptr_mask), i64_encoded,
+                         1};
+    rt_masked_release_from(&g);
+    g.armed = 0;
+}
+// Swap a wide slot with the caller's buffer, byte for byte: the slot takes
+// the new value and the caller's buffer parks the old one for the final
+// release. No allocation, and MSVC has no VLA to spill into. Every wide
+// store that has to stand across a panicking deinit goes through this — a
+// map entry and a Box alike.
+static void rt_swap_wide(void* slot, void* incoming, size_t n) {
+    unsigned char* a = (unsigned char*)slot;
+    unsigned char* b = (unsigned char*)incoming;
+    for (size_t i = 0; i < n; i++) {
+        unsigned char t = a[i];
+        a[i] = b[i];
+        b[i] = t;
+    }
+}
+
+static void release_masked_value(void* value, long long ptr_mask) {
+    release_masked_slots(value, ptr_mask, 0);
 }
 
 // ---- unwind-safe runtime scratch (issue #73) -------------------------------
@@ -2289,12 +2477,20 @@ void* beans_box_new_typed(void* value, long long size, long long ptr_mask,
 void beans_box_get_typed(void* box, void* out, long long size) {
     memcpy(out, box, (size_t)size);
 }
+// The store stands, the same rule beans_box_set keeps for a narrow value
+// (issue #79) and beans_map_set_typed keeps for a wide entry. Releasing the
+// old value first and copying after left a panicking deinit with the box
+// still pointing at the bytes it had just destroyed and the new value never
+// stored: `box.get()` handed the program freed memory. Swap the caller's
+// buffer into the box — the buffer is consumed by this call either way, and
+// the emitter hands the reference over before the call (src/llvm_unwind.b's
+// Box row) — and release the old value out of that buffer last.
 void beans_box_set_typed(void* box, void* value, long long size,
                          long long ptr_mask, long long cycle_mask) {
     beans_cc_write_typed(box, value, ptr_mask);
-    release_masked_value(box, ptr_mask);
-    memcpy(box, value, (size_t)size);
+    rt_swap_wide(box, value, (size_t)size);
     if (cycle_mask) cc_possible_root(box);
+    release_masked_value(value, ptr_mask);
 }
 
 // ---- zeroing weak references to ARC class objects ----
@@ -2619,6 +2815,30 @@ void beans_arena_at_typed(void* p, long long handle, void* out,
            (size_t)arena->stride);
 }
 long long beans_arena_len(void* p) { return ((BArena*)p)->len; }
+// Same teardown-does-not-stop rule as beans_list_clear below (issue #81):
+// the cursor is decremented before the release, so an unwind out of a
+// panicking element deinit resumes at the next value down instead of
+// stranding everything under it.
+typedef struct {
+    BArena* arena;
+    long long next;
+    long long stride;
+    int i64_encoded;
+    int armed;
+} RtArenaClearUnwound;
+static void rt_arena_clear_from(RtArenaClearUnwound* g) {
+    while (g->next > 0) {
+        long long i = --g->next;
+        if (i < g->arena->len) break; // a deinit added into this slot
+        release_masked_slots((char*)g->arena->data + i * g->stride,
+                             g->arena->ptr_mask, g->i64_encoded);
+    }
+}
+static void rt_arena_clear_unwound(RtArenaClearUnwound* g) {
+    if (!g->armed) return;
+    g->armed = 0;
+    rt_arena_clear_from(g);
+}
 void beans_arena_clear(void* p) {
     BArena* arena = p;
     long long n = arena->len;
@@ -2627,16 +2847,10 @@ void beans_arena_clear(void* p) {
     int i64_encoded = arena->stride < 0;
     long long stride = i64_encoded ? -arena->stride
                                    : (arena->stride ? arena->stride : 8);
-    for (long long i = n; i-- > 0;) {
-        if (i < arena->len) break; // a deinit added into this slot
-        char* value = (char*)arena->data + i * stride;
-        if (i64_encoded) {
-            void* child = rt_i64_slot_child(value);
-            if (child) beans_release(child);
-        } else {
-            release_masked_value(value, arena->ptr_mask);
-        }
-    }
+    __attribute__((cleanup(rt_arena_clear_unwound)))
+    RtArenaClearUnwound g = {arena, n, stride, i64_encoded, 1};
+    rt_arena_clear_from(&g);
+    g.armed = 0;
 }
 
 // ---- the collector (single mutator: us) ----
@@ -2801,6 +3015,43 @@ static void cc_worker_restore_edge(void* c, void* ctx) {
 }
 #endif
 
+// The deinit bodies of one dead cycle, and the holds that keep the set
+// standing while they run. Both halves live here so the unwind guard below
+// can finish exactly what the normal path does: the cursor steps before each
+// body, so a panic in member i resumes at i + 1 and no body runs twice.
+typedef struct {
+    void** dead;
+    long long len;
+    long long next;
+    long long dropped;
+    int armed;
+} RtCycleDeinits;
+static void rt_cycle_deinits_finish(RtCycleDeinits* g) {
+    while (g->next < g->len) {
+        void* member = g->dead[g->next++];
+        BHead* h = head_of(member);
+        long long rc = rt_rc_load(h);
+        // beans_do_deinit puts the count back with RC_FIN off, so death runs
+        // once whether it happens here or through an ordinary release.
+        if (rc & RC_FIN) beans_do_deinit(member, h, rc);
+    }
+    // Park before dropping the hold: a member that dies on the release below
+    // then finds itself buffered and leaves its shell for the collector,
+    // exactly as any other parked death does. Only the members still held —
+    // a resumed pass must not touch one it has already let go — and parking
+    // is idempotent, so repeating it for those costs nothing.
+    for (long long i = g->dropped; i < g->len; i++) cc_possible_root(g->dead[i]);
+    // A release here can still reach user code: a member whose deinit body
+    // dropped an internal edge dies on its own hold, and its children go with
+    // it. So the cursor steps before the release and the whole pass, both
+    // halves, stays under one guard.
+    while (g->dropped < g->len) beans_release(g->dead[g->dropped++]);
+}
+static void rt_cycle_deinits_unwound(RtCycleDeinits* g) {
+    if (!g->armed) return;
+    g->armed = 0;
+    rt_cycle_deinits_finish(g);
+}
 // A cycle's members die like any other object, deinit included — but a deinit
 // body is user code, and user code needs the counts it can see to be true.
 // Trial deletion destroyed them for this set, so give them back first: the
@@ -2836,19 +3087,15 @@ static int cc_run_cycle_deinits(void** dead, long long len, int owner_local) {
     // really die mid-loop, and this loop must not walk a freed shell.
     for (i = 0; i < len; i++) beans_retain(dead[i]);
 
-    for (i = 0; i < len; i++) {
-        BHead* h = head_of(dead[i]);
-        long long rc = rt_rc_load(h);
-        // beans_do_deinit puts the count back with RC_FIN off, so death runs
-        // once whether it happens here or through an ordinary release.
-        if (rc & RC_FIN) beans_do_deinit(dead[i], h, rc);
-    }
-
-    // Park before dropping the hold: a member that dies on the release below
-    // then finds itself buffered and leaves its shell for the collector,
-    // exactly as any other parked death does.
-    for (i = 0; i < len; i++) cc_possible_root(dead[i]);
-    for (i = 0; i < len; i++) beans_release(dead[i]);
+    // A member whose deinit panics does not end the pass (issue #81). Every
+    // member is held by the retain above, so abandoning here strands the whole
+    // white set — shells, deinits and all — for the life of the process. The
+    // guard runs the deinits the loop had not reached and then drops the
+    // holds, which is the only path back out of that retain.
+    __attribute__((cleanup(rt_cycle_deinits_unwound)))
+    RtCycleDeinits pass = {dead, len, 0, 0, 1};
+    rt_cycle_deinits_finish(&pass);
+    pass.armed = 0;
     return 1;
 }
 
@@ -2917,8 +3164,8 @@ static void cc_worker_collect(void) {
         ARC_ADD(arc_collections, 1);
         void* dlocal[64];
         CCStack deferred = {dlocal, 0, 64, dlocal};
-        __attribute__((cleanup(rt_stack_unwound)))
-        RtStackUnwound deferred_unwound = {&deferred, 1};
+        __attribute__((cleanup(rt_owed_stack_unwound)))
+        RtOwedStackUnwound deferred_unwound = {&deferred, 0, 1};
         void* glocal[64];
         CCStack global = {glocal, 0, 64, glocal};
         __attribute__((cleanup(rt_stack_unwound)))
@@ -3056,8 +3303,7 @@ static void cc_worker_collect(void) {
         // A Shared shell can hand back a payload whose release parks another
         // local root. Keep collection non-recursive; the next allocation
         // handles any root parked by these deferred releases.
-        for (long long i = 0; i < deferred.len; i++)
-            beans_release(deferred.v[i]);
+        rt_owed_stack_drain(&deferred_unwound);
         deferred_unwound.armed = 0;
         if (deferred.v != dlocal) rt_free(deferred.v);
     }
@@ -3077,9 +3323,10 @@ static void cc_worker_collect(void) {
 #endif
 
 // The cycle deinits and the deferred releases below run user code after
-// CC_UNLOCK; a contained panic there unwinds out of the pass. The members
-// not yet destroyed stay abandoned (their holds keep their shells), but
-// cc_collecting gates every future collection, so it must come back down.
+// CC_UNLOCK; a contained panic there unwinds out of the pass. The pass still
+// finishes what it started — cc_run_cycle_deinits runs the bodies it had not
+// reached and drops every hold, and the deferred stack drains (issue #81) —
+// and cc_collecting gates every future collection, so it must come back down.
 static void cc_collecting_unwound(int* armed) {
     if (*armed) cc_collecting = 0;
 }
@@ -3098,8 +3345,8 @@ static void cc_collect(int force) {
     // takes cc_mu again, and cc_mu is not recursive.
     void* dlocal[64];
     CCStack deferred = {dlocal, 0, 64, dlocal};
-    __attribute__((cleanup(rt_stack_unwound)))
-    RtStackUnwound deferred_unwound = {&deferred, 1};
+    __attribute__((cleanup(rt_owed_stack_unwound)))
+    RtOwedStackUnwound deferred_unwound = {&deferred, 0, 1};
     // The white set outlives the lock: deinit bodies are user code that
     // allocates and releases, and parking a possible root takes cc_mu again.
     CCStack doomed = {0, 0, 0};
@@ -3172,7 +3419,7 @@ static void cc_collect(int force) {
         cc_free_cycle_shells(doomed.v, doomed.len, &deferred);
     rt_free(doomed.v);
     doomed.v = 0; // the guard must not free it again if a release panics
-    for (long long i = 0; i < deferred.len; i++) beans_release(deferred.v[i]);
+    rt_owed_stack_drain(&deferred_unwound);
     deferred_unwound.armed = 0;
     doomed_unwound.armed = 0;
     if (deferred.v != dlocal) rt_free(deferred.v);
@@ -4091,12 +4338,7 @@ static void list_retain_element(BList* l, void* element) {
     }
 }
 static void list_release_element(BList* l, void* element) {
-    int i64_encoded = l->stride < 0;
-    for (int slot = 0; slot < RT_MASK_SLOTS && (l->ptr_mask >> slot); slot++) {
-        if (!((l->ptr_mask >> slot) & 1)) continue;
-        void* child = rt_masked_child(element, slot, i64_encoded);
-        if (child) beans_release(child);
-    }
+    release_masked_slots(element, l->ptr_mask, l->stride < 0);
 }
 static BList* list_new_capacity(long long stride, long long ptr_mask,
                                 long long capacity, long long line,
@@ -6361,18 +6603,43 @@ void beans_list_reverse(BList* l) {
 // again is no longer this loop's to drop. The interpreter gets there by
 // replacing the storage outright (`items = []`, `map_values = {}`); these
 // keep the buffer, so `reserve` survives a `clear` and nothing allocates.
+// A deinit that panics does not stop the teardown that was running it
+// (issue #81, spec/CONCURRENCY.md). Contained by brew/join, that panic
+// unwinds out of this frame, and every element the walk had not reached
+// would be lost: the container already reports itself empty, so nothing in
+// the program can reach them and nothing ever frees them — O(n) per caught
+// panic, where the tree interpreter destroyed all of them. The cursor lives
+// in the guard and is decremented before the release, so the unwind resumes
+// at the next element down and nothing is released twice.
+typedef struct {
+    BList* l;
+    long long next;
+    long long stride;
+    int armed;
+} RtListClearUnwound;
+static void rt_list_clear_from(RtListClearUnwound* g) {
+    while (g->next > 0) {
+        long long i = --g->next;
+        if (i < g->l->len) break; // a deinit pushed into this slot
+        list_release_element(g->l, (char*)g->l->data + i * g->stride);
+    }
+}
+static void rt_list_clear_unwound(RtListClearUnwound* g) {
+    if (!g->armed) return;
+    g->armed = 0;
+    rt_list_clear_from(g);
+}
 void beans_list_clear(BList* l) {
     if (l->len != 0) list_changed(l, LIST_CHANGE_CLEAR);
     long long n = l->len;
     l->len = 0;
     if (!l->ptr_mask) return; // nothing to release
-    long long stride = list_stride(l);
     // last element first — deinit made death order observable, and the
     // interpreter's vector teardown destroys back to front
-    for (long long i = n; i-- > 0;) {
-        if (i < l->len) break; // a deinit pushed into this slot
-        list_release_element(l, (char*)l->data + i * stride);
-    }
+    __attribute__((cleanup(rt_list_clear_unwound)))
+    RtListClearUnwound g = {l, n, list_stride(l), 1};
+    rt_list_clear_from(&g);
+    g.armed = 0;
 }
 // A `for` loop over a list holds the change count it started with. A
 // structural change moves that count, and the next turn stops here instead of
@@ -6722,12 +6989,7 @@ static void map_retain_wide_value(BMap* m, void* value) {
     }
 }
 static void map_release_wide_value(BMap* m, void* value) {
-    // Aggregate teardown is last-field-first, matching generated structs.
-    for (int slot = 58; slot-- > 0;) {
-        if (!((m->value_ptr_mask >> slot) & 1)) continue;
-        void* child = *(void**)RT_SLOT_AT(value, slot);
-        if (child) beans_release(child);
-    }
+    release_masked_slots(value, m->value_ptr_mask, 0);
 }
 static void map_bump_version(BMap* m) {
     m->version = (long long)((unsigned long long)m->version + 1);
@@ -6940,7 +7202,14 @@ static void map_insert_miss_typed(BMap* m, long long key, void* value,
         m->data = rt_realloc(m->data, (size_t)m->cap * 16);
         m->wide_values = rt_realloc(m->wide_values,
                                  (size_t)m->cap * (size_t)m->value_stride);
-        if (!m->data || !m->wide_values) beans_panic("out of memory", 0, 0);
+        if (!m->data || !m->wide_values) {
+            // The entry owns key and value from the call, so a refusal here
+            // releases them rather than leaving them to a caller that has
+            // already handed them over (src/llvm_unwind.b).
+            map_release_wide_value(m, value);
+            if (flags & 1) beans_release((void*)key);
+            beans_panic("out of memory", 0, 0);
+        }
         if (m->deadbits) {
             long long nw = (m->cap + 63) >> 6;
             m->deadbits = rt_realloc(m->deadbits, (size_t)nw * 8);
@@ -7035,19 +7304,6 @@ __attribute__((always_inline)) void beans_map_set_raw(BMap* m, long long key,
     map_insert_miss(m, key, val, h, 0, NULL, slot);
 }
 
-// swap the entry's wide value with the caller's buffer, byte for byte: the
-// entry takes the new value and the caller's buffer parks the old one for
-// the final release. No allocation, and MSVC has no VLA to spill into.
-static void map_swap_wide(void* entry, void* incoming, size_t n) {
-    unsigned char* a = (unsigned char*)entry;
-    unsigned char* b = (unsigned char*)incoming;
-    for (size_t i = 0; i < n; i++) {
-        unsigned char t = a[i];
-        a[i] = b[i];
-        b[i] = t;
-    }
-}
-
 void beans_map_set_typed(BMap* m, long long key, void* value, long long kind,
                          void* eq, void* hash) {
     long long (*hf)(long long) = (long long (*)(long long))hash;
@@ -7059,7 +7315,7 @@ void beans_map_set_typed(BMap* m, long long key, void* value, long long kind,
         // release last, from the caller's buffer the swap parked it in
         // (the buffer is consumed by this call either way)
         beans_cc_write_typed(m, value, m->value_ptr_mask);
-        map_swap_wide(map_wide_value(m, i), value, (size_t)m->value_stride);
+        rt_swap_wide(map_wide_value(m, i), value, (size_t)m->value_stride);
         if (flags & 1) beans_release((void*)key);
         if (m->value_cycle_mask || kind == 4) cc_possible_root(m);
         map_release_wide_value(m, value);
@@ -7079,7 +7335,7 @@ __attribute__((always_inline)) void beans_map_set_typed_raw(BMap* m,
         // same order rule as beans_map_set: store first, the old value's
         // release last, from the caller's buffer the swap parked it in
         beans_cc_write_typed(m, value, m->value_ptr_mask);
-        map_swap_wide(map_wide_value(m, i), value, (size_t)m->value_stride);
+        rt_swap_wide(map_wide_value(m, i), value, (size_t)m->value_stride);
         if (flags & 1) beans_release((void*)key);
         if (m->value_cycle_mask) cc_possible_root(m);
         map_release_wide_value(m, value);
@@ -7130,13 +7386,16 @@ long long beans_map_insert(BMap* m, long long key, long long val, long long kind
     unsigned long long h = 0, slot = 0;
     if (map_find(m, key, kind, eq, hf, &h, &slot) >= 0) {
         long long flags = (head_of(m)->meta & CC_SHAPE) >> 3;
-        // declined: the incoming value's release can run a panicking
-        // deinit, so it goes first, while the key is still the caller's
-        // to unwind; the duplicate key's release cannot panic (a string
-        // frees without user code, an identity-hit class key holds at
-        // least two counts)
-        if (flags & 2) beans_release((void*)val);
-        if (flags & 1) beans_release((void*)key);
+        // Declined: the entry owns both from the call (src/llvm_unwind.b),
+        // so it releases both. The value goes first because the map is the
+        // one holding the duplicate the caller meant to keep; that release
+        // runs a deinit, so the key rides the guard and still goes when the
+        // deinit panics (issue #81).
+        __attribute__((cleanup(rt_owed_pair_unwound)))
+        RtOwedPair owed = {(flags & 2) ? (void*)val : NULL,
+                           (flags & 1) ? (void*)key : NULL, 1};
+        rt_owed_pair_release(&owed);
+        owed.armed = 0;
         return 0;
     }
     map_insert_miss(m, key, val, h, kind, hf, slot);
@@ -7149,9 +7408,13 @@ __attribute__((always_inline)) long long beans_map_insert_raw(
     unsigned long long h = 0, slot = 0;
     if (map_find_raw(m, key, &h, &slot) >= 0) {
         long long flags = (head_of(m)->meta & CC_SHAPE) >> 3;
-        // same decline order as beans_map_insert: panic-capable first
-        if (flags & 2) beans_release((void*)val);
-        if (flags & 1) beans_release((void*)key);
+        // same decline rule as beans_map_insert: both are this entry's, the
+        // panic-capable one first, the other on the guard
+        __attribute__((cleanup(rt_owed_pair_unwound)))
+        RtOwedPair owed = {(flags & 2) ? (void*)val : NULL,
+                           (flags & 1) ? (void*)key : NULL, 1};
+        rt_owed_pair_release(&owed);
+        owed.armed = 0;
         return 0;
     }
     map_insert_miss(m, key, val, h, 0, NULL, slot);
@@ -7164,9 +7427,13 @@ long long beans_map_insert_typed(BMap* m, long long key, void* value,
     unsigned long long h = 0, slot = 0;
     if (map_find(m, key, kind, eq, hf, &h, &slot) >= 0) {
         long long flags = (head_of(m)->meta & CC_SHAPE) >> 3;
-        // same decline order as beans_map_insert: panic-capable first
+        // same decline rule as beans_map_insert: both are this entry's, the
+        // panic-capable one first, the key on the guard
+        __attribute__((cleanup(rt_owed_pair_unwound)))
+        RtOwedPair owed = {NULL, (flags & 1) ? (void*)key : NULL, 1};
         map_release_wide_value(m, value);
-        if (flags & 1) beans_release((void*)key);
+        rt_owed_pair_release(&owed);
+        owed.armed = 0;
         return 0;
     }
     map_insert_miss_typed(m, key, value, h, kind, hf, slot);
@@ -7179,9 +7446,13 @@ __attribute__((always_inline)) long long beans_map_insert_typed_raw(
     unsigned long long h = 0, slot = 0;
     if (map_find_raw(m, key, &h, &slot) >= 0) {
         long long flags = (head_of(m)->meta & CC_SHAPE) >> 3;
-        // same decline order as beans_map_insert: panic-capable first
+        // same decline rule as beans_map_insert: both are this entry's, the
+        // panic-capable one first, the key on the guard
+        __attribute__((cleanup(rt_owed_pair_unwound)))
+        RtOwedPair owed = {NULL, (flags & 1) ? (void*)key : NULL, 1};
         map_release_wide_value(m, value);
-        if (flags & 1) beans_release((void*)key);
+        rt_owed_pair_release(&owed);
+        owed.armed = 0;
         return 0;
     }
     map_insert_miss_typed(m, key, value, h, 0, NULL, slot);
@@ -7317,10 +7588,14 @@ __attribute__((noinline)) static long long map_remove_found_wide(
     }
     long long dead_key = (flags & 1) ? m->data[i * 2] : 0;
     map_unlink_entry(m, i, slot, kind, hf);
-    // The map is consistent again; only now can user code run.
+    // The map is consistent again; only now can user code run. A field's
+    // deinit that panics does not strand the fields after it (issue #81):
+    // the cursor steps before each release and the guard finishes the rest.
+    __attribute__((cleanup(rt_owed_children_unwound)))
+    RtOwedChildren owed = {dead_children, dead_count, 0, 1};
     if (dead_key) beans_release((void*)dead_key);
-    for (int child = 0; child < dead_count; child++)
-        beans_release(dead_children[child]);
+    rt_owed_children_release(&owed);
+    owed.armed = 0;
     return 1;
 }
 
@@ -7474,6 +7749,40 @@ __attribute__((always_inline)) long long beans_map_iter_value(BMap* m, long long
 __attribute__((always_inline)) void* beans_map_iter_value_typed(BMap* m, long long entry) {
     return map_wide_value(m, entry);
 }
+// Same teardown-does-not-stop rule as beans_list_clear (issue #81), with one
+// extra position to remember: an entry is two releases, value then key, and a
+// panic in the value's deinit still owes that entry's key. `key_owed` is the
+// entry whose key is outstanding, or -1.
+typedef struct {
+    BMap* m;
+    long long next;
+    long long key_owed;
+    long long flags;
+    int armed;
+} RtMapClearUnwound;
+static void rt_map_clear_from(RtMapClearUnwound* g) {
+    BMap* m = g->m;
+    for (;;) {
+        if (g->key_owed >= 0) {
+            long long entry = g->key_owed;
+            g->key_owed = -1;
+            if ((g->flags & 1) && m->data[entry * 2])
+                beans_release((void*)m->data[entry * 2]);
+        }
+        if (g->next <= 0) break;
+        long long i = --g->next;
+        if (i < m->used) break; // a deinit inserted into this slot
+        g->key_owed = i;
+        if (m->wide_values) map_release_wide_value(m, map_wide_value(m, i));
+        else if ((g->flags & 2) && m->data[i * 2 + 1])
+            beans_release((void*)m->data[i * 2 + 1]);
+    }
+}
+static void rt_map_clear_unwound(RtMapClearUnwound* g) {
+    if (!g->armed) return;
+    g->armed = 0;
+    rt_map_clear_from(g);
+}
 void beans_map_clear(BMap* m) {
     long long flags = (head_of(m)->meta & CC_SHAPE) >> 3;
     if (m->len != 0) map_bump_version(m);
@@ -7492,13 +7801,10 @@ void beans_map_clear(BMap* m) {
     if (!(flags & 3) && !m->value_ptr_mask) return; // nothing to release
     // reverse, value before key: the interpreter's pair teardown runs members
     // last-first, entries back to front — observable once a deinit prints
-    for (long long i = used; i-- > 0;) { // holes are zeroed: null-skip
-        if (i < m->used) break; // a deinit inserted into this slot
-        if (m->wide_values) map_release_wide_value(m, map_wide_value(m, i));
-        else if ((flags & 2) && m->data[i * 2 + 1])
-            beans_release((void*)m->data[i * 2 + 1]);
-        if ((flags & 1) && m->data[i * 2]) beans_release((void*)m->data[i * 2]);
-    }
+    __attribute__((cleanup(rt_map_clear_unwound)))
+    RtMapClearUnwound g = {m, used, -1, flags, 1};
+    rt_map_clear_from(&g);
+    g.armed = 0;
 }
 
 // element rendering matches the interpreter's display(): the kind code says

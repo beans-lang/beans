@@ -394,11 +394,18 @@ partial class LlvmTextEmitter {
             return method == "push" || method == "insert"
         }
         if receiver == "Map" || receiver == "OrderedMap" {
-            // set follows map[k] = v above: store-first, so clear-before.
-            // insert stays: growth fails before it takes, and a declined
-            // insert releases the incoming value first, while the caller
-            // still owns everything the pad would release.
-            return method == "insert"
+            // Every map entry point owns the key and the value from the
+            // call, so all of them are clear-before. `set` because it stores
+            // first (map[k] = v above). `insert` because a declined insert
+            // releases both itself, and that release runs a deinit: with the
+            // flag still set past it, the pad released the value the entry
+            // had already destroyed — invisible only while a panicking
+            // deinit left its object abandoned, and a use-after-free the
+            // moment that object's shell started coming back (issue #81).
+            // The entry is complete about it in exchange: whatever it does
+            // not store, it releases, on the decline path and on the growth
+            // failure alike.
+            return false
         }
         if receiver == "Channel" {
             // beans_chan_send declines a closed channel without taking the

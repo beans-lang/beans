@@ -1714,7 +1714,15 @@ can still read them. Deterministic, like C++/Swift: no GC pause, no "sometime la
 - A subclass `deinit` runs first, then its parent's, automatically — no `override`, ever.
 - `self` must not escape a `deinit`. The object is being destroyed; storing `self` anywhere
   is use-after-free by definition.
-- A panic inside `deinit` is fatal (same rule as defer).
+- A panic inside `deinit` is the same rule as one inside a `defer`: uncontained it ends
+  the process, and contained by `brew`/`join` (spec/CONCURRENCY.md) the join reports it —
+  **without stopping the destruction that was running it**. The `deinit` is not run again,
+  but the object's fields are still released and its memory still returned, and everything
+  else the release was going to destroy is still destroyed: the remaining elements of a
+  container being cleared, the rest of a dying object graph, the rest of a cycle the
+  collector killed. A container is empty and usable either way. A *second* `deinit` (or
+  `defer`) panicking before the first has been delivered is the one unrecoverable case —
+  both reports go out and the process stops.
 - `deinit` runs when the last reference dies, which is a thing that happens
   *while the program runs*. Leaving the program is not a death: a value a
   static or a singleton still holds at exit has no `deinit` call, and neither

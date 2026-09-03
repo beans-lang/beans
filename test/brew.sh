@@ -87,6 +87,195 @@ for round in 1 2 3 4 5 6; do
     diff -u test/cases/container_clear_panic.out "$tmp/clear.again"
 done
 
+echo "checking a panicking deinit does not stop the destruction it was running"
+# issue #81: contained by brew/join, a deinit panic unwinds out of whatever
+# runtime frame was tearing something down. Native stopped there — the
+# elements a `clear` had not reached were never destroyed and never freed,
+# while the container already reported itself empty, so nothing in the
+# program could reach them either. The interpreter, whose panic is a poison
+# flag rather than a stack unwind, destroyed all of them: one checked
+# program, two answers, and O(n) leaked per caught panic on the native side.
+# The golden is the interpreter's answer — counts and death order — across
+# every container, a scope death, a plain object graph, nested containers, a
+# wide record, the panicking object's own fields, both Box.set shapes and a
+# wide remove. Revert any half of the runtime guard and the counts drop.
+./build/beansc run test/cases/deinit_panic_cascade.b >"$tmp/cascade.interp"
+./build/beansc build test/cases/deinit_panic_cascade.b \
+    -o "$tmp/cascade.native" >"$tmp/cascade.build" 2>&1
+"$tmp/cascade.native" >"$tmp/cascade.native.out"
+./build/beansc build --release --lto test/cases/deinit_panic_cascade.b \
+    -o "$tmp/cascade.lto" >"$tmp/cascade.lto.build" 2>&1
+"$tmp/cascade.lto" >"$tmp/cascade.lto.out"
+diff -u test/cases/deinit_panic_cascade.out "$tmp/cascade.interp"
+diff -u test/cases/deinit_panic_cascade.out "$tmp/cascade.native.out"
+diff -u test/cases/deinit_panic_cascade.out "$tmp/cascade.lto.out"
+# Nothing is released twice on the way: a second release is allocator
+# corruption the pool hides, so three clean runs without it bind that half.
+for round in 1 2 3; do
+    BEANS_NO_POOL=1 "$tmp/cascade.native" >"$tmp/cascade.again" 2>&1 || {
+        echo "the finished cascade crashed on run $round without the pool" >&2
+        cat "$tmp/cascade.again" >&2
+        exit 1
+    }
+    diff -u test/cases/deinit_panic_cascade.out "$tmp/cascade.again"
+done
+
+echo "checking the finished cascade returns every byte it took"
+# The counts above say every deinit ran; this says the memory came back.
+# Two round counts an order of magnitude apart, each in its own
+# -DBEANS_ARC_STATS build: allocations must equal frees in both, so a
+# per-panic leak would show as a gap that grows with the rounds. A round
+# does both shapes that lose memory this way — a container clear whose
+# element deinit panics, and a declined map insert whose refused value's
+# deinit panics while the duplicate key is still owed a release. Before the
+# guards the fifty-round build ended 1000 and 50 allocations short.
+arc_rounds() { # <rounds>
+    local rounds=$1
+    sed "s/ROUNDS/$rounds/g" >"$tmp/arc_$rounds.b" <<'BEANS'
+import std.io
+
+class Item {
+    pub id: int = 0
+    pub bomb: bool = false
+    pub fn init(id: int, bomb: bool) {
+        self.id = id
+        self.bomb = bomb
+    }
+    fn deinit() { if self.bomb { panic("deinit bomb") } }
+}
+
+fn wipe(l: List<Item>) -> int { l.clear(); return 0 }
+
+// A declined insert releases the value it refused and then the duplicate
+// key. That first release runs a deinit, so the key rides the entry's guard;
+// without it the key string is lost once per round.
+fn decline(m: Map<string, Item>, n: int) -> int {
+    m.insert("dup-{n}", new Item(n, true))
+    return 0
+}
+
+fn round(n: int) {
+    var l: List<Item> = []
+    var i: int = 0
+    for i < 40 { l.push(new Item(i, i == 20)); i += 1 }
+    let h: Brew<int> = brew wipe(l)
+    match h.join() { ok(v) => {} err(problem) => {} }
+
+    var m: Map<string, Item> = {}
+    m["dup-{n}"] = new Item(n, false)
+    let d: Brew<int> = brew decline(m, n)
+    match d.join() { ok(v) => {} err(problem) => {} }
+}
+
+fn main() {
+    var r: int = 0
+    for r < ROUNDS { round(r); r += 1 }
+    io.println("rounds=ROUNDS")
+}
+BEANS
+    ./build/beansc build --emit ir "$tmp/arc_$rounds.b" >/dev/null 2>&1
+    # the same pairing the driver uses for a program that can contain a panic
+    clang -O1 -pthread -DBEANS_ARC_STATS -DBEANS_FIBER_UNWIND=1 \
+        -fexceptions -funwind-tables -Wno-override-module \
+        "build/arc_$rounds.ll" build/beans_rt.c -lm -o "$tmp/arc_$rounds"
+    "$tmp/arc_$rounds" >"$tmp/arc_$rounds.out" 2>"$tmp/arc_$rounds.stats"
+    grep -q "^rounds=$rounds\$" "$tmp/arc_$rounds.out" || {
+        echo "the arc-stats build did not run $rounds rounds" >&2
+        cat "$tmp/arc_$rounds.out" >&2
+        exit 1
+    }
+    local allocations frees
+    allocations=$(sed -n 's/.*allocations=\([0-9][0-9]*\).*/\1/p' \
+        "$tmp/arc_$rounds.stats")
+    frees=$(sed -n 's/.* frees=\([0-9][0-9]*\).*/\1/p' "$tmp/arc_$rounds.stats")
+    if [ -z "$allocations" ] || [ -z "$frees" ]; then
+        echo "no arc stats from the $rounds-round build" >&2
+        cat "$tmp/arc_$rounds.stats" >&2
+        exit 1
+    fi
+    if [ "$allocations" -ne "$frees" ]; then
+        echo "a caught deinit panic leaked: $rounds rounds allocated" \
+             "$allocations and freed $frees" >&2
+        cat "$tmp/arc_$rounds.stats" >&2
+        exit 1
+    fi
+    if [ "$allocations" -lt $((rounds * 40)) ]; then
+        echo "the $rounds-round build never built its elements" >&2
+        cat "$tmp/arc_$rounds.stats" >&2
+        exit 1
+    fi
+}
+arc_rounds 50
+arc_rounds 500
+
+echo "checking a second panicking deinit in one cascade is the double panic"
+# The destruction that finishes runs while the fiber is already unwinding,
+# which is exactly the condition both backends call unrecoverable. So the
+# element the finishing walk reaches next, panicking in its own deinit,
+# aborts with both reports — and the elements between the two panics have
+# already printed, which is what says the walk really did continue.
+cat >"$tmp/double_deinit.b" <<'BEANS'
+import std.io
+
+class Item {
+    pub id: int = 0
+    pub fn init(id: int) { self.id = id }
+    fn deinit() {
+        io.println("drop {self.id}")
+        if self.id == 7 { panic("first bomb") }
+        if self.id == 3 { panic("second bomb") }
+    }
+}
+
+fn wipe(l: List<Item>) -> int {
+    l.clear()
+    return 0
+}
+
+fn main() {
+    var l: List<Item> = []
+    var i: int = 0
+    for i < 12 {
+        l.push(new Item(i))
+        i += 1
+    }
+    let h: Brew<int> = brew wipe(l)
+    match h.join() {
+        ok(v) => { io.println("ok") }
+        err(problem) => { io.println("caught") }
+    }
+}
+BEANS
+expect_double_deinit() { # <command...>
+    set +e
+    "$@" >"$tmp/double_deinit.out" 2>"$tmp/double_deinit.err"
+    local status=$?
+    set -e
+    if [ "$status" -ne 134 ]; then
+        echo "a second panicking deinit should abort (134), got $status" >&2
+        cat "$tmp/double_deinit.err" >&2
+        exit 1
+    fi
+    printf 'drop 11\ndrop 10\ndrop 9\ndrop 8\ndrop 7\ndrop 6\ndrop 5\ndrop 4\ndrop 3\n' \
+        | diff -u - "$tmp/double_deinit.out"
+    grep -q "^double panic during unwind: runtime panic at 9:32: second bomb\$" \
+        "$tmp/double_deinit.err" || {
+        echo "the second deinit panic is not reported as a double panic" >&2
+        cat "$tmp/double_deinit.err" >&2
+        exit 1
+    }
+    grep -q "^  while unwinding: runtime panic at 8:32: first bomb\$" \
+        "$tmp/double_deinit.err" || {
+        echo "the interrupted unwind is not named in the report" >&2
+        cat "$tmp/double_deinit.err" >&2
+        exit 1
+    }
+}
+expect_double_deinit ./build/beansc run "$tmp/double_deinit.b"
+./build/beansc build "$tmp/double_deinit.b" -o "$tmp/double_deinit" \
+    >"$tmp/double_deinit.build" 2>&1
+expect_double_deinit "$tmp/double_deinit"
+
 echo "checking a map replace under a panicking deinit corrupts nothing"
 # issue #44: the old order released the caller's duplicate key before the
 # old value's panicking release, and the pad then released that key a
@@ -175,6 +364,122 @@ for leg in "$tmp/cc_deinit.interp" "$tmp/cc_deinit.native.out"; do
         exit 1
     }
 done
+
+echo "checking a collector pass finishes the white set a panic interrupted"
+# issue #81 in the collector: cc_run_cycle_deinits retains the whole white
+# set across the deinit bodies, so a panic anywhere in the pass used to
+# strand every object in it — holds up, shells never freed, deinits never
+# run — for the life of the process. Two places in one pass can reach user
+# code, and both are covered here: a member's own deinit body, and the
+# release that drops the holds afterwards (a member whose body dropped its
+# internal edge dies right there, and a child it built during the body goes
+# with it). When a collection runs is each backend's own business — the two
+# trigger on their own budgets — so this leg is native only and asserts the
+# pass rather than a golden. The same program is built three times, once
+# clean and once with each bomb, so the comparison calibrates itself:
+# whatever a clean run still holds at exit, a caught panic may hold at most
+# two more. Measured here: 1604 of 1604 freed clean, one short with either
+# bomb. Revert the bodies half and the member run drops to 41 deinits and 7
+# frees; revert the holds half and the child run ends 943 objects short.
+cycle_stats() { # <name> <node bomb> <leaf bomb>
+    sed "s/NODEBOMB/$2/;s/LEAFBOMB/$3/" >"$tmp/$1.b" <<'BEANS'
+import std.io
+
+class Tally { pub static gone: int = 0 }
+
+class Leaf {
+    pub id: int = 0
+    pub fn init(id: int) { self.id = id }
+    fn deinit() {
+        Tally.gone += 1
+        if LEAFBOMB { panic("leaf bomb") }
+    }
+}
+
+class Node {
+    pub id: int = 0
+    pub next: Option<Node> = none
+    pub made: Option<Leaf> = none
+    pub fn init(id: int) { self.id = id }
+    fn deinit() {
+        Tally.gone += 1
+        // Drop the internal edge and build a child the white set never saw,
+        // so this member dies on its own hold and takes the child with it.
+        self.next = none
+        self.made = some(new Leaf(self.id))
+        if NODEBOMB { panic("node bomb") }
+    }
+}
+
+fn build() -> int {
+    var i: int = 0
+    for i < 400 {
+        let a: Node = new Node(i * 2)
+        let b: Node = new Node(i * 2 + 1)
+        a.next = some(b)
+        b.next = some(a)
+        i += 1
+    }
+    return 0
+}
+
+fn main() {
+    let h: Brew<int> = brew build()
+    match h.join() {
+        ok(v) => { io.println("ok") }
+        err(problem) => { io.println("caught {problem.kind}") }
+    }
+    io.println("gone={Tally.gone}")
+}
+BEANS
+    ./build/beansc build --emit ir "$tmp/$1.b" >/dev/null 2>&1
+    clang -O1 -pthread -DBEANS_ARC_STATS -DBEANS_FIBER_UNWIND=1 \
+        -fexceptions -funwind-tables -Wno-override-module \
+        "build/$1.ll" build/beans_rt.c -lm -o "$tmp/$1"
+    "$tmp/$1" >"$tmp/$1.out" 2>"$tmp/$1.stats"
+    local allocations frees
+    allocations=$(sed -n 's/.*allocations=\([0-9][0-9]*\).*/\1/p' "$tmp/$1.stats")
+    frees=$(sed -n 's/.* frees=\([0-9][0-9]*\).*/\1/p' "$tmp/$1.stats")
+    if [ -z "$allocations" ] || [ -z "$frees" ]; then
+        echo "no arc stats from the $1 build" >&2
+        cat "$tmp/$1.stats" >&2
+        exit 1
+    fi
+    echo $((allocations - frees))
+}
+cycle_clean=$(cycle_stats cycle_clean "false" "false")
+grep -q '^ok$' "$tmp/cycle_clean.out" || {
+    echo "the control run panicked" >&2
+    cat "$tmp/cycle_clean.out" >&2
+    exit 1
+}
+cycle_bombed() { # <which> <node bomb> <leaf bomb>
+    local which=$1
+    local held
+    held=$(cycle_stats "cycle_$which" "$2" "$3")
+    grep -q '^caught panic$' "$tmp/cycle_$which.out" || {
+        echo "the collector's $which deinit panic was not contained" >&2
+        cat "$tmp/cycle_$which.out" >&2
+        exit 1
+    }
+    local gone
+    gone=$(sed -n 's/^gone=\([0-9][0-9]*\)$/\1/p' "$tmp/cycle_$which.out")
+    if [ -z "$gone" ] || [ "$gone" -lt 256 ]; then
+        echo "the pass stopped at its panicking $which: ${gone:-none} deinits" >&2
+        cat "$tmp/cycle_$which.out" >&2
+        exit 1
+    fi
+    if [ "$held" -gt $((cycle_clean + 2)) ]; then
+        echo "the interrupted collector pass stranded its white set:" \
+             "$held objects held at exit against $cycle_clean for the same" \
+             "program without the $which panic" >&2
+        cat "$tmp/cycle_$which.stats" >&2
+        exit 1
+    fi
+}
+# a member's own deinit body, then the release that drops the holds
+cycle_bombed member "self.id == 41" "false"
+cycle_bombed child "false" "self.id == 41"
 
 echo "checking a child's panic escalating into its parent's unwind is a double panic"
 # issue #44 (B4): the unwind joins an unjoined child through the synthesized
