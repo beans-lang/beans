@@ -1,0 +1,22 @@
+push_and_read len=17 first=0 last=48 sum=408
+drain total=780 len=0
+drain_is_empty total=31 len=0
+index_writes sum=91 at6=36
+interleaved len=30 sum=540 at0=1 at29=30
+broke_out 13
+returned_early 9 -1
+nested len=35 at0=0 at34=64
+iterate_after total=36 again=72
+calls_inside len=33 at32=64
+two_lists a=25 b=25 a24=24 b24=576
+wide_elements len=11 sum=385 y10=100
+float_elements len=13 at12=6
+option_elements len=15 total=56
+byte_elements len=300 at299=48
+reference_elements counters=12 total=66 strings=6 at5=s5
+unserved_operations len=15 at0=0 at13=12
+captured len=9
+push_own_length len=13 at12=24
+prefix_sum at19=190 len=20
+generic_instances ints=21 at20=6 strings=6 at5=y
+built len=21 at20=20

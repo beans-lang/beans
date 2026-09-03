@@ -59,5 +59,9 @@ check_bad test/cases/generic_interfaces_bad.b \
 # a bound pins the argument the same way an implements site does
 check_bad test/cases/generic_interfaces_bad.b \
     "'through_bound' needs P implements main.Producer<int>, got main.BoxOf<string>"
+# and a generic class's bound is checked where the type is named, not left for
+# the backend — the same rule the collections rely on for Order and Clone keys
+check_bad test/cases/generic_interfaces_bad.b \
+    "Keeper needs P implements main.Producer<int>, got main.BoxOf<string>"
 
 echo "ok generic relations: pinned arguments, interface-typed values, kept defaults, bounds, generic bases"

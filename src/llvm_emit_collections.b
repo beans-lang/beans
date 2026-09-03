@@ -490,17 +490,32 @@ partial class LlvmTextEmitter {
         let consumed: bool =
             instruction.consumes.len() == 3 &&
             instruction.consumes[2]
+        // A consumed temporary is the list's once it is in the slot, and not
+        // before: the bounds check above the store can panic, and then the
+        // cleanup pad still owns the value. The hand-off sits between the
+        // store and the release of the element it replaced, whose deinit
+        // can panic too (src/llvm_unwind.b).
+        var handed: string = ""
+        if consumed {
+            handed =
+                self.unwind_temp_clear(
+                    function, instruction.operands[2])
+        }
         let id: int = self.fresh()
         let okay: int = self.fresh()
         let bad: int = self.fresh()
+        let length: LlvmSlotConversion =
+            self.list_header_len(instruction, list)
+        let buffer: LlvmSlotConversion =
+            self.list_header_data(instruction, list)
         var output: string =
-            "  %list.store.len.ptr{id} = getelementptr i8, ptr {list}, i64 8\n  %list.store.len{id} = load i64, ptr %list.store.len.ptr{id}\n  %list.store.ok{id} = icmp ult i64 {index}, %list.store.len{id}\n  br i1 %list.store.ok{id}, label %list.store.have{okay}, label %list.store.bad{bad}\n"
+            "{length.setup}  %list.store.ok{id} = icmp ult i64 {index}, {length.value}\n  br i1 %list.store.ok{id}, label %list.store.have{okay}, label %list.store.bad{bad}\n"
         output =
-            "{output}list.store.bad{bad}:\n  call void @beans_panic_index(i64 {index}, i64 %list.store.len{id}, i64 1, i64 {instruction.line}, i64 {instruction.col})\n  unreachable\n"
+            "{output}list.store.bad{bad}:\n  call void @beans_panic_index(i64 {index}, i64 {length.value}, i64 1, i64 {instruction.line}, i64 {instruction.col})\n  unreachable\n"
         if self.list_element_inline(element) {
             let llvm: string = self.type_text(element)
             output =
-                "{output}list.store.have{okay}:\n  %list.store.data{id} = load ptr, ptr {list}\n  %list.store.slot{id} = getelementptr {llvm}, ptr %list.store.data{id}, i64 {index}\n"
+                "{output}list.store.have{okay}:\n{buffer.setup}  %list.store.slot{id} = getelementptr {llvm}, ptr {buffer.value}, i64 {index}\n"
             if !consumed &&
                self.type_has_owned_refs(element) {
                 output =
@@ -515,12 +530,12 @@ partial class LlvmTextEmitter {
                 let publish: string =
                     self.emit_cc_write(
                         list, element, stored, "list")
-                return "{output}{publish}  {old} = load {llvm}, ptr %list.store.slot{id}\n  store {llvm} {stored}, ptr %list.store.slot{id}\n{release}"
+                return "{output}{publish}  {old} = load {llvm}, ptr %list.store.slot{id}\n  store {llvm} {stored}, ptr %list.store.slot{id}\n{handed}{release}"
             }
             return "{output}  store {llvm} {stored}, ptr %list.store.slot{id}\n"
         }
         output =
-            "{output}list.store.have{okay}:\n  %list.store.data{id} = load ptr, ptr {list}\n  %list.store.slot{id} = getelementptr i64, ptr %list.store.data{id}, i64 {index}\n"
+            "{output}list.store.have{okay}:\n{buffer.setup}  %list.store.slot{id} = getelementptr i64, ptr {buffer.value}, i64 {index}\n"
         if self.type_is_reference(element) {
             // the list owns its element: take the consumed ref or retain a
             // borrowed one, and release what the slot held before
@@ -535,7 +550,7 @@ partial class LlvmTextEmitter {
                 self.emit_cc_write(
                     list, element, stored, "list")
             output =
-                "{output}{publish}  %list.store.old{id} = load i64, ptr %list.store.slot{id}\n  %list.store.old.ptr{id} = inttoptr i64 %list.store.old{id} to ptr\n{converted.setup}  store i64 {converted.value}, ptr %list.store.slot{id}\n  call void @beans_release(ptr %list.store.old.ptr{id})\n"
+                "{output}{publish}  %list.store.old{id} = load i64, ptr %list.store.slot{id}\n  %list.store.old.ptr{id} = inttoptr i64 %list.store.old{id} to ptr\n{converted.setup}  store i64 {converted.value}, ptr %list.store.slot{id}\n{handed}  call void @beans_release(ptr %list.store.old.ptr{id})\n"
             return output
         }
         let converted: LlvmSlotConversion =
@@ -1379,15 +1394,17 @@ partial class LlvmTextEmitter {
             self.value(
                 function, values,
                 receiver_id, instruction)
-        let pointer: int = self.fresh()
         let result: string = "%v{instruction.result}"
-        values[instruction.result] = result
-        let load: string =
-            "  %list.len.ptr{pointer} = getelementptr i8, ptr {receiver}, i64 8\n"
+        let length: LlvmSlotConversion =
+            self.list_header_len(instruction, receiver)
         if empty_check {
-            return "{load}  %list.len.raw{pointer} = load i64, ptr %list.len.ptr{pointer}\n  {result} = icmp eq i64 %list.len.raw{pointer}, 0\n"
+            values[instruction.result] = result
+            return "{length.setup}  {result} = icmp eq i64 {length.value}, 0\n"
         }
-        return "{load}  {result} = load i64, ptr %list.len.ptr{pointer}\n"
+        // The length is already an SSA value — naming it again would only
+        // add a copy for the optimizer to fold back out.
+        values[instruction.result] = length.value
+        return length.setup
     }
 
     fn emit_list_join(
@@ -1450,10 +1467,24 @@ partial class LlvmTextEmitter {
         }
         if kind < 0 {
             if self.wide_inline_value(element_type) {
-                self.fail(
-                    instruction,
-                    "LLVM emitter does not support joining List<{element}> yet")
-                return ""
+                // One eight-byte slot does not hold a wide value, so the
+                // element reaches the driver by its address instead — the
+                // same way an interpolation of the list renders it. Without
+                // this, `{xs}` printed a List<Point> and xs.join(", ") on the
+                // very same list was refused by the emitter.
+                let wide: string =
+                    self.request_show_wide_step(
+                        element_type)
+                if wide == "" {
+                    self.fail(
+                        instruction,
+                        "LLVM emitter does not support joining List<{element}> yet")
+                    return ""
+                }
+                self.require_declare(
+                    "beans_list_join_wide",
+                    "ptr @beans_list_join_wide(ptr, ptr, ptr)")
+                return "  {result} = call ptr @beans_list_join_wide(ptr {list}, ptr {separator}, ptr @{wide})\n"
             }
             let shown: string =
                 self.request_show(element_type)
@@ -1505,6 +1536,240 @@ partial class LlvmTextEmitter {
         return "  call void @beans_list_reserve(ptr {list}, i64 {capacity}, i64 {instruction.line}, i64 {instruction.col})\n"
     }
 
+    // ---- loop-private list headers (src/mir.b, analyze_list_header_cache) ----
+    //
+    // A loop the MIR pass proved nobody else can reach holds one list's
+    // data, len, cap and change word in entry allocas instead of the heap
+    // object. Nothing captures those addresses, so LLVM promotes all five to
+    // registers and the element store cannot alias them: the fast path of a
+    // push is one store and an add, against the load-store-load-store the
+    // heap object forces.
+    //
+    // The element type is the gate. A list whose elements own references
+    // needs the collector's write barrier on every push, a retain per
+    // element, and a release per element when the list dies — and a frame
+    // that unwinds mid-loop would run that release against a length still
+    // sitting in a register. Ref-free elements have none of those: the
+    // buffer is freed whole, the collector never walks it, and a length the
+    // cache has not written back yet costs nothing on the way out.
+    fn register_list_header(
+        function: MirFunction,
+        instruction: MirInstruction) {
+        let local_id: int =
+            instruction.list_header_local
+        if local_id < 0 ||
+           local_id >= function.locals.len() ||
+           self.list_headers.contains_key(local_id) {
+            return
+        }
+        let local: MirLocal = function.locals[local_id]
+        if self.cell_local(local) { return }
+        let type: HirType = local.type
+        if canonical_hir_name(type.name) != "List" ||
+           type.args.len() != 1 {
+            return
+        }
+        // The cache addresses the list through the local's own slot, so the
+        // local has to have one: a type the prologue declines to allocate
+        // has no `%l<id>` to load from.
+        if self.type_text(type) != "ptr" { return }
+        let element: HirType = type.args[0]
+        if self.type_has_owned_refs(element) ||
+           !self.type_supported(element) {
+            return
+        }
+        let llvm: string = self.type_text(element)
+        if llvm == "" || llvm == "void" { return }
+        let inline: bool =
+            self.list_element_inline(element)
+        if inline {
+            // The mask the list is built with, checked again here: a
+            // non-zero one means the runtime walks the elements and the
+            // collector's write barrier has to run on every push, which
+            // the cached fast path does not emit.
+            if self.pointer_mask_at(element, 0) != 0 {
+                return
+            }
+        } else if !self.slot_compatible(element) ||
+                  self.type_is_reference(element) {
+            return
+        }
+        self.list_headers[local_id] =
+            new LlvmListHeader(
+                self.spill_slot("ptr", "hdr.data"),
+                self.spill_slot("i64", "hdr.len"),
+                self.spill_slot("i64", "hdr.cap"),
+                self.spill_slot("i32", "hdr.count"),
+                self.spill_slot("i32", "hdr.kind"),
+                element, inline, llvm)
+    }
+
+    fn list_header_active(
+        instruction: MirInstruction) -> bool {
+        return instruction.list_header_local >= 0 &&
+               self.list_headers.contains_key(
+                   instruction.list_header_local)
+    }
+
+    // Fill every slot from the object. Emitted on each edge into the loop,
+    // and again behind the runtime's grow path, which is the one place the
+    // object moves under the cache.
+    fn emit_list_header_load(
+        cache: LlvmListHeader,
+        list: string) -> string {
+        let id: int = self.fresh()
+        return "  %hdr.in.data{id} = load ptr, ptr {list}\n  store ptr %hdr.in.data{id}, ptr {cache.data}\n  %hdr.in.len.ptr{id} = getelementptr i8, ptr {list}, i64 8\n  %hdr.in.len{id} = load i64, ptr %hdr.in.len.ptr{id}\n  store i64 %hdr.in.len{id}, ptr {cache.len}\n  %hdr.in.cap.ptr{id} = getelementptr i8, ptr {list}, i64 16\n  %hdr.in.cap{id} = load i64, ptr %hdr.in.cap.ptr{id}\n  store i64 %hdr.in.cap{id}, ptr {cache.cap}\n  %hdr.in.cnt.ptr{id} = getelementptr i8, ptr {list}, i64 40\n  %hdr.in.cnt{id} = load i32, ptr %hdr.in.cnt.ptr{id}\n  store i32 %hdr.in.cnt{id}, ptr {cache.count}\n  %hdr.in.kind.ptr{id} = getelementptr i8, ptr {list}, i64 44\n  %hdr.in.kind{id} = load i32, ptr %hdr.in.kind.ptr{id}\n  store i32 %hdr.in.kind{id}, ptr {cache.kind}\n"
+    }
+
+    // Publish what the cache owns: the length and the change word. `data`
+    // and `cap` are never written here — only the runtime moves them, and
+    // emit_list_header_load reads all five back behind every such call.
+    fn emit_list_header_store(
+        cache: LlvmListHeader,
+        list: string) -> string {
+        let id: int = self.fresh()
+        return "  %hdr.out.len{id} = load i64, ptr {cache.len}\n  %hdr.out.len.ptr{id} = getelementptr i8, ptr {list}, i64 8\n  store i64 %hdr.out.len{id}, ptr %hdr.out.len.ptr{id}\n  %hdr.out.cnt{id} = load i32, ptr {cache.count}\n  %hdr.out.cnt.ptr{id} = getelementptr i8, ptr {list}, i64 40\n  store i32 %hdr.out.cnt{id}, ptr %hdr.out.cnt.ptr{id}\n  %hdr.out.kind{id} = load i32, ptr {cache.kind}\n  %hdr.out.kind.ptr{id} = getelementptr i8, ptr {list}, i64 44\n  store i32 %hdr.out.kind{id}, ptr %hdr.out.kind.ptr{id}\n"
+    }
+
+    fn emit_list_header_open(
+        instruction: MirInstruction) -> string {
+        if !self.list_header_active(instruction) {
+            return ""
+        }
+        let local: int = instruction.list_header_local
+        let id: int = self.fresh()
+        return "  %hdr.open{id} = load ptr, ptr %l{local}\n{self.emit_list_header_load(self.list_headers[local], "%hdr.open{id}")}"
+    }
+
+    // The write-back on an edge leaving the loop (src/llvm_emit_memory.b).
+    fn emit_list_header_flush(local: int) -> string {
+        if !self.list_headers.contains_key(local) {
+            return ""
+        }
+        let id: int = self.fresh()
+        return "  %hdr.exit{id} = load ptr, ptr %l{local}\n{self.emit_list_header_store(self.list_headers[local], "%hdr.exit{id}")}"
+    }
+
+    // The four accessors every list operation that touches the header goes
+    // through. Off the cache they read and write the object exactly as they
+    // always did, so a call site needs no branch of its own.
+    fn list_header_len(
+        instruction: MirInstruction,
+        list: string) -> LlvmSlotConversion {
+        let id: int = self.fresh()
+        if self.list_header_active(instruction) {
+            let cache: LlvmListHeader =
+                self.list_headers[
+                    instruction.list_header_local]
+            return new LlvmSlotConversion(
+                "  %hdr.len{id} = load i64, ptr {cache.len}\n",
+                "%hdr.len{id}")
+        }
+        return new LlvmSlotConversion(
+            "  %hdr.heap.len.ptr{id} = getelementptr i8, ptr {list}, i64 8\n  %hdr.heap.len{id} = load i64, ptr %hdr.heap.len.ptr{id}\n",
+            "%hdr.heap.len{id}")
+    }
+
+    fn list_header_data(
+        instruction: MirInstruction,
+        list: string) -> LlvmSlotConversion {
+        let id: int = self.fresh()
+        if self.list_header_active(instruction) {
+            let cache: LlvmListHeader =
+                self.list_headers[
+                    instruction.list_header_local]
+            return new LlvmSlotConversion(
+                "  %hdr.data{id} = load ptr, ptr {cache.data}\n",
+                "%hdr.data{id}")
+        }
+        return new LlvmSlotConversion(
+            "  %hdr.heap.data{id} = load ptr, ptr {list}\n",
+            "%hdr.heap.data{id}")
+    }
+
+    fn list_header_set_len(
+        instruction: MirInstruction,
+        list: string, value: string) -> string {
+        if self.list_header_active(instruction) {
+            let cache: LlvmListHeader =
+                self.list_headers[
+                    instruction.list_header_local]
+            return "  store i64 {value}, ptr {cache.len}\n"
+        }
+        let id: int = self.fresh()
+        return "  %hdr.heap.setlen.ptr{id} = getelementptr i8, ptr {list}, i64 8\n  store i64 {value}, ptr %hdr.heap.setlen.ptr{id}\n"
+    }
+
+    // A structural change has to move the word at offset 40 that every list
+    // loop compares: the count there and the operation that wrote it at 44
+    // (runtime/beans_rt.c pins both offsets and both codes with a
+    // _Static_assert). Off the cache it is two narrow stores after one
+    // narrow load, deliberately — folding the halves into one integer costs
+    // a read-modify-write, and this is inlined into every drain loop a
+    // program writes. On the cache the count is a register the loop carries
+    // and the operation a constant store LLVM sinks out of the loop, which
+    // is what lets a drain whose body is a reduction vectorize again.
+    fn list_header_note_change(
+        instruction: MirInstruction,
+        list: string, kind: int) -> string {
+        let id: int = self.fresh()
+        if self.list_header_active(instruction) {
+            let cache: LlvmListHeader =
+                self.list_headers[
+                    instruction.list_header_local]
+            return "  %hdr.cnt{id} = load i32, ptr {cache.count}\n  %hdr.cnt.next{id} = add i32 %hdr.cnt{id}, 1\n  store i32 %hdr.cnt.next{id}, ptr {cache.count}\n  store i32 {kind}, ptr {cache.kind}\n"
+        }
+        return "  %hdr.heap.cnt.ptr{id} = getelementptr i8, ptr {list}, i64 40\n  %hdr.heap.cnt{id} = load i32, ptr %hdr.heap.cnt.ptr{id}\n  %hdr.heap.cnt.next{id} = add i32 %hdr.heap.cnt{id}, 1\n  store i32 %hdr.heap.cnt.next{id}, ptr %hdr.heap.cnt.ptr{id}\n  %hdr.heap.kind.ptr{id} = getelementptr i8, ptr {list}, i64 44\n  store i32 {kind}, ptr %hdr.heap.kind.ptr{id}\n"
+    }
+
+    // push against a cached header: compare the two registers, store the
+    // element, and carry the new length on. Only a full list calls the
+    // runtime, and that path publishes the header first and reads all five
+    // slots back after, because growth reallocates the buffer.
+    fn emit_list_header_push(
+        instruction: MirInstruction,
+        list: string, item: string) -> string {
+        let cache: LlvmListHeader =
+            self.list_headers[
+                instruction.list_header_local]
+        let id: int = self.fresh()
+        let fast: int = self.fresh()
+        let grow: int = self.fresh()
+        let done: int = self.fresh()
+        var output: string =
+            "  %hdr.push.len{id} = load i64, ptr {cache.len}\n  %hdr.push.cap{id} = load i64, ptr {cache.cap}\n  %hdr.push.room{id} = icmp slt i64 %hdr.push.len{id}, %hdr.push.cap{id}\n  br i1 %hdr.push.room{id}, label %hdr.push.fast{fast}, label %hdr.push.grow{grow}\n"
+        output =
+            "{output}hdr.push.fast{fast}:\n  %hdr.push.data{id} = load ptr, ptr {cache.data}\n"
+        if cache.inline {
+            output =
+                "{output}  %hdr.push.slot{id} = getelementptr {cache.llvm}, ptr %hdr.push.data{id}, i64 %hdr.push.len{id}\n  store {cache.llvm} {item}, ptr %hdr.push.slot{id}\n"
+        } else {
+            let converted: LlvmSlotConversion =
+                self.to_slot(
+                    cache.element, item, "hdr.push")
+            output =
+                "{output}{converted.setup}  %hdr.push.slot{id} = getelementptr i64, ptr %hdr.push.data{id}, i64 %hdr.push.len{id}\n  store i64 {converted.value}, ptr %hdr.push.slot{id}\n"
+        }
+        output =
+            "{output}  %hdr.push.next{id} = add i64 %hdr.push.len{id}, 1\n  store i64 %hdr.push.next{id}, ptr {cache.len}\n{self.list_header_note_change(instruction, list, 1)}  br label %hdr.push.done{done}\n"
+        output =
+            "{output}hdr.push.grow{grow}:\n{self.emit_list_header_store(cache, list)}"
+        if cache.inline {
+            let slot: string =
+                self.spill_slot(
+                    cache.llvm, "hdr.push.wide")
+            output =
+                "{output}  store {cache.llvm} {item}, ptr {slot}\n  call void @beans_list_push_typed(ptr {list}, ptr {slot})\n"
+        } else {
+            let converted: LlvmSlotConversion =
+                self.to_slot(
+                    cache.element, item, "hdr.grow")
+            output =
+                "{output}{converted.setup}  call void @beans_list_push(ptr {list}, i64 {converted.value})\n"
+        }
+        return "{output}{self.emit_list_header_load(cache, list)}  br label %hdr.push.done{done}\nhdr.push.done{done}:\n"
+    }
+
     fn emit_list_push(
         function: MirFunction,
         instruction: MirInstruction,
@@ -1538,6 +1803,10 @@ partial class LlvmTextEmitter {
                 instruction.operands[1],
                 instruction)
         let element: HirType = list_type.args[0]
+        if self.list_header_active(instruction) {
+            return self.emit_list_header_push(
+                instruction, list, item)
+        }
         if self.list_element_inline(element) {
             let llvm: string = self.type_text(element)
             let consumed: bool =
@@ -1733,10 +2002,14 @@ partial class LlvmTextEmitter {
                     "LLVM emitter does not support List.pop on '{render_hir_type(element)}' yet")
                 return ""
             }
+            let length: LlvmSlotConversion =
+                self.list_header_len(instruction, list)
+            let buffer: LlvmSlotConversion =
+                self.list_header_data(instruction, list)
             var output: string =
-                "  %list.pop.len.ptr{id} = getelementptr i8, ptr {list}, i64 8\n  %list.pop.len{id} = load i64, ptr %list.pop.len.ptr{id}\n  %list.pop.has{id} = icmp sgt i64 %list.pop.len{id}, 0\n  br i1 %list.pop.has{id}, label %list.pop.some{some_block}, label %list.pop.none{none_block}\n"
+                "{length.setup}  %list.pop.has{id} = icmp sgt i64 {length.value}, 0\n  br i1 %list.pop.has{id}, label %list.pop.some{some_block}, label %list.pop.none{none_block}\n"
             output =
-                "{output}list.pop.some{some_block}:\n  %list.pop.index{id} = sub i64 %list.pop.len{id}, 1\n  store i64 %list.pop.index{id}, ptr %list.pop.len.ptr{id}\n  %list.pop.data{id} = load ptr, ptr {list}\n  %list.pop.slot{id} = getelementptr {llvm}, ptr %list.pop.data{id}, i64 %list.pop.index{id}\n  %list.pop.value{id} = load {llvm}, ptr %list.pop.slot{id}\n"
+                "{output}list.pop.some{some_block}:\n  %list.pop.index{id} = sub i64 {length.value}, 1\n{self.list_header_set_len(instruction, list, "%list.pop.index{id}")}{self.list_header_note_change(instruction, list, 2)}{buffer.setup}  %list.pop.slot{id} = getelementptr {llvm}, ptr {buffer.value}, i64 %list.pop.index{id}\n  %list.pop.value{id} = load {llvm}, ptr %list.pop.slot{id}\n"
             let payload: int = self.fresh()
             let some: int = self.fresh()
             output =
@@ -1748,10 +2021,14 @@ partial class LlvmTextEmitter {
             values[instruction.result] = result
             return move output
         }
+        let length: LlvmSlotConversion =
+            self.list_header_len(instruction, list)
+        let buffer: LlvmSlotConversion =
+            self.list_header_data(instruction, list)
         var output: string =
-            "  %list.pop.len.ptr{id} = getelementptr i8, ptr {list}, i64 8\n  %list.pop.len{id} = load i64, ptr %list.pop.len.ptr{id}\n  %list.pop.has{id} = icmp sgt i64 %list.pop.len{id}, 0\n  br i1 %list.pop.has{id}, label %list.pop.some{some_block}, label %list.pop.none{none_block}\n"
+            "{length.setup}  %list.pop.has{id} = icmp sgt i64 {length.value}, 0\n  br i1 %list.pop.has{id}, label %list.pop.some{some_block}, label %list.pop.none{none_block}\n"
         output =
-            "{output}list.pop.some{some_block}:\n  %list.pop.index{id} = sub i64 %list.pop.len{id}, 1\n  store i64 %list.pop.index{id}, ptr %list.pop.len.ptr{id}\n  %list.pop.data.ptr{id} = getelementptr i8, ptr {list}, i64 0\n  %list.pop.data{id} = load ptr, ptr %list.pop.data.ptr{id}\n  %list.pop.slot{id} = getelementptr i64, ptr %list.pop.data{id}, i64 %list.pop.index{id}\n  %list.pop.raw{id} = load i64, ptr %list.pop.slot{id}\n"
+            "{output}list.pop.some{some_block}:\n  %list.pop.index{id} = sub i64 {length.value}, 1\n{self.list_header_set_len(instruction, list, "%list.pop.index{id}")}{self.list_header_note_change(instruction, list, 2)}{buffer.setup}  %list.pop.slot{id} = getelementptr i64, ptr {buffer.value}, i64 %list.pop.index{id}\n  %list.pop.raw{id} = load i64, ptr %list.pop.slot{id}\n"
         let converted: LlvmSlotConversion =
             self.from_slot(
                 element, "%list.pop.raw{id}",
@@ -2703,7 +2980,16 @@ partial class LlvmTextEmitter {
             }
             let old: string =
                 "%array.assign.old{id}"
-            return "{output}  {old} = load {element_llvm}, ptr %field.assign.ptr{address}\n  store {element_llvm} {stored}, ptr %field.assign.ptr{address}\n{self.emit_arc_value(element, old, false)}"
+            // as in a list store: the value is the array's once it is in
+            // the slot, after the bounds check and before the release of
+            // the element it replaced (src/llvm_unwind.b)
+            var handed: string = ""
+            if consumed {
+                handed =
+                    self.unwind_temp_clear(
+                        function, instruction.operands[2])
+            }
+            return "{output}  {old} = load {element_llvm}, ptr %field.assign.ptr{address}\n  store {element_llvm} {stored}, ptr %field.assign.ptr{address}\n{handed}{self.emit_arc_value(element, old, false)}"
         }
         return "{output}  store {element_llvm} {stored}, ptr %field.assign.ptr{address}\n"
     }
@@ -2874,24 +3160,28 @@ partial class LlvmTextEmitter {
         let id: int = self.fresh()
         let okay: int = self.fresh()
         let bad: int = self.fresh()
-        let data_pointer: int = self.fresh()
-        let data: int = self.fresh()
         let slot_pointer: int = self.fresh()
         let raw: int = self.fresh()
         let result: string = "%v{instruction.result}"
+        let length: LlvmSlotConversion =
+            self.list_header_len(
+                instruction, collection)
+        let buffer: LlvmSlotConversion =
+            self.list_header_data(
+                instruction, collection)
         var output: string =
-            "  %list.index.len.ptr{id} = getelementptr i8, ptr {collection}, i64 8\n  %list.index.len{id} = load i64, ptr %list.index.len.ptr{id}\n  %list.index.ok{id} = icmp ult i64 {index}, %list.index.len{id}\n  br i1 %list.index.ok{id}, label %list.index.have{okay}, label %list.index.bad{bad}\n"
+            "{length.setup}  %list.index.ok{id} = icmp ult i64 {index}, {length.value}\n  br i1 %list.index.ok{id}, label %list.index.have{okay}, label %list.index.bad{bad}\n"
         output =
-            "{output}list.index.bad{bad}:\n  call void @beans_panic_index(i64 {index}, i64 %list.index.len{id}, i64 1, i64 {instruction.line}, i64 {instruction.col})\n  unreachable\n"
+            "{output}list.index.bad{bad}:\n  call void @beans_panic_index(i64 {index}, i64 {length.value}, i64 1, i64 {instruction.line}, i64 {instruction.col})\n  unreachable\n"
         if self.list_element_inline(element) {
             let llvm: string = self.type_text(element)
             output =
-                "{output}list.index.have{okay}:\n  %list.data{data} = load ptr, ptr {collection}\n  %list.slot{slot_pointer} = getelementptr {llvm}, ptr %list.data{data}, i64 {index}\n  {result} = load {llvm}, ptr %list.slot{slot_pointer}\n"
+                "{output}list.index.have{okay}:\n{buffer.setup}  %list.slot{slot_pointer} = getelementptr {llvm}, ptr {buffer.value}, i64 {index}\n  {result} = load {llvm}, ptr %list.slot{slot_pointer}\n"
             values[instruction.result] = result
             return output
         }
         output =
-            "{output}list.index.have{okay}:\n  %list.data.ptr{data_pointer} = getelementptr i8, ptr {collection}, i64 0\n  %list.data{data} = load ptr, ptr %list.data.ptr{data_pointer}\n  %list.slot{slot_pointer} = getelementptr i64, ptr %list.data{data}, i64 {index}\n  %list.raw{raw} = load i64, ptr %list.slot{slot_pointer}\n"
+            "{output}list.index.have{okay}:\n{buffer.setup}  %list.slot{slot_pointer} = getelementptr i64, ptr {buffer.value}, i64 {index}\n  %list.raw{raw} = load i64, ptr %list.slot{slot_pointer}\n"
         let converted: LlvmSlotConversion =
             self.from_slot(
                 element, "%list.raw{raw}",
@@ -2936,6 +3226,46 @@ partial class LlvmTextEmitter {
         return ""
     }
 
+    // A list loop reads the list itself, so it has to notice the list being
+    // rebuilt underneath it. Both list iterators record the list's change word
+    // and the length it carried when the loop started; `iterate_next` compares
+    // the word before it reads anything else. The word at offset 40 is the
+    // change count and the operation that wrote it, side by side, so either
+    // moving invalidates the loop; offset 8 is the length. Both offsets are
+    // pinned by _Static_asserts in runtime/beans_rt.c.
+    fn emit_list_iter_snapshot(
+        instruction: MirInstruction,
+        collection: string) -> string {
+        let version: string =
+            self.spill_slot("i64", "iter.list.version")
+        let length: string =
+            self.spill_slot("i64", "iter.list.length")
+        self.iterator_list_version[instruction.result] = version
+        self.iterator_list_length[instruction.result] = length
+        let id: int = self.fresh()
+        return "  %iter.list.version.ptr{id} = getelementptr i8, ptr {collection}, i64 40\n  %iter.list.version0{id} = load i64, ptr %iter.list.version.ptr{id}\n  store i64 %iter.list.version0{id}, ptr {version}\n  %iter.list.length.ptr{id} = getelementptr i8, ptr {collection}, i64 8\n  %iter.list.length0{id} = load i64, ptr %iter.list.length.ptr{id}\n  store i64 %iter.list.length0{id}, ptr {length}\n"
+    }
+
+    fn emit_list_iter_guard(
+        instruction: MirInstruction,
+        iterator: int) -> string {
+        if !self.iterator_list_version.contains_key(iterator) ||
+           !self.iterator_list_length.contains_key(iterator) ||
+           !self.iterator_collection.contains_key(iterator) {
+            self.fail(
+                instruction,
+                "LLVM emitter cannot find the list iterator's change count")
+            return ""
+        }
+        let collection: string =
+            self.iterator_collection[iterator]
+        self.require_declare(
+            "beans_list_iter_invalid",
+            "void @beans_list_iter_invalid(ptr, i64, i64, i64)")
+        let id: int = self.fresh()
+        return "  %iter.list.now.ptr{id} = getelementptr i8, ptr {collection}, i64 40\n  %iter.list.now{id} = load i64, ptr %iter.list.now.ptr{id}\n  %iter.list.was{id} = load i64, ptr {self.iterator_list_version[iterator]}\n  %iter.list.stale{id} = icmp ne i64 %iter.list.now{id}, %iter.list.was{id}\n  br i1 %iter.list.stale{id}, label %iter.list.changed{id}, label %iter.list.same{id}\niter.list.changed{id}:\n  %iter.list.len0{id} = load i64, ptr {self.iterator_list_length[iterator]}\n  call void @beans_list_iter_invalid(ptr {collection}, i64 %iter.list.len0{id}, i64 {instruction.line}, i64 {instruction.col})\n  unreachable\niter.list.same{id}:\n"
+    }
+
     fn emit_iterate_init(
         function: MirFunction,
         instruction: MirInstruction,
@@ -2967,7 +3297,10 @@ partial class LlvmTextEmitter {
             self.require_declare(
                 "beans_list_slice_check",
                 "void @beans_list_slice_check(ptr, i64, i64, i64, i64)")
-            return "  call void @beans_list_slice_check(ptr {collection}, i64 {from}, i64 {to}, i64 {instruction.line}, i64 {instruction.col})\n  store i64 {from}, ptr {current}\n  store i64 {to}, ptr {upper}\n"
+            let snapshot: string =
+                self.emit_list_iter_snapshot(
+                    instruction, collection)
+            return "  call void @beans_list_slice_check(ptr {collection}, i64 {from}, i64 {to}, i64 {instruction.line}, i64 {instruction.col})\n  store i64 {from}, ptr {current}\n  store i64 {to}, ptr {upper}\n{snapshot}"
         }
         if instruction.operands.len() != 1 {
             self.fail(
@@ -3116,7 +3449,10 @@ partial class LlvmTextEmitter {
             self.iterator_collection_borrowed[
                 instruction.result] = true
         }
-        return "  store i64 0, ptr {current}\n"
+        let snapshot: string =
+            self.emit_list_iter_snapshot(
+                instruction, collection)
+        return "  store i64 0, ptr {current}\n{snapshot}"
     }
 
     fn emit_iterate_next(
@@ -3138,6 +3474,9 @@ partial class LlvmTextEmitter {
             return ""
         }
         if self.iterator_kind[iterator] == "list" {
+            let guard: string =
+                self.emit_list_iter_guard(
+                    instruction, iterator)
             let id: int = self.fresh()
             let index: string = "%iter.index{id}"
             let length_pointer: string =
@@ -3146,13 +3485,16 @@ partial class LlvmTextEmitter {
             let result: string =
                 "%v{instruction.result}"
             values[instruction.result] = result
-            return "  {index} = load i64, ptr {self.iterator_current[iterator]}\n  {length_pointer} = getelementptr i8, ptr {self.iterator_collection[iterator]}, i64 8\n  {length} = load i64, ptr {length_pointer}\n  {result} = icmp slt i64 {index}, {length}\n"
+            return "{guard}  {index} = load i64, ptr {self.iterator_current[iterator]}\n  {length_pointer} = getelementptr i8, ptr {self.iterator_collection[iterator]}, i64 8\n  {length} = load i64, ptr {length_pointer}\n  {result} = icmp slt i64 {index}, {length}\n"
         }
         if self.iterator_kind[iterator] == "list_slice" {
+            let guard: string =
+                self.emit_list_iter_guard(
+                    instruction, iterator)
             let id: int = self.fresh()
             let result: string = "%v{instruction.result}"
             values[instruction.result] = result
-            return "  %iter.slice.index{id} = load i64, ptr {self.iterator_current[iterator]}\n  %iter.slice.upper{id} = load i64, ptr {self.iterator_upper[iterator]}\n  {result} = icmp slt i64 %iter.slice.index{id}, %iter.slice.upper{id}\n"
+            return "{guard}  %iter.slice.index{id} = load i64, ptr {self.iterator_current[iterator]}\n  %iter.slice.upper{id} = load i64, ptr {self.iterator_upper[iterator]}\n  {result} = icmp slt i64 %iter.slice.index{id}, %iter.slice.upper{id}\n"
         }
         if self.iterator_kind[iterator] == "array" {
             let id: int = self.fresh()

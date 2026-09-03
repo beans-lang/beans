@@ -724,6 +724,12 @@ class NativeBuildDriver {
     log_enabled: bool
     net_features: List<string>
     csrc_sources: List<CsrcUnit>
+    // Does the emitted module carry the controlled unwind (src/llvm_unwind.b)?
+    // The runtime half has to agree with the backend half — a runtime that
+    // starts an unwind through frames with no cleanup pads would walk to the
+    // end of the fiber's stack — so both read the one answer the emitter
+    // computed.
+    unwind: bool
     errors: List<Diagnostic>
 
     fn init(target: TargetDescription,
@@ -740,7 +746,8 @@ class NativeBuildDriver {
             move encoding_features: List<string>,
             log_enabled: bool,
             move net_features: List<string>,
-            move csrc_sources: List<CsrcUnit>) {
+            move csrc_sources: List<CsrcUnit>,
+            unwind: bool) {
         self.target = target
         self.cpu = cpu
         self.runtime_profile = runtime_profile
@@ -761,6 +768,10 @@ class NativeBuildDriver {
         self.log_enabled = log_enabled
         self.net_features = move net_features
         self.csrc_sources = move csrc_sources
+        // A profile without fibers has no contained panic to unwind from, and
+        // no beans_fiber_* to link against.
+        self.unwind =
+            unwind && runtime_profile != "freestanding"
         self.errors = []
     }
 
@@ -1061,6 +1072,28 @@ class NativeBuildDriver {
                 } else {
                     "-DBEANS_RT_DECIMAL=0"
                 })
+        }
+        if self.unwind {
+            // The unwinder steps through every frame between the failure and
+            // the fiber's entry, C frames of the runtime and of a package's
+            // own sources included, and it can only step through a frame that
+            // has an unwind table. Clang already defaults to one on the
+            // targets supports_unwind allows; asking makes it the build's
+            // decision rather than the driver default's.
+            command.arg("-funwind-tables")
+            if runtime_source {
+                command.arg("-DBEANS_FIBER_UNWIND=1")
+                // The runtime frames that host Beans callbacks carry
+                // __attribute__((cleanup)) guards for their scratch and for
+                // the collection they are mutating (issue #73). C cleanups
+                // only run during an unwind when the frame has exception
+                // handling, which for C is -fexceptions — the same pairing
+                // glibc uses for pthread cleanup handlers. Only the runtime
+                // unit needs it, and the runtime object cache keys on
+                // self.unwind, so an unwinding and a non-unwinding build
+                // can never share this object.
+                command.arg("-fexceptions")
+            }
         }
         command.arg("-Wno-override-module")
         if pic {
@@ -1665,13 +1698,18 @@ class NativeBuildDriver {
 
     fn runtime_cache_path(runtime: string,
                           pic: bool) -> string {
-        var source: string = ""
-        match fs.read(runtime) {
-            ok(text) => { source = text }
-            err(_) => {}
-        }
+        // self.unwind flips -DBEANS_FIBER_UNWIND and -funwind-tables, which
+        // change the object with no change to any source. A program that brews
+        // needs the unwinding runtime; without this in the key it would reuse
+        // a non-brewing build's object and its contained panics would abandon
+        // their frames (issue #44). The amalgamated source folds in the
+        // companion units beans_rt.c #includes (beans_fiber.c and its header),
+        // which compile into this one object, so editing them cannot reuse a
+        // stale object either.
+        let source: string =
+            self.runtime_amalgamated_source(runtime)
         let key: string =
-            "{self.target.triple}|{self.cpu}|{self.target.features.join(",")}|{self.runtime_profile}|{self.release}|{self.debug}|{self.lto}|{pic}|{sanitizer_flags().join(" ")}|{source}"
+            "{self.target.triple}|{self.cpu}|{self.target.features.join(",")}|{self.runtime_profile}|{self.release}|{self.debug}|{self.lto}|{pic}|{self.unwind}|{sanitizer_flags().join(" ")}|{source}"
         var hash: int = 0
         for index: int in 0..key.len() {
             hash =
@@ -1683,6 +1721,56 @@ class NativeBuildDriver {
         return path.join(
             "build",
             "beans_rt.{self.target.triple}.{hash}.{extension}")
+    }
+
+    // The runtime is one object built from beans_rt.c, which #includes its
+    // companion units (beans_fiber.c and its header) so they compile into it.
+    // Reading the runtime plus every file it quote-includes from the same
+    // directory gives the cache key the whole content that feeds the object,
+    // so an edit to a companion cannot silently reuse a stale object.
+    fn runtime_amalgamated_source(
+        runtime: string) -> string {
+        var base: string = ""
+        match fs.read(runtime) {
+            ok(text) => { base = text }
+            err(_) => { return "" }
+        }
+        let dir: string = path.parent(runtime)
+        var extra: string = ""
+        var start: int = 0
+        for start < base.len() {
+            var end: int = start
+            for end < base.len() &&
+                base.byte_at(end) != 10 {
+                end += 1
+            }
+            let line: string = base.slice(start, end)
+            var head: int = 0
+            for head < line.len() &&
+                (line.byte_at(head) == 32 ||
+                 line.byte_at(head) == 9) {
+                head += 1
+            }
+            let rest: string = line.slice(head, line.len())
+            if rest.starts_with("#include \"") {
+                let after: string =
+                    rest.slice(10, rest.len())
+                match after.find("\"") {
+                    some(at) => {
+                        let name: string = after.slice(0, at)
+                        match fs.read(path.join(dir, name)) {
+                            ok(text) => {
+                                extra = "{extra}\n// {name}\n{text}"
+                            }
+                            err(_) => {}
+                        }
+                    }
+                    none => {}
+                }
+            }
+            start = end + 1
+        }
+        return "{base}{extra}"
     }
 
     fn cached_runtime_object(compiler: string,

@@ -53,7 +53,7 @@ partial class LlvmTextEmitter {
                     function, instruction, values)
             }
             let text: string =
-                llvm_unquote(instruction.text)
+                string_literal_decode(instruction.text)
             self.selector_texts[
                 instruction.result] = text
             values[instruction.result] =
@@ -192,11 +192,18 @@ partial class LlvmTextEmitter {
             return "  {result} = call i64 @beans_f64_round(double {receiver})\n"
         }
         if instruction.resolved == "f32.round" {
+            // The convert saturates like every other float-to-int step: a bare
+            // fptosi is poison once the rounded value leaves int's range, and
+            // beans_f64_round — the f64 twin, and the interpreter's answer for
+            // both widths — clamps.
             self.require_declare(
                 "llvm.round.f32",
                 "float @llvm.round.f32(float)")
+            self.require_declare(
+                "llvm.fptosi.sat.i64.f32",
+                "i64 @llvm.fptosi.sat.i64.f32(float)")
             values[instruction.result] = result
-            return "  %round.f32{id} = call float @llvm.round.f32(float {receiver})\n  {result} = fptosi float %round.f32{id} to i64\n"
+            return "  %round.f32{id} = call float @llvm.round.f32(float {receiver})\n  {result} = call i64 @llvm.fptosi.sat.i64.f32(float %round.f32{id})\n"
         }
         if instruction.resolved == "f32.abs" {
             self.require_declare(
@@ -1271,6 +1278,43 @@ partial class LlvmTextEmitter {
             }
             return "{output}  {result} = fptrunc double %dec.wide{id} to {target_llvm}\n"
         }
+        // A float that has no value in the target integer type saturates at
+        // that type's own bounds, and NaN is zero (spec/SYNTAX.md, "Number
+        // rules"). A bare fptosi/fptoui is *poison* for exactly those inputs,
+        // so `1e300 as i32` answered a different number on every build — an
+        // address, once the optimizer could see the constant — while the
+        // interpreter answered something else again. The saturating intrinsics
+        // are the rule written down, and they cost one instruction on every
+        // target that has a saturating convert.
+        if llvm_type_is_float(source_type) &&
+           llvm_type_is_integer(target_type) {
+            let bits: int =
+                llvm_integer_bits(target_type)
+            if bits != 8 && bits != 16 &&
+               bits != 32 && bits != 64 {
+                self.fail(
+                    instruction,
+                    "LLVM emitter does not support cast from {render_hir_type(source_type)} to {render_hir_type(target_type)} yet")
+                return ""
+            }
+            let suffix: string =
+                if source_llvm == "float" {
+                    "f32"
+                } else {
+                    "f64"
+                }
+            let intrinsic: string =
+                if llvm_type_is_unsigned(target_type) {
+                    "llvm.fptoui.sat.{target_llvm}.{suffix}"
+                } else {
+                    "llvm.fptosi.sat.{target_llvm}.{suffix}"
+                }
+            self.require_declare(
+                intrinsic,
+                "{target_llvm} @{intrinsic}({source_llvm})")
+            values[instruction.result] = result
+            return "  {result} = call {target_llvm} @{intrinsic}({source_llvm} {source})\n"
+        }
         var opcode: string = ""
         if llvm_type_is_integer(source_type) &&
            llvm_type_is_integer(target_type) {
@@ -1294,14 +1338,6 @@ partial class LlvmTextEmitter {
                     "sitofp"
                 }
         } else if llvm_type_is_float(source_type) &&
-                  llvm_type_is_integer(target_type) {
-            opcode =
-                if llvm_type_is_unsigned(target_type) {
-                    "fptoui"
-                } else {
-                    "fptosi"
-                }
-        } else if llvm_type_is_float(source_type) &&
                   llvm_type_is_float(target_type) {
             opcode =
                 if canonical_hir_name(
@@ -1322,9 +1358,9 @@ partial class LlvmTextEmitter {
     }
 
     // literals, alternatives, inclusive and exclusive ranges, and a
-    // trailing wildcard or binding, tested as a branch chain; the
-    // literal text drops straight into the compare, so nothing is
-    // parsed back into numbers
+    // trailing wildcard or binding, tested as a branch chain. Every
+    // literal is re-rendered as a decimal integer on the way into the
+    // compare (llvm_integer_pattern): LLVM reads no other spelling.
     fn emit_integer_match(
         function: MirFunction,
         block: MirBlock,
@@ -1371,7 +1407,8 @@ partial class LlvmTextEmitter {
             if pattern.starts_with(
                    "pattern_literal:") {
                 let text: string =
-                    pattern.slice(16, pattern.len())
+                    llvm_integer_pattern(
+                        pattern.slice(16, pattern.len()))
                 condition = "%int.match{id}"
                 output =
                     "{output}  {condition} = icmp eq {llvm} {subject}, {text}\n"
@@ -1399,7 +1436,8 @@ partial class LlvmTextEmitter {
                         return ""
                     }
                     let text: string =
-                        piece.slice(16, piece.len())
+                        llvm_integer_pattern(
+                            piece.slice(16, piece.len()))
                     let leg: int = self.fresh()
                     output =
                         "{output}  %int.match.leg{leg} = icmp eq {llvm} {subject}, {text}\n"
@@ -1445,9 +1483,11 @@ partial class LlvmTextEmitter {
                     return ""
                 }
                 let low_text: string =
-                    low.slice(16, low.len())
+                    llvm_integer_pattern(
+                        low.slice(16, low.len()))
                 let high_text: string =
-                    high.slice(16, high.len())
+                    llvm_integer_pattern(
+                        high.slice(16, high.len()))
                 // unsigned subjects need unsigned predicates:
                 // 150u8 sits inside 100..=200 only under uge/ule
                 let is_unsigned: bool =

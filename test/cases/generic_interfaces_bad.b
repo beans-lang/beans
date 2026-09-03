@@ -28,6 +28,15 @@ pub fn through_bound<P implements Producer<int>>(p: P) -> int {
     return p.make()
 }
 
+// a generic *class* pins its parameter's bound too, and it is checked where
+// the type is named — not left for the backend to choke on the body that
+// relies on it
+pub class Keeper<P implements Producer<int>> {
+    pub item: P
+    pub fn init(item: P) { self.item = item }
+    pub fn value() -> int { return self.item.make() }
+}
+
 fn main() {
     // a pinned interface is not the same type at another argument
     let a: Producer<string> = new IntBox()
@@ -36,4 +45,8 @@ fn main() {
     // the bound wants Producer<int>; this one produces strings
     let c: BoxOf<string> = new BoxOf<string>("no")
     io.println("{through_bound<BoxOf<string>>(c)}")
+    // the class bound wants Producer<int>; a string producer is refused at
+    // the type, not at build time
+    let k: Keeper<BoxOf<string>> = new Keeper<BoxOf<string>>(new BoxOf<string>("no"))
+    io.println("{k.value()}")
 }

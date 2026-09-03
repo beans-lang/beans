@@ -26,9 +26,14 @@ partial class LlvmTextEmitter {
     }
 
     fn reflection_annotation_value_text(value: HirNode) -> string {
+        if value.kind == "const" &&
+           value.children.len() == 1 {
+            return self.reflection_annotation_value_text(
+                value.children[0])
+        }
         if value.kind == "literal" {
             if canonical_hir_name(value.type.name) == "string" {
-                return llvm_unquote(value.value)
+                return string_literal_decode(value.value)
             }
             return value.value.replace("_", "")
         }

@@ -24,6 +24,10 @@ fn sem_c_global_id(qualified: string) -> string {
     return "cglobal:{qualified}"
 }
 
+fn sem_const_id(qualified: string) -> string {
+    return "const:{qualified}"
+}
+
 fn sem_annotation_id(qualified: string) -> string {
     return "annotation:{qualified}"
 }

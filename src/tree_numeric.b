@@ -68,6 +68,62 @@ fn tree_integer_unsigned(name: string) -> bool {
            clean == "u32" || clean == "u64"
 }
 
+// A float with no value in the integer type it is cast to saturates at that
+// type's own bounds, and NaN is zero (spec/SYNTAX.md, "Number rules"). The
+// bounds are tested before the host conversion, so the conversion that does
+// run is always in range — the native backend spells the same rule with
+// llvm.fptosi.sat / llvm.fptoui.sat, and both answer the same number.
+//
+// Each guard is exact in a double. The narrow limits are integers a double
+// holds exactly; int.max and u64.max are not, so the guards there are 2^63 and
+// 2^64, the first doubles above them.
+fn tree_float_to_signed(value: float,
+                        bits: int) -> int {
+    if value != value { return 0 }
+    if bits == 8 {
+        if value >= 127.0 { return 127 }
+        if value <= -128.0 { return -128 }
+    } else if bits == 16 {
+        if value >= 32767.0 { return 32767 }
+        if value <= -32768.0 { return -32768 }
+    } else if bits == 32 {
+        if value >= 2147483647.0 {
+            return 2147483647
+        }
+        if value <= -2147483648.0 {
+            return -2147483648
+        }
+    } else {
+        if value >= 9223372036854775808.0 {
+            return 9223372036854775807
+        }
+        if value <= -9223372036854775808.0 {
+            return -9223372036854775808
+        }
+    }
+    return value as int
+}
+
+fn tree_float_to_unsigned(value: float,
+                          bits: int) -> u64 {
+    if value != value { return 0 }
+    if value <= 0.0 { return 0 }
+    if bits == 8 {
+        if value >= 255.0 { return 255 }
+    } else if bits == 16 {
+        if value >= 65535.0 { return 65535 }
+    } else if bits == 32 {
+        if value >= 4294967295.0 {
+            return 4294967295
+        }
+    } else {
+        if value >= 18446744073709551616.0 {
+            return 18446744073709551615
+        }
+    }
+    return value as u64
+}
+
 fn tree_mask_unsigned(value: u64,
                       bits: int) -> u64 {
     if bits >= 64 { return value }
@@ -145,6 +201,23 @@ fn tree_parse_int(source: string) -> int {
                 tree_parse_unsigned(
                     clean.slice(1, clean.len())),
             64)
+    }
+    // `to_int()` answers the nearest representable value rather than an
+    // error when the digits run past i64, so the wrapping branch below is
+    // unreachable through it: "18446744073709551615" comes back as i64's
+    // maximum, not as a failure. A magnitude too large for i64 is therefore
+    // decided from the digits, and its bit pattern is what comes back — a
+    // u64 literal at or above 2^63 is the whole reason this function must
+    // answer bits and not a nearest number.
+    let negative: bool = clean.starts_with("-")
+    let magnitude: string =
+        if negative { clean.slice(1, clean.len()) } else { clean }
+    if !integer_literal_fits(magnitude, "int", negative) {
+        let bits: u64 = tree_parse_unsigned(magnitude)
+        if negative {
+            return tree_signed_from_bits((0 as u64) - bits, 64)
+        }
+        return tree_signed_from_bits(bits, 64)
     }
     match clean.to_int() {
         ok(value) => { return value }

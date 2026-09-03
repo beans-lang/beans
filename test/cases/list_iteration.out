@@ -1,0 +1,82 @@
+ahead n 1: 1
+behind n 1: 1 head 900
+reserve n 1: total 1 len 1
+read n 1: total 8
+other n 1: 1 copy 2
+fields n 1: total 11 first 11
+break n 1: 2 0 2 0 0 1 1
+return n 1: 1
+nested n 1: 1
+slice n 1: 1
+slicechg n 1: 1 xslen 2
+strings n 1: v1
+decimals n 1: total 1 count 1
+ahead n 2: 1,500
+behind n 2: 1,2 head 900
+reserve n 2: total 3 len 2
+read n 2: total 27
+other n 2: 1,2 copy 4
+fields n 2: total 23 first 11
+break n 2: 3 1 3 1 0 2 2
+return n 2: 1
+nested n 2: 9
+slice n 2: 1,2
+slicechg n 2: 1,2 xslen 3
+strings n 2: v1,last
+decimals n 2: total 51.5 count 2
+ahead n 5: 1,2,3,4,500
+behind n 5: 1,2,3,4,5 head 900
+reserve n 5: total 15 len 5
+read n 5: total 150
+other n 5: 1,2,3,4,5 copy 10
+fields n 5: total 65 first 11
+break n 5: 6 4 6 4 0 5 5
+return n 5: 1
+nested n 5: 225
+slice n 5: 1,2,3,4,5
+slicechg n 5: 1,2,3,4,5 xslen 6
+strings n 5: v1,v2,v3,v4,last
+decimals n 5: total 60.5 count 5
+ahead n 40: 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,500
+behind n 40: 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40 head 900
+reserve n 40: total 820 len 40
+read n 40: total 10140
+other n 40: 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40 copy 80
+fields n 40: total 1220 first 11
+break n 40: 41 39 41 39 0 40 40
+return n 40: 1
+nested n 40: 672400
+slice n 40: 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40
+slicechg n 40: 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40 xslen 41
+strings n 40: v1,v2,v3,v4,v5,v6,v7,v8,v9,v10,v11,v12,v13,v14,v15,v16,v17,v18,v19,v20,v21,v22,v23,v24,v25,v26,v27,v28,v29,v30,v31,v32,v33,v34,v35,v36,v37,v38,v39,last
+decimals n 40: total 830.5 count 40
+keys n 0: calls 0 head -1
+deckeys n 0: calls 0 head 0
+structkeys n 0: calls 0 head -1
+keys n 1: calls 1 head 7
+deckeys n 1: calls 1 head 7
+structkeys n 1: calls 1 head 7
+keys n 2: calls 2 head 7
+deckeys n 2: calls 2 head 7
+structkeys n 2: calls 2 head 7
+keys n 3: calls 3 head 7
+deckeys n 3: calls 3 head 7
+structkeys n 3: calls 3 head 7
+keys n 4: calls 4 head 7
+deckeys n 4: calls 4 head 7
+structkeys n 4: calls 4 head 7
+keys n 5: calls 5 head 7
+deckeys n 5: calls 5 head 7
+structkeys n 5: calls 5 head 7
+keys n 8: calls 8 head 7
+deckeys n 8: calls 8 head 7
+structkeys n 8: calls 8 head 7
+keys n 9: calls 9 head 7
+deckeys n 9: calls 9 head 7
+structkeys n 9: calls 9 head 7
+keys n 64: calls 64 head 1
+deckeys n 64: calls 64 head 1
+structkeys n 64: calls 64 head 1
+keys n 65: calls 65 head 1
+deckeys n 65: calls 65 head 1
+structkeys n 65: calls 65 head 1

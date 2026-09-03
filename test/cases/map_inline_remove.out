@@ -1,0 +1,13 @@
+  deinit plain-5 panics
+plain contained: panic
+plain len=11 has=false
+plain get = none
+  deinit ordered-5 panics
+ordered contained: panic
+ordered len=11 has=false
+ordered walk 0,1,2,3,4,6,7,8,9,10,11,
+  deinit wide-5 panics
+wide contained: panic
+wide len=11 has=false
+wide total 61
+still running

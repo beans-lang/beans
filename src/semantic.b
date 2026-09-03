@@ -34,6 +34,7 @@ class SemanticBuilder {
     declarations: Map<string, HirDeclaration>
     functions: Map<string, HirFunction>
     c_globals: Map<string, HirCGlobal>
+    consts: Map<string, HirConst>
     annotations: Map<string, HirAnnotationDeclaration>
     // "{file}:{line}:{col}" -> the checked entity declared there
     function_at: Map<string, HirFunction>
@@ -57,6 +58,7 @@ class SemanticBuilder {
         self.declarations = {}
         self.functions = {}
         self.c_globals = {}
+        self.consts = {}
         self.annotations = {}
         self.function_at = {}
         self.declaration_at = {}
@@ -85,6 +87,9 @@ class SemanticBuilder {
         }
         for global: HirCGlobal in program.c_globals {
             self.c_globals[global.qualified] = global
+        }
+        for constant: HirConst in program.consts {
+            self.consts[constant.qualified] = constant
         }
         for annotation: HirAnnotationDeclaration in
             program.annotation_declarations {
@@ -576,6 +581,9 @@ class SemanticBuilder {
                 if lowered.kind == "c_global" {
                     return sem_c_global_id(lowered.resolved)
                 }
+                if lowered.kind == "const" {
+                    return sem_const_id(lowered.resolved)
+                }
                 if lowered.kind == "variant" &&
                    lowered.resolved != "" {
                     return self.variant_id_from(lowered.resolved)
@@ -652,6 +660,9 @@ class SemanticBuilder {
                 }
                 if lowered.kind == "c_global" {
                     return sem_c_global_id(lowered.resolved)
+                }
+                if lowered.kind == "const" {
+                    return sem_const_id(lowered.resolved)
                 }
             }
             none => {}
@@ -1520,6 +1531,51 @@ class SemanticBuilder {
         }
     }
 
+    fn walk_const(node: AstNode, constant: HirConst) {
+        self.walk_annotations(node)
+        let id: string = sem_const_id(constant.qualified)
+        let entry: SemanticDecl =
+            new SemanticDecl(id, constant.name, "const")
+        entry.container = self.package_path
+        let value: string =
+            if constant.folded {
+                " = {constant.text}"
+            } else {
+                ""
+            }
+        entry.detail =
+            "const {constant.name}: {self.render(constant.type)}{value}"
+        entry.documentation =
+            self.documentation(node, constant.line)
+        entry.package_id = self.package_path
+        entry.type_text = self.render(constant.type)
+        entry.type_id = sem_type_symbol(constant.type)
+        entry.is_public = constant.is_public
+        entry.file = constant.file
+        entry.line = node.line
+        entry.col = node.col
+        entry.name_line = node.name_line
+        entry.name_col = node.name_col
+        entry.name_length = constant.name.len()
+        entry.end_line = node.line
+        entry.end_col = node.col
+        entry.can_rename = true
+        self.add_decl(entry)
+        self.add_package_member(id)
+        self.add_ref(
+            id, node.name_line, node.name_col,
+            constant.name.len(), true, false)
+        for child: AstNode in node.children {
+            if child.kind == "type" ||
+               child.kind == "array_type" ||
+               child.kind == "fn_type" {
+                self.walk_type(child)
+            } else {
+                self.walk_expression(child, none)
+            }
+        }
+    }
+
     fn walk_annotation_declaration(
         node: AstNode,
         annotation: HirAnnotationDeclaration) {
@@ -1622,6 +1678,16 @@ class SemanticBuilder {
                             none => {}
                         }
                     }
+                }
+            } else if node.kind == "const" {
+                for constant: HirConst in self.program.consts {
+                    if constant.file != file.path ||
+                       constant.line != node.line ||
+                       constant.col != node.col {
+                        continue
+                    }
+                    self.walk_const(node, constant)
+                    break
                 }
             } else if node.kind == "c_global" {
                 for global: HirCGlobal in self.program.c_globals {

@@ -95,4 +95,96 @@ fn main() {
     io.println("{optional} {floats} {float_map[0.5]}")
     io.println("{add_cent(money.amount)} {money.tail} {decimals} {decimal_map[2.50]}")
     io.println(ledger)
+    io.println(wide_arms())
+}
+
+// Integer match arms, in every spelling a literal has and on every width.
+// Three ways this used to break, all of them silent on one side:
+//
+//   * the tree interpreter read an unsigned subject through its signed
+//     field, so 255u8 arrived as -1 and matched no literal at all while the
+//     native backend matched it;
+//   * a decimal magnitude past i64 came back from `to_int()` as i64's
+//     maximum instead of as its own bits, so u64 arms above 2^63 matched
+//     each other under the interpreter;
+//   * the emitter dropped the source's own spelling into an `icmp`, and
+//     LLVM reads `0x…` as a hexadecimal *float*, so any hex arm checked and
+//     ran under the interpreter and then failed at build time.
+//
+// Every arm below is on the far side of one of those edges.
+fn u64_arm(value: u64) -> string {
+    return match value {
+        18446744073709551615 => "max",
+        0xFFFFFFFFFFFFFFFE => "max-1",
+        9223372036854775808 => "half",
+        9223372036854775807 => "half-1",
+        1 => "one",
+        _ => "other",
+    }
+}
+
+fn u8_arm(value: u8) -> string {
+    return match value {
+        255 => "dec-max",
+        0xFE => "hex-max-1",
+        0x80 => "hex-half",
+        0b0111_1111 => "bin-half-1",
+        _ => "other",
+    }
+}
+
+fn u16_arm(value: u16) -> string {
+    return match value {
+        0xFFFF => "max",
+        0xFF00 | 0b1000_0000_0000_0000 => "alt",
+        0xFF01..=0xFFFE => "range",
+        _ => "other",
+    }
+}
+
+fn i8_arm(value: i8) -> string {
+    return match value {
+        -128 => "min",
+        127 => "max",
+        -0x01 => "neg-one",
+        _ => "other",
+    }
+}
+
+// `bool` is an integer type to the emitter, so a bool arm walks the same
+// path as an integer one and its patterns are already the constants LLVM
+// wants. Re-rendering them as numbers made every arm compare against 0, and
+// a match with no arm left reaches an `unreachable`.
+fn bool_arm(value: bool) -> string {
+    return match value {
+        true => "yes",
+        false => "no",
+    }
+}
+
+fn wide_arms() -> string {
+    var parts: List<string> = []
+    parts.push(u64_arm(18446744073709551615))
+    parts.push(u64_arm(18446744073709551614))
+    parts.push(u64_arm(9223372036854775808))
+    parts.push(u64_arm(9223372036854775807))
+    parts.push(u64_arm(1))
+    parts.push(u64_arm(12345))
+    parts.push(u8_arm(255))
+    parts.push(u8_arm(254))
+    parts.push(u8_arm(128))
+    parts.push(u8_arm(127))
+    parts.push(u8_arm(3))
+    parts.push(u16_arm(65535))
+    parts.push(u16_arm(65280))
+    parts.push(u16_arm(32768))
+    parts.push(u16_arm(65534))
+    parts.push(u16_arm(7))
+    parts.push(i8_arm(-128))
+    parts.push(i8_arm(127))
+    parts.push(i8_arm(-1))
+    parts.push(i8_arm(5))
+    parts.push(bool_arm(true))
+    parts.push(bool_arm(false))
+    return parts.join(" ")
 }

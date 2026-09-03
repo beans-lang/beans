@@ -68,6 +68,20 @@ run_asan examples/box.b box
 run_asan examples/arena.b arena
 run_asan examples/containers.b containers 3
 run_asan test/cases/map_models.b map_models
+run_asan test/cases/collections_leakcheck.b collections_leakcheck
+run_asan test/cases/collections_models.b collections_models
+run_asan test/cases/calendar_basics.b calendar_basics
+# A `for` loop over a List reads the list's own buffer, one element at a time,
+# and refuses a structural change to it. That is where a use-after-free would
+# live: the allowed cases push past the list's first reallocation while a loop
+# holds it (reserve(4096) mid-loop, n = 40), the mutation case panics out of a
+# loop whose buffer just moved, and the slice case reads borrowed memory live.
+run_asan test/cases/list_iteration.b list_iteration
+run_asan test/cases/list_iteration_mutation.b list_iteration_mutation 3
+run_asan test/cases/slice_live_iteration.b slice_live_iteration
+# #60: a pattern-bound node dropped on an early return must be released; under
+# ASan on Linux a missed release is an LSan report and a non-zero exit.
+run_asan test/cases/unlink_leak.b unlink_leak
 run_asan examples/shared_weak.b shared_weak
 run_asan examples/unsafe_raw.b unsafe_raw
 run_asan examples/simd.b simd
@@ -153,6 +167,25 @@ run_bridge_asan() {
     fi
     echo "ASan/UBSan ok native bridge in $file"
 }
+
+# A contained panic (issue #44) must reclaim everything the fiber owned on the
+# way out — the unwind pad drops each owned local, each in-flight temporary
+# and each half-built object exactly once. Two hundred rounds of three
+# contained panics, each holding a 64 KiB buffer (in a local behind an armed
+# defer, in a temporary argument, and inside an object whose init panicked),
+# under ASan/UBSan through the real driver (which compiles beans_fiber.c): a
+# missed or doubled drop is a heap error here, and the leaks sweep below
+# proves the same run reclaims every byte.
+run_bridge_asan test/cases/brew_unwind_leak.b brew_unwind_leak \
+    'contained 600 panics'
+
+# A contained panic unwinding through a runtime frame frees the frame's
+# scratch and leaves the collection it was permuting as it was (issue #73):
+# every sort variant's merge/radix buffers, a key function panicking first,
+# mid and last, and a reflective call past its stack arity, one hundred
+# rounds each. The marker line also asserts the lists were restored.
+run_bridge_asan test/cases/sort_unwind_leak.b sort_unwind_leak \
+    'sorted under panic 900'
 
 run_bridge_asan test/cases/sock_fuzz.b sockx 'ok sock_fuzz' 1 120
 run_bridge_asan test/cases/http_fuzz.b h1 'ok http_fuzz' 1 80
@@ -327,15 +360,24 @@ fi
 echo "ASan/UBSan/TSan checking stored C callbacks"
 BEANS_SANITIZE_CALLBACKS=1 bash ./test/stored_callbacks.sh
 
+# collections_models.b removes from an owned AVL tree. It was excluded from
+# every sanitizer here while that leaked in the native ARC codegen (#60);
+# #60 has landed, so it is checked like everything else.
 if [[ "$(uname -s)" == Darwin ]] && command -v leaks >/dev/null 2>&1; then
     for file in bench/trees.b examples/box.b examples/arena.b examples/fmt.b \
+                test/cases/brew_unwind_leak.b \
+                test/cases/sort_unwind_leak.b \
+                test/cases/unlink_leak.b \
                 examples/shared_weak.b examples/inline_results.b examples/wide_lists.b \
                 examples/wide_maps.b examples/wide_enums.b examples/enum_repr.b \
                 examples/wide_owners.b \
                 examples/wide_sync.b examples/wide_concurrency.b \
                 examples/stdlib_beans.b examples/packed.b examples/atomics.b \
                 examples/simd_families.b examples/resources.b \
-                test/cases/map_models.b test/cases/decimal_precision.b \
+                test/cases/map_models.b \
+                test/cases/collections_leakcheck.b test/cases/calendar_basics.b \
+                test/cases/collections_models.b \
+                test/cases/decimal_precision.b \
                 test/cases/reflect_value.b test/cases/reflect_fields.b \
                 test/cases/reflect_calls.b test/cases/reflect_construct.b \
                 test/cases/parity/discard_binding.b \
@@ -351,4 +393,23 @@ if [[ "$(uname -s)" == Darwin ]] && command -v leaks >/dev/null 2>&1; then
         fi
         echo "leaks ok $file"
     done
+    # `leaks` scans every writable mapping, and a finished fiber is pooled
+    # with its stack: a value left in a dead frame's slot is still "reachable"
+    # from that stale stack and never reported. The unwind stress holds every
+    # buffer in exactly such a frame, so its real witness is the resident
+    # set: 600 contained panics that each held (and filled) 64 KiB stand at
+    # 28 MB when the unwind leaks them and under 2 MB when it reclaims them.
+    echo "resident set checking test/cases/brew_unwind_leak.b"
+    rss=$(/usr/bin/time -l "$out/brew_unwind_leak_leaks" 2>&1 >/dev/null \
+        | awk '/maximum resident set size/ { print $1 }')
+    if [[ -z "$rss" ]] || (( rss > 16 * 1024 * 1024 )); then
+        echo "brew_unwind_leak kept ${rss:-?} bytes resident: the unwind is leaking" >&2
+        exit 1
+    fi
+    echo "resident set ok test/cases/brew_unwind_leak.b (${rss} bytes)"
+else
+    # A gate that skips on a missing tool has to say so, or a green run reads
+    # as coverage it does not have. Off macOS the ASan lanes above carry
+    # LeakSanitizer instead, which is where CI checks this.
+    echo "no macOS \`leaks\`; the ASan/LeakSanitizer lanes above cover leaks here"
 fi
