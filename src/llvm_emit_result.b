@@ -1122,6 +1122,44 @@ partial class LlvmTextEmitter {
             values[instruction.result] = subject
             return ""
         }
+        let consumed: bool =
+            instruction.consumes.len() == 1 &&
+            instruction.consumes[0]
+        // A propagating Option carries nothing. `none` is `none` whatever
+        // the two payload types are, so the answer is the *target's* none
+        // and the operand is simply dropped. The Result path below reads an
+        // error payload out of the operand and rewraps it — over an Option
+        // that reads the bytes of a value that has none, which for an
+        // Option<T> whose T is a reference meant loading at offset 8 of a
+        // bare pointer and returning a fresh heap box where a tagged pair
+        // belonged. The module did not verify, so the failure arrived as a
+        // clang error naming a .ll file. The checker never lets an Option
+        // propagate into a Result or the other way, so this is the whole
+        // Option case.
+        if canonical_hir_name(
+               instruction.type.name) == "Option" &&
+           instruction.type.args.len() == 1 {
+            let llvm: string =
+                self.type_text(instruction.type)
+            if llvm == "" {
+                self.fail(
+                    instruction,
+                    "LLVM emitter does not support propagating {render_hir_type(instruction.type)} yet")
+                return ""
+            }
+            values[instruction.result] =
+                if self.type_is_reference(
+                       instruction.type.args[0]) {
+                    "null"
+                } else {
+                    "zeroinitializer"
+                }
+            if consumed {
+                return self.emit_arc_value(
+                    source_type, subject, false)
+            }
+            return ""
+        }
         let error_type: HirType =
             self.result_error_type(source_type)
         if render_hir_type(error_type) !=
@@ -1153,9 +1191,6 @@ partial class LlvmTextEmitter {
         }
         var output: string =
             "{error.setup}{self.emit_arc_value(error_type, error.value, true)}{made}"
-        let consumed: bool =
-            instruction.consumes.len() == 1 &&
-            instruction.consumes[0]
         if consumed {
             output =
                 "{output}{self.emit_arc_value(source_type, subject, false)}"

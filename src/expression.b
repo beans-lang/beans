@@ -412,21 +412,46 @@ class ExpressionChecker {
         self.scopes.pop()
     }
 
+    // `_` in a binding position is a discard, not a name. It never enters
+    // the scope, so any number of them may share one scope and none can be
+    // read back — the notation exists so those names do not have to be
+    // chosen, and a duplicate-name error there is a name the author already
+    // said they were not going to use.
+    //
+    // It still takes a binding id, and therefore a real local in both
+    // backends, because the value it discards still has to be owned: a
+    // discarded `move` parameter or a `let _ = make_bytes()` drops at the
+    // end of its scope exactly like a named binding, once and not twice.
+    // Only the name goes away.
     fn declare(node: AstNode, type: HirType, mutable: bool,
                borrowed: bool, inout_parameter: bool) -> int {
         let at: int = self.scopes.len() - 1
-        if self.scopes[at].bindings.contains_key(node.value) {
+        let discard: bool = is_discard_name(node.value)
+        if !discard &&
+           self.scopes[at].bindings.contains_key(node.value) {
             self.fail(
                 node, "'{node.value}' is already defined in this scope")
             return -1
         }
         let id: int = self.next_binding_id
         self.next_binding_id += 1
+        if discard { return id }
         self.scopes[at].bindings[node.value] =
             new LocalBinding(
                 id, node.value, type, mutable,
                 borrowed, inout_parameter)
         return id
+    }
+
+    // A discard has no binding to find, so every name lookup that reaches
+    // one would otherwise report "unknown name '_'" — a suggestion list for
+    // a name the author never meant to make. Say what `_` is instead.
+    fn fail_discard_use(node: AstNode, ending: string) -> bool {
+        if !is_discard_name(node.value) { return false }
+        self.fail(
+            node,
+            "'_' discards its value and binds no name, so there is nothing to {ending}")
+        return true
     }
 
     fn find_local(name: string) -> Option<LocalBinding> {
@@ -2117,6 +2142,59 @@ class ExpressionChecker {
     fn is_move_only(type: HirType) -> bool {
         var seen: Map<string, bool> = {}
         return self.is_move_only_seen(type, inout seen)
+    }
+
+    // Why a struct is move-only, when the answer is not the struct itself.
+    // A struct is a value, so it can only be copied if everything it holds
+    // can: one move-only field makes the whole struct move-only. Nothing at
+    // the declaration says so, and the refusal lands at the call sites
+    // instead — adding one field changes the copy semantics of a type that
+    // already has callers. So the refusal names the field, and names the
+    // one that actually fails all the way down rather than the type at the
+    // top. Empty for a type that is move-only in its own right, where the
+    // type's name is already the whole answer.
+    fn move_only_reason(type: HirType) -> string {
+        var seen: Map<string, bool> = {}
+        let path: string =
+            self.move_only_field_path(
+                type, "", inout seen)
+        if path == "" { return "" }
+        return " — a struct is move-only when any field is, and {path}"
+    }
+
+    fn move_only_field_path(
+        type: HirType, prefix: string,
+        inout seen: Map<string, bool>) -> string {
+        let key: string = hir_type_key(type)
+        if seen.contains_key(key) { return "" }
+        seen[key] = true
+        match self.declaration_for(type) {
+            some(declaration) => {
+                if declaration.kind != "struct" ||
+                   declaration.is_unique {
+                    return ""
+                }
+                for field: HirField in declaration.fields {
+                    let field_type: HirType =
+                        self.substitute_owner_type(
+                            field.type, declaration, type)
+                    if !self.is_move_only(field_type) {
+                        continue
+                    }
+                    var named: string = field.name
+                    if prefix != "" {
+                        named = "{prefix}.{field.name}"
+                    }
+                    let deeper: string =
+                        self.move_only_field_path(
+                            field_type, named, inout seen)
+                    if deeper != "" { return deeper }
+                    return "'{named}' is {render_hir_type(field_type)}"
+                }
+            }
+            none => {}
+        }
+        return ""
     }
 
     fn is_subtype(child: HirType, parent: HirType) -> bool {
@@ -4767,7 +4845,8 @@ class ExpressionChecker {
             if self.is_move_only(type.args[0]) {
                 self.fail(
                     node,
-                    "{type.name} key cannot be move-only, got {render_hir_type(type.args[0])}")
+                    self.move_only_key_message(
+                        type.name, type.args[0]))
             }
             if !self.trait_satisfied(type.args[0], "Eq") {
                 self.fail(
@@ -4830,6 +4909,27 @@ class ExpressionChecker {
         for argument: HirType in type.args {
             self.validate_target_type(node, argument)
         }
+    }
+
+    // One rule, one sentence. The copyable-key rule is checked in two
+    // places — a written-out map type, and a literal whose type nothing
+    // else pins down — and they answered differently: only the first named
+    // why or named the way out, so the same mistake got a useful message or
+    // a bare one depending on where the type came from.
+    fn move_only_key_message(
+        kind: string, key: HirType) -> string {
+        return "{kind} key cannot be move-only, got {render_hir_type(key)} — a map owns a copy of every key and keys() hands copies back{self.byte_key_hint(key)}"
+    }
+
+    // Byte data is the shape that meets the copyable-key rule first, and
+    // the answer is not obvious: a Beans string is binary-safe, so it keeps
+    // NULs and every other byte, which makes it the right key type for
+    // bytes. That fact lived only in a changelog line.
+    fn byte_key_hint(key: HirType) -> string {
+        if canonical_hir_name(key.name) != "Bytes" {
+            return ""
+        }
+        return ". A Beans string keeps every byte, NULs included, so key by string and convert with Bytes.to_string()"
     }
 
     fn check_interpolations(node: AstNode) -> List<HirNode> {
@@ -4957,7 +5057,11 @@ class ExpressionChecker {
                 // Only the single unknown-name error is taken back; when
                 // the piece failed for more reasons than that, every one
                 // of them still stands and this is added to them.
+                // `_` is the one bare name that already got a better
+                // answer: it says what a discard is, which is exactly the
+                // thing the brace hint would be guessing at.
                 if expression.kind == "name" &&
+                   !is_discard_name(expression.value) &&
                    piece.kind == "error" &&
                    piece.resolved == "" &&
                    piece.type.name == "poison" {
@@ -5315,6 +5419,10 @@ class ExpressionChecker {
             return self.make_node(
                 node, "none", "none", expected)
         }
+        if self.fail_discard_use(node, "read") {
+            return self.make_node(
+                node, "error", node.value, poison_hir_type())
+        }
         match self.find_local(node.value) {
             some(binding) => {
                 self.check_capture_use(node, binding)
@@ -5554,7 +5662,7 @@ class ExpressionChecker {
         if node.kind == "name" {
             self.fail(
                 node,
-                "{where} needs 'move {node.value}' because {render_hir_type(type)} is move-only")
+                "{where} needs 'move {node.value}' because {render_hir_type(type)} is move-only{self.move_only_reason(type)}")
         } else if node.kind == "field" ||
                   node.kind == "index" {
             self.fail(
@@ -5572,6 +5680,10 @@ class ExpressionChecker {
                 node, "error", "move", poison_hir_type())
         }
         let source: AstNode = node.children[0]
+        if self.fail_discard_use(source, "move") {
+            return self.make_node(
+                node, "error", "move", poison_hir_type())
+        }
         match self.find_local(source.value) {
             some(binding) => {
                 let operand: HirNode =
@@ -5642,6 +5754,10 @@ class ExpressionChecker {
                 poison_hir_type())
         }
         let source: AstNode = node.children[0]
+        if self.fail_discard_use(source, "lend") {
+            return self.make_node(
+                node, "error", "inout", poison_hir_type())
+        }
         match self.find_local(source.value) {
             some(binding) => {
                 if !binding.mutable {
@@ -9915,7 +10031,8 @@ class ExpressionChecker {
            self.is_move_only(key) {
             self.fail(
                 node,
-                "Map key cannot be move-only, got {render_hir_type(key)}")
+                self.move_only_key_message(
+                    "Map", key))
         }
         result.type =
             if expected.name == "OrderedMap" {
@@ -9929,6 +10046,19 @@ class ExpressionChecker {
 
     fn check_index(node: AstNode,
                    expected: HirType) -> HirNode {
+        return self.check_index_at(node, expected, false)
+    }
+
+    // `place` is true only for the left side of an assignment. It changes
+    // exactly one answer: a move-only map value cannot be *read* by index,
+    // because the read would have to copy the map's own value, but writing
+    // one is a move in — the same instruction `set` lowers to, with the same
+    // ownership transfer. The old rule refused the write by quoting the
+    // read's reason, which described an operation the program was not doing.
+    // Everything inside the brackets is still a read and is checked as one.
+    fn check_index_at(node: AstNode,
+                      expected: HirType,
+                      place: bool) -> HirNode {
         let receiver: HirNode =
             self.check_expression(node.children[0], no_hir_type())
         var index_type: HirType = new HirType("int")
@@ -9950,7 +10080,7 @@ class ExpressionChecker {
                   receiver.type.args.len() == 2 {
             index_type = receiver.type.args[0]
             result_type = receiver.type.args[1]
-            if self.is_move_only(result_type) {
+            if self.is_move_only(result_type) && !place {
                 self.fail(
                     node,
                     "can't copy a move-only map value by index — read it with get(key), which answers Option<{render_hir_type(result_type)}>")
@@ -11511,6 +11641,110 @@ class ExpressionChecker {
         return result
     }
 
+    // Why this binding cannot be written through, in terms the author can
+    // act on. Both place walks below end at a local and ask this, so a
+    // record and an array give one answer. `self` is the case the plain
+    // answer got wrong: a method's receiver is never rebindable, so "use
+    // var" named a change the language has no spelling for. A struct method
+    // that writes its own storage is an `inout fn`, and that is what the
+    // message has to say.
+    fn immutable_place_reason(
+        binding: LocalBinding, parts: string) -> string {
+        if binding.name == "self" {
+            return "'self' is borrowed here, so its {parts} can't be reassigned — declare the method 'inout fn' to write through the receiver"
+        }
+        return "'{binding.name}' is a let — its {parts} can't be reassigned. use var"
+    }
+
+    // A struct is a value: writing one of its fields writes the storage the
+    // struct lives in, so the write is only meaningful when that storage
+    // outlives the statement. This walks back from the record being written
+    // to the storage that holds it, exactly the way check_array_place walks
+    // back from an array — a mutable local's slot, or the heap object a
+    // class field sits in — hopping through as many struct fields and fixed
+    // array elements as the source wrote. Only the last hop used to be
+    // allowed, which made `rect.origin.x = 1` a copy-out, mutate, copy-back
+    // by hand for the very shape structs exist for.
+    //
+    // What stays refused is storage the backends cannot address: a union
+    // field read is a reinterpreting load rather than a place, a List or Map
+    // element read hands back a copy, and a call result has no storage at
+    // all. Each says which one it is, because "needs a local variable" was
+    // never the reason.
+    fn check_record_place(target: AstNode, base: HirNode) {
+        var current: HirNode = base
+        for true {
+            if current.kind == "local" {
+                match self.find_local(current.value) {
+                    some(binding) => {
+                        if !binding.mutable {
+                            self.fail(
+                                target,
+                                self.immutable_place_reason(
+                                    binding, "fields"))
+                        }
+                    }
+                    none => {}
+                }
+                return
+            }
+            if current.kind == "static_field" {
+                // a module-lifetime global is storage every backend can
+                // address, and the read that reached it already ran the
+                // initialisation guard: the walk ends here
+                return
+            }
+            if current.kind == "field" &&
+               current.children.len() == 1 {
+                let receiver: HirNode =
+                    current.children[0]
+                match self.declaration_for(
+                    receiver.type) {
+                    some(declaration) => {
+                        // a class instance is a heap object, and the
+                        // object pointer is storage every backend can
+                        // reach: the walk ends here
+                        if declaration.kind == "class" {
+                            return
+                        }
+                        if declaration.kind == "struct" {
+                            current = receiver
+                            continue
+                        }
+                        if declaration.kind == "union" {
+                            self.fail(
+                                target,
+                                "reading a field of {render_hir_type(receiver.type)} reinterprets its bytes rather than naming a place, so a field of that value can't be assigned through it — copy it to a var, update it, and assign it back")
+                            return
+                        }
+                    }
+                    none => {}
+                }
+                self.fail(
+                    target,
+                    "a field of {render_hir_type(receiver.type)} is not storage this write can reach — copy the struct to a var, update it, and assign it back")
+                return
+            }
+            if current.kind == "index" &&
+               current.children.len() == 2 {
+                let receiver: HirNode =
+                    current.children[0]
+                if receiver.type.name == "array" {
+                    current = receiver
+                    continue
+                }
+                self.fail(
+                    target,
+                    "a {render_hir_type(receiver.type)} element read answers a copy, so a field written through it would be dropped — copy the element to a var, update it, and assign it back")
+                return
+            }
+            self.fail(
+                target,
+                "this struct is a temporary copy — store it in a var before assigning its fields")
+            return
+        }
+    }
+
     // The base chain of a fixed-array element assignment, validated the
     // way the backends store it: struct fields and array elements walk
     // back to a mutable local, and a class field makes the heap object
@@ -11527,10 +11761,24 @@ class ExpressionChecker {
                         if !binding.mutable {
                             self.fail(
                                 target,
-                                "'{current.value}' is a let — its elements can't be reassigned. use var")
+                                self.immutable_place_reason(
+                                    binding, "elements"))
                         }
                     }
                     none => {}
+                }
+                return
+            }
+            if current.kind == "static_field" {
+                // a static is addressable storage like a heap object, and
+                // carries the same open question: an element store emits no
+                // write barrier, so an element that may own references would
+                // leave the collector an untracked edge
+                if !self.array_element_stores_inline(
+                       element) {
+                    self.fail(
+                        target,
+                        "storing owned references into an array inside a static is not supported yet — copy the array to a local, update it, and assign it back")
                 }
                 return
             }
@@ -11625,7 +11873,8 @@ class ExpressionChecker {
                 if target.kind == "field" {
                     self.check_field(target, no_hir_type())
                 } else {
-                    self.check_index(target, no_hir_type())
+                    self.check_index_at(
+                        target, no_hir_type(), true)
                 }
             let value: HirNode = self.check_expression(
                 node.children[1], place.type)
@@ -11653,26 +11902,8 @@ class ExpressionChecker {
                                     target,
                                     "union fields only support direct assignment for now")
                             }
-                            if target.children[0].kind != "name" {
-                                // no backend stores through a nested
-                                // record place yet; stage 0 rejects this
-                                // at check time and so does this checker
-                                self.fail(
-                                    target,
-                                    "struct field assignment needs a local variable for now")
-                            } else {
-                                match self.find_local(
-                                    target.children[0].value) {
-                                    some(binding) => {
-                                        if !binding.mutable {
-                                            self.fail(
-                                                target,
-                                                "'{binding.name}' is a let — its fields can't be reassigned. use var")
-                                        }
-                                    }
-                                    none => {}
-                                }
-                            }
+                            self.check_record_place(
+                                target, place.children[0])
                         }
                     }
                     none => {}
@@ -11719,6 +11950,11 @@ class ExpressionChecker {
         }
         if target.kind != "name" {
             self.fail(node, "expression is not assignable")
+            return result
+        }
+        if self.fail_discard_use(
+               target,
+               "assign to — drop the '_ =' and keep the expression") {
             return result
         }
         match self.find_local(target.value) {

@@ -907,6 +907,28 @@ var total: decimal = 0.0    // can be reassigned
 
 `let` means the *variable* can't be rebound. The object it points to can still change inside (Java-style — no borrow checker, no `mut` markers).
 
+`_` in a binding position is a **discard**, not a name. It works wherever a name
+is bound — `let`, `var`, function and closure parameters, loop bindings, and the
+payload bindings of a match pattern:
+
+```
+let _: Report = build_report()      // built, then dropped at the end of the scope
+fn log(_: Request, id: int) { ... }
+for _: int in 0..3 { work() }
+match shape { line(_, _) => "line", dot => "dot" }
+```
+
+A discard binds nothing, so any number of them may share one scope and none of
+them can be read, moved, lent, or assigned to. Reading one is an error that says
+so, not "unknown name". A bare `_` arm of a match is the same character used as
+a wildcard pattern and is unaffected.
+
+The value is still owned. A discard takes the value it is given and drops it at
+the end of its scope, exactly like a named binding — once, and never twice — so
+`let _: Packet = open()` and `fn eat(move _: Packet)` release what they take at
+the same point a named `let` or `move` parameter would. `_` removes the name,
+not the ownership.
+
 ### Module constants (v0.9, implemented)
 
 `let` and `var` are statements and live inside a function. A named value that
@@ -1360,10 +1382,22 @@ outside the list, and `map[key]` panics when the key is missing. Use
 Bracket assignment stays `list[i] = value` and `map[key] = value`; List and
 Map bracket assignment does not have compound forms. Fixed arrays support
 numeric compound element assignment because their element is a real inline
-place. A bracket assignment evaluates left to right — receiver, then index
-or key, then the right-hand side — and a compound form evaluates its index
-once. Both backends run this order; a side-effecting key and value observe
-it.
+place. Every assignment evaluates left to right — receiver, then index or
+key, then the right-hand side — and a compound form evaluates its receiver
+and its index once, not once to read and again to store. A field target
+follows the same rule as a bracket target. Both backends run this order; a
+side-effecting receiver, key and value observe it.
+
+A `?` anywhere on the left short-circuits the whole statement, exactly as it
+does on the right: `find(id)?.count = next()` leaves the function with the
+propagated value and never runs `next()`.
+
+A `Map` or `OrderedMap` **key must be copyable**, so a move-only type cannot be
+one: the map owns a copy of every key it stores, and `keys()` hands copies back.
+The type this rule is usually met with is `Bytes`, and the answer is `string`: a
+Beans string is binary-safe — it keeps NULs and every other byte, and
+`Bytes.to_string()` is every byte — so a byte-keyed map is a `Map<string, V>`
+and nothing is lost in the conversion.
 
 Map values may be wide structs, fixed arrays, SIMD vectors, slices, inline
 Option/Result values, or decimals. Their nested ARC fields are retained, dropped,
@@ -1388,6 +1422,12 @@ reading the same map again while an earlier read is still in scope is refused,
 because two such bindings would be two mutating names for one value. Reads that
 do not overlap, reads of a different map, and reads of a value type that is not
 move-only are all unaffected.
+
+Writing one is a different question and has always had an answer. `m[k] = v`
+takes a move-only value the same way `m.set(k, v)` does — it moves the value in,
+drops whatever the key held before, and lowers to the same instruction — so the
+read rule above applies to reads only. An existing move-only local still needs
+`move`: `m[k] = move packet`.
 
 Everything has methods:
 
@@ -1962,6 +2002,12 @@ in `std.option` or `std.result`. These methods copy the active input payload, so
 its type must implement `Clone`. Their inline, boxed, and null-niche layouts do
 not change.
 
+**`?` over an `Option` carries nothing.** In a function returning
+`Option<U>`, `x?` on an `x: Option<T>` answers this function's `none` when `x`
+is `none` — `none` is `none` whatever `T` and `U` are, and no payload crosses.
+`?` never crosses between the two kinds: an `Option` cannot propagate out of a
+`Result` function or the other way, and each is refused at the `?`.
+
 **`?` across an error boundary.** In a function returning `Result<U, F>`, `x?`
 on an `x: Result<T, E>` requires `E` to *reach* `F`. There are exactly three
 ways, checked at the `?` itself:
@@ -2057,6 +2103,10 @@ match code {
     _          => "who knows",
 }
 ```
+
+A variant's payload binds by position, and a payload the arm does not need
+binds to `_`, as many times as there are fields to ignore: `line(_, _) =>
+"line"`. Those are discards, not names — see Variables.
 
 **Statement position** additionally allows block arms — several statements, no value (v0.4):
 
@@ -3708,8 +3758,45 @@ helpers, globals, and functions for a library package's consumers.
   or `Box` for that edge. Struct inheritance and ARC reference fields in
   C-layout records remain unsupported. Ordinary structs that satisfy `Eq`
   and `Hash` can be Map keys; stored keys use an immutable compiler-owned box
-  and lookups use a stack copy. A field can be changed only through a `var`
-  local.
+  and lookups use a stack copy.
+
+  A struct field is written through the storage the struct lives in, at any
+  depth: `rect.origin.x = 1` and `config.limits.retries += 1` write the one
+  struct, not a copy of it. The chain walks back through as many struct fields
+  and fixed-array elements as the source writes, and ends at a mutable local's
+  slot or at the heap object a class field sits in — so `holder.settings.size =
+  9` on a class works too, as does an `inout` parameter, a local a closure
+  captured, and a struct method declared `inout fn`. A `let` local's fields
+  cannot be reassigned, and neither can a method receiver that is not
+  `inout fn`. What is refused is storage the write could not reach and would
+  silently drop: a temporary such as a call result, a `List` or `Map` element
+  (the element read answers a copy), and a struct read out of a `union` (a
+  union field read reinterprets bytes rather than naming a place). Each says
+  which one it is; the remedy in every case is to copy the value into a `var`,
+  update it, and assign it back.
+
+  A **static field is the third root**, beside a local's slot and a heap
+  object: `Cfg.home.origin.y = 3` and `Cfg.cells[0] = 9` write the static
+  itself. A static has no owning object whose bit could gate the write and no
+  scope that orders it, so a reference stored beneath one takes the cycle
+  collector's static barrier — the one a whole-static assignment already
+  emits — and the read that reaches the place runs the same
+  initialisation-order guard a whole-static read runs. One thing is still
+  refused there and it is refused for a class object too: storing a value
+  that may own references into a **fixed-array element** inside a static or a
+  class, because an element store emits no write barrier and would leave the
+  collector an untracked edge. A struct field beneath either root is fine —
+  it is a field store, and field stores carry the barrier.
+
+  A struct is **move-only when any field is**. A struct is a value, so it can
+  only be copied if everything it holds can, and `List`, `Map`, `Bytes`, `Box`,
+  `Arena` and a `unique class` cannot be. That propagates: adding one such field
+  changes the copy semantics of a struct that already has callers, and the
+  refusal appears at those call sites rather than at the declaration, so it
+  names the field responsible — `main.Wrapper is move-only — a struct is
+  move-only when any field is, and 'inner.tags' is List<string>` — following the
+  chain down to the field that actually fails rather than stopping at the type
+  on the left.
 
 - `extern "C" union` declares overlapping inline scalar, `RawPtr`, fixed-array,
   or nested C-layout storage. It must be

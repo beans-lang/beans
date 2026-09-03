@@ -1,5 +1,13 @@
 package main
 
+// `_` written where a name is expected is a discard: it binds nothing, so it
+// never enters a scope, never collides with another one, and can never be
+// read. Every binding position asks this rather than testing the spelling in
+// place, so the four of them cannot drift apart.
+fn is_discard_name(name: string) -> bool {
+    return name == "_"
+}
+
 class HirNode {
     kind: string
     value: string

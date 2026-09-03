@@ -1504,6 +1504,15 @@ partial class LlvmTextEmitter {
             guard =
                 "  %static.done{id} = load i8, ptr @.next.statics.ready\n  %static.after{id} = icmp ne i8 %static.done{id}, 0\n  br i1 %static.after{id}, label %static.ok{id}, label %static.check{id}\nstatic.check{id}:\n  %static.busy{id} = load i8, ptr @.next.statics.running\n  %static.inside{id} = icmp ne i8 %static.busy{id}, 0\n  br i1 %static.inside{id}, label %static.order{id}, label %static.lazy{id}\nstatic.lazy{id}:\n  call void @.next.statics.init()\n  br label %static.ok{id}\nstatic.order{id}:\n  %static.flag{id} = load i8, ptr {ready}\n  %static.set{id} = icmp ne i8 %static.flag{id}, 0\n  br i1 %static.set{id}, label %static.ok{id}, label %static.bad{id}\nstatic.bad{id}:\n  call void @beans_panic(ptr {message}, i64 {instruction.line}, i64 {instruction.col})\n  unreachable\nstatic.ok{id}:\n"
         }
+        // the copy this load makes has live storage behind it, and unlike a
+        // local's slot or a heap object that storage is a module-lifetime
+        // global — so a field or element store through the copy can write
+        // back to the static rather than to the copy
+        let place: LlvmBorrowedPlace =
+            new LlvmBorrowedPlace(-1, "")
+        place.root_static = symbol
+        self.borrowed_place_of[
+            instruction.result] = place
         return "{guard}  {result} = load {llvm}, ptr {symbol}\n{self.emit_arc_value(instruction.type, result, true)}"
     }
 
@@ -2422,8 +2431,12 @@ partial class LlvmTextEmitter {
             none => {}
         }
         if record_struct {
-            // a record is an SSA aggregate everywhere else, so an
-            // assignment writes through the local's own storage
+            // A record is an SSA aggregate everywhere else, so the store
+            // has to reach the storage that copy was read out of. The place
+            // chain says where that is — a local's slot, or a byte offset
+            // inside a heap object — through as many struct fields and
+            // fixed-array elements as the source wrote. It is the same
+            // chain an array element store walks.
             match self.record_layout(receiver_type) {
                 some(layout) => {
                     if !layout.field_indices.contains_key(
@@ -2435,16 +2448,33 @@ partial class LlvmTextEmitter {
                             "LLVM emitter cannot find field '{name}' in {render_hir_type(receiver_type)}")
                         return ""
                     }
-                    if !self.borrowed_local_of.contains_key(
-                         receiver_id) {
-                        self.fail(
-                            instruction,
-                            "LLVM emitter needs a plain local behind this record assignment")
-                        return ""
+                    var address_setup: string = ""
+                    var base_pointer: string = ""
+                    // The heap object the record lives in, or "" when it
+                    // lives in a stack slot or a static. It is the cycle
+                    // collector's owner for a reference stored into the
+                    // record; a static has no owner and takes the
+                    // collector's static form instead.
+                    var owner: string = ""
+                    var static_owner: bool = false
+                    match self.place_for(receiver_id) {
+                        some(place) => {
+                            let slot: LlvmSlotConversion =
+                                self.place_address(
+                                    function, place)
+                            address_setup = slot.setup
+                            base_pointer = slot.value
+                            owner = place.root_register
+                            static_owner =
+                                place.root_static != ""
+                        }
+                        none => {
+                            self.fail(
+                                instruction,
+                                "LLVM emitter needs storage behind this record assignment")
+                            return ""
+                        }
                     }
-                    let target: int =
-                        self.borrowed_local_of[
-                            receiver_id]
                     let field_type: HirType =
                         layout.field_types[name]
                     let type: string =
@@ -2455,13 +2485,13 @@ partial class LlvmTextEmitter {
                             instruction.operands[1],
                             instruction)
                     let address: int = self.fresh()
-                    var output: string = ""
+                    var output: string = address_setup
                     if layout.is_union {
                         output =
-                            "  %field.assign.ptr{address} = getelementptr i8, ptr %l{target}, i64 0\n"
+                            "{output}  %field.assign.ptr{address} = getelementptr i8, ptr {base_pointer}, i64 0\n"
                     } else {
                         output =
-                            "  %field.assign.ptr{address} = getelementptr {llvm_record_instance_name(layout.instance)}, ptr %l{target}, i32 0, i32 {layout.field_indices[name]}\n"
+                            "{output}  %field.assign.ptr{address} = getelementptr {llvm_record_instance_name(layout.instance)}, ptr {base_pointer}, i32 0, i32 {layout.field_indices[name]}\n"
                     }
                     if operation != "=" {
                         let access: string =
@@ -2480,6 +2510,34 @@ partial class LlvmTextEmitter {
                         }
                     if self.type_has_owned_refs(
                            field_type) {
+                        // A record inside a heap object is owned by that
+                        // object, so a reference stored into it needs the
+                        // same publication barrier a direct class field
+                        // store emits. A record in a stack slot has no
+                        // shared owner and needs none. A record in a static
+                        // is reachable from every thread by construction
+                        // and has no owner whose bit could gate the write,
+                        // which is the static form's whole reason — the
+                        // same one a whole-static store emits.
+                        let barrier: string =
+                            if static_owner {
+                                self.emit_cc_write_static(
+                                    field_type, stored,
+                                    "field")
+                            } else if owner == "" {
+                                ""
+                            } else {
+                                self.emit_cc_write(
+                                    owner, field_type,
+                                    stored, "field")
+                            }
+                        let publish: string =
+                            if owner == "" {
+                                ""
+                            } else {
+                                self.emit_cc_publish(
+                                    owner, field_type)
+                            }
                         let previous: int =
                             self.fresh()
                         let old: string =
@@ -2488,7 +2546,7 @@ partial class LlvmTextEmitter {
                             self.emit_arc_value(
                                 field_type, old,
                                 false)
-                        return "{output}  {old} = load {type}, ptr %field.assign.ptr{address}{access}\n  store {type} {stored}, ptr %field.assign.ptr{address}{access}\n{release}"
+                        return "{output}{barrier}  {old} = load {type}, ptr %field.assign.ptr{address}{access}\n  store {type} {stored}, ptr %field.assign.ptr{address}{access}\n{publish}{release}"
                     }
                     return "{output}  store {type} {stored}, ptr %field.assign.ptr{address}{access}\n"
                 }

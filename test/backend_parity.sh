@@ -131,6 +131,11 @@ agree test/cases/parity/inherited_defaults.b
 agree test/cases/parity/static_fn_field.b
 agree test/cases/parity/panic_diverges.b
 agree test/cases/parity/super_in_scope.b
+agree test/cases/parity/discard_binding.b 7
+agree test/cases/parity/record_place.b 6
+agree test/cases/parity/assign_short_circuit.b 2
+agree test/cases/parity/static_place.b 2
+agree test/cases/parity/try_propagate.b 1
 agree test/cases/parity/bind_release.b 111
 agree test/cases/parity/scope_exit_order.b 14
 agree test/cases/parity/sort_panic_state.b
@@ -147,7 +152,7 @@ agree test/cases/parity/reflect_error_bridge.b
 
 # Every case in the directory has to be listed above with its own expected
 # count; a file added and forgotten would otherwise be silently unchecked.
-listed=23
+listed=28
 present=$(find test/cases/parity -name '*.b' | wc -l | tr -d ' ')
 if [ "$present" != "$listed" ]; then
     echo "test/cases/parity holds $present cases but $listed are run" >&2
@@ -256,8 +261,25 @@ grep -Fq "was read before initialization" "$tmp/early.interp" || {
 }
 echo "  refused: reading a static before its initialiser ran, both backends"
 
-# The forms that must stay refused, with the message that names the way out.
-cat >"$tmp/bad.b" <<'EOF'
+# A move-only map value is not symmetric between the two bracket forms. The
+# write moves a value in — the same transfer m.set(k, v) does — and is
+# accepted; the read would have to copy the map's own value and stays refused
+# with the message that names the way out. The two are checked in separate
+# files on purpose: proving the write is accepted needs a file that does not
+# also fail for the read.
+cat >"$tmp/write_ok.b" <<'EOF'
+package main
+fn main() {
+    var m: Map<string, List<int>> = {}
+    m["a"] = [1, 2, 3]
+}
+EOF
+./build/beansc check "$tmp/write_ok.b" >"$tmp/write_ok.out" 2>&1 || {
+    echo "moving a value into a move-only map by bracket was refused" >&2
+    cat "$tmp/write_ok.out" >&2
+    exit 1
+}
+cat >"$tmp/read_bad.b" <<'EOF'
 package main
 fn main() {
     var m: Map<string, List<int>> = {}
@@ -265,16 +287,16 @@ fn main() {
     let taken: List<int> = m["a"]
 }
 EOF
-if ./build/beansc check "$tmp/bad.b" >"$tmp/bad.out" 2>&1; then
-    echo "indexing a move-only map value was accepted" >&2
+if ./build/beansc check "$tmp/read_bad.b" >"$tmp/read_bad.out" 2>&1; then
+    echo "reading a move-only map value by index was accepted" >&2
     exit 1
 fi
-grep -Fq "read it with get(key)" "$tmp/bad.out" || {
-    echo "the index refusal no longer names get(key)" >&2
-    cat "$tmp/bad.out" >&2
+grep -Fq "read it with get(key)" "$tmp/read_bad.out" || {
+    echo "the index read refusal no longer names get(key)" >&2
+    cat "$tmp/read_bad.out" >&2
     exit 1
 }
-echo "  refused: indexing a move-only map value, both directions"
+echo "  refused: reading a move-only map value by index; the write moves in"
 
 # A map has no equality. The interpreter used to answer false for every pair,
 # including a map against itself, while a native build refused to emit it.

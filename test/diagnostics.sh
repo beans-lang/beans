@@ -121,4 +121,49 @@ grep -Fq "can't erase move-only ownership by converting main.Pinned to main.AppE
     "$tmp/diagnostics_try_convert_unique_bad"
 test "$(grep -c ': error:' "$tmp/diagnostics_try_convert_unique_bad")" -eq 1
 
+# `_` binds nothing, so naming it has to say so. Four paths reach a name in
+# the checker — read, move, lend, assign — and a suggestion list for a name
+# the author declined to make is the answer none of them should give. The
+# duplicate at the end is the control: a real name that repeats is still a
+# duplicate, which is the half a "just allow `_` twice" change would break.
+check_bad diagnostics_discard_bad
+grep -Fq ":16:23: error: '_' discards its value and binds no name, so there is nothing to read" \
+    "$tmp/diagnostics_discard_bad"
+grep -Fq ":20:18: error: '_' discards its value and binds no name, so there is nothing to read" \
+    "$tmp/diagnostics_discard_bad"
+grep -Fq "so there is nothing to move" "$tmp/diagnostics_discard_bad"
+grep -Fq "so there is nothing to lend" "$tmp/diagnostics_discard_bad"
+grep -Fq "so there is nothing to assign to — drop the '_ =' and keep the expression" \
+    "$tmp/diagnostics_discard_bad"
+grep -Fq "'kept' is already defined in this scope" "$tmp/diagnostics_discard_bad"
+if grep -Fq "unknown name '_'" "$tmp/diagnostics_discard_bad"; then
+    echo "a discard was reported as an unknown name" >&2
+    exit 1
+fi
+if grep -Fq "in a string is an interpolation" "$tmp/diagnostics_discard_bad"; then
+    echo "the brace hint swallowed the discard's own answer" >&2
+    exit 1
+fi
+test "$(grep -c ': error:' "$tmp/diagnostics_discard_bad")" -eq 6
+
+# The walk back from a written field to the storage that holds it ends one of
+# six ways, and each says which one it hit. They are pinned together because
+# the failure mode is a rule that loosens by accident: a branch that stops
+# refusing shows up here as a missing line rather than as a silently dropped
+# store at run time.
+check_bad diagnostics_record_place_bad
+grep -Fq "'self' is borrowed here, so its fields can't be reassigned — declare the method 'inout fn' to write through the receiver" \
+    "$tmp/diagnostics_record_place_bad"
+grep -Fq "'frozen' is a let — its fields can't be reassigned. use var" \
+    "$tmp/diagnostics_record_place_bad"
+grep -Fq "this struct is a temporary copy — store it in a var before assigning its fields" \
+    "$tmp/diagnostics_record_place_bad"
+grep -Fq "a List<main.Rect> element read answers a copy" \
+    "$tmp/diagnostics_record_place_bad"
+grep -Fq "a Map<string, main.Rect> element read answers a copy" \
+    "$tmp/diagnostics_record_place_bad"
+grep -Fq "reading a field of main.Bits reinterprets its bytes rather than naming a place" \
+    "$tmp/diagnostics_record_place_bad"
+test "$(grep -c ': error:' "$tmp/diagnostics_record_place_bad")" -eq 6
+
 echo "ok diagnostics: locations, imports, suggestions, wording, and recovery"

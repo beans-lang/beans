@@ -391,8 +391,13 @@ class SemanticBuilder {
         entry.name_length = name.len()
         entry.end_line = node.name_line
         entry.end_col = node.name_col
-        entry.can_rename = true
+        // A discard is not a name: nothing may complete to it, nothing may
+        // rename it. The declaration itself stays so hover over the `_`
+        // still says what was thrown away, but it never joins the scope's
+        // visible bindings, which is what completion offers.
+        entry.can_rename = !is_discard_name(name)
         self.add_decl(entry)
+        if is_discard_name(name) { return }
         let binding: SemanticBinding =
             new SemanticBinding(id, name, kind)
         binding.type_text = entry.type_text

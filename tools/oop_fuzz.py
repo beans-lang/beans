@@ -877,7 +877,11 @@ fn main() {
 fn main() {}
 '''},
             "main.b",
-            ["'self' is a let — its fields can't be reassigned. use var"],
+            [
+                "'self' is borrowed here, so its fields can't be "
+                "reassigned — declare the method 'inout fn' to write "
+                "through the receiver"
+            ],
         ),
         InvalidProgram(
             "bare-generic-struct",
