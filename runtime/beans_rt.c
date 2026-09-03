@@ -5950,10 +5950,17 @@ static long long reflect_method_invoke(long long id, char* checked_owner,
              !beans_reflect_is_assignable_from(checked_owner,
                                                receiver->type_name)))
             return reflect_fail(3);
-        /* Virtual dispatch: prefer an override declared by the runtime type. */
+        /* Virtual dispatch: prefer an override declared by the runtime type,
+           and only a body a receiver can pick is one. A `static fn` wearing
+           the same name declares no `self`, so substituting it handed the
+           receiver to a function with no parameter for it (#88). The checker
+           refuses that pair wherever a call could name it; a `priv static`,
+           which is exempt there because it shares no dispatch slot with
+           anything, reached it only here. */
         long long actual = reflect_method_id(receiver->type_name,
                                              method->name);
-        if (actual >= 0) call = reflect_methods[actual].call;
+        if (actual >= 0 && !(reflect_methods[actual].flags & 2))
+            call = reflect_methods[actual].call;
     }
     char* type_stack[REFLECT_INVOKE_STACK_ARITY];
     long long passing_stack[REFLECT_INVOKE_STACK_ARITY];

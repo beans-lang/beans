@@ -2465,6 +2465,67 @@ class ExpressionChecker {
         return none
     }
 
+    // The static an ancestor declares under this name, if one is visible
+    // from here. Statics are not inherited, so this never answers a method
+    // the class may call — it answers the one a class further down would be
+    // wearing the same name as. Visibility matches inherited_methods: a
+    // `priv` static belongs to its exact declaring type and a
+    // package-private one to its package, so neither collides with a name
+    // written outside it.
+    fn inherited_static(
+        owner: string, name: string) -> Option<HirFunction> {
+        var pending: List<HirType> = []
+        match self.declarations.get(owner) {
+            some(declaration) => {
+                let receiver: HirType =
+                    self.declaration_self_type(declaration)
+                for relation: HirType in
+                    declaration.relations {
+                    pending.push(
+                        self.substitute_owner_type(
+                            relation, declaration, receiver))
+                }
+            }
+            none => {}
+        }
+        var seen: Map<string, bool> = {}
+        for pending.len() != 0 {
+            let relation: HirType = pending.remove(0)
+            if seen.contains_key(relation.name) { continue }
+            seen[relation.name] = true
+            match self.declaration_for(relation) {
+                some(declaration) => {
+                    match self.methods.get(
+                        "{declaration.qualified}.{name}") {
+                        some(function) => {
+                            let caller_package: string =
+                                self.package_path_for_file(
+                                    self.current.file)
+                            let owner_package: string =
+                                self.package_path_for_file(
+                                    function.file)
+                            if function.is_static &&
+                               !function.is_private &&
+                               (function.is_public ||
+                                caller_package == owner_package) {
+                                return some(function)
+                            }
+                        }
+                        none => {}
+                    }
+                    for parent: HirType in
+                        declaration.relations {
+                        pending.push(
+                            self.substitute_owner_type(
+                                parent, declaration, relation))
+                    }
+                }
+                none => {}
+            }
+        }
+        return none
+    }
+
     fn inherited_methods(
         owner: string, name: string) -> List<InheritedMethod> {
         var pending: List<HirType> = []
@@ -2607,10 +2668,60 @@ class ExpressionChecker {
         return "fn({parameters.join(", ")}) -> {shown}"
     }
 
-    fn validate_override(function: HirFunction) {
-        if function.owner == "" || function.is_static {
+    // Within one class family a name is either a static or an instance
+    // method, never both. Nothing in the language lets the two live under
+    // one name: `Sub.label()` reads the static, `sub.label()` reads the
+    // instance method, and which body a reader gets turns on whether the
+    // receiver was spelled as a type or as a value. Before #88 the pair was
+    // accepted and the subclass's static took over the base's dispatch
+    // slot, so every dynamic call through a base-typed reference handed a
+    // receiver to a function that declares none; giving the static a slot
+    // of its own instead would only move the same two bodies behind one
+    // name and say nothing.
+    //
+    // Both directions are refused, because both put two bodies under one
+    // name in one hierarchy — the mirror case leaves `Base.tag()` and
+    // `sub.tag()` naming different code just as surely.
+    //
+    // A `priv` method is exempt on either side: it belongs to its exact
+    // declaring type, is never inherited and never shares a dispatch slot,
+    // so a subclass writing the same name is already a separate method and
+    // was never in the base's row to begin with.
+    fn validate_static_instance_split(function: HirFunction) {
+        if function.owner == "" ||
+           function.name == "init" ||
+           function.name == "deinit" ||
+           function.is_private {
             return
         }
+        if function.is_static {
+            let parents: List<InheritedMethod> =
+                self.inherited_methods(
+                    function.owner, function.name)
+            if parents.len() != 0 {
+                self.fail(
+                    function.syntax,
+                    "'{function.name}' is declared static here, but {self.diagnostic_symbol(parents[0].function.owner)} declares it as an instance method — a name is either a static or an instance method throughout a class family, and a static has no receiver to be dispatched on")
+            }
+            return
+        }
+        match self.inherited_static(
+                  function.owner, function.name) {
+            some(parent) => {
+                self.fail(
+                    function.syntax,
+                    "'{function.name}' is declared as an instance method here, but {self.diagnostic_symbol(parent.owner)} declares it static — a name is either a static or an instance method throughout a class family, and a static has no receiver to be dispatched on")
+            }
+            none => {}
+        }
+    }
+
+    fn validate_override(function: HirFunction) {
+        if function.owner == "" {
+            return
+        }
+        self.validate_static_instance_split(function)
+        if function.is_static { return }
         if function.name == "init" ||
            function.name == "deinit" {
             if function.is_override {
@@ -2638,6 +2749,31 @@ class ExpressionChecker {
                     function.syntax,
                     "'{function.name}' is marked override but no parent has it")
             }
+            return
+        }
+        // A method that declares type parameters of its own binds them at
+        // the call site, so it is a template with one function per
+        // instantiation and holds no dispatch row. Nothing can replace it
+        // and it can replace nothing: before #89 this pair checked clean
+        // and then split the backends — the native build bound whichever
+        // template the receiver's static type named, while the interpreter
+        // dispatched on the runtime class and answered the subclass's — a
+        // silent wrong answer on one side, from a program the checker had
+        // just asked to mark `override`.
+        for inherited: InheritedMethod in parents {
+            if function.generics.len() == 0 &&
+               inherited.function.generics.len() == 0 {
+                continue
+            }
+            let generic_side: string =
+                if function.generics.len() != 0 {
+                    "'{function.name}' declares type parameters of its own"
+                } else {
+                    "{self.diagnostic_symbol(inherited.function.owner)}'s '{function.name}' declares type parameters of its own"
+                }
+            self.fail(
+                function.syntax,
+                "{generic_side}, so it binds them at the call site and holds no dispatch row — it cannot replace, or be replaced by, the '{function.name}' on {self.diagnostic_symbol(inherited.function.owner)}; give one of them a different name")
             return
         }
         var needs_override: bool = false
@@ -9121,6 +9257,22 @@ class ExpressionChecker {
                     self.require_method_visible(
                         node, function, "method",
                         "{render_hir_type(receiver.type)}.{callee.value}")
+                    // A static has no `self`, so a receiver cannot reach
+                    // it. Every other lookup already said so —
+                    // `Sub.tag()` for a base's static is refused because
+                    // statics are not inherited, `super.tag()` finds no
+                    // parent implementation, and the inherited-method walk
+                    // skips them — but method_for did not, and the call it
+                    // built passed the receiver to a function that
+                    // declares no parameter for it (#88).
+                    if function.is_static {
+                        self.fail(
+                            node,
+                            "'{callee.value}' is a static method of {self.diagnostic_symbol(function.owner)} — a static has no receiver, so call it on the type: {self.diagnostic_symbol(function.owner)}.{callee.value}(...)")
+                        return self.make_node(
+                            node, "error", callee.value,
+                            poison_hir_type())
+                    }
                     var owner: Option<HirDeclaration> =
                         self.declaration_for(receiver.type)
                     if function.owner != "" {
@@ -9156,12 +9308,12 @@ class ExpressionChecker {
                                     node, "method_call",
                                     function.name, result_type)
                             result.resolved = function.qualified
+                            // "" when this method holds no row: a
+                            // method with type parameters of its own is a
+                            // template, so the body is the one resolved
+                            // here and neither backend looks further.
                             result.dispatch_slot =
-                                hir_method_slot(
-                                    function.owner,
-                                    function.name,
-                                    function.is_public,
-                                    function.is_private)
+                                hir_call_dispatch_slot(function)
                             if declaration.kind == "struct" &&
                                function.is_inout {
                                 if receiver_syntax.kind != "name" {
@@ -10318,10 +10470,7 @@ class ExpressionChecker {
                         function.name, produced)
                 call.resolved = function.qualified
                 call.dispatch_slot =
-                    hir_method_slot(
-                        function.owner, function.name,
-                        function.is_public,
-                        function.is_private)
+                    hir_call_dispatch_slot(function)
                 call.children.push(carried)
                 return some(call)
             }

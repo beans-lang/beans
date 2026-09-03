@@ -1546,8 +1546,11 @@ let u: User = new("jul")
 
 - Methods are instance methods by default. Their `self` binding is implicit and
   available in the body; it is never written in the parameter list.
-- `static fn` is required for class statics. A static method has no `self` and is
-  not inherited.
+- `static fn` is required for class statics. A static method has no `self`, is
+  not inherited, and is not dispatched: it is called on the type that declares
+  it, as `User.guest()`, and `u.guest()` on a value is refused. See
+  *Inheritance and interfaces* for the rule that follows from it — one name in
+  a class family is a static or an instance method, never both.
 - An unmarked method is package-visible, `pub fn` is visible from other
   packages, and `priv fn` is visible only inside its exact declaring class or
   struct. The same rule applies to `priv static fn`, `priv inout fn`, and
@@ -1811,6 +1814,18 @@ cannot declare private methods. Beans has no `final` yet.
 or enum that names either is refused at the declaration: an interface value is
 an object whose first word is its descriptor, and a value type has none.
 
+Only an instance method is dispatched. A `static fn` declares no `self`, so no
+receiver picks it: it is called on its type, `value.some_static()` is refused,
+and it holds no row in any class's method table. Within one class family a
+name is therefore either a static or an instance method, never both — a
+`static fn` beside an instance method the class inherits, and an instance
+method beside a static a base declares, are each refused at the declaration
+naming the other. A `priv` method is outside this rule in both directions: it
+belongs to its exact declaring type, is never inherited and shares no slot, so
+a subclass writing the same name is already a separate method. Reflection
+follows the same rule: `Method.call` prefers the body the receiver's runtime
+class declares, and a static is never one of those.
+
 **Generic interfaces.** An interface may take type parameters, and an
 implementor binds them at the `implements` site: `class IntBox implements
 Producer<int>` requires `fn make() -> int`, not the interface's own `T`. A
@@ -1820,9 +1835,20 @@ instantiation's argument. Either way the interface stands as a type of its
 own: `Producer<int>` is a variable, parameter and element type that
 dispatches dynamically, and `Producer<int>` and `Producer<string>` are two
 unrelated types. A chain pins arguments the same way, so `interface
-IntProducer extends Producer<int>` answers `int`. A method that declares
-generics of its own binds them at the call site and so cannot be reached
-through an interface.
+IntProducer extends Producer<int>` answers `int`.
+
+**A method that declares generics of its own does not dispatch.** It binds
+them at the call site, so it is a template with one function per
+instantiation and there is no single body a method table could hold. The
+checker refuses every form that exists only to be reached through one: an
+interface may not declare such a method, with or without a default body; an
+`abstract fn` may not declare one; and a subclass may not replace one, nor
+replace a plain method with one — each is refused at the declaration naming
+the method it collides with. What stays is the ordinary case: the receiver's
+static type picks the body, walking its base chain the way any other name
+lookup does, so a subclass inherits its base's generic method and a base
+pinned at an argument — `class IntHolder extends Holder<int>` — raises the
+instantiation that argument names.
 
 A generic bound carries type arguments the same way: `fn read<P implements
 Producer<int>>(p: P)` accepts only implementors pinned to `int`, and a bound
