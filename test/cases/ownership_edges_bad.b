@@ -78,6 +78,13 @@ fn main() {
     let map_copy: Option<List<int>> = map.get("one")
     let indexed: List<int> = map["one"]
     let bad_key: Map<List<int>, int> = {[1]: 1}
+    // the same rule reached from the other side: a literal whose type
+    // nothing else pins down, and the Bytes key the rule is usually met
+    // with, which has an answer worth naming
+    let bad_bytes_key: Map<Bytes, int> = {Bytes.from("a"): 1}
+    for loose_key, loose_value: int in {Bytes.from("b"): 2} {
+        let seen: int = loose_value
+    }
 
     let arena_value: List<int> = [4]
     arena.add(arena_value)

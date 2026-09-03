@@ -1382,10 +1382,15 @@ outside the list, and `map[key]` panics when the key is missing. Use
 Bracket assignment stays `list[i] = value` and `map[key] = value`; List and
 Map bracket assignment does not have compound forms. Fixed arrays support
 numeric compound element assignment because their element is a real inline
-place. A bracket assignment evaluates left to right — receiver, then index
-or key, then the right-hand side — and a compound form evaluates its index
-once. Both backends run this order; a side-effecting key and value observe
-it.
+place. Every assignment evaluates left to right — receiver, then index or
+key, then the right-hand side — and a compound form evaluates its receiver
+and its index once, not once to read and again to store. A field target
+follows the same rule as a bracket target. Both backends run this order; a
+side-effecting receiver, key and value observe it.
+
+A `?` anywhere on the left short-circuits the whole statement, exactly as it
+does on the right: `find(id)?.count = next()` leaves the function with the
+propagated value and never runs `next()`.
 
 A `Map` or `OrderedMap` **key must be copyable**, so a move-only type cannot be
 one: the map owns a copy of every key it stores, and `keys()` hands copies back.
@@ -1996,6 +2001,12 @@ let count: int = parsed.recover(fn(e: Error) -> int { return 0 })
 in `std.option` or `std.result`. These methods copy the active input payload, so
 its type must implement `Clone`. Their inline, boxed, and null-niche layouts do
 not change.
+
+**`?` over an `Option` carries nothing.** In a function returning
+`Option<U>`, `x?` on an `x: Option<T>` answers this function's `none` when `x`
+is `none` — `none` is `none` whatever `T` and `U` are, and no payload crosses.
+`?` never crosses between the two kinds: an `Option` cannot propagate out of a
+`Result` function or the other way, and each is refused at the `?`.
 
 **`?` across an error boundary.** In a function returning `Result<U, F>`, `x?`
 on an `x: Result<T, E>` requires `E` to *reach* `F`. There are exactly three
@@ -3754,13 +3765,28 @@ helpers, globals, and functions for a library package's consumers.
   struct, not a copy of it. The chain walks back through as many struct fields
   and fixed-array elements as the source writes, and ends at a mutable local's
   slot or at the heap object a class field sits in — so `holder.settings.size =
-  9` on a class works too. A `let` local's fields cannot be reassigned. What is
-  refused is storage the write could not reach and would silently drop: a
-  temporary such as a call result, a `List` or `Map` element (the element read
-  answers a copy), and a struct read out of a `union` (a union field read
-  reinterprets bytes rather than naming a place). Each says which one it is;
-  the remedy in every case is to copy the value into a `var`, update it, and
-  assign it back.
+  9` on a class works too, as does an `inout` parameter, a local a closure
+  captured, and a struct method declared `inout fn`. A `let` local's fields
+  cannot be reassigned, and neither can a method receiver that is not
+  `inout fn`. What is refused is storage the write could not reach and would
+  silently drop: a temporary such as a call result, a `List` or `Map` element
+  (the element read answers a copy), and a struct read out of a `union` (a
+  union field read reinterprets bytes rather than naming a place). Each says
+  which one it is; the remedy in every case is to copy the value into a `var`,
+  update it, and assign it back.
+
+  A **static field is the third root**, beside a local's slot and a heap
+  object: `Cfg.home.origin.y = 3` and `Cfg.cells[0] = 9` write the static
+  itself. A static has no owning object whose bit could gate the write and no
+  scope that orders it, so a reference stored beneath one takes the cycle
+  collector's static barrier — the one a whole-static assignment already
+  emits — and the read that reaches the place runs the same
+  initialisation-order guard a whole-static read runs. One thing is still
+  refused there and it is refused for a class object too: storing a value
+  that may own references into a **fixed-array element** inside a static or a
+  class, because an element store emits no write barrier and would leave the
+  collector an untracked edge. A struct field beneath either root is fine —
+  it is a field store, and field stores carry the barrier.
 
   A struct is **move-only when any field is**. A struct is a value, so it can
   only be copied if everything it holds can, and `List`, `Map`, `Bytes`, `Box`,

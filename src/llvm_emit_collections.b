@@ -2833,6 +2833,7 @@ partial class LlvmTextEmitter {
                     new LlvmBorrowedPlace(
                         place.root_local,
                         place.root_register)
+                extended.root_static = place.root_static
                 for step: LlvmPlaceStep in place.steps {
                     extended.steps.push(step)
                 }
@@ -2854,14 +2855,20 @@ partial class LlvmTextEmitter {
     // holds the address. The array-element store and the record-field store
     // both go through here so the two cannot answer a different address for
     // the same chain. The root goes through local_value_address because a
-    // captured or escaping local's slot holds a cell pointer, not the value
-    // — geping off the slot itself would write over the cell pointer.
+    // captured or escaping local's slot holds a cell pointer, not the value:
+    // indexing off the slot itself would write the store over that pointer,
+    // which is a native-only segfault the interpreter never sees.
     fn place_address(
         function: MirFunction,
         place: LlvmBorrowedPlace) -> LlvmSlotConversion {
         var setup: string = ""
         var pointer: string = ""
-        if place.root_local >= 0 {
+        if place.root_static != "" {
+            // a global's symbol is already the address of the value, and
+            // the read that produced this place ran the initialisation
+            // guard on the way past
+            pointer = place.root_static
+        } else if place.root_local >= 0 {
             if place.root_local < function.locals.len() {
                 let root: MirLocal =
                     function.locals[place.root_local]
@@ -2923,12 +2930,21 @@ partial class LlvmTextEmitter {
         var base_pointer: string = ""
         match self.place_for(array_id) {
             some(place) => {
+                // an owned reference stored inside a heap object or a
+                // static needs the cycle-collector write barrier that
+                // field stores emit; until elements get it too, refuse
+                // rather than un-track the edge. The two owners are
+                // written out rather than interpolated so the gap
+                // inventory keeps them apart.
+                if place.root_static != "" &&
+                   self.type_has_owned_refs(element) {
+                    self.fail(
+                        instruction,
+                        "LLVM emitter cannot store owned references into an array inside a static yet — copy the array to a local, update it, and assign it back")
+                    return ""
+                }
                 if place.root_register != "" &&
                    self.type_has_owned_refs(element) {
-                    // an owned reference stored inside a heap object
-                    // needs the cycle-collector write barrier that
-                    // field stores emit; until elements get it too,
-                    // refuse rather than un-track the edge
                     self.fail(
                         instruction,
                         "LLVM emitter cannot store owned references into an array inside a class object yet — copy the array to a local, update it, and assign it back")

@@ -122,6 +122,11 @@ run_asan test/cases/move_ok.b move_ok
 # frees early surfaces as a real memory error rather than only a wrong count.
 run_asan test/cases/parity/discard_binding.b discard_binding
 run_asan test/cases/parity/record_place.b record_place
+# A place inside a static takes the collector's static write barrier rather
+# than an owner's, because a static has no owner. That is the half the arc
+# markers cannot see: a barrier that is skipped shows up as a use-after-free
+# under a sweep, not as a wrong count.
+run_asan test/cases/parity/static_place.b static_place
 run_asan examples/regress_mem.b regress_mem 3
 run_asan test/cases/decimal_precision.b decimal_precision
 run_asan test/cases/decimal_extrema.b decimal_extrema
@@ -381,7 +386,8 @@ if [[ "$(uname -s)" == Darwin ]] && command -v leaks >/dev/null 2>&1; then
                 test/cases/reflect_value.b test/cases/reflect_fields.b \
                 test/cases/reflect_calls.b test/cases/reflect_construct.b \
                 test/cases/parity/discard_binding.b \
-                test/cases/parity/record_place.b; do
+                test/cases/parity/record_place.b \
+                test/cases/parity/static_place.b; do
         echo "leaks checking $file"
         name=$(basename "$file" .b)
         ./build/beansc build "$file" -o "$out/${name}_leaks" >/dev/null

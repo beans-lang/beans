@@ -90,15 +90,25 @@ class LlvmPlaceStep {
 
 // Where an SSA aggregate copy was loaded from, so a store through it can
 // reach the original storage instead of the copy: a chain of steps below
-// a local's slot (root_local) or below a class object (root_register).
+// a local's slot (root_local), below a class object (root_register), or
+// below a module-lifetime global (root_static, the static field's symbol).
+//
+// The three are different in more than spelling. A local's slot may hold a
+// cell pointer rather than the value, so it goes through
+// local_value_address. A class object is also the cycle collector's owner
+// for anything stored beneath it. A static has no owner to name, and takes
+// the collector's static form instead — the same one a whole-static store
+// emits.
 class LlvmBorrowedPlace {
     root_local: int
     root_register: string
+    root_static: string
     steps: List<LlvmPlaceStep>
 
     fn init(root_local: int, root_register: string) {
         self.root_local = root_local
         self.root_register = root_register
+        self.root_static = ""
         self.steps = []
     }
 }

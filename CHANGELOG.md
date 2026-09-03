@@ -4,6 +4,78 @@ This file records user-facing changes in each Beans release.
 
 ## [Unreleased]
 
+### Added
+
+- **`_` is a discard, not a name.** It works wherever a name is bound — `let`,
+  `var`, function and closure parameters, loop bindings, and a match arm's
+  payload — and binds nothing: any number of them may share one scope, and
+  none can be read, moved, lent or assigned to. Each of those four says what
+  `_` is instead of offering a suggestion list for a name the author declined
+  to make, including inside a string interpolation, where the brace hint used
+  to speak over it. The value is still owned: `let _: Packet = open()` and
+  `fn eat(move _: Packet)` drop what they take at the end of their scope,
+  once, exactly where a named binding would — the same point on both
+  backends. Nothing completes to `_` and nothing renames it. (#56)
+
+### Changed
+
+- **`m[k] = v` takes a move-only value.** Writing one into a map is a move in,
+  the same transfer `m.set(k, v)` does and the same instruction it lowers to;
+  the read rule is untouched and still refuses `let b = m[k]`. A move-only
+  *key* is still refused, and the refusal now says why — a map owns a copy of
+  every key and `keys()` hands copies back — and, for the `Bytes` key the rule
+  is usually met with, names the way out: a Beans string keeps every byte, so
+  key by `string` and convert with `Bytes.to_string()`. Both places that check
+  the rule say the same sentence now; the one behind an inferred map literal
+  used to say only half of it. (#36)
+
+- **A struct field is a place at any depth.** `rect.origin.x = 1` and
+  `config.limits.retries += 1` write the one struct rather than a copy: the
+  chain walks back through as many struct fields and fixed-array elements as
+  the source wrote, and ends at a mutable local's slot, at the heap object a
+  class field sits in, or at a static field — including an `inout` parameter,
+  an `inout fn` receiver, and a local a closure captured. The checker and the
+  LLVM emitter walk that chain through one shared helper, so the two backends
+  cannot compute a different address. What stays refused names which storage
+  it is — a temporary, a `List` or `Map` element, a `union` field — rather
+  than "needs a local variable for now". A struct's move-only refusal names
+  the field responsible, following the chain down to the one that actually
+  fails. (#48, #112)
+
+### Fixed
+
+- **A record field store through a captured local wrote over the capture.** A
+  local a closure captures lives in a cell, so its slot holds a pointer rather
+  than the value. The record store indexed the slot itself: a native-only
+  segmentation fault, with the interpreter answering correctly beside it. It
+  goes through the same cell-aware address the array element store already
+  used.
+
+- **An assignment evaluates left to right, whatever its target is.** A field
+  target evaluated its right-hand side *before* the receiver on the
+  interpreter and after it natively, so a side-effecting pair observably
+  swapped between the backends; a compound field assignment then evaluated the
+  receiver twice on the interpreter and once natively, so `holder().n += 1`
+  called `holder()` a different number of times depending on the backend. The
+  receiver is hoisted once now, ahead of the value, the way a bracket target
+  already was.
+
+- **An `Option` propagated by `?` into a different `Option` built invalid
+  IR.** A `Result` carries its error across a `?`, so the propagation extracts
+  the payload and rewraps it; an `Option` carries nothing, and had no arm of
+  its own — it fell through to the `Result` code, which read an error payload
+  out of a value that has none. The module did not verify, so `beansc build`
+  failed naming a `.ll` file for a program the checker had accepted and the
+  interpreter ran correctly. A propagating `Option` is now the target's
+  `none`, whatever the two payload types are. (#111)
+
+- **A `?` in an assignment target short-circuits the statement.** The
+  interpreter threw the propagated value away and ran on, finishing a function
+  the native backend had already left — `find(id)?.count = next()` ran
+  `next()` and everything after it on the `none` path. It returns the
+  propagated value now, from the target's receiver, an index key, and a weak
+  field alike.
+
 ## [0.1.35] - 2026-08-30
 
 ### Fixed

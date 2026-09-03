@@ -19,7 +19,7 @@ fi
 
 grep -Fq "inout methods are supported only on structs" "$tmp/bad"
 grep -Fq "struct methods cannot be named init" "$tmp/bad"
-grep -Fq "'self' is a let — its fields can't be reassigned" "$tmp/bad"
+grep -Fq "'self' is borrowed here, so its fields can't be reassigned — declare the method 'inout fn'" "$tmp/bad"
 grep -Fq "needs var, but 'point' is a let" "$tmp/bad"
 grep -Fq "needs a mutable local receiver" "$tmp/bad"
 grep -Fq "Cell needs 1 type argument" "$tmp/bad"

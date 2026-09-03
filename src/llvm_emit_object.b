@@ -1504,6 +1504,15 @@ partial class LlvmTextEmitter {
             guard =
                 "  %static.done{id} = load i8, ptr @.next.statics.ready\n  %static.after{id} = icmp ne i8 %static.done{id}, 0\n  br i1 %static.after{id}, label %static.ok{id}, label %static.check{id}\nstatic.check{id}:\n  %static.busy{id} = load i8, ptr @.next.statics.running\n  %static.inside{id} = icmp ne i8 %static.busy{id}, 0\n  br i1 %static.inside{id}, label %static.order{id}, label %static.lazy{id}\nstatic.lazy{id}:\n  call void @.next.statics.init()\n  br label %static.ok{id}\nstatic.order{id}:\n  %static.flag{id} = load i8, ptr {ready}\n  %static.set{id} = icmp ne i8 %static.flag{id}, 0\n  br i1 %static.set{id}, label %static.ok{id}, label %static.bad{id}\nstatic.bad{id}:\n  call void @beans_panic(ptr {message}, i64 {instruction.line}, i64 {instruction.col})\n  unreachable\nstatic.ok{id}:\n"
         }
+        // the copy this load makes has live storage behind it, and unlike a
+        // local's slot or a heap object that storage is a module-lifetime
+        // global — so a field or element store through the copy can write
+        // back to the static rather than to the copy
+        let place: LlvmBorrowedPlace =
+            new LlvmBorrowedPlace(-1, "")
+        place.root_static = symbol
+        self.borrowed_place_of[
+            instruction.result] = place
         return "{guard}  {result} = load {llvm}, ptr {symbol}\n{self.emit_arc_value(instruction.type, result, true)}"
     }
 
@@ -2442,9 +2451,12 @@ partial class LlvmTextEmitter {
                     var address_setup: string = ""
                     var base_pointer: string = ""
                     // The heap object the record lives in, or "" when it
-                    // lives in a stack slot. It is the cycle collector's
-                    // owner for a reference stored into the record.
+                    // lives in a stack slot or a static. It is the cycle
+                    // collector's owner for a reference stored into the
+                    // record; a static has no owner and takes the
+                    // collector's static form instead.
                     var owner: string = ""
+                    var static_owner: bool = false
                     match self.place_for(receiver_id) {
                         some(place) => {
                             let slot: LlvmSlotConversion =
@@ -2453,6 +2465,8 @@ partial class LlvmTextEmitter {
                             address_setup = slot.setup
                             base_pointer = slot.value
                             owner = place.root_register
+                            static_owner =
+                                place.root_static != ""
                         }
                         none => {
                             self.fail(
@@ -2500,9 +2514,17 @@ partial class LlvmTextEmitter {
                         // object, so a reference stored into it needs the
                         // same publication barrier a direct class field
                         // store emits. A record in a stack slot has no
-                        // shared owner and needs none.
+                        // shared owner and needs none. A record in a static
+                        // is reachable from every thread by construction
+                        // and has no owner whose bit could gate the write,
+                        // which is the static form's whole reason — the
+                        // same one a whole-static store emits.
                         let barrier: string =
-                            if owner == "" {
+                            if static_owner {
+                                self.emit_cc_write_static(
+                                    field_type, stored,
+                                    "field")
+                            } else if owner == "" {
                                 ""
                             } else {
                                 self.emit_cc_write(

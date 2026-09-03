@@ -11997,6 +11997,20 @@ class TreeInterpreter {
         return self.expression(node, frame)
     }
 
+    // A `?` anywhere in an assignment — target receiver, index key, or the
+    // right-hand side — short-circuits the statement the way it does in every
+    // other position: the function returns the propagated value. Answering
+    // `next()` for a target's `?` threw the error away and ran on, so the
+    // interpreter finished a function the native backend had already left.
+    fn propagated(value: TreeValue) -> Option<TreeExec> {
+        if value.kind == "propagate" &&
+           value.items.len() == 1 {
+            return some(
+                TreeExec.returned(value.items[0]))
+        }
+        return none
+    }
+
     fn assign(node: HirNode,
               frame: TreeFrame) -> TreeExec {
         if node.children.len() != 2 {
@@ -12004,29 +12018,59 @@ class TreeInterpreter {
             return TreeExec.next()
         }
         let target: HirNode = node.children[0]
-        // Source order: an index target's receiver and key evaluate before
-        // the right-hand side — the order MIR lowers, so the order a native
-        // build runs. The interpreter evaluated the value first, and a
-        // side-effecting key and value observably swapped on the backends.
+        // Source order: a target's receiver — and an index target's key —
+        // evaluate before the right-hand side, which is the order MIR
+        // lowers and so the order a native build runs. The interpreter
+        // evaluated the value first, and a side-effecting receiver, key and
+        // value observably swapped on the backends. A field target had the
+        // second half of the same fault: the compound read re-evaluated the
+        // whole target, so `holder().n += 1` called holder() twice here and
+        // once natively.
         var index_receiver: TreeValue = TreeValue.unit()
         var index_key: TreeValue = TreeValue.unit()
         let index_first: bool =
             target.kind == "index" &&
             target.children.len() == 2
+        // Exactly the two target shapes whose store reads this receiver
+        // below, spelled the same way there: a shape that is not hoisted
+        // would otherwise store through a unit.
+        var field_receiver: TreeValue = TreeValue.unit()
+        let field_first: bool =
+            (target.kind == "field" &&
+             target.children.len() == 1) ||
+            (target.kind == "weak_field" &&
+             target.children.len() != 0)
         if index_first {
             index_receiver =
                 self.place_receiver(
                     target.children[0], frame)
+            match self.propagated(index_receiver) {
+                some(exit) => { return exit }
+                none => {}
+            }
             index_key =
                 self.expression(
                     target.children[1], frame)
+            match self.propagated(index_key) {
+                some(exit) => { return exit }
+                none => {}
+            }
+        }
+        if field_first {
+            field_receiver =
+                self.place_receiver(
+                    target.children[0], frame)
+            match self.propagated(field_receiver) {
+                some(exit) => { return exit }
+                none => {}
+            }
+            if self.failed { return TreeExec.next() }
         }
         let written: TreeValue =
             self.expression(node.children[1], frame)
-        if written.kind == "propagate" &&
-           written.items.len() == 1 {
-            return TreeExec.returned(
-                written.items[0])
+        match self.propagated(written) {
+            some(exit) => { return exit }
+            none => {}
         }
         var value: TreeValue = written
         if node.value != "=" {
@@ -12050,6 +12094,14 @@ class TreeInterpreter {
                     tree_value_copy(
                         index_receiver.items[
                             index_key.int_data])
+                } else if field_first &&
+                          field_receiver.fields.entries
+                              .contains_key(target.value) {
+                    // the same hoisted receiver the store below writes
+                    // through, so the receiver expression runs once
+                    tree_value_copy(
+                        field_receiver.fields.entries[
+                            target.value])
                 } else {
                     self.expression(target, frame)
                 }
@@ -12139,14 +12191,10 @@ class TreeInterpreter {
             // read of a record hands back an independent wrapper, so a
             // write through `n.inner.x` would land in that wrapper and
             // vanish — the same reason the element-assignment path has
-            // always walked the place instead of evaluating it.
-            let receiver: TreeValue =
-                self.place_receiver(
-                    target.children[0], frame)
-            if receiver.kind == "propagate" {
-                return TreeExec.next()
-            }
-            if self.failed { return TreeExec.next() }
+            // always walked the place instead of evaluating it. It is the
+            // receiver hoisted above the right-hand side, so it is walked
+            // once whatever the operator is.
+            let receiver: TreeValue = field_receiver
             match self.declaration(receiver.text) {
                 some(declaration) => {
                     if declaration.kind == "union" {
@@ -12166,12 +12214,7 @@ class TreeInterpreter {
         }
         if target.kind == "weak_field" &&
            target.children.len() != 0 {
-            let receiver: TreeValue =
-                self.expression(
-                    target.children[0], frame)
-            if receiver.kind == "propagate" {
-                return TreeExec.next()
-            }
+            let receiver: TreeValue = field_receiver
             let stored: TreeValue = tree_value_copy(value)
             if stored.kind == "some" &&
                stored.items.len() == 1 {
