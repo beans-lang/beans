@@ -543,6 +543,39 @@ with tempfile.TemporaryDirectory() as tmp:
 print("ok editing: unsaved buffers, incremental sync, URIs, UTF-16 columns")
 
 # ---------------------------------------------------------------------------
+# Module constants navigate like any other symbol (#37)
+# ---------------------------------------------------------------------------
+# Over the real wire: a use of a `const` jumps to its declaration, and hover
+# there carries the constant's type and its folded value.
+with tempfile.TemporaryDirectory() as tmp:
+    proj = pathlib.Path(tmp)
+    (proj / "beans.pot").write_text("module consts_demo\n")
+    main = proj / "main.b"
+    main.write_text(
+        "package main\n\nimport std.io\n\n"
+        "const MAX_FRAME: int = 1 << 20\n\n"
+        "fn main() {\n    let n: int = MAX_FRAME\n"
+        "    io.println(\"{n}\")\n}\n")
+
+    s = Session(main)
+    # `MAX_FRAME` is used on line 8, starting at column 18.
+    d = s.ask("textDocument/definition", main, 8, 18)
+    hov = s.ask("textDocument/hover", main, 8, 18)
+    s.finish()
+
+    if at(s.result(d)) != ("main.b", 5, 6):
+        fail(f"definition of a const use should reach its declaration: "
+             f"{s.result(d)}")
+    hover = s.result(hov)
+    if hover is None:
+        fail("a const use should hover")
+    text = hover["contents"]["value"]
+    if "MAX_FRAME" not in text or "1048576" not in text:
+        fail(f"const hover should carry the type and the folded value: {text}")
+
+print("ok module constants: a use navigates to its declaration and hovers")
+
+# ---------------------------------------------------------------------------
 # Cancellation, and the exact-span rule
 # ---------------------------------------------------------------------------
 # The server reads and answers strictly in order, so a `$/cancelRequest` is

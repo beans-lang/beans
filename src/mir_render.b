@@ -183,6 +183,10 @@ fn render_mir(program: MirProgram) -> string {
                 if instruction.bounds_elided {
                     detail = "{detail} bounds-elided"
                 }
+                if instruction.list_header_local >= 0 {
+                    detail =
+                        "{detail} header-cache=l{instruction.list_header_local}"
+                }
                 if instruction.scalar_materialize {
                     detail =
                         "{detail} scalar-materialize"
@@ -222,6 +226,11 @@ fn render_mir(program: MirProgram) -> string {
                     lines.push(
                         "    edge_drop -> bb{edge.target} releases=({render_mir_operands(edge.values)})")
                 }
+            }
+            for flush: MirHeaderFlush in
+                block.header_flushes {
+                lines.push(
+                    "    header_flush -> bb{flush.target} local=l{flush.local}")
             }
         }
     }

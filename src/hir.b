@@ -190,6 +190,64 @@ fn hir_method_slot(owner: string, name: string,
     return "pkg:{symbol_package(owner)}:{name}"
 }
 
+// The slot a call that statically resolved to this method dispatches
+// through, or "" when the method holds no row to dispatch through. A method
+// with no slot is bound where it was resolved, and both backends read the
+// same empty string to mean it: the native emitter names the body it
+// resolved and the tree interpreter skips its runtime-class walk.
+fn hir_call_dispatch_slot(function: HirFunction) -> string {
+    if function.dispatch_slots.len() == 0 { return "" }
+    return hir_method_slot(
+        function.owner, function.name,
+        function.is_public, function.is_private)
+}
+
+// A type's own string form: a `to_string(self) -> string` with a body and no
+// argument beyond the receiver. When present, `{obj}` renders through it
+// rather than through the derived Name { field: value } form, so a class that
+// spells out how it reads wins over the default. The checker, the native show
+// emitter and the tree interpreter all ask this one predicate, so the three
+// agree on which values take the custom path.
+fn hir_is_string_form(function: HirFunction) -> bool {
+    return function.name == "to_string" &&
+           function.has_body &&
+           !function.is_static &&
+           !function.is_abstract &&
+           function.parameters.len() == 0 &&
+           canonical_hir_name(function.result.name) ==
+               "string"
+}
+
+// The form one owner declares. Linear in the program, so a caller that asks
+// it per value rendered indexes with hir_string_form_index instead.
+fn hir_string_form(owner: string,
+                   functions: List<HirFunction>) -> Option<HirFunction> {
+    for function: HirFunction in functions {
+        if function.owner == owner &&
+           hir_is_string_form(function) {
+            return some(function)
+        }
+    }
+    return none
+}
+
+// Every owner's form in one pass. The tree interpreter asks this question
+// once per object it renders and the checker once per class it walks; a scan
+// per question made both linear in the size of the whole program.
+fn hir_string_form_index(
+    functions: List<HirFunction>) ->
+    Map<string, HirFunction> {
+    var index: Map<string, HirFunction> = {}
+    for function: HirFunction in functions {
+        if function.owner != "" &&
+           hir_is_string_form(function) &&
+           !index.contains_key(function.owner) {
+            index[function.owner] = function
+        }
+    }
+    return move index
+}
+
 class HirFunction {
     name: string
     qualified: string
@@ -244,12 +302,6 @@ class HirFunction {
         self.is_private = is_private
         self.is_override = false
         self.dispatch_slots = []
-        if owner != "" && name != "init" &&
-           name != "deinit" {
-            self.dispatch_slots.push(
-                hir_method_slot(
-                    owner, name, is_public, is_private))
-        }
         self.generics = []
         self.generic_constraints = []
         self.parameters = []
@@ -274,6 +326,44 @@ class HirFunction {
         self.annotations = []
         self.runtime_start = false
         self.runtime_stop = false
+        self.assign_dispatch_slot()
+    }
+
+    // A dispatch slot is the identity a receiver's runtime class picks a
+    // body through, so only a method a receiver can pick has one. Every
+    // reader agrees on that: the descriptor row for a slot is filled from
+    // the nearest owner in the receiver's chain that declares the slot, the
+    // selector table numbers one row per slot, and the interpreter's
+    // runtime-class walk accepts a body only when it carries the slot.
+    //
+    // Four kinds of method have no single body a row could hold, and none
+    // of them may sit in one:
+    //
+    //   - a free function, which has no owner;
+    //   - `init`, which runs on storage that has no descriptor yet, and
+    //     `deinit`, whose row is the one @beans_deinit_sel publishes;
+    //   - a `static fn`, which declares no `self` at all — its row named a
+    //     receiverless function and every dynamic call through the slot
+    //     handed it one anyway (#88);
+    //   - a method that declares type parameters of its own, which is a
+    //     template with one function per instantiation: a row holds one
+    //     pointer, so it stayed null and the call jumped through it (#89).
+    //
+    // Modifiers are read after construction, so lower_function calls this
+    // again once `static` and the type parameters are known.
+    fn assign_dispatch_slot() {
+        self.dispatch_slots = []
+        if self.owner == "" ||
+           self.name == "init" ||
+           self.name == "deinit" ||
+           self.is_static ||
+           self.generics.len() != 0 {
+            return
+        }
+        self.dispatch_slots.push(
+            hir_method_slot(
+                self.owner, self.name,
+                self.is_public, self.is_private))
     }
 }
 
@@ -407,6 +497,47 @@ class HirCGlobal {
     }
 }
 
+// A module constant. It has no storage and no address: the checker folds
+// the initializer once and every use is the value, materialized where the
+// use is written. `text` is that value in the spelling a literal of this
+// type takes, which is all a use site needs to build the same node source
+// would have produced.
+class HirConst {
+    name: string
+    qualified: string
+    type: HirType
+    is_public: bool
+    // the initializer, kept for the expression checker to fold
+    syntax: Option<AstNode>
+    file: string
+    line: int
+    col: int
+    // filled in by the expression checker's const pass
+    folded: bool
+    kind: string
+    number: int
+    text: string
+    annotations: List<HirAnnotation>
+
+    fn init(name: string, qualified: string, type: HirType,
+            is_public: bool, file: string, line: int,
+            col: int) {
+        self.name = name
+        self.qualified = qualified
+        self.type = type
+        self.is_public = is_public
+        self.syntax = none
+        self.file = file
+        self.line = line
+        self.col = col
+        self.folded = false
+        self.kind = ""
+        self.number = 0
+        self.text = ""
+        self.annotations = []
+    }
+}
+
 class HirProgram {
     target: TargetDescription
     links: List<ModuleLink>
@@ -414,6 +545,7 @@ class HirProgram {
     cflag_rows: List<ModuleCflags>
     declarations: List<HirDeclaration>
     c_globals: List<HirCGlobal>
+    consts: List<HirConst>
     functions: List<HirFunction>
     annotation_declarations: List<HirAnnotationDeclaration>
     errors: List<Diagnostic>
@@ -428,6 +560,7 @@ class HirProgram {
         self.cflag_rows = []
         self.declarations = []
         self.c_globals = []
+        self.consts = []
         self.functions = []
         self.annotation_declarations = []
         self.errors = []
@@ -446,8 +579,9 @@ fn type_child(node: AstNode) -> Option<AstNode> {
 }
 
 // The whole constant-expression grammar for parameter defaults: a
-// literal, a negated numeric literal, or `none`. Anything computed
-// belongs at the call site.
+// literal, a negated numeric literal, or `none`. A module constant is not
+// one, and cannot be until constant initializers fold before signatures
+// are checked — the same pass an array length waits on (issue #59).
 fn constant_default(node: AstNode) -> bool {
     if node.kind == "literal" { return true }
     if node.kind == "name" && node.value == "none" { return true }
@@ -491,10 +625,8 @@ fn required_feature_from_value(value: string) -> string {
             continue
         }
         let quoted: string = words[index + 1]
-        if quoted.len() >= 2 &&
-           quoted.starts_with("\"") &&
-           quoted.ends_with("\"") {
-            return quoted.slice(1, quoted.len() - 1)
+        if string_literal_is_text(quoted) {
+            return string_literal_decode(quoted)
         }
     }
     return ""
@@ -894,12 +1026,7 @@ class SignatureChecker {
         if node.kind != "literal" || node.note != "string" {
             return ""
         }
-        if node.value.len() >= 2 &&
-           node.value.starts_with("\"") &&
-           node.value.ends_with("\"") {
-            return node.value.slice(1, node.value.len() - 1)
-        }
-        return node.value
+        return string_literal_decode(node.value)
     }
 
     fn annotation_schema_type(type: HirType) -> bool {
@@ -1056,7 +1183,7 @@ class SignatureChecker {
                     target == "function" || target == "method" ||
                     target == "field" || target == "variant" ||
                     target == "parameter" || target == "local" ||
-                    target == "c_global"
+                    target == "c_global" || target == "const"
                 if !valid {
                     self.fail(file.path, item,
                               "unknown annotation target '{target}'")
@@ -1160,7 +1287,8 @@ class SignatureChecker {
             match self.annotation_declaration(use.resolved) {
                 some(schema) => {
                     if schema.retention == "runtime" &&
-                       (target == "local" || target == "c_global") {
+                       (target == "local" || target == "c_global" ||
+                        target == "const") {
                         self.fail(
                             file, use,
                             "runtime annotation '@{use.value}' cannot target {target} declarations")
@@ -1289,6 +1417,26 @@ class SignatureChecker {
             module_words(node.value).contains("abstract")
         function.is_override =
             module_words(node.value).contains("override")
+        // `static` and the method's own type parameters are read above,
+        // after construction, and both decide whether this method can sit
+        // in a dispatch row at all.
+        function.assign_dispatch_slot()
+        // A method that declares type parameters of its own binds them at
+        // the call site, so it is a template with one function per
+        // instantiation and no single body a row could hold. Both forms
+        // below exist only to be reached through a row, and both checked
+        // clean before #89 and then jumped through a null one.
+        if function.generics.len() != 0 {
+            if owner_is_interface {
+                self.fail(
+                    file.path, node,
+                    "interface method '{name}' can't declare type parameters of its own — an interface is reached only through a dispatch row, which holds one body, and this method has one per instantiation; put the parameter on the interface as 'interface {symbol_name(owner)}<{function.generics.join(", ")}>' or declare the method on the class")
+            } else if function.is_abstract {
+                self.fail(
+                    file.path, node,
+                    "abstract method '{name}' can't declare type parameters of its own — an abstract method exists to be replaced and reached through a dispatch row, which holds one body, and this method has one per instantiation")
+            }
+        }
         function.required_feature =
             required_feature_from_value(node.value)
         for child: AstNode in node.children {
@@ -1333,8 +1481,18 @@ class SignatureChecker {
                                     self.fail(file.path, part,
                                               "a defaulted parameter passes by value, not '{passing}'")
                                 } else if !constant_default(value) {
-                                    self.fail(file.path, part,
-                                              "a parameter default must be a constant literal")
+                                    // A name is the mistake worth naming:
+                                    // a module constant reads like it
+                                    // should work here, and the reason it
+                                    // does not is an ordering the message
+                                    // has to state (issue #59).
+                                    if value.kind == "name" {
+                                        self.fail(file.path, part,
+                                                  "a parameter default must be a literal, not the name '{value.value}' — a default is read while signatures are checked, which happens before any constant is folded, so a module const cannot be one yet")
+                                    } else {
+                                        self.fail(file.path, part,
+                                                  "a parameter default must be a constant literal")
+                                    }
                                 } else {
                                     lowered.default_syntax = some(value)
                                 }
@@ -1402,11 +1560,9 @@ class SignatureChecker {
             } else if child.kind == "block" {
                 function.has_body = true
             } else if child.kind == "symbol_alias" {
-                if child.value.len() >= 2 &&
-                   child.value.starts_with("\"") &&
-                   child.value.ends_with("\"") {
+                if string_literal_is_text(child.value) {
                     function.extern_name =
-                        child.value.slice(1, child.value.len() - 1)
+                        string_literal_decode(child.value)
                 }
             }
         }
@@ -1453,12 +1609,9 @@ class SignatureChecker {
         var extern_name: string = name
         for child: AstNode in node.children {
             if child.kind == "symbol_alias" &&
-               child.value.len() >= 2 &&
-               child.value.starts_with("\"") &&
-               child.value.ends_with("\"") {
+               string_literal_is_text(child.value) {
                 extern_name =
-                    child.value.slice(
-                        1, child.value.len() - 1)
+                    string_literal_decode(child.value)
             }
         }
         let global: HirCGlobal =
@@ -1474,6 +1627,59 @@ class SignatureChecker {
             self.lower_annotations(
                 node.annotations, "c_global", file.path)
         self.hir.c_globals.push(global)
+    }
+
+    // A constant's type must be one a value can be written as a literal in:
+    // it has no storage, so there is nothing for a composite to live in, and
+    // no runtime call to build one.
+    fn const_type_allowed(type: HirType) -> bool {
+        if type.args.len() != 0 { return false }
+        if hir_is_numeric(type) { return true }
+        let name: string = canonical_hir_name(type.name)
+        return name == "bool" || name == "string"
+    }
+
+    fn lower_const(node: AstNode, file: ParsedModuleFile) {
+        let name: string = declaration_name(node.value)
+        var type: HirType = new HirType("poison")
+        match type_child(node) {
+            some(type_node) => {
+                type = self.lower_type(type_node, file.path)
+            }
+            none => {
+                self.fail(
+                    file.path, node,
+                    "a constant needs a declared type, like const LIMIT: int = 128")
+            }
+        }
+        if type.name != "poison" &&
+           !self.const_type_allowed(type) {
+            self.fail(
+                file.path, node,
+                "a constant is a number, bool or string — {render_hir_type(type)} has no compile-time value")
+            type = new HirType("poison")
+        }
+        let constant: HirConst =
+            new HirConst(
+                name, node.resolved, type,
+                node.value.starts_with("pub "),
+                file.path, node.line, node.col)
+        for child: AstNode in node.children {
+            if child.kind != "type" &&
+               child.kind != "array_type" &&
+               child.kind != "fn_type" {
+                constant.syntax = some(child)
+            }
+        }
+        if constant.syntax.is_none() {
+            self.fail(
+                file.path, node,
+                "a constant needs a value, like const LIMIT: int = 128")
+        }
+        constant.annotations =
+            self.lower_annotations(
+                node.annotations, "const", file.path)
+        self.hir.consts.push(constant)
     }
 
     fn lower_declaration(node: AstNode, file: ParsedModuleFile) {
@@ -1560,6 +1766,37 @@ class SignatureChecker {
                         })
                     }
                 }
+            }
+        }
+        // Only a class is an interface value. An interface receiver is
+        // dispatched by reading a descriptor out of the object's first
+        // word, and no value type carries one: `let x: Eq = 5` is refused,
+        // a struct or union naming a relation is refused just above, and
+        // `enum(u8)` is committed to the bare one-byte tag with no pointer
+        // bits at all. An enum satisfies `Eq`, `Hash` and `Order` bounds
+        // and works as a map key without naming them, so nothing is lost.
+        //
+        // Enums were the one record kind with no rule here, so
+        // `enum Colour implements Shows` checked clean and then answered
+        // unit under the interpreter and read a tag word as a descriptor
+        // natively (#87).
+        if node.kind == "enum" {
+            for index: int in
+                0..declaration.relations.len() {
+                let relation: HirType =
+                    declaration.relations[index]
+                let is_base: bool =
+                    index <
+                        declaration.relation_kinds.len() &&
+                    declaration.relation_kinds[index] ==
+                        "extends"
+                self.fail(
+                    file.path, node,
+                    if is_base {
+                        "enum '{declaration.name}' cannot extend '{render_hir_type(relation)}' — enums have no base type"
+                    } else {
+                        "enum '{declaration.name}' cannot implement '{render_hir_type(relation)}' — an interface value is an object with a descriptor and an enum value is a tag, so only a class can implement one"
+                    })
             }
         }
         self.hir.declarations.push(declaration)
@@ -2254,6 +2491,8 @@ class SignatureChecker {
                     } else if declaration.kind == "c_global" {
                         self.lower_c_global(
                             declaration, file)
+                    } else if declaration.kind == "const" {
+                        self.lower_const(declaration, file)
                     } else if declaration.kind == "class" ||
                               declaration.kind == "struct" ||
                               declaration.kind == "union" ||
@@ -2315,6 +2554,18 @@ fn render_hir_type(type: HirType) -> string {
 
 fn render_hir(program: HirProgram) -> string {
     var lines: List<string> = []
+    // The value is the expression checker's answer, and `beansc hir` prints
+    // this the moment signatures are checked — before any constant is
+    // folded. Rendering `= {constant.text}` unconditionally therefore
+    // printed an empty value for every constant in the program. A stage
+    // dump says what the stage knows: the value appears only once there is
+    // one.
+    for constant: HirConst in program.consts {
+        let value: string =
+            if constant.folded { " = {constant.text}" } else { "" }
+        lines.push(
+            "const {constant.qualified} {render_hir_type(constant.type)}{value}")
+    }
     for global: HirCGlobal in program.c_globals {
         let mutability: string =
             if global.is_var { "var" } else { "let" }

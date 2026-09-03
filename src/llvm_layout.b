@@ -38,6 +38,38 @@ class LlvmSlotConversion {
     }
 }
 
+// The stack slots a loop holds one list's header in. `data` and `cap` are
+// read-only mirrors — only the runtime's grow path writes them, and the
+// cache reloads all five behind it — so leaving the loop writes back `len`
+// and the change word and nothing else. Every slot is an entry alloca whose
+// address never leaves the frame, which is the whole point: the element
+// store cannot alias it, so LLVM keeps the header in registers across the
+// loop instead of reloading it from the heap object every turn.
+class LlvmListHeader {
+    data: string
+    len: string
+    cap: string
+    count: string
+    kind: string
+    element: HirType
+    inline: bool
+    llvm: string
+
+    fn init(data: string, len: string, cap: string,
+            count: string, kind: string,
+            element: HirType, inline: bool,
+            llvm: string) {
+        self.data = data
+        self.len = len
+        self.cap = cap
+        self.count = count
+        self.kind = kind
+        self.element = element
+        self.inline = inline
+        self.llvm = llvm
+    }
+}
+
 // One step from an enclosing aggregate to the storage the value was read
 // out of: a struct field (gep index into `aggregate`), a class field (byte
 // offset into the object), or a fixed-array element (index register).
@@ -58,15 +90,25 @@ class LlvmPlaceStep {
 
 // Where an SSA aggregate copy was loaded from, so a store through it can
 // reach the original storage instead of the copy: a chain of steps below
-// a local's slot (root_local) or below a class object (root_register).
+// a local's slot (root_local), below a class object (root_register), or
+// below a module-lifetime global (root_static, the static field's symbol).
+//
+// The three are different in more than spelling. A local's slot may hold a
+// cell pointer rather than the value, so it goes through
+// local_value_address. A class object is also the cycle collector's owner
+// for anything stored beneath it. A static has no owner to name, and takes
+// the collector's static form instead — the same one a whole-static store
+// emits.
 class LlvmBorrowedPlace {
     root_local: int
     root_register: string
+    root_static: string
     steps: List<LlvmPlaceStep>
 
     fn init(root_local: int, root_register: string) {
         self.root_local = root_local
         self.root_register = root_register
+        self.root_static = ""
         self.steps = []
     }
 }

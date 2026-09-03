@@ -350,12 +350,71 @@ fn main() {
 - Format specs ride after a `:` in the braces: `{x:8}` pads to width 8 (right-aligned),
   `{x:-8}` left-aligns, `{pi:.2}` fixes decimals (float/decimal only), `{pi:8.2}` both.
   Width pads anything printable — `{xs:12}` pads a whole list. Same rendering as `std.fmt`.
-- **There is no `+` for strings.** Building strings happens through interpolation, `std.fmt` (sprintf-style: padding, precision, alignment), or `list.join(sep)`. One way to do it, and it's the readable one.
-- Escapes: `\n \t \r \0 \\ \" \{ \}`. The backslash forms are the *only* brace
-  escapes: `{{` is not one. A `{` right after another `{` begins an
+- **Width is measured in display columns, not bytes.** `{s:12}` fills until the
+  rendered value occupies twelve terminal columns, so `"café 東京 🍜"` (17 bytes,
+  9 characters, 12 columns) is already full and `"ok"` gets ten spaces. Byte
+  padding lined up only ASCII; there is no caller that wanted it for anything
+  else. `s.width()` is the same measure, spelled out.
+- **There is no `+` for strings.** To render *one* string, use interpolation
+  (`"hi {name}"`) or `std.fmt` (sprintf-style: padding, precision, alignment).
+  To *accumulate* a string across a loop, use `fmt.StringBuilder` (push the
+  pieces, `to_string()` once) or `list.join(sep)` — never `text = "{text}piece"`
+  in a loop, which rebuilds the whole string every turn and so costs O(n²) in
+  the total length. Interpolation is the readable tool for a single value and
+  the wrong one for a growing buffer; a builder is the other way round.
+- Escapes: `\n \t \r \0 \\ \" \{ \} \xNN \u{...}`. Anything else after a
+  backslash is an error, not the character itself — `"C:\Users"` says so
+  instead of quietly becoming `C:Users`. The backslash forms are the *only*
+  brace escapes: `{{` is not one. A `{` right after another `{` begins an
   interpolation whose expression starts with a map literal, so `"{{}}"` is an
   (illegal) empty-map piece, not a literal `{}`. Both compilers render every
   escape identically, in and out of interpolated strings.
+- `\xNN` is exactly two hex digits and stands for **one raw byte**, whatever
+  that byte is. `"\x1b[2J"` is the ANSI clear-screen sequence. A value at or
+  above `\x80` puts a byte in the string that is not valid UTF-8 on its own,
+  and that is the point: a string is binary-safe (`\0` has always been
+  spellable), so a protocol byte is written as the byte. `chars()` hands such
+  a byte back one at a time, the same as any other malformed sequence.
+- `\u{...}` is one to six hex digits and stands for a **Unicode scalar**,
+  encoded UTF-8: `"\u{1f600}"` is four bytes. The value must be at most
+  `10FFFF`, and the surrogate range `D800`–`DFFF` is refused because it has no
+  UTF-8 form. This is `chars()`'s inverse: every element `chars()` returns for
+  well-formed text can be written back with `\u{...}`.
+- There is no `\e`. `\x1b` already names that byte, in the spelling C, C++,
+  Rust and Python all use; a second name for one byte would reserve a letter
+  forever and buy nothing.
+
+### Raw string literals
+
+```
+r"/users/{id}"           // a route template, brace and all
+r"\d+"                   // a regex, backslash and all
+r#"say "hi""#            // n hashes when the body holds a quote
+r##"…"#…"##              // more hashes when the body holds `"#`
+```
+
+A raw literal is bytes, not syntax. Nothing in it is an escape and nothing in
+it opens an interpolation, so a literal meant to be read by something other
+than Beans — a route template, a regex, a Windows path, a printf format, a
+JSON fixture — is written the way its own reader spells it. The opener is `r`
+followed by any number of `#`, then `"`; the terminator is `"` followed by the
+same number of `#`. A raw literal may span lines: the terminator is explicit,
+so there is no end of line to guess at.
+
+`r` is only a prefix when the quote follows it with nothing in between, so `r`
+stays an ordinary name everywhere else.
+
+Rawness is a spelling, not a kind. The two forms make the same string, they
+are the same type, they compare equal, and below the checker there is one
+spelling: a raw literal used as a match pattern or folded into a `const` is
+rewritten with ordinary escapes, so nothing downstream ever meets a second
+shape. A raw literal is a compile-time constant, so it works where one is
+required — an annotation argument most of all:
+
+```
+@route(path: r"/users/{id}")
+pub fn show(id: int) -> int { return id }
+```
 
 **Methods (v0.5, implemented, byte-based — unicode arrives later as explicit `chars()`, `len` stays bytes forever):**
 `len`, `is_empty`, `first(n)`, `last(n)`, `slice(from, to)` (half-open, panics out of range),
@@ -369,6 +428,35 @@ fn main() {
 `count_chars(from, to)` for a checked, allocation-free byte range scan,
 `find_byte(byte, from) -> int` (`-1` when absent), `range_equals(from, to, other)`,
 and `parse_int_range_or(from, to, fallback)` for allocation-free byte-range work.
+
+`width() -> int` is the third measure, beside `len()` in bytes and
+`chars().len()` in characters: how many terminal columns the string occupies.
+It is what `{s:N}` and `std.fmt`'s pads fill to. The rules, from the Unicode
+Character Database (`tools/gen_width_table.py` regenerates the tables in
+`runtime/beans_rt.c`; the shipped ones are Unicode 17.0.0):
+
+- East_Asian_Width `W` and `F`, and anything with `Emoji_Presentation`, take
+  two columns; everything else takes one.
+- Combining marks (`Mn`, `Me`), format characters (`Cf`), control characters
+  (`Cc`), conjoining Hangul jamo (`V`, `T`) and the emoji skin-tone modifiers
+  take none. `U+00AD SOFT HYPHEN` is the one exception: terminals draw it, so
+  it counts one.
+- `U+200D ZERO WIDTH JOINER` welds the next scalar onto the current glyph, so
+  that scalar takes no column either: a four-person family emoji is two
+  columns, not eight.
+- `U+FE0F` promotes the pictograph before it to two columns and `U+FE0E`
+  pulls it back to one, so `❤` is one column and `❤️` is two.
+- Two regional indicators make one flag and two columns; a third starts a new
+  pair.
+- Invalid UTF-8 counts one column per bad byte, which is what a terminal draws
+  for the replacement character it substitutes. A byte is bad when it does not
+  start a well-formed sequence, when its sequence is truncated, and when the
+  bytes are well formed but spell what UTF-8 does not encode — an overlong
+  form, half a surrogate pair, a scalar past the last plane. A bad byte also
+  stands between whatever was joining or pairing across it.
+
+This is a column count, not a grapheme count: a `Mc` spacing mark advances the
+caret and counts one, and no normalization happens first.
 
 ## Bytes (v0.5, implemented)
 
@@ -476,10 +564,52 @@ registry rows remain for low-level allocation/storage, raw bytes, OS calls,
 atomics, and thread entry while more of `core` and `std` move to `.b` files.
 
 **What prints** (same rule for `io.println` and `{x}` interpolation): numbers, bools, strings;
-enums, as `variant` or `variant(payload, ...)`; lists of printable things, as `[a, b, c]`,
-nesting included — and `join(sep)` renders the same way. Maps and class instances don't print
-yet — give them a string form first. (`Result` carries an `Error` object, so it stays
-unprintable too — match on it.)
+enums, as `variant` or `variant(payload, ...)`; options as `some(x)` / `none` and results as
+`ok(x)` / `err(e)`; lists of printable things, as `[a, b, c]`; maps of printable keys and
+values, as `{k: v, k: v}`; and structs and class instances, as `Name { field: value, ... }` —
+nesting included, and `join(sep)` renders the same way. A result's default `err` payload is an
+`Error`, which prints as the message a caller passed to `err(...)`; a custom err type prints
+as itself. A map renders its entries in the order `keys()` walks. For a map only inserted into and
+updated in place that is **insertion order** — an updated key keeps the place it was first
+given — and both backends impose the same one, so a golden file can pin it. A **removal** is
+the exception: a plain `Map` swap-removes, and the two engines do not agree today on the order
+that leaves behind, so nothing should pin the rendering of a `Map` a key has been removed
+from. `OrderedMap` keeps its order across a removal, on both. Strings render without quotes,
+the same as inside a list.
+
+A struct or class instance renders its fields **in declaration order**, using the bare type
+name (`Point { x: 1, y: 2 }`, `Empty {}`). A **class** that declares its own string form —
+a `to_string() -> string` method taking no argument — renders through it instead: `{obj}` and
+every nested position (a list element, a map key or value, another object's field, `join`)
+print what `to_string` returns, so a class's own form wins over the derived one everywhere,
+a generic class included. A class with a `to_string` is printable even when a field of it is
+not, since the derived form is never used. A **struct** does not take this path: its
+`to_string` is an ordinary method you can call, and `{p}` still renders the derived form —
+both backends agree on that, and widening it to structs is a separate change.
+When there is no `to_string`, the derived form is the compiler's own view of the value, so:
+
+- A **private** field is shown like any other — hiding half the object would make the debug
+  form lie.
+- A **move-only** field is shown by borrowing it; rendering never moves or consumes a value.
+- A **weak** field prints as `<weak>` and is **not followed**. It is the one edge the cycle
+  collector refuses to trace, and the printer refuses it too — so a cleared weak cannot fault
+  the printer and a back-reference cannot loop it. Its type need not be printable.
+- Static fields belong to the type, not the instance, and never appear.
+- A **reference cycle** prints `<cycle>` where it closes; a shared value that is not on the
+  current path renders in full each time it is reached.
+
+Only a class whose declared type is the one concrete type a value of it can carry prints this
+way: a **leaf, standalone class** (not an interface, not `abstract`, not a base another class
+`extends`, and — until inherited fields render — not itself extending one). A base, an
+interface or an abstract class is refused, because its value's real type is not knowable from
+its declared one and the two backends would render different fields; give it a string form
+first, or match on it.
+
+A key or an element too wide for one runtime slot — a struct, a `decimal`, an inline
+`Option` — is rendered from where it really lives rather than refused, so `{m}` on a
+`Map<Point, string>` and `xs.join(", ")` on a `List<Point>` print what `{xs}` prints.
+`join` refuses exactly what interpolation refuses, at check time and with the same message
+on both backends.
 
 [examples/kv.b](examples/kv.b) is the proof: an append-only KV store with binary records and a
 durable compaction (write temp, sync, rename over, sync the parent dir).
@@ -508,14 +638,18 @@ one owner may move between threads, but concurrent aliases are forbidden.
 
 Interpolation assembles, fmt formats. No printf — the language has no varargs.
 
-- `pad_left(s, width)` / `pad_right(s, width)` — spaces, byte width; already-wide input
-  comes back unchanged.
+- `pad_left(s, width)` / `pad_right(s, width)` — spaces, **display columns**
+  (`string.width()`, not `len()`); already-wide input comes back unchanged.
 - `float(x, places)` — fixed decimals (`3.14`), places clamped to 0..100.
 - `decimal(d, places)` — exact decimals: rounds half-even when narrowing, zero-pads
   when widening. `fmt.decimal(19.995, 2)` is `"20.00"`.
 - `hex(n)` / `binary(n)` — the 64-bit two's-complement pattern, lowercase, no prefix:
   `hex(-1)` is 16 f's.
 - `group_digits(n, sep)` — thousands grouping: `group_digits(1234567, ",")` is `"1,234,567"`.
+- `StringBuilder` — accumulate a string across a loop into one growing buffer:
+  `push(text)`, `push_int`, `push_bool`, `push_line`, `push_byte`, then
+  `to_string()` (or `to_bytes()`) once. `text = "{text}piece"` in a loop rebuilds
+  the whole string every turn — O(n²) in the length; a builder is O(n).
 
 ## std.encoding (v0.9, implemented)
 
@@ -774,6 +908,98 @@ var total: decimal = 0.0    // can be reassigned
 
 `let` means the *variable* can't be rebound. The object it points to can still change inside (Java-style — no borrow checker, no `mut` markers).
 
+`_` in a binding position is a **discard**, not a name. It works wherever a name
+is bound — `let`, `var`, function and closure parameters, loop bindings, and the
+payload bindings of a match pattern:
+
+```
+let _: Report = build_report()      // built, then dropped at the end of the scope
+fn log(_: Request, id: int) { ... }
+for _: int in 0..3 { work() }
+match shape { line(_, _) => "line", dot => "dot" }
+```
+
+A discard binds nothing, so any number of them may share one scope and none of
+them can be read, moved, lent, or assigned to. Reading one is an error that says
+so, not "unknown name". A bare `_` arm of a match is the same character used as
+a wildcard pattern and is unaffected.
+
+The value is still owned. A discard takes the value it is given and drops it at
+the end of its scope, exactly like a named binding — once, and never twice — so
+`let _: Packet = open()` and `fn eat(move _: Packet)` release what they take at
+the same point a named `let` or `move` parameter would. `_` removes the name,
+not the ownership.
+
+### Module constants (v0.9, implemented)
+
+`let` and `var` are statements and live inside a function. A named value that
+belongs to the module is a `const`:
+
+```
+const TERMIOS_BYTES: int = 128
+const TCSAFLUSH: i32 = 2
+const O_NONBLOCK: i32 = 1 << 11
+const GREETING: string = "hello"
+pub const MAX_FRAME: int = 1 << 20      // pub, for a library package
+```
+
+A `const` has **no storage and no address**. The checker folds the initializer
+once, and every use is that value written where the use is — so a constant
+costs exactly what typing the literal there would cost, in both backends. It
+cannot be assigned to, and `&`-style address-taking never applied to it.
+
+- The type is written out and is a number, `bool` or `string`. There is no
+  composite constant: with no storage there is nothing for a list or an object
+  to live in.
+- The initializer is a **constant expression**: literals; other constants,
+  including ones declared further down the file or in another package
+  (`pkg.NAME`, or selected with `import {NAME} from pkg`); unary `-`, `!`, `~`;
+  and the binary operators `+ - * / % & | ^ << >> && || == != < <= > >=`.
+  Anything else is refused with a message that names what was not constant —
+  a call, a local, a field read, an `as` cast, a `{}` piece in a string.
+- Integer folding answers what the same expression answers at run time: every
+  result is narrowed to its own type, so `const X: i32 = 1 << 31` is `i32`'s
+  smallest value, not an error. Division or modulo by zero, a shift count
+  outside `0..bits-1`, and dividing a signed minimum by `-1` are refused. `u64`
+  is the one type the fold cannot carry whole: a `u64` value at or above
+  `2^63` may be **declared** and used like any other constant, but no
+  operator may fold with one — arithmetic, shifts and comparisons alike are
+  refused, because the fold computes in signed 64 bits and would otherwise
+  answer with signed order for a number the program never holds.
+- Floats and decimals fold a literal and unary minus, and no arithmetic. The
+  compiler will not re-round a value the source did not write.
+- A constant that names itself, directly or through another constant, is
+  refused.
+- A constant stands where a literal stands. That includes match arms and
+  annotation arguments:
+
+```
+const LIMIT: int = 128
+
+match n {
+    LIMIT => { … }
+    _ => { … }
+}
+```
+
+- `size_of`, `align_of` and `offset_of` are **not** constant expressions: they
+  are answered after layout, which runs later than a constant is folded, so
+  they cannot appear in a `const` initializer.
+- Two places still take a literal and not a constant, for one reason: both
+  are read before any constant is folded.
+  - A `const` cannot **size a fixed array** — a length is read while types
+    are laid out (`[int; 128]`, not `[int; LIMIT]`).
+  - A `const` cannot be a **parameter default** — a default is read while
+    signatures are checked (`fn f(n: int = 128)`, not `= LIMIT`).
+
+  Both are refused where they are written, with a message that names the
+  name and the ordering. Lifting either means folding constant initializers
+  in an earlier pass, which is one change in one phase covering both; it is
+  the part of the original request that is not yet delivered.
+- `const` is contextual. It is a declaration keyword only in `const <NAME>` at
+  the start of a module-level declaration, and stays an ordinary identifier
+  everywhere else.
+
 `move name` moves the value out of a local binding. The old binding cannot be
 read again unless it is a `var` and gets a new value first:
 
@@ -941,6 +1167,16 @@ Primitives (all unboxed in codegen):
   call site.
 - Division produces up to 38 significant digits and rounds the last digit
   half-even.
+- **Scale is part of the answer.** `a + b` and `a - b` carry
+  `max(scale(a), scale(b))`; `a * b` carries `scale(a) + scale(b)`; `a / b`
+  carries the smallest scale that represents the exact quotient, and when the
+  quotient is zero it carries `max(0, scale(a) - scale(b))` — so `1.25 + 1.25`
+  is `2.50`, `123.45 * 10000000` is `1234500000.00`, and `0.000 / 0.7` is
+  `0.00`. Growing toward that scale stops at 38 significant digits, because the
+  appended zeros are significant; a zero coefficient has none to protect and
+  always reaches the full scale, which is what makes `0E-45 + 0E-1` and
+  `0E-1 + 0E-45` the same number. There is no negative scale and no negative
+  zero: a scale the rules put below 0 is 0, and `-0` and `0` are one value.
 - Decimal stays an inline value in locals, fields, parameters, returns, List,
   Map values, Box, Arena, Shared, Mutex, Channel, and thread results.
 - Native layout is `{i128 coefficient, i64 scale}` (32 bytes, 16-byte
@@ -951,10 +1187,45 @@ Primitives (all unboxed in codegen):
 
 - A number literal takes the type the spot demands: `let p: decimal = 19.99` makes a decimal, `let f: f64 = 19.99` makes a float. No suffix zoo.
 - With no demand, an integer literal is `int` and a decimal-point literal is `f64`.
+- **A cast is a demand when its operand is a number literal.** A number written
+  straight under `as decimal`, `as float`/`as f64` or `as f32` is read *in* that
+  type: `19.99 as decimal` is the decimal 19.99, exactly like `let p: decimal =
+  19.99`, and the f64 that would otherwise stand between them never exists. A
+  leading `-` belongs to the literal, so `-19.99 as decimal` is the decimal
+  -19.99. It reaches through nothing else: `rate as decimal` where `rate` is a
+  `float` variable still says exactly what that float is, because the operand is
+  a value and not a spelling. Integer targets are excluded so the wrapping rule
+  below keeps its meaning — `300 as i8` is still `44`.
+- A hex or binary literal is the integer it spells, in `float`, `f32` and
+  `decimal` as much as in an integer type, and there it must be an `int` value:
+  `0xffffffffffffffff` is a bit pattern, which `u64` has a rule for and a
+  real-number type does not.
 - **No implicit numeric conversions, ever.** Mixing `int`/`float`/`decimal` needs `as`: `price * (qty as decimal)`.
 - Integer literals must fit their demanded type. The checker rejects both ends outside the exact `i8`..`u64` range.
 - Fixed-width integer `+`, `-`, `*`, unary `-`, and bit operations wrap to that width. Shift counts are masked by `width - 1`. Divide or modulo by zero panics.
 - Integer casts keep the low target-width bits. Widening sign-extends a signed source and zero-extends an unsigned source.
+- **A float-to-integer cast saturates at the target type's own range**, and NaN
+  is `0`. `+inf` and anything above the maximum give the maximum, `-inf` and
+  anything below the minimum give the minimum, and a value inside the range
+  truncates toward zero as usual. The bound is the target's, not `int`'s and
+  then narrowed: `1e300 as i32` is `2147483647`, never `-1`. `float.round()`
+  and `f32.round()` answer the same way. The rule holds for every width from
+  both `f32` and `f64`, in the interpreter and the native backend alike — the
+  native one emits `llvm.fptosi.sat` / `llvm.fptoui.sat`, because a bare
+  `fptosi` is *poison* for exactly these inputs and the same expression
+  answered a different number on every build. Saturation is the rule and
+  not a panic, deliberately: the interpreter already answered this way, so
+  making the two backends agree meant giving the native one that same rule,
+  not turning a shipped total conversion into a fault. It maps every float —
+  NaN and both infinities included — to a defined value at no codegen cost
+  (one saturating instruction), and it is what the nearest neighbours do (a
+  Rust `as` from float to integer, WebAssembly's `trunc_sat`). The cost is
+  named here rather than hidden: a magnitude past the target's range becomes
+  the bound silently instead of stopping the program, so code that must not
+  proceed on such a value checks the range before the cast. `decimal` still
+  panics on NaN, an infinity, or a magnitude past 38 digits (below), because
+  those have no nearest decimal to land on, where a bounded integer type has
+  an obvious one at each end.
 - `f32` rounds after every literal, cast, and arithmetic operation. It is a real 32-bit LLVM value in locals, calls, and fields, not an alias for `f64`.
 - Float comparisons are IEEE-754: a NaN operand makes `==`, `<`, `<=`, `>`, and
   `>=` false and `!=` true, in the interpreter and the native backend alike.
@@ -962,6 +1233,45 @@ Primitives (all unboxed in codegen):
   the native backend answered `!=` with an ordered compare — every implementation
   now agrees.) Casting NaN or an infinity to `decimal` panics as `decimal
   overflow`, the same as any float whose magnitude exceeds 38 digits.
+- **`Order` and `Eq` on a float are total, and the operators above are not.**
+  IEEE comparison is not an order: NaN is unordered with everything, so
+  `[3.0, 1.0, nan, 2.0].sort()` answered `[1, 3, nan, 2]`, a map read `nan`
+  as equal to no key including itself — every re-insert appended and no read
+  could ever find it — and anything that binary-searches read "neither less
+  nor greater" as "found it" and overwrote an unrelated key. `float` and
+  `f32` therefore order by IEEE 754 **totalOrder** wherever the comparing is
+  done by the `Order` or `Eq` interface rather than by an operator:
+
+  ```
+  -NaN < -inf < ... < -1.0 < -0.0 < +0.0 < 1.0 < ... < +inf < +NaN
+  ```
+
+  The equality that belongs with that order is **bit equality**. Two NaNs are
+  one value when their sign and payload match, and `-0.0` and `+0.0` are two
+  values — so they are two map keys, they do not find each other, and a sort
+  puts `-0.0` first. This is the same split Java draws between `a < b` on a
+  `double` and `Double.compare`/`Double.equals`, and it reaches:
+
+  - `List.sort`, `max`, `min`, `contains`, `index_of`, and `List == List`;
+  - `Map` and `OrderedMap` keys — lookup, replacement, removal and hashing;
+  - the structural `==` of a struct, fixed array, `Option` or enum that holds
+    a float, and the same value used as a wide map key;
+  - `<`, `<=`, `>`, `>=`, `==` and `!=` applied to a value whose type is a
+    **type parameter**, which is how a container written in Beans compares
+    the keys it was handed. `fn less<T implements Order>(a: T, b: T) -> bool
+    { return a < b }` answers `true` for `less(1.0, nan)`, while a bare
+    `1.0 < nan` in the same program answers `false`: one is the interface,
+    the other is the operator. Only `float` and `f32` read differently
+    between the two — every other `Order` type has one order.
+
+  A bare `float == float` or `float < float` stays IEEE in every one of those
+  spots. Which NaN an operation produces is the platform's business, as it is
+  everywhere; totalOrder only promises a defined answer for the bits it is
+  given.
+
+  `decimal` needs none of this and gets none: it has no NaN and no negative
+  zero (see *decimal* above — a scale below 0 is 0, and `-0` and `0` are one
+  value), so its order is already total and its comparison is unchanged.
 
 The native backend uses exact LLVM integer, float, and decimal types for locals,
 parameters, returns, arithmetic, and packed class fields. List keeps its old
@@ -991,9 +1301,25 @@ let n: Option<int> = m.get("a")     // no null, no panic
 param, trusting its constraint), `contains`, `index_of` → `Option<int>`, `insert(i, v)` and
 `remove(i) -> T` (panic out of range), `reverse`, `clear`, `slice(from, to)` (copy, half-open,
 panics), `sort` (ordered elements), `sort_by(fn(a: T, b: T) -> bool)` (any `T`; the predicate
-is strict less-than), `sort_by_key(fn(T) -> int)` (one key call per item), `join(sep)`.
+is strict less-than), `sort_by_key(fn(T) -> int)` (one key call per item — including the
+one item a one-element list holds, which nothing sorts), `join(sep)`.
 Sorts are **stable**. The native backend uses a stable radix path for integers and integer
-keys, and the shared merge semantics for other values and custom predicates.
+keys, and the shared merge semantics for other values and custom predicates. Both backends
+run the same bottom-up stable merge for a custom predicate, so they produce the same order
+even for a predicate that is not a strict weak ordering; a comparator that reads the list
+it is sorting (through a captured reference) sees the same intermediate states on both —
+each merged block is committed to the list when it completes; and a comparator or key
+function that panics (contained, spec/CONCURRENCY.md) leaves the list exactly as it was
+before the call, on both backends. Reading is as far as it goes: a callback that
+*structurally changes* the list mid-sort (push, remove, clear — anything that moves its
+length or storage) is refused with `list changed during sort (length A -> B)` at the first
+callback return after the change, on both backends — the sort would otherwise permute
+stale storage. The list stays as the mutation left it; there is nothing coherent to
+restore. Writing an element in place (`l[i] = v`) moves nothing and stays allowed.
+`reserve(capacity)` on a List, `Map` or `OrderedMap` asks for room, never for less:
+a negative capacity is a bug in the caller and panics as `negative reserve capacity
+<n>`, and a capacity above 2^58 panics as `reserve capacity too large`. `reserve(0)`
+and a capacity the collection already has are no-ops.
 
 **Map and OrderedMap methods (v0.5, implemented):** `clone`, `get` → `Option<V>`,
 `set` (also `m[k] = v` sugar), `insert(k, v) -> bool` (false leaves the old value),
@@ -1022,13 +1348,96 @@ iterator and panics before another entry is read. Replacing the value of an
 existing key is allowed.
 Direct map iteration is currently limited to synchronous functions.
 
+### Changing a collection while a loop reads it
+
+`for x: T in xs` over a `List` reads the list itself, one element at a time. It
+takes no copy, so a change the body makes is a change to what the loop is
+walking.
+
+A **structural** change is one that alters the list's length or moves an
+element to a different index: `push`, `pop`, `insert`, `remove`, `clear`,
+`reverse`, `sort`, `sort_by` and `sort_by_key`. Any of them invalidates the
+iterator, and the loop panics before it reads another element — the same rule a
+map follows, and the same rule whether the change came from the loop body, from
+a function the body called, or from a closure it invoked. The message names the
+operation that last changed the list and what its length did:
+
+```
+var xs: List<int> = [1, 2, 3, 4, 5]
+for x: int in xs {
+    xs.push(99)             // runtime panic at 2:1:
+}                           // list changed during iteration (push, length 5 -> 6)
+```
+
+Everything else is allowed and the loop keeps running:
+
+- `xs[i] = v` at an index the list already has. The loop sees the replacement
+  when it reaches that index — exactly as replacing an existing map key's value
+  is allowed and read live. Writing an index the list does not have still
+  panics as an out-of-range write, iteration or no iteration.
+- `reserve(n)` on a List changes only its capacity and moves no element, so it
+  never invalidates the loop. (A map is stricter: it counts *every* `reserve`
+  among the changes that invalidate its iterator, `reserve(0)` included, because
+  a map that grows rehashes and moves its entries between buckets. A List has no
+  buckets to rehash, so its `reserve` is always safe to call mid-loop.)
+- Every read: `len`, `get`, `first`, `last`, `contains`, `index_of`, `min`,
+  `max`, `slice`, `clone`, `join`.
+- Mutating a *different* list, including one built from this one by `clone` or
+  `slice`.
+- Mutating the *element* — a class element's fields are its own value, not the
+  list's shape.
+- Leaving the loop with `break` or `return` immediately after a structural
+  change. The check happens before the next element is read, so a loop that
+  never reads again never sees it.
+
+This is not the same refusal as `list changed during sort`, and the two do not
+overlap: that one is a *sort callback* changing the list its own sort is
+permuting, and it fires inside the sort whether or not a loop is running. This
+one is a *loop* reading a list something changed, and it fires on the loop's
+next turn. A `sort_by` whose comparator pushes, called from inside a `for` loop
+over that same list, hits the sort's refusal first — the sort never returns to
+the loop.
+
+`xs.slice(from, to)` answers a copy, so `for x: T in xs.slice(from, to)` walks
+that copy and a change to `xs` does not reach it. The compiler may skip
+materializing the copy and walk `xs`'s own storage when it can prove `xs`
+cannot change while the loop runs; that is invisible, and if the proof were
+ever wrong the loop stops with the same `list changed during iteration` panic
+rather than reading storage that moved out from under it.
+
+The rule for the other iterables follows from what they are:
+
+- A **fixed array** is a value. `for value: T in a` walks the value `a` held
+  when the loop started, and a write to `a` during the loop does not reach it.
+- A **`Slice<T>`** is a borrowed `{pointer, length}` view of memory something
+  else owns. Its length cannot change, so there is nothing to invalidate, and
+  each turn reads the memory as it is now: a write to the memory it views during
+  the loop -- made through whatever owns that memory -- is visible to the turns
+  that have not run yet.
+- A **range** is fixed when the loop starts.
+
 Bracket reads are checked, required reads: `list[i]` panics when the index is
 outside the list, and `map[key]` panics when the key is missing. Use
 `list.get(i)` or `map.get(key)` when absence is expected; both return `Option`.
 Bracket assignment stays `list[i] = value` and `map[key] = value`; List and
 Map bracket assignment does not have compound forms. Fixed arrays support
 numeric compound element assignment because their element is a real inline
-place.
+place. Every assignment evaluates left to right — receiver, then index or
+key, then the right-hand side — and a compound form evaluates its receiver
+and its index once, not once to read and again to store. A field target
+follows the same rule as a bracket target. Both backends run this order; a
+side-effecting receiver, key and value observe it.
+
+A `?` anywhere on the left short-circuits the whole statement, exactly as it
+does on the right: `find(id)?.count = next()` leaves the function with the
+propagated value and never runs `next()`.
+
+A `Map` or `OrderedMap` **key must be copyable**, so a move-only type cannot be
+one: the map owns a copy of every key it stores, and `keys()` hands copies back.
+The type this rule is usually met with is `Bytes`, and the answer is `string`: a
+Beans string is binary-safe — it keeps NULs and every other byte, and
+`Bytes.to_string()` is every byte — so a byte-keyed map is a `Map<string, V>`
+and nothing is lost in the conversion.
 
 Map values may be wide structs, fixed arrays, SIMD vectors, slices, inline
 Option/Result values, or decimals. Their nested ARC fields are retained, dropped,
@@ -1053,6 +1462,12 @@ reading the same map again while an earlier read is still in scope is refused,
 because two such bindings would be two mutating names for one value. Reads that
 do not overlap, reads of a different map, and reads of a value type that is not
 move-only are all unaffected.
+
+Writing one is a different question and has always had an answer. `m[k] = v`
+takes a move-only value the same way `m.set(k, v)` does — it moves the value in,
+drops whatever the key held before, and lowers to the same instruction — so the
+read rule above applies to reads only. An existing move-only local still needs
+`move`: `m[k] = move packet`.
 
 Everything has methods:
 
@@ -1171,8 +1586,11 @@ let u: User = new("jul")
 
 - Methods are instance methods by default. Their `self` binding is implicit and
   available in the body; it is never written in the parameter list.
-- `static fn` is required for class statics. A static method has no `self` and is
-  not inherited.
+- `static fn` is required for class statics. A static method has no `self`, is
+  not inherited, and is not dispatched: it is called on the type that declares
+  it, as `User.guest()`, and `u.guest()` on a value is refused. See
+  *Inheritance and interfaces* for the rule that follows from it — one name in
+  a class family is a static or an instance method, never both.
 - An unmarked method is package-visible, `pub fn` is visible from other
   packages, and `priv fn` is visible only inside its exact declaring class or
   struct. The same rule applies to `priv static fn`, `priv inout fn`, and
@@ -1181,6 +1599,14 @@ let u: User = new("jul")
   written through its declaring type, such as `User.created += 1`. Static
   fields are initialized once before `main`, in declaration order, and are not
   inherited. Generic classes cannot declare static fields.
+- A static field — and a singleton's fields with it — lives for the whole
+  process and is **never torn down**. What a static still owns when `main`
+  returns is not released, so no `deinit` runs for it. The reverse of `init`
+  at exit has no order to run in that the rest of the language would honour
+  (unwind order is newest-first, but statics initialize oldest-first across
+  files), and it would have to be skipped anyway for the two exits that
+  matter most — `os.exit` and a panic. A process-lifetime resource that must
+  be released closes itself explicitly; `deinit` is for values with owners.
 - `new Class(...)` and target-typed `new(...)` are the class-construction forms.
   Both follow the class's `init` rules. `new(...)` gets its class from the
   declared result, assignment target, return type, or function parameter. It is
@@ -1275,7 +1701,10 @@ let c: Conn = new Conn("db1")
 ```
 
 - `init` returns nothing and runs on a fresh object: fields with defaults start at them, the
-  rest start unassigned. **Until every field is assigned, the body is a straight-line prefix**:
+  rest start unassigned. Every default in the class chain is evaluated before any `init` body
+  runs, in declaration order with the base class's fields first — so a default whose
+  expression has an effect (a call that prints, a counter) has one order, not one per
+  backend. **Until every field is assigned, the body is a straight-line prefix**:
   each statement either assigns a field (`self.f = ...`) or touches `self` only by reading
   fields already assigned — no method calls, no passing `self` on, no `return`, and no string
   interpolation (its pieces are checked too late to prove them safe). The checker proves all
@@ -1326,9 +1755,31 @@ can still read them. Deterministic, like C++/Swift: no GC pause, no "sometime la
 - No parameters, no return value, never called by hand: construction calls `init`, death
   calls `deinit`.
 - A subclass `deinit` runs first, then its parent's, automatically — no `override`, ever.
+- Once the whole `deinit` chain has run, the object's fields are released in **reverse
+  declaration order**: the object's own class first, then each base class up the chain, and
+  within each class the last-declared field goes first. Each field's release finishes — its
+  own `deinit`, its own fields, the whole subtree it owned — before the next field is
+  touched. The declared *type* of a field does not change this: a field holding a class
+  directly, one holding `Option<C>`, `Result<C, E>`, `List<C>`, `Map<K, C>`, a struct with a
+  class inside, or a generic parameter bound to a class all release at their declared
+  position. A struct value releases its own fields by the same reverse-declaration rule,
+  wherever it is stored and whatever order a literal named them in. The release cascade is
+  iterative, so a chain a million links long is dropped without recursion.
 - `self` must not escape a `deinit`. The object is being destroyed; storing `self` anywhere
   is use-after-free by definition.
-- A panic inside `deinit` is fatal (same rule as defer).
+- A panic inside `deinit` is the same rule as one inside a `defer`: uncontained it ends
+  the process, and contained by `brew`/`join` (spec/CONCURRENCY.md) the join reports it —
+  **without stopping the destruction that was running it**. The `deinit` is not run again,
+  but the object's fields are still released and its memory still returned, and everything
+  else the release was going to destroy is still destroyed: the remaining elements of a
+  container being cleared, the rest of a dying object graph, the rest of a cycle the
+  collector killed. A container is empty and usable either way. A *second* `deinit` (or
+  `defer`) panicking before the first has been delivered is the one unrecoverable case —
+  both reports go out and the process stops.
+- `deinit` runs when the last reference dies, which is a thing that happens
+  *while the program runs*. Leaving the program is not a death: a value a
+  static or a singleton still holds at exit has no `deinit` call, and neither
+  does anything alive when `os.exit` or a panic ends the process.
 - An object that dies **inside a reference cycle** does not get its `deinit` — a cycle never
   drops to zero on its own, so if it owns a resource, break the cycle with a
   `weak` field instead of building it.
@@ -1420,6 +1871,22 @@ Private methods are not inherited and never satisfy or replace class or
 interface contracts, so they cannot be `abstract` or `override`. Interfaces
 cannot declare private methods. Beans has no `final` yet.
 
+`extends` and `implements` belong to classes and interfaces. A struct, union
+or enum that names either is refused at the declaration: an interface value is
+an object whose first word is its descriptor, and a value type has none.
+
+Only an instance method is dispatched. A `static fn` declares no `self`, so no
+receiver picks it: it is called on its type, `value.some_static()` is refused,
+and it holds no row in any class's method table. Within one class family a
+name is therefore either a static or an instance method, never both — a
+`static fn` beside an instance method the class inherits, and an instance
+method beside a static a base declares, are each refused at the declaration
+naming the other. A `priv` method is outside this rule in both directions: it
+belongs to its exact declaring type, is never inherited and shares no slot, so
+a subclass writing the same name is already a separate method. Reflection
+follows the same rule: `Method.call` prefers the body the receiver's runtime
+class declares, and a static is never one of those.
+
 **Generic interfaces.** An interface may take type parameters, and an
 implementor binds them at the `implements` site: `class IntBox implements
 Producer<int>` requires `fn make() -> int`, not the interface's own `T`. A
@@ -1429,9 +1896,20 @@ instantiation's argument. Either way the interface stands as a type of its
 own: `Producer<int>` is a variable, parameter and element type that
 dispatches dynamically, and `Producer<int>` and `Producer<string>` are two
 unrelated types. A chain pins arguments the same way, so `interface
-IntProducer extends Producer<int>` answers `int`. A method that declares
-generics of its own binds them at the call site and so cannot be reached
-through an interface.
+IntProducer extends Producer<int>` answers `int`.
+
+**A method that declares generics of its own does not dispatch.** It binds
+them at the call site, so it is a template with one function per
+instantiation and there is no single body a method table could hold. The
+checker refuses every form that exists only to be reached through one: an
+interface may not declare such a method, with or without a default body; an
+`abstract fn` may not declare one; and a subclass may not replace one, nor
+replace a plain method with one — each is refused at the declaration naming
+the method it collides with. What stays is the ordinary case: the receiver's
+static type picks the body, walking its base chain the way any other name
+lookup does, so a subclass inherits its base's generic method and a base
+pinned at an argument — `class IntHolder extends Holder<int>` — raises the
+instantiation that argument names.
 
 A generic bound carries type arguments the same way: `fn read<P implements
 Producer<int>>(p: P)` accepts only implementors pinned to `int`, and a bound
@@ -1525,6 +2003,11 @@ fn describe(p: Payment) -> string {
 Enums are objects too — they can carry methods (`fn label() -> string { ... }`
 inside the enum body, with implicit `self`).
 
+An enum has no base type and cannot implement an interface: the checker refuses
+`enum Colour implements Shows` at the declaration, naming the enum and the
+interface. Nothing is lost by it — an enum satisfies `Eq`, `Hash` and `Order`
+bounds and works as a map key without ever naming them.
+
 ### Fixed representation: `enum(u8)`
 
 A payload-free enum can opt into a committed one-byte layout on the
@@ -1582,6 +2065,10 @@ fn parse_age(s: string) -> Result<int> {
   a custom error type carries its own fields, so `err(value)` is the form there. Without
   this a Beans-written package could not produce the slugs the stdlib convention is
   built on; only native builtins could.
+- **`new Error(message)`** and **`new Error(message, kind)`** build the built-in
+  error object itself — the same value `err(message, kind)` wraps, without the
+  `Result` around it. This is what a `to_error` hook (below) returns; before it,
+  no Beans code could name an `Error`, only a `Result` carrying one.
 - `?` propagates. `match` handles. Helpers for the rest:
 
 ```
@@ -1610,6 +2097,58 @@ let count: int = parsed.recover(fn(e: Error) -> int { return 0 })
 in `std.option` or `std.result`. These methods copy the active input payload, so
 its type must implement `Clone`. Their inline, boxed, and null-niche layouts do
 not change.
+
+**`?` over an `Option` carries nothing.** In a function returning
+`Option<U>`, `x?` on an `x: Option<T>` answers this function's `none` when `x`
+is `none` — `none` is `none` whatever `T` and `U` are, and no payload crosses.
+`?` never crosses between the two kinds: an `Option` cannot propagate out of a
+`Result` function or the other way, and each is refused at the `?`.
+
+**`?` across an error boundary.** In a function returning `Result<U, F>`, `x?`
+on an `x: Result<T, E>` requires `E` to *reach* `F`. There are exactly three
+ways, checked at the `?` itself:
+
+1. `E` is `F` — nothing happens, the error propagates unchanged.
+2. `E` is a subtype of `F` (it `implements`/`extends` it) — the reference
+   widens to `F`, the same object read as the wider type. No code runs and
+   nothing is lost, exactly as a plain assignment to an `F` binding would.
+3. `E` declares `fn to_error() -> F` — on the error path `?` calls it on the
+   error and propagates the `F` it returns.
+
+```
+fn query() -> Result<int, DbError>   // DbError has `fn to_error() -> Error`
+fn service() -> Result<int> {        // Result<int, Error>
+    let rows: int = query()?         // ? calls DbError.to_error() on an err
+    return ok(rows)
+}
+```
+
+Any other `E` is refused at the `?`, naming both `E` and `F` and the method
+that would let them meet. The conversion runs only on the error path, only
+once — a `to_error` result is never itself put through a second `to_error`.
+Each `?` negotiates its own boundary: `x??` on an
+`x: Result<Result<T, E1>, E2>` crosses `E2` at the first `?` and `E1` at the
+second, each by whichever of the three ways applies to it.
+`std.reflect` relies on this: it answers `Result<T, ReflectError>`, and
+`ReflectError.to_error()` lets a reflection failure cross into a plain
+`Result<T>` carrying the reflect kind as the error slug.
+
+Still refused, deliberately:
+
+- The built-in `Error` as the *source* `E`. It cannot carry a `to_error`
+  method, so `Error → some custom F` has no hook; unpack it with `match`.
+- A `to_error` that is `static`, takes any parameter, or has type parameters —
+  `?` calls it with no arguments on the error, so it must be a plain instance
+  method taking none. A method that misses this is reported, not silently
+  skipped.
+- A `to_error` whose result does not itself reach `F`.
+- Erasing move-only ownership: a move-only `E` cannot widen to a
+  non-move-only `F`, and a `to_error` answering a move-only subtype of a
+  non-move-only `F` is refused the same way.
+- `return err(e)` is **not** a conversion point. It builds this function's own
+  `Result`, so `e` must already be an `F` (or a subtype that widens to one);
+  `to_error` is never called there. Conversion is a property of `?`, not of
+  `err`.
 
 Native `Option` uses three layouts without changing source semantics: pointer
 payloads use null as `none`, wide inline values such as structs, fixed arrays,
@@ -1661,6 +2200,10 @@ match code {
 }
 ```
 
+A variant's payload binds by position, and a payload the arm does not need
+binds to `_`, as many times as there are fields to ignore: `line(_, _) =>
+"line"`. Those are discards, not names — see Variables.
+
 **Statement position** additionally allows block arms — several statements, no value (v0.4):
 
 ```
@@ -1699,8 +2242,15 @@ fn index<K implements Eq & Hash, V>(key: K, value: V) -> Map<K, V> { ... }
 The compiler-known interfaces are `Clone`, `Eq`, `Hash`, `Order`, `Send`, and `Sync`.
 Bounds are checked when a generic function or type is used, and generic bodies
 can only use operations promised by their bounds. `Order` also promises `Eq`.
+**`Order` is a total order and `Eq` is the equality that goes with it**, for
+every type that has them — which for `float` and `f32` means IEEE 754
+totalOrder and bit equality, not the IEEE operators (see *Number rules*).
 User interfaces, including imported interfaces, may also be bounds. Generic
 code may call the instance methods promised by those interfaces.
+
+`Order` on a `bool` is `false` before `true`, which `sort`, `max` and `min`
+have always answered; a generic body is the only place the comparison can be
+written, since a bare `a < b` on two bools is refused as an unordered operand.
 
 `Map<K, V>` and `OrderedMap<K, V>` require `K implements Eq & Hash`. Collection
 `clone()` is available only when every stored type is `Clone`; ordering and
@@ -3145,13 +3695,25 @@ beansc build --target riscv32imac-unknown-none-elf --runtime freestanding f.b --
   logical `closed` flag flips immediately, so same-thread `close()` semantics are unchanged; only
   the OS-level release is deferred, and only while threads run.
 - `defer f.close()` — runs when the function exits normally, including through
-  `return` and `?`, newest first and before local destruction. Must sit at the
-  top level of the function body (not inside `if`/`for`/blocks — it is a function-exit hook,
-  and nested registration would need runtime capture the native backend does not do). A panic
-  exits the process without running defers, and a panic inside a defer is itself fatal.
+  `return` and `?`, newest first. A return leaves every scope it sits in, innermost
+  first: the locals of the nested blocks (`if`, loop bodies, match arms) drop as their
+  blocks exit, *then* the function's defers run, *then* the function's own locals drop —
+  so a defer sees the function-level locals still alive and the block-level ones already
+  gone. Must sit at the top level of the function body (not inside `if`/`for`/blocks — it
+  is a function-exit hook, and nested registration would need runtime capture the native
+  backend does not do); the checker refuses a nested one. Each defer runs at most once. An *uncontained* panic exits the
+  process without running defers. A panic *contained* by `brew`/`join`
+  (spec/CONCURRENCY.md) does the opposite: it unwinds the fiber's frames on the way to the
+  fiber entry, running each function's defers newest-first and dropping what it owns — the
+  same cleanup a return runs, in the same order — and the join reports the failure. A defer
+  that panics while the function is exiting normally is a contained panic like any other
+  when the fiber is brewed: it is not run again, the older defers still run, and the locals
+  still drop. A panic inside a defer *during* a contained unwind is fatal — it aborts the
+  process (the one unrecoverable case — there is no second unwind to give it) — and an
+  uncontained one exits.
   `?` is not allowed inside a deferred expression because the function's
   return path is already being processed.
-  (Go's best idea, minus unwinding.)
+  (Go's best idea, with an unwind only where a panic is caught.)
 - `unsafe { }` — gates low-level operations. The first implemented part is
   `RawPtr<T>` for primitive integer, float, bool, raw-pointer, fixed-array, and
   declared `extern "C" struct`/`union` values. These shapes can nest.
@@ -3391,8 +3953,45 @@ helpers, globals, and functions for a library package's consumers.
   or `Box` for that edge. Struct inheritance and ARC reference fields in
   C-layout records remain unsupported. Ordinary structs that satisfy `Eq`
   and `Hash` can be Map keys; stored keys use an immutable compiler-owned box
-  and lookups use a stack copy. A field can be changed only through a `var`
-  local.
+  and lookups use a stack copy.
+
+  A struct field is written through the storage the struct lives in, at any
+  depth: `rect.origin.x = 1` and `config.limits.retries += 1` write the one
+  struct, not a copy of it. The chain walks back through as many struct fields
+  and fixed-array elements as the source writes, and ends at a mutable local's
+  slot or at the heap object a class field sits in — so `holder.settings.size =
+  9` on a class works too, as does an `inout` parameter, a local a closure
+  captured, and a struct method declared `inout fn`. A `let` local's fields
+  cannot be reassigned, and neither can a method receiver that is not
+  `inout fn`. What is refused is storage the write could not reach and would
+  silently drop: a temporary such as a call result, a `List` or `Map` element
+  (the element read answers a copy), and a struct read out of a `union` (a
+  union field read reinterprets bytes rather than naming a place). Each says
+  which one it is; the remedy in every case is to copy the value into a `var`,
+  update it, and assign it back.
+
+  A **static field is the third root**, beside a local's slot and a heap
+  object: `Cfg.home.origin.y = 3` and `Cfg.cells[0] = 9` write the static
+  itself. A static has no owning object whose bit could gate the write and no
+  scope that orders it, so a reference stored beneath one takes the cycle
+  collector's static barrier — the one a whole-static assignment already
+  emits — and the read that reaches the place runs the same
+  initialisation-order guard a whole-static read runs. One thing is still
+  refused there and it is refused for a class object too: storing a value
+  that may own references into a **fixed-array element** inside a static or a
+  class, because an element store emits no write barrier and would leave the
+  collector an untracked edge. A struct field beneath either root is fine —
+  it is a field store, and field stores carry the barrier.
+
+  A struct is **move-only when any field is**. A struct is a value, so it can
+  only be copied if everything it holds can, and `List`, `Map`, `Bytes`, `Box`,
+  `Arena` and a `unique class` cannot be. That propagates: adding one such field
+  changes the copy semantics of a struct that already has callers, and the
+  refusal appears at those call sites rather than at the declaration, so it
+  names the field responsible — `main.Wrapper is move-only — a struct is
+  move-only when any field is, and 'inner.tags' is List<string>` — following the
+  chain down to the field that actually fails rather than stopping at the type
+  on the left.
 
 - `extern "C" union` declares overlapping inline scalar, `RawPtr`, fixed-array,
   or nested C-layout storage. It must be
@@ -3429,7 +4028,10 @@ self true false unique abstract singleton
 library function, not a keyword. `async` and `await` are ordinary
 identifiers — the effect system that once gave them contextual meaning was
 removed. `package` is contextual — only `package <name>` at the top of a
-file declares one, so `package` stays usable as an ordinary identifier.
+file declares one, so `package` stays usable as an ordinary identifier. So is
+`const`: only `const <NAME>` starting a module-level declaration declares one.
+`r` is a string prefix only when a `"` follows it immediately, and a name
+everywhere else.
 
 ## Decided
 
@@ -3602,7 +4204,7 @@ file declares one, so `package` stays usable as an ordinary identifier.
   then full self; destruction runs at refcount zero before field release,
   subclass then parent, and is skipped for cycle garbage
 - Stdlib v0.5 phase 4 (implemented): Beans-written `std.reader` line reading over positional I/O (the old native `BufReader` is gone), format specs in interpolation (`{x:8.2}` — first top-level `:` in the braces; the same rendering as `std.fmt`), `chars()` for UTF-8, varint + crc32 on `Bytes`, `MMap.resize` (the handle keeps its fd), `Dir.walk` (recursive, sorted, relative), and Beans-written `std.path`
-- Stdlib v0.5 phase 3 (implemented): the List/Map method set with **stable** sorts (`sort_by` takes a less-than closure; both backends run the identical merge), `Bytes` value `==`, advisory file locks, `MMap` (whole-file, shared, drop unmaps, grow = close + reopen), `std.fmt`, and printing widened to enums and lists — `variant(payload)` / `[a, b]` — everywhere strings interpolate; maps, class instances, and `Result` stay unprintable
+- Stdlib v0.5 phase 3 (implemented): the List/Map method set with **stable** sorts (`sort_by` takes a less-than closure; both backends run the identical merge), `Bytes` value `==`, advisory file locks, `MMap` (whole-file, shared, drop unmaps, grow = close + reopen), `std.fmt`, and printing widened to enums and lists — `variant(payload)` / `[a, b]` — everywhere strings interpolate; maps, class instances, and `Result` stayed unprintable until the derived rendering above landed
 - Stdlib v0.5: the string method set, `Bytes`, `File`/`Dir`, `std.os`, and the `std.io` console set (implemented); byte semantics, panics carry positions, byte-owner mutators return `unit`, fs errors carry kind slugs
 - Modules: `beans.pot`, one folder = one package, git imports with a global cache (v0.4, implemented)
 - Block-bodied match arms in statement position (v0.4, implemented)

@@ -29,6 +29,15 @@ grep -q 'call void @beans_cc_write(ptr' build/thread_live_cycles.ll
     >"$tmp/shared-publication.ir"
 grep -q 'call void @beans_cc_write_static(ptr' build/shared_publication.ll
 grep -q 'call void @beans_cc_write(ptr' build/shared_publication.ll
+# A place *inside* a static is the same publication point, one hop down. The
+# record store there has no owner object to mark, so it takes the static form
+# too — and that is the half nothing else can see: the printed answers and the
+# arc markers are identical whether the barrier is emitted or dropped, so a
+# store that silently lost it would leave the collector an untracked edge and
+# every gate would stay green.
+./build/beansc build --emit ir test/cases/parity/static_place.b \
+    >"$tmp/static-place.ir"
+grep -q 'call void @beans_cc_write_static(ptr' build/static_place.ll
 clang -O1 -pthread -DBEANS_ARC_STATS -Wno-override-module \
     build/thread_live_cycles.ll build/thread_live_cycles_ffi.c \
     build/beans_rt.c -lm \

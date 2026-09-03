@@ -3,11 +3,43 @@ package main
 // One object's field storage, boxed so several host-level wrappers can
 // stand for one interpreted object (zeroing weak revival) while the map
 // itself keeps a single owner.
+//
+// The entry order of this map IS the object's storage order, because the
+// host runtime releases a map's entries back to front — so it has to be
+// the order a native build lays the same class out in: every declared
+// field takes its slot when the object is built, base class first and in
+// declaration order within each class. A slot nothing has written yet
+// holds `unset`, which reads as an absent field everywhere; that keeps
+// the position without inventing a value for it.
 class TreeFields {
     entries: Map<string, TreeValue>
 
     fn init() {
         self.entries = {}
+    }
+
+    // The written value in a slot, or none for a slot that is only
+    // reserved. Every reader of a field goes through this, so a reserved
+    // slot is indistinguishable from a field that was never stored.
+    fn value(name: string) -> Option<TreeValue> {
+        match self.entries.get(name) {
+            some(stored) => {
+                if stored.kind == "unset" { return none }
+                return some(stored)
+            }
+            none => { return none }
+        }
+    }
+
+    // How many fields actually hold a value; reserved slots do not count.
+    fn written() -> int {
+        var total: int = 0
+        for name: string in self.entries.keys() {
+            if self.entries[name].kind != "unset" {
+                total += 1
+            }
+        }
+        return total
     }
 }
 
@@ -27,6 +59,13 @@ class TreeValue {
     map_keys: List<TreeValue>
     map_values: Map<string, TreeValue>
     map_version: int
+    // A list carries the same structural change count a map does, plus the
+    // name of the operation that last moved it, so an invalidated loop can
+    // say what changed. Mirrors BList's change_count and change_kind in
+    // runtime/beans_rt.c -- the same two facts, held as a count and a name
+    // here because a tree value has no ABI to keep.
+    list_version: int
+    list_change: string
     object_id: int
     closure_node: Option<HirNode>
     closure_frame: Option<TreeFrame>
@@ -71,6 +110,8 @@ class TreeValue {
         self.map_keys = []
         self.map_values = {}
         self.map_version = 0
+        self.list_version = 0
+        self.list_change = ""
         self.object_id = -1
         self.closure_node = none
         self.closure_frame = none
@@ -96,6 +137,14 @@ class TreeValue {
 
     static fn unit() -> TreeValue {
         return new TreeValue("unit")
+    }
+
+    // A field slot reserved by construction and not written yet. It is not
+    // a value: TreeFields.value hides it, so a read still reports the field
+    // as uninitialized. It exists only to fix where the field sits in the
+    // object's storage, and therefore where it lands in the release order.
+    static fn unset() -> TreeValue {
+        return new TreeValue("unset")
     }
 
     static fn boolean(value: bool) -> TreeValue {
@@ -385,7 +434,10 @@ fn tree_value_key(value: TreeValue) -> string {
         return if value.bool_data { "b:1" } else { "b:0" }
     }
     if value.kind == "float" {
-        return "f:{value.float_data}"
+        // the bits, not the rendering: a map key is compared with
+        // tree_value_total_equal, which separates -0.0 from +0.0 and one NaN
+        // from another, and both of those render the same text
+        return "f:{tree_float_total_key(value.float_data)}"
     }
     if value.kind == "decimal" {
         return "d:{value.decimal_data}"
@@ -400,17 +452,37 @@ fn tree_value_key(value: TreeValue) -> string {
         var result: string =
             "r:{value.text.len()}:{value.text}"
         for name: string in names {
-            let field_key: string =
-                tree_value_key(value.fields.entries[name])
-            result =
-                "{result}:{name.len()}:{name}:{field_key.len()}:{field_key}"
+            match value.fields.value(name) {
+                some(stored) => {
+                    let field_key: string =
+                        tree_value_key(stored)
+                    result =
+                        "{result}:{name.len()}:{name}:{field_key.len()}:{field_key}"
+                }
+                none => {}
+            }
         }
         return result
     }
+    // Every kind whose equality tree_value_total_equal decides structurally
+    // gets a structural key, built from its elements' keys rather than from
+    // its rendering. A fixed array is the one that bit: `[nan, 1.0]` and
+    // `[-nan, 1.0]` are two keys the native backend keeps apart, and both
+    // render "array:[nan, 1]", so the tree collapsed them into one and the
+    // second insert replaced the first. Every element is length-prefixed, so
+    // no two element sequences can run together into the same string.
+    //
+    // `simd` is deliberately not here. Its lanes compare with IEEE `==`, not
+    // by their bits (see tree_value_total_equal), so a bit-exact key would
+    // separate two vectors the language calls equal. It is not a valid map
+    // key either — the checker refuses one for want of `Hash`.
     if value.kind == "variant" ||
        value.kind == "some" ||
        value.kind == "ok" ||
-       value.kind == "err" {
+       value.kind == "err" ||
+       value.kind == "list" ||
+       value.kind == "array" ||
+       value.kind == "range" {
         var result: string =
             "v:{value.kind.len()}:{value.kind}:{value.text.len()}:{value.text}"
         for item: TreeValue in value.items {
@@ -434,8 +506,26 @@ fn tree_type_label(name: string) -> string {
     return name
 }
 
+// `==` and `!=` as the source wrote them. A bare float pair is the one place
+// IEEE still decides: `nan == nan` is false and `-0.0 == 0.0` is true, which
+// is what numeric code needs. Everything else — including a struct, list,
+// Option or enum that happens to hold a float — is the `Eq` interface, and
+// `Eq` on a float is bit equality (spec/SYNTAX.md, "Number rules"), because
+// that is the equality that belongs with the totalOrder `Order` uses.
 fn tree_value_equal(left: TreeValue,
                     right: TreeValue) -> bool {
+    if left.kind == "float" &&
+       right.kind == "float" {
+        return left.float_data == right.float_data
+    }
+    return tree_value_total_equal(left, right)
+}
+
+// The `Eq` interface: map and set keys, `contains`, `index_of`, and every
+// structural comparison. Mirrors slot_eq and the .next.eq thunks in the
+// native backend arm for arm.
+fn tree_value_total_equal(left: TreeValue,
+                          right: TreeValue) -> bool {
     if left.kind != right.kind { return false }
     if left.kind == "unit" ||
        left.kind == "none" {
@@ -453,7 +543,8 @@ fn tree_value_equal(left: TreeValue,
         return left.int_data == right.int_data
     }
     if left.kind == "float" {
-        return left.float_data == right.float_data
+        return tree_float_total_equal(
+            left.float_data, right.float_data)
     }
     if left.kind == "decimal" {
         return left.decimal_data ==
@@ -492,18 +583,31 @@ fn tree_value_equal(left: TreeValue,
     }
     if left.kind == "record" {
         if left.text != right.text ||
-           left.fields.entries.len() != right.fields.entries.len() {
+           left.fields.entries.len() !=
+               right.fields.entries.len() {
             return false
         }
+        // A reserved slot on one side and a written one on the other are as
+        // different as two written values that disagree; two reserved slots
+        // are the same absence.
         for name: string in left.fields.entries.keys() {
-            match right.fields.entries.get(name) {
-                some(value) => {
-                    if !tree_value_equal(
-                           left.fields.entries[name], value) {
+            match left.fields.value(name) {
+                some(mine) => {
+                    match right.fields.value(name) {
+                        some(value) => {
+                            if !tree_value_total_equal(
+                                   mine, value) {
+                                return false
+                            }
+                        }
+                        none => { return false }
+                    }
+                }
+                none => {
+                    if right.fields.value(name).is_some() {
                         return false
                     }
                 }
-                none => { return false }
             }
         }
         return true
@@ -512,9 +616,24 @@ fn tree_value_equal(left: TreeValue,
        left.text != right.text {
         return false
     }
-    if left.kind == "simd" &&
-       left.text != right.text {
-        return false
+    if left.kind == "simd" {
+        // A SIMD vector is arithmetic, not a container: it is neither Eq nor
+        // Hash, nothing sorts it, and it cannot be a key. Its `==` is the
+        // lane-wise IEEE compare the native backend emits (fcmp oeq per lane,
+        // and-ed), so its lanes take the operator's equality, not the
+        // interface's. Anything else would be a backend split.
+        if left.text != right.text { return false }
+        if left.items.len() != right.items.len() {
+            return false
+        }
+        for index: int in 0..left.items.len() {
+            if !tree_value_equal(
+                   left.items[index],
+                   right.items[index]) {
+                return false
+            }
+        }
+        return true
     }
     if left.kind == "variant" ||
        left.kind == "some" ||
@@ -522,13 +641,12 @@ fn tree_value_equal(left: TreeValue,
        left.kind == "err" ||
        left.kind == "list" ||
        left.kind == "array" ||
-       left.kind == "simd" ||
        left.kind == "range" {
         if left.items.len() != right.items.len() {
             return false
         }
         for index: int in 0..left.items.len() {
-            if !tree_value_equal(
+            if !tree_value_total_equal(
                    left.items[index],
                    right.items[index]) {
                 return false
@@ -552,7 +670,12 @@ fn tree_value_less(left: TreeValue,
     }
     if left.kind == "float" &&
        right.kind == "float" {
-        return left.float_data < right.float_data
+        // sort, min and max order through the Order interface, and Order is
+        // total: IEEE `<` leaves NaN unordered with everything, which sorted
+        // [3, 1, nan, 2] to [1, 3, nan, 2]. totalOrder, matching slot_cmp
+        // kind 1 in runtime/beans_rt.c.
+        return tree_float_total_less(
+            left.float_data, right.float_data)
     }
     if left.kind == "decimal" &&
        right.kind == "decimal" {
@@ -698,4 +821,24 @@ fn tree_spawn_closure(value: TreeValue) -> TreeValue {
         none => {}
     }
     return result
+}
+
+// A structural change to a list: anything that changes its length or moves an
+// element to a different index. Element replacement is not one, so a `for`
+// loop over the list keeps running and sees the replacement.
+fn tree_list_changed(list: TreeValue, what: string) {
+    list.list_version += 1
+    list.list_change = what
+}
+
+// The interpreter and beans_list_iter_invalid in runtime/beans_rt.c must
+// produce the same sentence.
+fn tree_list_changed_message(
+    what: string, was: int, now: int) -> string {
+    let name: string =
+        if what == "" { "change" } else { what }
+    if was != now {
+        return "list changed during iteration ({name}, length {was} -> {now})"
+    }
+    return "list changed during iteration ({name}, length {was})"
 }

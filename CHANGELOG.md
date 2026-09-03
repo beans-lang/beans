@@ -4,7 +4,233 @@ This file records user-facing changes in each Beans release.
 
 ## [Unreleased]
 
+## [0.1.36] - 2026-09-03
+
+### Added
+
+- **`_` is a discard, not a name.** It works wherever a name is bound — `let`,
+  `var`, function and closure parameters, loop bindings, and a match arm's
+  payload — and binds nothing: any number of them may share one scope, and
+  none can be read, moved, lent or assigned to. Each of those four says what
+  `_` is instead of offering a suggestion list for a name the author declined
+  to make, including inside a string interpolation, where the brace hint used
+  to speak over it. The value is still owned: `let _: Packet = open()` and
+  `fn eat(move _: Packet)` drop what they take at the end of their scope,
+  once, exactly where a named binding would — the same point on both
+  backends. Nothing completes to `_` and nothing renames it. (#56)
+
+### Changed
+
+- **`m[k] = v` takes a move-only value.** Writing one into a map is a move in,
+  the same transfer `m.set(k, v)` does and the same instruction it lowers to;
+  the read rule is untouched and still refuses `let b = m[k]`. A move-only
+  *key* is still refused, and the refusal now says why — a map owns a copy of
+  every key and `keys()` hands copies back — and, for the `Bytes` key the rule
+  is usually met with, names the way out: a Beans string keeps every byte, so
+  key by `string` and convert with `Bytes.to_string()`. Both places that check
+  the rule say the same sentence now; the one behind an inferred map literal
+  used to say only half of it. (#36)
+
+- **A struct field is a place at any depth.** `rect.origin.x = 1` and
+  `config.limits.retries += 1` write the one struct rather than a copy: the
+  chain walks back through as many struct fields and fixed-array elements as
+  the source wrote, and ends at a mutable local's slot, at the heap object a
+  class field sits in, or at a static field — including an `inout` parameter,
+  an `inout fn` receiver, and a local a closure captured. The checker and the
+  LLVM emitter walk that chain through one shared helper, so the two backends
+  cannot compute a different address. What stays refused names which storage
+  it is — a temporary, a `List` or `Map` element, a `union` field — rather
+  than "needs a local variable for now". A struct's move-only refusal names
+  the field responsible, following the chain down to the one that actually
+  fails. (#48, #112)
+
+- **A float orders and compares by totalOrder wherever `Order` and `Eq` do the
+  work.** IEEE comparison is not an order — NaN is unordered with everything —
+  and three things were built on it: `Map<float, _>` disagreed across backends
+  (native made a NaN key write-only and grew the map without bound on every
+  re-insert, the interpreter replaced), `SortedMap` and `PriorityQueue` read
+  "neither less nor greater" as "found it" and so `set(NaN, v)` overwrote
+  whichever key the descent stopped at, and `[3.0, 1.0, NaN, 2.0].sort()`
+  answered `[1, 3, nan, 2]`. `float` and `f32` now order by IEEE 754
+  totalOrder — `-NaN < -inf < ... < -0.0 < +0.0 < ... < +inf < +NaN` — with bit
+  equality as the equality that belongs to that order, so two NaNs are one
+  value when sign and payload match and the two zeros are two map keys. **The
+  operators are untouched**: `nan < 1.0` and `nan == nan` are still false,
+  `-0.0 == 0.0` is still true, and arithmetic is unchanged — the same split
+  Java draws between `a < b` on a `double` and `Double.compare`. See
+  `examples/float_order.b`. (#84)
+
+- **A panicking `deinit` does not stop the destruction it was running.** A
+  panic contained by `brew` used to stop the native release cascade where it
+  stood: for a list of 40 with a failing `deinit` at index 20, the interpreter
+  ran 40 deinits and a native build ran 20, leaking the other 20 with the list
+  reporting `len 0`. O(n) leaked per caught panic, and the two backends
+  disagreeing. The release that was under way now finishes on both — the
+  remaining elements of a container being cleared, the rest of a dying graph's
+  worklist, the rest of a white set the collector killed — in the order it
+  would have run in anyway, and only then does the panic continue to the join.
+  The object whose `deinit` panicked is never destroyed twice. (#81)
+
+- **An enum cannot implement an interface or extend a class.** An interface
+  value is an object with a descriptor and an enum value is a tag, so only a
+  class can implement one. Every spelling is refused at the declaration now —
+  two interfaces at once, payload variants, `enum(u8)`, a generic enum, a base
+  class — rather than reaching a backend. (#87)
+
+- **A dispatch slot belongs to a method that can fill it.** A `static fn` in a
+  subclass silently took over an inherited instance method's slot, so
+  `b.greet()` on a `Base` holding a `Sub` called a function with a receiver its
+  signature does not declare — on both backends. A generic method took a slot
+  it has no single body to fill. Both are refused at the declaration with a
+  message about the program, and the reflective path, which a `priv static`
+  reached without passing the checker, now checks too. (#88, #89)
+
+- **A settled call goes straight to its method.** A call is provably one method
+  when every non-abstract class that could stand behind the receiver answers
+  the same dispatch symbol — which settles a leaf class, an unreplaced
+  inherited body, an abstract class with one concrete subclass, a sole
+  interface implementor and a kept interface default in one condition. Those
+  calls no longer go through the object descriptor, which also unblocks
+  inlining the callee. What still dispatches dynamically is unchanged. (#85)
+
+- **Guarded devirtualization speculates on the classes the program builds.** It
+  used to fire only when a class had already been registered by an emitted
+  `new`, so whether a call took the fast path depended on the order the
+  compiler happened to emit things — the same program, different codegen. The
+  set of classes a program builds is computed up front now. The guard itself is
+  unchanged and still checks. (#90)
+
 ### Fixed
+
+- **A record field store through a captured local wrote over the capture.** A
+  local a closure captures lives in a cell, so its slot holds a pointer rather
+  than the value. The record store indexed the slot itself: a native-only
+  segmentation fault, with the interpreter answering correctly beside it. It
+  goes through the same cell-aware address the array element store already
+  used.
+
+- **An assignment evaluates left to right, whatever its target is.** A field
+  target evaluated its right-hand side *before* the receiver on the
+  interpreter and after it natively, so a side-effecting pair observably
+  swapped between the backends; a compound field assignment then evaluated the
+  receiver twice on the interpreter and once natively, so `holder().n += 1`
+  called `holder()` a different number of times depending on the backend. The
+  receiver is hoisted once now, ahead of the value, the way a bracket target
+  already was.
+
+- **An `Option` propagated by `?` into a different `Option` built invalid
+  IR.** A `Result` carries its error across a `?`, so the propagation extracts
+  the payload and rewraps it; an `Option` carries nothing, and had no arm of
+  its own — it fell through to the `Result` code, which read an error payload
+  out of a value that has none. The module did not verify, so `beansc build`
+  failed naming a `.ll` file for a program the checker had accepted and the
+  interpreter ran correctly. A propagating `Option` is now the target's
+  `none`, whatever the two payload types are. (#111)
+
+- **A `?` in an assignment target short-circuits the statement.** The
+  interpreter threw the propagated value away and ran on, finishing a function
+  the native backend had already left — `find(id)?.count = next()` ran
+  `next()` and everything after it on the `none` path. It returns the
+  propagated value now, from the target's receiver, an index key, and a weak
+  field alike.
+
+- **The interpreter releases what an object owns in the order its storage
+  says.** It decided release order from a predicate about *types*: a field
+  whose type is a generic parameter, or an `Option` wrapping a class, never
+  matched, so the canonical order never ran for that object and
+  `SortedMap<int, Loud>.clear()` printed `1 / 2 / 0` interpreted against
+  `2 / 0 / 1` natively. Every declared field's slot is reserved when the object
+  is built now — base class first, declaration order within each class, the
+  order a native build lays it out — so the host's back-to-front release of
+  that map *is* the canonical order, for every field shape. A `clear()` on a
+  `Map` or `OrderedMap` also sets both halves of an entry aside before
+  releasing either, so no accessor can answer out of a half the clear has not
+  reached. (#82, #83)
+
+- **A deque tells the truth at every point a `deinit` can read it.** The
+  crossover window mutated storage before updating the counters that `len()`,
+  `get()`, `first()`, `last()` and both `pop_*` read, and the window allocates
+  — which is where the cycle collector runs, so a `deinit` can be scheduled
+  precisely inside it. A probe holding the deque from inside a cycle saw 1,622
+  order tears in 316,810 reads natively and panicked inside the stdlib under
+  the interpreter. See `examples/deque.b`. (#86)
+
+## [0.1.35] - 2026-08-30
+
+### Fixed
+
+- **A contained panic unwinds its fiber's frames, on both backends.** A panic
+  caught by `brew`/`join` used to abandon every frame between the failure and
+  the fiber entry: defers skipped, deinits skipped, everything the frames held
+  stranded — a server that caught panics leaked by the request. The unwind now
+  runs each function's defers newest-first and at most once, drops every owned
+  local, releases every in-flight temporary and half-built object (the
+  argument built when the next one panics, interpolation pieces, list-literal
+  elements, the collection a `for` took from a call, the object whose `init`
+  panicked), joins the children a frame never joined, and does all of it in
+  the same order on the tree interpreter and a native build, byte for byte. A
+  child's uncaught panic escalating into its parent's unwind is a double
+  panic, reported with both failures named. The panicking `deinit`'s own
+  object stays abandoned mid-destruction — never destroyed twice. (#44)
+
+- **Every removal from an owned structure leaked one node natively.** A
+  pattern arm's bind stored its retained payload without setting the local's
+  live flag, so the guarded drop read the clear flag and skipped the release —
+  one leaked node per unlink, invisible to `leaks --atExit` behind the
+  exit-time pool free. The rule is uniform now: every write that makes a
+  flagged slot hold an owned reference sets the flag, every move-out or drop
+  clears it. The issue's repro went from 2047 leaks to 0, resident set from
+  44.5 MB to 1.6 MB, flat in the number of removals. (#60)
+
+- **A runtime frame survives a panicking callback.** A panic raised in a
+  Beans callback that a runtime C frame was running — a sort's comparator or
+  key function, a reflective call — used to unwind through the frame leaving
+  its merge buffer leaked and the collection half-permuted. The frame's
+  scratch is freed on the way through now, and an interrupted sort puts the
+  list back exactly as it was. A `deinit` panicking inside a map replace
+  leaves the map consistent too: the entry takes the new value and drops the
+  duplicate key before the old value's release runs, so the store stands and
+  nothing is freed twice — the old order freed the caller's key first, and
+  the unwind then released it again. (#73)
+
+- **The backends could sort the same list differently, with no panic
+  anywhere.** The interpreter ran an insertion sort against native's
+  bottom-up merge, so any predicate that is not a strict weak ordering got
+  two different permutations; and a comparator observing a `List<f32>` it was
+  sorting saw the untouched original natively while the interpreter showed it
+  evolving. Both engines run one stable merge now, and a widened sort mirrors
+  each completed block back, so an observing comparator sees the same
+  intermediate states everywhere.
+
+- **One caught deinit panic disabled the cycle collector for the rest of the
+  process.** The in-deinit counters stranded when a contained panic unwound
+  out of a deinit body, and `cc_collect` refuses to run while one is up —
+  every later cycle leaked with its deinit silently skipped, unbounded growth
+  in a long-running program. The counters, the release cascade's work stack
+  and the collector's own flags and buffers all restore on that unwind now.
+
+- **A cancelled fiber's unwind could abort a later, unrelated panic.** The
+  interpreter kept a cancelled-mid-cleanup fiber's unwind entry past its
+  death; a fresh fiber pooled at the same address started life "unwinding",
+  and its ordinary catchable panic became a process-wide double panic naming
+  the dead fiber's message. The entry is cleared when a fiber body starts,
+  the same zeroing native's spawn always gave a reused record.
+
+- **A move argument leaked when the panic point was inline arithmetic.**
+  Integer `/` and `%`, decimal operations and static reads panic natively
+  where the effects table said "none", so a temporary consumed by a move
+  parameter had no unwind slot across them — the interpreter printed the
+  deinit, native skipped it. The table tells the truth at the emit site now.
+
+- **A large brewing program could not build natively at all.** The parallel
+  backend's cross-chunk declarations copied the definition's personality,
+  which LLVM refuses on a declaration — every brewing module past the 4 MiB
+  chunk threshold failed to link. Declarations are cut before both.
+
+- **An out-of-range `List.insert` panicked the interpreter itself** — the
+  position pointed into `interpreter.b`, and on a brewed fiber the join hung
+  forever. It fails as the program's own panic with the native runtime's
+  message now.
 
 - **A stalled download no longer fails the install.** `tools/install-release.sh`
   passed `--retry 3` to curl, which counts only curl's own transient errors — a
@@ -15,6 +241,31 @@ This file records user-facing changes in each Beans release.
   works the same for wget and needs no newer curl than a supported
   distribution already ships, and `--speed-limit`/`--speed-time` turn a stall
   into an abort after thirty seconds rather than nine minutes.
+
+### Changed
+
+- **A `defer` must sit at the top level of the function body, and the checker
+  refuses a nested one.** That was always the spec's rule; the checker
+  accepted the nested shape anyway, and the native run-site then read the
+  captured cell after the block's locals dropped — a segfault on any owned
+  capture. The primitive-capture case only looked like it worked. The refusal
+  names the way out: defer at the function's own scope, or do the cleanup at
+  the block's end.
+
+- **A callback that structurally changes the list it is sorting is refused.**
+  Push, remove, clear — anything that moves the length or the storage — is
+  the program's own panic at the first callback return after the change,
+  `list changed during sort (length A -> B)`, identical on both backends. The
+  sort would otherwise permute stale storage: a use-after-free on growth,
+  reads past the end on shrink, and the interpreter could hang a join
+  forever. The list stays as the mutation left it; writing an element in
+  place (`l[i] = v`) moves nothing and stays allowed.
+
+- **An index assignment evaluates left to right on both backends.** Receiver,
+  then index or key, then the right-hand side — and a compound array
+  assignment evaluates its index once. The interpreter ran the value first
+  and the index twice, so a side-effecting key and value observably swapped
+  between the legs.
 
 ## [0.1.34] - 2026-08-27
 

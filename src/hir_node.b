@@ -1,5 +1,13 @@
 package main
 
+// `_` written where a name is expected is a discard: it binds nothing, so it
+// never enters a scope, never collides with another one, and can never be
+// read. Every binding position asks this rather than testing the spelling in
+// place, so the four of them cannot drift apart.
+fn is_discard_name(name: string) -> bool {
+    return name == "_"
+}
+
 class HirNode {
     kind: string
     value: string
@@ -19,6 +27,14 @@ class HirNode {
     // signature never mentions.
     type_argument_names: List<string>
     type_arguments: List<HirType>
+    // Set on a comparison whose operands are a type parameter, so both
+    // backends know the comparing is being done by the `Order`/`Eq`
+    // interface rather than by the operators of whatever the instantiation
+    // binds. It changes nothing except for `float` and `f32`, whose
+    // interface order is IEEE 754 totalOrder and whose interface equality is
+    // bit equality while their operators stay IEEE (spec/SYNTAX.md, "Number
+    // rules"). A container written in Beans compares its keys this way.
+    total_order: bool
 
     fn init(kind: string, value: string, type: HirType,
             file: string, line: int, col: int) {
@@ -36,6 +52,7 @@ class HirNode {
         self.dispatch_slot = ""
         self.type_argument_names = []
         self.type_arguments = []
+        self.total_order = false
     }
 }
 

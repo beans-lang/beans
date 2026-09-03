@@ -18,6 +18,11 @@ class Bag {
     }
 }
 
+class Shelf {
+    static labels: [Label; 2] =
+        [Label { text: "a", kind: 1 }, Label { text: "b", kind: 2 }]
+}
+
 fn make() -> Pt {
     return Pt { cells: [1, 2] }
 }
@@ -38,4 +43,8 @@ fn main() {
     // barrier element stores do not emit yet
     let bag: Bag = new Bag()
     bag.labels[0] = Label { text: "x", kind: 3 }
+
+    // a static is addressable storage like a heap object, and carries the
+    // same open question for the same reason
+    Shelf.labels[0] = Label { text: "y", kind: 4 }
 }

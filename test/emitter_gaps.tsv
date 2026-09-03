@@ -17,6 +17,7 @@ src/llvm.b	LLVM emitter does not support builtin call 'X' yet	1	unknown
 src/llvm.b	LLVM emitter does not support builtin method 'X' yet	1	unknown
 src/llvm.b	LLVM emitter does not support target fact 'X' yet	1	unknown
 src/llvm_emit_collections.b	LLVM emitter cannot store owned references into an array inside a class object yet — copy the array to a local, update it, and assign it back	1	unknown
+src/llvm_emit_collections.b	LLVM emitter cannot store owned references into an array inside a static yet — copy the array to a local, update it, and assign it back	1	both-refuse
 src/llvm_emit_collections.b	LLVM emitter does not support List.X on 'X' yet	1	unknown
 src/llvm_emit_collections.b	LLVM emitter does not support List.pop on 'X' yet	1	unknown
 src/llvm_emit_collections.b	LLVM emitter does not support List<X>.X yet	1	unknown
@@ -90,7 +91,7 @@ src/llvm_emit_memory.b	LLVM emitter does not support local type 'X' yet	1	unknow
 src/llvm_emit_numeric.b	LLVM emitter does not support as? to 'X' yet	1	unknown
 src/llvm_emit_numeric.b	LLVM emitter does not support binary 'X' for X yet	4	interpreter-ok
 src/llvm_emit_numeric.b	LLVM emitter does not support builtin method 'X' yet	1	unknown
-src/llvm_emit_numeric.b	LLVM emitter does not support cast from X to X yet	2	unknown
+src/llvm_emit_numeric.b	LLVM emitter does not support cast from X to X yet	3	unknown
 src/llvm_emit_numeric.b	LLVM emitter does not support decimal method 'X' yet	1	unknown
 src/llvm_emit_numeric.b	LLVM emitter does not support equality for 'X' yet	1	unknown
 src/llvm_emit_numeric.b	LLVM emitter does not support literal type 'X' yet	1	unknown
@@ -115,6 +116,7 @@ src/llvm_emit_result.b	LLVM emitter does not support X payload 'X' yet	1	unknown
 src/llvm_emit_result.b	LLVM emitter does not support X yet	3	unknown
 src/llvm_emit_result.b	LLVM emitter does not support err payload 'X' yet	1	unknown
 src/llvm_emit_result.b	LLVM emitter does not support ok payload 'X' yet	1	unknown
+src/llvm_emit_result.b	LLVM emitter does not support propagating X yet	1	internal
 src/llvm_emit_result.b	LLVM emitter does not support result payload 'X' yet	1	unknown
 src/llvm_emit_result.b	LLVM emitter does not support result type 'X' yet	2	unknown
 src/llvm_emit_result.b	LLVM emitter does not support unwrap payload 'X' yet	1	unknown

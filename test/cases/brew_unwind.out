@@ -1,0 +1,135 @@
+  deep defer B
+  deep defer A
+  drop deep-second
+  drop deep-first
+  middle defer
+  drop middle-held
+first: panic
+  deep defer B
+  deep defer A
+  drop deep-second
+  drop deep-first
+  middle defer
+  drop middle-held
+loop: panic
+  deep defer B
+  deep defer A
+  drop deep-second
+  drop deep-first
+  middle defer
+  drop middle-held
+loop: panic
+  deep defer B
+  deep defer A
+  drop deep-second
+  drop deep-first
+  middle defer
+  drop middle-held
+loop: panic
+  deep defer B
+  deep defer A
+  drop deep-second
+  drop deep-first
+  middle defer
+  drop middle-held
+loop: panic
+counter after 5 contained panics: 0
+  moveonly defer
+  drop token 7
+moveonly: panic
+  capture defer
+  drop captured-res
+capture: panic
+  drop faulty-held
+pipeline: panic
+  dp older defer
+  drop dp-local
+defer-panic: panic
+  drop last
+  deinit bomb panics
+  drop first
+deinit-panic: panic
+  drop t-second
+  drop t-first
+  t defer
+  drop t-local
+temps: panic
+  drop t-inner
+  drop t-outer
+nested temps: panic
+  drop tb-inner
+  drop tb-temp
+  tb defer
+  drop tb-local
+temp across block: panic
+  drop t-piece
+interpolation: panic
+  drop t-elem-2
+  drop t-elem-1
+list literal: panic
+  drop t-assigned
+  drop t-slot0
+index store: panic
+  drop t-item-b
+  drop t-item-a
+iterator: panic
+  pr older defer
+  drop pr-local
+  drop pr-retval
+pending return: panic
+  deinit half, a=half-a
+  drop half-a
+init after field: panic
+  deinit early, tag=default
+  drop e-arg
+init before field: panic
+  drop lo-second
+  drop lo-first
+locals only: panic
+  do defer A
+  do defer B
+defer only: panic
+  drop ti-inserted
+  drop ti-slot0
+insert store: panic
+  drop cs-sent
+closed send: panic
+  drop dv-held
+div arg: panic
+  drop md-held
+mod arg: panic
+  drop dc-held
+decimal arg: panic
+  drop ld-first
+list literal div: panic
+  drop id-held
+interpolation div: panic
+  mm defer
+  drop mm-local
+map iteration: panic
+  drop rm-9
+  drop rm-8
+  drop rm-7
+  drop rm-6
+  drop rm-5
+  drop rm-4
+  drop rm-3
+  drop rm-2
+  drop rm-1
+  drop rm-0
+map temporary: panic
+  drop item 5
+  mr defer
+  drop item 10
+  drop item 9
+  drop item 8
+  drop item 7
+  drop item 6
+  drop item 11
+  drop item 4
+  drop item 3
+  drop item 2
+  drop item 1
+  drop item 0
+  drop mr-local
+map remove deinit: panic

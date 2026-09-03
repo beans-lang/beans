@@ -20,7 +20,7 @@ supporting types in `src/mir_types.b` and `src/mir_effects.b`:
 `iterate_next`, `iterate_value`, `phi`, `call`, `function`, `closure`,
 `closure_call`, `super_init`, `static_call`, `method_call`, `builtin_call`,
 `builtin_method`, `selector`, `unwrap`, `propagate`, `retain`, `drop_local`,
-`defer_register`, and `run_defers`.
+`defer_register`, `run_defers`, and `list_header_open`.
 
 Terminators are `return`, `match`, `try_branch`, `jump`, and `branch`. `open`
 is only the construction sentinel and the verifier rejects it in a finished
@@ -38,8 +38,11 @@ Locals and values are `trivial`, `borrowed`, or `owned`; a move consumes the
 owned value instead of creating a fourth live state. Calls carry `borrow`,
 `move`, or `inout` for every argument and a matching consumed bit. Each
 instruction and terminator has a release list. Each CFG edge has its own
-release list. Closures and deferred cleanups have explicit parents, IDs,
-captures, and cloned generic families.
+release list, and an edge leaving a loop that holds a list's header in
+registers also carries the write-back that publishes it (`list_header_open`
+above opens the same cache on the way in; `analyze_list_header_cache` in
+`src/mir.b` is the proof that lets both exist). Closures and deferred cleanups
+have explicit parents, IDs, captures, and cloned generic families.
 
 The verifier checks value definitions, operand bounds, type and ownership
 tables, consumes, releases, owned local initialization, retain shape, phi
@@ -61,6 +64,7 @@ The main coverage is:
 | C calls, records, unions, globals, callbacks | `test/c_abi_tier1.sh` |
 | raw memory and atomics | `test/unsafe.sh`, `test/atomics.sh`, `test/stack_pointer.sh` |
 | SIMD and target features | `test/simd.sh`, `test/intrinsics.sh`, `test/cpu_features.sh` |
+| loop-private list headers | `test/list_header_cache.sh`, `test/cases/list_header_cache.b` |
 | targets, WASM, embedded | `test/targets.sh`, `test/wasm.sh`, `test/embedded.sh` |
 
 The LLVM emitter ends in a hard diagnostic naming any unknown MIR operation

@@ -946,8 +946,10 @@ partial class LlvmTextEmitter {
     }
 
     // Structural equality for inline records and fixed arrays. Padding is
-    // never compared, and floats keep IEEE equality, matching production's
-    // inline_equal rather than treating the aggregate as raw bytes.
+    // never compared, and a float field compares by its bits rather than by
+    // IEEE `==`: structural equality is the `Eq` interface, and `Eq` on a
+    // float is the equality that belongs with totalOrder (spec/SYNTAX.md,
+    // "Number rules"). Only a bare `float == float` stays IEEE.
     fn emit_inline_equal(
         type: HirType,
         left: string,
@@ -969,8 +971,10 @@ partial class LlvmTextEmitter {
                 "%inline.eq{tag}{id}")
         }
         if llvm_type_is_float(type) {
+            let word: string =
+                if llvm == "float" { "i32" } else { "i64" }
             return new LlvmSlotConversion(
-                "  %inline.eq{tag}{id} = fcmp oeq {llvm} {left}, {right}\n",
+                "  %inline.eq.lw{tag}{id} = bitcast {llvm} {left} to {word}\n  %inline.eq.rw{tag}{id} = bitcast {llvm} {right} to {word}\n  %inline.eq{tag}{id} = icmp eq {word} %inline.eq.lw{tag}{id}, %inline.eq.rw{tag}{id}\n",
                 "%inline.eq{tag}{id}")
         }
         if name == "string" {
@@ -1353,29 +1357,60 @@ partial class LlvmTextEmitter {
         function: MirFunction,
         instruction: MirInstruction,
         values: Map<int, string>,
-        target: HirDeclaration) -> string {
+        target: HirDeclaration,
+        receiver_type: HirType) -> string {
+        let dispatch_slot: string =
+            if instruction.dispatch_slot != "" {
+                instruction.dispatch_slot
+            } else {
+                "pub:{instruction.text}"
+            }
+        // A table that can only ever hold one symbol for this slot decides
+        // nothing, so read the answer here and call it. The receiver being
+        // a class of its own is not what makes this safe — a base-typed
+        // receiver, an interface-typed one and `self` are all covered, and
+        // an overridden method or a second implementor takes the guarded
+        // path below exactly as before.
+        let settled: string =
+            self.static_dispatch_symbol(
+                target, dispatch_slot)
+        if settled != "" {
+            return self.emit_direct_call(
+                function, instruction, values, settled)
+        }
+        // Speculate on the classes this program builds that can stand
+        // behind this receiver. Which classes the program builds is a
+        // whole-program fact, read before any body was emitted, so the same
+        // call gets the same arms wherever its body happens to sit in the
+        // emit order.
+        //
+        // Missing an arm costs nothing but the fallback, which reads the
+        // row the way an unguarded call does; that is what covers a class
+        // only reflection builds, a generic instantiation, an inherited
+        // body raised on demand, and anything past the arm limit. An arm
+        // that names the wrong symbol would call the wrong method, so a
+        // class only gets one when its row for this method is already
+        // fixed and its own type arguments are the receiver's.
         var candidates: List<HirDeclaration> = []
         var symbols: List<string> = []
         for declaration: HirDeclaration in
             self.program.declarations {
             if declaration.kind != "class" ||
                declaration.generics.len() != 0 ||
+               declaration.is_abstract ||
                !self.class_ids.contains_key(
                    declaration.qualified) ||
-               !self.used_builtin_symbols.contains_key(
-                    "devirt:{declaration.qualified}") ||
-               !self.class_conforms(
-                   declaration, target) {
+               !self.constructed_classes.contains_key(
+                   declaration.qualified) ||
+               !self.class_conforms_to_instance(
+                   declaration, target, receiver_type) ||
+               !self.class_dispatch_row_is_fixed(
+                   declaration, dispatch_slot) {
                 continue
             }
             let symbol: string =
                 self.method_slot_symbol(
-                    declaration,
-                    if instruction.dispatch_slot != "" {
-                        instruction.dispatch_slot
-                    } else {
-                        "pub:{instruction.text}"
-                    })
+                    declaration, dispatch_slot)
             if symbol == "null" { continue }
             candidates.push(declaration)
             symbols.push(symbol)
@@ -1463,12 +1498,6 @@ partial class LlvmTextEmitter {
         }
 
         var slot: int = -1
-        let dispatch_slot: string =
-            if instruction.dispatch_slot != "" {
-                instruction.dispatch_slot
-            } else {
-                "pub:{instruction.text}"
-            }
         match self.selector_indices.get(
                   dispatch_slot) {
             some(found) => { slot = found }
@@ -1639,7 +1668,15 @@ partial class LlvmTextEmitter {
                 self.value(
                     function, values,
                     terminator.value, source)
-            return "{output}{self.release_function_cells(function)}{parent_deinit}  ret {result_type} {value}\n"
+            // the caller owns the returned reference from here; an in-flight
+            // temporary this return consumes leaves the frame's care last
+            var handed: string = ""
+            if terminator.consumes_value {
+                handed =
+                    self.unwind_temp_clear(
+                        function, terminator.value)
+            }
+            return "{output}{self.release_function_cells(function)}{parent_deinit}{handed}  ret {result_type} {value}\n"
         }
         if terminator.kind == "match" {
             return "{output}{self.emit_match(function, block, values, source)}"
@@ -1732,6 +1769,15 @@ partial class LlvmTextEmitter {
             for instruction: MirInstruction in
                 block.instructions {
                 if instruction.removed { continue }
+                // Every slot the cache needs is an entry alloca, and
+                // the decision to keep one at all is the element type's,
+                // which only the emitter knows. Both happen here, before
+                // any block that reads the cache is written.
+                if instruction.op ==
+                       "list_header_open" {
+                    self.register_list_header(
+                        function, instruction)
+                }
                 if instruction.op == "defer_register" {
                     self.function_allocas.push(
                         "  %defer.flag{instruction.cleanup_id} = alloca i1\n  store i1 0, ptr %defer.flag{instruction.cleanup_id}\n")
@@ -1853,18 +1899,25 @@ partial class LlvmTextEmitter {
         // blocks are emitted first so spill slots they request can land as
         // entry allocas — a mid-loop alloca would grow the stack every pass
         var values: Map<int, string> = {}
+        // The cleanup pad has to exist by name before the body is written:
+        // every call in it is rewritten to name the pad as its exception
+        // edge (src/llvm_unwind.b).
+        self.unwind_open(function)
         // chunks, joined once below: re-interpolating "{body}{next}" per
         // instruction recopied the whole function text every time
         var chunks: List<string> = []
         for block: MirBlock in function.blocks {
             if !block.reachable { continue }
             chunks.push("bb{block.id}:\n")
+            self.unwind_block = "bb{block.id}"
             for instruction: MirInstruction in
                 block.instructions {
                 if instruction.removed { continue }
                 let errors_before: int = self.errors.len()
                 chunks.push(
-                    self.emit_instruction(function, instruction, values))
+                    self.unwind_chunk(
+                        self.emit_instruction(
+                            function, instruction, values)))
                 // An instruction that failed still defines its
                 // destination: the first error is the diagnosis, and a
                 // "cannot find vN" per downstream use would only bury it.
@@ -1875,8 +1928,19 @@ partial class LlvmTextEmitter {
                 }
             }
             chunks.push(
-                self.emit_terminator(function, block, values, is_main))
+                self.unwind_chunk(
+                    self.emit_terminator(
+                        function, block, values, is_main)))
         }
+        // Only after the body: a pad no call named has no predecessor, and a
+        // landing pad without an incoming exception edge does not verify.
+        if self.unwind_used {
+            chunks.push(
+                llvm_attach_dbg(
+                    self.unwind_pad_block(function),
+                    self.debug_function_location()))
+        }
+        self.unwind_close(function)
         let body: string = chunks.join("")
         let feature_attribute: string =
             if function.required_feature == "" {
@@ -1884,8 +1948,19 @@ partial class LlvmTextEmitter {
             } else {
                 " \"target-features\"=\"+{function.required_feature}\""
             }
+        // `uwtable` is what makes the unwinder able to step through this
+        // frame at all — clang adds it for C, but IR handed to it as text
+        // carries only what the emitter wrote.
+        let unwind_attribute: string =
+            if self.unwind_enabled() { " uwtable" } else { "" }
+        let personality: string =
+            if self.unwind_used {
+                self.unwind_personality()
+            } else {
+                ""
+            }
         var output: string =
-            "; {display_symbol(function.name)}\ndefine {result_type} {symbol}({parameters.join(", ")}){feature_attribute}{self.debug_function_attributes(subprogram)} \{\nentry:\n"
+            "; {display_symbol(function.name)}\ndefine {result_type} {symbol}({parameters.join(", ")}){unwind_attribute}{feature_attribute}{self.debug_function_attribute()}{personality}{self.debug_function_metadata(subprogram)} \{\nentry:\n"
         if is_main {
             output =
                 "{output}  call void @beans_os_init(i32 %beans.argc, ptr %beans.argv)\n{self.reflection_initializers()}{self.static_field_initializers()}{self.singleton_initializers()}"

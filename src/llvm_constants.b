@@ -71,14 +71,13 @@ fn llvm_float_constant(text: string) -> string {
        cleaned.starts_with("+") {
         index = 1
     }
-    // A hex float spelling is already unambiguous to LLVM.
-    if index + 2 <= cleaned.len() &&
-       cleaned.byte_at(index) == 48 {
-        let marker: int = cleaned.byte_at(index + 1)
-        if marker == 120 || marker == 88 {
-            return cleaned
-        }
-    }
+    // Beans has no hex float spelling: `0x`/`0b` always lex as an integer
+    // literal, and a float position reads it as that integer. Handing the
+    // source text to LLVM instead made it a raw double bit pattern, so
+    // `let f: float = 0xFF` built as 1.26e-321 while the interpreter ran 255.
+    let based: string =
+        base_literal_decimal_text(cleaned)
+    if based != "" { return "{based}.0" }
     var mantissa_end: int = cleaned.len()
     var has_dot: bool = false
     var position: int = index
@@ -119,10 +118,17 @@ fn llvm_float_constant(text: string) -> string {
 // caps. The i128 coefficient is emitted as its digit text — LLVM parses wide
 // decimal constants, so no 128-bit arithmetic happens here. "" means the
 // literal is out of range and the caller reports it.
-fn llvm_decimal_constant(text: string) -> string {
+fn llvm_decimal_constant(source: string) -> string {
     // The spare word stays i64, matching BDec. LLVM's s390x ABI lowering reads
     // an equivalent [8 x i8] tail from the wrong argument offsets after the
     // register arguments fill.
+    //
+    // A hex or binary literal is the integer it spells; the digit walk below
+    // reads decimal digits only, so it is rewritten first.
+    let based: string =
+        base_literal_decimal_text(source)
+    let text: string =
+        if based != "" { based } else { source }
     var negative: bool = false
     var index: int = 0
     if text.len() > 0 {

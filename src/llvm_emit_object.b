@@ -596,33 +596,6 @@ partial class LlvmTextEmitter {
         return ""
     }
 
-    fn class_descends_from(
-        declaration: HirDeclaration,
-        ancestor: string) -> bool {
-        var current: HirDeclaration = declaration
-        var depth: int = 0
-        for self.class_base_index(current) >= 0 {
-            depth += 1
-            if depth > 32 { return false }
-            let base_index: int =
-                self.class_base_index(current)
-            match self.declaration_for(
-                      current.relations[base_index]) {
-                some(base) => {
-                    if base.qualified == ancestor {
-                        return true
-                    }
-                    current = base
-                }
-                none => { return false }
-            }
-        }
-        return false
-    }
-
-    // a resolved direct call is only right while no subclass redefines
-    // the method; deinit never goes through here — the runtime
-    // dispatches it by descriptor
     // ---- generic instantiation ----
 
     fn clone_generic_instruction(
@@ -675,6 +648,10 @@ partial class LlvmTextEmitter {
         clone.capture_value_mask =
             instruction.capture_value_mask
         clone.dispatch_slot = instruction.dispatch_slot
+        // The flag says how the source asked for the comparison, which the
+        // substitution does not change: the instance still compares through
+        // the interface even though its operand type is concrete now.
+        clone.total_order = instruction.total_order
         for index: int in
             0..instruction.type_argument_names.len() {
             clone.type_argument_names.push(
@@ -694,6 +671,8 @@ partial class LlvmTextEmitter {
         clone.borrow_elided = instruction.borrow_elided
         clone.stack_closure = instruction.stack_closure
         clone.bounds_elided = instruction.bounds_elided
+        clone.list_header_local =
+            instruction.list_header_local
         clone.removed = instruction.removed
         // the flag lattice is over the CFG, not over types, so an
         // instance inherits the template's answer unchanged
@@ -842,6 +821,12 @@ partial class LlvmTextEmitter {
                 }
                 cloned_block.edge_releases.push(
                     cloned_edge)
+            }
+            for flush: MirHeaderFlush in
+                block.header_flushes {
+                cloned_block.header_flushes.push(
+                    new MirHeaderFlush(
+                        flush.target, flush.local))
             }
             clone.blocks.push(cloned_block)
         }
@@ -1064,29 +1049,216 @@ partial class LlvmTextEmitter {
         return false
     }
 
-    fn method_overridden(
+    // Whether the symbol this class's descriptor row for `method` names is
+    // decided already. Plain class methods are handed their symbols by a
+    // pre-pass that runs before any body is emitted and never revises an
+    // entry, so their rows are fixed. Every entry that arrives later is an
+    // instance raised on demand, and each kind is visible from here: a
+    // method of a generic base or a generic interface's default is raised
+    // under this class's own name, and a method carrying generics of its
+    // own is raised under its template's name. With any of those in reach
+    // the row a call reads mid-emit need not be the row the descriptor
+    // ends up holding, and no caller may bind against it.
+    fn class_dispatch_is_settled(
         declaration: HirDeclaration,
-        name: string) -> bool {
-        for candidate: HirDeclaration in
-            self.program.declarations {
-            if candidate.kind != "class" {
+        method: string) -> bool {
+        let key: string =
+            "{declaration.qualified}|{method}"
+        match self.settled_dispatch_classes.get(key) {
+            some(known) => { return known }
+            none => {}
+        }
+        var settled: bool =
+            declaration.generics.len() == 0 &&
+            !self.generic_templates.contains_key(
+                "{declaration.qualified}.{method}")
+        var pending: List<HirType> = []
+        if settled {
+            for relation: HirType in declaration.relations {
+                pending.push(relation)
+            }
+        }
+        var seen: Map<string, bool> = {}
+        for settled && pending.len() != 0 {
+            let current: HirType =
+                pending.pop().expect("class relation")
+            if seen.contains_key(current.name) {
                 continue
             }
-            if candidate.qualified ==
-               declaration.qualified {
-                continue
+            seen[current.name] = true
+            match self.declaration_for(current) {
+                some(parent) => {
+                    if parent.generics.len() != 0 ||
+                       self.generic_templates.contains_key(
+                           "{parent.qualified}.{method}") {
+                        settled = false
+                    } else {
+                        for relation: HirType in
+                            parent.relations {
+                            pending.push(relation)
+                        }
+                    }
+                }
+                // A relation with no declaration is a compiler-known
+                // interface: it owns no method bodies, so nothing can be
+                // raised under it and it cannot move a row.
+                none => {}
             }
-            if !self.class_descends_from(
-                   candidate,
-                   declaration.qualified) {
-                continue
+        }
+        self.settled_dispatch_classes[key] = settled
+        return settled
+    }
+
+    // Whether method_slot_symbol(declaration, slot) already names the
+    // symbol this class's descriptor row will end up holding, asked
+    // without reference to how far the emit has got. A guarded arm names
+    // that symbol directly, so an arm may only be built for a class this
+    // answers yes for.
+    //
+    // Two ways to know. Either nothing in the class's reach can be raised
+    // at all, which is the question a settled row asks. Or the MIR carries
+    // this method under the class's own name: a raise files under that
+    // name and only when nothing holds it yet, and the class's own name is
+    // the first place the chain walk looks, so a row that resolves there
+    // is the row that stands. An inherited body is the case neither
+    // covers — a generic base raises it per subclass, partway through the
+    // emit — and it keeps the fallback.
+    fn class_dispatch_row_is_fixed(
+        declaration: HirDeclaration,
+        slot: string) -> bool {
+        let method: string = self.dispatch_method(slot)
+        if self.class_dispatch_is_settled(
+               declaration, method) {
+            return true
+        }
+        return self.declared_dispatch_slots.contains_key(
+            "{declaration.qualified}.{method}|{slot}")
+    }
+
+    // Whether an object of `candidate` can stand behind a receiver written
+    // `instance`, whose declaration is `target`. class_conforms answers by
+    // name alone, which is all a settled row needs — a wider set there only
+    // makes that answer stricter. A guarded arm binds the other way: an arm
+    // for a class that cannot be behind this receiver is unreachable code
+    // calling a method whose signature is not the call's, so a
+    // `Producer<int>` receiver must not reach a class that implements
+    // `Producer<string>`. Same name test as class_conforms, and the walk
+    // carries each link's arguments down so a relation written in an
+    // interface's own parameters is compared after binding.
+    fn class_conforms_to_instance(
+        candidate: HirDeclaration,
+        target: HirDeclaration,
+        instance: HirType) -> bool {
+        if candidate.qualified == target.qualified {
+            return true
+        }
+        var pending: List<HirType> = []
+        for relation: HirType in candidate.relations {
+            pending.push(relation)
+        }
+        var seen: Map<string, bool> = {}
+        for pending.len() != 0 {
+            let current: HirType =
+                pending.pop().expect("class relation")
+            if current.name == target.qualified ||
+               current.name == target.name {
+                // the names are compared the way class_conforms compares
+                // them, so only the arguments are read off the types
+                var same: bool =
+                    current.args.len() ==
+                        instance.args.len()
+                for index: int in
+                    0..current.args.len() {
+                    if index >= instance.args.len() ||
+                       !hir_types_equal(
+                            current.args[index],
+                            instance.args[index]) {
+                        same = false
+                    }
+                }
+                if same { return true }
             }
-            if self.function_symbols.contains_key(
-                   "{candidate.qualified}.{name}") {
-                return true
+            let key: string = hir_type_key(current)
+            if seen.contains_key(key) { continue }
+            seen[key] = true
+            match self.declaration_for(current) {
+                some(parent) => {
+                    for relation: HirType in
+                        parent.relations {
+                        pending.push(
+                            self.substitute_class_type(
+                                relation, parent, current))
+                    }
+                }
+                none => {}
             }
         }
         return false
+    }
+
+    // The one method a call on this receiver type can reach, or "" when
+    // more than one could.
+    //
+    // A receiver's runtime class is always some class that conforms to the
+    // call's static receiver type, and a non-generic class's descriptor row
+    // for a dispatch slot is exactly `method_slot_symbol(class, slot)` —
+    // the same question asked here. So when every class that could stand
+    // behind the receiver answers one symbol, every table this call could
+    // read holds that symbol, and the indirect call is that call. Beans
+    // compiles whole programs and a dynamic library publishes C functions
+    // only, so no later class can join the set.
+    //
+    // Anything that leaves a row unaccounted for answers "": a declaration
+    // that is not a class does not carry a class table at all, a class
+    // whose rows are not settled may still change, and a null row means
+    // this slot has no implementation to name.
+    fn static_dispatch_symbol(
+        target: HirDeclaration,
+        slot: string) -> string {
+        let key: string = "{target.qualified}|{slot}"
+        match self.static_dispatch_symbols.get(key) {
+            some(known) => { return known }
+            none => {}
+        }
+        var resolved: string = ""
+        for declaration: HirDeclaration in
+            self.program.declarations {
+            // an interface is a name for a set of classes, never the
+            // class a receiver's descriptor names
+            if declaration.kind == "interface" ||
+               !self.class_conforms(declaration, target) {
+                continue
+            }
+            if declaration.kind != "class" {
+                resolved = ""
+                break
+            }
+            // an abstract class cannot be built, so it is never the
+            // class behind a receiver
+            if declaration.is_abstract { continue }
+            if !self.class_dispatch_is_settled(
+                   declaration,
+                   self.dispatch_method(slot)) {
+                resolved = ""
+                break
+            }
+            let symbol: string =
+                self.method_slot_symbol(declaration, slot)
+            if symbol == "null" {
+                resolved = ""
+                break
+            }
+            if resolved == "" {
+                resolved = symbol
+                continue
+            }
+            if resolved != symbol {
+                resolved = ""
+                break
+            }
+        }
+        self.static_dispatch_symbols[key] = resolved
+        return resolved
     }
 
     fn class_layout(
@@ -1496,6 +1668,15 @@ partial class LlvmTextEmitter {
             guard =
                 "  %static.done{id} = load i8, ptr @.next.statics.ready\n  %static.after{id} = icmp ne i8 %static.done{id}, 0\n  br i1 %static.after{id}, label %static.ok{id}, label %static.check{id}\nstatic.check{id}:\n  %static.busy{id} = load i8, ptr @.next.statics.running\n  %static.inside{id} = icmp ne i8 %static.busy{id}, 0\n  br i1 %static.inside{id}, label %static.order{id}, label %static.lazy{id}\nstatic.lazy{id}:\n  call void @.next.statics.init()\n  br label %static.ok{id}\nstatic.order{id}:\n  %static.flag{id} = load i8, ptr {ready}\n  %static.set{id} = icmp ne i8 %static.flag{id}, 0\n  br i1 %static.set{id}, label %static.ok{id}, label %static.bad{id}\nstatic.bad{id}:\n  call void @beans_panic(ptr {message}, i64 {instruction.line}, i64 {instruction.col})\n  unreachable\nstatic.ok{id}:\n"
         }
+        // the copy this load makes has live storage behind it, and unlike a
+        // local's slot or a heap object that storage is a module-lifetime
+        // global — so a field or element store through the copy can write
+        // back to the static rather than to the copy
+        let place: LlvmBorrowedPlace =
+            new LlvmBorrowedPlace(-1, "")
+        place.root_static = symbol
+        self.borrowed_place_of[
+            instruction.result] = place
         return "{guard}  {result} = load {llvm}, ptr {symbol}\n{self.emit_arc_value(instruction.type, result, true)}"
     }
 
@@ -1717,6 +1898,37 @@ partial class LlvmTextEmitter {
                 "ptr @beans_gate_new()")
             return "  {result} = call ptr @beans_gate_new()\n"
         }
+        // `new Error(message)` / `new Error(message, kind)` builds the same
+        // object `err("message", "kind")` does, through the same helper, so
+        // the two spellings are one representation.
+        if handle_name == "Error" {
+            let message: string =
+                self.value(
+                    function, values,
+                    instruction.operands[0],
+                    instruction)
+            let message_consumed: bool =
+                instruction.consumes.len() >= 1 &&
+                instruction.consumes[0]
+            var kind: string = ""
+            var kind_consumed: bool = false
+            if instruction.operands.len() == 2 {
+                kind =
+                    self.value(
+                        function, values,
+                        instruction.operands[1],
+                        instruction)
+                kind_consumed =
+                    instruction.consumes.len() == 2 &&
+                    instruction.consumes[1]
+            }
+            let result: string =
+                "%v{instruction.result}"
+            values[instruction.result] = result
+            return self.emit_make_error(
+                instruction, message, message_consumed,
+                kind, kind_consumed, result)
+        }
         if handle_name == "TaskGroup" {
             let result: string =
                 "%v{instruction.result}"
@@ -1871,9 +2083,6 @@ partial class LlvmTextEmitter {
             self.class_layout(instruction.type)
         match found {
             some(layout) => {
-                self.used_builtin_symbols[
-                    "devirt:{layout.declaration.qualified}"] =
-                    true
                 if layout.declaration.generics.len() !=
                        0 &&
                    self.class_has_deinit(
@@ -2032,8 +2241,11 @@ partial class LlvmTextEmitter {
                         argument_setup =
                             "{argument_setup}{self.append_internal_argument(operand_type, operand, arguments)}"
                     }
+                    // the object exists from here: if its init panics
+                    // (contained), the cleanup pad releases it — deinit
+                    // and fields — as the interpreter does
                     output =
-                        "{output}{argument_setup}  call void {initializer}({arguments.join(", ")})\n"
+                        "{output}{argument_setup}{self.unwind_temp_define_new(function, instruction, result, scalar_local < 0)}  call void {initializer}({arguments.join(", ")})\n"
                     // A borrow-passed consumed operand is an
                     // ownership-sink argument: the contraction makes
                     // every such call site pass its own reference
@@ -2380,8 +2592,12 @@ partial class LlvmTextEmitter {
             none => {}
         }
         if record_struct {
-            // a record is an SSA aggregate everywhere else, so an
-            // assignment writes through the local's own storage
+            // A record is an SSA aggregate everywhere else, so the store
+            // has to reach the storage that copy was read out of. The place
+            // chain says where that is — a local's slot, or a byte offset
+            // inside a heap object — through as many struct fields and
+            // fixed-array elements as the source wrote. It is the same
+            // chain an array element store walks.
             match self.record_layout(receiver_type) {
                 some(layout) => {
                     if !layout.field_indices.contains_key(
@@ -2393,16 +2609,33 @@ partial class LlvmTextEmitter {
                             "LLVM emitter cannot find field '{name}' in {render_hir_type(receiver_type)}")
                         return ""
                     }
-                    if !self.borrowed_local_of.contains_key(
-                         receiver_id) {
-                        self.fail(
-                            instruction,
-                            "LLVM emitter needs a plain local behind this record assignment")
-                        return ""
+                    var address_setup: string = ""
+                    var base_pointer: string = ""
+                    // The heap object the record lives in, or "" when it
+                    // lives in a stack slot or a static. It is the cycle
+                    // collector's owner for a reference stored into the
+                    // record; a static has no owner and takes the
+                    // collector's static form instead.
+                    var owner: string = ""
+                    var static_owner: bool = false
+                    match self.place_for(receiver_id) {
+                        some(place) => {
+                            let slot: LlvmSlotConversion =
+                                self.place_address(
+                                    function, place)
+                            address_setup = slot.setup
+                            base_pointer = slot.value
+                            owner = place.root_register
+                            static_owner =
+                                place.root_static != ""
+                        }
+                        none => {
+                            self.fail(
+                                instruction,
+                                "LLVM emitter needs storage behind this record assignment")
+                            return ""
+                        }
                     }
-                    let target: int =
-                        self.borrowed_local_of[
-                            receiver_id]
                     let field_type: HirType =
                         layout.field_types[name]
                     let type: string =
@@ -2413,13 +2646,13 @@ partial class LlvmTextEmitter {
                             instruction.operands[1],
                             instruction)
                     let address: int = self.fresh()
-                    var output: string = ""
+                    var output: string = address_setup
                     if layout.is_union {
                         output =
-                            "  %field.assign.ptr{address} = getelementptr i8, ptr %l{target}, i64 0\n"
+                            "{output}  %field.assign.ptr{address} = getelementptr i8, ptr {base_pointer}, i64 0\n"
                     } else {
                         output =
-                            "  %field.assign.ptr{address} = getelementptr {llvm_record_instance_name(layout.instance)}, ptr %l{target}, i32 0, i32 {layout.field_indices[name]}\n"
+                            "{output}  %field.assign.ptr{address} = getelementptr {llvm_record_instance_name(layout.instance)}, ptr {base_pointer}, i32 0, i32 {layout.field_indices[name]}\n"
                     }
                     if operation != "=" {
                         let access: string =
@@ -2438,6 +2671,34 @@ partial class LlvmTextEmitter {
                         }
                     if self.type_has_owned_refs(
                            field_type) {
+                        // A record inside a heap object is owned by that
+                        // object, so a reference stored into it needs the
+                        // same publication barrier a direct class field
+                        // store emits. A record in a stack slot has no
+                        // shared owner and needs none. A record in a static
+                        // is reachable from every thread by construction
+                        // and has no owner whose bit could gate the write,
+                        // which is the static form's whole reason — the
+                        // same one a whole-static store emits.
+                        let barrier: string =
+                            if static_owner {
+                                self.emit_cc_write_static(
+                                    field_type, stored,
+                                    "field")
+                            } else if owner == "" {
+                                ""
+                            } else {
+                                self.emit_cc_write(
+                                    owner, field_type,
+                                    stored, "field")
+                            }
+                        let publish: string =
+                            if owner == "" {
+                                ""
+                            } else {
+                                self.emit_cc_publish(
+                                    owner, field_type)
+                            }
                         let previous: int =
                             self.fresh()
                         let old: string =
@@ -2446,7 +2707,7 @@ partial class LlvmTextEmitter {
                             self.emit_arc_value(
                                 field_type, old,
                                 false)
-                        return "{output}  {old} = load {type}, ptr %field.assign.ptr{address}{access}\n  store {type} {stored}, ptr %field.assign.ptr{address}{access}\n{release}"
+                        return "{output}{barrier}  {old} = load {type}, ptr %field.assign.ptr{address}{access}\n  store {type} {stored}, ptr %field.assign.ptr{address}{access}\n{publish}{release}"
                     }
                     return "{output}  store {type} {stored}, ptr %field.assign.ptr{address}{access}\n"
                 }
@@ -2812,6 +3073,83 @@ partial class LlvmTextEmitter {
         return "{output}  store {llvm} {result}, ptr {address.value}\n"
     }
 
+    // A method that declares type parameters of its own binds them at the
+    // call site, so it holds no dispatch row and nothing can replace it: the
+    // receiver's static type alone decides which body runs, and that body
+    // may be one a base declares. Walk the receiver's chain nearest owner
+    // first for the template — the same walk method_slot_symbol makes for
+    // symbols — pinning each link's own arguments on the way, and raise the
+    // instance from there.
+    //
+    // Reading only the receiver's own declaration left an inherited generic
+    // method with no template to raise: the call fell through to dispatch
+    // and read a row that was never going to be filled (#89).
+    //
+    // `none` means no link declares it, so the caller carries on; `some("")`
+    // is a raise that failed and has already reported.
+    fn emit_inherited_generic_call(
+        function: MirFunction,
+        instruction: MirInstruction,
+        values: Map<int, string>,
+        declaration: HirDeclaration,
+        receiver: HirType) -> Option<string> {
+        let chain: List<HirDeclaration> =
+            self.class_chain(declaration)
+        let chain_types: List<HirType> =
+            self.class_chain_types(declaration, receiver)
+        if chain.len() != chain_types.len() { return none }
+        var index: int = chain.len()
+        for index > 0 {
+            index -= 1
+            let link: HirDeclaration = chain[index]
+            let template: string =
+                "{link.qualified}.{instruction.text}"
+            var owns_generics: bool = false
+            match self.generic_templates.get(template) {
+                some(body) => {
+                    owns_generics = body.generics.len() != 0
+                }
+                none => {}
+            }
+            // Every method of a generic class is a template, but only one
+            // that declares type parameters of its own is bound here: the
+            // rest hold rows and are raised under the inheriting class's
+            // own name, so a subclass's override must win over the base's
+            // body exactly as it does for any other method.
+            if !owns_generics { continue }
+            let link_type: HirType = chain_types[index]
+            var bindings: Map<string, HirType> = {}
+            // A non-generic owner is its own instance, so its qualified
+            // name is the whole key. A generic one needs the arguments the
+            // `extends` pinned in the key as well, or two subclasses that
+            // pin one base differently would raise different bodies under
+            // one name.
+            var base_name: string = template
+            if link.generics.len() != 0 {
+                if link.generics.len() !=
+                       link_type.args.len() {
+                    self.fail(
+                        instruction,
+                        "LLVM emitter needs the receiver's type arguments")
+                    return some("")
+                }
+                for slot: int in 0..link.generics.len() {
+                    bindings[link.generics[slot]] =
+                        link_type.args[slot]
+                }
+                bindings[link.qualified] = link_type
+                bindings[link.name] = link_type
+                base_name =
+                    "{render_hir_type(link_type)}.{instruction.text}"
+            }
+            return some(
+                self.emit_generic_method_instance(
+                    function, instruction, values,
+                    template, base_name, bindings))
+        }
+        return none
+    }
+
     // Instantiate one generic method call: explicit type arguments seed
     // the bindings — the only way to bind a generic the signature never
     // mentions — unification against the concrete operand and result
@@ -2940,6 +3278,22 @@ partial class LlvmTextEmitter {
                             method_template,
                             bindings)
                     }
+                    // The exact class may inherit the template rather than
+                    // declare it. Only a call with no slot is bound this
+                    // way — anything that holds a row is found through the
+                    // row. A generic exact class already returned above, so
+                    // its own qualified name is the whole instance here and
+                    // the chain climbs from there.
+                    if instruction.dispatch_slot == "" {
+                        match self.emit_inherited_generic_call(
+                                  function, instruction,
+                                  values, declaration,
+                                  new HirType(
+                                      declaration.qualified)) {
+                            some(text) => { return text }
+                            none => {}
+                        }
+                    }
                     let slot: string =
                         if instruction.dispatch_slot != "" {
                             instruction.dispatch_slot
@@ -2993,7 +3347,7 @@ partial class LlvmTextEmitter {
                 if declaration.kind == "interface" {
                     return self.emit_guarded_dynamic_call(
                         function, instruction, values,
-                        declaration)
+                        declaration, receiver_type)
                 }
                 if declaration.kind != "class" &&
                    declaration.kind != "enum" &&
@@ -3061,10 +3415,32 @@ partial class LlvmTextEmitter {
                         method_template,
                         bindings)
                 }
+                // A call with no slot holds no row to read, so the body
+                // is the one the receiver's static type names: the
+                // receiver may inherit the template, from a plain base or
+                // from one pinned at an argument. Anything that does hold
+                // a row falls through to the table below, where a
+                // subclass's override wins.
+                if instruction.dispatch_slot == "" {
+                    match self.emit_inherited_generic_call(
+                              function, instruction, values,
+                              declaration, receiver_type) {
+                        some(text) => { return text }
+                        none => {}
+                    }
+                    // Nothing left to try: dispatching would load whatever
+                    // the row happens to contain. The checker refuses every
+                    // program that reaches here, so this is the assertion
+                    // that it did, not a shape left unhandled.
+                    self.fail(
+                        instruction,
+                        "LLVM emitter cannot find a body for '{render_hir_type(receiver_type)}.{instruction.text}'")
+                    return ""
+                }
                 if declaration.kind == "class" {
                     return self.emit_guarded_dynamic_call(
                         function, instruction, values,
-                        declaration)
+                        declaration, receiver_type)
                 }
             }
             none => {

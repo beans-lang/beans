@@ -69,11 +69,16 @@ partial class LlvmTextEmitter {
         } else if kind == "never" {
             body = "{body}  ret i64 0\n"
         } else if kind == "f64" {
+            // Eq on a float is bit equality, the equality that belongs with
+            // totalOrder (spec/SYNTAX.md, "Number rules"). An IEEE compare
+            // here made a NaN key unfindable in its own map and let a struct
+            // holding -0.0 answer equal to one holding +0.0 while the two
+            // sort apart.
             body =
-                "{body}  %x = bitcast i64 %a to double\n  %y = bitcast i64 %b to double\n  %same = fcmp oeq double %x, %y\n  %bit = zext i1 %same to i64\n  ret i64 %bit\n"
+                "{body}  %same = icmp eq i64 %a, %b\n  %bit = zext i1 %same to i64\n  ret i64 %bit\n"
         } else if kind == "f32" {
             body =
-                "{body}  %a32 = trunc i64 %a to i32\n  %b32 = trunc i64 %b to i32\n  %x = bitcast i32 %a32 to float\n  %y = bitcast i32 %b32 to float\n  %same = fcmp oeq float %x, %y\n  %bit = zext i1 %same to i64\n  ret i64 %bit\n"
+                "{body}  %a32 = trunc i64 %a to i32\n  %b32 = trunc i64 %b to i32\n  %same = icmp eq i32 %a32, %b32\n  %bit = zext i1 %same to i64\n  ret i64 %bit\n"
         } else if kind == "string" {
             body =
                 "{body}  %p = inttoptr i64 %a to ptr\n  %q = inttoptr i64 %b to ptr\n  %same = call i64 @beans_str_eq(ptr %p, ptr %q)\n  ret i64 %same\n"
@@ -623,6 +628,63 @@ partial class LlvmTextEmitter {
                 return ""
             }
             body = "{body}{pushed}  ret void\n"
+        } else if name == "Result" &&
+                  type.args.len() >= 1 &&
+                  self.result_is_inline(type) {
+            // An inline result {is_error, okay, failed} whose address the
+            // driver handed us: read is_error, append ok( / err(, and push
+            // the live arm's field.
+            let built: string =
+                self.request_result_show_body(
+                    type, "%raw", true)
+            if built == "" {
+                self.show_wide_step_functions[key] = ""
+                return ""
+            }
+            body = built
+        } else if self.declaration_is_struct(type) {
+            // A struct is a value, so it crosses by address and cannot be a
+            // reference cycle — no path marking, just its fields in
+            // declaration order read from the address the driver handed us.
+            match self.record_layout(type) {
+                some(layout) => {
+                    match self.declaration_for(type) {
+                        some(declaration) => {
+                            let simple: string =
+                                declaration.name
+                            let open_full: string =
+                                self.string_pointer(
+                                    "{simple} \{ ")
+                            let open_empty: string =
+                                self.string_pointer(
+                                    "{simple} \{\}")
+                            let close: string =
+                                self.string_pointer(" \}")
+                            let fields: string =
+                                self.request_record_fields(
+                                    declaration.fields,
+                                    layout.field_offsets,
+                                    layout.field_types,
+                                    "%show.wide.ptr",
+                                    open_full, open_empty,
+                                    close, "rec")
+                            if fields == "" {
+                                self.show_wide_step_functions[key] = ""
+                                return ""
+                            }
+                            body = "{body}{fields}  ret void\n"
+                        }
+                        none => {
+                            self.show_wide_step_functions[key] = ""
+                            return ""
+                        }
+                    }
+                }
+                none => {
+                    self.show_wide_step_functions[key] = ""
+                    return ""
+                }
+            }
         } else {
             self.show_wide_step_functions[key] = ""
             return ""
@@ -630,6 +692,18 @@ partial class LlvmTextEmitter {
         self.ffi_functions.push(
             "define internal void @{symbol}(ptr %c, i64 %raw) \{\n{body}\}\n")
         return symbol
+    }
+
+    // A user struct declaration, told apart from the wide builtins
+    // (decimal, an inline Option, a Slice, a SIMD vector, an inline array)
+    // that also cross a show step by address.
+    fn declaration_is_struct(type: HirType) -> bool {
+        match self.declaration_for(type) {
+            some(declaration) => {
+                return declaration.kind == "struct"
+            }
+            none => { return false }
+        }
     }
 
     // Iterative display steps append their own text and push child work.
@@ -674,6 +748,13 @@ partial class LlvmTextEmitter {
         } else if name == "string" {
             body =
                 "  %show.text = inttoptr i64 %v to ptr\n  call void @beans_show_append(ptr %c, ptr %show.text)\n  ret void\n"
+        } else if name == "Error" {
+            // Error prints as its message — the string a caller passed to
+            // err(...). The message pointer sits at the Error object's msg
+            // offset, moving with the target pointer width.
+            let offset: int = self.error_field_offset("msg")
+            body =
+                "  %show.err = inttoptr i64 %v to ptr\n  %show.err.msg.ptr = getelementptr i8, ptr %show.err, i64 {offset}\n  %show.err.msg = load ptr, ptr %show.err.msg.ptr\n  call void @beans_show_append(ptr %c, ptr %show.err.msg)\n  ret void\n"
         } else if name == "List" &&
                   type.args.len() == 1 {
             let element: HirType = type.args[0]
@@ -754,6 +835,61 @@ partial class LlvmTextEmitter {
                 "void @beans_show_push_val(ptr, ptr, i64)")
             body =
                 "  %show.none = icmp eq i64 %v, 0\n  br i1 %show.none, label %show.option.none, label %show.option.some\nshow.option.none:\n  call void @beans_show_append(ptr %c, ptr {none_text})\n  ret void\nshow.option.some:\n  call void @beans_show_append(ptr %c, ptr {some_text})\n  call void @beans_show_push_lit(ptr %c, ptr {close})\n  call void @beans_show_push_val(ptr %c, ptr @{inner}, i64 %v)\n  ret void\n"
+        } else if name == "Result" &&
+                  type.args.len() >= 1 &&
+                  !self.result_is_inline(type) {
+            // A boxed result: {i64 tag, payload}. Read the tag, append
+            // ok( / err(, and push the live arm's payload from the box's
+            // payload slot — the same offset a match reads it from.
+            body =
+                self.request_result_show_body(
+                    type, "%v", false)
+        } else if (name == "Map" || name == "OrderedMap") &&
+                  type.args.len() == 2 {
+            // A map prints as {k: v, k: v}. The runtime driver walks the
+            // entry storage in insertion order — the order keys() and a
+            // direct `for k, v in m` walk — and pushes each key and value
+            // onto the same stack as a list's elements. Keys cross as a
+            // runtime slot; a wide value crosses by address, the way every
+            // other wide inline value reaches a show step.
+            let key_type: HirType = type.args[0]
+            let value_type: HirType = type.args[1]
+            // A wide key is not stored inline: the map boxes it and keeps
+            // the box pointer in the key slot, so the slot the driver hands
+            // the step is already the value's address — the same thing a
+            // wide step reads. Refusing it here left the checker admitting
+            // Map<Point, int> that no backend could emit.
+            var key_step: string = ""
+            if self.wide_inline_value(key_type) {
+                key_step =
+                    self.request_show_wide_step(key_type)
+            } else {
+                key_step =
+                    self.request_show_step(key_type)
+            }
+            if key_step == "" {
+                self.show_step_functions[key] = ""
+                return ""
+            }
+            var wide: int = 0
+            var value_step: string = ""
+            if self.wide_inline_value(value_type) {
+                wide = 1
+                value_step =
+                    self.request_show_wide_step(value_type)
+            } else {
+                value_step =
+                    self.request_show_step(value_type)
+            }
+            if value_step == "" {
+                self.show_step_functions[key] = ""
+                return ""
+            }
+            self.require_declare(
+                "beans_show_map_iter",
+                "void @beans_show_map_iter(ptr, ptr, ptr, ptr, i64)")
+            body =
+                "  %show.map = inttoptr i64 %v to ptr\n  call void @beans_show_map_iter(ptr %c, ptr %show.map, ptr @{key_step}, ptr @{value_step}, i64 {wide})\n  ret void\n"
         } else {
             match self.declaration_for(type) {
                 some(declaration) => {
@@ -836,6 +972,18 @@ partial class LlvmTextEmitter {
                             self.string_pointer("?")
                         body =
                             "{body}show.variant{id}.bad:\n  call void @beans_show_append(ptr %c, ptr {unknown})\n  ret void\n"
+                    } else if declaration.kind == "class" {
+                        // A class instance prints as Name { field: value }.
+                        // The object arrives as its own pointer, which is
+                        // also its identity on the render path: a reference
+                        // graph may be a cycle, so the object is marked on
+                        // the path and a re-entry prints <cycle> instead of
+                        // running forever. The leave step, pushed under the
+                        // closing brace, takes it back off once every field
+                        // nested under it has rendered.
+                        body =
+                            self.request_class_show_body(
+                                type, declaration)
                     }
                 }
                 none => {}
@@ -848,6 +996,268 @@ partial class LlvmTextEmitter {
         self.ffi_functions.push(
             "define internal void @{symbol}(ptr %c, i64 %v) \{\nentry:\n{body}\}\n")
         return symbol
+    }
+
+    // The fields of a struct or class object at `base` pushed onto the
+    // driver's stack as `{ f0: v0, f1: v1 }` — the open text appended, the
+    // closing brace pushed first so it comes back out last, then each field
+    // pushed in reverse so they pop in declaration order. `base` is a ptr
+    // register already pointing at the object. Returns "" when a field type
+    // has no show step, which makes the whole object unshowable.
+    fn request_record_fields(
+        fields: List<HirField>,
+        field_offsets: Map<string, int>,
+        field_types: Map<string, HirType>,
+        base: string,
+        open_full: string,
+        open_empty: string,
+        close: string,
+        tag: string) -> string {
+        // Static fields belong to the type, not the instance, so an object's
+        // rendering never carries them.
+        var ordered: List<HirField> = []
+        for candidate: HirField in fields {
+            if !candidate.is_static { ordered.push(candidate) }
+        }
+        if ordered.len() == 0 {
+            return "  call void @beans_show_append(ptr %c, ptr {open_empty})\n"
+        }
+        self.require_declare(
+            "beans_show_push_lit",
+            "void @beans_show_push_lit(ptr, ptr)")
+        let comma: string = self.string_pointer(", ")
+        var body: string =
+            "  call void @beans_show_append(ptr %c, ptr {open_full})\n  call void @beans_show_push_lit(ptr %c, ptr {close})\n"
+        var index: int = ordered.len() - 1
+        for index >= 0 {
+            let field: HirField = ordered[index]
+            let label: string =
+                self.string_pointer("{field.name}: ")
+            if field.is_weak {
+                // A weak field is a non-owning reference — the one edge the
+                // cycle collector refuses to trace. The printer refuses it
+                // too: it prints <weak> without loading the pointer, which a
+                // cleared weak has zeroed and a live one may loop back
+                // through. Its type never has to be printable.
+                let weak_mark: string =
+                    self.string_pointer("<weak>")
+                body =
+                    "{body}  call void @beans_show_push_lit(ptr %c, ptr {weak_mark})\n  call void @beans_show_push_lit(ptr %c, ptr {label})\n"
+                if index > 0 {
+                    body =
+                        "{body}  call void @beans_show_push_lit(ptr %c, ptr {comma})\n"
+                }
+                index -= 1
+                continue
+            }
+            let offset: int = field_offsets[field.name]
+            // The concrete field type: for a generic owner the declared
+            // field type is a parameter, and only the layout carries what it
+            // was bound to.
+            var field_type: HirType = field.type
+            match field_types.get(field.name) {
+                some(bound) => { field_type = bound }
+                none => {}
+            }
+            let pointer: string =
+                "%show.field.{tag}.{index}"
+            body =
+                "{body}  {pointer} = getelementptr i8, ptr {base}, i64 {offset}\n"
+            let pushed: string =
+                self.show_step_push_at(
+                    field_type, pointer,
+                    "{tag}.{index}")
+            if pushed == "" { return "" }
+            body = "{body}{pushed}  call void @beans_show_push_lit(ptr %c, ptr {label})\n"
+            if index > 0 {
+                body =
+                    "{body}  call void @beans_show_push_lit(ptr %c, ptr {comma})\n"
+            }
+            index -= 1
+        }
+        return body
+    }
+
+    // The symbol of a class's own `to_string`. A non-generic class has one
+    // registered before any body is emitted. A generic one has only a
+    // template until some site raises it for concrete arguments, and the
+    // show step is such a site: without raising it here the step fell
+    // through to the derived `Name { field: value }` form while the tree
+    // interpreter printed what to_string returned, so the two backends
+    // printed different text for the same object. Empty means no symbol can
+    // be named, and the caller refuses rather than rendering a second way.
+    fn class_string_form_symbol(
+        type: HirType,
+        declaration: HirDeclaration) -> string {
+        if declaration.generics.len() == 0 {
+            match self.function_symbols.get(
+                      "{declaration.qualified}.to_string") {
+                some(symbol) => { return symbol }
+                none => { return "" }
+            }
+        }
+        if declaration.generics.len() != type.args.len() {
+            return ""
+        }
+        // An instantiated receiver names its methods by the rendered
+        // instance type, the same key a call site uses.
+        let instance: string =
+            "{render_hir_type(type)}.to_string"
+        match self.function_symbols.get(instance) {
+            some(symbol) => { return symbol }
+            none => {}
+        }
+        let template: string =
+            self.generic_method_template(
+                declaration, "to_string")
+        if !self.generic_templates.contains_key(
+               template) {
+            return ""
+        }
+        var bindings: Map<string, HirType> = {}
+        for index: int in
+            0..declaration.generics.len() {
+            bindings[declaration.generics[index]] =
+                type.args[index]
+        }
+        bindings[declaration.qualified] = type
+        bindings[declaration.name] = type
+        let site: MirInstruction =
+            new MirInstruction(
+                "show_string_form", -1, type, "", "",
+                declaration.file, declaration.line,
+                declaration.col)
+        return self.instantiate_generic(
+            site, template, instance, bindings)
+    }
+
+    // The iterative show step body for a class instance. Empty when the
+    // class carries a field no backend can render, so the caller refuses.
+    fn request_class_show_body(
+        type: HirType,
+        declaration: HirDeclaration) -> string {
+        // A class that spells out its own string form renders through it:
+        // call to_string, append what it returned, release it. No cycle
+        // guard — the user's method owns its own recursion.
+        //
+        // The checker admits such a class without asking whether its fields
+        // are printable, so there is no derived form to fall back on here:
+        // a missing symbol is a refusal, never a second rendering the tree
+        // interpreter would not print.
+        if hir_string_form(
+               declaration.qualified,
+               self.program.reflection_functions).is_some() {
+            let symbol: string =
+                self.class_string_form_symbol(
+                    type, declaration)
+            if symbol == "" { return "" }
+            let sid: int = self.fresh()
+            return "  %show.form.obj{sid} = inttoptr i64 %v to ptr\n  %show.form.text{sid} = call ptr {symbol}(ptr %show.form.obj{sid})\n  call void @beans_show_append(ptr %c, ptr %show.form.text{sid})\n  call void @beans_release(ptr %show.form.text{sid})\n  ret void\n"
+        }
+        match self.class_layout(type) {
+            some(layout) => {
+                let id: int = self.fresh()
+                let simple: string = declaration.name
+                let open_full: string =
+                    self.string_pointer("{simple} \{ ")
+                let open_empty: string =
+                    self.string_pointer("{simple} \{\}")
+                let close: string =
+                    self.string_pointer(" \}")
+                let cycle: string =
+                    self.string_pointer("<cycle>")
+                self.require_declare(
+                    "beans_show_enter",
+                    "i64 @beans_show_enter(ptr, i64)")
+                self.require_declare(
+                    "beans_show_push_leave",
+                    "void @beans_show_push_leave(ptr, i64)")
+                var body: string =
+                    "  %show.obj{id} = inttoptr i64 %v to ptr\n  %show.onpath{id} = call i64 @beans_show_enter(ptr %c, i64 %v)\n  %show.cyc{id} = icmp ne i64 %show.onpath{id}, 0\n  br i1 %show.cyc{id}, label %show.cycle{id}, label %show.fresh{id}\nshow.cycle{id}:\n  call void @beans_show_append(ptr %c, ptr {cycle})\n  ret void\nshow.fresh{id}:\n  call void @beans_show_push_leave(ptr %c, i64 %v)\n"
+                // Declaration order, the order the interpreter walks too —
+                // the checker admits only a leaf standalone class, so the
+                // declared fields are the whole instance and inherited ones
+                // never enter.
+                let fields: string =
+                    self.request_record_fields(
+                        declaration.fields,
+                        layout.field_offsets,
+                        layout.field_types,
+                        "%show.obj{id}",
+                        open_full, open_empty, close,
+                        "obj{id}")
+                if fields == "" { return "" }
+                return "{body}{fields}  ret void\n"
+            }
+            none => { return "" }
+        }
+    }
+
+    // The iterative show step body for a result — ok(x) / err(e). Reads the
+    // arm the discriminant selects and pushes its payload, exactly how a
+    // match reads it. `is_wide` distinguishes the inline aggregate
+    // {is_error, okay, failed}, whose slot is the value's address, from the
+    // boxed {tag, payload}, whose slot is the box pointer. Empty when a
+    // payload has no show step, so the caller refuses.
+    fn request_result_show_body(
+        type: HirType,
+        slot_name: string,
+        is_wide: bool) -> string {
+        let ok_type: HirType = type.args[0]
+        let err_type: HirType =
+            self.result_error_type(type)
+        let id: int = self.fresh()
+        let ok_open: string = self.string_pointer("ok(")
+        let err_open: string = self.string_pointer("err(")
+        let close: string = self.string_pointer(")")
+        self.require_declare(
+            "beans_show_push_lit",
+            "void @beans_show_push_lit(ptr, ptr)")
+        let base: string = "%show.resbase{id}"
+        var body: string =
+            "  {base} = inttoptr i64 {slot_name} to ptr\n"
+        if is_wide {
+            body =
+                "{body}  %show.reserrflag{id} = load i1, ptr {base}\n  %show.resok{id} = xor i1 %show.reserrflag{id}, true\n"
+        } else {
+            body =
+                "{body}  %show.restag{id} = load i64, ptr {base}\n  %show.resok{id} = icmp eq i64 %show.restag{id}, 0\n"
+        }
+        body =
+            "{body}  br i1 %show.resok{id}, label %show.resoklbl{id}, label %show.reserrlbl{id}\n"
+        // ok arm
+        let ok_ptr: string = "%show.resokptr{id}"
+        var ok_setup: string = ""
+        if is_wide {
+            ok_setup =
+                "  {ok_ptr} = getelementptr {self.type_text(type)}, ptr {base}, i32 0, i32 1\n"
+        } else {
+            ok_setup =
+                "  {ok_ptr} = getelementptr i8, ptr {base}, i64 {self.result_payload_offset(ok_type)}\n"
+        }
+        let ok_push: string =
+            self.show_step_push_at(
+                ok_type, ok_ptr, "resok{id}")
+        if ok_push == "" { return "" }
+        body =
+            "{body}show.resoklbl{id}:\n  call void @beans_show_append(ptr %c, ptr {ok_open})\n  call void @beans_show_push_lit(ptr %c, ptr {close})\n{ok_setup}{ok_push}  ret void\n"
+        // err arm
+        let err_ptr: string = "%show.reserrptr{id}"
+        var err_setup: string = ""
+        if is_wide {
+            err_setup =
+                "  {err_ptr} = getelementptr {self.type_text(type)}, ptr {base}, i32 0, i32 2\n"
+        } else {
+            err_setup =
+                "  {err_ptr} = getelementptr i8, ptr {base}, i64 {self.result_payload_offset(err_type)}\n"
+        }
+        let err_push: string =
+            self.show_step_push_at(
+                err_type, err_ptr, "reserr{id}")
+        if err_push == "" { return "" }
+        body =
+            "{body}show.reserrlbl{id}:\n  call void @beans_show_append(ptr %c, ptr {err_open})\n  call void @beans_show_push_lit(ptr %c, ptr {close})\n{err_setup}{err_push}  ret void\n"
+        return body
     }
 
     // one owned-string renderer per shown type, memoized so nested
@@ -888,6 +1298,12 @@ partial class LlvmTextEmitter {
         } else if name == "string" {
             body =
                 "  %text = inttoptr i64 %v to ptr\n  call void @beans_retain(ptr %text)\n  ret ptr %text\n"
+        } else if name == "Error" {
+            // Error prints as its message; hand back a retained copy of the
+            // message string the Error object holds.
+            let offset: int = self.error_field_offset("msg")
+            body =
+                "  %err = inttoptr i64 %v to ptr\n  %err.msg.ptr = getelementptr i8, ptr %err, i64 {offset}\n  %err.msg = load ptr, ptr %err.msg.ptr\n  call void @beans_retain(ptr %err.msg)\n  ret ptr %err.msg\n"
         } else if name == "List" &&
                   type.args.len() == 1 {
             let element: HirType = type.args[0]
@@ -928,9 +1344,22 @@ partial class LlvmTextEmitter {
                 name == "Option" &&
                 type.args.len() == 1 &&
                 self.type_is_reference(type)
+            if (name == "Map" || name == "OrderedMap") &&
+               type.args.len() == 2 {
+                iterative = true
+            }
+            // A boxed result crosses as its box pointer, a slot the driver
+            // can carry; an inline result is wide and reaches the driver by
+            // address through the wide step instead.
+            if name == "Result" &&
+               type.args.len() >= 1 &&
+               !self.result_is_inline(type) {
+                iterative = true
+            }
             match self.declaration_for(type) {
                 some(declaration) => {
-                    if declaration.kind == "enum" {
+                    if declaration.kind == "enum" ||
+                       declaration.kind == "class" {
                         iterative = true
                     }
                 }

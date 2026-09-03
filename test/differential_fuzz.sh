@@ -41,9 +41,14 @@ trap 'rm -rf "$tmp"' EXIT
 pinned() {
     echo "== differential fuzz: pinned checker/panic parity =="
 
-    # both checkers reject a nested struct-field assignment the same way;
-    # the self-hosted checker used to accept it and then drop the store
+    # a nested struct-field assignment lands, on both backends. The
+    # self-hosted checker once accepted it and then dropped the store,
+    # which is why this is pinned here; it was refused outright until the
+    # backends learned to address a nested record place, and the thing to
+    # pin now is that the write is visible and not that it is refused.
     cat >"$tmp/nested_assign.b" <<'EOF'
+import std.io
+
 struct In {
     a: int
 }
@@ -55,16 +60,35 @@ struct Mid {
 fn main() {
     var w: Mid = Mid { i: In { a: 1 } }
     w.i.a = 2
+    io.println("{w.i.a}")
 }
 EOF
     for cc in build/beansc; do
-        if "$cc" check "$tmp/nested_assign.b" >"$tmp/na.log" 2>&1; then
-            echo "  FAIL: $cc accepted a nested struct field assignment" >&2
-            return 1
-        fi
-        grep -q "struct field assignment needs a local variable" "$tmp/na.log" || {
-            echo "  FAIL: $cc rejected the nested assignment with the wrong message:" >&2
+        "$cc" check "$tmp/nested_assign.b" >"$tmp/na.log" 2>&1 || {
+            echo "  FAIL: $cc rejected a nested struct field assignment:" >&2
             head -2 "$tmp/na.log" >&2
+            return 1
+        }
+        got=$("$cc" run "$tmp/nested_assign.b" 2>&1) || {
+            echo "  FAIL: $cc could not run the nested assignment: $got" >&2
+            return 1
+        }
+        [ "$got" = "2" ] || {
+            echo "  FAIL: $cc interpreter dropped the nested store: got '$got'" >&2
+            return 1
+        }
+        "$cc" build "$tmp/nested_assign.b" -o "$tmp/nested_assign" \
+            >"$tmp/na.log" 2>&1 || {
+            echo "  FAIL: $cc could not build the nested assignment:" >&2
+            head -2 "$tmp/na.log" >&2
+            return 1
+        }
+        got=$("$tmp/nested_assign" 2>&1) || {
+            echo "  FAIL: the nested assignment binary failed: $got" >&2
+            return 1
+        }
+        [ "$got" = "2" ] || {
+            echo "  FAIL: $cc native backend dropped the nested store: got '$got'" >&2
             return 1
         }
     done

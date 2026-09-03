@@ -54,6 +54,7 @@ partial class LlvmTextEmitter {
     ordered_builtin_declares: List<string>
     borrowed_local_of: Map<int, int>
     borrowed_place_of: Map<int, LlvmBorrowedPlace>
+    list_headers: Map<int, LlvmListHeader>
     inout_addresses: Map<int, bool>
     field_init_names: Map<int, string>
     cleanup_functions: Map<int, MirFunction>
@@ -75,6 +76,21 @@ partial class LlvmTextEmitter {
     selector_indices: Map<string, int>
     selector_order: List<string>
     method_dispatch_slots: Map<string, bool>
+    // Answers of static_dispatch_symbol, keyed "{receiver type}|{slot}".
+    // Every input it reads is fixed once the symbol pre-pass has run, so
+    // one answer per receiver-and-slot stands for the whole emit.
+    static_dispatch_symbols: Map<string, string>
+    // class_dispatch_is_settled, keyed "{class}|{method}"
+    settled_dispatch_classes: Map<string, bool>
+    // Classes this program builds an object of, read off the whole MIR
+    // before anything is emitted. A guarded call speculates on these, so
+    // the answer must not depend on how far the emit has got.
+    constructed_classes: Map<string, bool>
+    // method_dispatch_slots as the symbol pre-pass left it, keyed
+    // "{function}|{slot}". method_dispatch_slots itself grows as raised
+    // instances register their selectors; this one is the set of names the
+    // MIR itself carries, so it answers the same before and after any raise.
+    declared_dispatch_slots: Map<string, bool>
     generic_templates: Map<string, MirFunction>
     generic_queue: List<MirFunction>
     generic_count: int
@@ -94,6 +110,10 @@ partial class LlvmTextEmitter {
     iterator_collection_borrowed: Map<int, bool>
     iterator_map_version: Map<int, string>
     iterator_map_entry: Map<int, string>
+    // What a list looked like when its loop started: the change count it must
+    // still carry, and the length the panic message reports it moved from.
+    iterator_list_version: Map<int, string>
+    iterator_list_length: Map<int, string>
     iterator_slice: Map<int, string>
     iterator_array_slot: Map<int, string>
     iterator_array_length: Map<int, int>
@@ -118,6 +138,31 @@ partial class LlvmTextEmitter {
     debug_main_file: string
     debug_unit: int
     debug_subroutine_type: int
+    // Controlled unwind (src/llvm_unwind.b). The cleanup pad of the function
+    // being emitted, "" when it has nothing to clean up or the program cannot
+    // unwind at all; whether any call actually named it; and the label of the
+    // block the rewrite is currently inside, with the splits it has made, so
+    // a phi can still name the predecessor it really has.
+    unwind_pad: string
+    unwind_used: bool
+    unwind_block: string
+    unwind_alias_from: List<string>
+    unwind_alias_to: List<string>
+    // In-flight owned temporaries (src/llvm_unwind.b): MIR values that hold
+    // an owned reference while an instruction that can panic runs. The scan
+    // before the body names the candidates and the ones a `return` consumes;
+    // emission gives each a slot and a flag beside the locals, records where
+    // it was defined and that its hand-off was emitted, and notes where each
+    // nested-scope local was initialized so the pad can order them together.
+    unwind_temp_candidate: Map<int, bool>
+    unwind_temp_return: Map<int, bool>
+    unwind_temp_slot: Map<int, string>
+    unwind_temp_defined: Map<int, bool>
+    unwind_temp_cleared: Map<int, bool>
+    unwind_temp_order: List<int>
+    unwind_temp_position: Map<int, int>
+    unwind_local_position: Map<int, int>
+    unwind_position: int
     // The subprogram of the function being emitted, or -1 outside one and in
     // a function the debugger is not told about.
     debug_scope: int
@@ -140,6 +185,20 @@ partial class LlvmTextEmitter {
         self.debug_scope = -1
         self.debug_scope_file = ""
         self.debug_scope_line = 0
+        self.unwind_pad = ""
+        self.unwind_used = false
+        self.unwind_block = ""
+        self.unwind_alias_from = []
+        self.unwind_alias_to = []
+        self.unwind_temp_candidate = {}
+        self.unwind_temp_return = {}
+        self.unwind_temp_slot = {}
+        self.unwind_temp_defined = {}
+        self.unwind_temp_cleared = {}
+        self.unwind_temp_order = []
+        self.unwind_temp_position = {}
+        self.unwind_local_position = {}
+        self.unwind_position = 0
         self.errors = []
         self.encoding_intrinsics = {}
         self.log_intrinsics = {}
@@ -179,6 +238,7 @@ partial class LlvmTextEmitter {
         self.ordered_builtin_declares = []
         self.borrowed_local_of = {}
         self.borrowed_place_of = {}
+        self.list_headers = {}
         self.inout_addresses = {}
         self.field_init_names = {}
         self.cleanup_functions = {}
@@ -200,6 +260,10 @@ partial class LlvmTextEmitter {
         self.selector_indices = {}
         self.selector_order = []
         self.method_dispatch_slots = {}
+        self.static_dispatch_symbols = {}
+        self.settled_dispatch_classes = {}
+        self.constructed_classes = {}
+        self.declared_dispatch_slots = {}
         self.generic_templates = {}
         self.generic_queue = []
         self.generic_count = 0
@@ -218,6 +282,8 @@ partial class LlvmTextEmitter {
         self.iterator_collection = {}
         self.iterator_map_version = {}
         self.iterator_map_entry = {}
+        self.iterator_list_version = {}
+        self.iterator_list_length = {}
         self.iterator_slice = {}
         self.iterator_array_slot = {}
         self.iterator_array_length = {}
@@ -247,11 +313,46 @@ partial class LlvmTextEmitter {
                     declaration.qualified] = record_id
                 record_id += 1
             }
+            // A singleton's object is built by its accessor, which every
+            // program that declares one runs, so it is constructed without
+            // any `new` naming it.
+            if declaration.kind == "class" &&
+               declaration.is_singleton {
+                self.constructed_classes[
+                    declaration.qualified] = true
+            }
         }
         for function: MirFunction in program.functions {
             for slot: string in function.dispatch_slots {
                 self.method_dispatch_slots[
                     "{function.name}|{slot}"] = true
+            }
+            // Which classes the program builds is a whole-program fact and
+            // is read here, not accumulated as bodies come out: a guarded
+            // call emitted before the body holding the `new` must speculate
+            // on the same set as one emitted after it. A template counts —
+            // its instances carry its `new` instructions — and the blocks
+            // and instructions skipped here are exactly the ones
+            // emit_function skips.
+            for block: MirBlock in function.blocks {
+                if !block.reachable { continue }
+                for instruction: MirInstruction in
+                    block.instructions {
+                    if instruction.removed ||
+                       instruction.op != "new" {
+                        continue
+                    }
+                    match self.declarations.get(
+                              instruction.type.name) {
+                        some(built) => {
+                            if built.kind == "class" {
+                                self.constructed_classes[
+                                    built.qualified] = true
+                            }
+                        }
+                        none => {}
+                    }
+                }
             }
         }
         self.class_id_count = class_id
@@ -273,9 +374,41 @@ partial class LlvmTextEmitter {
         return "  call void @beans_panic(ptr {message}, i64 {instruction.line}, i64 {instruction.col})\n"
     }
 
+    // One instruction, with the ownership hand-offs the unwind needs around
+    // it (src/llvm_unwind.b): a consumed temporary's flag clears before the
+    // instruction when the consumer owns it from its entry, or after it when
+    // the consumer can still panic before taking it; the result, if it is an
+    // owned temporary the pad may have to release, is stored beside the
+    // locals before this instruction's own releases run — a release runs a
+    // deinit, and a deinit can panic.
     fn emit_instruction(function: MirFunction,
                         instruction: MirInstruction,
                         values: Map<int, string>) -> string {
+        self.unwind_position += 1
+        self.unwind_note_local_init(function, instruction)
+        var output: string =
+            "{self.unwind_temp_consume(function, instruction, true)}{self.emit_instruction_body(function, instruction, values)}"
+        output =
+            "{output}{self.unwind_temp_consume(function, instruction, false)}{self.unwind_temp_define(function, instruction, values)}"
+        output =
+            "{output}{self.emit_releases(function, values, instruction.releases, instruction)}"
+        if output == "" { return "" }
+        // Every line this instruction lowered to carries the instruction's own
+        // source position. One funnel covers the whole opcode table, and
+        // covering all of it — not the first line of each statement — is what
+        // satisfies the verifier's rule that a call inside a function with a
+        // subprogram must carry a location.
+        output =
+            llvm_attach_dbg(
+                output,
+                self.debug_instruction_location(instruction))
+        if !self.mir_comments { return output }
+        return "  ; MIR {instruction.op} v{instruction.result}\n{output}"
+    }
+
+    fn emit_instruction_body(function: MirFunction,
+                             instruction: MirInstruction,
+                             values: Map<int, string>) -> string {
         var output: string = ""
         if instruction.op == "type" {
             // compile-time-only operand for a layout query
@@ -955,6 +1088,11 @@ partial class LlvmTextEmitter {
                         function,
                         instruction, values)
             }
+        } else if instruction.op ==
+                      "list_header_open" {
+            output =
+                self.emit_list_header_open(
+                    instruction)
         } else if instruction.op == "builtin_method" &&
                   instruction.text == "push" &&
                   instruction.operands.len() != 0 &&
@@ -1604,20 +1742,7 @@ partial class LlvmTextEmitter {
                 instruction,
                 "LLVM emitter does not support MIR operation '{instruction.op}'{detail} yet")
         }
-        output =
-            "{output}{self.emit_releases(function, values, instruction.releases, instruction)}"
-        if output == "" { return "" }
-        // Every line this instruction lowered to carries the instruction's own
-        // source position. One funnel covers the whole opcode table, and
-        // covering all of it — not the first line of each statement — is what
-        // satisfies the verifier's rule that a call inside a function with a
-        // subprogram must carry a location.
-        output =
-            llvm_attach_dbg(
-                output,
-                self.debug_instruction_location(instruction))
-        if !self.mir_comments { return output }
-        return "  ; MIR {instruction.op} v{instruction.result}\n{output}"
+        return output
     }
 
     fn emit(require_main: bool) -> string {

@@ -53,7 +53,7 @@ partial class LlvmTextEmitter {
                     function, instruction, values)
             }
             let text: string =
-                llvm_unquote(instruction.text)
+                string_literal_decode(instruction.text)
             self.selector_texts[
                 instruction.result] = text
             values[instruction.result] =
@@ -192,11 +192,18 @@ partial class LlvmTextEmitter {
             return "  {result} = call i64 @beans_f64_round(double {receiver})\n"
         }
         if instruction.resolved == "f32.round" {
+            // The convert saturates like every other float-to-int step: a bare
+            // fptosi is poison once the rounded value leaves int's range, and
+            // beans_f64_round — the f64 twin, and the interpreter's answer for
+            // both widths — clamps.
             self.require_declare(
                 "llvm.round.f32",
                 "float @llvm.round.f32(float)")
+            self.require_declare(
+                "llvm.fptosi.sat.i64.f32",
+                "i64 @llvm.fptosi.sat.i64.f32(float)")
             values[instruction.result] = result
-            return "  %round.f32{id} = call float @llvm.round.f32(float {receiver})\n  {result} = fptosi float %round.f32{id} to i64\n"
+            return "  %round.f32{id} = call float @llvm.round.f32(float {receiver})\n  {result} = call i64 @llvm.fptosi.sat.i64.f32(float %round.f32{id})\n"
         }
         if instruction.resolved == "f32.abs" {
             self.require_declare(
@@ -341,8 +348,20 @@ partial class LlvmTextEmitter {
                                  type: HirType) -> string {
         if operator == "==" { return "eq" }
         if operator == "!=" { return "ne" }
+        // A bool is an i1, where the signed reading of `true` is -1, so a
+        // signed predicate answered `false < true` with false. `Order` on a
+        // bool is false before true (the interpreter's tree_value_less says
+        // so, and List<bool>.sort and max/min have always agreed), and only
+        // a generic body can spell the comparison — a bare `false < true` is
+        // refused as an unordered operand.
         let prefix: string =
-            if llvm_type_is_unsigned(type) { "u" } else { "s" }
+            if llvm_type_is_unsigned(type) ||
+               canonical_hir_name(type.name) ==
+                   "bool" {
+                "u"
+            } else {
+                "s"
+            }
         if operator == "<" { return "{prefix}lt" }
         if operator == "<=" { return "{prefix}le" }
         if operator == ">" { return "{prefix}gt" }
@@ -624,11 +643,21 @@ partial class LlvmTextEmitter {
             let element_llvm: string =
                 self.type_text(element)
             var compare: string = ""
+            // An element compares the way `Eq` compares it, so a float
+            // element goes through its bits — the same rule emit_inline_equal
+            // states, reached here because a bare array `==` never builds one.
+            var compared_llvm: string = element_llvm
             if llvm_type_is_integer(element) ||
                self.type_is_raw_pointer(element) {
                 compare = "icmp eq"
             } else if llvm_type_is_float(element) {
-                compare = "fcmp oeq"
+                compare = "icmp eq"
+                compared_llvm =
+                    if element_llvm == "float" {
+                        "i32"
+                    } else {
+                        "i64"
+                    }
             }
             if llvm == "" || compare == "" {
                 self.fail(
@@ -642,7 +671,19 @@ partial class LlvmTextEmitter {
                 0..operand_type.array_length {
                 let id: int = self.fresh()
                 output =
-                    "{output}  %array.eq.left{id} = extractvalue {llvm} {left}, {index}\n  %array.eq.right{id} = extractvalue {llvm} {right}, {index}\n  %array.eq.same{id} = {compare} {element_llvm} %array.eq.left{id}, %array.eq.right{id}\n"
+                    "{output}  %array.eq.left{id} = extractvalue {llvm} {left}, {index}\n  %array.eq.right{id} = extractvalue {llvm} {right}, {index}\n"
+                var left_word: string =
+                    "%array.eq.left{id}"
+                var right_word: string =
+                    "%array.eq.right{id}"
+                if compared_llvm != element_llvm {
+                    output =
+                        "{output}  %array.eq.lw{id} = bitcast {element_llvm} {left_word} to {compared_llvm}\n  %array.eq.rw{id} = bitcast {element_llvm} {right_word} to {compared_llvm}\n"
+                    left_word = "%array.eq.lw{id}"
+                    right_word = "%array.eq.rw{id}"
+                }
+                output =
+                    "{output}  %array.eq.same{id} = {compare} {compared_llvm} {left_word}, {right_word}\n"
                 if all == "" {
                     all = "%array.eq.same{id}"
                 } else {
@@ -844,6 +885,17 @@ partial class LlvmTextEmitter {
                 return "  {result} = {opcode} {type} {left}, {right}\n"
             }
         } else if llvm_type_is_float(operand_type) {
+            if instruction.total_order {
+                let total: string =
+                    self.emit_total_float_compare(
+                        instruction, type, left,
+                        right, result)
+                if total != "" {
+                    values[instruction.result] =
+                        result
+                    return total
+                }
+            }
             let compare: string =
                 self.float_compare_predicate(
                     instruction.text)
@@ -877,6 +929,59 @@ partial class LlvmTextEmitter {
             instruction,
             "LLVM emitter does not support binary '{instruction.text}' for {render_hir_type(operand_type)} yet")
         return ""
+    }
+
+    // A comparison the source made over a type parameter compares through the
+    // `Order`/`Eq` interface, and for a float that is IEEE 754 totalOrder and
+    // bit equality rather than the IEEE operators (spec/SYNTAX.md, "Number
+    // rules"): a container written in Beans keeps `K implements Order` sorted
+    // by exactly this, and under a partial order its descent reads "neither
+    // less nor greater" as "found it" and overwrites an unrelated key.
+    // Flipping the magnitude bits of a negative lays the float line out as
+    // signed integers in totalOrder — the same key rt_f64_total_key builds in
+    // runtime/beans_rt.c and tree_float_total_key builds for the interpreter.
+    fn emit_total_float_compare(
+        instruction: MirInstruction,
+        type: string,
+        left: string,
+        right: string,
+        result: string) -> string {
+        let narrow: bool = type == "float"
+        let word: string =
+            if narrow { "i32" } else { "i64" }
+        let magnitude: string =
+            if narrow {
+                "2147483647"
+            } else {
+                "9223372036854775807"
+            }
+        let shift: string =
+            if narrow { "31" } else { "63" }
+        let id: int = self.fresh()
+        let setup: string =
+            "  %total.lb{id} = bitcast {type} {left} to {word}\n  %total.rb{id} = bitcast {type} {right} to {word}\n"
+        if instruction.text == "==" ||
+           instruction.text == "!=" {
+            let same: string =
+                if instruction.text == "==" {
+                    "eq"
+                } else {
+                    "ne"
+                }
+            return "{setup}  {result} = icmp {same} {word} %total.lb{id}, %total.rb{id}\n"
+        }
+        var predicate: string = ""
+        if instruction.text == "<" {
+            predicate = "slt"
+        } else if instruction.text == "<=" {
+            predicate = "sle"
+        } else if instruction.text == ">" {
+            predicate = "sgt"
+        } else if instruction.text == ">=" {
+            predicate = "sge"
+        }
+        if predicate == "" { return "" }
+        return "{setup}  %total.ls{id} = ashr {word} %total.lb{id}, {shift}\n  %total.lm{id} = and {word} %total.ls{id}, {magnitude}\n  %total.lk{id} = xor {word} %total.lb{id}, %total.lm{id}\n  %total.rs{id} = ashr {word} %total.rb{id}, {shift}\n  %total.rm{id} = and {word} %total.rs{id}, {magnitude}\n  %total.rk{id} = xor {word} %total.rb{id}, %total.rm{id}\n  {result} = icmp {predicate} {word} %total.lk{id}, %total.rk{id}\n"
     }
 
     // The runtime's slot_eq kind for an element, with the comparator thunk
@@ -1271,6 +1376,43 @@ partial class LlvmTextEmitter {
             }
             return "{output}  {result} = fptrunc double %dec.wide{id} to {target_llvm}\n"
         }
+        // A float that has no value in the target integer type saturates at
+        // that type's own bounds, and NaN is zero (spec/SYNTAX.md, "Number
+        // rules"). A bare fptosi/fptoui is *poison* for exactly those inputs,
+        // so `1e300 as i32` answered a different number on every build — an
+        // address, once the optimizer could see the constant — while the
+        // interpreter answered something else again. The saturating intrinsics
+        // are the rule written down, and they cost one instruction on every
+        // target that has a saturating convert.
+        if llvm_type_is_float(source_type) &&
+           llvm_type_is_integer(target_type) {
+            let bits: int =
+                llvm_integer_bits(target_type)
+            if bits != 8 && bits != 16 &&
+               bits != 32 && bits != 64 {
+                self.fail(
+                    instruction,
+                    "LLVM emitter does not support cast from {render_hir_type(source_type)} to {render_hir_type(target_type)} yet")
+                return ""
+            }
+            let suffix: string =
+                if source_llvm == "float" {
+                    "f32"
+                } else {
+                    "f64"
+                }
+            let intrinsic: string =
+                if llvm_type_is_unsigned(target_type) {
+                    "llvm.fptoui.sat.{target_llvm}.{suffix}"
+                } else {
+                    "llvm.fptosi.sat.{target_llvm}.{suffix}"
+                }
+            self.require_declare(
+                intrinsic,
+                "{target_llvm} @{intrinsic}({source_llvm})")
+            values[instruction.result] = result
+            return "  {result} = call {target_llvm} @{intrinsic}({source_llvm} {source})\n"
+        }
         var opcode: string = ""
         if llvm_type_is_integer(source_type) &&
            llvm_type_is_integer(target_type) {
@@ -1294,14 +1436,6 @@ partial class LlvmTextEmitter {
                     "sitofp"
                 }
         } else if llvm_type_is_float(source_type) &&
-                  llvm_type_is_integer(target_type) {
-            opcode =
-                if llvm_type_is_unsigned(target_type) {
-                    "fptoui"
-                } else {
-                    "fptosi"
-                }
-        } else if llvm_type_is_float(source_type) &&
                   llvm_type_is_float(target_type) {
             opcode =
                 if canonical_hir_name(
@@ -1322,9 +1456,9 @@ partial class LlvmTextEmitter {
     }
 
     // literals, alternatives, inclusive and exclusive ranges, and a
-    // trailing wildcard or binding, tested as a branch chain; the
-    // literal text drops straight into the compare, so nothing is
-    // parsed back into numbers
+    // trailing wildcard or binding, tested as a branch chain. Every
+    // literal is re-rendered as a decimal integer on the way into the
+    // compare (llvm_integer_pattern): LLVM reads no other spelling.
     fn emit_integer_match(
         function: MirFunction,
         block: MirBlock,
@@ -1371,7 +1505,8 @@ partial class LlvmTextEmitter {
             if pattern.starts_with(
                    "pattern_literal:") {
                 let text: string =
-                    pattern.slice(16, pattern.len())
+                    llvm_integer_pattern(
+                        pattern.slice(16, pattern.len()))
                 condition = "%int.match{id}"
                 output =
                     "{output}  {condition} = icmp eq {llvm} {subject}, {text}\n"
@@ -1399,7 +1534,8 @@ partial class LlvmTextEmitter {
                         return ""
                     }
                     let text: string =
-                        piece.slice(16, piece.len())
+                        llvm_integer_pattern(
+                            piece.slice(16, piece.len()))
                     let leg: int = self.fresh()
                     output =
                         "{output}  %int.match.leg{leg} = icmp eq {llvm} {subject}, {text}\n"
@@ -1445,9 +1581,11 @@ partial class LlvmTextEmitter {
                     return ""
                 }
                 let low_text: string =
-                    low.slice(16, low.len())
+                    llvm_integer_pattern(
+                        low.slice(16, low.len()))
                 let high_text: string =
-                    high.slice(16, high.len())
+                    llvm_integer_pattern(
+                        high.slice(16, high.len()))
                 // unsigned subjects need unsigned predicates:
                 // 150u8 sits inside 100..=200 only under uge/ule
                 let is_unsigned: bool =

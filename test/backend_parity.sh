@@ -121,6 +121,7 @@ agree test/cases/parity/default_effects.b 5
 agree test/cases/parity/interface_upcast.b 6
 agree test/cases/parity/generic_base_deinit.b 4
 agree test/cases/parity/struct_sort.b 3
+agree test/cases/parity/sort_by_key_paths.b
 agree test/cases/parity/list_equality.b
 agree test/cases/parity/option_equality.b
 agree test/cases/parity/cast_compare.b
@@ -130,10 +131,33 @@ agree test/cases/parity/inherited_defaults.b
 agree test/cases/parity/static_fn_field.b
 agree test/cases/parity/panic_diverges.b
 agree test/cases/parity/super_in_scope.b
+agree test/cases/parity/discard_binding.b 7
+agree test/cases/parity/record_place.b 6
+agree test/cases/parity/assign_short_circuit.b 2
+agree test/cases/parity/static_place.b 2
+agree test/cases/parity/try_propagate.b 1
+agree test/cases/parity/bind_release.b 111
+agree test/cases/parity/scope_exit_order.b 14
+agree test/cases/parity/sort_panic_state.b
+agree test/cases/parity/map_replace_panic.b
+agree test/cases/parity/assign_eval_order.b
+# `?` crossing an error boundary: the source error is converted through
+# to_error or widened to a supertype, and both backends have to do it once —
+# for a call operand, a local operand, a bare statement `f()?`, and each hop
+# of a nested `f()??`. The six source errors are the pinned construct count.
+agree test/cases/parity/error_conversion.b 6
+# std failing its own users — a std.reflect failure crossing into a plain
+# Result<T> through ReflectError.to_error, on both the ok and err paths.
+agree test/cases/parity/reflect_error_bridge.b
+# A call the emitter names outright has to do the same work as the call
+# through the table it replaces: the guarded path writes the receiver as a
+# bare pointer while the direct one runs every operand, receiver included,
+# through the internal-argument packer. Ten objects built, ten released.
+agree test/cases/parity/settled_dispatch.b 10
 
 # Every case in the directory has to be listed above with its own expected
 # count; a file added and forgotten would otherwise be silently unchecked.
-listed=15
+listed=29
 present=$(find test/cases/parity -name '*.b' | wc -l | tr -d ' ')
 if [ "$present" != "$listed" ]; then
     echo "test/cases/parity holds $present cases but $listed are run" >&2
@@ -242,8 +266,25 @@ grep -Fq "was read before initialization" "$tmp/early.interp" || {
 }
 echo "  refused: reading a static before its initialiser ran, both backends"
 
-# The forms that must stay refused, with the message that names the way out.
-cat >"$tmp/bad.b" <<'EOF'
+# A move-only map value is not symmetric between the two bracket forms. The
+# write moves a value in — the same transfer m.set(k, v) does — and is
+# accepted; the read would have to copy the map's own value and stays refused
+# with the message that names the way out. The two are checked in separate
+# files on purpose: proving the write is accepted needs a file that does not
+# also fail for the read.
+cat >"$tmp/write_ok.b" <<'EOF'
+package main
+fn main() {
+    var m: Map<string, List<int>> = {}
+    m["a"] = [1, 2, 3]
+}
+EOF
+./build/beansc check "$tmp/write_ok.b" >"$tmp/write_ok.out" 2>&1 || {
+    echo "moving a value into a move-only map by bracket was refused" >&2
+    cat "$tmp/write_ok.out" >&2
+    exit 1
+}
+cat >"$tmp/read_bad.b" <<'EOF'
 package main
 fn main() {
     var m: Map<string, List<int>> = {}
@@ -251,16 +292,16 @@ fn main() {
     let taken: List<int> = m["a"]
 }
 EOF
-if ./build/beansc check "$tmp/bad.b" >"$tmp/bad.out" 2>&1; then
-    echo "indexing a move-only map value was accepted" >&2
+if ./build/beansc check "$tmp/read_bad.b" >"$tmp/read_bad.out" 2>&1; then
+    echo "reading a move-only map value by index was accepted" >&2
     exit 1
 fi
-grep -Fq "read it with get(key)" "$tmp/bad.out" || {
-    echo "the index refusal no longer names get(key)" >&2
-    cat "$tmp/bad.out" >&2
+grep -Fq "read it with get(key)" "$tmp/read_bad.out" || {
+    echo "the index read refusal no longer names get(key)" >&2
+    cat "$tmp/read_bad.out" >&2
     exit 1
 }
-echo "  refused: indexing a move-only map value, both directions"
+echo "  refused: reading a move-only map value by index; the write moves in"
 
 # A map has no equality. The interpreter used to answer false for every pair,
 # including a map against itself, while a native build refused to emit it.
@@ -282,5 +323,37 @@ grep -Fq "is not defined for Map<string, int>" "$tmp/mapeq.out" || {
     exit 1
 }
 echo "  refused: comparing two maps, in the caller's own terms"
+
+# A defer is a function-exit hook (spec/SYNTAX.md): registered inside a
+# nested block it would run after the block's locals dropped — the native
+# run-site read a released cell and crashed on any owned capture. The
+# checker refuses the shape; the primitive-capture case that happened to
+# work is refused with it.
+cat >"$tmp/nesteddefer.b" <<'EOF'
+package main
+import std.io
+
+fn late_words(deep: bool) {
+    if deep {
+        let held: string = "kept {deep}"
+        defer io.println("late {held}")
+        io.println("body")
+    }
+}
+
+fn main() {
+    late_words(true)
+}
+EOF
+if ./build/beansc check "$tmp/nesteddefer.b" >"$tmp/nesteddefer.out" 2>&1; then
+    echo "a defer inside a nested block was accepted" >&2
+    exit 1
+fi
+grep -Fq "defer at the function's own scope" "$tmp/nesteddefer.out" || {
+    echo "the nested-defer refusal no longer names the way out" >&2
+    cat "$tmp/nesteddefer.out" >&2
+    exit 1
+}
+echo "  refused: a defer inside a nested block, both backends"
 
 echo "ok backend parity: answers, construct and release counts, refusals"

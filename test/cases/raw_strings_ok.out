@@ -1,0 +1,40 @@
+/users/{id}
+\d+
+\{2,3\}
+C:\Users\bin\beansc.exe
+%-10s|%05.2f\n
+{"name": "beans", "ok": true}
+a "#" inside
+and a "## here
+
+
+first
+  second\t{not a slot}
+third
+34 3
+true
+true
+true
+true 1 2 1
+true
+digits
+user route
+user route
+comma
+quoted
+other
+[a"}b]
+[x:y]
+[p"}:q]
+len 4
+fmt z|  42
+[     8]
+[10    ]
+[4]
+[   3]
+[   6]
+[     a:b]
+[   p"}:q]
+[   1.500] [1.5     ]
+show = /users/{id}
+nested = /users/{id}/posts/{slug}

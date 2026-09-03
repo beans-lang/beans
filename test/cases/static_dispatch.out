@@ -1,0 +1,35 @@
+base/Ledger.stamp
+sub/Ledger.stamp
+own/SubLedger.stamp
+Animal+Animal
+Dog+Dog
+Cat+Cat
+Fox+Fox
+Owl+Owl
+Puppy<Dog>+Puppy<Dog>
+Puppy<Dog>+Puppy<Dog>
+Root.kind
+Root.kind
+Root.kind
+Root.kind
+Solo
+Loud7
+Quiet7
+TheOnly
+go/OnlyTask
+start/Fast
+start/Slow
+PlainMaker
+BoxMaker
+BoxMaker
+Point8
+3
+1234
+picked
+Store.note
+Store.note
+hi one
+HEY softly
+RUDE
+Loud1Quiet1Loud1
+Animal,Dog,Cat,Fox,Owl,Puppy<Dog>,

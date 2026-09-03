@@ -124,6 +124,14 @@ for compiler in ./build/beansc; do
     grep -q "List<List<int>> has no method 'slice'" "$out"
     grep -q "can't copy a move-only map value by index" "$out"
     grep -q "Map key cannot be move-only" "$out"
+    # One rule, one sentence. The written-out map type and a literal whose
+    # type nothing else pins down are two call sites of the same check, and
+    # they used to answer differently. Counting rather than matching is the
+    # point: a reason added to one site and forgotten on the other leaves the
+    # grep above green and drops one of these three.
+    test "$(grep -c "a map owns a copy of every key and keys() hands copies back" "$out")" -eq 3
+    # and the Bytes hint on both of the two Bytes-keyed sites
+    test "$(grep -c "key by string and convert with Bytes.to_string()" "$out")" -eq 2
     grep -q "Arena.add needs 'move arena_value'" "$out"
     grep -q "Channel.send needs 'move message'" "$out"
 done

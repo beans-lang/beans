@@ -431,6 +431,17 @@ class Parser {
             let result: AstNode = self.node("error", "extern", abi)
             return result
         }
+        // `const` stays contextual, like every other declaration word the
+        // language has added since: outside `const <NAME>` at the start of a
+        // declaration it is an ordinary identifier, so no program loses a
+        // name it was already using.
+        if self.check("ident") &&
+           self.current().text == "const" &&
+           self.tokens[self.pos + 1].kind == "ident" {
+            let result: AstNode = self.parse_const_declaration()
+            if public { result.value = "pub {result.value}" }
+            return result
+        }
         if self.check("import") {
             let result: AstNode = self.parse_import()
             if public { result.value = "pub {result.value}" }
@@ -456,6 +467,26 @@ class Parser {
         self.fail(token, "expected a declaration")
         let result: AstNode = self.node("error", token.text, token)
         for !self.check("newline") && !self.at_end() { self.advance() }
+        return result
+    }
+
+    fn parse_const_declaration() -> AstNode {
+        let start: Token = self.advance()
+        let name: Token =
+            self.expect("ident", "expected a constant name after 'const'")
+        let result: AstNode =
+            self.named(
+                self.node("const", "const {name.text}", start),
+                name)
+        self.expect(
+            ":",
+            "a constant needs a declared type, like const LIMIT: int = 128")
+        result.add(self.parse_type())
+        self.expect(
+            "=",
+            "a constant needs a value, like const LIMIT: int = 128")
+        result.add(self.parse_expression())
+        self.finish_statement()
         return result
     }
 
@@ -938,6 +969,24 @@ class Parser {
             let array: AstNode = self.node("array_type", "", start)
             array.add(self.parse_type())
             self.expect(";", "expected ';'")
+            // A name here is a parse error worth naming, because the
+            // grammar otherwise cascades three errors off a token it did
+            // not expect. The parser has no symbol table, so the message
+            // must hold for every name that can appear — a local, a type,
+            // a typo, a module constant — and may not claim to know which
+            // one this is. A length is laid out before any constant is
+            // folded, so the reason no name works is the same for all of
+            // them, and it is the reason worth stating.
+            if self.check("ident") {
+                let name: Token = self.current()
+                self.fail(
+                    name,
+                    "an array length must be an integer literal, not the name '{name.text}' — a length is read while types are laid out, which happens before any name has a value, module constants included")
+                self.advance()
+                array.value = "0"
+                self.expect("]", "expected ']'")
+                return array
+            }
             let size: Token = self.expect("int", "expected array length")
             array.value = size.text
             self.expect("]", "expected ']'")

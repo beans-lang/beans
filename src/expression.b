@@ -23,6 +23,14 @@ class ExpressionChecker {
     methods: Map<string, HirFunction>
     declarations: Map<string, HirDeclaration>
     c_globals: Map<string, HirCGlobal>
+    consts: Map<string, HirConst>
+    // A constant's initializer may name another constant, and files of one
+    // package create no edges between each other, so the order the program
+    // happens to hold must not decide whether a fold succeeds. These say
+    // what is folded and what is on the stack, so a self-referential
+    // constant stops instead of recursing forever.
+    consts_folded: Map<string, bool>
+    consts_visiting: Map<string, bool>
     imports: Map<string, string>
     // Names bound by `import {…} from path`, keyed "file|binding" and
     // valued "path\nname" — the target package and the original symbol.
@@ -37,6 +45,17 @@ class ExpressionChecker {
     // stops instead of recursing forever.
     defaults_checked: Map<string, bool>
     defaults_visiting: Map<string, bool>
+    // A type's own string form, indexed alongside the methods: the derived
+    // rendering asks it once per class it walks, and scanning every function
+    // for the answer made that linear in the size of the whole program.
+    string_forms: Map<string, HirFunction>
+    // Which classes some other class extends. class_render_ready asks this
+    // per class per interpolation; walking every declaration for the answer
+    // made a file full of interpolations quadratic in the declaration count.
+    // Built on first use: declaration_for needs the imports, which init
+    // fills after this point.
+    subclassed: Map<string, bool>
+    subclassed_built: bool
     loop_depth: int
     literal_sign: int
     unsafe_depth: int
@@ -71,6 +90,15 @@ class ExpressionChecker {
     // were written but nothing took them.
     call_generics_syntax: Option<AstNode>
     call_generics_taken: bool
+    // The Result expectations open `?`s pushed into their own operands,
+    // held by identity, innermost last. `?` decides for itself whether the
+    // callee's error can reach this function's (check_try_error_bridge), so
+    // expect_type must not refuse a convertible error before the conversion
+    // is looked for — it compares only the ok type, and only against
+    // exactly these objects. A stack, not a slot: in `f()??` the inner
+    // expectation nests the outer one as its ok half, so peeling one layer
+    // lands on the outer object, which must still be open to match.
+    try_expectations: List<HirType>
 
     fn init(signature: SignatureChecker) {
         self.signature = signature
@@ -79,6 +107,9 @@ class ExpressionChecker {
         self.methods = {}
         self.declarations = {}
         self.c_globals = {}
+        self.consts = {}
+        self.consts_folded = {}
+        self.consts_visiting = {}
         self.imports = {}
         self.named_imports = {}
         self.errors = []
@@ -88,6 +119,9 @@ class ExpressionChecker {
         self.current_constraints = []
         self.defaults_checked = {}
         self.defaults_visiting = {}
+        self.string_forms = {}
+        self.subclassed = {}
+        self.subclassed_built = false
         self.loop_depth = 0
         self.literal_sign = 1
         self.unsafe_depth = 0
@@ -110,10 +144,17 @@ class ExpressionChecker {
         self.next_binding_id = 0
         self.call_generics_syntax = none
         self.call_generics_taken = true
+        self.try_expectations = []
         for function: HirFunction in self.program.functions {
             if function.owner != "" {
                 self.methods["{function.owner}.{function.name}"] =
                     function
+                if hir_is_string_form(function) &&
+                   !self.string_forms.contains_key(
+                       function.owner) {
+                    self.string_forms[function.owner] =
+                        function
+                }
                 continue
             }
             self.functions[function.qualified] = function
@@ -125,6 +166,9 @@ class ExpressionChecker {
             self.program.c_globals {
             self.c_globals[
                 global.qualified] = global
+        }
+        for constant: HirConst in self.program.consts {
+            self.consts[constant.qualified] = constant
         }
         // Bindings are keyed by file: an import in one file of a package
         // must not qualify anything in its siblings.
@@ -368,21 +412,46 @@ class ExpressionChecker {
         self.scopes.pop()
     }
 
+    // `_` in a binding position is a discard, not a name. It never enters
+    // the scope, so any number of them may share one scope and none can be
+    // read back — the notation exists so those names do not have to be
+    // chosen, and a duplicate-name error there is a name the author already
+    // said they were not going to use.
+    //
+    // It still takes a binding id, and therefore a real local in both
+    // backends, because the value it discards still has to be owned: a
+    // discarded `move` parameter or a `let _ = make_bytes()` drops at the
+    // end of its scope exactly like a named binding, once and not twice.
+    // Only the name goes away.
     fn declare(node: AstNode, type: HirType, mutable: bool,
                borrowed: bool, inout_parameter: bool) -> int {
         let at: int = self.scopes.len() - 1
-        if self.scopes[at].bindings.contains_key(node.value) {
+        let discard: bool = is_discard_name(node.value)
+        if !discard &&
+           self.scopes[at].bindings.contains_key(node.value) {
             self.fail(
                 node, "'{node.value}' is already defined in this scope")
             return -1
         }
         let id: int = self.next_binding_id
         self.next_binding_id += 1
+        if discard { return id }
         self.scopes[at].bindings[node.value] =
             new LocalBinding(
                 id, node.value, type, mutable,
                 borrowed, inout_parameter)
         return id
+    }
+
+    // A discard has no binding to find, so every name lookup that reaches
+    // one would otherwise report "unknown name '_'" — a suggestion list for
+    // a name the author never meant to make. Say what `_` is instead.
+    fn fail_discard_use(node: AstNode, ending: string) -> bool {
+        if !is_discard_name(node.value) { return false }
+        self.fail(
+            node,
+            "'_' discards its value and binds no name, so there is nothing to {ending}")
+        return true
     }
 
     fn find_local(name: string) -> Option<LocalBinding> {
@@ -660,6 +729,7 @@ class ExpressionChecker {
         result.resolved = node.resolved
         result.binding_id = node.binding_id
         result.dispatch_slot = node.dispatch_slot
+        result.total_order = node.total_order
         for annotation: HirAnnotation in node.annotations {
             result.annotations.push(annotation)
         }
@@ -797,6 +867,25 @@ class ExpressionChecker {
             self.current_constraints {
             if constraint.name != type.name { continue }
             return self.trait_satisfied(type, "Order")
+        }
+        return false
+    }
+
+    // True when what is being compared is a type parameter rather than a
+    // concrete type. The comparison then means what the *interface* means,
+    // which for `float` and `f32` is not what their operators mean: `Order`
+    // is IEEE 754 totalOrder and `Eq` is bit equality, while `a < b` and
+    // `a == b` on a bare float stay IEEE (spec/SYNTAX.md, "Number rules").
+    // A container written in Beans — one that keeps `K implements Order`
+    // sorted, or hashes `K implements Eq` — compares its keys through here,
+    // and a partial order under it silently overwrites an unrelated key
+    // rather than merely mis-ordering.
+    fn parameter_comparison(type: HirType) -> bool {
+        for constraint: HirGeneric in
+            self.current_constraints {
+            if constraint.name == type.name {
+                return true
+            }
         }
         return false
     }
@@ -1328,12 +1417,7 @@ class ExpressionChecker {
         if syntax.kind != "literal" || syntax.note != "string" {
             return ""
         }
-        if syntax.value.len() >= 2 &&
-           syntax.value.starts_with("\"") &&
-           syntax.value.ends_with("\"") {
-            return syntax.value.slice(1, syntax.value.len() - 1)
-        }
-        return syntax.value
+        return string_literal_decode(syntax.value)
     }
 
     fn json_camel_case(name: string) -> string {
@@ -2011,6 +2095,11 @@ class ExpressionChecker {
             self.current_qualified(name))
     }
 
+    fn current_const(name: string) -> Option<HirConst> {
+        return self.consts.get(
+            self.current_qualified(name))
+    }
+
     fn is_move_only_seen(
         type: HirType,
         inout seen: Map<string, bool>) -> bool {
@@ -2073,6 +2162,59 @@ class ExpressionChecker {
     fn is_move_only(type: HirType) -> bool {
         var seen: Map<string, bool> = {}
         return self.is_move_only_seen(type, inout seen)
+    }
+
+    // Why a struct is move-only, when the answer is not the struct itself.
+    // A struct is a value, so it can only be copied if everything it holds
+    // can: one move-only field makes the whole struct move-only. Nothing at
+    // the declaration says so, and the refusal lands at the call sites
+    // instead — adding one field changes the copy semantics of a type that
+    // already has callers. So the refusal names the field, and names the
+    // one that actually fails all the way down rather than the type at the
+    // top. Empty for a type that is move-only in its own right, where the
+    // type's name is already the whole answer.
+    fn move_only_reason(type: HirType) -> string {
+        var seen: Map<string, bool> = {}
+        let path: string =
+            self.move_only_field_path(
+                type, "", inout seen)
+        if path == "" { return "" }
+        return " — a struct is move-only when any field is, and {path}"
+    }
+
+    fn move_only_field_path(
+        type: HirType, prefix: string,
+        inout seen: Map<string, bool>) -> string {
+        let key: string = hir_type_key(type)
+        if seen.contains_key(key) { return "" }
+        seen[key] = true
+        match self.declaration_for(type) {
+            some(declaration) => {
+                if declaration.kind != "struct" ||
+                   declaration.is_unique {
+                    return ""
+                }
+                for field: HirField in declaration.fields {
+                    let field_type: HirType =
+                        self.substitute_owner_type(
+                            field.type, declaration, type)
+                    if !self.is_move_only(field_type) {
+                        continue
+                    }
+                    var named: string = field.name
+                    if prefix != "" {
+                        named = "{prefix}.{field.name}"
+                    }
+                    let deeper: string =
+                        self.move_only_field_path(
+                            field_type, named, inout seen)
+                    if deeper != "" { return deeper }
+                    return "'{named}' is {render_hir_type(field_type)}"
+                }
+            }
+            none => {}
+        }
+        return ""
     }
 
     fn is_subtype(child: HirType, parent: HirType) -> bool {
@@ -2343,6 +2485,67 @@ class ExpressionChecker {
         return none
     }
 
+    // The static an ancestor declares under this name, if one is visible
+    // from here. Statics are not inherited, so this never answers a method
+    // the class may call — it answers the one a class further down would be
+    // wearing the same name as. Visibility matches inherited_methods: a
+    // `priv` static belongs to its exact declaring type and a
+    // package-private one to its package, so neither collides with a name
+    // written outside it.
+    fn inherited_static(
+        owner: string, name: string) -> Option<HirFunction> {
+        var pending: List<HirType> = []
+        match self.declarations.get(owner) {
+            some(declaration) => {
+                let receiver: HirType =
+                    self.declaration_self_type(declaration)
+                for relation: HirType in
+                    declaration.relations {
+                    pending.push(
+                        self.substitute_owner_type(
+                            relation, declaration, receiver))
+                }
+            }
+            none => {}
+        }
+        var seen: Map<string, bool> = {}
+        for pending.len() != 0 {
+            let relation: HirType = pending.remove(0)
+            if seen.contains_key(relation.name) { continue }
+            seen[relation.name] = true
+            match self.declaration_for(relation) {
+                some(declaration) => {
+                    match self.methods.get(
+                        "{declaration.qualified}.{name}") {
+                        some(function) => {
+                            let caller_package: string =
+                                self.package_path_for_file(
+                                    self.current.file)
+                            let owner_package: string =
+                                self.package_path_for_file(
+                                    function.file)
+                            if function.is_static &&
+                               !function.is_private &&
+                               (function.is_public ||
+                                caller_package == owner_package) {
+                                return some(function)
+                            }
+                        }
+                        none => {}
+                    }
+                    for parent: HirType in
+                        declaration.relations {
+                        pending.push(
+                            self.substitute_owner_type(
+                                parent, declaration, relation))
+                    }
+                }
+                none => {}
+            }
+        }
+        return none
+    }
+
     fn inherited_methods(
         owner: string, name: string) -> List<InheritedMethod> {
         var pending: List<HirType> = []
@@ -2485,10 +2688,60 @@ class ExpressionChecker {
         return "fn({parameters.join(", ")}) -> {shown}"
     }
 
-    fn validate_override(function: HirFunction) {
-        if function.owner == "" || function.is_static {
+    // Within one class family a name is either a static or an instance
+    // method, never both. Nothing in the language lets the two live under
+    // one name: `Sub.label()` reads the static, `sub.label()` reads the
+    // instance method, and which body a reader gets turns on whether the
+    // receiver was spelled as a type or as a value. Before #88 the pair was
+    // accepted and the subclass's static took over the base's dispatch
+    // slot, so every dynamic call through a base-typed reference handed a
+    // receiver to a function that declares none; giving the static a slot
+    // of its own instead would only move the same two bodies behind one
+    // name and say nothing.
+    //
+    // Both directions are refused, because both put two bodies under one
+    // name in one hierarchy — the mirror case leaves `Base.tag()` and
+    // `sub.tag()` naming different code just as surely.
+    //
+    // A `priv` method is exempt on either side: it belongs to its exact
+    // declaring type, is never inherited and never shares a dispatch slot,
+    // so a subclass writing the same name is already a separate method and
+    // was never in the base's row to begin with.
+    fn validate_static_instance_split(function: HirFunction) {
+        if function.owner == "" ||
+           function.name == "init" ||
+           function.name == "deinit" ||
+           function.is_private {
             return
         }
+        if function.is_static {
+            let parents: List<InheritedMethod> =
+                self.inherited_methods(
+                    function.owner, function.name)
+            if parents.len() != 0 {
+                self.fail(
+                    function.syntax,
+                    "'{function.name}' is declared static here, but {self.diagnostic_symbol(parents[0].function.owner)} declares it as an instance method — a name is either a static or an instance method throughout a class family, and a static has no receiver to be dispatched on")
+            }
+            return
+        }
+        match self.inherited_static(
+                  function.owner, function.name) {
+            some(parent) => {
+                self.fail(
+                    function.syntax,
+                    "'{function.name}' is declared as an instance method here, but {self.diagnostic_symbol(parent.owner)} declares it static — a name is either a static or an instance method throughout a class family, and a static has no receiver to be dispatched on")
+            }
+            none => {}
+        }
+    }
+
+    fn validate_override(function: HirFunction) {
+        if function.owner == "" {
+            return
+        }
+        self.validate_static_instance_split(function)
+        if function.is_static { return }
         if function.name == "init" ||
            function.name == "deinit" {
             if function.is_override {
@@ -2516,6 +2769,31 @@ class ExpressionChecker {
                     function.syntax,
                     "'{function.name}' is marked override but no parent has it")
             }
+            return
+        }
+        // A method that declares type parameters of its own binds them at
+        // the call site, so it is a template with one function per
+        // instantiation and holds no dispatch row. Nothing can replace it
+        // and it can replace nothing: before #89 this pair checked clean
+        // and then split the backends — the native build bound whichever
+        // template the receiver's static type named, while the interpreter
+        // dispatched on the runtime class and answered the subclass's — a
+        // silent wrong answer on one side, from a program the checker had
+        // just asked to mark `override`.
+        for inherited: InheritedMethod in parents {
+            if function.generics.len() == 0 &&
+               inherited.function.generics.len() == 0 {
+                continue
+            }
+            let generic_side: string =
+                if function.generics.len() != 0 {
+                    "'{function.name}' declares type parameters of its own"
+                } else {
+                    "{self.diagnostic_symbol(inherited.function.owner)}'s '{function.name}' declares type parameters of its own"
+                }
+            self.fail(
+                function.syntax,
+                "{generic_side}, so it binds them at the call site and holds no dispatch row — it cannot replace, or be replaced by, the '{function.name}' on {self.diagnostic_symbol(inherited.function.owner)}; give one of them a different name")
             return
         }
         var needs_override: bool = false
@@ -3099,6 +3377,11 @@ class ExpressionChecker {
             if name == "count_chars" {
                 return some(new BuiltinSignature(
                     [integer, integer], integer))
+            }
+            // The third measure of a string, beside bytes (len) and scalars
+            // (chars): how many terminal columns it occupies.
+            if name == "width" {
+                return some(new BuiltinSignature([], integer))
             }
         }
         if receiver.name == "array" {
@@ -4550,6 +4833,26 @@ class ExpressionChecker {
 
     fn expect_type(node: AstNode, actual: HirType,
                    expected: HirType) {
+        // The expectation a `?` pushes into its operand is a hint about the
+        // ok type, not a demand about the error. Whether the callee's error
+        // reaches this function's is check_try's own decision, and it now
+        // makes it for every `?`, so comparing whole Results here would
+        // refuse a convertible error before the conversion was looked for.
+        // Every open `?` is a candidate: peeling the ok half of a nested
+        // expectation (`f()??`) hands this comparison the outer object, and
+        // its error half is negotiable exactly while that `?` is open.
+        for open: HirType in self.try_expectations {
+            if expected == open &&
+               expected.name == "Result" &&
+               expected.args.len() >= 1 &&
+               actual.name == "Result" &&
+               actual.args.len() >= 1 {
+                self.expect_type(
+                    node, actual.args[0],
+                    expected.args[0])
+                return
+            }
+        }
         if expected.name != "" &&
            !hir_types_equal(actual, expected) &&
            self.is_move_only(actual) &&
@@ -4698,7 +5001,8 @@ class ExpressionChecker {
             if self.is_move_only(type.args[0]) {
                 self.fail(
                     node,
-                    "{type.name} key cannot be move-only, got {render_hir_type(type.args[0])}")
+                    self.move_only_key_message(
+                        type.name, type.args[0]))
             }
             if !self.trait_satisfied(type.args[0], "Eq") {
                 self.fail(
@@ -4711,21 +5015,91 @@ class ExpressionChecker {
                     "{type.name} key needs Hash, got {render_hir_type(type.args[0])}")
             }
         }
+        // A user generic type states bounds on its parameters — `class
+        // SortedMap<K implements Order & Clone, ...>` — and those bounds are
+        // promises the body then relies on: it compares two K with `<`, or
+        // hands a V back by copy. A generic function already refuses an
+        // argument that breaks such a promise at the call; a generic type did
+        // not, so `SortedMap<SomeClass, int>` passed checking and then failed
+        // in the backend — the interpreter panicking on `<` of two objects,
+        // the native emitter reporting it cannot lower `<` for the class. Both
+        // are the checker letting through what no backend can run. Measure the
+        // argument against the declared bound here, at the type, so the error
+        // names the program.
+        match self.declaration_for(type) {
+            some(declaration) => {
+                if declaration.generic_constraints.len() != 0 &&
+                   type.args.len() == declaration.generics.len() {
+                    var binding: Map<string, HirType> = {}
+                    var slot: int = 0
+                    for parameter_name: string in declaration.generics {
+                        binding[parameter_name] = type.args[slot]
+                        slot += 1
+                    }
+                    for constraint: HirGeneric in
+                        declaration.generic_constraints {
+                        match binding.get(constraint.name) {
+                            some(actual) => {
+                                for bound: HirType in constraint.bounds {
+                                    // A bound may name a sibling parameter
+                                    // (`T implements Producer<U>`), so it is
+                                    // read after the arguments are bound.
+                                    let wanted: HirType =
+                                        self.substitute_generic_type(
+                                            bound, declaration.generics,
+                                            binding)
+                                    if !self.bound_satisfied(actual, wanted) {
+                                        self.fail(
+                                            node,
+                                            "{declaration.name} needs {constraint.name} implements {render_hir_type(wanted)}, got {render_hir_type(actual)}")
+                                    }
+                                }
+                            }
+                            none => {}
+                        }
+                    }
+                }
+            }
+            none => {}
+        }
         for argument: HirType in type.args {
             self.validate_target_type(node, argument)
         }
+    }
+
+    // One rule, one sentence. The copyable-key rule is checked in two
+    // places — a written-out map type, and a literal whose type nothing
+    // else pins down — and they answered differently: only the first named
+    // why or named the way out, so the same mistake got a useful message or
+    // a bare one depending on where the type came from.
+    fn move_only_key_message(
+        kind: string, key: HirType) -> string {
+        return "{kind} key cannot be move-only, got {render_hir_type(key)} — a map owns a copy of every key and keys() hands copies back{self.byte_key_hint(key)}"
+    }
+
+    // Byte data is the shape that meets the copyable-key rule first, and
+    // the answer is not obvious: a Beans string is binary-safe, so it keeps
+    // NULs and every other byte, which makes it the right key type for
+    // bytes. That fact lived only in a changelog line.
+    fn byte_key_hint(key: HirType) -> string {
+        if canonical_hir_name(key.name) != "Bytes" {
+            return ""
+        }
+        return ". A Beans string keeps every byte, NULs included, so key by string and convert with Bytes.to_string()"
     }
 
     fn check_interpolations(node: AstNode) -> List<HirNode> {
         var lowered: List<HirNode> = []
         let raw: string = node.value
         if raw.len() < 2 { return move lowered }
-        var index: int = 1
-        let end: int = raw.len() - 1
+        // A raw literal is bytes: `{` in it is a brace, not a slot.
+        if string_literal_is_raw(raw) { return move lowered }
+        var index: int = string_literal_body_start(raw)
+        let end: int = string_literal_body_end(raw)
         for index < end {
             let byte: int = raw.byte_at(index)
             if byte == 92 {
-                index += 2
+                index += string_escape_length(raw, index, end)
                 continue
             }
             if byte != 123 {
@@ -4739,7 +5113,19 @@ class ExpressionChecker {
             for cursor < end && depth > 0 {
                 let current: int = raw.byte_at(cursor)
                 if current == 92 {
-                    cursor += 2
+                    cursor += string_escape_length(
+                        raw, cursor, end)
+                    continue
+                }
+                // A raw literal nested in the slot is bytes: its braces do
+                // not nest the slot and its quotes do not open a string.
+                // Step over it whole, the way the lexer did, so the slot
+                // ends at its own `}` and not at a brace inside a route
+                // template or a hashed raw body.
+                if !in_string &&
+                   raw_open_at(raw, cursor, end) {
+                    cursor = raw_literal_end(
+                        raw, cursor, end)
                     continue
                 }
                 if in_string {
@@ -4811,8 +5197,38 @@ class ExpressionChecker {
                     expression, node.line, node.col + start - 1)
                 self.qualify_unresolved_types(expression)
                 node.interpolations.push(expression)
+                let piece_errors: int = self.errors.len()
                 let piece: HirNode = self.check_expression(
                     expression, no_hir_type())
+                // A piece that is one bare name nothing answers is far
+                // more often a brace someone meant literally — a route
+                // template, a regex, a printf format — than a typo. The
+                // resolver's "unknown name" is true and useless on its
+                // own: it never mentions the brace that made it a name.
+                //
+                // It replaces that line rather than following it. One
+                // mistake is one diagnostic, and it belongs on the word,
+                // not on the quote that opens the literal — `"/users/{id}/
+                // posts/{slug}"` said four things where it had two to say.
+                // Only the single unknown-name error is taken back; when
+                // the piece failed for more reasons than that, every one
+                // of them still stands and this is added to them.
+                // `_` is the one bare name that already got a better
+                // answer: it says what a discard is, which is exactly the
+                // thing the brace hint would be guessing at.
+                if expression.kind == "name" &&
+                   !is_discard_name(expression.value) &&
+                   piece.kind == "error" &&
+                   piece.resolved == "" &&
+                   piece.type.name == "poison" {
+                    if self.errors.len() ==
+                       piece_errors + 1 {
+                        self.errors.pop()
+                    }
+                    self.fail(
+                        expression,
+                        "'\{{segment}\}' in a string is an interpolation, so '{segment}' has to name something; for a literal brace write \\\{{segment}\\\} or make the whole literal raw: r\"...\"")
+                }
                 // Stage 0 refuses non-printable pieces at check time;
                 // without this gate the tree interpreter printed a
                 // placeholder and the LLVM emitter refused late, so the
@@ -4834,10 +5250,29 @@ class ExpressionChecker {
         return move lowered
     }
 
-    // Mirrors stage 0's printable walk: lists print as [a, b], enums as
-    // variant(payload...) — printable when every piece is. Class payloads
-    // stay out: their display would need the dynamic class name, which
-    // the native backend does not carry. That excludes Result.
+    // What a value can look like inside a string: lists as [a, b], maps as
+    // {k: v}, options as some(x)/none, results as ok(x)/err(e), enums as
+    // variant(payload...), structs and leaf classes as Name { field: value }.
+    // A composite is printable only when each type it is built from is; a
+    // leaf the backends cannot render (a file, a lock, a channel, a closure,
+    // an interface, a base class) makes the whole thing unprintable, so the
+    // checker never hands a backend a shape it cannot emit.
+    // Whether a type is still spelled with any type parameter in scope, at
+    // any depth: `T`, `List<T>`, `Wrap<Option<T>>`. Such a type is not yet
+    // any one type, so a rule about what a backend can emit for it has
+    // nothing concrete to decide on — the instantiations are checked where
+    // they are made.
+    fn type_mentions_any_generic(type: HirType) -> bool {
+        for constraint: HirGeneric in
+            self.current_constraints {
+            if self.type_mentions_generic(
+                   type, constraint.name) {
+                return true
+            }
+        }
+        return false
+    }
+
     fn printable_in_string(type: HirType) -> bool {
         var seen: Map<string, bool> = {}
         return self.printable_in_string_rec(type, inout seen)
@@ -4855,51 +5290,154 @@ class ExpressionChecker {
             return self.printable_in_string_rec(
                 type.args[0], inout seen)
         }
-        // The builtin enums live outside the declaration table; their
-        // shapes mirror stage 0's registrations. Result's err payload is
-        // Error — a class — unless spelled otherwise, which is what
-        // keeps Result out of strings.
         if name == "Option" && type.args.len() == 1 {
             return self.printable_in_string_rec(
                 type.args[0], inout seen)
         }
+        // A map prints as {k: v}; it is printable when both its key type and
+        // its value type are. Its iteration order is insertion order — the
+        // order keys() walks — on both backends.
+        if (name == "Map" || name == "OrderedMap") &&
+           type.args.len() == 2 {
+            if !self.printable_in_string_rec(
+                type.args[0], inout seen) {
+                return false
+            }
+            return self.printable_in_string_rec(
+                type.args[1], inout seen)
+        }
+        // A result prints as ok(x) / err(e). It is printable when its ok
+        // type is and its err type is — and its err type is Error unless
+        // spelled otherwise, which prints as the error's message.
         if name == "Result" {
+            if type.args.len() == 0 { return false }
+            if !self.printable_in_string_rec(
+                type.args[0], inout seen) {
+                return false
+            }
             if type.args.len() >= 2 {
-                if !self.printable_in_string_rec(
-                    type.args[0], inout seen) {
-                    return false
-                }
                 return self.printable_in_string_rec(
                     type.args[1], inout seen)
             }
-            return false
+            return true
         }
+        // The builtin Error class lives outside the declaration table; it
+        // prints as its message, the string a caller passed to err(...).
+        if name == "Error" { return true }
         if name == "MemoryOrder" || name == "RoundingMode" {
             return true
         }
         match self.declaration_for(type) {
             some(declaration) => {
-                if declaration.kind != "enum" { return false }
                 let key: string = render_hir_type(type)
-                // self-recursive enums hold finite values
+                // self-recursive shapes hold finite values, and a class
+                // graph that loops back is caught at runtime, not here
                 if seen.contains_key(key) { return true }
                 seen[key] = true
-                for variant: HirField in declaration.variants {
-                    for payload: HirType in variant.type.args {
+                if declaration.kind == "enum" {
+                    for variant: HirField in declaration.variants {
+                        for payload: HirType in variant.type.args {
+                            let item: HirType =
+                                self.substitute_owner_type(
+                                    payload, declaration, type)
+                            if !self.printable_in_string_rec(
+                                item, inout seen) {
+                                return false
+                            }
+                        }
+                    }
+                    return true
+                }
+                // A struct or a plain class prints as Name { field: value }.
+                // A struct is a value with no identity and no subtype, so it
+                // is always its own concrete shape. A class prints only when
+                // its declared type is the only type it can be — not an
+                // interface, not abstract, not a base some other class
+                // extends, and (until inherited fields render) not itself a
+                // subclass. Otherwise the value's real type is not knowable
+                // from its declared one, and the two backends would render
+                // different fields.
+                if declaration.kind == "struct" ||
+                   (declaration.kind == "class" &&
+                    self.class_render_ready(declaration)) {
+                    // A class that spells out its own string form renders
+                    // through it, so its fields need not each be printable.
+                    if declaration.kind == "class" &&
+                       self.string_forms.contains_key(
+                           declaration.qualified) {
+                        return true
+                    }
+                    for field: HirField in declaration.fields {
+                        // Static fields belong to the type, and a weak field
+                        // renders as <weak> without being followed — neither
+                        // needs a printable type.
+                        if field.is_static || field.is_weak {
+                            continue
+                        }
                         let item: HirType =
                             self.substitute_owner_type(
-                                payload, declaration, type)
+                                field.type, declaration, type)
                         if !self.printable_in_string_rec(
                             item, inout seen) {
                             return false
                         }
                     }
+                    return true
                 }
-                return true
+                return false
             }
             none => {}
         }
         return false
+    }
+
+    // A class whose declared type is the only concrete type a value of it
+    // can carry: a leaf, standalone class. An abstract class is never
+    // instantiated as itself, a base one hands its slot to a subclass, and a
+    // subclass carries inherited fields the derived rendering does not walk
+    // yet — each renders fields the other backend cannot see, so each is
+    // refused rather than rendered two ways.
+    fn class_render_ready(declaration: HirDeclaration) -> bool {
+        if declaration.is_abstract { return false }
+        var index: int = 0
+        for index < declaration.relation_kinds.len() {
+            if declaration.relation_kinds[index] == "extends" {
+                return false
+            }
+            index += 1
+        }
+        return !self.class_is_subclassed(declaration.qualified)
+    }
+
+    // Whether some other declaration extends this class. The rendering of a
+    // base-class slot cannot know which subclass fills it, so a base is
+    // refused rather than rendered as itself on one backend and as the
+    // subclass on the other. Every base in the program is collected on the
+    // first question rather than the whole declaration list being walked for
+    // each one.
+    fn class_is_subclassed(qualified: string) -> bool {
+        if !self.subclassed_built {
+            self.subclassed_built = true
+            for other: HirDeclaration in
+                self.program.declarations {
+                var index: int = 0
+                for index < other.relation_kinds.len() {
+                    if other.relation_kinds[index] ==
+                           "extends" {
+                        match self.declaration_for(
+                                  other.relations[index]) {
+                            some(base) => {
+                                self.subclassed[
+                                    base.qualified] = true
+                            }
+                            none => {}
+                        }
+                    }
+                    index += 1
+                }
+            }
+        }
+        return self.subclassed.contains_key(qualified)
     }
 
     fn check_literal(node: AstNode,
@@ -4910,9 +5448,7 @@ class ExpressionChecker {
         } else if node.note == "true" || node.note == "false" {
             type = new HirType("bool")
         } else if node.note == "float" {
-            if expected.name == "decimal" ||
-               canonical_hir_name(expected.name) == "float" ||
-               expected.name == "f32" {
+            if literal_number_target(expected) {
                 type = expected
             } else {
                 type = new HirType("float")
@@ -4931,7 +5467,27 @@ class ExpressionChecker {
                 node,
                 "integer literal {sign}{node.value} does not fit {render_hir_type(type)} ({integer_literal_range(type.name)})")
         }
-        if type.name == "decimal" &&
+        // A base prefix says "this integer, written in another base", and the
+        // real-number types read it as the integer it is. `0xffffffffffffffff`
+        // is a bit pattern, which u64 has a rule for and a float does not, so
+        // a hex or binary literal in a real-number type has to be an int
+        // value. Without this the checker took every one of them and the two
+        // backends went different ways: `let f: float = 0xFF` ran as 255 and
+        // built as 1.26e-321, and `let d: decimal = 0xFF` ran as 0.0 and did
+        // not build at all.
+        let base_prefixed: bool =
+            node.note == "int" &&
+            literal_has_base_prefix(node.value)
+        if base_prefixed && literal_number_target(type) &&
+           !integer_literal_fits(
+               node.value, "int", self.literal_sign < 0) {
+            let sign: string =
+                if self.literal_sign < 0 { "-" } else { "" }
+            self.fail(
+                node,
+                "hex or binary literal {sign}{node.value} does not fit {render_hir_type(type)} — it has to be an int value ({integer_literal_range("int")})")
+        }
+        if type.name == "decimal" && !base_prefixed &&
            !decimal_literal_fits(node.value) {
             self.fail(
                 node,
@@ -5019,6 +5575,10 @@ class ExpressionChecker {
             return self.make_node(
                 node, "none", "none", expected)
         }
+        if self.fail_discard_use(node, "read") {
+            return self.make_node(
+                node, "error", node.value, poison_hir_type())
+        }
         match self.find_local(node.value) {
             some(binding) => {
                 self.check_capture_use(node, binding)
@@ -5037,6 +5597,13 @@ class ExpressionChecker {
                     node, "local", node.value, binding.type)
                 result.binding_id = binding.id
                 return result
+            }
+            none => {}
+        }
+        match self.current_const(node.value) {
+            some(constant) => {
+                return self.constant_node(
+                    node, constant, expected)
             }
             none => {}
         }
@@ -5071,6 +5638,18 @@ class ExpressionChecker {
             let original: string = parts[1]
             if self.signature.resolver.is_loaded_package(
                 import_path) {
+                match self.consts.get(
+                    package_symbol(import_path, original)) {
+                    some(constant) => {
+                        self.require_visible(
+                            node, constant.is_public,
+                            constant.file, "constant",
+                            node.value)
+                        return self.constant_node(
+                            node, constant, expected)
+                    }
+                    none => {}
+                }
                 match self.functions.get(
                     package_symbol(import_path, original)) {
                     some(function) => {
@@ -5239,7 +5818,7 @@ class ExpressionChecker {
         if node.kind == "name" {
             self.fail(
                 node,
-                "{where} needs 'move {node.value}' because {render_hir_type(type)} is move-only")
+                "{where} needs 'move {node.value}' because {render_hir_type(type)} is move-only{self.move_only_reason(type)}")
         } else if node.kind == "field" ||
                   node.kind == "index" {
             self.fail(
@@ -5257,6 +5836,10 @@ class ExpressionChecker {
                 node, "error", "move", poison_hir_type())
         }
         let source: AstNode = node.children[0]
+        if self.fail_discard_use(source, "move") {
+            return self.make_node(
+                node, "error", "move", poison_hir_type())
+        }
         match self.find_local(source.value) {
             some(binding) => {
                 let operand: HirNode =
@@ -5327,6 +5910,10 @@ class ExpressionChecker {
                 poison_hir_type())
         }
         let source: AstNode = node.children[0]
+        if self.fail_discard_use(source, "lend") {
+            return self.make_node(
+                node, "error", "inout", poison_hir_type())
+        }
         match self.find_local(source.value) {
             some(binding) => {
                 if !binding.mutable {
@@ -5529,6 +6116,12 @@ class ExpressionChecker {
         self.expect_type(node, type, expected)
         let result: HirNode =
             self.make_node(node, "binary", operation, type)
+        if (operation == "<" || operation == "<=" ||
+            operation == ">" || operation == ">=" ||
+            operation == "==" || operation == "!=") &&
+           self.parameter_comparison(left.type) {
+            result.total_order = true
+        }
         result.children.push(left)
         result.children.push(right)
         return result
@@ -5726,6 +6319,18 @@ class ExpressionChecker {
             if import_path != "" &&
                self.signature.resolver.is_loaded_package(
                    import_path) {
+                match self.consts.get(
+                    package_symbol(import_path, node.value)) {
+                    some(constant) => {
+                        self.require_visible(
+                            node, constant.is_public,
+                            constant.file, "constant",
+                            "{receiver_syntax.value}.{node.value}")
+                        return self.constant_node(
+                            node, constant, expected)
+                    }
+                    none => {}
+                }
                 match self.functions.get(
                     package_symbol(import_path, node.value)) {
                     some(function) => {
@@ -8571,6 +9176,27 @@ class ExpressionChecker {
                                 "'{receiver.value}' is already read into '{held}', which still holds its {render_hir_type(receiver.type.args[1])} — a move-only value has one live reader at a time, so finish with '{held}' first")
                         }
                     }
+                    // join renders each element the way interpolation
+                    // does, so an element with no string form has to be
+                    // refused here. Without this gate the tree interpreter
+                    // rendered [Point { x: 1, y: 2 }] and the native backend
+                    // refused the same call at emit time.
+                    //
+                    // An element still spelled with a type parameter is not
+                    // one of those: it is not yet any type, and its
+                    // instantiations are checked where they are made. Only a
+                    // type that is already what it will be is refused here.
+                    if receiver.type.name == "List" &&
+                       callee.value == "join" &&
+                       receiver.type.args.len() == 1 &&
+                       !self.type_mentions_any_generic(
+                           receiver.type.args[0]) &&
+                       !self.printable_in_string(
+                           receiver.type.args[0]) {
+                        self.fail(
+                            node,
+                            "can't join a {render_hir_type(receiver.type)} — give {render_hir_type(receiver.type.args[0])} a string form first")
+                    }
                     if (receiver.type.name == "RawPtr" &&
                         callee.value != "is_null") ||
                        receiver.type.name == "Slice" ||
@@ -8697,6 +9323,22 @@ class ExpressionChecker {
                     self.require_method_visible(
                         node, function, "method",
                         "{render_hir_type(receiver.type)}.{callee.value}")
+                    // A static has no `self`, so a receiver cannot reach
+                    // it. Every other lookup already said so —
+                    // `Sub.tag()` for a base's static is refused because
+                    // statics are not inherited, `super.tag()` finds no
+                    // parent implementation, and the inherited-method walk
+                    // skips them — but method_for did not, and the call it
+                    // built passed the receiver to a function that
+                    // declares no parameter for it (#88).
+                    if function.is_static {
+                        self.fail(
+                            node,
+                            "'{callee.value}' is a static method of {self.diagnostic_symbol(function.owner)} — a static has no receiver, so call it on the type: {self.diagnostic_symbol(function.owner)}.{callee.value}(...)")
+                        return self.make_node(
+                            node, "error", callee.value,
+                            poison_hir_type())
+                    }
                     var owner: Option<HirDeclaration> =
                         self.declaration_for(receiver.type)
                     if function.owner != "" {
@@ -8732,12 +9374,12 @@ class ExpressionChecker {
                                     node, "method_call",
                                     function.name, result_type)
                             result.resolved = function.qualified
+                            // "" when this method holds no row: a
+                            // method with type parameters of its own is a
+                            // template, so the body is the one resolved
+                            // here and neither backend looks further.
                             result.dispatch_slot =
-                                hir_method_slot(
-                                    function.owner,
-                                    function.name,
-                                    function.is_public,
-                                    function.is_private)
+                                hir_call_dispatch_slot(function)
                             if declaration.kind == "struct" &&
                                function.is_inout {
                                 if receiver_syntax.kind != "name" {
@@ -9136,6 +9778,27 @@ class ExpressionChecker {
             self.expect_type(node, type, expected)
             return result
         }
+        // `Error` is a builtin class every `err(...)` hands back, and until
+        // now nothing could make one: `err` builds a Result, not the error
+        // inside it. The `?` conversion hook is `fn to_error() -> Error`, so
+        // the hook could not have been written without this. The kind
+        // defaults to the empty slug, exactly as `err(message)` stores it.
+        if type.name == "Error" {
+            var parameters: List<HirType> =
+                [new HirType("string")]
+            if node.children.len() - 1 >= 2 {
+                parameters.push(new HirType("string"))
+            }
+            let signature: BuiltinSignature =
+                new BuiltinSignature(parameters, type)
+            let result: HirNode =
+                self.make_node(node, "new", "Error", type)
+            result.resolved = "Error.init"
+            self.check_builtin_arguments(
+                node, 1, signature, result)
+            self.expect_type(node, type, expected)
+            return result
+        }
         if type.name == "AtomicInt" {
             let signature: BuiltinSignature =
                 new BuiltinSignature(
@@ -9174,7 +9837,7 @@ class ExpressionChecker {
             if !self.at_body_floor() {
                 self.fail(
                     node,
-                    "new TaskGroup inside a nested block is not ready yet — its scope join runs at function exit, after the block's group is gone. make the group at the function's own scope (per-scope joins land with the fiber unwind work)")
+                    "new TaskGroup inside a nested block is not ready yet — its scope join runs at function exit, after the block's group is gone. make the group at the function's own scope; group.brew(...) on it stays legal at any depth, including inside this block (per-scope joins land with the fiber unwind work)")
             }
             if type.args.len() != 1 {
                 self.fail(
@@ -9586,7 +10249,8 @@ class ExpressionChecker {
            self.is_move_only(key) {
             self.fail(
                 node,
-                "Map key cannot be move-only, got {render_hir_type(key)}")
+                self.move_only_key_message(
+                    "Map", key))
         }
         result.type =
             if expected.name == "OrderedMap" {
@@ -9600,6 +10264,19 @@ class ExpressionChecker {
 
     fn check_index(node: AstNode,
                    expected: HirType) -> HirNode {
+        return self.check_index_at(node, expected, false)
+    }
+
+    // `place` is true only for the left side of an assignment. It changes
+    // exactly one answer: a move-only map value cannot be *read* by index,
+    // because the read would have to copy the map's own value, but writing
+    // one is a move in — the same instruction `set` lowers to, with the same
+    // ownership transfer. The old rule refused the write by quoting the
+    // read's reason, which described an operation the program was not doing.
+    // Everything inside the brackets is still a read and is checked as one.
+    fn check_index_at(node: AstNode,
+                      expected: HirType,
+                      place: bool) -> HirNode {
         let receiver: HirNode =
             self.check_expression(node.children[0], no_hir_type())
         var index_type: HirType = new HirType("int")
@@ -9621,7 +10298,7 @@ class ExpressionChecker {
                   receiver.type.args.len() == 2 {
             index_type = receiver.type.args[0]
             result_type = receiver.type.args[1]
-            if self.is_move_only(result_type) {
+            if self.is_move_only(result_type) && !place {
                 self.fail(
                     node,
                     "can't copy a move-only map value by index — read it with get(key), which answers Option<{render_hir_type(result_type)}>")
@@ -9667,10 +10344,20 @@ class ExpressionChecker {
                   self.current.body_result.args.len() == 1 {
             operand_expected = hir_named("Option", [expected])
         }
+        var pushed_expectation: bool = false
+        if operand_expected.name == "Result" {
+            self.try_expectations.push(operand_expected)
+            pushed_expectation = true
+        }
         let operand: HirNode =
             self.check_expression(
                 node.children[0], operand_expected)
+        if pushed_expectation {
+            self.try_expectations.pop()
+        }
         var result_type: HirType = poison_hir_type()
+        var bridge: Option<HirNode> = none
+        var bridge_binding: int = -1
         if operand.type.name == "Result" &&
            operand.type.args.len() >= 1 {
             result_type = operand.type.args[0]
@@ -9678,6 +10365,21 @@ class ExpressionChecker {
                 self.fail(
                     node,
                     "'?' needs a function returning Result")
+            } else {
+                // The error has to reach this function's error type. It
+                // used to be checked only when the `?` sat in a spot with a
+                // declared type, so a bare `f()?` let a foreign error
+                // through the checker and out to a backend that could not
+                // emit it.
+                bridge_binding = self.next_binding_id
+                self.next_binding_id += 1
+                bridge =
+                    self.check_try_error_bridge(
+                        node,
+                        hir_result_error(operand.type),
+                        hir_result_error(
+                            self.current.body_result),
+                        bridge_binding)
             }
         } else if operand.type.name == "Option" &&
                   operand.type.args.len() == 1 {
@@ -9698,16 +10400,178 @@ class ExpressionChecker {
         let result: HirNode =
             self.make_node(node, "try", "", result_type)
         result.children.push(operand)
+        match bridge {
+            some(conversion) => {
+                // Both backends read the binding off the try node: the
+                // error comes out of the operand into it, and the second
+                // child turns it into this function's error.
+                result.binding_id = bridge_binding
+                result.children.push(conversion)
+            }
+            none => {}
+        }
         return result
+    }
+
+    // `?` crossing a layer boundary. The callee's error type does not have
+    // to be this function's, it has to *reach* it, and there are exactly
+    // three ways (spec/SYNTAX.md, "Option and Result"):
+    //
+    //   1. it is the same type, and nothing happens;
+    //   2. it is a subtype of it, and the reference widens — the same
+    //      object read as the wider type, which is what a plain assignment
+    //      already does, so no code runs and nothing is lost;
+    //   3. it declares `fn to_error() -> <this function's error>`, and `?`
+    //      calls it on the error and propagates what comes back.
+    //
+    // Anything else is refused here, at the `?`, naming both types. The
+    // answer is the expression that produces this function's error out of a
+    // binding holding the callee's, or none when the error already fits.
+    // The conversion runs only on the error path, only once — `to_error()`
+    // is never chained through a second type.
+    fn check_try_error_bridge(
+        node: AstNode, source: HirType, target: HirType,
+        binding_id: int) -> Option<HirNode> {
+        if source.name == "poison" ||
+           target.name == "poison" ||
+           hir_types_equal(source, target) {
+            return none
+        }
+        let carried: HirNode =
+            self.make_node(
+                node, "local", "$error", source)
+        carried.binding_id = binding_id
+        if self.is_subtype(source, target) {
+            if self.is_move_only(source) &&
+               !self.is_move_only(target) {
+                self.fail(
+                    node,
+                    "can't erase move-only ownership by converting {render_hir_type(source)} to {render_hir_type(target)}")
+                return none
+            }
+            return some(carried)
+        }
+        if canonical_hir_name(source.name) == "Error" {
+            self.fail(
+                node,
+                "'?' can't turn the builtin Error into {render_hir_type(target)} — Error is a builtin and cannot carry a to_error method. match on the Result and build the {render_hir_type(target)} yourself")
+            return none
+        }
+        match self.method_for(source, "to_error") {
+            some(function) => {
+                return self.check_error_conversion(
+                    node, function, source, target,
+                    carried)
+            }
+            none => {}
+        }
+        self.fail(
+            node,
+            "'?' can't turn {render_hir_type(source)} into {render_hir_type(target)} — give {render_hir_type(source)} a `fn to_error() -> {render_hir_type(target)}` method, or match on the Result and build the error yourself")
+        return none
+    }
+
+    // The `to_error` a type offers has to be usable as one: an instance
+    // method of its own, taking nothing, generic over nothing, answering a
+    // type that itself reaches the target. A method that misses any of
+    // those says so rather than being quietly ignored, because a silently
+    // skipped conversion reads as the feature not existing.
+    fn check_error_conversion(
+        node: AstNode, function: HirFunction,
+        source: HirType, target: HirType,
+        carried: HirNode) -> Option<HirNode> {
+        let shown: string =
+            "{render_hir_type(source)}.to_error"
+        if function.is_static ||
+           function.parameters.len() != 0 ||
+           function.generics.len() != 0 {
+            self.fail(
+                node,
+                "'?' needs {shown} to be an instance method taking no arguments and no type parameters")
+            return none
+        }
+        var owner: Option<HirDeclaration> =
+            self.declaration_for(source)
+        match owner {
+            some(declaration) => {}
+            none => {
+                owner = self.declarations.get(function.owner)
+            }
+        }
+        match owner {
+            some(declaration) => {
+                let produced: HirType =
+                    if function.returns_self {
+                        source
+                    } else {
+                        self.substitute_method_type(
+                            function.result, function,
+                            declaration, source)
+                    }
+                // The same erasure rule a plain widening obeys
+                // (expect_type, check_try_error_bridge): reaching the
+                // target as a subtype must not shed move-only ownership
+                // along the way.
+                if !hir_types_equal(produced, target) &&
+                   self.is_move_only(produced) &&
+                   !self.is_move_only(target) &&
+                   self.is_subtype(produced, target) {
+                    self.fail(
+                        node,
+                        "can't erase move-only ownership by converting {render_hir_type(produced)} to {render_hir_type(target)}")
+                    return none
+                }
+                if !hir_types_equal(produced, target) &&
+                   !self.is_subtype(produced, target) {
+                    self.fail(
+                        node,
+                        "{shown}() answers {render_hir_type(produced)}, which doesn't reach this function's error type {render_hir_type(target)}")
+                    return none
+                }
+                self.require_method_visible(
+                    node, function, "method", shown)
+                let call: HirNode =
+                    self.make_node(
+                        node, "method_call",
+                        function.name, produced)
+                call.resolved = function.qualified
+                call.dispatch_slot =
+                    hir_call_dispatch_slot(function)
+                call.children.push(carried)
+                return some(call)
+            }
+            none => {}
+        }
+        self.fail(
+            node,
+            "'?' can't turn {render_hir_type(source)} into {render_hir_type(target)} — give {render_hir_type(source)} a `fn to_error() -> {render_hir_type(target)}` method, or match on the Result and build the error yourself")
+        return none
     }
 
     fn check_cast(node: AstNode,
                   expected: HirType) -> HirNode {
-        let value: HirNode =
-            self.check_expression(
-                node.children[0], no_hir_type())
         let target: HirType =
             hir_type_from_ast(node.children[1])
+        // A number literal written straight under `as` is read *in* the target
+        // type, not read in the default type and then converted: `19.99 as
+        // decimal` is the decimal 19.99, exactly like `let p: decimal = 19.99`.
+        // With no demand the literal was an f64 first, so the cast converted
+        // 19.989999999999998436805981327779591083526611328125 and the one type
+        // that exists to have no binary error carried one.
+        //
+        // The demand stops at the real-number types. `rate as decimal` on a
+        // float *variable* still tells the truth about that float, because the
+        // operand is not a literal; and an integer target keeps the low
+        // target-width bits, so `300 as i8` is still 44.
+        var demand: HirType = no_hir_type()
+        if node.value == "as" &&
+           number_literal_syntax(node.children[0]) &&
+           literal_number_target(target) {
+            demand = target
+        }
+        let value: HirNode =
+            self.check_expression(
+                node.children[0], demand)
         var result_type: HirType = target
         if node.value == "as?" {
             result_type = hir_option(target)
@@ -10146,6 +11010,52 @@ class ExpressionChecker {
         return []
     }
 
+    // The constant a pattern name stands for, as the literal pattern the
+    // source could have written instead. Nothing downstream learns a new
+    // pattern shape: `render_pattern`, the match tables and both backends
+    // see exactly what a written literal produces.
+    fn constant_pattern(pattern: AstNode,
+                        subject: HirType) -> Option<HirNode> {
+        var found: Option<HirConst> =
+            self.current_const(pattern.value)
+        if found.is_none() {
+            let encoded: string =
+                self.named_import_target(pattern.value)
+            if encoded != "" {
+                let parts: List<string> = encoded.split("\n")
+                found = self.consts.get(
+                    package_symbol(parts[0], parts[1]))
+            }
+        }
+        match found {
+            some(constant) => {
+                self.ensure_const(constant)
+                if !constant.folded { return none }
+                self.require_visible(
+                    pattern, constant.is_public,
+                    constant.file, "constant",
+                    pattern.value)
+                if !hir_types_equal(constant.type, subject) {
+                    self.fail(
+                        pattern,
+                        "pattern is {render_hir_type(constant.type)} but the match subject is {render_hir_type(subject)}")
+                    return some(
+                        self.make_node(
+                            pattern, "pattern_literal",
+                            constant.text, subject))
+                }
+                let result: HirNode =
+                    self.make_node(
+                        pattern, "pattern_literal",
+                        constant.text, subject)
+                result.resolved = constant.qualified
+                return some(result)
+            }
+            none => {}
+        }
+        return none
+    }
+
     fn check_pattern(pattern: AstNode,
                      subject: HirType) -> HirNode {
         let result: HirNode =
@@ -10165,19 +11075,15 @@ class ExpressionChecker {
             if pattern.value == "true" ||
                pattern.value == "false" {
                 literal_type = new HirType("bool")
-            } else if pattern.value.starts_with("\"") {
+            } else if string_literal_is_text(pattern.value) {
                 literal_type = new HirType("string")
-            } else if pattern.value.contains(".") ||
-                      (!pattern.value.starts_with("0x") &&
-                       !pattern.value.starts_with("0X") &&
-                       !pattern.value.starts_with("0b") &&
-                       !pattern.value.starts_with("0B") &&
-                       !pattern.value.starts_with("-0x") &&
-                       !pattern.value.starts_with("-0X") &&
-                       !pattern.value.starts_with("-0b") &&
-                       !pattern.value.starts_with("-0B") &&
-                       (pattern.value.contains("e") ||
-                        pattern.value.contains("E"))) {
+                // Below the checker a pattern is one spelling: a raw
+                // literal is the same bytes written another way, and the
+                // MIR match tables are read back as ordinary literals.
+                result.value =
+                    string_literal_cook(pattern.value)
+            } else if literal_is_float_syntax(
+                          pattern.value) {
                 literal_type = new HirType("float")
                 is_float_literal = true
             }
@@ -10234,6 +11140,17 @@ class ExpressionChecker {
                     }
                 }
                 none => {}
+            }
+        }
+        // A module constant is a value, so it may stand where a literal
+        // stands. An enum variant of the same name still wins: the arm is
+        // about the subject's own shape.
+        if !enum_subject || !known_variant {
+            if pattern.children.len() == 0 {
+                match self.constant_pattern(pattern, subject) {
+                    some(literal) => { return literal }
+                    none => {}
+                }
             }
         }
         if !enum_subject {
@@ -10643,6 +11560,11 @@ class ExpressionChecker {
     fn annotation_constant(
         syntax: AstNode, expected: HirType,
         checked: HirNode) -> bool {
+        // A module constant already is a compile-time value; the checker
+        // folded it before any annotation was looked at.
+        if checked.kind == "const" {
+            return hir_types_equal(checked.type, expected)
+        }
         if syntax.kind == "literal" {
             if syntax.note == "string" {
                 return expected.name == "string" &&
@@ -10709,12 +11631,17 @@ class ExpressionChecker {
                 if argument.defaulted && argument.value.is_some() {
                     continue
                 }
+                let before: int = self.errors.len()
                 let value: HirNode =
                     self.check_expression(
                         argument.syntax, argument.type)
                 argument.value = some(value)
-                if !self.annotation_constant(
-                    argument.syntax, argument.type, value) {
+                // An argument that did not check has already been
+                // explained. Saying it is also not constant is a second
+                // line about the same mistake, two steps from its cause.
+                if self.errors.len() == before &&
+                   !self.annotation_constant(
+                       argument.syntax, argument.type, value) {
                     self.fail(
                         argument.syntax,
                         "annotation argument '{argument.name}' must be a compile-time constant")
@@ -10929,6 +11856,110 @@ class ExpressionChecker {
         return result
     }
 
+    // Why this binding cannot be written through, in terms the author can
+    // act on. Both place walks below end at a local and ask this, so a
+    // record and an array give one answer. `self` is the case the plain
+    // answer got wrong: a method's receiver is never rebindable, so "use
+    // var" named a change the language has no spelling for. A struct method
+    // that writes its own storage is an `inout fn`, and that is what the
+    // message has to say.
+    fn immutable_place_reason(
+        binding: LocalBinding, parts: string) -> string {
+        if binding.name == "self" {
+            return "'self' is borrowed here, so its {parts} can't be reassigned — declare the method 'inout fn' to write through the receiver"
+        }
+        return "'{binding.name}' is a let — its {parts} can't be reassigned. use var"
+    }
+
+    // A struct is a value: writing one of its fields writes the storage the
+    // struct lives in, so the write is only meaningful when that storage
+    // outlives the statement. This walks back from the record being written
+    // to the storage that holds it, exactly the way check_array_place walks
+    // back from an array — a mutable local's slot, or the heap object a
+    // class field sits in — hopping through as many struct fields and fixed
+    // array elements as the source wrote. Only the last hop used to be
+    // allowed, which made `rect.origin.x = 1` a copy-out, mutate, copy-back
+    // by hand for the very shape structs exist for.
+    //
+    // What stays refused is storage the backends cannot address: a union
+    // field read is a reinterpreting load rather than a place, a List or Map
+    // element read hands back a copy, and a call result has no storage at
+    // all. Each says which one it is, because "needs a local variable" was
+    // never the reason.
+    fn check_record_place(target: AstNode, base: HirNode) {
+        var current: HirNode = base
+        for true {
+            if current.kind == "local" {
+                match self.find_local(current.value) {
+                    some(binding) => {
+                        if !binding.mutable {
+                            self.fail(
+                                target,
+                                self.immutable_place_reason(
+                                    binding, "fields"))
+                        }
+                    }
+                    none => {}
+                }
+                return
+            }
+            if current.kind == "static_field" {
+                // a module-lifetime global is storage every backend can
+                // address, and the read that reached it already ran the
+                // initialisation guard: the walk ends here
+                return
+            }
+            if current.kind == "field" &&
+               current.children.len() == 1 {
+                let receiver: HirNode =
+                    current.children[0]
+                match self.declaration_for(
+                    receiver.type) {
+                    some(declaration) => {
+                        // a class instance is a heap object, and the
+                        // object pointer is storage every backend can
+                        // reach: the walk ends here
+                        if declaration.kind == "class" {
+                            return
+                        }
+                        if declaration.kind == "struct" {
+                            current = receiver
+                            continue
+                        }
+                        if declaration.kind == "union" {
+                            self.fail(
+                                target,
+                                "reading a field of {render_hir_type(receiver.type)} reinterprets its bytes rather than naming a place, so a field of that value can't be assigned through it — copy it to a var, update it, and assign it back")
+                            return
+                        }
+                    }
+                    none => {}
+                }
+                self.fail(
+                    target,
+                    "a field of {render_hir_type(receiver.type)} is not storage this write can reach — copy the struct to a var, update it, and assign it back")
+                return
+            }
+            if current.kind == "index" &&
+               current.children.len() == 2 {
+                let receiver: HirNode =
+                    current.children[0]
+                if receiver.type.name == "array" {
+                    current = receiver
+                    continue
+                }
+                self.fail(
+                    target,
+                    "a {render_hir_type(receiver.type)} element read answers a copy, so a field written through it would be dropped — copy the element to a var, update it, and assign it back")
+                return
+            }
+            self.fail(
+                target,
+                "this struct is a temporary copy — store it in a var before assigning its fields")
+            return
+        }
+    }
+
     // The base chain of a fixed-array element assignment, validated the
     // way the backends store it: struct fields and array elements walk
     // back to a mutable local, and a class field makes the heap object
@@ -10945,10 +11976,24 @@ class ExpressionChecker {
                         if !binding.mutable {
                             self.fail(
                                 target,
-                                "'{current.value}' is a let — its elements can't be reassigned. use var")
+                                self.immutable_place_reason(
+                                    binding, "elements"))
                         }
                     }
                     none => {}
+                }
+                return
+            }
+            if current.kind == "static_field" {
+                // a static is addressable storage like a heap object, and
+                // carries the same open question: an element store emits no
+                // write barrier, so an element that may own references would
+                // leave the collector an untracked edge
+                if !self.array_element_stores_inline(
+                       element) {
+                    self.fail(
+                        target,
+                        "storing owned references into an array inside a static is not supported yet — copy the array to a local, update it, and assign it back")
                 }
                 return
             }
@@ -11043,7 +12088,8 @@ class ExpressionChecker {
                 if target.kind == "field" {
                     self.check_field(target, no_hir_type())
                 } else {
-                    self.check_index(target, no_hir_type())
+                    self.check_index_at(
+                        target, no_hir_type(), true)
                 }
             let value: HirNode = self.check_expression(
                 node.children[1], place.type)
@@ -11071,26 +12117,8 @@ class ExpressionChecker {
                                     target,
                                     "union fields only support direct assignment for now")
                             }
-                            if target.children[0].kind != "name" {
-                                // no backend stores through a nested
-                                // record place yet; stage 0 rejects this
-                                // at check time and so does this checker
-                                self.fail(
-                                    target,
-                                    "struct field assignment needs a local variable for now")
-                            } else {
-                                match self.find_local(
-                                    target.children[0].value) {
-                                    some(binding) => {
-                                        if !binding.mutable {
-                                            self.fail(
-                                                target,
-                                                "'{binding.name}' is a let — its fields can't be reassigned. use var")
-                                        }
-                                    }
-                                    none => {}
-                                }
-                            }
+                            self.check_record_place(
+                                target, place.children[0])
                         }
                     }
                     none => {}
@@ -11137,6 +12165,11 @@ class ExpressionChecker {
         }
         if target.kind != "name" {
             self.fail(node, "expression is not assignable")
+            return result
+        }
+        if self.fail_discard_use(
+               target,
+               "assign to — drop the '_ =' and keep the expression") {
             return result
         }
         match self.find_local(target.value) {
@@ -11210,11 +12243,22 @@ class ExpressionChecker {
                         result.children.push(value)
                     }
                     none => {
-                        self.fail(
-                            target,
-                            add_name_suggestion(
-                                "unknown name '{target.value}'",
-                                target.value, self.local_names()))
+                        match self.current_const(
+                            target.value) {
+                            some(constant) => {
+                                self.fail(
+                                    target,
+                                    "'{target.value}' is a constant and has no storage to assign to")
+                            }
+                            none => {
+                                self.fail(
+                                    target,
+                                    add_name_suggestion(
+                                        "unknown name '{target.value}'",
+                                        target.value,
+                                        self.local_names()))
+                            }
+                        }
                     }
                 }
             }
@@ -11523,7 +12567,7 @@ class ExpressionChecker {
         if !self.at_body_floor() {
             self.fail(
                 node,
-                "brew inside a nested block is not ready yet — its scope join runs at function exit, after the block's handle is gone. brew at the function's own scope (per-scope joins land with the fiber unwind work)")
+                "brew inside a nested block is not ready yet — its scope join runs at function exit, after the block's handle is gone. use TaskGroup<T> for a fiber per loop iteration: make the group at the function's own scope, and group.brew(...) on it is legal at any depth. a lone brew works at the function's own scope (per-scope joins land with the fiber unwind work)")
         }
         if node.children.len() != 1 ||
            node.children[0].kind != "call" {
@@ -11901,6 +12945,15 @@ class ExpressionChecker {
                 node, node.kind, "", new HirType("unit"))
         }
         if node.kind == "defer" {
+            // Spec (SYNTAX.md, defer): a defer is a function-exit hook and
+            // must sit at the top level of the function body. A nested one
+            // runs after its block's locals are gone — the native run-site
+            // reads a released cell.
+            if !self.at_body_floor() {
+                self.fail(
+                    node,
+                    "defer inside a nested block is not allowed — it runs at function exit, after the block's locals are gone. defer at the function's own scope, or do the cleanup at the block's end")
+            }
             let result: HirNode =
                 self.make_node(
                     node, "defer", "", new HirType("unit"))
@@ -12239,6 +13292,521 @@ class ExpressionChecker {
         self.pop_scope()
     }
 
+    // ---- module constants ---------------------------------------------------
+    //
+    // `const NAME: T = <expression>` has no storage. The initializer is
+    // checked once, in its own package, and folded on the *checked* HIR, so
+    // the language's own typing decides what each operator means. What the
+    // fold produces is the spelling a literal of that type is written in;
+    // a use site materializes that, which makes a constant behave exactly
+    // as if its value had been typed there — in both backends, with nothing
+    // left for them to disagree about.
+
+    fn check_consts() {
+        self.consts_folded = {}
+        self.consts_visiting = {}
+        for constant: HirConst in self.program.consts {
+            self.fold_one_const(constant)
+        }
+    }
+
+    // Asked for by name the moment a constant's initializer names another
+    // one. The ask arrives from the middle of that constant's own pass, so
+    // the checking state around it is saved and put back.
+    fn ensure_const(constant: HirConst) {
+        if self.consts_folded.contains_key(
+               constant.qualified) ||
+           self.consts_visiting.contains_key(
+               constant.qualified) {
+            return
+        }
+        let saved_current: HirFunction = self.current
+        var saved_constraints: List<HirGeneric> = []
+        for constraint: HirGeneric in
+            self.current_constraints {
+            saved_constraints.push(constraint)
+        }
+        var saved_scopes: List<LocalScope> = []
+        for scope: LocalScope in self.scopes {
+            saved_scopes.push(scope)
+        }
+        self.fold_one_const(constant)
+        self.current = saved_current
+        self.current_constraints = move saved_constraints
+        self.scopes = move saved_scopes
+    }
+
+    fn fold_one_const(constant: HirConst) {
+        if self.consts_folded.contains_key(
+               constant.qualified) {
+            return
+        }
+        if self.consts_visiting.contains_key(
+               constant.qualified) {
+            // Reported once, at the constant the cycle was entered from.
+            return
+        }
+        self.consts_visiting[constant.qualified] = true
+        self.current = new HirFunction(
+            "$const", "{constant.qualified}.$const",
+            "", false, false, constant.file,
+            constant.line, constant.col)
+        self.current_constraints = []
+        self.scopes = []
+        self.push_scope()
+        constant.annotations =
+            self.check_hir_annotations(
+                constant.annotations)
+        match constant.syntax {
+            some(syntax) => {
+                let before: int = self.errors.len()
+                let checked: HirNode =
+                    self.check_expression(
+                        syntax, constant.type)
+                if self.errors.len() == before &&
+                   constant.type.name != "poison" {
+                    let value: ConstValue =
+                        self.fold_const(
+                            checked, syntax, constant.name)
+                    if value.kind != "" {
+                        constant.folded = true
+                        constant.kind = value.kind
+                        constant.number = value.number
+                        constant.text = value.text
+                    }
+                }
+            }
+            none => {}
+        }
+        self.pop_scope()
+        self.consts_folded[constant.qualified] = true
+    }
+
+    fn const_failure(site: AstNode, name: string,
+                     what: string) {
+        self.fail(
+            site,
+            "const {name} is not a compile-time value: {what}")
+    }
+
+    // What the node in front of the fold actually is, said in the program's
+    // own words. "not a constant" on its own leaves a reader guessing which
+    // part of the line the compiler could not settle.
+    fn const_reason(node: HirNode) -> string {
+        if node.kind == "call" || node.kind == "method_call" ||
+           node.kind == "static_call" ||
+           node.kind == "builtin_call" ||
+           node.kind == "module_call" {
+            return "a call runs at run time"
+        }
+        if node.kind == "layout_query" {
+            return "{node.value} is answered after layout, which runs later than a constant is folded"
+        }
+        if node.kind == "local" {
+            return "'{node.value}' is a local, and a local has no value until its function runs"
+        }
+        if node.kind == "c_global" {
+            return "'{node.value}' is an extern C global, and C decides its value"
+        }
+        if node.kind == "field" || node.kind == "weak_field" ||
+           node.kind == "static_field" {
+            return "'{node.value}' is a field read"
+        }
+        if node.kind == "list" || node.kind == "map" ||
+           node.kind == "initializer" ||
+           node.kind == "new" {
+            return "a constant is a number, bool or string, and this builds a value"
+        }
+        if node.kind == "cast" {
+            return "'as' converts at run time — declare the constant with the type you want"
+        }
+        if node.kind == "variant" {
+            return "'{node.value}' is an enum variant, and a constant is a number, bool or string"
+        }
+        if node.kind == "if" || node.kind == "match" ||
+           node.kind == "block" {
+            return "a constant is one expression, not a branch"
+        }
+        return "'{node.kind}' is computed at run time"
+    }
+
+    fn fold_const(node: HirNode, site: AstNode,
+                  name: string) -> ConstValue {
+        if node.kind == "const" {
+            match self.consts.get(node.resolved) {
+                some(other) => {
+                    if other.folded {
+                        return ConstValue {
+                            kind: other.kind,
+                            number: other.number,
+                            text: other.text,
+                        }
+                    }
+                    // Its own declaration already said why.
+                    return const_value_failed()
+                }
+                none => {}
+            }
+            return const_value_failed()
+        }
+        if node.kind == "literal" {
+            return self.fold_const_literal(node, site, name)
+        }
+        if node.kind == "unary" && node.children.len() == 1 {
+            return self.fold_const_unary(node, site, name)
+        }
+        if node.kind == "binary" && node.children.len() == 2 {
+            return self.fold_const_binary(node, site, name)
+        }
+        if node.kind == "error" || node.type.name == "poison" {
+            return const_value_failed()
+        }
+        self.const_failure(
+            site, name, self.const_reason(node))
+        return const_value_failed()
+    }
+
+    fn fold_const_literal(node: HirNode, site: AstNode,
+                          name: string) -> ConstValue {
+        let canonical: string =
+            canonical_hir_name(node.type.name)
+        if canonical == "bool" {
+            return const_value_bool(node.value == "true")
+        }
+        if canonical == "string" {
+            if node.children.len() != 0 {
+                self.const_failure(
+                    site, name,
+                    "a string constant cannot interpolate — a \{\} piece is filled in at run time")
+                return const_value_failed()
+            }
+            return ConstValue {
+                kind: "string",
+                number: 0,
+                text: string_literal_cook(node.value),
+            }
+        }
+        if hir_is_integer(node.type) {
+            return const_value_int(
+                tree_parse_int(node.value), node.value)
+        }
+        if hir_is_float(node.type) {
+            return ConstValue {
+                kind: "float", number: 0, text: node.value,
+            }
+        }
+        if canonical == "decimal" {
+            return ConstValue {
+                kind: "decimal", number: 0, text: node.value,
+            }
+        }
+        self.const_failure(
+            site, name,
+            "a {render_hir_type(node.type)} has no compile-time value")
+        return const_value_failed()
+    }
+
+    // A folded integer answers what the same expression answers at run time,
+    // so every result is narrowed to its own type. u64 is the exception the
+    // fold cannot carry: a 64-bit signed accumulator holds the bit pattern
+    // but not the number, so rather than answer a different value than the
+    // program would, folding stops and says so. A u64 mask written out in
+    // full is still a literal and still works.
+    fn fold_const_int(value: int, type: HirType,
+                      site: AstNode,
+                      name: string) -> ConstValue {
+        let narrowed: int = const_wrap(value, type)
+        if const_unsigned_64(type) && narrowed < 0 {
+            self.const_failure(
+                site, name,
+                "this folds past 2^63 in u64, which the checker cannot compute — write the value as a literal")
+            return const_value_failed()
+        }
+        return const_value_int(
+            narrowed, const_int_text(narrowed))
+    }
+
+    fn fold_const_unary(node: HirNode, site: AstNode,
+                        name: string) -> ConstValue {
+        if node.value == "move" || node.value == "inout" {
+            self.const_failure(
+                site, name,
+                "'{node.value}' is an ownership operator, not a value")
+            return const_value_failed()
+        }
+        let operand: ConstValue =
+            self.fold_const(node.children[0], site, name)
+        if operand.kind == "" { return const_value_failed() }
+        if node.value == "-" {
+            if operand.kind == "int" {
+                return self.fold_const_int(
+                    0 - operand.number,
+                    node.children[0].type, site, name)
+            }
+            if operand.kind == "float" ||
+               operand.kind == "decimal" {
+                if operand.text.starts_with("-") {
+                    return ConstValue {
+                        kind: operand.kind,
+                        number: 0,
+                        text: operand.text.slice(
+                            1, operand.text.len()),
+                    }
+                }
+                return ConstValue {
+                    kind: operand.kind,
+                    number: 0,
+                    text: "-{operand.text}",
+                }
+            }
+            self.const_failure(
+                site, name,
+                "unary '-' needs a number")
+            return const_value_failed()
+        }
+        if node.value == "!" {
+            if operand.kind != "bool" {
+                self.const_failure(
+                    site, name, "unary '!' needs bool")
+                return const_value_failed()
+            }
+            return const_value_bool(operand.number == 0)
+        }
+        if node.value == "~" {
+            if operand.kind != "int" {
+                self.const_failure(
+                    site, name,
+                    "unary '~' needs an integer")
+                return const_value_failed()
+            }
+            return self.fold_const_int(
+                ~operand.number,
+                node.children[0].type, site, name)
+        }
+        self.const_failure(
+            site, name,
+            "unary '{node.value}' has no constant form")
+        return const_value_failed()
+    }
+
+    fn fold_const_compare(operation: string, left: ConstValue,
+                          right: ConstValue, site: AstNode,
+                          name: string) -> ConstValue {
+        if left.kind == "string" && right.kind == "string" {
+            let a: string = string_literal_decode(left.text)
+            let b: string = string_literal_decode(right.text)
+            if operation == "==" {
+                return const_value_bool(a == b)
+            }
+            if operation == "!=" {
+                return const_value_bool(a != b)
+            }
+            if operation == "<" { return const_value_bool(a < b) }
+            if operation == "<=" { return const_value_bool(a <= b) }
+            if operation == ">" { return const_value_bool(a > b) }
+            return const_value_bool(a >= b)
+        }
+        if (left.kind == "int" || left.kind == "bool") &&
+           left.kind == right.kind {
+            let a: int = left.number
+            let b: int = right.number
+            if operation == "==" { return const_value_bool(a == b) }
+            if operation == "!=" { return const_value_bool(a != b) }
+            if left.kind == "bool" {
+                self.const_failure(
+                    site, name,
+                    "'{operation}' has no constant form for bool")
+                return const_value_failed()
+            }
+            if operation == "<" { return const_value_bool(a < b) }
+            if operation == "<=" { return const_value_bool(a <= b) }
+            if operation == ">" { return const_value_bool(a > b) }
+            return const_value_bool(a >= b)
+        }
+        self.const_failure(
+            site, name,
+            "'{operation}' folds integers, bools and strings; a float comparison would need the compiler to round for you")
+        return const_value_failed()
+    }
+
+    fn fold_const_binary(node: HirNode, site: AstNode,
+                         name: string) -> ConstValue {
+        let operation: string = node.value
+        let left: ConstValue =
+            self.fold_const(node.children[0], site, name)
+        if left.kind == "" { return const_value_failed() }
+        let right: ConstValue =
+            self.fold_const(node.children[1], site, name)
+        if right.kind == "" { return const_value_failed() }
+        if operation == "&&" || operation == "||" {
+            if left.kind != "bool" || right.kind != "bool" {
+                self.const_failure(
+                    site, name,
+                    "'{operation}' needs bool operands")
+                return const_value_failed()
+            }
+            let value: bool =
+                if operation == "&&" {
+                    left.number != 0 && right.number != 0
+                } else {
+                    left.number != 0 || right.number != 0
+                }
+            return const_value_bool(value)
+        }
+        // A u64 operand at or above 2^63 is a negative bit pattern in the
+        // fold's signed accumulator. That has to stop every operator, not
+        // just the arithmetic ones: a comparison would answer with signed
+        // order, and `MAX_U64 > 2^63 - 1` is true unsigned and false
+        // signed. The guard therefore sits above the comparison dispatch,
+        // where both kinds of operator still pass through it.
+        let type: HirType = node.children[0].type
+        if left.kind == "int" && right.kind == "int" &&
+           const_unsigned_64(type) &&
+           (left.number < 0 || right.number < 0) {
+            self.const_failure(
+                site, name,
+                "a u64 at or above 2^63 is past the signed 64 bits this fold computes in, so '{operation}' has no compile-time answer here — a constant that large can be declared and used, just not folded into another one")
+            return const_value_failed()
+        }
+        if operation == "==" || operation == "!=" ||
+           operation == "<" || operation == "<=" ||
+           operation == ">" || operation == ">=" {
+            return self.fold_const_compare(
+                operation, left, right, site, name)
+        }
+        if left.kind != "int" || right.kind != "int" {
+            self.const_failure(
+                site, name,
+                "'{operation}' folds integers; a {left.kind} constant is the literal it was written as")
+            return const_value_failed()
+        }
+        if operation == "+" {
+            return self.fold_const_int(
+                left.number + right.number, type, site, name)
+        }
+        if operation == "-" {
+            return self.fold_const_int(
+                left.number - right.number, type, site, name)
+        }
+        if operation == "*" {
+            return self.fold_const_int(
+                left.number * right.number, type, site, name)
+        }
+        if operation == "/" || operation == "%" {
+            if right.number == 0 {
+                self.const_failure(
+                    site, name,
+                    "this divides by zero")
+                return const_value_failed()
+            }
+            if right.number == -1 &&
+               integer_literal_signed(type.name) &&
+               left.number == const_int_minimum(type) {
+                self.const_failure(
+                    site, name,
+                    "this divides {render_hir_type(type)}'s smallest value by -1, which has no result in {render_hir_type(type)}")
+                return const_value_failed()
+            }
+            if operation == "/" {
+                return self.fold_const_int(
+                    left.number / right.number,
+                    type, site, name)
+            }
+            return self.fold_const_int(
+                left.number % right.number, type, site, name)
+        }
+        if operation == "&" {
+            return self.fold_const_int(
+                left.number & right.number, type, site, name)
+        }
+        if operation == "|" {
+            return self.fold_const_int(
+                left.number | right.number, type, site, name)
+        }
+        if operation == "^" {
+            return self.fold_const_int(
+                left.number ^ right.number, type, site, name)
+        }
+        if operation == "<<" || operation == ">>" {
+            let bits: int = integer_literal_bits(type.name)
+            if right.number < 0 || right.number >= bits {
+                self.const_failure(
+                    site, name,
+                    "a {render_hir_type(type)} shift needs a count from 0 to {bits - 1}, got {right.number}")
+                return const_value_failed()
+            }
+            if operation == "<<" {
+                return self.fold_const_int(
+                    left.number << right.number,
+                    type, site, name)
+            }
+            return self.fold_const_int(
+                left.number >> right.number,
+                type, site, name)
+        }
+        self.const_failure(
+            site, name,
+            "'{operation}' has no constant form")
+        return const_value_failed()
+    }
+
+    // The node a use site gets: the constant's value, written where the use
+    // is. A negative number becomes unary minus over its magnitude, which is
+    // the shape source itself produces, so no backend meets a literal
+    // spelling it has never seen.
+    fn constant_value_node(node: AstNode, type: HirType,
+                           text: string) -> HirNode {
+        if text.starts_with("-") {
+            let magnitude: HirNode =
+                self.make_node(
+                    node, "literal",
+                    text.slice(1, text.len()), type)
+            let negated: HirNode =
+                self.make_node(node, "unary", "-", type)
+            negated.children.push(magnitude)
+            return negated
+        }
+        return self.make_node(node, "literal", text, type)
+    }
+
+    fn constant_node(node: AstNode, constant: HirConst,
+                     expected: HirType) -> HirNode {
+        self.ensure_const(constant)
+        self.expect_type(node, constant.type, expected)
+        if !constant.folded {
+            // Still on the fold stack: this use is inside the constant's
+            // own initializer, so the constant is defined in terms of
+            // itself. Anything else already said why it did not fold, at
+            // its declaration.
+            if self.consts_visiting.contains_key(
+                   constant.qualified) &&
+               !self.consts_folded.contains_key(
+                   constant.qualified) {
+                self.fail(
+                    node,
+                    "const {constant.name} is defined in terms of itself")
+            }
+            let refused: HirNode =
+                self.make_node(
+                    node, "error", constant.name,
+                    poison_hir_type())
+            // The name did resolve — to a constant that could not be
+            // folded. Anything reading this must not go on to say the
+            // name means nothing.
+            refused.resolved = constant.qualified
+            return refused
+        }
+        let value: HirNode =
+            self.constant_value_node(
+                node, constant.type, constant.text)
+        let result: HirNode =
+            self.make_node(
+                node, "const", constant.name, constant.type)
+        result.resolved = constant.qualified
+        result.children.push(value)
+        return result
+    }
+
     fn check_field_defaults() {
         self.defaults_checked = {}
         self.defaults_visiting = {}
@@ -12455,6 +14023,9 @@ class ExpressionChecker {
     }
 
     fn run() -> bool {
+        // Constants first: an annotation argument, a field default or any
+        // body may name one, and every one of those asks for the value.
+        self.check_consts()
         self.check_annotation_declarations()
         self.check_c_global_annotations()
         self.check_field_defaults()
