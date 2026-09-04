@@ -2000,13 +2000,17 @@ fn describe(p: Payment) -> string {
 }
 ```
 
-Enums are objects too — they can carry methods (`fn label() -> string { ... }`
-inside the enum body, with implicit `self`).
+An enum carries methods (`fn label() -> string { ... }` inside the enum body,
+with implicit `self`) and static methods, but an enum **value** is a tag, not an
+object: it has no descriptor word, so no dynamic dispatch reads one out of it.
 
 An enum has no base type and cannot implement an interface: the checker refuses
-`enum Colour implements Shows` at the declaration, naming the enum and the
-interface. Nothing is lost by it — an enum satisfies `Eq`, `Hash` and `Order`
-bounds and works as a map key without ever naming them.
+`enum Colour implements Shows` and `enum Colour extends Base` at the
+declaration, naming the enum and the relation. An enum satisfies the `Clone`,
+`Eq` and `Hash` bounds and works as a map key without ever naming them. It does
+**not** satisfy `Order`, and `<` on two enum values is refused — a payload-free
+enum has a declaration-order tag that could carry one, the way `bool` already
+does, but no rule gives it one today (issue #117).
 
 ### Fixed representation: `enum(u8)`
 
