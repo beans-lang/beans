@@ -996,6 +996,13 @@ partial class LlvmTextEmitter {
             instruction.operands[0]
         let subject_type: HirType =
             self.value_type(function, subject_id)
+        // The ownership plan's word on the operand. When it is set nothing
+        // else releases the operand, so its count is the result's to keep;
+        // when it is clear the operand keeps its own and an owned result
+        // needs one of its own. Every arm below turns on this one answer.
+        let consumed: bool =
+            instruction.consumes.len() == 1 &&
+            instruction.consumes[0]
         if canonical_hir_name(
                subject_type.name) == "Option" &&
            subject_type.args.len() == 1 {
@@ -1005,16 +1012,26 @@ partial class LlvmTextEmitter {
                 self.value(
                     function, values,
                     subject_id, instruction)
+            // An Option is not a box. `some` is the payload itself, with a
+            // null pointer or the flag telling the two apart, so unwrapping
+            // moves nothing: a consumed operand hands its count straight to
+            // the result and the emitter writes no count op at all. The
+            // Result arm below retains and then releases because a Result
+            // *is* a box that owns the payload and has to be let go.
             if self.type_is_reference(payload) {
                 values[instruction.result] =
                     subject
+                if consumed { return "" }
                 return "  call void @beans_retain(ptr {subject})\n"
             }
             let result: string =
                 "%v{instruction.result}"
             values[instruction.result] =
                 result
-            return "  {result} = extractvalue {self.type_text(subject_type)} {subject}, 1\n{self.emit_arc_value(payload, result, true)}"
+            let extracted: string =
+                "  {result} = extractvalue {self.type_text(subject_type)} {subject}, 1\n"
+            if consumed { return extracted }
+            return "{extracted}{self.emit_arc_value(payload, result, true)}"
         }
         if canonical_hir_name(subject_type.name) !=
                "Result" {
@@ -1043,9 +1060,6 @@ partial class LlvmTextEmitter {
             self.value(
                 function, values,
                 subject_id, instruction)
-        let consumed: bool =
-            instruction.consumes.len() == 1 &&
-            instruction.consumes[0]
         let id: int = self.fresh()
         let result: string = "%v{instruction.result}"
         if self.result_is_inline(subject_type) {
@@ -1115,16 +1129,23 @@ partial class LlvmTextEmitter {
                 function, values,
                 instruction.operands[0],
                 instruction)
-        if render_hir_type(source_type) ==
-               render_hir_type(instruction.type) {
-            // The exact same representation flows out and keeps
-            // its ownership.
-            values[instruction.result] = subject
-            return ""
-        }
         let consumed: bool =
             instruction.consumes.len() == 1 &&
             instruction.consumes[0]
+        if render_hir_type(source_type) ==
+               render_hir_type(instruction.type) {
+            // The same representation flows straight out. A consumed
+            // operand hands its count over with it and nothing more is
+            // owed. A borrowed one keeps its own, and the value this
+            // function returns is owned — without a count of its own the
+            // caller releases a box this frame only borrowed, which for
+            // `let x = borrowed_result?` on the error path is a double
+            // free the moment the caller lets go.
+            values[instruction.result] = subject
+            if consumed { return "" }
+            return self.emit_arc_value(
+                source_type, subject, true)
+        }
         // A propagating Option carries nothing. `none` is `none` whatever
         // the two payload types are, so the answer is the *target's* none
         // and the operand is simply dropped. The Result path below reads an

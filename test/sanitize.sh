@@ -134,6 +134,7 @@ run_asan test/cases/parity/record_place.b record_place
 # markers cannot see: a barrier that is skipped shows up as a use-after-free
 # under a sweep, not as a wrong count.
 run_asan test/cases/parity/static_place.b static_place
+run_asan test/cases/parity/try_ownership.b try_ownership
 run_asan examples/regress_mem.b regress_mem 3
 run_asan test/cases/decimal_precision.b decimal_precision
 run_asan test/cases/decimal_extrema.b decimal_extrema
@@ -395,7 +396,8 @@ if [[ "$(uname -s)" == Darwin ]] && command -v leaks >/dev/null 2>&1; then
                 test/cases/reflect_calls.b test/cases/reflect_construct.b \
                 test/cases/parity/discard_binding.b \
                 test/cases/parity/record_place.b \
-                test/cases/parity/static_place.b; do
+                test/cases/parity/static_place.b \
+                test/cases/parity/try_ownership.b; do
         echo "leaks checking $file"
         name=$(basename "$file" .b)
         ./build/beansc build "$file" -o "$out/${name}_leaks" >/dev/null
