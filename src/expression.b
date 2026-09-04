@@ -890,6 +890,32 @@ class ExpressionChecker {
         return false
     }
 
+    // Why an `Order` bound failed on an enum. The bound-failure message names
+    // the type but not the reason, and a payload enum is the surprising case:
+    // it satisfies Eq and Hash, so a reader expects Order too. The rule lives
+    // in the spec; this puts a pointer to it on the diagnostic. Empty for
+    // anything but a payload enum against Order.
+    fn order_bound_hint(actual: HirType,
+                        wanted: HirType) -> string {
+        if wanted.name != "Order" {
+            return ""
+        }
+        match self.declaration_for(actual) {
+            some(declaration) => {
+                if declaration.kind == "enum" {
+                    for variant: HirField in
+                        declaration.variants {
+                        if variant.type.args.len() != 0 {
+                            return " — a payload enum satisfies Eq and Hash but not Order; only a payload-free enum has a declaration-order tag to order by"
+                        }
+                    }
+                }
+            }
+            none => {}
+        }
+        return ""
+    }
+
     fn trait_satisfied(type: HirType, trait: string) -> bool {
         if type.name == "poison" { return true }
         for constraint: HirGeneric in
@@ -5071,7 +5097,7 @@ class ExpressionChecker {
                                     if !self.bound_satisfied(actual, wanted) {
                                         self.fail(
                                             node,
-                                            "{declaration.name} needs {constraint.name} implements {render_hir_type(wanted)}, got {render_hir_type(actual)}")
+                                            "{declaration.name} needs {constraint.name} implements {render_hir_type(wanted)}, got {render_hir_type(actual)}{self.order_bound_hint(actual, wanted)}")
                                     }
                                 }
                             }
@@ -7052,7 +7078,7 @@ class ExpressionChecker {
                             actual, wanted) {
                             self.fail(
                                 node,
-                                "'{function.name}' needs {constraint.name} implements {render_hir_type(wanted)}, got {render_hir_type(actual)}")
+                                "'{function.name}' needs {constraint.name} implements {render_hir_type(wanted)}, got {render_hir_type(actual)}{self.order_bound_hint(actual, wanted)}")
                         }
                     }
                 }
