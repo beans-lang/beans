@@ -142,6 +142,23 @@ agree test/cases/parity/scope_exit_order.b 14
 agree test/cases/parity/sort_panic_state.b
 agree test/cases/parity/map_replace_panic.b
 agree test/cases/parity/assign_eval_order.b
+# #61: an indexed write through a Slice<T>, the borrowed-view type. The
+# checker and the interpreter took `view[i] = v` and `view[i] += v`; the
+# native backend refused both at build time. Every store shape is here —
+# plain and compound, constant and computed index, n=1/2/many, i32/i64/u8,
+# a struct element, and a subslice write landing in the parent's memory.
+agree test/cases/parity/slice_index_write.b
+# #117: a payload-free enum satisfies Order, so sort, max, min and a generic
+# `T implements Order` body work on it by declaration-order tag. A plain enum
+# is a pointer at its tag word (runtime kind 7), an enum(u8) is the bare tag
+# (kind 5), and Big's 200 variants cross tag 127 where a signed i8 compare
+# would sort b128.. first. Sort with duplicates, min, max, generic largest,
+# and a stable sort_by through a generic Order comparator.
+agree test/cases/parity/enum_order.b
+# #117 through the stdlib's ordered containers: a payload-free enum is a legal
+# `K implements Order` key, compared by a balanced-tree insert and a heap sift
+# rather than a list sort. A plain enum key and an enum(u8) key both appear.
+agree test/cases/parity/enum_order_containers.b
 # `?` crossing an error boundary: the source error is converted through
 # to_error or widened to a supertype, and both backends have to do it once —
 # for a call operand, a local operand, a bare statement `f()?`, and each hop
@@ -158,7 +175,7 @@ agree test/cases/parity/settled_dispatch.b 10
 
 # Every case in the directory has to be listed above with its own expected
 # count; a file added and forgotten would otherwise be silently unchecked.
-listed=30
+listed=33
 present=$(find test/cases/parity -name '*.b' | wc -l | tr -d ' ')
 if [ "$present" != "$listed" ]; then
     echo "test/cases/parity holds $present cases but $listed are run" >&2

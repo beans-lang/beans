@@ -890,6 +890,32 @@ class ExpressionChecker {
         return false
     }
 
+    // Why an `Order` bound failed on an enum. The bound-failure message names
+    // the type but not the reason, and a payload enum is the surprising case:
+    // it satisfies Eq and Hash, so a reader expects Order too. The rule lives
+    // in the spec; this puts a pointer to it on the diagnostic. Empty for
+    // anything but a payload enum against Order.
+    fn order_bound_hint(actual: HirType,
+                        wanted: HirType) -> string {
+        if wanted.name != "Order" {
+            return ""
+        }
+        match self.declaration_for(actual) {
+            some(declaration) => {
+                if declaration.kind == "enum" {
+                    for variant: HirField in
+                        declaration.variants {
+                        if variant.type.args.len() != 0 {
+                            return " — a payload enum satisfies Eq and Hash but not Order; only a payload-free enum has a declaration-order tag to order by"
+                        }
+                    }
+                }
+            }
+            none => {}
+        }
+        return ""
+    }
+
     fn trait_satisfied(type: HirType, trait: string) -> bool {
         if type.name == "poison" { return true }
         for constraint: HirGeneric in
@@ -1082,6 +1108,26 @@ class ExpressionChecker {
                     return true
                 }
                 if declaration.kind == "enum" {
+                    // `Order` on an enum is the declaration-order tag —
+                    // the same numbering `enum(u8)` exposes as its `u8`
+                    // and the same shape as `bool`'s false-before-true,
+                    // available with no representation change and without
+                    // making a bare `a < b` on two enum values legal. It
+                    // reaches only a payload-free enum: ordering a payload
+                    // variant would mean tag-then-payload, which needs
+                    // every payload type to be `Order` and a deep compare
+                    // in both backends' sort path — not offered, so a
+                    // payload enum does not satisfy `Order` even when its
+                    // payloads happen to (it still satisfies `Eq`/`Hash`).
+                    if trait == "Order" {
+                        for variant: HirField in
+                            declaration.variants {
+                            if variant.type.args.len() != 0 {
+                                return false
+                            }
+                        }
+                        return true
+                    }
                     if trait != "Clone" &&
                        trait != "Eq" &&
                        trait != "Hash" &&
@@ -5051,7 +5097,7 @@ class ExpressionChecker {
                                     if !self.bound_satisfied(actual, wanted) {
                                         self.fail(
                                             node,
-                                            "{declaration.name} needs {constraint.name} implements {render_hir_type(wanted)}, got {render_hir_type(actual)}")
+                                            "{declaration.name} needs {constraint.name} implements {render_hir_type(wanted)}, got {render_hir_type(actual)}{self.order_bound_hint(actual, wanted)}")
                                     }
                                 }
                             }
@@ -7032,7 +7078,7 @@ class ExpressionChecker {
                             actual, wanted) {
                             self.fail(
                                 node,
-                                "'{function.name}' needs {constraint.name} implements {render_hir_type(wanted)}, got {render_hir_type(actual)}")
+                                "'{function.name}' needs {constraint.name} implements {render_hir_type(wanted)}, got {render_hir_type(actual)}{self.order_bound_hint(actual, wanted)}")
                         }
                     }
                 }

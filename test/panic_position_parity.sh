@@ -279,6 +279,29 @@ agree guard_divide_by_zero - 'fn main() {
     let c: int = a / b
 }'
 
+# A panic from the compound operator on an index target must report the index
+# position on both backends. The native backend anchors an index-target
+# assignment at the index (src/mir.b), so the interpreter builds the compound
+# operator node from the index position too — otherwise `v[0] /= 0` reports the
+# operator column on the interpreter and the `[` column natively. Slice and
+# fixed array both, since the slice store rides the array store path.
+agree guard_slice_compound_divzero - 'fn main() {
+    unsafe {
+        let p: RawPtr<i32> = RawPtr.alloc(1)
+        p.offset(0).write(7 as i32)
+        let v: Slice<i32> = Slice.from_raw(p, 1)
+        var z: i32 = 0
+        v[0] /= z
+        p.free()
+    }
+}'
+
+agree guard_array_compound_divzero - 'fn main() {
+    var a: [i32; 2] = [7, 8]
+    var z: i32 = 0
+    a[0] /= z
+}'
+
 # ---- coverage: no Bytes/List/string/fmt-pad panic path may go untested ----
 # The authoritative set is the runtime itself: a host op that can panic with a
 # position takes (line, col). Pull every such Bytes/List/string/fmt-pad

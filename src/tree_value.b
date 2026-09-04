@@ -691,6 +691,14 @@ fn tree_value_less(left: TreeValue,
         return !left.bool_data &&
                right.bool_data
     }
+    // `Order` on a payload-free enum is the declaration-order tag, which a
+    // variant carries in int_data. Only payload-free enums satisfy Order, so
+    // sort, min and max reach this with no payload to break the tie — the
+    // same i8/loaded-i64 tag compare the native backend's slot_cmp does.
+    if left.kind == "variant" &&
+       right.kind == "variant" {
+        return left.int_data < right.int_data
+    }
     return false
 }
 
@@ -801,6 +809,10 @@ fn tree_value_copy(value: TreeValue) -> TreeValue {
                 value.kind, move items)
         result.text = value.text
         result.bool_data = value.bool_data
+        // an enum variant carries its declaration-order tag in int_data,
+        // the key `Order` compares by; a copy has to keep it or a sorted
+        // or compared copy would read tag 0 for every variant
+        result.int_data = value.int_data
         result.generic_types = copy_type_map(value.generic_types)
         return result
     }

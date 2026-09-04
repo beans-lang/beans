@@ -16,6 +16,12 @@
 compiler=0.1.37
 language=1.0
 
+# 16: order kind 7 — a payload-free enum slot is a pointer at its tag word;
+# sort, min and max compare the loaded tags, where an older runtime compared
+# the pointers. No new symbol: the order kind is a compiler-to-runtime contract
+# passed to beans_list_sort/min/max, like ABI 14's beans_list_sort_by_key n=1
+# change. slot_cmp now also traps an unknown kind instead of sorting by the raw
+# slot, so a compiler/runtime mismatch fails loudly rather than silently.
 # 15: std.term's four entry points. beans_term_is_tty, beans_term_size,
 # beans_term_set_raw and beans_term_restore are the struct-shaped half of a
 # terminal, kept in C because `struct termios` is 72 bytes on macOS and 60 on
@@ -75,4 +81,4 @@ language=1.0
 # caller-owned event buffer instead of returning a fresh one.
 # Version 7 added Bytes.filled, Bytes.append_int_text, and Thread.detach.
 # Version 6 added per-thread runtime-hook guard entry points.
-runtime_abi=15
+runtime_abi=16

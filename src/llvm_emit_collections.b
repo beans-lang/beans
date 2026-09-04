@@ -586,6 +586,18 @@ partial class LlvmTextEmitter {
             return self.emit_array_assignment(
                 function, instruction, values)
         }
+        // A Slice<T> is inline memory, the sibling of a fixed array: an
+        // index write is address arithmetic plus a store, and a compound
+        // is the same read-modify-write, so both land here before the
+        // plain-only guard below (which stands for List/Map, whose
+        // compound the checker already refuses). The checker holds the
+        // element to the raw-pointee set, so it is always POD — no ARC.
+        if canonical_hir_name(map_type.name) ==
+               "Slice" &&
+           map_type.args.len() == 1 {
+            return self.emit_slice_assignment(
+                function, instruction, values)
+        }
         if instruction.text != "index::=" {
             self.fail(
                 instruction,
@@ -666,7 +678,8 @@ partial class LlvmTextEmitter {
             return ""
         }
         // the runtime's order kinds: 0 signed, 1 double, 2 string,
-        // 5 unsigned, 6 float — the same table emit_list_sort uses.
+        // 5 unsigned, 6 float, 7 enum-tag-through-pointer — the same table
+        // emit_list_sort uses.
         // The old catch-all 4 landed on slot_cmp's comparator row with
         // no comparator, which answers 0 for every pair, so min and
         // max of a sized-integer or f32 list returned whichever
@@ -685,6 +698,27 @@ partial class LlvmTextEmitter {
             kind = 6
         } else if name == "string" {
             kind = 2
+        }
+        // min and max order the same way sort does: a payload-free enum by
+        // its declaration-order tag — enum(u8) reads the slot tag (kind 5),
+        // a plain enum loads it through the pointer (kind 7). The runtime
+        // hands back the winning slot, so the Option carries the right enum.
+        if kind < 0 {
+            match self.declaration_for(element) {
+                some(declaration) => {
+                    if declaration.kind == "enum" &&
+                       self.enum_is_fieldless(
+                           declaration) {
+                        kind =
+                            if declaration.repr != "" {
+                                5
+                            } else {
+                                7
+                            }
+                    }
+                }
+                none => {}
+            }
         }
         if kind < 0 {
             self.fail(
@@ -2174,7 +2208,8 @@ partial class LlvmTextEmitter {
             return ""
         }
         // the runtime's order kinds: 0 signed, 1 double, 2 string,
-        // 5 unsigned, 6 float — same table as production's order_kind
+        // 5 unsigned, 6 float, 7 enum-tag-through-pointer — same table as
+        // production's order_kind
         let element: HirType = list_type.args[0]
         let element_name: string =
             canonical_hir_name(element.name)
@@ -2192,6 +2227,28 @@ partial class LlvmTextEmitter {
             kind = 6
         } else if element_name == "string" {
             kind = 2
+        }
+        // a payload-free enum sorts by its declaration-order tag. enum(u8)
+        // stores that tag in the slot (unsigned, kind 5); a plain enum
+        // stores a pointer at the tag word, so the runtime loads it (kind
+        // 7). Only payload-free enums satisfy Order, so a payload enum never
+        // reaches sort — enum_is_fieldless leaves kind -1 and it is refused.
+        if kind < 0 {
+            match self.declaration_for(element) {
+                some(declaration) => {
+                    if declaration.kind == "enum" &&
+                       self.enum_is_fieldless(
+                           declaration) {
+                        kind =
+                            if declaration.repr != "" {
+                                5
+                            } else {
+                                7
+                            }
+                    }
+                }
+                none => {}
+            }
         }
         if element_name == "decimal" {
             let list: string =
@@ -2992,7 +3049,7 @@ partial class LlvmTextEmitter {
         output =
             "{output}array.assign.have{okay}:\n  %field.assign.ptr{address} = getelementptr {llvm}, ptr {base_pointer}, i64 0, i64 {index}\n"
         if operation != "=" {
-            return "{output}{self.emit_field_compound(instruction, element, address, stored, operation, "")}"
+            return "{output}{self.emit_field_compound(instruction, element, address, stored, operation, "", "")}"
         }
         if self.type_has_owned_refs(element) {
             let consumed: bool =
@@ -3123,6 +3180,74 @@ partial class LlvmTextEmitter {
         output =
             "{output}slice.index.bad{bad}:\n  call void @beans_panic_slice_index(i64 {index}, i64 %slice.index.len{id}, i64 {instruction.line}, i64 {instruction.col})\n  unreachable\n"
         return "{output}slice.index.have{okay}:\n  %slice.index.item{id} = getelementptr {element_llvm}, ptr %slice.index.ptr{id}, i64 {index}\n  {result} = load {element_llvm}, ptr %slice.index.item{id}, align 1\n"
+    }
+
+    // A Slice<T> element write is the address arithmetic emit_slice_index
+    // does for a read, followed by a store. The bounds check is never
+    // elided here — the elision pass only touches `op == "index"` reads —
+    // so the store always checks, exactly as the tree interpreter's slice
+    // store does. align 1 matches the read: a slice may describe unaligned
+    // foreign memory. A compound reuses emit_field_compound on the same
+    // element pointer, the read-modify-write a fixed array's compound store
+    // already routes through, so both backends fold the value the same way.
+    // The checker holds a slice element to the raw-pointee set, so it is
+    // always POD — no owned reference, no ARC on the old or new value.
+    fn emit_slice_assignment(
+        function: MirFunction,
+        instruction: MirInstruction,
+        values: Map<int, string>) -> string {
+        let slice_type: HirType =
+            self.value_type(
+                function, instruction.operands[0])
+        if slice_type.args.len() != 1 {
+            self.fail(
+                instruction,
+                "LLVM emitter needs a slice element type")
+            return ""
+        }
+        let element: HirType = slice_type.args[0]
+        let element_llvm: string =
+            self.type_text(element)
+        let operation: string =
+            instruction.text.slice(
+                7, instruction.text.len())
+        if element_llvm == "" ||
+           element_llvm == "void" ||
+           !operation.ends_with("=") {
+            self.fail(
+                instruction,
+                "LLVM emitter does not support this index assignment yet")
+            return ""
+        }
+        let slice: string =
+            self.value(
+                function, values,
+                instruction.operands[0], instruction)
+        let index: string =
+            self.value(
+                function, values,
+                instruction.operands[1], instruction)
+        let stored: string =
+            self.value(
+                function, values,
+                instruction.operands[2], instruction)
+        let id: int = self.fresh()
+        let okay: int = self.fresh()
+        let bad: int = self.fresh()
+        let address: int = self.fresh()
+        self.require_declare(
+            "beans_panic_slice_index",
+            "void @beans_panic_slice_index(i64, i64, i64, i64)")
+        var output: string =
+            "  %slice.assign.ptr{id} = extractvalue \{ptr, i64\} {slice}, 0\n  %slice.assign.len{id} = extractvalue \{ptr, i64\} {slice}, 1\n  %slice.assign.ok{id} = icmp ult i64 {index}, %slice.assign.len{id}\n  br i1 %slice.assign.ok{id}, label %slice.assign.have{okay}, label %slice.assign.bad{bad}\n"
+        output =
+            "{output}slice.assign.bad{bad}:\n  call void @beans_panic_slice_index(i64 {index}, i64 %slice.assign.len{id}, i64 {instruction.line}, i64 {instruction.col})\n  unreachable\n"
+        output =
+            "{output}slice.assign.have{okay}:\n  %field.assign.ptr{address} = getelementptr {element_llvm}, ptr %slice.assign.ptr{id}, i64 {index}\n"
+        if operation != "=" {
+            return "{output}{self.emit_field_compound(instruction, element, address, stored, operation, "", ", align 1")}"
+        }
+        return "{output}  store {element_llvm} {stored}, ptr %field.assign.ptr{address}, align 1\n"
     }
 
     fn emit_index(function: MirFunction,

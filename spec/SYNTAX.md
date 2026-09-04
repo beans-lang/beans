@@ -2008,10 +2008,17 @@ one.
 An enum has no base type and cannot implement an interface: the checker refuses
 `enum Colour implements Shows` and `enum Colour extends Base` at the
 declaration, naming the enum and the relation. An enum satisfies the `Clone`,
-`Eq` and `Hash` bounds and works as a map key without ever naming them. It does
-**not** satisfy `Order`, and `<` on two enum values is refused — a payload-free
-enum has a declaration-order tag that could carry one, the way `bool` already
-does, but no rule gives it one today (issue #117).
+`Eq` and `Hash` bounds and works as a map key without ever naming them. A
+**payload-free** enum also satisfies `Order`, by its declaration-order tag —
+the same numbering `enum(u8)` exposes as its `u8` and the same shape as
+`bool`'s false-before-true — so `sort`, `max`, `min` and a generic
+`T implements Order` body work on it with no representation change. A bare
+`a < b` on two enum values is still refused as an unordered operand, exactly as
+it is for `bool`; the comparison can only be written inside a generic `Order`
+body. A **payload** enum does **not** satisfy `Order` even when its payload
+types happen to: ordering it would mean tag-then-payload, which needs every
+payload type to be `Order` and a deep compare in both backends' sort path, and
+that is not offered — it still satisfies `Clone`, `Eq` and `Hash`.
 
 ### Fixed representation: `enum(u8)`
 
@@ -3908,8 +3915,13 @@ helpers, globals, and functions for a library package's consumers.
   element set above. `Slice.from_raw(ptr, len)`,
   `get`, `set`, indexing, `subslice`,
   `as_ptr`, and iteration require `unsafe`; reads and writes are bounds checked.
-  A non-empty slice rejects a null pointer. The caller must keep the backing
-  allocation alive and must not use the view after `free`.
+  Indexing is a place: `view[i] = v` stores through the pointer, and — as with
+  a fixed array, and unlike `List` and `Map` — a compound `view[i] += v` on a
+  numeric element is the read-modify-write of that one cell. The write lands in
+  the memory the view borrows, so it is visible through any other view of it,
+  and needs no `var` on the binding: the view is read-only, the memory it names
+  is not. A non-empty slice rejects a null pointer. The caller must keep the
+  backing allocation alive and must not use the view after `free`.
 
 - `struct` declares an inline value type. It copies by value and is passed and
   returned as an LLVM aggregate, with no ARC header or heap allocation. A

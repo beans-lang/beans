@@ -4462,6 +4462,10 @@ static int rt_f32_total_key(unsigned bits) {
     return (int)(bits ^ (flip & 0x7fffffffu));
 }
 static int slot_cmp(long long a, long long b, long long kind) {
+    // kind 0: the raw signed slot (ints, bools). Spelled out rather than left
+    // to the tail, so the tail can trap an unknown kind instead of silently
+    // sorting by it.
+    if (kind == 0) return a < b ? -1 : a > b ? 1 : 0;
     if (kind == 1) {
         long long x = rt_f64_total_key(a);
         long long y = rt_f64_total_key(b);
@@ -4482,7 +4486,25 @@ static int slot_cmp(long long a, long long b, long long kind) {
         int y = rt_f32_total_key((unsigned)b);
         return x < y ? -1 : x > y ? 1 : 0;
     }
-    return a < b ? -1 : a > b ? 1 : 0;
+    // kind 7: a payload-free enum value is a pointer at its declaration-order
+    // tag word (the same one enum `==` loads), so Order compares the loaded
+    // tags. The static tag objects happen to be emitted consecutively, so
+    // pointer order equals tag order on this host — but that is layout luck
+    // (private unnamed_addr constants a linker may reorder or fold), not a
+    // contract, so comparing the loaded tags is right by contract where
+    // comparing the pointers is right by accident. enum(u8) needs no kind
+    // here: its slot already holds the tag.
+    if (kind == 7) {
+        long long x = *(long long*)a;
+        long long y = *(long long*)b;
+        return x < y ? -1 : x > y ? 1 : 0;
+    }
+    // An unknown kind is never a program state: it means the compiler and this
+    // runtime are out of step (a mismatched BEANS_RUNTIME, an older linked
+    // runtime, an emitter bug). The old tail silently sorted by the raw slot,
+    // which is exactly how the kind-4 min/max bug shipped unseen. Fail loudly.
+    beans_panic("order kind unknown to this runtime: the compiler and runtime are out of step", 0, 0);
+    return 0; // beans_panic does not return; this satisfies the compiler
 }
 // content equality for strings — length header first, bytes second; strcmp
 // would stop at an embedded NUL and lie

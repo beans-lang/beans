@@ -795,6 +795,33 @@ class TreeInterpreter {
         return self.declaration_by_name.get(name)
     }
 
+    // The declaration-order tag of an enum variant, the number `Order`
+    // compares by. A variant value carries it in `int_data` so the two
+    // type-erased comparators — tree_value_less (sort, min, max) and the
+    // binary `<` path — can order two variants without the declaration in
+    // hand, the same tag the native backend loads from the enum object or
+    // reads as the `enum(u8)` value. Payload variants also get it; only a
+    // payload-free enum satisfies `Order`, but stamping every variant keeps
+    // the one construction rule uniform.
+    fn enum_variant_tag(type: HirType,
+                        variant_name: string) -> int {
+        match self.declaration(type.name) {
+            some(declaration) => {
+                if declaration.kind == "enum" {
+                    for index: int in
+                        0..declaration.variants.len() {
+                        if declaration.variants[index].name ==
+                           variant_name {
+                            return index
+                        }
+                    }
+                }
+            }
+            none => {}
+        }
+        return 0
+    }
+
     fn tree_json_annotation(
         annotations: List<HirAnnotation>, short_name: string
     ) -> Option<HirAnnotation> {
@@ -2160,6 +2187,13 @@ class TreeInterpreter {
                     } else {
                         result = TreeValue.sequence("variant", values)
                         result.text = variant_name
+                        for index: int in
+                            0..declaration.variants.len() {
+                            if declaration.variants[index].name ==
+                               variant_name {
+                                result.int_data = index
+                            }
+                        }
                     }
                     for index: int in 0..count {
                         if !constructing ||
@@ -4627,6 +4661,30 @@ class TreeInterpreter {
             }
             if node.value == ">=" {
                 return TreeValue.boolean(low || !high)
+            }
+        }
+        // `Order` on a payload-free enum: compare the declaration-order tags
+        // the variants carry. Only a generic body reaches these — a bare
+        // `a < b` on two enum values is refused as an unordered operand, the
+        // same rule bool has — and only a payload-free enum satisfies Order,
+        // so there is never a payload to break the tie. == and != went
+        // through tree_value_equal above. This is the tag compare the native
+        // backend emits (icmp on the i8 value or the loaded i64).
+        if left.kind == "variant" &&
+           right.kind == "variant" {
+            let low: int = left.int_data
+            let high: int = right.int_data
+            if node.value == "<" {
+                return TreeValue.boolean(low < high)
+            }
+            if node.value == "<=" {
+                return TreeValue.boolean(low <= high)
+            }
+            if node.value == ">" {
+                return TreeValue.boolean(low > high)
+            }
+            if node.value == ">=" {
+                return TreeValue.boolean(low >= high)
             }
         }
         if left.kind == "object" &&
@@ -12032,6 +12090,9 @@ class TreeInterpreter {
                 TreeValue.sequence(
                     "variant", move payload)
             result.text = node.value
+            result.int_data =
+                self.enum_variant_tag(
+                    node.type, node.value)
             return result
         }
         if node.kind == "some" ||
@@ -12289,8 +12350,14 @@ class TreeInterpreter {
         if node.value != "=" {
             // A compound element read uses the hoisted receiver and key,
             // so the index expression runs exactly once — as MIR lowers
-            // it. Slices (unsafe) keep the expression fallback; their
-            // count is unchanged (the store below reuses the hoist).
+            // it, and as the native backend now does for a slice too. A
+            // slice reached the expression fallback below while it could
+            // not build natively; once the emitter gained the store, that
+            // fallback re-ran the whole target — a side-effecting index
+            // then read one cell and the hoisted store wrote another, and
+            // the two backends disagreed on both the value and the call
+            // count. The slice arm reads through the hoist, the same
+            // pointer_memory read the plain slice index does.
             let current: TreeValue =
                 if index_first &&
                    (index_receiver.kind == "list" ||
@@ -12307,6 +12374,33 @@ class TreeInterpreter {
                     tree_value_copy(
                         index_receiver.items[
                             index_key.int_data])
+                } else if index_first &&
+                          index_receiver.kind == "slice" &&
+                          index_key.kind == "int" {
+                    if index_key.int_data < 0 ||
+                       index_key.int_data >=
+                       index_receiver.slice_len {
+                        self.fail(
+                            target,
+                            "slice index {index_key.int_data} out of range (len {index_receiver.slice_len})")
+                        return TreeExec.next()
+                    }
+                    let element: HirType =
+                        index_receiver.memory_type.expect(
+                            "slice element type")
+                    let piece: LayoutAnswer =
+                        self.layout(element)
+                    match self.pointer_memory(
+                            target, index_receiver) {
+                        some(memory) =>
+                            self.memory_read_value(
+                                target, memory,
+                                index_receiver.memory_address +
+                                    ((index_key.int_data *
+                                      piece.value.size) as u64),
+                                element)
+                        none => TreeValue.unit()
+                    }
                 } else if field_first &&
                           field_receiver.fields.entries
                               .contains_key(target.value) {
@@ -12318,13 +12412,30 @@ class TreeInterpreter {
                 } else {
                     self.expression(target, frame)
                 }
+            // A panic from the compound operator itself — a divide by zero,
+            // a decimal overflow — reports where the operator ran. The
+            // native backend anchors an index-target assignment at the
+            // index's own position (src/mir.b, target.line/col), so for
+            // `v[i] /= 0` the operator node has to take the index's position
+            // too, or the two backends print different columns for the same
+            // panic. A field or local target keeps the assignment position.
             let operation: HirNode =
-                new HirNode(
-                    "binary",
-                    node.value.slice(
-                        0, node.value.len() - 1),
-                    target.type,
-                    node.file, node.line, node.col)
+                if target.kind == "index" {
+                    new HirNode(
+                        "binary",
+                        node.value.slice(
+                            0, node.value.len() - 1),
+                        target.type,
+                        target.file, target.line,
+                        target.col)
+                } else {
+                    new HirNode(
+                        "binary",
+                        node.value.slice(
+                            0, node.value.len() - 1),
+                        target.type,
+                        node.file, node.line, node.col)
+                }
             operation.children.push(target)
             operation.children.push(node.children[1])
             if current.kind == "int" &&

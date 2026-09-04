@@ -765,57 +765,69 @@ partial class LlvmTextEmitter {
                 }
                 if declaration.kind == "enum" &&
                    (instruction.text == "==" ||
-                    instruction.text == "!=") {
+                    instruction.text == "!=" ||
+                    instruction.text == "<" ||
+                    instruction.text == "<=" ||
+                    instruction.text == ">" ||
+                    instruction.text == ">=") {
                     if declaration.repr != "" {
-                        // enum(u8): the values are the bare tags
+                        // enum(u8): the value is the bare tag. `Order`
+                        // compares it unsigned — the same u8 the marker
+                        // promises — and == / != are eq / ne of that tag.
                         let predicate: string =
-                            if instruction.text ==
-                               "==" {
-                                "eq"
-                            } else {
-                                "ne"
-                            }
-                        values[instruction.result] =
-                            result
-                        return "  {result} = icmp {predicate} i8 {left}, {right}\n"
-                    }
-                    if self.enum_is_fieldless(
-                           declaration) {
-                        // payload-free enums keep the plain tag compare —
-                        // same answer as structural equality, no call
-                        let left_tag: int =
-                            self.fresh()
-                        let right_tag: int =
-                            self.fresh()
-                        let predicate: string =
-                            if instruction.text ==
-                               "==" {
-                                "eq"
-                            } else {
-                                "ne"
-                            }
-                        values[instruction.result] =
-                            result
-                        return "  %enum.left{left_tag} = load i64, ptr {left}\n  %enum.right{right_tag} = load i64, ptr {right}\n  {result} = icmp {predicate} i64 %enum.left{left_tag}, %enum.right{right_tag}\n"
-                    }
-                    let symbol: string =
-                        self.request_value_eq(
-                            operand_type)
-                    if symbol == "" {
-                        self.fail(
-                            instruction,
-                            "LLVM emitter does not support equality for '{render_hir_type(operand_type)}' yet")
-                        return ""
-                    }
-                    let id: int = self.fresh()
-                    let predicate: string =
-                        if instruction.text == "==" {
-                            "ne"
-                        } else {
-                            "eq"
+                            self.integer_compare_predicate(
+                                instruction.text,
+                                new HirType("u8"))
+                        if predicate != "" {
+                            values[instruction.result] =
+                                result
+                            return "  {result} = icmp {predicate} i8 {left}, {right}\n"
                         }
-                    values[instruction.result] = result
-                    return "  %enum.eq.left{id} = ptrtoint ptr {left} to i64\n  %enum.eq.right{id} = ptrtoint ptr {right} to i64\n  %enum.eq.same{id} = call i64 {symbol}(i64 %enum.eq.left{id}, i64 %enum.eq.right{id})\n  {result} = icmp {predicate} i64 %enum.eq.same{id}, 0\n"
+                    } else if self.enum_is_fieldless(
+                           declaration) {
+                        // payload-free enum: the value points at the
+                        // declaration-order tag word (emit_variant). Load
+                        // it and compare — `Order` reads the same tag
+                        // equality does, no call. Signed like the
+                        // interpreter's int_data tag, which agrees with
+                        // unsigned across the non-negative tag range.
+                        let predicate: string =
+                            self.integer_compare_predicate(
+                                instruction.text,
+                                new HirType("int"))
+                        if predicate != "" {
+                            let left_tag: int =
+                                self.fresh()
+                            let right_tag: int =
+                                self.fresh()
+                            values[instruction.result] =
+                                result
+                            return "  %enum.left{left_tag} = load i64, ptr {left}\n  %enum.right{right_tag} = load i64, ptr {right}\n  {result} = icmp {predicate} i64 %enum.left{left_tag}, %enum.right{right_tag}\n"
+                        }
+                    } else if instruction.text == "==" ||
+                              instruction.text == "!=" {
+                        // payload enum: structural equality only. `Order`
+                        // is refused for a payload enum in the checker, so
+                        // a relational operator never reaches here.
+                        let symbol: string =
+                            self.request_value_eq(
+                                operand_type)
+                        if symbol == "" {
+                            self.fail(
+                                instruction,
+                                "LLVM emitter does not support equality for '{render_hir_type(operand_type)}' yet")
+                            return ""
+                        }
+                        let id: int = self.fresh()
+                        let predicate: string =
+                            if instruction.text == "==" {
+                                "ne"
+                            } else {
+                                "eq"
+                            }
+                        values[instruction.result] = result
+                        return "  %enum.eq.left{id} = ptrtoint ptr {left} to i64\n  %enum.eq.right{id} = ptrtoint ptr {right} to i64\n  %enum.eq.same{id} = call i64 {symbol}(i64 %enum.eq.left{id}, i64 %enum.eq.right{id})\n  {result} = icmp {predicate} i64 %enum.eq.same{id}, 0\n"
+                    }
                 }
             }
             none => {}
