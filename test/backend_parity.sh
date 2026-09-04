@@ -126,6 +126,12 @@ agree test/cases/parity/generic_base_deinit.b 4
 # encodes the shared owner's count, so a skipped body leaves an unbalanced
 # marker and a body run against a stripped owner reads the wrong count.
 agree test/cases/parity/cycle_exit_deinit.b 8
+# A Map with class keys AND class values dropped, reassigned or with an entry
+# removed released all values then all keys in the interpreter, where native
+# releases each entry's value before its own key, entries back to front (#97).
+# The interpreter stores an entry as one value now; the diff is the order check
+# and the balanced markers are the leak/double-free check, at n = 1, 2 and 3.
+agree test/cases/parity/map_release_order.b 30
 agree test/cases/parity/struct_sort.b 3
 agree test/cases/parity/sort_by_key_paths.b
 agree test/cases/parity/list_equality.b
@@ -164,7 +170,7 @@ agree test/cases/parity/settled_dispatch.b 10
 
 # Every case in the directory has to be listed above with its own expected
 # count; a file added and forgotten would otherwise be silently unchecked.
-listed=31
+listed=32
 present=$(find test/cases/parity -name '*.b' | wc -l | tr -d ' ')
 if [ "$present" != "$listed" ]; then
     echo "test/cases/parity holds $present cases but $listed are run" >&2

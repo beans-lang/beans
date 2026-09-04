@@ -56,8 +56,19 @@ class TreeValue {
     text: string
     items: List<TreeValue>
     fields: TreeFields
-    map_keys: List<TreeValue>
+    // A tree map keeps one entry as one value so the two halves die as a unit,
+    // the way a native map entry does (#97). map_values maps the encoded key to
+    // an entry (kind "map_entry", items = [key, value]); a beans Map preserves
+    // insertion order, so a dropped map releases its entries back to front, each
+    // releasing its value (item 1) before its key (item 0). map_keys holds the
+    // key objects for enumeration order and indexed access, aliasing the keys
+    // the entries own, and is declared AFTER map_values so the host releases the
+    // alias list first -- as a no-op, the entries still hold the keys -- and the
+    // entries last, which is where every key's and value's deinit runs. Reverse
+    // that declaration order and a whole map goes back to all-values-then-all-
+    // keys, which is the split #97 was.
     map_values: Map<string, TreeValue>
+    map_keys: List<TreeValue>
     map_version: int
     // A list carries the same structural change count a map does, plus the
     // name of the operation that last moved it, so an invalidated loop can
@@ -107,8 +118,8 @@ class TreeValue {
         self.text = ""
         self.items = []
         self.fields = new TreeFields()
-        self.map_keys = []
         self.map_values = {}
+        self.map_keys = []
         self.map_version = 0
         self.list_version = 0
         self.list_change = ""
@@ -339,6 +350,26 @@ class TreeObjectValue extends TreeValue {
     }
 }
 
+// A map entry owns both halves of one entry so they die as a unit (#97). The
+// items are [key, value]: the host releases a list back to front, so the value
+// (item 1) is released before the key (item 0), which is the order a native map
+// releases an entry in. map_values stores these under the encoded key.
+fn tree_map_entry(key: TreeValue,
+                  value: TreeValue) -> TreeValue {
+    let entry: TreeValue = new TreeValue("map_entry")
+    entry.items.push(key)
+    entry.items.push(value)
+    return entry
+}
+
+fn tree_map_entry_key(entry: TreeValue) -> TreeValue {
+    return entry.items[0]
+}
+
+fn tree_map_entry_value(entry: TreeValue) -> TreeValue {
+    return entry.items[1]
+}
+
 fn tree_value_text(value: TreeValue) -> string {
     if value.kind == "unit" { return "()" }
     if value.kind == "bool" {
@@ -382,9 +413,9 @@ fn tree_value_text(value: TreeValue) -> string {
         for key: TreeValue in value.map_keys {
             let encoded: string = tree_value_key(key)
             match value.map_values.get(encoded) {
-                some(item) => {
+                some(entry) => {
                     pieces.push(
-                        "{tree_value_text(key)}: {tree_value_text(item)}")
+                        "{tree_value_text(key)}: {tree_value_text(tree_map_entry_value(entry))}")
                 }
                 none => {}
             }

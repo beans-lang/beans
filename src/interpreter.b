@@ -3748,6 +3748,34 @@ class TreeInterpreter {
         return tree_value_key(key)
     }
 
+    // Store one entry into a tree map. map_values holds an entry (key and value
+    // as one value, #97); map_keys holds the key for order. A new key is added
+    // to both and bumps the version an iteration watches; an existing key keeps
+    // its stored key object -- only the value is replaced, which releases the
+    // old value and never re-runs the key's deinit, the same as the native map.
+    // Returns whether a new key was inserted.
+    fn tree_map_store(map: TreeValue,
+                      encoded: string,
+                      key: TreeValue,
+                      value: TreeValue) -> bool {
+        if map.map_values.contains_key(encoded) {
+            map.map_values[encoded] =
+                tree_map_entry(
+                    tree_value_copy(
+                        tree_map_entry_key(
+                            map.map_values[encoded])),
+                    tree_value_copy(value))
+            return false
+        }
+        map.map_keys.push(tree_value_copy(key))
+        map.map_version += 1
+        map.map_values[encoded] =
+            tree_map_entry(
+                tree_value_copy(key),
+                tree_value_copy(value))
+        return true
+    }
+
     // The body to run for `method` on a value whose runtime type is
     // `type_name`. This walked `extends` only, and only the first one, so a
     // default body an interface supplies was unreachable: a class reaches its
@@ -3891,9 +3919,9 @@ class TreeInterpreter {
             for key: TreeValue in value.map_keys {
                 let encoded: string = tree_value_key(key)
                 match value.map_values.get(encoded) {
-                    some(item) => {
+                    some(entry) => {
                         pieces.push(
-                            "{self.render_for_string(key, inout cycle_path)}: {self.render_for_string(item, inout cycle_path)}")
+                            "{self.render_for_string(key, inout cycle_path)}: {self.render_for_string(tree_map_entry_value(entry), inout cycle_path)}")
                     }
                     none => {}
                 }
@@ -9046,20 +9074,15 @@ class TreeInterpreter {
             let encoded: string =
                 self.map_key(
                     receiver, arguments[1])
-            let inserted: bool =
-                !receiver.map_values.contains_key(encoded)
             if node.value == "insert" &&
-               !inserted {
+               receiver.map_values.contains_key(
+                   encoded) {
                 return TreeValue.boolean(false)
             }
-            if !receiver.map_values.contains_key(
-                   encoded) {
-                receiver.map_keys.push(
-                    tree_value_copy(arguments[1]))
-                receiver.map_version += 1
-            }
-            receiver.map_values[encoded] =
-                tree_value_copy(arguments[2])
+            let inserted: bool =
+                self.tree_map_store(
+                    receiver, encoded,
+                    arguments[1], arguments[2])
             return if node.value == "insert" {
                 TreeValue.boolean(inserted)
             } else {
@@ -9072,9 +9095,10 @@ class TreeInterpreter {
             match receiver.map_values.get(
                 self.map_key(
                     receiver, arguments[1])) {
-                some(value) => {
+                some(entry) => {
                     return TreeValue.option_some(
-                        tree_value_copy(value))
+                        tree_value_copy(
+                            tree_map_entry_value(entry)))
                 }
                 none => {
                     return TreeValue.option_none()
@@ -9124,9 +9148,11 @@ class TreeInterpreter {
             for key: TreeValue in receiver.map_keys {
                 match receiver.map_values.get(
                     tree_value_key(key)) {
-                    some(value) => {
+                    some(entry) => {
                         values.push(
-                            tree_value_copy(value))
+                            tree_value_copy(
+                                tree_map_entry_value(
+                                    entry)))
                     }
                     none => {}
                 }
@@ -9139,42 +9165,27 @@ class TreeInterpreter {
             if receiver.map_values.len() != 0 {
                 receiver.map_version += 1
             }
-            // spec/CONCURRENCY.md: the storage is detached and an empty
-            // container published before the first element's release, so a
-            // deinit that reads the container sees it empty and one that adds
-            // to it keeps what it added. A tree map keeps an entry in two
-            // fields, and storing a fresh one of either releases that half
-            // against a container the other half still fills: publishing the
-            // key list first ran every class key's deinit while len(),
-            // is_empty() and contains_key() -- all of which read map_values --
-            // still answered the old count, and the second store then wiped
-            // whatever those deinits had put back. Publishing the value map
-            // first would only move the hole to keys(). So both halves are
-            // taken aside before either store runs.
-            var dead_keys: List<TreeValue> = []
-            var dead_values: List<TreeValue> = []
+            // spec/CONCURRENCY.md: detach the storage and publish an empty
+            // container before the first element's release, so a deinit that
+            // reads the map sees it empty and one that adds to it keeps what it
+            // added. Each entry owns both halves, so setting the entries aside
+            // and releasing them back to front -- each its value before its key
+            // -- is the order beans_map_clear releases a native map in, without
+            // publishing a half-empty container to any accessor.
+            var dead: List<TreeValue> = []
             for key: TreeValue in receiver.map_keys {
-                dead_keys.push(key)
                 match receiver.map_values.get(
                           tree_value_key(key)) {
-                    some(value) => {
-                        dead_values.push(value)
-                    }
-                    none => {
-                        dead_values.push(
-                            TreeValue.unit())
-                    }
+                    some(entry) => { dead.push(entry) }
+                    none => {}
                 }
             }
-            receiver.map_keys = []
             receiver.map_values = {}
-            // Released the way beans_map_clear releases a native map: entries
-            // back to front, a value before its own key.
-            var dying: int = dead_keys.len()
+            receiver.map_keys = []
+            var dying: int = dead.len()
             for dying > 0 {
                 dying -= 1
-                dead_values.pop()
-                dead_keys.pop()
+                dead.pop()
             }
             return TreeValue.unit()
         }
@@ -9185,11 +9196,19 @@ class TreeInterpreter {
             for key: TreeValue in receiver.map_keys {
                 let encoded: string =
                     tree_value_key(key)
-                result.map_keys.push(
-                    tree_value_copy(key))
-                result.map_values[encoded] =
-                    tree_value_copy(
-                        receiver.map_values[encoded])
+                match receiver.map_values.get(encoded) {
+                    some(entry) => {
+                        result.map_keys.push(
+                            tree_value_copy(key))
+                        result.map_values[encoded] =
+                            tree_map_entry(
+                                tree_value_copy(key),
+                                tree_value_copy(
+                                    tree_map_entry_value(
+                                        entry)))
+                    }
+                    none => {}
+                }
             }
             return result
         }
@@ -11409,11 +11428,12 @@ class TreeInterpreter {
         if receiver.kind == "map" {
             match receiver.map_values.get(
                 self.map_key(receiver, key)) {
-                some(value) => {
+                some(entry) => {
                     return if borrowed {
-                        value
+                        tree_map_entry_value(entry)
                     } else {
-                        tree_value_copy(value)
+                        tree_value_copy(
+                            tree_map_entry_value(entry))
                     }
                 }
                 none => {
@@ -12012,13 +12032,8 @@ class TreeInterpreter {
                 }
                 let encoded: string =
                     self.map_key(result, key)
-                if !result.map_values.contains_key(
-                       encoded) {
-                    result.map_keys.push(
-                        tree_value_copy(key))
-                }
-                result.map_values[encoded] =
-                    tree_value_copy(value)
+                self.tree_map_store(
+                    result, encoded, key, value)
                 index += 2
             }
             return result
@@ -12503,14 +12518,8 @@ class TreeInterpreter {
             if receiver.kind == "map" {
                 let encoded: string =
                     self.map_key(receiver, key)
-                if !receiver.map_values.contains_key(
-                       encoded) {
-                    receiver.map_keys.push(
-                        tree_value_copy(key))
-                    receiver.map_version += 1
-                }
-                receiver.map_values[encoded] =
-                    tree_value_copy(value)
+                self.tree_map_store(
+                    receiver, encoded, key, value)
                 return TreeExec.next()
             }
             if receiver.kind == "slice" &&
@@ -12727,7 +12736,8 @@ class TreeInterpreter {
                 var value: TreeValue = TreeValue.unit()
                 match iterable.map_values.get(encoded) {
                     some(found) => {
-                        value = tree_value_copy(found)
+                        value = tree_value_copy(
+                            tree_map_entry_value(found))
                     }
                     none => {
                         self.fail(

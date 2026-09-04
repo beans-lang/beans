@@ -41,12 +41,12 @@
 #      reassignment and nested containers, at n = 1, 2 and 6
 #      (test/cases/container_settle.b).
 #
-# NOT pinned here, and still a live split: a Map dropped or reassigned while it
-# holds class keys AND class values releases all values and then all keys in
-# the interpreter, where the native runtime releases each entry's value before
-# its own key. The tree map keeps keys and values in two separate fields, and
-# the host releases one field after the other; interleaving them needs the two
-# halves stored as one entry. Reported, not fixed.
+# The split this note used to call out -- a Map dropped or reassigned while it
+# holds class keys AND class values releasing all values and then all keys in
+# the interpreter, where native releases each entry's value before its own key
+# -- is fixed (#97): the tree map stores each entry as one value owning both
+# halves, so the host cascade interleaves them the way it does for a native map.
+# test/cases/parity/map_release_order.b pins it against the native backend.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
