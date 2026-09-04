@@ -1704,17 +1704,26 @@ let c: Conn = new Conn("db1")
   rest start unassigned. Every default in the class chain is evaluated before any `init` body
   runs, in declaration order with the base class's fields first — so a default whose
   expression has an effect (a call that prints, a counter) has one order, not one per
-  backend. **The checker proves every field is assigned before the object can be read**, so a
-  half-built object can never escape. It is a definite-assignment proof, so branches count: a
-  field assigned on every arm of an `if` or of an exhaustive `match` is assigned after it, one
-  assigned in only some arms is not, and one assigned only inside a loop is not (the loop may
-  run zero times); an arm that `panic`s or `return`s drops out of the merge. Two rules follow.
-  A field cannot be read until it is assigned — not through `self.f`, not through a method that
-  would read it, not in a string interpolation (`"{self.f}"` reads `f` and is checked exactly
-  as `self.f` is). And until **every** field is assigned, `self` itself cannot escape: no
-  method call on `self`, no passing `self` on, no `return`, no interpolating `self` whole —
-  each could read a field that is not there yet. A field with a default counts as assigned
-  from the start; after the last field, anything goes.
+  backend. **The checker proves every field is assigned before the object can be read**, so no
+  path through the constructor reaches code that reads a field the constructor has not set yet.
+  It is a definite-assignment proof, so branches count: a field assigned on every arm of an
+  `if` or of an exhaustive `match` is assigned after it, one assigned in only some arms is not,
+  and one assigned inside a loop is not (the loop may run zero times — a loop body never
+  credits a field, so a value it computes has to be hoisted out to be assigned once); an arm
+  that `panic`s or `return`s, and an unconditional `for {}` with no `break`, drop out of the
+  merge because nothing after them runs. Two rules follow. A field cannot be read until it is
+  assigned — not through `self.f`, not through a method that would read it, not in a string
+  interpolation (`"{self.f}"` reads `f` and is checked exactly as `self.f` is). And until
+  **every** field is assigned, `self` itself cannot escape: no method call on `self` (including
+  `super.m(...)`, which runs the base method on this object), no passing `self` on, no
+  `return`, no interpolating `self` whole — each could read a field that is not there yet. A
+  field with a default counts as assigned from the start, and a `weak` field always does (its
+  slot starts `none`); after the last field, anything goes.
+- The proof is about the paths the checker can see. A `panic` mid-`init` is not one of them:
+  it unwinds the object under construction, and unwinding runs `deinit`, which reads fields
+  the constructor had not reached. Releasing a still-constructing object must therefore skip
+  its `deinit` body — until it does (#121), a panic before the last field is assigned is
+  undefined at this one boundary, the same on both backends.
 - A class whose fields all have defaults receives an implicit zero-argument
   initializer. A class with any required field must declare `init` — the implicit
   initializer assigns nothing, so a required field left to it would never be assigned. Every

@@ -69,6 +69,7 @@ class NeedsSuperBase {
     fn init() {
         self.z = 0
     }
+    fn describe() -> string { return "base" }
 }
 class ForgotSuper extends NeedsSuperBase {
     y: int
@@ -107,13 +108,29 @@ class SuperTwice extends NeedsSuperBase {
     }
 }
 
-// interpolation reading a field before it is assigned
+// interpolation reading a field before it is assigned. Its fields are named
+// apart from every other class here so the message it produces is unique: a
+// grep for it fails the moment interpolation pieces stop being seen as the
+// field reads they are, which is the whole reason this clause is safe.
 class InterpEarly {
-    a: int
-    b: int
+    seen: int
+    hidden: int
     fn init() {
-        let s: string = "b is {self.b}"
-        self.a = s.len()
-        self.b = 2
+        let s: string = "hidden is {self.hidden}"
+        self.seen = s.len()
+        self.hidden = 2
+    }
+}
+
+// a non-init method called through super before every field is assigned. The
+// super_call HIR node carries only its arguments, never a `local self`, so the
+// escape check has to catch it on the node kind or it slips through — the same
+// crash #94 was filed for, one keyword over.
+class SuperCallEarly extends NeedsSuperBase {
+    tag: string
+    fn init() {
+        let d: string = super.describe()
+        self.tag = d
+        super.init()
     }
 }

@@ -3132,13 +3132,25 @@ class ExpressionChecker {
         for declaration: HirDeclaration in
             self.program.declarations {
             if declaration.kind != "class" { continue }
+            // An abstract class is never constructed directly, so its own
+            // implicit initializer never runs; a required field it declares is
+            // the concrete subclass's job to assign (through super.init when it
+            // declares an init, or directly when it does not). Refusing it here
+            // would refuse a program nothing can build.
+            if declaration.is_abstract { continue }
             if self.methods.contains_key(
                    "{declaration.qualified}.init") {
                 continue
             }
+            // A concrete class with no init of its own runs only the implicit
+            // zero-argument initializer, which assigns nothing. Every field it
+            // is responsible for must therefore carry a default: its own
+            // fields, and every field inherited from an ancestor that likewise
+            // has no init — the nearest ancestor that declares an init, and its
+            // own super chain, cover the classes at and above it.
             for field: HirField in declaration.fields {
                 if field.is_static { continue }
-                if !field.has_default {
+                if !field.has_default && !field.is_weak {
                     self.current = new HirFunction(
                         "$fields",
                         "{declaration.qualified}.$fields",
@@ -3149,6 +3161,45 @@ class ExpressionChecker {
                             "field", field.name,
                             field.line, field.col),
                         "field '{field.name}' has no default and '{declaration.name}' declares no init to assign it — give the field a default value or declare 'fn init' that assigns it")
+                }
+            }
+            var current_base: Option<HirDeclaration> =
+                self.ctor_base_declaration(declaration)
+            var seen: Map<string, bool> = {}
+            for true {
+                match current_base {
+                    some(base) => {
+                        if seen.contains_key(base.qualified) {
+                            break
+                        }
+                        seen[base.qualified] = true
+                        if self.methods.contains_key(
+                               "{base.qualified}.init") {
+                            break
+                        }
+                        for field: HirField in base.fields {
+                            if field.is_static { continue }
+                            if !field.has_default &&
+                               !field.is_weak {
+                                self.current = new HirFunction(
+                                    "$fields",
+                                    "{declaration.qualified}.$fields",
+                                    declaration.qualified, false, false,
+                                    declaration.file,
+                                    declaration.line,
+                                    declaration.col)
+                                self.fail(
+                                    new AstNode(
+                                        "class", declaration.name,
+                                        declaration.line,
+                                        declaration.col),
+                                    "'{declaration.name}' declares no init and inherits required field '{field.name}' from '{self.diagnostic_symbol(base.qualified)}', which has no init to assign it — give the field a default value or declare 'fn init' that assigns it")
+                            }
+                        }
+                        current_base =
+                            self.ctor_base_declaration(base)
+                    }
+                    none => { break }
                 }
             }
         }
@@ -3187,9 +3238,16 @@ class ExpressionChecker {
                     }
                 }
                 if !self.ctor_requires_super {
+                    // No ancestor has an init, so this init's prefix covers the
+                    // inherited fields too (SYNTAX.md, "init and inheritance").
+                    // A defaulted inherited field starts assigned; a required
+                    // one does not — this init must assign it, because nothing
+                    // above it will.
                     for name: string in
                         self.ctor_inherited_fields.keys() {
-                        assigned[name] = true
+                        if self.ctor_inherited_fields[name] {
+                            assigned[name] = true
+                        }
                     }
                 }
                 let diverges: bool =
@@ -3217,8 +3275,12 @@ class ExpressionChecker {
         self.ctor_super_seen = false
         for field: HirField in owner.fields {
             if !field.is_static {
+                // A weak field's slot is a zeroing handle whose only valid
+                // starting value is none, so it is assigned from the start
+                // whether or not the source wrote the `= none` (SYNTAX.md,
+                // "weak fields").
                 self.ctor_own_fields[field.name] =
-                    field.has_default
+                    field.has_default || field.is_weak
             }
         }
         var seen: Map<string, bool> = {}
@@ -3265,7 +3327,9 @@ class ExpressionChecker {
                     for field: HirField in base.fields {
                         if !field.is_static {
                             self.ctor_inherited_fields[
-                                field.name] = field.has_default
+                                field.name] =
+                                field.has_default ||
+                                field.is_weak
                         }
                     }
                     self.ctor_collect_inherited(
@@ -3364,8 +3428,7 @@ class ExpressionChecker {
             return self.ctor_analyze_if(stmt, inout assigned)
         }
         if kind == "for" {
-            self.ctor_analyze_for(stmt, inout assigned)
-            return false
+            return self.ctor_analyze_for(stmt, inout assigned)
         }
         if kind == "defer" {
             for child: HirNode in stmt.children {
@@ -3456,6 +3519,19 @@ class ExpressionChecker {
                 expr, inout assigned)
             return
         }
+        // `super.m(...)` carries only its arguments as children — its receiver
+        // is self, never a `local` node — so the self-escape test below never
+        // sees it. It runs the base method non-virtually on this object, and
+        // that body may call a method the subclass overrides, which reads a
+        // field the subclass has not assigned yet, so it escapes self exactly
+        // as a plain method call does and needs every field assigned first.
+        if kind == "super_call" {
+            for child: HirNode in expr.children {
+                self.ctor_analyze_expr(child, inout assigned)
+            }
+            self.ctor_report_self_escape(expr, inout assigned)
+            return
+        }
         if self.ctor_is_self(expr) {
             self.ctor_report_self_escape(expr, inout assigned)
             return
@@ -3465,28 +3541,48 @@ class ExpressionChecker {
         }
     }
 
+    // An inherited field is available once it is in `assigned` — seeded from
+    // its default, or assigned by this init when no ancestor has one — or once
+    // super.init has run, which constructs the whole base chain. Keeping the
+    // second half off the per-path map is what stops one misplaced super.init
+    // from cascading a "field unassigned" behind the real error.
+    fn ctor_inherited_satisfied(
+        name: string,
+        assigned: Map<string, bool>) -> bool {
+        if assigned.contains_key(name) { return true }
+        return self.ctor_requires_super &&
+               self.ctor_super_seen
+    }
+
     fn ctor_check_field_read(
         expr: HirNode,
         inout assigned: Map<string, bool>) {
         let fname: string = expr.value
-        let is_field: bool =
-            self.ctor_own_fields.contains_key(fname) ||
-            self.ctor_inherited_fields.contains_key(fname)
-        if !is_field { return }
-        if assigned.contains_key(fname) { return }
-        if self.ctor_inherited_fields.contains_key(fname) &&
-           self.ctor_requires_super &&
-           !self.ctor_super_seen {
+        if self.ctor_own_fields.contains_key(fname) {
+            if !assigned.contains_key(fname) {
+                self.fail(
+                    new AstNode(
+                        "field", fname, expr.line, expr.col),
+                    "field '{fname}' is read before it is assigned")
+            }
+            return
+        }
+        if self.ctor_inherited_fields.contains_key(fname) {
+            if self.ctor_inherited_satisfied(fname, assigned) {
+                return
+            }
+            if self.ctor_requires_super {
+                self.fail(
+                    new AstNode(
+                        "field", fname, expr.line, expr.col),
+                    "'{fname}' is a base class field and the base is not constructed yet — read it only after super.init")
+                return
+            }
             self.fail(
                 new AstNode(
                     "field", fname, expr.line, expr.col),
-                "'{fname}' is a base class field and the base is not constructed yet — read it only after super.init")
-            return
+                "field '{fname}' is read before it is assigned")
         }
-        self.fail(
-            new AstNode(
-                "field", fname, expr.line, expr.col),
-            "field '{fname}' is read before it is assigned")
     }
 
     fn ctor_report_self_escape(
@@ -3515,6 +3611,14 @@ class ExpressionChecker {
                     "super_init", "init",
                     node.line, node.col),
                 "super.init must be a top-level statement of init — it runs exactly once, not inside a branch, loop or block")
+            // Treat it as seen for the rest of the flow so the one real fault
+            // is reported, not a cascade of "super.init must be called" and
+            // "inherited field read before super.init" behind it.
+            self.ctor_super_seen = true
+            for name: string in
+                self.ctor_inherited_fields.keys() {
+                assigned[name] = true
+            }
             return
         }
         if self.ctor_super_seen {
@@ -3658,7 +3762,7 @@ class ExpressionChecker {
     // against the live set.
     fn ctor_analyze_for(
         stmt: HirNode,
-        inout assigned: Map<string, bool>) {
+        inout assigned: Map<string, bool>) -> bool {
         for child: HirNode in stmt.children {
             if child.kind == "block" {
                 var body_a: Map<string, bool> =
@@ -3669,6 +3773,28 @@ class ExpressionChecker {
                 self.ctor_analyze_expr(child, inout assigned)
             }
         }
+        // An unconditional `for { }` — no iterable, no binding — that holds no
+        // `break` never falls through, so nothing after it runs. The same rule
+        // statement_always_returns applies, so all three halves agree.
+        if stmt.children.len() == 1 &&
+           stmt.children[0].kind == "block" &&
+           !self.ctor_has_break(stmt.children[0]) {
+            return true
+        }
+        return false
+    }
+
+    // A `break` that would leave THIS loop: one inside a nested loop targets
+    // that loop, and a closure body is a different function, so neither counts.
+    fn ctor_has_break(node: HirNode) -> bool {
+        if node.kind == "break" { return true }
+        if node.kind == "for" || node.kind == "closure" {
+            return false
+        }
+        for child: HirNode in node.children {
+            if self.ctor_has_break(child) { return true }
+        }
+        return false
     }
 
     // Add every name in `source` to `dest` (dest becomes dest ∪ source). Used
@@ -3714,7 +3840,10 @@ class ExpressionChecker {
         }
         for name: string in
             self.ctor_inherited_fields.keys() {
-            if !assigned.contains_key(name) { return false }
+            if !self.ctor_inherited_satisfied(
+                   name, assigned) {
+                return false
+            }
         }
         return true
     }
@@ -3729,7 +3858,8 @@ class ExpressionChecker {
         }
         for name: string in
             self.ctor_inherited_fields.keys() {
-            if !assigned.contains_key(name) {
+            if !self.ctor_inherited_satisfied(
+                   name, assigned) {
                 missing.push(name)
             }
         }
@@ -3759,7 +3889,8 @@ class ExpressionChecker {
         }
         for name: string in
             self.ctor_inherited_fields.keys() {
-            if !assigned.contains_key(name) {
+            if !self.ctor_inherited_satisfied(
+                   name, assigned) {
                 missing.push(name)
             }
         }
