@@ -45,7 +45,7 @@ cat >"$tmp/word.b" <<'BEANS'
 import std.io
 
 partial class Holder {
-    partial: string
+    partial: string = ""
 }
 
 fn main() {

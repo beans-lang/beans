@@ -11,6 +11,17 @@ trap 'rm -rf "$tmp"' EXIT
 diff -u test/cases/syntax_v07_ok.out "$tmp/interp"
 diff -u test/cases/syntax_v07_ok.out "$tmp/native.out"
 
+# #94: the construction-safety proof accepts branches and an exhaustive match
+# that assign on every arm, a method call once every field is assigned, and a
+# base initializer that calls a subclass override — safe because the subclass
+# assigns its own field before super.init. Both backends must agree.
+./build/beansc run test/cases/init_construction_ok.b >"$tmp/ic.interp"
+./build/beansc build test/cases/init_construction_ok.b -o "$tmp/ic.native" \
+    >"$tmp/ic.build" 2>&1
+"$tmp/ic.native" >"$tmp/ic.native.out"
+diff -u test/cases/init_construction_ok.out "$tmp/ic.interp"
+diff -u test/cases/init_construction_ok.out "$tmp/ic.native.out"
+
 compilers=(./build/beansc)
 for compiler in "${compilers[@]}"; do
     name=$(basename "$compiler")
@@ -59,6 +70,20 @@ if grep -q "no parent constructor to call" "$tmp/bad"; then
     echo "invalid builtin inheritance emitted a constructor cascade" >&2
     exit 1
 fi
+# #94: every clause of the construction proof refuses its own shape. One file
+# holds a class per clause, so each assertion re-runs it and greps its message.
+check_bad init_construction_bad.b "'NeverAssigned' init returns with unassigned fields (b)"
+check_bad init_construction_bad.b "'SlotUnset' init returns with unassigned fields (p)"
+check_bad init_construction_bad.b "self is used here before the object is fully built"
+check_bad init_construction_bad.b "field 'b' is read before it is assigned"
+check_bad init_construction_bad.b "'PartialBranch' init returns with unassigned fields (a)"
+check_bad init_construction_bad.b "'LoopOnly' init returns with unassigned fields (a)"
+check_bad init_construction_bad.b "field 'x' has no default and 'NoInit' declares no init"
+check_bad init_construction_bad.b "super.init must be called before init returns"
+check_bad init_construction_bad.b "super.init is called before 'SuperTooEarly' assigns its own fields (w)"
+check_bad init_construction_bad.b "super.init must be a top-level statement of init"
+check_bad init_construction_bad.b "super.init is called more than once"
+
 # A subclass may not redeclare a field name it inherits (#95). Assert the
 # direct-parent and the grandparent-through-a-silent-middle shapes both refuse,
 # naming the base the slot belongs to.

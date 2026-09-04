@@ -1704,13 +1704,22 @@ let c: Conn = new Conn("db1")
   rest start unassigned. Every default in the class chain is evaluated before any `init` body
   runs, in declaration order with the base class's fields first — so a default whose
   expression has an effect (a call that prints, a counter) has one order, not one per
-  backend. **Until every field is assigned, the body is a straight-line prefix**:
-  each statement either assigns a field (`self.f = ...`) or touches `self` only by reading
-  fields already assigned — no method calls, no passing `self` on, no `return`, and no string
-  interpolation (its pieces are checked too late to prove them safe). The checker proves all
-  of it, so a half-built object can never escape. After the last field, anything goes.
+  backend. **The checker proves every field is assigned before the object can be read**, so a
+  half-built object can never escape. It is a definite-assignment proof, so branches count: a
+  field assigned on every arm of an `if` or of an exhaustive `match` is assigned after it, one
+  assigned in only some arms is not, and one assigned only inside a loop is not (the loop may
+  run zero times); an arm that `panic`s or `return`s drops out of the merge. Two rules follow.
+  A field cannot be read until it is assigned — not through `self.f`, not through a method that
+  would read it, not in a string interpolation (`"{self.f}"` reads `f` and is checked exactly
+  as `self.f` is). And until **every** field is assigned, `self` itself cannot escape: no
+  method call on `self`, no passing `self` on, no `return`, no interpolating `self` whole —
+  each could read a field that is not there yet. A field with a default counts as assigned
+  from the start; after the last field, anything goes.
 - A class whose fields all have defaults receives an implicit zero-argument
-  initializer. A class with any required field must declare `init`.
+  initializer. A class with any required field must declare `init` — the implicit
+  initializer assigns nothing, so a required field left to it would never be assigned. Every
+  `init` must leave every field assigned on every path that returns, the implicit return at
+  the end included.
 - Construction that can fail stays a named static, such as
   `static fn open(...) -> Result<Conn>`; it may call `new Conn(...)` after validation.
 - Generic classes take type arguments from the declared spot or an explicit

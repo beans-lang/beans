@@ -118,10 +118,10 @@ class ChainDerived extends ChainBase {
     d3: Option<Loud> = none
 
     pub fn init(a: Loud, b: Loud, c: Loud, d: Loud, e: Loud, f: Loud) {
-        super.init(a, b, c)
         self.d3 = some(f)
         self.d1 = some(d)
         self.d2 = some(e)
+        super.init(a, b, c)
     }
 }
 
@@ -156,11 +156,13 @@ class Single {
     }
 }
 
-// Nothing written during construction at all: both slots are filled from
-// outside, back to front.
+// Both slots start at their default and are filled from outside after
+// construction, back to front. The defaults are what make construct-then-fill
+// well-formed (issue #94: a field with no default needs an init to assign it);
+// the release order is still reverse declaration.
 class Late {
-    first: Option<Loud>
-    second: Option<Loud>
+    first: Option<Loud> = none
+    second: Option<Loud> = none
 
     pub fn init() {}
 }
