@@ -43,8 +43,32 @@ package collections
 /// `len` and `is_empty` are O(1). A comparison reads only the priority and the
 /// sequence of the two entries it is handed and never touches the payload, so
 /// ordering an `<int, string>` queue never retains a string.
+///
+/// **Reads answer from a published view, not from the heap mid-sift.** A user's
+/// `deinit` can run in the middle of a `push` or a `pop`: the cycle collector
+/// runs deinits, an allocation is where it runs, and a sift allocates — under
+/// the tree interpreter essentially every operation does. A sift moves the heap
+/// through a hole, so between its first write and its last the root slot holds a
+/// stale entry and `entries.len()` has already changed; `len()` and `peek()`
+/// reading the heap directly would see a queue whose count and whose smallest
+/// disagree. That was #92. So `len()`, `peek()` and `peek_priority()` never read
+/// the heap. They read `view`, a small object holding the settled count and a
+/// copy of the settled smallest entry together, and a `push` or a `pop`
+/// rearranges the heap first and then republishes `view` with a single store.
+/// Before that store the queue is entirely its old shape and after it entirely
+/// the new one; there is no half-sifted state a reader can find, because a
+/// reader never looks at the heap. The copy is one entry per `push` or `pop`,
+/// which the sift's own per-level entry moves already dwarf.
 pub class PriorityQueue<P implements Order & Clone, V implements Clone> {
+    // The working heap. No reader reads this: a `push` or a `pop` rearranges it
+    // through a hole and leaves it torn at every allocation inside that loop.
+    // Reads answer from `view` instead.
     entries: List<Entry<P, V>> = []
+    // The settled count and the settled smallest entry, together, so one store
+    // publishes both. A reader caught between two heap writes sees the `view`
+    // from before the operation — the whole old shape — until the final store
+    // swaps in the whole new one.
+    view: PqView<P, V> = new()
     next_sequence: int = 0
 
     /// An empty queue.
@@ -74,19 +98,26 @@ pub class PriorityQueue<P implements Order & Clone, V implements Clone> {
         if hole != last {
             self.entries[hole] = entry
         }
+        // The heap is a heap again; publish its new count and smallest in one
+        // store, so no reader ever saw the sift in flight.
+        self.view = self.snapshot()
     }
 
     /// The smallest-priority value, without removing it. O(1).
     pub fn peek() -> Option<V> {
-        if self.entries.len() == 0 { return none }
-        return some(self.entries[0].value)
+        match self.view.top {
+            some(entry) => { return some(entry.value) }
+            none => { return none }
+        }
     }
 
     /// The smallest priority, without removing its entry. This is the "when
     /// does the next thing happen" question, answered without taking it. O(1).
     pub fn peek_priority() -> Option<P> {
-        if self.entries.len() == 0 { return none }
-        return some(self.entries[0].priority)
+        match self.view.top {
+            some(entry) => { return some(entry.priority) }
+            none => { return none }
+        }
     }
 
     /// Remove and answer the smallest-priority value. O(log n): the tail entry
@@ -118,23 +149,49 @@ pub class PriorityQueue<P implements Order & Clone, V implements Clone> {
             }
             none => {}
         }
+        // The heap is settled; publish the smaller count and the new smallest
+        // together, so a reader never saw `len()` drop before the root did.
+        self.view = self.snapshot()
         return some(top)
     }
 
     /// How many entries. O(1).
     pub fn len() -> int {
-        return self.entries.len()
+        return self.view.count
     }
 
     /// True while the queue holds nothing. O(1).
     pub fn is_empty() -> bool {
-        return self.entries.len() == 0
+        return self.view.count == 0
     }
 
     /// Drop every entry. The push counter keeps running, so tie order stays
     /// consistent across a clear.
     pub fn clear() {
+        // Publish the empty view before dropping anything, so an element's
+        // `deinit` running as the heap releases it reads the count it will have
+        // — empty — rather than the old count over storage already going away.
+        self.view = new()
         self.entries.clear()
+    }
+
+    // The published answer to every read: the settled heap's size and a copy of
+    // its smallest entry, held together so a reader decodes them from one
+    // object. Built only when the heap is a valid heap again and swapped in with
+    // one store, so `len()`, `peek()` and `peek_priority()` never decode a
+    // half-sifted heap. The copy is a plain field-by-field read of `entries[0]`,
+    // which leaves the heap slot intact.
+    fn snapshot() -> PqView<P, V> {
+        var next: PqView<P, V> = new()
+        next.count = self.entries.len()
+        if next.count > 0 {
+            next.top = some(Entry {
+                priority: self.entries[0].priority,
+                value: self.entries[0].value,
+                sequence: self.entries[0].sequence,
+            })
+        }
+        return move next
     }
 
     // `left` sorts before `right`: smaller priority first, and among equal
@@ -146,6 +203,17 @@ pub class PriorityQueue<P implements Order & Clone, V implements Clone> {
         if right.priority < left.priority { return false }
         return left.sequence < right.sequence
     }
+}
+
+// The published view of a settled queue: how many entries it holds and a copy
+// of its smallest, together, so a `push` or a `pop` swaps both in with one
+// store and a reader between the heap writes never sees a count that disagrees
+// with the smallest. Module-private: it is how the queue answers, not part of
+// its surface.
+class PqView<P implements Order & Clone, V implements Clone> {
+    count: int = 0
+    top: Option<Entry<P, V>> = none
+    pub fn init() {}
 }
 
 // Priority, payload and sequence in one cache line's worth of struct, so a
