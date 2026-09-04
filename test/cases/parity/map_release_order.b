@@ -60,16 +60,25 @@ fn cleared(prefix: string, n: int) {
     io.println("empty {m.len()}")
 }
 
-// remove() of a single entry releases that entry's value before its key. A
-// fresh key of equal structure finds the stored entry; the temporary is
-// released after, so the value and the stored key are the two the remove drops.
+// remove() of a single entry actually leaves the map and releases the value.
+// Class keys are compared by identity, so the key handed to remove must be the
+// stored object itself -- kept in a local here so the lookup finds the entry
+// (a fresh equal Loud would match nothing and remove would be a no-op). The
+// key stays a live local, so only the value's deinit runs at the remove; the
+// key/value order there is unobservable and unspecified (spec/CONCURRENCY.md).
+// The two backends must still agree on the whole transcript.
 fn removed(prefix: string) {
     io.println("-- removed {prefix} --")
     var m: Map<Loud, Loud> = {}
-    fill(m, prefix, 3)
-    io.println("remove middle")
-    m.remove(new Loud("{prefix}k1"))
-    io.println("kept {m.len()}")
+    let k0: Loud = new Loud("{prefix}k0")
+    m[k0] = new Loud("{prefix}v0")
+    let k1: Loud = new Loud("{prefix}k1")
+    m[k1] = new Loud("{prefix}v1")
+    let k2: Loud = new Loud("{prefix}k2")
+    m[k2] = new Loud("{prefix}v2")
+    io.println("kept before {m.len()}")
+    m.remove(k1)
+    io.println("kept after {m.len()}")
 }
 
 // A map whose value is itself a map: the outer entry releases its value (the

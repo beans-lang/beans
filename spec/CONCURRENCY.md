@@ -507,17 +507,27 @@ Landed since:
    entry by entry from the back, a value before its own key.
 
    That value-before-key, entry-from-the-back order is what a map releases
-   its entries in whenever they die — a whole map **dropped** at a scope
-   exit or a return, a map **reassigned** to a new one, a single entry
-   **removed**, or a `clear` — not only when it is cleared (#97). The native
-   runtime releases one entry array that way. The tree interpreter stores
-   each entry as a single value owning both halves, declared so the host
-   cascade releases the entries last and back to front, each its value before
-   its key; storing the keys and the values as two separate fields released
-   every value and then every key on a drop or a reassignment, the one map
-   teardown the two backends used to disagree on. A plain `Map` still makes
-   no *iteration*-order promise (`spec/SYNTAX.md`); this is the order its
-   entries' `deinit`s run in, which both backends now share.
+   its entries in whenever the map itself dies — a whole map **dropped** at a
+   scope exit or a return, or **reassigned** to a new one — and it is the
+   order a `clear` already used (#97, #83). The native runtime releases one
+   entry array that way. The tree interpreter stores each entry as a single
+   value owning both halves, declared so the host cascade releases the entries
+   last and back to front, each its value before its key; storing the keys and
+   the values as two separate fields released every value and then every key on
+   a drop or a reassignment, the one map teardown the two backends used to
+   disagree on. A plain `Map` still makes no *iteration*-order promise
+   (`spec/SYNTAX.md`); this is the order its entries' `deinit`s run in, which
+   both backends now share.
+
+   A single entry **removed** is deliberately *not* pinned to this order. The
+   interpreter releases the removed value before its key; the native runtime
+   (`map_remove_found`) releases the key before the value. With class keys
+   compared by identity the removed key is always a local the caller still
+   holds — you cannot name an entry to remove without holding its key — so its
+   `deinit` never runs at the remove and only the value's does, which makes the
+   difference unobservable today. It would become a real split if a key type's
+   equality were ever user-defined; the two backends would have to be
+   reconciled to value-before-key then.
 
 0. **A panicking `deinit` does not stop the destruction it was running**
    (#81). The rule the two backends now share: the release that was under way

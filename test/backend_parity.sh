@@ -131,7 +131,7 @@ agree test/cases/parity/cycle_exit_deinit.b 8
 # releases each entry's value before its own key, entries back to front (#97).
 # The interpreter stores an entry as one value now; the diff is the order check
 # and the balanced markers are the leak/double-free check, at n = 1, 2 and 3.
-agree test/cases/parity/map_release_order.b 30
+agree test/cases/parity/map_release_order.b 29
 agree test/cases/parity/struct_sort.b 3
 agree test/cases/parity/sort_by_key_paths.b
 agree test/cases/parity/list_equality.b
