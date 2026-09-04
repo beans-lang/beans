@@ -97,6 +97,12 @@ class TreeInterpreter {
     arguments: List<string>
     failed: bool
     panic_text: string
+    // True once run_entry has returned. After that point the only interpreted
+    // code left to run is deinits driven by the exit-time cycle sweep, and
+    // there is no walker frame above them to carry a panic to run(). An
+    // uncontained panic in one of those is surfaced where it happens instead
+    // (issue #107); during the program the walker carries it to run() as before.
+    entry_returned: bool
     // A contained panic (one raised on a brewed, non-root fiber) does not
     // abandon its frames: it unwinds them, running each function's defers and
     // dropping each owned local, exactly as a return would — the same thing
@@ -192,6 +198,7 @@ class TreeInterpreter {
         self.arguments = move arguments
         self.failed = false
         self.panic_text = ""
+        self.entry_returned = false
         self.unwinds = {}
         self.next_object_id = 0
         self.weak_track = false
@@ -3708,6 +3715,22 @@ class TreeInterpreter {
             return
         }
         self.deinit_chain(object.text, object)
+        if self.failed &&
+           self.entry_returned &&
+           !self.panic_is_contained() {
+            // An uncontained panic raised by a deinit the exit-time cycle sweep
+            // is running, after run_entry returned. There is no walker frame
+            // left above it to carry the failure to run(), so it would be lost
+            // and the process would exit 0 with the program dead in teardown —
+            // a death that looks successful to a shell or a CI job (issue #107).
+            // Surface it where the native runtime's beans_panic does at the same
+            // point: flush the program's own buffered output, report, and leave
+            // with 3. During the program this same panic reaches run() through
+            // the walker and is reported there.
+            unsafe { beans_out_flush() }
+            io.eprintln(self.panic_text)
+            host_os.exit(3)
+        }
     }
 
     // A map key is an Eq key, not an `==` operand: two NaNs with the same
@@ -14933,6 +14956,10 @@ class TreeInterpreter {
     // leaves through beans_panic with those same values still standing.
     fn run() -> bool {
         let answer: bool = self.run_entry()
+        // From here on, a deinit runs only under the host's exit-time sweep,
+        // with no walker frame above it. deinit_object surfaces an uncontained
+        // panic there itself (issue #107).
+        self.entry_returned = true
         TreeExitRoots.kept.push(self.singletons)
         return answer
     }
