@@ -124,6 +124,7 @@ agree test/cases/parity/struct_sort.b 3
 agree test/cases/parity/sort_by_key_paths.b
 agree test/cases/parity/list_equality.b
 agree test/cases/parity/option_equality.b
+agree test/cases/parity/result_equality.b
 agree test/cases/parity/cast_compare.b
 agree test/cases/parity/option_layout.b
 agree test/cases/parity/composite_equality.b
@@ -158,7 +159,7 @@ agree test/cases/parity/settled_dispatch.b 10
 
 # Every case in the directory has to be listed above with its own expected
 # count; a file added and forgotten would otherwise be silently unchecked.
-listed=30
+listed=31
 present=$(find test/cases/parity -name '*.b' | wc -l | tr -d ' ')
 if [ "$present" != "$listed" ]; then
     echo "test/cases/parity holds $present cases but $listed are run" >&2

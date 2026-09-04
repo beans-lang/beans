@@ -1414,8 +1414,6 @@ partial class LlvmTextEmitter {
         if self.result_is_inline(type) {
             let llvm: string =
                 self.type_text(type)
-            var output: string =
-                "  %result.eq.left.error{id} = extractvalue {llvm} {left}, 0\n  %result.eq.right.error{id} = extractvalue {llvm} {right}, 0\n  %result.eq.tags{id} = icmp eq i1 %result.eq.left.error{id}, %result.eq.right.error{id}\n  %result.eq.left.ok{id} = extractvalue {llvm} {left}, 1\n  %result.eq.right.ok{id} = extractvalue {llvm} {right}, 1\n  %result.eq.left.err{id} = extractvalue {llvm} {left}, 2\n  %result.eq.right.err{id} = extractvalue {llvm} {right}, 2\n"
             let okay: LlvmSlotConversion =
                 self.emit_inline_equal(
                     payload,
@@ -1432,10 +1430,34 @@ partial class LlvmTextEmitter {
                failed.value == "" {
                 return new LlvmSlotConversion("", "")
             }
+            let same_block: int = self.fresh()
+            let different_block: int = self.fresh()
+            let okay_block: int = self.fresh()
+            let error_block: int = self.fresh()
+            let okay_join: int = self.fresh()
+            let error_join: int = self.fresh()
+            let merge_block: int = self.fresh()
+            // Extracting either arm is safe — extractvalue reads the SSA
+            // aggregate, never memory — so both arms come out up front. But
+            // the tag decides which arm is *compared*: the dead arm of an
+            // inline Result is zero-initialised, and a comparison that
+            // dereferences a zeroed reference slot (beans_str_eq on a null
+            // string) faults. Evaluating both comparisons and selecting ran
+            // the dead one and crashed; branch on the tag so only the live
+            // arm is compared. Different tags are unequal without touching
+            // either payload.
+            var output: string =
+                "  %result.eq.left.error{id} = extractvalue {llvm} {left}, 0\n  %result.eq.right.error{id} = extractvalue {llvm} {right}, 0\n  %result.eq.tags{id} = icmp eq i1 %result.eq.left.error{id}, %result.eq.right.error{id}\n  %result.eq.left.ok{id} = extractvalue {llvm} {left}, 1\n  %result.eq.right.ok{id} = extractvalue {llvm} {right}, 1\n  %result.eq.left.err{id} = extractvalue {llvm} {left}, 2\n  %result.eq.right.err{id} = extractvalue {llvm} {right}, 2\n  br i1 %result.eq.tags{id}, label %result.eq.same{same_block}, label %result.eq.different{different_block}\nresult.eq.same{same_block}:\n  br i1 %result.eq.left.error{id}, label %result.eq.error{error_block}, label %result.eq.okay{okay_block}\nresult.eq.okay{okay_block}:\n"
+            // A payload comparison can open blocks of its own (a nested
+            // Option does), so land on a block we name before the phi; the
+            // predecessor is then known whatever the arm emitted.
             output =
-                "{output}{okay.setup}{failed.setup}  %result.eq.payload{id} = select i1 %result.eq.left.error{id}, i1 {failed.value}, i1 {okay.value}\n  %result.eq{id} = and i1 %result.eq.tags{id}, %result.eq.payload{id}\n"
+                "{output}{okay.setup}  br label %result.eq.okjoin{okay_join}\nresult.eq.okjoin{okay_join}:\n  br label %result.eq.merge{merge_block}\nresult.eq.error{error_block}:\n{failed.setup}  br label %result.eq.errjoin{error_join}\nresult.eq.errjoin{error_join}:\n  br label %result.eq.merge{merge_block}\nresult.eq.different{different_block}:\n  br label %result.eq.merge{merge_block}\nresult.eq.merge{merge_block}:\n"
+            let result: string = "%result.eq{id}"
+            output =
+                "{output}  {result} = phi i1 [ {okay.value}, %result.eq.okjoin{okay_join} ], [ {failed.value}, %result.eq.errjoin{error_join} ], [ false, %result.eq.different{different_block} ]\n"
             return new LlvmSlotConversion(
-                output, "%result.eq{id}")
+                output, result)
         }
         let same_block: int = self.fresh()
         let different_block: int = self.fresh()
