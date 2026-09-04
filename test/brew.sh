@@ -365,6 +365,169 @@ for leg in "$tmp/cc_deinit.interp" "$tmp/cc_deinit.native.out"; do
     }
 done
 
+echo "checking an uncontained deinit panic in the exit-time cycle sweep exits 3"
+# issue #107: a deinit that panics while the exit-time cycle collector runs it
+# has no walker frame above it to carry the failure to run(), so the tree
+# interpreter swallowed the panic and exited 0 while the native backend reported
+# it and left with 3. A death in teardown must not look successful to a shell or
+# a CI job. The exit code and the report are the rule; the collector's order is
+# each backend's own business, so which of a ring's other deinits ran before the
+# panicking one is deliberately not compared (a pure one-node self-loop is not
+# swept the same way on both backends, so the ring starts at two). Reverting the
+# surfacing in deinit_object drops the interpreter leg back to exit 0.
+esp_rings() { # <panicking?> <sizes...>
+    local bomb=$1; shift
+    for n in "$@"; do
+        sed "s/RINGSIZE/$n/;s/PANICKING/$bomb/" >"$tmp/esp.b" <<'BEANS'
+import std.io
+class Node {
+    peer: Option<Node> = none
+    id: int = 0
+    fn init(id: int) { self.id = id }
+    fn deinit() {
+        io.println("deinit")
+        if PANICKING && self.id == 0 { panic("boom in exit-sweep deinit") }
+    }
+}
+// A garbage ring, kept alive until main returns so it is swept at exit, not
+// mid-run: the exit path is the one the interpreter mishandled.
+fn ring(n: int) -> List<Node> {
+    var nodes: List<Node> = []
+    for i: int in 0..n { nodes.push(new Node(i)) }
+    for i: int in 0..n { nodes[i].peer = some(nodes[(i + 1) % n]) }
+    return move nodes
+}
+fn main() {
+    let held: List<Node> = ring(RINGSIZE)
+    io.println("built")
+}
+BEANS
+        ./build/beansc build "$tmp/esp.b" -o "$tmp/esp.native" \
+            >"$tmp/esp.build" 2>&1
+        for leg in "./build/beansc run $tmp/esp.b" "$tmp/esp.native"; do
+            set +e
+            $leg >"$tmp/esp.out" 2>"$tmp/esp.err"
+            local status=$?
+            set -e
+            grep -q '^built$' "$tmp/esp.out" || {
+                echo "n=$n: the program's own output was lost ($leg)" >&2
+                cat "$tmp/esp.out" "$tmp/esp.err" >&2
+                exit 1
+            }
+            if [ "$bomb" = "true" ]; then
+                if [ "$status" -ne 3 ]; then
+                    echo "n=$n: an uncontained exit-sweep deinit panic must" \
+                        "exit 3, got $status ($leg)" >&2
+                    cat "$tmp/esp.out" "$tmp/esp.err" >&2
+                    exit 1
+                fi
+                grep -q 'boom in exit-sweep deinit$' "$tmp/esp.err" || {
+                    echo "n=$n: the exit-sweep panic was not reported ($leg)" >&2
+                    cat "$tmp/esp.err" >&2
+                    exit 1
+                }
+            else
+                # a clean exit sweep must NOT be turned into a failure: the
+                # surfacing fires on a panic, not on every teardown.
+                if [ "$status" -ne 0 ]; then
+                    echo "n=$n: a clean exit sweep must exit 0, got $status" \
+                        "($leg)" >&2
+                    cat "$tmp/esp.out" "$tmp/esp.err" >&2
+                    exit 1
+                fi
+            fi
+        done
+    done
+}
+esp_rings true 2 6
+esp_rings false 2 6
+
+echo "checking an exit-sweep deinit panic surfaces past an explicit exit and a thread"
+# issue #107, two shapes the scope-exit case above does not reach. std.os.exit
+# leaves through the walker and never returns to run(); a thread runs on its own
+# interpreter that never calls run() at all. In both, the exit sweep must still
+# surface an uncontained deinit panic with 3 -- not let exit's own code stand
+# (exit(7) hides behind an accidental 3) and not let the thread report success
+# and the program carry on. The ring is built in a helper so it is unreachable
+# when the process leaves; a non-3 exit code (7) proves the surfacing, not luck.
+esp_leaving() { # <name>  (program on stdin)
+    cat >"$tmp/$1.b"
+    ./build/beansc build "$tmp/$1.b" -o "$tmp/$1.native" \
+        >"$tmp/$1.build" 2>&1
+    for leg in "./build/beansc run $tmp/$1.b" "$tmp/$1.native"; do
+        set +e
+        $leg >"$tmp/$1.out" 2>"$tmp/$1.err"
+        local status=$?
+        set -e
+        if [ "$status" -ne 3 ]; then
+            echo "$1: an exit-sweep deinit panic must exit 3, got $status" \
+                "($leg)" >&2
+            cat "$tmp/$1.out" "$tmp/$1.err" >&2
+            exit 1
+        fi
+        grep -q 'boom in teardown$' "$tmp/$1.err" || {
+            echo "$1: the exit-sweep panic was not reported ($leg)" >&2
+            cat "$tmp/$1.err" >&2
+            exit 1
+        }
+    done
+}
+esp_leaving exit_sweep_exit <<'BEANS'
+import std.io
+import std.os as os
+class Node {
+    peer: Option<Node> = none
+    id: int = 0
+    fn init(id: int) { self.id = id }
+    fn deinit() {
+        io.println("deinit {self.id}")
+        if self.id == 0 { panic("boom in teardown") }
+    }
+}
+fn make() {
+    var a: Node = new Node(0)
+    var b: Node = new Node(1)
+    var c: Node = new Node(2)
+    a.peer = some(b)
+    b.peer = some(c)
+    c.peer = some(a)
+}
+fn main() {
+    make()
+    io.println("built")
+    os.exit(7)
+}
+BEANS
+esp_leaving exit_sweep_thread <<'BEANS'
+import std.io
+import std.thread
+class Node {
+    peer: Option<Node> = none
+    id: int = 0
+    fn init(id: int) { self.id = id }
+    fn deinit() {
+        io.println("deinit {self.id}")
+        if self.id == 0 { panic("boom in teardown") }
+    }
+}
+fn make() {
+    var a: Node = new Node(0)
+    var b: Node = new Node(1)
+    var c: Node = new Node(2)
+    a.peer = some(b)
+    b.peer = some(c)
+    c.peer = some(a)
+}
+fn main() {
+    let worker: Thread<int> = thread.spawn(fn() -> int {
+        make()
+        return 3
+    })
+    io.println("joined {worker.join()}")
+    io.println("done")
+}
+BEANS
+
 echo "checking a collector pass finishes the white set a panic interrupted"
 # issue #81 in the collector: cc_run_cycle_deinits retains the whole white
 # set across the deinit bodies, so a panic anywhere in the pass used to

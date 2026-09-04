@@ -17613,7 +17613,12 @@ BBrew* beans_taskgroup_wait_all_join(BTaskGroup* g) {
     }
     if (bad < 0) return NULL;
     BBrew* first = (BBrew*)(uintptr_t)g->children->data[bad];
-    for (long long i = 0; i < g->children->len; i++) {
+    // The children were joined in spawn order above; the failure at `bad` is
+    // handed back to the caller. Discard the rest newest-first (#106), the same
+    // order the scope join and cancel_all discard in and the order the
+    // interpreter releases its children list -- so a wait_all that fails runs
+    // the unclaimed results' deinits in the same order on both engines.
+    for (long long i = g->children->len - 1; i >= 0; i--) {
         BBrew* row = (BBrew*)(uintptr_t)g->children->data[i];
         if (!row || i == bad) continue;
         brew_drop_result(row);
@@ -17668,14 +17673,26 @@ BList* beans_taskgroup_collect_typed(BTaskGroup* g, long long stride,
 // discard, recorded in the spec. A child that finished before the cancel
 // reached it is dropped the same way.
 void beans_taskgroup_cancel_all(BTaskGroup* g) {
-    for (long long i = g->children->len; i > 0; i--) {
+    long long n = g->children->len;
+    // Cancel newest-first (the spec's contract), then join everyone in spawn
+    // order without dropping the outcome yet.
+    for (long long i = n; i > 0; i--) {
         BBrew* row = (BBrew*)(uintptr_t)g->children->data[i - 1];
         if (row) beans_brew_cancel(row);
     }
-    for (long long i = 0; i < g->children->len; i++) {
+    for (long long i = 0; i < n; i++) {
+        BBrew* row = (BBrew*)(uintptr_t)g->children->data[i];
+        if (row) beans_brew_join(row);
+    }
+    // Discard every outcome newest-first -- the order the interpreter releases
+    // its children list in, and the LIFO order a scope drops what it owns, so a
+    // discarded value's deinit runs in the same order on both engines (#106).
+    // The row is cleared from the list only after its deinit has run: a
+    // contained panic out of that deinit then leaves the row on the list, to be
+    // released when the group dies, rather than orphaned off it.
+    for (long long i = n - 1; i >= 0; i--) {
         BBrew* row = (BBrew*)(uintptr_t)g->children->data[i];
         if (!row) continue;
-        beans_brew_join(row);
         brew_drop_result(row);
         g->children->data[i] = 0;
         beans_release(row);
@@ -17689,11 +17706,36 @@ void beans_taskgroup_cancel_all(BTaskGroup* g) {
 // first panic nobody looked at, drop unclaimed ok results quietly.
 void beans_taskgroup_scope_join(BTaskGroup* g, long long line,
                                 long long col) {
-    for (long long i = 0; i < g->children->len; i++) {
+    long long n = g->children->len;
+    // Join every unclaimed child in spawn order and escalate the first panic
+    // nobody looked at -- the same child the tree interpreter escalates on,
+    // which reaps spawn order too. The ok result is NOT dropped here: dropping
+    // it in this front-to-back loop (what beans_brew_scope_join does) ran the
+    // discarded values' deinits oldest-first, where the interpreter leaves each
+    // result on its child row and releases the row list back to front, so the
+    // deinits ran newest-first (#106). Only the join happens here.
+    for (long long i = 0; i < n; i++) {
         BBrew* row = (BBrew*)(uintptr_t)g->children->data[i];
-        if (!row) continue;
+        if (!row || row->joined) continue;
+        long long status = beans_brew_join(row);
+        if (status == BEANS_FIBER_PANICKED) {
+            char text[600];
+            rt_format(text, sizeof text,
+                      "a brewed fiber panicked with no join to catch it: %s",
+                      row->message);
+            beans_panic(text, line, col); // a panic escalates here
+        }
+    }
+    // Drop the unclaimed results newest-first -- the way a scope drops what it
+    // owns, and the order the interpreter releases its children list in -- then
+    // release each row shell. A panic above escalated before this ran, leaving
+    // the remaining rows on g->children to be released when the group dies,
+    // exactly as the interpreter leaves them on state.children.
+    for (long long i = n - 1; i >= 0; i--) {
+        BBrew* row = (BBrew*)(uintptr_t)g->children->data[i];
         g->children->data[i] = 0;
-        beans_brew_scope_join(row, line, col); // a panic escalates here
+        if (!row) continue;
+        brew_drop_result(row);
         beans_release(row);
     }
     g->children->len = 0;

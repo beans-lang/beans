@@ -33,18 +33,20 @@
 #      against one golden file (test/cases/release_order.b);
 #   2. the cascade stays iterative -- a 200k-link generic chain is dropped at
 #      once and must not smash the host stack on either backend
-#      (test/cases/release_order_deep.b);
+#      (test/cases/release_order_deep.b), and the same holds for a chain whose
+#      class declares a `deinit`, which takes the host-wrapper path the silent
+#      chain never does (test/cases/release_order_deinit_deep.b, issue #96);
 #   3. a container is empty by every accessor before the first element release
 #      runs, for class keys as well as class values, over clear, remove,
 #      reassignment and nested containers, at n = 1, 2 and 6
 #      (test/cases/container_settle.b).
 #
-# NOT pinned here, and still a live split: a Map dropped or reassigned while it
-# holds class keys AND class values releases all values and then all keys in
-# the interpreter, where the native runtime releases each entry's value before
-# its own key. The tree map keeps keys and values in two separate fields, and
-# the host releases one field after the other; interleaving them needs the two
-# halves stored as one entry. Reported, not fixed.
+# The split this note used to call out -- a Map dropped or reassigned while it
+# holds class keys AND class values releasing all values and then all keys in
+# the interpreter, where native releases each entry's value before its own key
+# -- is fixed (#97): the tree map stores each entry as one value owning both
+# halves, so the host cascade interleaves them the way it does for a native map.
+# test/cases/parity/map_release_order.b pins it against the native backend.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -75,6 +77,22 @@ printf 'alive -1\n' >"$tmp/deep.expected"
 diff -u "$tmp/deep.expected" "$tmp/deep.interp"
 diff -u "$tmp/deep.expected" "$tmp/deep.native.out"
 
+# 2b. The same cascade with a `deinit`. release_order_deep.b's class is silent,
+#     so it takes the no-wrapper path and never touches the recursive one. An
+#     object that declares a `deinit` gets a host wrapper, and the wrapper used
+#     to release the object's fields by hand -- one host frame per link -- so a
+#     deep chain of them overflowed the interpreter's stack where the native
+#     backend dropped it iteratively (issue #96). The tally proves every link's
+#     deinit ran; `id == 0` is the deepest node, so its line prints only if the
+#     drop reached the bottom of the chain in constant host stack.
+echo "checking a 200k-link chain WITH a deinit drops without recursing"
+"$beansc" run test/cases/release_order_deinit_deep.b >"$tmp/dd.interp"
+"$beansc" build test/cases/release_order_deinit_deep.b -o "$tmp/dd.native" \
+    >"$tmp/dd.build" 2>&1
+"$tmp/dd.native" >"$tmp/dd.native.out"
+diff -u test/cases/release_order_deinit_deep.out "$tmp/dd.interp"
+diff -u test/cases/release_order_deinit_deep.out "$tmp/dd.native.out"
+
 # 3. A container settles before it releases what it owned -- keys included.
 echo "checking a container is empty before the first element release"
 "$beansc" run test/cases/container_settle.b >"$tmp/settle.interp"
@@ -84,4 +102,4 @@ echo "checking a container is empty before the first element release"
 diff -u test/cases/container_settle.out "$tmp/settle.interp"
 diff -u test/cases/container_settle.out "$tmp/settle.native.out"
 
-echo "ok field release order, iterative cascade, container settle"
+echo "ok field release order, iterative cascade (silent and deinit), container settle"
