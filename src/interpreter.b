@@ -3665,64 +3665,49 @@ class TreeInterpreter {
         return false
     }
 
-    // Canonical field release order shared with the stage-0 interpreter
-    // and both native backends: the object's own class first, fields in
-    // reverse declaration order, then each base class up the chain.
-    fn release_fields(name: string,
-                      object: TreeValue) {
-        match self.declaration(name) {
-            some(declaration) => {
-                var index: int =
-                    declaration.fields.len() - 1
-                for index >= 0 {
-                    object.fields.entries.remove(
-                        declaration.fields[index].name)
-                    index -= 1
-                }
-                for rel: int in
-                    0..declaration.relations.len() {
-                    if rel <
-                           declaration.relation_kinds.len() &&
-                       declaration.relation_kinds[rel] ==
-                           "extends" {
-                        self.release_fields(
-                            declaration.relations[rel].name,
-                            object)
-                        return
-                    }
-                }
-            }
-            none => {}
-        }
-    }
-
+    // An object dies by running its `deinit` chain; its fields are released
+    // afterwards by the host runtime's own cascade, not by hand here. A
+    // wrapper owns nothing but the one fields box it points at, so when the
+    // host frees the wrapper it releases that box, and a fully-reserved fields
+    // map — every declared slot taken base-class-first in declaration order
+    // (#82's reserve_field_slots) — releases back to front. That IS the
+    // canonical order: the object's own class first in reverse declaration
+    // order, then each base up the chain.
+    //
+    // Releasing the fields here instead recursed one host frame per owned
+    // child (release_fields removed an entry, the host released the child
+    // wrapper, its deinit re-entered here), so a deep chain of objects that
+    // declare a `deinit` overflowed the stack where the same chain WITHOUT a
+    // `deinit` — released entirely by the host's iterative cascade — did not
+    // (issue #96). Handing every field release to that one cascade closes the
+    // gap: the chain unwinds in constant host stack, matching the native
+    // backend's beans_release, which likewise runs the deinit then hands the
+    // children to its explicit work stack rather than recursing.
     fn deinit_object(object: TreeValue) {
         if object.kind != "object" { return }
         if self.failed {
             // A panic is in flight. During a contained unwind the owned
             // locals still run their deinit on the way out — that is what the
             // issue is about — so set the panic aside and run it, then restore
-            // the panic and keep unwinding. An uncontained panic drops the
-            // object without a deinit (spec: it leaves the process). A panic
-            // raised inside the deinit is the double-panic case that fail_at
-            // aborts on; the guards below never re-arm the old panic over it.
+            // the panic and keep unwinding. Each owned child the host cascade
+            // reaches next re-opens this same window on its own, which is
+            // equivalent: every deinit in the dying subtree runs with the
+            // panic set aside, and the panic is preserved across all of them.
+            // An uncontained panic drops the object without a deinit (spec: it
+            // leaves the process). A panic raised inside the deinit is the
+            // double-panic case that fail_at aborts on; the guard below never
+            // re-arms the old panic over it.
             if !self.fiber_unwinding() { return }
             let saved: string = self.panic_text
             self.failed = false
             self.panic_text = ""
             self.deinit_chain(object.text, object)
             if self.failed { return }
-            self.release_fields(object.text, object)
-            if self.failed { return }
             self.failed = true
             self.panic_text = saved
             return
         }
         self.deinit_chain(object.text, object)
-        if self.failed {
-            return
-        }
-        self.release_fields(object.text, object)
     }
 
     // A map key is an Eq key, not an `==` operand: two NaNs with the same
