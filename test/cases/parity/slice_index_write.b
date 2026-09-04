@@ -14,6 +14,11 @@
 //   * scalar widths i32, i64, u8 (the u8 write wraps, both backends alike)
 //   * a struct element (an extern "C" struct copied in whole)
 //   * a subslice, whose write lands in the parent's memory
+//   * a compound `view[i] += v` whose index has a side effect, so the index
+//     is evaluated exactly once — the read of the old value goes through the
+//     hoisted key, not a re-evaluation of the whole target. The counter and
+//     the printed cell together prove it: a double-eval reads and writes
+//     different cells and advances the counter twice.
 //
 // Slice elements are held to the raw-pointee set by the checker, so they are
 // always POD: no ARC, hence no arc+/arc- markers — the answers carry the proof.
@@ -24,6 +29,17 @@ import std.io
 extern "C" struct Packet {
     tag: u8
     count: u32
+}
+
+// A counter whose read advances it, to spell an index with a side effect.
+class Ctr {
+    priv static count: int = 0
+    static fn next() -> int {
+        let value: int = Ctr.count
+        Ctr.count = Ctr.count + 1
+        return value
+    }
+    static fn calls() -> int { return Ctr.count }
 }
 
 fn main() {
@@ -121,5 +137,18 @@ fn main() {
         sub[2] += 100
         io.println("subslice {full[2]} {full[4]} sub {sub[0]} {sub[2]}")
         q.free()
+
+        // a compound with a side-effecting index: `Ctr.next()` returns 0 once,
+        // and the read of the old value must use that same 0 — not run
+        // `Ctr.next()` again and read cell 1 while the store lands in cell 0.
+        let s: RawPtr<i32> = RawPtr.alloc(4)
+        s.offset(0).write(100 as i32)
+        s.offset(1).write(200 as i32)
+        s.offset(2).write(300 as i32)
+        s.offset(3).write(400 as i32)
+        let sv2: Slice<i32> = Slice.from_raw(s, 4)
+        sv2[Ctr.next()] += 1
+        io.println("sidefx {sv2[0]} {sv2[1]} {sv2[2]} {sv2[3]} calls {Ctr.calls()}")
+        s.free()
     }
 }
