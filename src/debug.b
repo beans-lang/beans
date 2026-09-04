@@ -589,7 +589,11 @@ class DebugSession {
                 match value.map_values.get(
                           tree_value_key(key)) {
                     some(entry) => {
-                        found.push(self.describe(shown, entry))
+                        found.push(
+                            self.describe(
+                                shown,
+                                tree_map_entry_value(
+                                    entry)))
                     }
                     none => {}
                 }

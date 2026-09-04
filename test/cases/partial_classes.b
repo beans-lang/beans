@@ -51,11 +51,11 @@ partial class Crate {
 // No part has to carry a header at all. Field order follows the order the
 // parts are declared in.
 partial class Pair {
-    left: int
+    left: int = 0
 }
 
 partial class Pair {
-    right: int
+    right: int = 0
     fn total() -> int { return self.left + self.right }
 }
 

@@ -1325,10 +1325,27 @@ grep -q 'result.combinator.ok' \
     "$tmp/inline-sum.first.ll"
 grep -q 'result.eq.tags' \
     "$tmp/inline-sum.first.ll"
-grep -q 'result.eq.payload' \
+# Issue #93: equality used to extract *both* payloads and `and` them together,
+# so comparing an ok against an err read the dead arm's payload as the wrong
+# type and segfaulted. The emission now branches on the tags and touches only
+# the arm that is live, so `result.eq.payload` and the unconditional
+# `result.eq<n> = and i1` no longer exist. Assert the branching shape itself,
+# and assert the old shape stays gone — restoring the both-arms compare brings
+# the `and` back and fails here.
+grep -qE 'br i1 %result[.]eq[.]tags[0-9]*, label %result[.]eq[.]same[0-9]*, label %result[.]eq[.]different[0-9]*' \
     "$tmp/inline-sum.first.ll"
-grep -q 'result.eq[0-9]* = and i1' \
+grep -qE 'br i1 %result[.]eq[.]left[.]error[0-9]*, label %result[.]eq[.]error[0-9]*, label %result[.]eq[.]okay[0-9]*' \
     "$tmp/inline-sum.first.ll"
+grep -qE '%inline[.]eqresult[.]ok[0-9]*' \
+    "$tmp/inline-sum.first.ll"
+grep -qE '%result[.]eq[0-9]* = phi i1 ' \
+    "$tmp/inline-sum.first.ll"
+grep -qE '\[ false, %result[.]eq[.]different[0-9]* \]' \
+    "$tmp/inline-sum.first.ll"
+if grep -qE '%result[.]eq[0-9]* = and i1' "$tmp/inline-sum.first.ll"; then
+    echo "inline Result equality combines both arms again (issue #93)" >&2
+    exit 1
+fi
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \

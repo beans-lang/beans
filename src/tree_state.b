@@ -144,6 +144,12 @@ unique class TreeThreadWork implements Send {
         let answer: TreeValue =
             interpreter.invoke_closure(
                 self.node, self.closure, [])
+        // This interpreter never runs run(), so nothing else arms its exit-sweep
+        // guard. Arm it now: the garbage this thread leaves is swept after the
+        // body returns, and an uncontained deinit panic in that sweep must
+        // surface and end the process with 3, not be swallowed while the thread
+        // reports success and the program carries on (#107).
+        interpreter.entry_returned = true
         if interpreter.failed {
             interpreter.report_thread_panic()
         }

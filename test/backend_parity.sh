@@ -120,10 +120,44 @@ agree test/cases/parity/map_move_only_get.b
 agree test/cases/parity/default_effects.b 5
 agree test/cases/parity/interface_upcast.b 6
 agree test/cases/parity/generic_base_deinit.b 4
+# A generic class holding a generic class field skipped its cycle deinits at
+# exit under the interpreter and ran them natively (#91). The eight watchers
+# form garbage rings (n = 1, 2, 5) swept only at exit; the release marker
+# encodes the shared owner's count, so a skipped body leaves an unbalanced
+# marker and a body run against a stripped owner reads the wrong count.
+agree test/cases/parity/cycle_exit_deinit.b 8
+# A Map with class keys AND class values dropped, reassigned or with an entry
+# removed released all values then all keys in the interpreter, where native
+# releases each entry's value before its own key, entries back to front (#97).
+# The interpreter stores an entry as one value now; the diff is the order check
+# and the balanced markers are the leak/double-free check, at n = 1, 2 and 3.
+agree test/cases/parity/map_release_order.b 29
+# A receiver written at a generic base must run the object's own method, not
+# the base body. A non-overriding subclass keeps the direct call; an override
+# reads the descriptor; `self.method()` in a base body dispatches too; and a
+# private or own-generic call, which holds no row, stays direct. Four objects
+# built and released.
+agree test/cases/parity/generic_base_dispatch.b 4
+# #119: a generic base's deinit filed under the wrong key when a *middle*
+# class sits between it and the leaf. Four hierarchies, each at least three
+# links: a middle that overrides deinit, a four-link chain with two middles,
+# a base-only deinit with two objects built (the extra release only showed
+# when a second object of a nearer class also existed), and one generic base
+# under two different instantiations, and a leaf whose deinit chains past a
+# middle that declares none. Thirteen objects built and released once.
+agree test/cases/parity/generic_base_deinit_chain.b 13
+# #119, the blocker half: a plain class *above* a generic base, whose deinit
+# the parent walk stepped over because a generic link has no plain symbol —
+# dropping one deinit, chosen by declaration order. Both orders here (built in
+# main vs behind a Maker declared before its leaf), a leaf declaring none whose
+# raised base still chains up, and a five-link stack with two plain ancestors
+# above the generic link. Twelve objects built and released once.
+agree test/cases/parity/generic_base_deinit_above.b 12
 agree test/cases/parity/struct_sort.b 3
 agree test/cases/parity/sort_by_key_paths.b
 agree test/cases/parity/list_equality.b
 agree test/cases/parity/option_equality.b
+agree test/cases/parity/result_equality.b
 agree test/cases/parity/cast_compare.b
 agree test/cases/parity/option_layout.b
 agree test/cases/parity/composite_equality.b
@@ -172,10 +206,17 @@ agree test/cases/parity/reflect_error_bridge.b
 # bare pointer while the direct one runs every operand, receiver included,
 # through the internal-argument packer. Ten objects built, ten released.
 agree test/cases/parity/settled_dispatch.b 10
+# A subclass with its own (non-shadowing) field names is the shape the #95
+# refusal must still accept, and it is the shape the two backends already had
+# to agree on: every field of every class in the chain owns a slot, so the
+# four owned values build once and release once in one order. A redeclared
+# name gave the interpreter one slot and the native backend two, which this
+# case would expose as a marker imbalance the moment the layouts diverged.
+agree test/cases/parity/inherited_field_slots.b 4
 
 # Every case in the directory has to be listed above with its own expected
 # count; a file added and forgotten would otherwise be silently unchecked.
-listed=33
+listed=40
 present=$(find test/cases/parity -name '*.b' | wc -l | tr -d ' ')
 if [ "$present" != "$listed" ]; then
     echo "test/cases/parity holds $present cases but $listed are run" >&2
@@ -244,6 +285,77 @@ grep -q "built 3" "$tmp/$name.interp" || {
     exit 1
 }
 echo "  agree: test/cases/$name (static tables build once, before main)"
+
+# A receiver written at a generic base whose runtime class lives in another
+# package. A cross-package subclass's override of a public method must win
+# (mark), while an un-overridden public method stays direct and its own
+# package-private call reaches the base package's method, not a same-named one
+# the consumer declares (tag/hidden). The native emitter called the base body
+# outright for both; it answered mark wrong and segfaulted on the collision.
+name=parity_generic_base
+( cd "test/cases/$name" && "$root/build/beansc" run tests/main.b ) \
+    >"$tmp/$name.interp"
+( cd "test/cases/$name" \
+  && "$root/build/beansc" build --release tests/main.b \
+       -o "$tmp/$name.release" >/dev/null )
+"$tmp/$name.release" >"$tmp/$name.release.out"
+diff -u "$tmp/$name.interp" "$tmp/$name.release.out"
+grep -q "mark named base base" "$tmp/$name.interp" || {
+    echo "a cross-package override did not win over the generic base body" >&2
+    cat "$tmp/$name.interp" >&2
+    exit 1
+}
+echo "  agree: test/cases/$name (generic-base dispatch across packages)"
+# #119, the second half: a generic base's method row filed under the wrong
+# key for *ordinary* methods, not just deinit. The base's package-private
+# `peek` carries the selector `lib:peek`; a subclass in another package
+# declares its own `peek`, which answers a different selector and so is not an
+# override. The base's row was raised under the subclass's plain name, collided
+# with the subclass's own `peek`, and was dropped — leaving the base's vtable
+# row null. It is latent at runtime today (the call devirtualizes), so this
+# asserts the emitted descriptor row directly rather than trusting the answer:
+# the leaf's table must carry a real symbol in the base's slot, not `ptr null`.
+name=generic_base_pkg_row
+( cd "test/cases/$name" && "$root/build/beansc" run main.b ) \
+    >"$tmp/$name.interp"
+( cd "test/cases/$name" \
+  && "$root/build/beansc" build --release main.b \
+       -o "$tmp/$name.release" >/dev/null )
+"$tmp/$name.release" >"$tmp/$name.release.out"
+diff -u "$tmp/$name.interp" "$tmp/$name.release.out"
+( cd "test/cases/$name" && "$root/build/beansc" llvm main.b ) \
+    >"$tmp/$name.ll" 2>/dev/null
+# the symbol emitted for the leaf's own peek (the row that was never null)
+leaf_peek=$(awk '/; app\.Leaf\.peek$/{getline; if ($0 ~ /^define/){match($0,/@\.next\.[A-Za-z0-9]+/); print substr($0,RSTART,RLENGTH); exit}}' "$tmp/$name.ll")
+if [ -z "$leaf_peek" ]; then
+    echo "$name: could not find the leaf's own peek symbol in the IR" >&2
+    exit 1
+fi
+row=$(grep 'next.class[0-9]* = internal constant' "$tmp/$name.ll" \
+        | grep -F "$leaf_peek")
+if [ -z "$row" ]; then
+    echo "$name: no descriptor table references the leaf's peek" >&2
+    exit 1
+fi
+# the method table is the final [ ... ] group, after the "[N x ptr]" type; a
+# null there is a base row the key collision dropped. (The shape pointer just
+# before it is legitimately null, so match only the trailing array.)
+vtable=$(echo "$row" | sed -E 's/.*\[[0-9]+ x ptr\] (\[[^]]*\]).*/\1/')
+# Guard the substitution: if the descriptor layout ever changes shape the sed
+# leaves the row untouched, and a bare `grep null` would then match the shape
+# pointer and fail for the wrong reason. Insist the capture actually isolated a
+# bracketed array before trusting the null check.
+if [ "$vtable" = "$row" ] || [ "${vtable#\[}" = "$vtable" ]; then
+    echo "$name: could not isolate the method table from the descriptor row" >&2
+    echo "$row" >&2
+    exit 1
+fi
+if echo "$vtable" | grep -q 'ptr null'; then
+    echo "$name: the leaf's descriptor has a null row a base method must fill" >&2
+    echo "$row" >&2
+    exit 1
+fi
+echo "  agree: test/cases/$name (generic base's method row survives a cross-package name clash)"
 
 # Reading one too early has to say so on both paths, not answer a zero on one.
 mkdir -p "$tmp/early"

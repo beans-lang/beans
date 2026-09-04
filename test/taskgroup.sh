@@ -37,6 +37,20 @@ timeout 60 "$tmp/native" >"$tmp/native.out"
 diff -u test/cases/taskgroup.out "$tmp/interp"
 diff -u test/cases/taskgroup.out "$tmp/native.out"
 
+echo "checking TaskGroup discards unclaimed results newest-first on both engines"
+# issue #106: the results nobody claimed are discarded newest-first (reverse
+# spawn order) -- the LIFO order a scope drops what it owns. The interpreter
+# already did (it releases the children list back to front); the native runtime
+# dropped each result as it joined the children in spawn order, so a discarded
+# value's deinit ran oldest-first. One golden, both engines, for a group dropped
+# at scope exit and for cancel_all, at n = 1, 2 and 4.
+timeout 60 ./build/beansc run test/cases/taskgroup_discard.b >"$tmp/discard.interp"
+./build/beansc build test/cases/taskgroup_discard.b -o "$tmp/discard.native" \
+    >"$tmp/discard.build" 2>&1
+timeout 60 "$tmp/discard.native" >"$tmp/discard.native.out"
+diff -u test/cases/taskgroup_discard.out "$tmp/discard.interp"
+diff -u test/cases/taskgroup_discard.out "$tmp/discard.native.out"
+
 echo "checking the group walls refuse with named messages"
 cat >"$tmp/walls.b" <<'BEANS'
 fn work(a: int) -> int { return a }

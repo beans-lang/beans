@@ -35,8 +35,8 @@ class Square extends Shape {
     side: int
 
     fn init(side: int) {
-        super.init("square")
         self.side = side
+        super.init("square")
     }
 
     override fn area() -> int { return self.side * self.side }
@@ -48,8 +48,8 @@ class Circle extends Shape {
     radius: int
 
     fn init(radius: int) {
-        super.init("circle")
         self.radius = radius
+        super.init("circle")
     }
 
     override fn area() -> int {

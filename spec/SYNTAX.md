@@ -1704,13 +1704,31 @@ let c: Conn = new Conn("db1")
   rest start unassigned. Every default in the class chain is evaluated before any `init` body
   runs, in declaration order with the base class's fields first — so a default whose
   expression has an effect (a call that prints, a counter) has one order, not one per
-  backend. **Until every field is assigned, the body is a straight-line prefix**:
-  each statement either assigns a field (`self.f = ...`) or touches `self` only by reading
-  fields already assigned — no method calls, no passing `self` on, no `return`, and no string
-  interpolation (its pieces are checked too late to prove them safe). The checker proves all
-  of it, so a half-built object can never escape. After the last field, anything goes.
+  backend. **The checker proves every field is assigned before the object can be read**, so no
+  path through the constructor reaches code that reads a field the constructor has not set yet.
+  It is a definite-assignment proof, so branches count: a field assigned on every arm of an
+  `if` or of an exhaustive `match` is assigned after it, one assigned in only some arms is not,
+  and one assigned inside a loop is not (the loop may run zero times — a loop body never
+  credits a field, so a value it computes has to be hoisted out to be assigned once); an arm
+  that `panic`s or `return`s, and an unconditional `for {}` with no `break`, drop out of the
+  merge because nothing after them runs. Two rules follow. A field cannot be read until it is
+  assigned — not through `self.f`, not through a method that would read it, not in a string
+  interpolation (`"{self.f}"` reads `f` and is checked exactly as `self.f` is). And until
+  **every** field is assigned, `self` itself cannot escape: no method call on `self` (including
+  `super.m(...)`, which runs the base method on this object), no passing `self` on, no
+  `return`, no interpolating `self` whole — each could read a field that is not there yet. A
+  field with a default counts as assigned from the start, and a `weak` field always does (its
+  slot starts `none`); after the last field, anything goes.
+- The proof is about the paths the checker can see. A `panic` mid-`init` is not one of them:
+  it unwinds the object under construction, and unwinding runs `deinit`, which reads fields
+  the constructor had not reached. Releasing a still-constructing object must therefore skip
+  its `deinit` body — until it does (#120), a panic before the last field is assigned is
+  undefined at this one boundary, the same on both backends.
 - A class whose fields all have defaults receives an implicit zero-argument
-  initializer. A class with any required field must declare `init`.
+  initializer. A class with any required field must declare `init` — the implicit
+  initializer assigns nothing, so a required field left to it would never be assigned. Every
+  `init` must leave every field assigned on every path that returns, the implicit return at
+  the end included.
 - Construction that can fail stays a named static, such as
   `static fn open(...) -> Result<Conn>`; it may call `new Conn(...)` after validation.
 - Generic classes take type arguments from the declared spot or an explicit
@@ -1870,6 +1888,18 @@ implementation of a bodyless interface requirement does not need `override`.
 Private methods are not inherited and never satisfy or replace class or
 interface contracts, so they cannot be `abstract` or `override`. Interfaces
 cannot declare private methods. Beans has no `final` yet.
+
+A subclass field may not reuse the name of a field it inherits. Every field of
+every class in the chain takes its own slot, laid out base class first, so one
+name shared by two classes in a chain would be two slots — an inherited field
+is storage the base already owns, and the subclass has to pick a different
+name. This holds whatever the redeclared field's type or visibility, and
+across the parts of a `partial class`. Fields have no counterpart to the
+`priv`-method carve-out: a method can be a distinct member under a reused
+name, but storage is never shadowed. (Only instance fields collide this way; a
+`static` field is per-type storage reached through its declaring type and is
+not inherited, so it does not share a slot with an instance field of the same
+name.)
 
 `extends` and `implements` belong to classes and interfaces. A struct, union
 or enum that names either is refused at the declaration: an interface value is

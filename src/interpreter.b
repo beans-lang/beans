@@ -97,6 +97,12 @@ class TreeInterpreter {
     arguments: List<string>
     failed: bool
     panic_text: string
+    // True once run_entry has returned. After that point the only interpreted
+    // code left to run is deinits driven by the exit-time cycle sweep, and
+    // there is no walker frame above them to carry a panic to run(). An
+    // uncontained panic in one of those is surfaced where it happens instead
+    // (issue #107); during the program the walker carries it to run() as before.
+    entry_returned: bool
     // A contained panic (one raised on a brewed, non-root fiber) does not
     // abandon its frames: it unwinds them, running each function's defers and
     // dropping each owned local, exactly as a return would — the same thing
@@ -192,6 +198,7 @@ class TreeInterpreter {
         self.arguments = move arguments
         self.failed = false
         self.panic_text = ""
+        self.entry_returned = false
         self.unwinds = {}
         self.next_object_id = 0
         self.weak_track = false
@@ -649,6 +656,10 @@ class TreeInterpreter {
     // never-joined thread has no join at all. Containment is what `brew`
     // is for (spec/CONCURRENCY.md); a thread is the raw primitive.
     fn report_thread_panic() {
+        // The exit sweep this triggers runs on the interpreter that already
+        // armed the guard (TreeThreadWork.run), but arm it here too so a future
+        // caller cannot leave it disarmed over a teardown death (#107).
+        self.entry_returned = true
         unsafe { beans_out_flush() }
         io.eprintln(self.panic_text)
         host_os.exit(3)
@@ -3699,64 +3710,83 @@ class TreeInterpreter {
         return false
     }
 
-    // Canonical field release order shared with the stage-0 interpreter
-    // and both native backends: the object's own class first, fields in
-    // reverse declaration order, then each base class up the chain.
-    fn release_fields(name: string,
-                      object: TreeValue) {
-        match self.declaration(name) {
-            some(declaration) => {
-                var index: int =
-                    declaration.fields.len() - 1
-                for index >= 0 {
-                    object.fields.entries.remove(
-                        declaration.fields[index].name)
-                    index -= 1
-                }
-                for rel: int in
-                    0..declaration.relations.len() {
-                    if rel <
-                           declaration.relation_kinds.len() &&
-                       declaration.relation_kinds[rel] ==
-                           "extends" {
-                        self.release_fields(
-                            declaration.relations[rel].name,
-                            object)
-                        return
-                    }
-                }
-            }
-            none => {}
-        }
-    }
-
+    // An object dies by running its `deinit` chain; its fields are released
+    // afterwards by the host runtime's own cascade, not by hand here. A
+    // wrapper owns nothing but the one fields box it points at, so when the
+    // host frees the wrapper it releases that box, and a fully-reserved fields
+    // map — every declared slot taken base-class-first in declaration order
+    // (#82's reserve_field_slots) — releases back to front. That IS the
+    // canonical order: the object's own class first in reverse declaration
+    // order, then each base up the chain.
+    //
+    // Releasing the fields here instead recursed one host frame per owned
+    // child (release_fields removed an entry, the host released the child
+    // wrapper, its deinit re-entered here), so a deep chain of objects that
+    // declare a `deinit` overflowed the stack where the same chain WITHOUT a
+    // `deinit` — released entirely by the host's iterative cascade — did not
+    // (issue #96). Handing every field release to that one cascade closes the
+    // gap: the chain unwinds in constant host stack, matching the native
+    // backend's beans_release, which likewise runs the deinit then hands the
+    // children to its explicit work stack rather than recursing.
     fn deinit_object(object: TreeValue) {
         if object.kind != "object" { return }
         if self.failed {
-            // A panic is in flight. During a contained unwind the owned
-            // locals still run their deinit on the way out — that is what the
-            // issue is about — so set the panic aside and run it, then restore
-            // the panic and keep unwinding. An uncontained panic drops the
-            // object without a deinit (spec: it leaves the process). A panic
-            // raised inside the deinit is the double-panic case that fail_at
-            // aborts on; the guards below never re-arm the old panic over it.
-            if !self.fiber_unwinding() { return }
+            // A panic is in flight. Two cases run the deinit anyway, with the
+            // panic set aside so the body executes: a contained unwind, where
+            // owned locals still run their deinit on the way out (#81); and the
+            // exit-time cycle sweep, where the host destroys the garbage the
+            // program left even though an uncontained panic is on its way out of
+            // the process — the native runtime runs those deinits, so the
+            // interpreter must too, rather than skipping them and printing a
+            // shorter teardown (#107). Each owned child the host cascade reaches
+            // next re-opens this same window on its own, and the panic is
+            // preserved across all of them. An uncontained panic DURING the
+            // program (neither of those) drops the object without a deinit
+            // (spec: it leaves the process).
+            if !self.fiber_unwinding() &&
+               !self.entry_returned {
+                return
+            }
             let saved: string = self.panic_text
             self.failed = false
             self.panic_text = ""
             self.deinit_chain(object.text, object)
-            if self.failed { return }
-            self.release_fields(object.text, object)
-            if self.failed { return }
+            if self.failed {
+                // The deinit itself panicked. In the exit sweep that is an
+                // uncontained panic in teardown with no walker above it —
+                // surface it and leave with 3, the same as the normal branch
+                // below and the same as the native runtime. In a contained
+                // unwind it is the double-panic case fail_at aborts on; leave
+                // the panic set and return without re-arming the old one.
+                if self.entry_returned &&
+                   !self.panic_is_contained() {
+                    unsafe { beans_out_flush() }
+                    io.eprintln(self.panic_text)
+                    host_os.exit(3)
+                }
+                return
+            }
             self.failed = true
             self.panic_text = saved
             return
         }
         self.deinit_chain(object.text, object)
-        if self.failed {
-            return
+        if self.failed &&
+           self.entry_returned &&
+           !self.panic_is_contained() {
+            // An uncontained panic raised by a deinit the exit-time cycle sweep
+            // is running, after run_entry returned. There is no walker frame
+            // left above it to carry the failure to run(), so it would be lost
+            // and the process would exit 0 with the program dead in teardown —
+            // a death that looks successful to a shell or a CI job (issue #107).
+            // Surface it where the native runtime's beans_panic does at the same
+            // point: flush the program's own buffered output, report, and leave
+            // with 3. During the program this same panic reaches run() through
+            // the walker and is reported there.
+            unsafe { beans_out_flush() }
+            io.eprintln(self.panic_text)
+            host_os.exit(3)
         }
-        self.release_fields(object.text, object)
     }
 
     // A map key is an Eq key, not an `==` operand: two NaNs with the same
@@ -3772,6 +3802,34 @@ class TreeInterpreter {
             }
         }
         return tree_value_key(key)
+    }
+
+    // Store one entry into a tree map. map_values holds an entry (key and value
+    // as one value, #97); map_keys holds the key for order. A new key is added
+    // to both and bumps the version an iteration watches; an existing key keeps
+    // its stored key object -- only the value is replaced, which releases the
+    // old value and never re-runs the key's deinit, the same as the native map.
+    // Returns whether a new key was inserted.
+    fn tree_map_store(map: TreeValue,
+                      encoded: string,
+                      key: TreeValue,
+                      value: TreeValue) -> bool {
+        if map.map_values.contains_key(encoded) {
+            map.map_values[encoded] =
+                tree_map_entry(
+                    tree_value_copy(
+                        tree_map_entry_key(
+                            map.map_values[encoded])),
+                    tree_value_copy(value))
+            return false
+        }
+        map.map_keys.push(tree_value_copy(key))
+        map.map_version += 1
+        map.map_values[encoded] =
+            tree_map_entry(
+                tree_value_copy(key),
+                tree_value_copy(value))
+        return true
     }
 
     // The body to run for `method` on a value whose runtime type is
@@ -3917,9 +3975,9 @@ class TreeInterpreter {
             for key: TreeValue in value.map_keys {
                 let encoded: string = tree_value_key(key)
                 match value.map_values.get(encoded) {
-                    some(item) => {
+                    some(entry) => {
                         pieces.push(
-                            "{self.render_for_string(key, inout cycle_path)}: {self.render_for_string(item, inout cycle_path)}")
+                            "{self.render_for_string(key, inout cycle_path)}: {self.render_for_string(tree_map_entry_value(entry), inout cycle_path)}")
                     }
                     none => {}
                 }
@@ -4898,6 +4956,12 @@ class TreeInterpreter {
         }
         if node.resolved == "std.os.exit" &&
            arguments.len() == 1 {
+            // An explicit exit leaves through the walker and never returns to
+            // run(), so arm the exit-sweep guard here too: a garbage cycle the
+            // host sweeps after this must surface an uncontained deinit panic
+            // and leave with 3, the way the native runtime does, rather than
+            // letting exit's own code stand over a death in teardown (#107).
+            self.entry_returned = true
             host_os.exit(
                 arguments[0].int_data)
             return TreeValue.unit()
@@ -9096,20 +9160,15 @@ class TreeInterpreter {
             let encoded: string =
                 self.map_key(
                     receiver, arguments[1])
-            let inserted: bool =
-                !receiver.map_values.contains_key(encoded)
             if node.value == "insert" &&
-               !inserted {
+               receiver.map_values.contains_key(
+                   encoded) {
                 return TreeValue.boolean(false)
             }
-            if !receiver.map_values.contains_key(
-                   encoded) {
-                receiver.map_keys.push(
-                    tree_value_copy(arguments[1]))
-                receiver.map_version += 1
-            }
-            receiver.map_values[encoded] =
-                tree_value_copy(arguments[2])
+            let inserted: bool =
+                self.tree_map_store(
+                    receiver, encoded,
+                    arguments[1], arguments[2])
             return if node.value == "insert" {
                 TreeValue.boolean(inserted)
             } else {
@@ -9122,9 +9181,10 @@ class TreeInterpreter {
             match receiver.map_values.get(
                 self.map_key(
                     receiver, arguments[1])) {
-                some(value) => {
+                some(entry) => {
                     return TreeValue.option_some(
-                        tree_value_copy(value))
+                        tree_value_copy(
+                            tree_map_entry_value(entry)))
                 }
                 none => {
                     return TreeValue.option_none()
@@ -9174,9 +9234,11 @@ class TreeInterpreter {
             for key: TreeValue in receiver.map_keys {
                 match receiver.map_values.get(
                     tree_value_key(key)) {
-                    some(value) => {
+                    some(entry) => {
                         values.push(
-                            tree_value_copy(value))
+                            tree_value_copy(
+                                tree_map_entry_value(
+                                    entry)))
                     }
                     none => {}
                 }
@@ -9189,42 +9251,27 @@ class TreeInterpreter {
             if receiver.map_values.len() != 0 {
                 receiver.map_version += 1
             }
-            // spec/CONCURRENCY.md: the storage is detached and an empty
-            // container published before the first element's release, so a
-            // deinit that reads the container sees it empty and one that adds
-            // to it keeps what it added. A tree map keeps an entry in two
-            // fields, and storing a fresh one of either releases that half
-            // against a container the other half still fills: publishing the
-            // key list first ran every class key's deinit while len(),
-            // is_empty() and contains_key() -- all of which read map_values --
-            // still answered the old count, and the second store then wiped
-            // whatever those deinits had put back. Publishing the value map
-            // first would only move the hole to keys(). So both halves are
-            // taken aside before either store runs.
-            var dead_keys: List<TreeValue> = []
-            var dead_values: List<TreeValue> = []
+            // spec/CONCURRENCY.md: detach the storage and publish an empty
+            // container before the first element's release, so a deinit that
+            // reads the map sees it empty and one that adds to it keeps what it
+            // added. Each entry owns both halves, so setting the entries aside
+            // and releasing them back to front -- each its value before its key
+            // -- is the order beans_map_clear releases a native map in, without
+            // publishing a half-empty container to any accessor.
+            var dead: List<TreeValue> = []
             for key: TreeValue in receiver.map_keys {
-                dead_keys.push(key)
                 match receiver.map_values.get(
                           tree_value_key(key)) {
-                    some(value) => {
-                        dead_values.push(value)
-                    }
-                    none => {
-                        dead_values.push(
-                            TreeValue.unit())
-                    }
+                    some(entry) => { dead.push(entry) }
+                    none => {}
                 }
             }
-            receiver.map_keys = []
             receiver.map_values = {}
-            // Released the way beans_map_clear releases a native map: entries
-            // back to front, a value before its own key.
-            var dying: int = dead_keys.len()
+            receiver.map_keys = []
+            var dying: int = dead.len()
             for dying > 0 {
                 dying -= 1
-                dead_values.pop()
-                dead_keys.pop()
+                dead.pop()
             }
             return TreeValue.unit()
         }
@@ -9235,11 +9282,19 @@ class TreeInterpreter {
             for key: TreeValue in receiver.map_keys {
                 let encoded: string =
                     tree_value_key(key)
-                result.map_keys.push(
-                    tree_value_copy(key))
-                result.map_values[encoded] =
-                    tree_value_copy(
-                        receiver.map_values[encoded])
+                match receiver.map_values.get(encoded) {
+                    some(entry) => {
+                        result.map_keys.push(
+                            tree_value_copy(key))
+                        result.map_values[encoded] =
+                            tree_map_entry(
+                                tree_value_copy(key),
+                                tree_value_copy(
+                                    tree_map_entry_value(
+                                        entry)))
+                    }
+                    none => {}
+                }
             }
             return result
         }
@@ -11459,11 +11514,12 @@ class TreeInterpreter {
         if receiver.kind == "map" {
             match receiver.map_values.get(
                 self.map_key(receiver, key)) {
-                some(value) => {
+                some(entry) => {
                     return if borrowed {
-                        value
+                        tree_map_entry_value(entry)
                     } else {
-                        tree_value_copy(value)
+                        tree_value_copy(
+                            tree_map_entry_value(entry))
                     }
                 }
                 none => {
@@ -12062,13 +12118,8 @@ class TreeInterpreter {
                 }
                 let encoded: string =
                     self.map_key(result, key)
-                if !result.map_values.contains_key(
-                       encoded) {
-                    result.map_keys.push(
-                        tree_value_copy(key))
-                }
-                result.map_values[encoded] =
-                    tree_value_copy(value)
+                self.tree_map_store(
+                    result, encoded, key, value)
                 index += 2
             }
             return result
@@ -12606,14 +12657,8 @@ class TreeInterpreter {
             if receiver.kind == "map" {
                 let encoded: string =
                     self.map_key(receiver, key)
-                if !receiver.map_values.contains_key(
-                       encoded) {
-                    receiver.map_keys.push(
-                        tree_value_copy(key))
-                    receiver.map_version += 1
-                }
-                receiver.map_values[encoded] =
-                    tree_value_copy(value)
+                self.tree_map_store(
+                    receiver, encoded, key, value)
                 return TreeExec.next()
             }
             if receiver.kind == "slice" &&
@@ -12830,7 +12875,8 @@ class TreeInterpreter {
                 var value: TreeValue = TreeValue.unit()
                 match iterable.map_values.get(encoded) {
                     some(found) => {
-                        value = tree_value_copy(found)
+                        value = tree_value_copy(
+                            tree_map_entry_value(found))
                     }
                     none => {
                         self.fail(
@@ -15059,6 +15105,10 @@ class TreeInterpreter {
     // leaves through beans_panic with those same values still standing.
     fn run() -> bool {
         let answer: bool = self.run_entry()
+        // From here on, a deinit runs only under the host's exit-time sweep,
+        // with no walker frame above it. deinit_object surfaces an uncontained
+        // panic there itself (issue #107).
+        self.entry_returned = true
         TreeExitRoots.kept.push(self.singletons)
         return answer
     }
