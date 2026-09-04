@@ -138,6 +138,21 @@ agree test/cases/parity/map_release_order.b 29
 # private or own-generic call, which holds no row, stays direct. Four objects
 # built and released.
 agree test/cases/parity/generic_base_dispatch.b 4
+# #119: a generic base's deinit filed under the wrong key when a *middle*
+# class sits between it and the leaf. Four hierarchies, each at least three
+# links: a middle that overrides deinit, a four-link chain with two middles,
+# a base-only deinit with two objects built (the extra release only showed
+# when a second object of a nearer class also existed), and one generic base
+# under two different instantiations, and a leaf whose deinit chains past a
+# middle that declares none. Thirteen objects built and released once.
+agree test/cases/parity/generic_base_deinit_chain.b 13
+# #119, the blocker half: a plain class *above* a generic base, whose deinit
+# the parent walk stepped over because a generic link has no plain symbol —
+# dropping one deinit, chosen by declaration order. Both orders here (built in
+# main vs behind a Maker declared before its leaf), a leaf declaring none whose
+# raised base still chains up, and a five-link stack with two plain ancestors
+# above the generic link. Twelve objects built and released once.
+agree test/cases/parity/generic_base_deinit_above.b 12
 agree test/cases/parity/struct_sort.b 3
 agree test/cases/parity/sort_by_key_paths.b
 agree test/cases/parity/list_equality.b
@@ -194,7 +209,7 @@ agree test/cases/parity/settled_dispatch.b 10
 
 # Every case in the directory has to be listed above with its own expected
 # count; a file added and forgotten would otherwise be silently unchecked.
-listed=37
+listed=39
 present=$(find test/cases/parity -name '*.b' | wc -l | tr -d ' ')
 if [ "$present" != "$listed" ]; then
     echo "test/cases/parity holds $present cases but $listed are run" >&2
@@ -284,6 +299,56 @@ grep -q "mark named base base" "$tmp/$name.interp" || {
     exit 1
 }
 echo "  agree: test/cases/$name (generic-base dispatch across packages)"
+# #119, the second half: a generic base's method row filed under the wrong
+# key for *ordinary* methods, not just deinit. The base's package-private
+# `peek` carries the selector `lib:peek`; a subclass in another package
+# declares its own `peek`, which answers a different selector and so is not an
+# override. The base's row was raised under the subclass's plain name, collided
+# with the subclass's own `peek`, and was dropped — leaving the base's vtable
+# row null. It is latent at runtime today (the call devirtualizes), so this
+# asserts the emitted descriptor row directly rather than trusting the answer:
+# the leaf's table must carry a real symbol in the base's slot, not `ptr null`.
+name=generic_base_pkg_row
+( cd "test/cases/$name" && "$root/build/beansc" run main.b ) \
+    >"$tmp/$name.interp"
+( cd "test/cases/$name" \
+  && "$root/build/beansc" build --release main.b \
+       -o "$tmp/$name.release" >/dev/null )
+"$tmp/$name.release" >"$tmp/$name.release.out"
+diff -u "$tmp/$name.interp" "$tmp/$name.release.out"
+( cd "test/cases/$name" && "$root/build/beansc" llvm main.b ) \
+    >"$tmp/$name.ll" 2>/dev/null
+# the symbol emitted for the leaf's own peek (the row that was never null)
+leaf_peek=$(awk '/; app\.Leaf\.peek$/{getline; if ($0 ~ /^define/){match($0,/@\.next\.[A-Za-z0-9]+/); print substr($0,RSTART,RLENGTH); exit}}' "$tmp/$name.ll")
+if [ -z "$leaf_peek" ]; then
+    echo "$name: could not find the leaf's own peek symbol in the IR" >&2
+    exit 1
+fi
+row=$(grep 'next.class[0-9]* = internal constant' "$tmp/$name.ll" \
+        | grep -F "$leaf_peek")
+if [ -z "$row" ]; then
+    echo "$name: no descriptor table references the leaf's peek" >&2
+    exit 1
+fi
+# the method table is the final [ ... ] group, after the "[N x ptr]" type; a
+# null there is a base row the key collision dropped. (The shape pointer just
+# before it is legitimately null, so match only the trailing array.)
+vtable=$(echo "$row" | sed -E 's/.*\[[0-9]+ x ptr\] (\[[^]]*\]).*/\1/')
+# Guard the substitution: if the descriptor layout ever changes shape the sed
+# leaves the row untouched, and a bare `grep null` would then match the shape
+# pointer and fail for the wrong reason. Insist the capture actually isolated a
+# bracketed array before trusting the null check.
+if [ "$vtable" = "$row" ] || [ "${vtable#\[}" = "$vtable" ]; then
+    echo "$name: could not isolate the method table from the descriptor row" >&2
+    echo "$row" >&2
+    exit 1
+fi
+if echo "$vtable" | grep -q 'ptr null'; then
+    echo "$name: the leaf's descriptor has a null row a base method must fill" >&2
+    echo "$row" >&2
+    exit 1
+fi
+echo "  agree: test/cases/$name (generic base's method row survives a cross-package name clash)"
 
 # Reading one too early has to say so on both paths, not answer a zero on one.
 mkdir -p "$tmp/early"
