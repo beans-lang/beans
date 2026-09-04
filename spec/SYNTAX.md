@@ -2001,8 +2001,9 @@ fn describe(p: Payment) -> string {
 ```
 
 An enum carries methods (`fn label() -> string { ... }` inside the enum body,
-with implicit `self`) and static methods, but an enum **value** is a tag, not an
-object: it has no descriptor word, so no dynamic dispatch reads one out of it.
+with implicit `self`) and static methods, but no enum object has a descriptor
+word for dynamic dispatch to read, which is why the relation rules below refuse
+one.
 
 An enum has no base type and cannot implement an interface: the checker refuses
 `enum Colour implements Shows` and `enum Colour extends Base` at the
