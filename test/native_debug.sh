@@ -270,13 +270,13 @@ class Dog extends Animal {
     exact: float
 
     fn init() {
-        super.init("Rex", 4)
         self.flag = true
         self.tiny = 200
         self.small = -300
         self.medium = 70000
         self.ratio = 0.5
         self.exact = 2.25
+        super.init("Rex", 4)
     }
 }
 
