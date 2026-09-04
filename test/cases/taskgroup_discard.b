@@ -17,6 +17,7 @@ class Loud {
 }
 
 fn make(tag: string) -> Loud { return new Loud(tag) }
+fn boom(tag: string) -> Loud { panic("boom {tag}") }
 
 // Build n children whose results nobody claims, then let the group die at the
 // scope exit: the synthesized scope join discards them newest-first.
@@ -45,9 +46,26 @@ fn cancel_discard(n: int) {
     io.println("cancelled")
 }
 
+// wait_all() that fails hands back the first failure and discards the ok
+// results nobody took -- also newest-first, skipping the failure row (#106).
+fn wait_all_fail() {
+    io.println("-- wait_all fail --")
+    let g: TaskGroup<Loud> = new TaskGroup<Loud>()
+    g.brew(make("w0"))
+    g.brew(boom("w1"))
+    g.brew(make("w2"))
+    g.brew(make("w3"))
+    match g.wait_all() {
+        ok(vs) => { io.println("unexpected ok") }
+        err(e) => { io.println("failed") }
+    }
+    io.println("waited")
+}
+
 fn main() {
     scope_discard(1)
     scope_discard(2)
     scope_discard(4)
     cancel_discard(4)
+    wait_all_fail()
 }

@@ -17526,7 +17526,12 @@ BBrew* beans_taskgroup_wait_all_join(BTaskGroup* g) {
     }
     if (bad < 0) return NULL;
     BBrew* first = (BBrew*)(uintptr_t)g->children->data[bad];
-    for (long long i = 0; i < g->children->len; i++) {
+    // The children were joined in spawn order above; the failure at `bad` is
+    // handed back to the caller. Discard the rest newest-first (#106), the same
+    // order the scope join and cancel_all discard in and the order the
+    // interpreter releases its children list -- so a wait_all that fails runs
+    // the unclaimed results' deinits in the same order on both engines.
+    for (long long i = g->children->len - 1; i >= 0; i--) {
         BBrew* row = (BBrew*)(uintptr_t)g->children->data[i];
         if (!row || i == bad) continue;
         brew_drop_result(row);
@@ -17595,11 +17600,14 @@ void beans_taskgroup_cancel_all(BTaskGroup* g) {
     // Discard every outcome newest-first -- the order the interpreter releases
     // its children list in, and the LIFO order a scope drops what it owns, so a
     // discarded value's deinit runs in the same order on both engines (#106).
+    // The row is cleared from the list only after its deinit has run: a
+    // contained panic out of that deinit then leaves the row on the list, to be
+    // released when the group dies, rather than orphaned off it.
     for (long long i = n - 1; i >= 0; i--) {
         BBrew* row = (BBrew*)(uintptr_t)g->children->data[i];
-        g->children->data[i] = 0;
         if (!row) continue;
         brew_drop_result(row);
+        g->children->data[i] = 0;
         beans_release(row);
     }
     g->children->len = 0;

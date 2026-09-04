@@ -18,3 +18,9 @@ drop c4.2
 drop c4.1
 drop c4.0
 cancelled
+-- wait_all fail --
+drop w3
+drop w2
+drop w0
+failed
+waited
