@@ -13,9 +13,18 @@
 #
 # The project is still in the public 1.0 bake, so do not call it 1.0.0 until
 # every release gate in ROADMAP.md has passed.
-compiler=0.1.36
+compiler=0.1.37
 language=1.0
 
+# 15: std.term's four entry points. beans_term_is_tty, beans_term_size,
+# beans_term_set_raw and beans_term_restore are the struct-shaped half of a
+# terminal, kept in C because `struct termios` is 72 bytes on macOS and 60 on
+# Linux and `struct winsize` has no portable Beans spelling. Each returns a
+# plain status — 0, or negative on failure (-errno on POSIX, -1000 where the
+# platform has no terminal control) — and a size comes back through the
+# caller's buffer, so a status is never read as a count. Compiled only at the
+# full runtime profile; the checker refuses std.term below it, so a smaller
+# build links none of this.
 # 14: `for x in xs` over a List got the invalidation rule maps already had.
 # beans_list_iter_invalid is the panic a loop raises when the list it is
 # reading was structurally changed under it. BList's last word became two:
@@ -66,4 +75,4 @@ language=1.0
 # caller-owned event buffer instead of returning a fresh one.
 # Version 7 added Bytes.filled, Bytes.append_int_text, and Thread.detach.
 # Version 6 added per-thread runtime-hook guard entry points.
-runtime_abi=14
+runtime_abi=15

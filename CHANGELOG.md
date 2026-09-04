@@ -4,6 +4,70 @@ This file records user-facing changes in each Beans release.
 
 ## [Unreleased]
 
+## [0.1.37] - 2026-09-04
+
+### Added
+
+- **A C function with a `...` tail can be declared and called.** `ioctl`,
+  `fcntl`, three-argument `open`, `printf` — none could be bound at all, so
+  anything reaching for them dropped to hand-written C. `extern "C" fn
+  ioctl(fd: i32, request: u64, ...) -> i32` declares one. The tail belongs to
+  the **call site**, not the declaration: one declaration has as many
+  signatures as it has calls, and each is classified by the target's own
+  variadic rules. That is the point of the form rather than a convenience — on
+  Apple arm64 the fixed head stays in registers while the tail goes on the
+  stack, so the same arguments passed through a fixed signature land in the
+  wrong places. Both backends materialise the signature the call actually has
+  and let Clang classify it. At least one fixed parameter is required, as in C;
+  there is no `va_list`, so a variadic declaration never has a body and a `pub
+  extern "C" fn` export is never variadic. `bindgen` binds a variadic import
+  and still refuses a variadic *callback* type, which would have to name a tail
+  only a call site knows. (#33)
+
+- **`std.term`, so a terminal program is not hand-rolled.** Raw mode, window
+  size, ANSI output and key decoding. The split is deliberate: the parts whose
+  shape is the platform's — `struct termios` (72 bytes on macOS, 60 on Linux),
+  `struct winsize`, the Windows console — are four calls in the runtime's C,
+  and everything portable is Beans. `RawMode.enter` returns a guard that
+  restores on `restore()`, on going out of scope, and — because the runtime
+  registers the restore with `atexit` — on a normal exit and on a panic, both
+  of which reach `exit()` on either backend. A crash by `SIGSEGV`/`SIGBUS` is
+  the documented boundary: only the fault reporter runs then and it is fenced
+  to flushing output, so a full-screen program should watch `terminate` and
+  `hangup` through `std.signal`. `Frame` builds a whole frame and writes it
+  with one `write(2)`, because `io.print` goes through stdio where a frame with
+  no trailing newline would sit in the buffer. `KeyDecoder` turns CSI sequences
+  into keys and holds an incomplete prefix rather than reporting a bare `ESC`.
+  Refused by the checker on any runtime below full, with a message about the
+  program rather than a link error. (#41)
+
+### Fixed
+
+- **`?` keeps exactly the count the ownership plan gave it.** The MIR plan
+  already says who owns the operand — `consumes` means the count transfers and
+  nothing else will release it — and both halves of the emitter read that
+  decision from the wrong place, in opposite directions.
+
+  The unwrap's two `Option` arms retained the payload either way, so every
+  reference crossing an owned `?` was left with a `+1` nothing released: the
+  interpreter freed it and a native build did not, on the shape a program
+  writes every time it says `let x: T = maybe()?`. It leaked on the read path,
+  the write path and the argument path alike, and through the second arm too,
+  where the payload is a struct that owns a reference without being one. (#110)
+
+  The propagate's same-representation fast path had the mirror fault: the
+  operand flowed straight out even when it was a borrow, handing the caller a
+  box the frame never retained — `let x = borrowed_result?` on the error path
+  was a double free the moment the caller let go. Two shipped files already had
+  the shape and survived only because their error payload was a string literal,
+  which is immortal. (#114)
+
+  Neither arm writes a count op it does not owe now. An `Option` is not a box,
+  so a consumed operand hands its count straight over and the emitter writes
+  nothing at all — one atomic increment fewer than before on the hottest
+  ownership path there is. Across the whole tree the emitted IR is unchanged
+  except at `?` itself.
+
 ## [0.1.36] - 2026-09-03
 
 ### Added
