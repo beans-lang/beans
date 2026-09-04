@@ -59,6 +59,11 @@ if grep -q "no parent constructor to call" "$tmp/bad"; then
     echo "invalid builtin inheritance emitted a constructor cascade" >&2
     exit 1
 fi
+# A subclass may not redeclare a field name it inherits (#95). Assert the
+# direct-parent and the grandparent-through-a-silent-middle shapes both refuse,
+# naming the base the slot belongs to.
+check_bad inherited_field_shadow_bad.b "field 'z' redeclares a field 'Sub' inherits from 'Middle'"
+check_bad inherited_field_shadow_bad.b "field 'x' redeclares a field 'Sub' inherits from 'Grand'"
 check_bad syntax_interface_static_bad.b "static interface methods are not supported"
 check_bad syntax_bound_bad.b "generic bound 'Value' is not an interface"
 check_bad syntax_old_take_bad.b "'take' was removed"

@@ -1871,6 +1871,18 @@ Private methods are not inherited and never satisfy or replace class or
 interface contracts, so they cannot be `abstract` or `override`. Interfaces
 cannot declare private methods. Beans has no `final` yet.
 
+A subclass field may not reuse the name of a field it inherits. Every field of
+every class in the chain takes its own slot, laid out base class first, so one
+name shared by two classes in a chain would be two slots — an inherited field
+is storage the base already owns, and the subclass has to pick a different
+name. This holds whatever the redeclared field's type or visibility, and
+across the parts of a `partial class`. Fields have no counterpart to the
+`priv`-method carve-out: a method can be a distinct member under a reused
+name, but storage is never shadowed. (Only instance fields collide this way; a
+`static` field is per-type storage reached through its declaring type and is
+not inherited, so it does not share a slot with an instance field of the same
+name.)
+
 `extends` and `implements` belong to classes and interfaces. A struct, union
 or enum that names either is refused at the declaration: an interface value is
 an object whose first word is its descriptor, and a value type has none.

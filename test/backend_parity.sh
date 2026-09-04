@@ -155,10 +155,17 @@ agree test/cases/parity/reflect_error_bridge.b
 # bare pointer while the direct one runs every operand, receiver included,
 # through the internal-argument packer. Ten objects built, ten released.
 agree test/cases/parity/settled_dispatch.b 10
+# A subclass with its own (non-shadowing) field names is the shape the #95
+# refusal must still accept, and it is the shape the two backends already had
+# to agree on: every field of every class in the chain owns a slot, so the
+# four owned values build once and release once in one order. A redeclared
+# name gave the interpreter one slot and the native backend two, which this
+# case would expose as a marker imbalance the moment the layouts diverged.
+agree test/cases/parity/inherited_field_slots.b 4
 
 # Every case in the directory has to be listed above with its own expected
 # count; a file added and forgotten would otherwise be silently unchecked.
-listed=30
+listed=31
 present=$(find test/cases/parity -name '*.b' | wc -l | tr -d ' ')
 if [ "$present" != "$listed" ]; then
     echo "test/cases/parity holds $present cases but $listed are run" >&2

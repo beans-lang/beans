@@ -3016,6 +3016,91 @@ class ExpressionChecker {
         return move result
     }
 
+    // A subclass field must not reuse the name of a field it inherits.
+    //
+    // The two backends store a redeclared name differently, so `check` was
+    // letting them mean different objects. The tree interpreter keys an
+    // object's fields by name (TreeFields in src/tree_value.b), so a base
+    // field and a subclass field of the same name land in one slot: the
+    // subclass's write overwrites the base's value mid-construction and
+    // releases it while the object is still being built. A native build lays
+    // every field of every class in the chain out at its own offset
+    // (src/llvm_emit_object.b), so the name is two slots and both survive.
+    // One field name has to mean one slot in both backends, so the shadowing
+    // is refused here rather than left to diverge at run time.
+    fn check_inherited_field_shadowing() {
+        for declaration: HirDeclaration in
+            self.program.declarations {
+            if declaration.kind != "class" { continue }
+            var owners: Map<string, string> = {}
+            var seen: Map<string, bool> = {}
+            self.collect_inherited_field_owners(
+                declaration, inout owners, inout seen)
+            for field: HirField in declaration.fields {
+                match owners.get(field.name) {
+                    some(owner) => {
+                        // A field credited to the class itself can only come
+                        // from an inheritance cycle, which is reported on its
+                        // own; do not add a self-referential shadow error.
+                        if owner == declaration.qualified {
+                            continue
+                        }
+                        self.current = new HirFunction(
+                            "$fields",
+                            "{declaration.qualified}.$fields",
+                            declaration.qualified, false, false,
+                            field.file, field.line, field.col)
+                        self.fail(
+                            new AstNode(
+                                "field", field.name,
+                                field.line, field.col),
+                            "field '{field.name}' redeclares a field '{declaration.name}' inherits from '{self.diagnostic_symbol(owner)}' — an inherited field name is a slot the base already owns, so a subclass cannot declare it again; rename this field")
+                    }
+                    none => {}
+                }
+            }
+        }
+    }
+
+    // The nearest base owner of every instance field declared above this
+    // class, walking the single `extends` base at each link. The first hit
+    // for a name is kept, so the owner reported is the closest ancestor. A
+    // `seen` set stops a malformed cyclic chain from looping forever;
+    // real cycles are already refused before this pass.
+    fn collect_inherited_field_owners(
+        declaration: HirDeclaration,
+        inout owners: Map<string, string>,
+        inout seen: Map<string, bool>) {
+        if seen.contains_key(declaration.qualified) { return }
+        seen[declaration.qualified] = true
+        var base_index: int = 0 - 1
+        for index: int in
+            0..declaration.relations.len() {
+            if index <
+                   declaration.relation_kinds.len() &&
+               declaration.relation_kinds[index] ==
+                   "extends" {
+                base_index = index
+                break
+            }
+        }
+        if base_index < 0 { return }
+        match self.declaration_for(
+                  declaration.relations[base_index]) {
+            some(base) => {
+                if base.kind != "class" { return }
+                for field: HirField in base.fields {
+                    if !owners.contains_key(field.name) {
+                        owners[field.name] = base.qualified
+                    }
+                }
+                self.collect_inherited_field_owners(
+                    base, inout owners, inout seen)
+            }
+            none => {}
+        }
+    }
+
     fn check_abstract_contracts() {
         for declaration: HirDeclaration in
             self.program.declarations {
@@ -14039,6 +14124,7 @@ class ExpressionChecker {
             self.validate_override(function)
         }
         self.check_abstract_contracts()
+        self.check_inherited_field_shadowing()
         for function: HirFunction in self.program.functions {
             if (function.is_extern_c &&
                 !function.is_c_export) ||
