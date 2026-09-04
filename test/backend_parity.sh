@@ -120,6 +120,12 @@ agree test/cases/parity/map_move_only_get.b
 agree test/cases/parity/default_effects.b 5
 agree test/cases/parity/interface_upcast.b 6
 agree test/cases/parity/generic_base_deinit.b 4
+# A receiver written at a generic base must run the object's own method, not
+# the base body. A non-overriding subclass keeps the direct call; an override
+# reads the descriptor; `self.method()` in a base body dispatches too; and a
+# private or own-generic call, which holds no row, stays direct. Four objects
+# built and released.
+agree test/cases/parity/generic_base_dispatch.b 4
 agree test/cases/parity/struct_sort.b 3
 agree test/cases/parity/sort_by_key_paths.b
 agree test/cases/parity/list_equality.b
@@ -159,7 +165,7 @@ agree test/cases/parity/settled_dispatch.b 10
 
 # Every case in the directory has to be listed above with its own expected
 # count; a file added and forgotten would otherwise be silently unchecked.
-listed=31
+listed=32
 present=$(find test/cases/parity -name '*.b' | wc -l | tr -d ' ')
 if [ "$present" != "$listed" ]; then
     echo "test/cases/parity holds $present cases but $listed are run" >&2
@@ -228,6 +234,27 @@ grep -q "built 3" "$tmp/$name.interp" || {
     exit 1
 }
 echo "  agree: test/cases/$name (static tables build once, before main)"
+
+# A receiver written at a generic base whose runtime class lives in another
+# package. A cross-package subclass's override of a public method must win
+# (mark), while an un-overridden public method stays direct and its own
+# package-private call reaches the base package's method, not a same-named one
+# the consumer declares (tag/hidden). The native emitter called the base body
+# outright for both; it answered mark wrong and segfaulted on the collision.
+name=parity_generic_base
+( cd "test/cases/$name" && "$root/build/beansc" run tests/main.b ) \
+    >"$tmp/$name.interp"
+( cd "test/cases/$name" \
+  && "$root/build/beansc" build --release tests/main.b \
+       -o "$tmp/$name.release" >/dev/null )
+"$tmp/$name.release" >"$tmp/$name.release.out"
+diff -u "$tmp/$name.interp" "$tmp/$name.release.out"
+grep -q "mark named base base" "$tmp/$name.interp" || {
+    echo "a cross-package override did not win over the generic base body" >&2
+    cat "$tmp/$name.interp" >&2
+    exit 1
+}
+echo "  agree: test/cases/$name (generic-base dispatch across packages)"
 
 # Reading one too early has to say so on both paths, not answer a zero on one.
 mkdir -p "$tmp/early"

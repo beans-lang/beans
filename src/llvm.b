@@ -82,6 +82,12 @@ partial class LlvmTextEmitter {
     static_dispatch_symbols: Map<string, string>
     // class_dispatch_is_settled, keyed "{class}|{method}"
     settled_dispatch_classes: Map<string, bool>
+    // generic_base_dispatch_symbol, keyed
+    // "{receiver instance}|{slot}|{base symbol}". A receiver written at a
+    // generic base calls the base body direct only when nothing can replace
+    // it; the reads behind that answer are fixed once the symbol pre-pass has
+    // run, so one answer per instance-and-slot stands for the whole emit.
+    generic_base_dispatch: Map<string, string>
     // Classes this program builds an object of, read off the whole MIR
     // before anything is emitted. A guarded call speculates on these, so
     // the answer must not depend on how far the emit has got.
@@ -262,6 +268,7 @@ partial class LlvmTextEmitter {
         self.method_dispatch_slots = {}
         self.static_dispatch_symbols = {}
         self.settled_dispatch_classes = {}
+        self.generic_base_dispatch = {}
         self.constructed_classes = {}
         self.declared_dispatch_slots = {}
         self.generic_templates = {}
