@@ -469,9 +469,37 @@ extern char** environ;
 // but the runtime itself uses libc directly. That keeps the generated code for
 // the default profile exactly what it was — a hook on the allocation hot path
 // would cost every program to serve the one that overrides it.
+#ifdef BEANS_RT_ALLOC_FAILTEST
+// Test-only allocation-failure injection (test/oom.sh). NOT compiled into any
+// release build: the flag is set by that gate alone, so the default profile's
+// allocators stay the bare libc macros below. BEANS_OOM_AFTER=N lets N runtime
+// allocations succeed and makes the next one return NULL, so an out-of-memory
+// path can be reached at a chosen site rather than only when the machine is
+// genuinely out of memory. Every rt_* allocator routes through the one
+// countdown so a single sweep covers zalloc, realloc and alloc alike.
+static long long rt_oom_left = -2; // -2 = env not read yet, -1 = disabled
+static int rt_oom_hit(void) {
+    if (rt_oom_left == -2) {
+        const char* e = getenv("BEANS_OOM_AFTER");
+        rt_oom_left = e ? atoll(e) : -1;
+    }
+    if (rt_oom_left < 0) return 0;
+    if (rt_oom_left == 0) return 1;
+    rt_oom_left -= 1;
+    return 0;
+}
+static void* rt_zalloc(unsigned long long n) {
+    return rt_oom_hit() ? NULL : calloc(1, (size_t)n);
+}
+static void* rt_realloc(void* p, unsigned long long n) {
+    return rt_oom_hit() ? NULL : realloc(p, (size_t)n);
+}
+#define rt_free(p) free(p)
+#else
 #define rt_zalloc(n) calloc(1, (size_t)(n))
 #define rt_realloc(p, n) realloc((p), (size_t)(n))
 #define rt_free(p) free(p)
+#endif
 
 __attribute__((weak)) void* beans_host_alloc(unsigned long long size,
                                              unsigned long long align) {
@@ -680,7 +708,13 @@ void beans_out_flush(void) {
 // rt_zalloc so the hosted profiles keep using malloc where they always did — a
 // blanket calloc would zero every list growth for the benefit of nobody.
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
+#ifdef BEANS_RT_ALLOC_FAILTEST
+static void* rt_alloc(unsigned long long n) {
+    return rt_oom_hit() ? NULL : malloc((size_t)n);
+}
+#else
 #define rt_alloc(n) malloc((size_t)(n))
+#endif
 #else
 static void* rt_alloc(unsigned long long n) { return beans_host_alloc(n, 16); }
 #endif
@@ -6528,6 +6562,9 @@ void beans_list_insert(BList* l, long long i, long long v, long long line,
     if (l->len == l->cap) {
         l->cap *= 2;
         l->data = rt_realloc(l->data, (size_t)l->cap * 8);
+        // The typed sibling below already panicked here; this one stored into a
+        // NULL buffer on OOM. Match it: a refused grow is the documented panic.
+        if (!l->data) beans_panic("out of memory", line, col);
     }
     memmove(l->data + i + 1, l->data + i, (size_t)(l->len - i) * 8);
     l->data[i] = v;
@@ -7005,6 +7042,7 @@ BMap* beans_map_new(long long key_ptr, long long val_ptr, long long ordered) {
     BMap* m = beans_alloc(sizeof(BMap), 3 | (key_ptr << 3) | (val_ptr << 4));
     m->cap = 4;
     m->data = rt_zalloc((unsigned long long)(8) * (8)); // idx/tombs/used/deadbits start zero: beans_alloc zeroes
+    if (!m->data) beans_panic("out of memory", 0, 0);
     m->ordered = ordered;
     return m;
 }
@@ -7048,6 +7086,11 @@ static void map_reindex_to(BMap* m, long long kind, long long (*hf)(long long),
     while (wanted * 3 >= cap * 2) cap <<= 1;
     rt_free(m->idx);
     m->idx = rt_zalloc((unsigned long long)((size_t)cap) * (8));
+    // Reindex runs on the insert path once a map outgrows the linear scan, and
+    // the loop below dereferences the index at once. Without this an OOM here
+    // was a NULL store rather than the documented panic. Any entry that
+    // triggered the grow is already in `m->data`, so nothing is leaked.
+    if (!m->idx) beans_panic("out of memory", 0, 0);
     m->icap = cap;
     m->tombs = 0;
     unsigned long long mask = (unsigned long long)cap - 1;
@@ -7085,6 +7128,7 @@ void beans_map_reserve(BMap* m, long long capacity, long long kind, void* hash,
             long long old_words = (m->cap + 63) >> 6;
             long long new_words = (cap + 63) >> 6;
             m->deadbits = rt_realloc(m->deadbits, (size_t)new_words * 8);
+            if (!m->deadbits) beans_panic("out of memory", line, col);
             memset(m->deadbits + old_words, 0,
                    (size_t)(new_words - old_words) * 8);
         }
@@ -7174,9 +7218,24 @@ static void map_insert_miss(BMap* m, long long key, long long val,
         long long ow = (m->cap + 63) >> 6;
         m->cap *= 2;
         m->data = rt_realloc(m->data, (size_t)m->cap * 16);
+        if (!m->data) {
+            // The entry owns key and value from the call (the caller retained
+            // before handing them over), so a refusal here releases them
+            // rather than leaking them when a contained panic unwinds out of
+            // this frame (src/llvm_unwind.b). This is what map_insert_miss_typed
+            // already did; without it OOM here was a NULL store, not a panic.
+            if (flags & 2) beans_release((void*)(uintptr_t)val);
+            if (flags & 1) beans_release((void*)(uintptr_t)key);
+            beans_panic("out of memory", 0, 0);
+        }
         if (m->deadbits) {
             long long nw = (m->cap + 63) >> 6;
             m->deadbits = rt_realloc(m->deadbits, (size_t)nw * 8);
+            if (!m->deadbits) {
+                if (flags & 2) beans_release((void*)(uintptr_t)val);
+                if (flags & 1) beans_release((void*)(uintptr_t)key);
+                beans_panic("out of memory", 0, 0);
+            }
             memset(m->deadbits + ow, 0, (size_t)(nw - ow) * 8);
         }
     }
@@ -7220,6 +7279,11 @@ static void map_insert_miss_typed(BMap* m, long long key, void* value,
         if (m->deadbits) {
             long long nw = (m->cap + 63) >> 6;
             m->deadbits = rt_realloc(m->deadbits, (size_t)nw * 8);
+            if (!m->deadbits) {
+                map_release_wide_value(m, value);
+                if (flags & 1) beans_release((void*)key);
+                beans_panic("out of memory", 0, 0);
+            }
             memset(m->deadbits + ow, 0, (size_t)(nw - ow) * 8);
         }
     }
@@ -8625,6 +8689,7 @@ static void bytes_grow(BList* b, long long need) {
     long long cap = b->cap;
     while (cap < need) cap *= 2;
     b->data = rt_realloc(b->data, (size_t)cap);
+    if (!b->data) beans_panic("out of memory", 0, 0);
     b->cap = cap;
 }
 // Private compiler hook for parsers that may read a fixed SIMD tail. The
