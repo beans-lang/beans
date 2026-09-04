@@ -3151,15 +3151,17 @@ partial class LlvmTextEmitter {
         return none
     }
 
-    // Instantiate one generic method call: explicit type arguments seed
-    // the bindings — the only way to bind a generic the signature never
-    // mentions — unification against the concrete operand and result
-    // types fills the rest, and the instance is keyed on the whole call
-    // shape so distinct bindings never share a body.
-    fn emit_generic_method_instance(
+    // Raise one generic method instance and return its symbol, without
+    // emitting the call. Explicit type arguments seed the bindings — the only
+    // way to bind a generic the signature never mentions — and unification
+    // against the concrete operand and result types fills the rest, so the
+    // instance is keyed on the whole call shape and distinct bindings never
+    // share a body. Splitting the raise from the call lets a dispatch that
+    // must read the descriptor still raise the base's own body, which the base
+    // instantiation's row needs whether or not the call goes direct.
+    fn resolve_generic_method_symbol(
         function: MirFunction,
         instruction: MirInstruction,
-        values: Map<int, string>,
         template_name: string,
         base_name: string,
         bindings: Map<string, HirType>) -> string {
@@ -3204,13 +3206,107 @@ partial class LlvmTextEmitter {
             }
             none => {}
         }
+        return self.instantiate_generic(
+            instruction, template_name,
+            instance_name, bindings)
+    }
+
+    fn emit_generic_method_instance(
+        function: MirFunction,
+        instruction: MirInstruction,
+        values: Map<int, string>,
+        template_name: string,
+        base_name: string,
+        bindings: Map<string, HirType>) -> string {
         let symbol: string =
-            self.instantiate_generic(
-                instruction, template_name,
-                instance_name, bindings)
+            self.resolve_generic_method_symbol(
+                function, instruction,
+                template_name, base_name, bindings)
         if symbol == "" { return "" }
         return self.emit_direct_call(
             function, instruction, values, symbol)
+    }
+
+    // The base body `base_symbol` if a receiver written at a generic base may
+    // be called direct, else "". Direct is sound when no class that can stand
+    // behind the receiver overrides the method: each such class then inherits
+    // the base body. The question is asked of the class graph, not of raised
+    // rows — for every concrete non-generic conformer, does a link between it
+    // and the generic base declare this method in this slot? A declaration in
+    // the slot is an override; none means the conformer inherits base_symbol.
+    // `declared_dispatch_slots` is the pre-pass's own record, fixed before any
+    // body is emitted, so the answer is the same wherever the call sits in the
+    // emit order. A generic subclass (its arguments are not bound here) and a
+    // non-class conformer both force the descriptor. Slot-less and private
+    // (`type:`) calls never reach here — the caller sends those direct,
+    // because nothing can replace them and they hold no row to read.
+    fn generic_base_dispatch_symbol(
+        declaration: HirDeclaration,
+        receiver_type: HirType,
+        slot: string,
+        base_symbol: string) -> string {
+        let key: string =
+            "{render_hir_type(receiver_type)}|{slot}|{base_symbol}"
+        match self.generic_base_dispatch.get(key) {
+            some(known) => { return known }
+            none => {}
+        }
+        let method: string = self.dispatch_method(slot)
+        var resolved: string = base_symbol
+        for candidate: HirDeclaration in
+            self.program.declarations {
+            if candidate.kind == "interface" ||
+               candidate.qualified ==
+                   declaration.qualified ||
+               !self.class_conforms_to_instance(
+                   candidate, declaration,
+                   receiver_type) {
+                continue
+            }
+            if candidate.kind != "class" {
+                resolved = ""
+                break
+            }
+            // an abstract class cannot be built, so it is never the class
+            // behind a receiver; a concrete subclass of it is weighed on its
+            // own row
+            if candidate.is_abstract { continue }
+            if candidate.generics.len() != 0 {
+                resolved = ""
+                break
+            }
+            // Walk this conformer's chain from itself up to — but not
+            // including — the generic base. A link between them that declares
+            // the method in this slot overrides the base body, so the object
+            // does not run base_symbol and the descriptor must be read. If no
+            // link overrides, the conformer inherits the base body, which is
+            // base_symbol. The names come from the pre-pass, so the answer
+            // does not depend on how far the emit has got.
+            let chain: List<HirDeclaration> =
+                self.class_chain(candidate)
+            var overrides: bool = false
+            var reached_base: bool = false
+            var index: int = chain.len()
+            for index > 0 {
+                index -= 1
+                let link: HirDeclaration = chain[index]
+                if link.qualified ==
+                       declaration.qualified {
+                    reached_base = true
+                    break
+                }
+                if self.declared_dispatch_slots.contains_key(
+                       "{link.qualified}.{method}|{slot}") {
+                    overrides = true
+                }
+            }
+            if overrides || !reached_base {
+                resolved = ""
+                break
+            }
+        }
+        self.generic_base_dispatch[key] = resolved
+        return resolved
     }
 
     fn emit_method_call(
@@ -3393,12 +3489,53 @@ partial class LlvmTextEmitter {
                         receiver_type
                     bindings[declaration.name] =
                         receiver_type
-                    return self.emit_generic_method_instance(
+                    // Raise the base's own body under the instance name and
+                    // keep the symbol: it is the body every class that does
+                    // not replace this method runs, and the receiver named at
+                    // the base is one of them.
+                    let base_symbol: string =
+                        self.resolve_generic_method_symbol(
+                            function, instruction,
+                            self.generic_method_template(
+                                declaration, instruction.text),
+                            "{render_hir_type(receiver_type)}.{instruction.text}",
+                            bindings)
+                    if base_symbol == "" { return "" }
+                    let slot: string =
+                        instruction.dispatch_slot
+                    // Nothing can replace this body, so call it directly. A
+                    // slot-less call is one to a method carrying its own type
+                    // parameters — the checker forbids overriding it, so it
+                    // holds no descriptor row to read. A `type:` slot is a
+                    // private method's, which only its declaring type can ever
+                    // hold. Reading a descriptor for either loads a row that is
+                    // null or absent; the raised base body is the one answer.
+                    if slot == "" ||
+                       slot.starts_with("type:") {
+                        return self.emit_direct_call(
+                            function, instruction,
+                            values, base_symbol)
+                    }
+                    // `Shelf<int>` is only the receiver's static type. The
+                    // runtime class is any non-generic subclass, and one that
+                    // overrides this method replaces the body — so calling the
+                    // base body outright runs the wrong method, silently, while
+                    // the interpreter dispatches through the object and the
+                    // backends part. Call direct only when no class that can
+                    // stand behind this receiver overrides the method;
+                    // otherwise read the row, where a subclass's override wins.
+                    let settled: string =
+                        self.generic_base_dispatch_symbol(
+                            declaration, receiver_type,
+                            slot, base_symbol)
+                    if settled != "" {
+                        return self.emit_direct_call(
+                            function, instruction,
+                            values, settled)
+                    }
+                    return self.emit_guarded_dynamic_call(
                         function, instruction, values,
-                        self.generic_method_template(
-                            declaration, instruction.text),
-                        "{render_hir_type(receiver_type)}.{instruction.text}",
-                        bindings)
+                        declaration, receiver_type)
                 }
                 let method_template: string =
                     "{declaration.qualified}.{instruction.text}"
