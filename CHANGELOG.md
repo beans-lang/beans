@@ -4,6 +4,98 @@ This file records user-facing changes in each Beans release.
 
 ## [Unreleased]
 
+## [0.1.38] - 2026-09-05
+
+Fourteen issues where the tree interpreter and the native backend disagreed
+about the same checked program, plus two rules the checker was never enforcing.
+The runtime ABI moves to 16.
+
+### Changed
+
+- **A subclass may no longer redeclare an inherited field's name.** The
+  interpreter gave the two declarations one slot and the native backend gave
+  them two, so `Sub.v` and `Base.v` were the same storage under one compiler and
+  different storage under the other. There is no reading of that program both
+  backends can share, so the checker now refuses it: *"field 'v' redeclares a
+  field 'Sub' inherits from 'Base' — an inherited field name is a slot the base
+  already owns, so a subclass cannot declare it again; rename this field."*
+  Existing code that shadowed a base field will stop compiling and must rename.
+  (#95)
+
+- **An initializer must assign every field before it returns.** Nothing proved
+  an object was fully built, so a never-assigned field passed `check` and then
+  panicked in the interpreter and read uninitialised memory natively. The
+  checker now runs definite-assignment over initializers and refuses the gap:
+  *"'C' init returns with unassigned fields (a) — every field must be assigned
+  before construction finishes."* Code that relied on a field being implicitly
+  valid will stop compiling. Field defaults and every path through a branch are
+  understood, so only genuinely unassigned fields are reported. (#94)
+
+### Fixed
+
+- **Writing through a `Slice<T>` by index no longer evaluates the index twice.**
+  A compound write through a slice ran its index expression once in the
+  interpreter and twice natively, so `s[next()] += 1` called `next()` a
+  different number of times on each backend. The index is now read once, at the
+  hoisted key, on both. (#61)
+
+- **An enum satisfies the `Order` bound**, so `sort`, `min` and `max` work on a
+  list of enum values. A payload-free enum slot is a pointer at its tag word;
+  the runtime compared the pointers, which ordered by allocation address. Order
+  kind 7 compares the loaded tags instead, and `slot_cmp` now traps an unknown
+  kind rather than sorting by the raw slot, so a compiler/runtime mismatch fails
+  loudly. This is the ABI 16 change. (#117)
+
+- **Comparing two `Result<T, E>` values no longer segfaults natively.** The
+  emitter evaluated *both* payload comparisons and chose between them with a
+  `select`, which does not short-circuit — so comparing an `ok` against an `err`
+  dereferenced the dead arm's payload as the wrong type. Equality now branches
+  on the tags and touches only the arm that is live. (#93)
+
+- **A subclass's override runs when the receiver is written at a generic base.**
+  A call through a `Base<T>`-typed receiver went straight to the base body
+  natively while the interpreter dispatched it, so the override silently never
+  ran in a native build. (#103)
+
+- **A generic base class's methods no longer collide with a subclass's own.**
+  The base's instantiated methods were filed under the subclass's plain name,
+  which is the same key the subclass's own methods use. One bad key produced
+  three failures: a base `deinit` ran twice and ahead of the middle class's own,
+  an ordinary method's vtable row was left null when a package-private method in
+  another package answered a different selector, and a `deinit` on a plain class
+  above a generic base never ran at all — which of them you hit depended on the
+  order bodies happened to be emitted in. (#119)
+
+- **A deep chain of objects that declare `deinit` no longer overflows the
+  interpreter's stack**, where the native backend had always dropped it
+  iteratively. (#96)
+
+- **A generic class holding a generic class field runs its cycle deinits at
+  exit** under the interpreter, as the native backend already did. (#91)
+
+- **A `Map` releases each entry's value before its key**, interleaved per entry,
+  on both backends. The interpreter released all values and then all keys, so a
+  key whose `deinit` observed its value saw a different world depending on the
+  backend. (#97)
+
+- **A `TaskGroup` discards unclaimed results newest-first on both backends** —
+  the order a scope drops what it owns, and the order the interpreter releases
+  its children. It was oldest-first natively. (#106)
+
+- **An uncontained deinit panic in the exit-time cycle sweep reports the same
+  exit status on both backends**, including past an explicit `exit(n)`, out of a
+  thread, and while another panic is live. It exited 3 natively and 0 in the
+  interpreter. (#107)
+
+- **`PriorityQueue`'s sift and `SortedMap`'s rotations no longer answer from a
+  half-updated container.** Both wrote a node's links across several statements,
+  and any allocation in between can run a collector `deinit` that reads the
+  container mid-update. (#92)
+
+- **Nine runtime allocation sites check their result.** `map_insert_miss` and
+  the list, map and bytes growth paths used `rt_realloc`'s return without
+  testing it, turning an out-of-memory condition into a null dereference. (#108)
+
 ## [0.1.37] - 2026-09-04
 
 ### Added
