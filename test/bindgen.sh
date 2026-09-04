@@ -214,7 +214,12 @@ cat >"$tmp/variadic.h" <<'C'
 int logline(const char*, ...);
 int ioctl_like(int fd, unsigned long request, ...);
 C
-"$beansc" bindgen "$tmp/variadic.h" -o "$tmp/variadic.b" >"$tmp/variadic.out"
+# Pinned to one target: plain `char` is signed on x86-64 and unsigned on ARM
+# Linux, so `const char*` binds as RawPtr<i8> on one and RawPtr<u8> on the
+# other. The assertions below name a concrete type, so the ABI has to be a
+# constant here rather than the host's.
+"$beansc" bindgen "$tmp/variadic.h" -o "$tmp/variadic.b" \
+    --target x86_64-unknown-linux-gnu >"$tmp/variadic.out"
 "$beansc" check "$tmp/variadic.b" >"$tmp/variadic.check"
 grep -F 'fn logline(arg0: RawPtr<i8>, ...) -> i32' "$tmp/variadic.b" >"$tmp/match"
 grep -F 'fn ioctl_like(fd: i32, request: u64, ...) -> i32' \
