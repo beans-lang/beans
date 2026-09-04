@@ -795,6 +795,33 @@ class TreeInterpreter {
         return self.declaration_by_name.get(name)
     }
 
+    // The declaration-order tag of an enum variant, the number `Order`
+    // compares by. A variant value carries it in `int_data` so the two
+    // type-erased comparators — tree_value_less (sort, min, max) and the
+    // binary `<` path — can order two variants without the declaration in
+    // hand, the same tag the native backend loads from the enum object or
+    // reads as the `enum(u8)` value. Payload variants also get it; only a
+    // payload-free enum satisfies `Order`, but stamping every variant keeps
+    // the one construction rule uniform.
+    fn enum_variant_tag(type: HirType,
+                        variant_name: string) -> int {
+        match self.declaration(type.name) {
+            some(declaration) => {
+                if declaration.kind == "enum" {
+                    for index: int in
+                        0..declaration.variants.len() {
+                        if declaration.variants[index].name ==
+                           variant_name {
+                            return index
+                        }
+                    }
+                }
+            }
+            none => {}
+        }
+        return 0
+    }
+
     fn tree_json_annotation(
         annotations: List<HirAnnotation>, short_name: string
     ) -> Option<HirAnnotation> {
@@ -2160,6 +2187,13 @@ class TreeInterpreter {
                     } else {
                         result = TreeValue.sequence("variant", values)
                         result.text = variant_name
+                        for index: int in
+                            0..declaration.variants.len() {
+                            if declaration.variants[index].name ==
+                               variant_name {
+                                result.int_data = index
+                            }
+                        }
                     }
                     for index: int in 0..count {
                         if !constructing ||
@@ -4627,6 +4661,30 @@ class TreeInterpreter {
             }
             if node.value == ">=" {
                 return TreeValue.boolean(low || !high)
+            }
+        }
+        // `Order` on a payload-free enum: compare the declaration-order tags
+        // the variants carry. Only a generic body reaches these — a bare
+        // `a < b` on two enum values is refused as an unordered operand, the
+        // same rule bool has — and only a payload-free enum satisfies Order,
+        // so there is never a payload to break the tie. == and != went
+        // through tree_value_equal above. This is the tag compare the native
+        // backend emits (icmp on the i8 value or the loaded i64).
+        if left.kind == "variant" &&
+           right.kind == "variant" {
+            let low: int = left.int_data
+            let high: int = right.int_data
+            if node.value == "<" {
+                return TreeValue.boolean(low < high)
+            }
+            if node.value == "<=" {
+                return TreeValue.boolean(low <= high)
+            }
+            if node.value == ">" {
+                return TreeValue.boolean(low > high)
+            }
+            if node.value == ">=" {
+                return TreeValue.boolean(low >= high)
             }
         }
         if left.kind == "object" &&
@@ -12032,6 +12090,9 @@ class TreeInterpreter {
                 TreeValue.sequence(
                     "variant", move payload)
             result.text = node.value
+            result.int_data =
+                self.enum_variant_tag(
+                    node.type, node.value)
             return result
         }
         if node.kind == "some" ||

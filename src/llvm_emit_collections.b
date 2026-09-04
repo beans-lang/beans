@@ -678,7 +678,8 @@ partial class LlvmTextEmitter {
             return ""
         }
         // the runtime's order kinds: 0 signed, 1 double, 2 string,
-        // 5 unsigned, 6 float — the same table emit_list_sort uses.
+        // 5 unsigned, 6 float, 7 enum-tag-through-pointer — the same table
+        // emit_list_sort uses.
         // The old catch-all 4 landed on slot_cmp's comparator row with
         // no comparator, which answers 0 for every pair, so min and
         // max of a sized-integer or f32 list returned whichever
@@ -697,6 +698,27 @@ partial class LlvmTextEmitter {
             kind = 6
         } else if name == "string" {
             kind = 2
+        }
+        // min and max order the same way sort does: a payload-free enum by
+        // its declaration-order tag — enum(u8) reads the slot tag (kind 5),
+        // a plain enum loads it through the pointer (kind 7). The runtime
+        // hands back the winning slot, so the Option carries the right enum.
+        if kind < 0 {
+            match self.declaration_for(element) {
+                some(declaration) => {
+                    if declaration.kind == "enum" &&
+                       self.enum_is_fieldless(
+                           declaration) {
+                        kind =
+                            if declaration.repr != "" {
+                                5
+                            } else {
+                                7
+                            }
+                    }
+                }
+                none => {}
+            }
         }
         if kind < 0 {
             self.fail(
@@ -2186,7 +2208,8 @@ partial class LlvmTextEmitter {
             return ""
         }
         // the runtime's order kinds: 0 signed, 1 double, 2 string,
-        // 5 unsigned, 6 float — same table as production's order_kind
+        // 5 unsigned, 6 float, 7 enum-tag-through-pointer — same table as
+        // production's order_kind
         let element: HirType = list_type.args[0]
         let element_name: string =
             canonical_hir_name(element.name)
@@ -2204,6 +2227,28 @@ partial class LlvmTextEmitter {
             kind = 6
         } else if element_name == "string" {
             kind = 2
+        }
+        // a payload-free enum sorts by its declaration-order tag. enum(u8)
+        // stores that tag in the slot (unsigned, kind 5); a plain enum
+        // stores a pointer at the tag word, so the runtime loads it (kind
+        // 7). Only payload-free enums satisfy Order, so a payload enum never
+        // reaches sort — enum_is_fieldless leaves kind -1 and it is refused.
+        if kind < 0 {
+            match self.declaration_for(element) {
+                some(declaration) => {
+                    if declaration.kind == "enum" &&
+                       self.enum_is_fieldless(
+                           declaration) {
+                        kind =
+                            if declaration.repr != "" {
+                                5
+                            } else {
+                                7
+                            }
+                    }
+                }
+                none => {}
+            }
         }
         if element_name == "decimal" {
             let list: string =

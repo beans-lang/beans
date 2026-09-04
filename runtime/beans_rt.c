@@ -4482,6 +4482,15 @@ static int slot_cmp(long long a, long long b, long long kind) {
         int y = rt_f32_total_key((unsigned)b);
         return x < y ? -1 : x > y ? 1 : 0;
     }
+    // kind 7: a payload-free enum value is a pointer at its declaration-order
+    // tag word (the same one enum `==` loads). Order compares the loaded
+    // tags, not the pointers — the static tag objects are not laid out in
+    // tag order. enum(u8) needs no kind here: its slot already holds the tag.
+    if (kind == 7) {
+        long long x = *(long long*)a;
+        long long y = *(long long*)b;
+        return x < y ? -1 : x > y ? 1 : 0;
+    }
     return a < b ? -1 : a > b ? 1 : 0;
 }
 // content equality for strings — length header first, bytes second; strcmp

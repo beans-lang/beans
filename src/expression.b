@@ -1082,6 +1082,26 @@ class ExpressionChecker {
                     return true
                 }
                 if declaration.kind == "enum" {
+                    // `Order` on an enum is the declaration-order tag —
+                    // the same numbering `enum(u8)` exposes as its `u8`
+                    // and the same shape as `bool`'s false-before-true,
+                    // available with no representation change and without
+                    // making a bare `a < b` on two enum values legal. It
+                    // reaches only a payload-free enum: ordering a payload
+                    // variant would mean tag-then-payload, which needs
+                    // every payload type to be `Order` and a deep compare
+                    // in both backends' sort path — not offered, so a
+                    // payload enum does not satisfy `Order` even when its
+                    // payloads happen to (it still satisfies `Eq`/`Hash`).
+                    if trait == "Order" {
+                        for variant: HirField in
+                            declaration.variants {
+                            if variant.type.args.len() != 0 {
+                                return false
+                            }
+                        }
+                        return true
+                    }
                     if trait != "Clone" &&
                        trait != "Eq" &&
                        trait != "Hash" &&
