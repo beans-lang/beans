@@ -378,24 +378,51 @@ partial class LlvmTextEmitter {
                 // raises its own instantiation on the way.
                 if method == "init" { continue }
                 var key: string = "{instance}.{method}"
-                // `deinit` needs care either way. A descriptor names one
-                // release symbol per class, found by walking the chain for
-                // `{owner}.deinit`, and a generic base is a template with
-                // nothing at that name — the row emitted null and dropping
-                // the subclass jumped to address zero.
-                //
-                // When the class writes no deinit of its own, the raised
-                // base body *is* its release and takes the plain name. When
-                // it writes one, that body is what its own deinit chains
-                // into on the way out, so the raised base keeps a name of
-                // its own and deinit_parent_call looks for it there.
-                if method == "deinit" &&
-                   self.class_has_deinit(declaration) {
+                // `deinit` needs care. A descriptor names one release symbol
+                // per class, found by walking the chain for `{owner}.deinit`,
+                // and a generic base is a template with nothing at that name —
+                // the row emitted null and dropping the subclass jumped to
+                // address zero. The whole object's release row is the nearest
+                // *declared* deinit, and each body chains into the next declared
+                // one up the chain. So a generic base's deinit is raised under
+                // the instance's plain name only when no class from this base
+                // down to the instance declares one — then the base body *is*
+                // the instance's release. When the instance declares its own,
+                // the raised base is what that deinit chains into, filed under
+                // an @-key so it cannot be mistaken for the instance's own row,
+                // and deinit_parent_call looks for it there. When a class
+                // strictly between this base and the instance declares one,
+                // that middle class is the release row and chains into the base
+                // itself through raise_generic_parent_deinit — raising the base
+                // under the instance's plain name here would out-rank the middle
+                // class in method_slot_symbol and run the base body twice.
+                if method == "deinit" {
+                    if self.class_has_deinit(declaration) {
+                        key =
+                            "{instance}@{link.qualified}.deinit"
+                    } else if self.nearer_link_declares_deinit(
+                                  chain, index) {
+                        continue
+                    }
+                    if self.function_symbols.contains_key(key) {
+                        continue
+                    }
+                } else if self.function_symbols.contains_key(key) {
+                    // A method already at this plain name is an override of the
+                    // base's only when it fills the base method's dispatch
+                    // slots. When it does not — a same-named package-private
+                    // method in another package, whose selector carries a
+                    // different package — the base's own vtable rows would be
+                    // left null. Raise the base under an @-key and register its
+                    // slots there so method_slot_symbol still finds them.
+                    if self.symbol_covers_slots(key, candidate) {
+                        continue
+                    }
                     key =
-                        "{instance}@{link.qualified}.deinit"
-                }
-                if self.function_symbols.contains_key(key) {
-                    continue
+                        "{instance}@{link.qualified}.{method}"
+                    if self.function_symbols.contains_key(key) {
+                        continue
+                    }
                 }
                 var bindings: Map<string, HirType> = {}
                 for slot_index: int in
@@ -415,6 +442,43 @@ partial class LlvmTextEmitter {
                     self.method_dispatch_slots[
                         "{key}|{slot}"] = true
                 }
+            }
+        }
+        return true
+    }
+
+    // Whether a class strictly nearer the leaf than chain[index] declares its
+    // own deinit in source. `class_has_deinit` reads program.functions, which
+    // holds only source-declared bodies — raised base instances live on the
+    // generic queue — so this answers "declares one", not "has a symbol at
+    // that name". Used to decide whether a generic base's deinit is this
+    // instance's release row or belongs to a middle class that outranks it.
+    fn nearer_link_declares_deinit(
+        chain: List<HirDeclaration>,
+        index: int) -> bool {
+        var scan: int = index + 1
+        for scan < chain.len() {
+            if self.class_has_deinit(chain[scan]) {
+                return true
+            }
+            scan += 1
+        }
+        return false
+    }
+
+    // Whether the symbol already filed under `key` fills every dispatch slot
+    // the base method `candidate` carries. A genuine override does; a
+    // same-named method that answers a different selector (a package-private
+    // one carrying its own package) does not, and then the base's rows are
+    // still unfilled and must be raised under an @-key. A base method with no
+    // dispatch slots has no vtable row to leave null, so the existing symbol
+    // stands and this answers true.
+    fn symbol_covers_slots(
+        key: string,
+        candidate: MirFunction) -> bool {
+        for slot: string in candidate.dispatch_slots {
+            if !self.function_has_dispatch_slot(key, slot) {
+                return false
             }
         }
         return true
@@ -990,6 +1054,20 @@ partial class LlvmTextEmitter {
                (slot == "deinit" ||
                 self.function_has_dispatch_slot(key, slot)) {
                 return self.function_symbols[key]
+            }
+            // A generic base method whose plain name was taken by a same-named
+            // package-private method is raised under an @-key instead. It fills
+            // this owner's slot; the plain name at this owner is the base's own
+            // template, which never has a symbol. deinit never uses the @-key
+            // for a descriptor row — it is only the parent link a declared
+            // deinit chains into, read by deinit_parent_call, not here.
+            if slot != "deinit" {
+                let raised: string =
+                    "{declaration.qualified}@{owner.qualified}.{method}"
+                if self.function_symbols.contains_key(raised) &&
+                   self.function_has_dispatch_slot(raised, slot) {
+                    return self.function_symbols[raised]
+                }
             }
         }
         nearest = chain.len()

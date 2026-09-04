@@ -1579,9 +1579,18 @@ partial class LlvmTextEmitter {
                     self.function_symbols[raised]
                 break
             }
+            // A plain name is a real parent deinit only when that class
+            // declares one in source. A generic base with no nearer declared
+            // deinit is raised under a subclass's plain name too (so the
+            // subclass has a release row at all), and without this guard that
+            // raised instance would be picked up here as if the subclass had
+            // written a deinit — chaining into it and running the base body a
+            // second time. `class_has_deinit` reads source functions only, so
+            // it tells a declared deinit from a raised instance.
             let candidate: string =
                 "{chain[index].qualified}.deinit"
-            if self.function_symbols.contains_key(candidate) {
+            if self.class_has_deinit(chain[index]) &&
+               self.function_symbols.contains_key(candidate) {
                 parent_symbol =
                     self.function_symbols[candidate]
                 break

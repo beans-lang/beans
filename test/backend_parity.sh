@@ -120,6 +120,14 @@ agree test/cases/parity/map_move_only_get.b
 agree test/cases/parity/default_effects.b 5
 agree test/cases/parity/interface_upcast.b 6
 agree test/cases/parity/generic_base_deinit.b 4
+# #119: a generic base's deinit filed under the wrong key when a *middle*
+# class sits between it and the leaf. Four hierarchies, each at least three
+# links: a middle that overrides deinit, a four-link chain with two middles,
+# a base-only deinit with two objects built (the extra release only showed
+# when a second object of a nearer class also existed), and one generic base
+# under two different instantiations, and a leaf whose deinit chains past a
+# middle that declares none. Thirteen objects built and released once.
+agree test/cases/parity/generic_base_deinit_chain.b 13
 agree test/cases/parity/struct_sort.b 3
 agree test/cases/parity/sort_by_key_paths.b
 agree test/cases/parity/list_equality.b
@@ -158,7 +166,7 @@ agree test/cases/parity/settled_dispatch.b 10
 
 # Every case in the directory has to be listed above with its own expected
 # count; a file added and forgotten would otherwise be silently unchecked.
-listed=30
+listed=31
 present=$(find test/cases/parity -name '*.b' | wc -l | tr -d ' ')
 if [ "$present" != "$listed" ]; then
     echo "test/cases/parity holds $present cases but $listed are run" >&2
@@ -227,6 +235,48 @@ grep -q "built 3" "$tmp/$name.interp" || {
     exit 1
 }
 echo "  agree: test/cases/$name (static tables build once, before main)"
+
+# #119, the second half: a generic base's method row filed under the wrong
+# key for *ordinary* methods, not just deinit. The base's package-private
+# `peek` carries the selector `lib:peek`; a subclass in another package
+# declares its own `peek`, which answers a different selector and so is not an
+# override. The base's row was raised under the subclass's plain name, collided
+# with the subclass's own `peek`, and was dropped — leaving the base's vtable
+# row null. It is latent at runtime today (the call devirtualizes), so this
+# asserts the emitted descriptor row directly rather than trusting the answer:
+# the leaf's table must carry a real symbol in the base's slot, not `ptr null`.
+name=generic_base_pkg_row
+( cd "test/cases/$name" && "$root/build/beansc" run main.b ) \
+    >"$tmp/$name.interp"
+( cd "test/cases/$name" \
+  && "$root/build/beansc" build --release main.b \
+       -o "$tmp/$name.release" >/dev/null )
+"$tmp/$name.release" >"$tmp/$name.release.out"
+diff -u "$tmp/$name.interp" "$tmp/$name.release.out"
+( cd "test/cases/$name" && "$root/build/beansc" llvm main.b ) \
+    >"$tmp/$name.ll" 2>/dev/null
+# the symbol emitted for the leaf's own peek (the row that was never null)
+leaf_peek=$(awk '/; app\.Leaf\.peek$/{getline; if ($0 ~ /^define/){match($0,/@\.next\.[A-Za-z0-9]+/); print substr($0,RSTART,RLENGTH); exit}}' "$tmp/$name.ll")
+if [ -z "$leaf_peek" ]; then
+    echo "$name: could not find the leaf's own peek symbol in the IR" >&2
+    exit 1
+fi
+row=$(grep 'next.class[0-9]* = internal constant' "$tmp/$name.ll" \
+        | grep -F "$leaf_peek")
+if [ -z "$row" ]; then
+    echo "$name: no descriptor table references the leaf's peek" >&2
+    exit 1
+fi
+# the method table is the final [ ... ] group, after the "[N x ptr]" type; a
+# null there is a base row the key collision dropped. (The shape pointer just
+# before it is legitimately null, so match only the trailing array.)
+vtable=$(echo "$row" | sed -E 's/.*\[[0-9]+ x ptr\] (\[[^]]*\]).*/\1/')
+if echo "$vtable" | grep -q 'ptr null'; then
+    echo "$name: the leaf's descriptor has a null row a base method must fill" >&2
+    echo "$row" >&2
+    exit 1
+fi
+echo "  agree: test/cases/$name (generic base's method row survives a cross-package name clash)"
 
 # Reading one too early has to say so on both paths, not answer a zero on one.
 mkdir -p "$tmp/early"
