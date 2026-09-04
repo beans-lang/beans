@@ -1553,58 +1553,99 @@ partial class LlvmTextEmitter {
         if !function.name.ends_with(".deinit") {
             return ""
         }
-        let owner_name: string =
+        // A deinit body runs for one concrete object (the instance) and stands
+        // at one link of that object's chain. Its parent call is the nearest
+        // class *strictly above* that link which declares its own deinit.
+        //
+        // The name carries both facts. A plain `{instance}.deinit` is either
+        // the instance's own deinit (it stands at the instance) or a generic
+        // base raised under the instance's plain name because no class from
+        // that base to the instance declares one (it stands at that base). A
+        // raised `{instance}@{link}.deinit` stands at `link`. Deriving the
+        // position from the name — not from a fixed chain top — is what lets a
+        // raised base body find *its* parent rather than the leaf's, and lets
+        // a class above a generic link be reached at all.
+        let stem: string =
             function.name.slice(
                 0, function.name.len() - 7)
-        if !self.declarations.contains_key(owner_name) {
+        var instance_name: string = stem
+        var link_qualified: string = ""
+        match stem.find("@") {
+            some(at) => {
+                instance_name = stem.slice(0, at)
+                link_qualified =
+                    stem.slice(at + 1, stem.len())
+            }
+            none => {}
+        }
+        if !self.declarations.contains_key(instance_name) {
             return ""
         }
         let owner: HirDeclaration =
-            self.declarations[owner_name]
+            self.declarations[instance_name]
         let chain: List<HirDeclaration> =
             self.class_chain(owner)
         if chain.len() < 2 { return "" }
+        // Where in the chain this body stands.
+        var position: int = chain.len() - 1
+        if link_qualified != "" {
+            position = -1
+            for scan: int in 0..chain.len() {
+                if chain[scan].qualified == link_qualified {
+                    position = scan
+                    break
+                }
+            }
+        } else if !self.class_has_deinit(owner) {
+            // a generic base raised under the instance's plain name: it stands
+            // at the nearest ancestor that declares a deinit, since nothing
+            // between that ancestor and the instance does (or the plain-name
+            // raise would have been skipped).
+            position = -1
+            var below: int = chain.len() - 1
+            for below > 0 {
+                below -= 1
+                if self.class_has_deinit(chain[below]) {
+                    position = below
+                    break
+                }
+            }
+        }
+        if position < 0 { return "" }
         var parent_symbol: string = ""
-        var index: int = chain.len() - 1
+        var index: int = position
         for index > 0 {
             index -= 1
-            // A generic base is a template, so its body exists only as an
-            // instance raised for this class's arguments; that is kept
-            // under the owner's name so it cannot collide with the
-            // owner's own deinit. Ask for it before the plain name.
+            let link: HirDeclaration = chain[index]
+            // A link that declares no deinit is not in the chain of bodies;
+            // step over it. The first link that does is the parent — and the
+            // walk stops there whether it already has a symbol or has to raise
+            // one. Stepping past it (as an earlier walk did for a generic link
+            // with no plain symbol) bound a farther ancestor and dropped this
+            // one's deinit outright.
+            if !self.class_has_deinit(link) { continue }
             let raised: string =
-                "{owner_name}@{chain[index].qualified}.deinit"
+                "{instance_name}@{link.qualified}.deinit"
             if self.function_symbols.contains_key(raised) {
                 parent_symbol =
                     self.function_symbols[raised]
                 break
             }
-            // A plain name is a real parent deinit only when that class
-            // declares one in source. A generic base with no nearer declared
-            // deinit is raised under a subclass's plain name too (so the
-            // subclass has a release row at all), and without this guard that
-            // raised instance would be picked up here as if the subclass had
-            // written a deinit — chaining into it and running the base body a
-            // second time. `class_has_deinit` reads source functions only, so
-            // it tells a declared deinit from a raised instance.
-            let candidate: string =
-                "{chain[index].qualified}.deinit"
-            if self.class_has_deinit(chain[index]) &&
-               self.function_symbols.contains_key(candidate) {
+            let plain: string =
+                "{link.qualified}.deinit"
+            if self.function_symbols.contains_key(plain) {
                 parent_symbol =
-                    self.function_symbols[candidate]
+                    self.function_symbols[plain]
                 break
             }
-        }
-        // Only a class that writes its own deinit chains into a raised
-        // base. Without that guard the raised base body — which is
-        // registered under the deriving class's own name when the class
-        // writes none — would find itself as its parent and release twice.
-        if parent_symbol == "" &&
-           self.class_has_deinit(owner) {
+            // A declaring link with no symbol yet is a generic one — a
+            // template until a site raises it. This is that site, so a deinit
+            // written on a generic class in the middle of a chain is never
+            // dropped for want of a symbol, whatever order bodies emit in.
             parent_symbol =
-                self.raise_generic_parent_deinit(
-                    owner, owner_name, chain)
+                self.raise_link_deinit(
+                    owner, instance_name, chain, index)
+            break
         }
         if parent_symbol == "" { return "" }
         for local: MirLocal in function.locals {

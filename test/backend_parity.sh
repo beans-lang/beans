@@ -128,6 +128,13 @@ agree test/cases/parity/generic_base_deinit.b 4
 # under two different instantiations, and a leaf whose deinit chains past a
 # middle that declares none. Thirteen objects built and released once.
 agree test/cases/parity/generic_base_deinit_chain.b 13
+# #119, the blocker half: a plain class *above* a generic base, whose deinit
+# the parent walk stepped over because a generic link has no plain symbol —
+# dropping one deinit, chosen by declaration order. Both orders here (built in
+# main vs behind a Maker declared before its leaf), a leaf declaring none whose
+# raised base still chains up, and a five-link stack with two plain ancestors
+# above the generic link. Twelve objects built and released once.
+agree test/cases/parity/generic_base_deinit_above.b 12
 agree test/cases/parity/struct_sort.b 3
 agree test/cases/parity/sort_by_key_paths.b
 agree test/cases/parity/list_equality.b
@@ -166,7 +173,7 @@ agree test/cases/parity/settled_dispatch.b 10
 
 # Every case in the directory has to be listed above with its own expected
 # count; a file added and forgotten would otherwise be silently unchecked.
-listed=31
+listed=32
 present=$(find test/cases/parity -name '*.b' | wc -l | tr -d ' ')
 if [ "$present" != "$listed" ]; then
     echo "test/cases/parity holds $present cases but $listed are run" >&2
@@ -271,6 +278,15 @@ fi
 # null there is a base row the key collision dropped. (The shape pointer just
 # before it is legitimately null, so match only the trailing array.)
 vtable=$(echo "$row" | sed -E 's/.*\[[0-9]+ x ptr\] (\[[^]]*\]).*/\1/')
+# Guard the substitution: if the descriptor layout ever changes shape the sed
+# leaves the row untouched, and a bare `grep null` would then match the shape
+# pointer and fail for the wrong reason. Insist the capture actually isolated a
+# bracketed array before trusting the null check.
+if [ "$vtable" = "$row" ] || [ "${vtable#\[}" = "$vtable" ]; then
+    echo "$name: could not isolate the method table from the descriptor row" >&2
+    echo "$row" >&2
+    exit 1
+fi
 if echo "$vtable" | grep -q 'ptr null'; then
     echo "$name: the leaf's descriptor has a null row a base method must fill" >&2
     echo "$row" >&2

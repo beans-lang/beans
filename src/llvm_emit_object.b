@@ -392,10 +392,11 @@ partial class LlvmTextEmitter {
                 // an @-key so it cannot be mistaken for the instance's own row,
                 // and deinit_parent_call looks for it there. When a class
                 // strictly between this base and the instance declares one,
-                // that middle class is the release row and chains into the base
-                // itself through raise_generic_parent_deinit — raising the base
-                // under the instance's plain name here would out-rank the middle
-                // class in method_slot_symbol and run the base body twice.
+                // that middle class is the release row and its own deinit
+                // chains into the base on demand (deinit_parent_call raises the
+                // link) — raising the base under the instance's plain name here
+                // would out-rank the middle class in method_slot_symbol and run
+                // the base body twice.
                 if method == "deinit" {
                     if self.class_has_deinit(declaration) {
                         key =
@@ -610,54 +611,58 @@ partial class LlvmTextEmitter {
         return move chain
     }
 
-    // A generic base's deinit is a template, so it has a body only once
-    // some site raises it for concrete arguments. When the deriving class
-    // writes its own deinit, that body is emitted before any `new` site has
-    // done so, and the chain call had no symbol to name — it was dropped,
-    // and the base's release silently stopped running on every instance.
+    // A generic link's deinit is a template, so it has a body only once some
+    // site raises it for concrete arguments. When a deriving class writes its
+    // own deinit, that body is emitted before any `new` site has done so, and
+    // the chain call had no symbol to name — it was dropped, and the link's
+    // release silently stopped running. Raising it from the chain call itself
+    // fixes the order: the symbol is handed back straight away and the body
+    // follows off the generic queue.
     //
-    // Raising it from the chain call itself fixes the order: the symbol is
-    // handed back straight away and the body follows off the generic queue.
-    fn raise_generic_parent_deinit(
+    // The link is chain[index], raised for the concrete instance `owner` (a
+    // string form in `instance_name`), and filed under the @-key the chain
+    // walk resolves it by. `index` names the exact link because a chain can
+    // hold a generic class anywhere — above it, below it, or between two plain
+    // classes — and only that one is raisable here.
+    fn raise_link_deinit(
         owner: HirDeclaration,
-        owner_name: string,
-        chain: List<HirDeclaration>) -> string {
+        instance_name: string,
+        chain: List<HirDeclaration>,
+        index: int) -> string {
+        if index < 0 || index >= chain.len() {
+            return ""
+        }
+        let link: HirDeclaration = chain[index]
+        if link.generics.len() == 0 { return "" }
         let root: HirType = new HirType(owner.qualified)
         let chain_types: List<HirType> =
             self.class_chain_types(owner, root)
         if chain_types.len() != chain.len() { return "" }
-        var index: int = chain.len() - 1
-        for index > 0 {
-            index -= 1
-            let link: HirDeclaration = chain[index]
-            if link.generics.len() == 0 { continue }
-            let link_type: HirType = chain_types[index]
-            if link.generics.len() != link_type.args.len() {
-                continue
-            }
-            let template: string =
-                "{link.qualified}.deinit"
-            if !self.generic_templates.contains_key(
-                   template) {
-                continue
-            }
-            var bindings: Map<string, HirType> = {}
-            for slot: int in 0..link.generics.len() {
-                bindings[link.generics[slot]] =
-                    link_type.args[slot]
-            }
-            bindings[link.qualified] = root
-            bindings[link.name] = root
-            let site: MirInstruction =
-                new MirInstruction(
-                    "deinit_chain", -1, root, "", "",
-                    owner.file, owner.line, owner.col)
-            return self.instantiate_generic(
-                site, template,
-                "{owner_name}@{link.qualified}.deinit",
-                bindings)
+        let link_type: HirType = chain_types[index]
+        if link.generics.len() != link_type.args.len() {
+            return ""
         }
-        return ""
+        let template: string =
+            "{link.qualified}.deinit"
+        if !self.generic_templates.contains_key(
+               template) {
+            return ""
+        }
+        var bindings: Map<string, HirType> = {}
+        for slot: int in 0..link.generics.len() {
+            bindings[link.generics[slot]] =
+                link_type.args[slot]
+        }
+        bindings[link.qualified] = root
+        bindings[link.name] = root
+        let site: MirInstruction =
+            new MirInstruction(
+                "deinit_chain", -1, root, "", "",
+                owner.file, owner.line, owner.col)
+        return self.instantiate_generic(
+            site, template,
+            "{instance_name}@{link.qualified}.deinit",
+            bindings)
     }
 
     // ---- generic instantiation ----
