@@ -115,12 +115,13 @@ class BindgenCTypeParser {
 
     fn parse_slice(first: int, last: int) -> BindgenCType {
         let source: string = self.join(first, last)
+        // `...` is carried, not refused: a top-level import binds it as the
+        // Beans `...` tail, while a *callback* type has nowhere to put it
+        // and is refused where the callback is rendered.
         if source == "..." {
-            self.errors.push(
-                "variadic C callback type is unsupported")
             let result: BindgenCType =
-                new BindgenCType("base")
-            result.text = "void"
+                new BindgenCType("variadic")
+            result.text = "..."
             return result
         }
         let parser: BindgenCTypeParser =

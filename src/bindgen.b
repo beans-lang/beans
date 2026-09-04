@@ -268,6 +268,17 @@ class BindgenGenerator {
                 "C callback has more than 6 parameters, which is unsupported")
             return "fn()"
         }
+        // A variadic *callback* has no spelling: `fn(...)` would have to
+        // name the tail, and only a call site can. Imports carry `...`
+        // through the declaration path instead; this is the stored or
+        // borrowed callback case, and it stays out of reach.
+        for index: int in 1..type.children.len() {
+            if type.children[index].kind == "variadic" {
+                self.errors.push(
+                    "variadic C callback type is unsupported")
+                return "fn()"
+            }
+        }
         var output: string = "fn("
         for index: int in 1..type.children.len() {
             if index != 1 { output = "{output}, " }
@@ -291,6 +302,13 @@ class BindgenGenerator {
 
     fn render_type(type: BindgenCType,
                    borrowed_callback: bool) -> string {
+        if type.kind == "variadic" {
+            // Only a function declarator may hold one, and the two places
+            // that may render it handle it themselves.
+            self.errors.push(
+                "'...' is not a C type")
+            return "unit"
+        }
         if type.kind == "pointer" {
             if type.children.len() == 0 {
                 self.errors.push(
@@ -1047,10 +1065,15 @@ fn run_self_bindgen(
             }
             continue
         }
+        // A variadic import binds as `fn name(fixed..., ...)`; each call
+        // site writes its own tail. C gives `...` no meaning without a
+        // named parameter in front of it, so a prototype that has none is
+        // still out of reach.
         if kind == "FunctionDecl" &&
-           node.boolean("variadic") {
+           node.boolean("variadic") &&
+           bindgen_parameter_count(node) == 0 {
             generator.errors.push(
-                "variadic function '{name}' is unsupported")
+                "variadic function '{name}' has no fixed parameter, so it cannot be written as `fn {name}(..., ...)`")
             continue
         }
         // Clang writes a non-default convention into the function's type.
@@ -1322,6 +1345,10 @@ fn run_self_bindgen(
                     }
                 }
                 none => {}
+            }
+            if node.boolean("variadic") && count != 0 {
+                declaration_output =
+                    "{declaration_output}, ..."
             }
             declaration_output =
                 "{declaration_output})"

@@ -1,0 +1,39 @@
+is_tty(stdin)=false
+stream:
+  up(0)
+  down(0)
+  right(0)
+  left(0)
+  home(0)
+  end(0)
+  page_up(0)
+  page_down(0)
+  insert(0)
+  delete(0)
+  right(4)
+  up(1)
+  left(5)
+  function(5, 0)
+  function(12, 0)
+  function(9, 4)
+  function(1, 0)
+  up(0)
+  char(104)
+  char(105)
+  enter
+  tab
+  ctrl(67)
+  ctrl(65)
+  backspace
+  alt(98)
+  char(9731)
+split:
+  down(4)
+split-utf8:
+  char(9731)
+lone-esc:
+  flush escape
+mods(1)=true,false,false
+mods(4)=false,false,true
+mods(5)=true,false,true
+frame_bytes=74

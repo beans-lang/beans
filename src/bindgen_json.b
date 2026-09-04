@@ -272,6 +272,24 @@ fn bindgen_rfind(text: string,
     }
 }
 
+// How many named parameters a FunctionDecl declares. Clang reports the
+// `...` only through the declaration's `variadic` flag, so this counts
+// exactly the fixed head.
+fn bindgen_parameter_count(node: BindgenJson) -> int {
+    var count: int = 0
+    match node.get("inner") {
+        some(inner) => {
+            for child: BindgenJson in inner.items {
+                if child.string("kind") == "ParmVarDecl" {
+                    count += 1
+                }
+            }
+        }
+        none => {}
+    }
+    return count
+}
+
 fn bindgen_has_kind(node: BindgenJson,
                     wanted: string) -> bool {
     if node.string("kind") == wanted { return true }

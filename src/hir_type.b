@@ -69,6 +69,24 @@ fn hir_is_numeric(type: HirType) -> bool {
            type.name == "decimal"
 }
 
+// What may cross a C `...` tail. Past the last named parameter the
+// prototype describes nothing, so the value's own type is the whole
+// contract: it has to have one unambiguous C spelling that the target's
+// variadic rules and C's default argument promotions both know. A
+// by-value record, a Beans closure and every managed Beans value are out
+// — the caller and the callee would be agreeing about nothing.
+//
+// `decimal` is deliberately excluded even though hir_is_numeric accepts
+// it: it is two limbs, not a C scalar.
+fn c_variadic_shape(type: HirType) -> bool {
+    let name: string = canonical_hir_name(type.name)
+    if name == "RawPtr" || name == "CFunctionPtr" {
+        return type.args.len() == 1
+    }
+    return name == "bool" || hir_is_integer(type) ||
+           hir_is_float(type)
+}
+
 fn hir_named(name: string, arguments: List<HirType>) -> HirType {
     let result: HirType = new HirType(name)
     for argument: HirType in arguments {

@@ -644,6 +644,17 @@ partial class LlvmTextEmitter {
         return symbol
     }
 
+    // How many parameters an extern declaration wrote before `...`,
+    // or -1 for an ordinary fixed signature.
+    fn extern_variadic_from(name: string) -> int {
+        for function: MirFunction in self.program.functions {
+            if function.external && function.name == name {
+                return function.variadic_from
+            }
+        }
+        return -1
+    }
+
     // every extern call runs through a generated C wrapper taking
     // (result*, args**): Clang, not Beans, classifies the platform
     // ABI, and a callback argument becomes a static C shim that
@@ -652,8 +663,22 @@ partial class LlvmTextEmitter {
         instruction: MirInstruction,
         argument_types: List<HirType>,
         result_type: HirType) -> string {
-        match self.extern_wrappers.get(
-                instruction.resolved) {
+        // A variadic callee has no single signature: each call site
+        // fixes its own tail, and the tail is what the target's ABI
+        // classifies. So the wrapper is keyed by the whole argument
+        // shape, and one variadic import can own several wrappers.
+        let variadic_from: int =
+            self.extern_variadic_from(instruction.resolved)
+        var key: string = instruction.resolved
+        if variadic_from >= 0 {
+            var shapes: List<string> = []
+            for argument: HirType in argument_types {
+                shapes.push(render_hir_type(argument))
+            }
+            key =
+                "{instruction.resolved}({shapes.join(",")})"
+        }
+        match self.extern_wrappers.get(key) {
             some(symbol) => { return symbol }
             none => {}
         }
@@ -683,6 +708,25 @@ partial class LlvmTextEmitter {
         for index: int in 0..argument_types.len() {
             let argument: HirType =
                 argument_types[index]
+            if variadic_from >= 0 && index >= variadic_from {
+                // Past `...` the prototype says nothing, so the value's
+                // own C type is what Clang classifies and promotes.
+                let c_type: string =
+                    if c_variadic_shape(argument) {
+                        self.c_extern_type(argument)
+                    } else {
+                        ""
+                    }
+                if c_type == "" || c_type == "void" {
+                    self.fail(
+                        instruction,
+                        "LLVM emitter cannot pass '{render_hir_type(argument)}' through a C '...' tail")
+                    return ""
+                }
+                call_arguments.push(
+                    "*({c_type}*)args[{index}]")
+                continue
+            }
             if canonical_hir_name(argument.name) ==
                    "fn" {
                 let dispatch: string =
@@ -775,6 +819,14 @@ partial class LlvmTextEmitter {
             call_arguments.push(
                 "*({c_type}*)args[{index}]")
         }
+        // The `...` goes into the C prototype the wrapper declares, so
+        // Clang classifies the tail by the target's variadic rules —
+        // stack-only on Apple arm64, the same register banks as fixed
+        // arguments under SysV x86-64 and generic AAPCS64 — and applies
+        // C's default argument promotions to every one of them.
+        if variadic_from >= 0 {
+            declarations.push("...")
+        }
         let declaration_text: string =
             if declarations.len() == 0 {
                 "void"
@@ -794,14 +846,24 @@ partial class LlvmTextEmitter {
             result_type.name == "bool" ||
             result_type.name == "RawPtr"
         var llvm_arguments: List<string> = []
-        for argument: HirType in argument_types {
+        for index: int in 0..argument_types.len() {
+            let argument: HirType = argument_types[index]
             if !hir_is_numeric(argument) &&
                argument.name != "bool" &&
                argument.name != "RawPtr" {
                 direct_declaration = false
             }
+            // The module-level declaration names the signature the symbol
+            // *has*, and a variadic symbol's is the fixed head plus
+            // `...` — the tail belongs to the call, not to the callee.
+            if variadic_from >= 0 && index >= variadic_from {
+                continue
+            }
             llvm_arguments.push(
                 self.type_text(argument))
+        }
+        if variadic_from >= 0 {
+            llvm_arguments.push("...")
         }
         if direct_declaration {
             self.require_declare(
@@ -822,8 +884,7 @@ partial class LlvmTextEmitter {
         }
         self.ffi_source =
             "{self.ffi_source}{body}\}\n"
-        self.extern_wrappers[
-            instruction.resolved] = wrapper
+        self.extern_wrappers[key] = wrapper
         self.require_declare(
             wrapper, "void @{wrapper}(ptr, ptr)")
         return wrapper

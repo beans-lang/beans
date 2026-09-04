@@ -336,7 +336,8 @@ fn main() {
   continues (the dot can never end a statement), and a newline is not a
   terminator when the next line begins with `.name` — so fluent chains write
   trailing-dot or leading-dot style. `..` stays a range operator and never
-  continues a line.
+  continues a line. `...` is one token and means only the C variadic tail in
+  an `extern "C" fn` signature.
 - Style consequence, same as Go: `} else {` must be on one line.
 - Comments: `//` line, `/* */` block (nesting allowed).
 - Number literals can use `_` separators: `1_000_000`. Hex `0xFF`, binary `0b1010`.
@@ -3097,6 +3098,75 @@ poll.wake(signal)?                                        // from a worker
 - `Poller` is a `unique class`, closed by `deinit`, like every other resource. The
   low-level layer is `std.ready`.
 
+### std.term (v1.0, implemented)
+
+```beans
+import std.term
+import std.proc
+
+if !term.is_tty(0) { return }
+let size: term.Size = term.size(0)?                       // ioctl(TIOCGWINSZ), in the runtime's C
+let raw: term.RawMode = term.RawMode.enter(0)?            // restored on drop, exit, and panic
+
+var frame: term.Frame = new term.Frame()
+frame.enter_alt_screen()
+frame.hide_cursor()
+frame.clear()
+frame.move_to(1, 1)
+frame.fg(2)
+frame.text("hello, {size.rows}x{size.cols}")
+frame.reset_style()
+frame.flush(1)?                                            // one unbuffered write(2)
+
+var keys: term.KeyDecoder = new term.KeyDecoder()
+keys.feed(proc.read(0, 64)?)                              // a read can split a sequence
+for going {
+    match keys.next() {                                   // holds an incomplete sequence
+        some(key) => { match key { up(mods) => { ... } char(c) => { ... } _ => {} } }
+        none => { going = false }                         // feed more and call again
+    }
+}
+```
+
+- **The struct-shaped calls live in the runtime's C**, because their layout is the
+  platform's: `struct termios` is 72 bytes on macOS and 60 on Linux, and `struct
+  winsize` and the Windows console have no portable Beans spelling. `is_tty`, `size`,
+  and raw mode set/restore are four `beans_term_*` entry points; everything with a
+  portable shape — the ANSI writers, the CSI decoder — is Beans.
+- **`RawMode.enter(fd)`** puts a terminal into raw mode — no echo, no line buffering, no
+  signal generation (`Ctrl-C` is delivered as the byte `0x03`, not `SIGINT`), no input or
+  output translation — and hands back a `unique class` guard. `err` with kind `invalid`
+  when `fd` is not a terminal, kind `unsupported` where raw mode is not offered.
+- **Restore is guaranteed on three paths and honest about the fourth.** The guard
+  restores cooked mode on `restore()`, on going out of scope (`deinit`), and — because the
+  runtime registers the restore with `atexit` — on a normal exit and on a **panic**, which
+  reaches `exit()` without unwinding on both backends. What it does **not** cover is a
+  crash by `SIGSEGV`/`SIGBUS`: only the runtime's fault reporter runs then, and it is
+  fenced to flushing output (adding a second signal disposition is what `test/signals.sh`
+  forbids). A full-screen program watches `terminate` and `hangup` through `std.signal`
+  and restores from its own loop, which needs no handler.
+- **`Frame`** builds a screen's worth of escapes and text and writes it whole:
+  `clear`, `clear_line`, `move_to(row, col)`, `home`, `hide_cursor`/`show_cursor`,
+  `enter_alt_screen`/`leave_alt_screen`, `reset_style`, `bold`, `fg`/`bg` (256-colour),
+  `fg_rgb`/`bg_rgb` (24-bit), `text`, `byte`, then `flush(fd)` — one unbuffered `write(2)`,
+  because `io.print` goes through stdio and a frame with no trailing newline would sit in
+  the buffer. `reset` empties it for reuse.
+- **`KeyDecoder`** turns bytes into `Key`s and buffers an incomplete escape sequence
+  across `feed`s, so a sequence **split across two reads** is one key, not two wrong ones.
+  `next()` returns `none` while what is buffered is only a prefix; a lone `ESC` is held as
+  ambiguous and `flush()` — called once input has settled — resolves it to the Escape key.
+  It decodes arrows, Home/End, Page-Up/Down, Insert/Delete, F1–F12, printable characters
+  (UTF-8), `Alt`+key, `Ctrl`+key, Enter, Tab and Backspace, with the xterm modifier mask
+  read back through `has_shift`/`has_alt`/`has_ctrl`.
+- **Platform.** `std.term` needs the **full** runtime — its calls live in the full-profile
+  runtime — so `import std.term` is **refused by the checker** on the minimal and
+  freestanding profiles, with a message naming the program (`'std.term' needs terminal
+  control, which the minimal runtime does not have`), never a link error about a missing
+  symbol. macOS and Linux are complete. On Windows `is_tty` and `size` work through the
+  console API; **raw mode is refused** with kind `unsupported` at runtime (the console-mode
+  and virtual-terminal-input path is not driven yet) rather than left half-configured.
+  `wasi` has no terminal and the checker refuses it there too.
+
 ### std.http (v1.0, implemented)
 
 ```beans
@@ -3683,6 +3753,27 @@ beansc build --target riscv32imac-unknown-none-elf --runtime freestanding f.b --
   synchronous, and same-thread:
   C may call it only before the surrounding extern call returns, must not store
   it, and must not invoke it from another thread.
+- `extern "C" fn name(fixed: T, ...) -> R` declares a C function with a
+  variadic tail — `ioctl`, `fcntl`, three-argument `open`, `printf`. `...`
+  comes last and needs at least one named parameter in front of it, exactly as
+  C requires. There is no `va_list` in Beans, so a variadic declaration never
+  has a body and a `pub extern "C" fn` export is never variadic.
+  A **call site writes its own tail**, and the type it writes is the C type
+  that crosses: the backend hands Clang that spelling at that call site, so the
+  target's own variadic rules classify it. That is the point of the form — on
+  Apple arm64 the whole tail goes on the stack while the fixed head stays in
+  registers, while SysV x86-64 and generic AAPCS64 keep filling the register
+  banks, so a variadic function declared with a fixed signature passes its
+  arguments in the wrong place with no diagnostic.
+  **C's default argument promotions apply to the tail**, because the tail is
+  written as C: `i8`, `u8`, `i16`, `u16` and `bool` arrive as `int`, and `f32`
+  arrives as `double`. A tail argument must be an integer, float, bool,
+  `RawPtr` or `CFunctionPtr` — an `extern "C"` struct or union by value, a
+  callback and every managed Beans value are refused, because past the last
+  named parameter the prototype describes nothing and only a type with one
+  unambiguous C spelling can cross. Beans `int` is 64 bits, so a bare integer
+  literal in a tail passes as C `long long`; write `value as i32` where the
+  callee reads an `int`.
 - `extern "C" opaque struct Handle` declares an incomplete C type. It is valid
   only behind `RawPtr`; allocation, field access, embedding, and layout queries
   are rejected.
@@ -3734,7 +3825,9 @@ unions, arrays, enums, globals, TLS, functions, and function pointers. C
 nullability annotations (`_Nullable`, `_Nonnull`, `_Null_unspecified`) are
 ignored for type mapping. Declarations come from every requested header, while
 types may also come from any header they include. This gives split `core.h` +
-`service.h` APIs one shared record and opaque-handle identity. Nested function
+`service.h` APIs one shared record and opaque-handle identity. A variadic C
+function binds as `fn name(fixed: T, ...)`; a variadic *callback* type does not
+bind at all, since `fn(...)` would have to name a tail only a call site knows. Nested function
 pointers keep each level: only a callback passed directly to an imported
 function is borrowed as `fn(...)`; stored or nested callback addresses use
 `CFunctionPtr<F>`.

@@ -116,7 +116,11 @@ fn cli_ast_parameter(node: AstNode) -> string {
 fn cli_ast_parameters(node: AstNode) -> string {
     var parts: List<string> = []
     for child: AstNode in node.children {
-        parts.push(cli_ast_parameter(child))
+        if child.kind == "variadic" {
+            parts.push("...")
+        } else {
+            parts.push(cli_ast_parameter(child))
+        }
     }
     return "({parts.join(", ")})"
 }

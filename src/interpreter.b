@@ -10880,6 +10880,15 @@ class TreeInterpreter {
                     self.runtime_hook_active = false
                     return result
                 }
+                if function.variadic_from >= 0 &&
+                   function.is_extern_c &&
+                   !function.is_c_export {
+                    return self.invoke_bound(
+                        self.variadic_extern_instance(
+                            function, node),
+                        move arguments, receiver,
+                        self.call_type_bindings(node, function))
+                }
                 return self.invoke_bound(
                     function, move arguments, receiver,
                     self.call_type_bindings(node, function))
@@ -10890,6 +10899,41 @@ class TreeInterpreter {
                     "unknown function '{node.resolved}'")
             }
         }
+    }
+
+    // A variadic import has one declaration but as many signatures as it
+    // has call sites: the tail belongs to the call, not to the callee, and
+    // it is the tail the target's ABI classifies. Materialize the
+    // signature *this* call has, so the C bridge is generated for these
+    // argument types and the marshalling below reads them by their
+    // declared width rather than by a word.
+    fn variadic_extern_instance(
+        function: HirFunction,
+        node: HirNode) -> HirFunction {
+        let instance: HirFunction =
+            new HirFunction(
+                function.name, function.qualified,
+                function.owner, function.is_public,
+                function.is_private, function.file,
+                function.line, function.col)
+        instance.is_extern_c = true
+        instance.extern_name = function.extern_name
+        instance.variadic_from = function.variadic_from
+        instance.result = function.result
+        instance.body_result = function.body_result
+        for parameter: HirParameter in function.parameters {
+            instance.parameters.push(parameter)
+        }
+        for index: int in
+            function.parameters.len()..node.children.len() {
+            instance.parameters.push(
+                new HirParameter(
+                    "arg{index}", "",
+                    node.children[index].type,
+                    function.file, function.line,
+                    function.col))
+        }
+        return instance
     }
 
     fn builtin_object(node: HirNode, name: string,
@@ -13312,8 +13356,23 @@ class TreeInterpreter {
     fn ffi_bridge_source(
         function: HirFunction,
         abi: CAbiDescription) -> string {
-        var parameters: string =
-            abi.parameter_declarations.join(", ")
+        // A variadic prototype names only its fixed head; the tail this
+        // call site passes goes through `...`, so Clang classifies and
+        // promotes it exactly as it would in hand-written C.
+        var declared: List<string> = []
+        for index: int in
+            0..abi.parameter_declarations.len() {
+            if abi.variadic_from >= 0 &&
+               index >= abi.variadic_from {
+                break
+            }
+            declared.push(
+                abi.parameter_declarations[index])
+        }
+        if abi.variadic_from >= 0 {
+            declared.push("...")
+        }
+        var parameters: string = declared.join(", ")
         if parameters == "" { parameters = "void" }
         var source: string =
             "#include <stdint.h>\n{abi.definitions}"
@@ -14585,6 +14644,20 @@ class TreeInterpreter {
             } else {
                 ""
             }
+        // A variadic callee never takes a word-ABI shortcut. host_dl.callN
+        // passes every argument as one 8-byte word through a fixed
+        // prototype, and that is precisely what a variadic call is not:
+        // Apple's arm64 rules put the tail on the stack while the fixed
+        // head stays in registers, so the same words would land in
+        // different places. Clang decides, through the bridge.
+        if function.variadic_from >= 0 {
+            let builder: CAbiTextBuilder =
+                new CAbiTextBuilder(self.program)
+            return self.call_extern_bridge(
+                function, arguments, symbol,
+                builder.describe(function))
+        }
+
         var result: TreeValue = TreeValue.unit()
         var called: bool = false
         unsafe {
