@@ -442,6 +442,92 @@ BEANS
 esp_rings true 2 6
 esp_rings false 2 6
 
+echo "checking an exit-sweep deinit panic surfaces past an explicit exit and a thread"
+# issue #107, two shapes the scope-exit case above does not reach. std.os.exit
+# leaves through the walker and never returns to run(); a thread runs on its own
+# interpreter that never calls run() at all. In both, the exit sweep must still
+# surface an uncontained deinit panic with 3 -- not let exit's own code stand
+# (exit(7) hides behind an accidental 3) and not let the thread report success
+# and the program carry on. The ring is built in a helper so it is unreachable
+# when the process leaves; a non-3 exit code (7) proves the surfacing, not luck.
+esp_leaving() { # <name>  (program on stdin)
+    cat >"$tmp/$1.b"
+    ./build/beansc build "$tmp/$1.b" -o "$tmp/$1.native" \
+        >"$tmp/$1.build" 2>&1
+    for leg in "./build/beansc run $tmp/$1.b" "$tmp/$1.native"; do
+        set +e
+        $leg >"$tmp/$1.out" 2>"$tmp/$1.err"
+        local status=$?
+        set -e
+        if [ "$status" -ne 3 ]; then
+            echo "$1: an exit-sweep deinit panic must exit 3, got $status" \
+                "($leg)" >&2
+            cat "$tmp/$1.out" "$tmp/$1.err" >&2
+            exit 1
+        fi
+        grep -q 'boom in teardown$' "$tmp/$1.err" || {
+            echo "$1: the exit-sweep panic was not reported ($leg)" >&2
+            cat "$tmp/$1.err" >&2
+            exit 1
+        }
+    done
+}
+esp_leaving exit_sweep_exit <<'BEANS'
+import std.io
+import std.os as os
+class Node {
+    peer: Option<Node> = none
+    id: int = 0
+    fn init(id: int) { self.id = id }
+    fn deinit() {
+        io.println("deinit {self.id}")
+        if self.id == 0 { panic("boom in teardown") }
+    }
+}
+fn make() {
+    var a: Node = new Node(0)
+    var b: Node = new Node(1)
+    var c: Node = new Node(2)
+    a.peer = some(b)
+    b.peer = some(c)
+    c.peer = some(a)
+}
+fn main() {
+    make()
+    io.println("built")
+    os.exit(7)
+}
+BEANS
+esp_leaving exit_sweep_thread <<'BEANS'
+import std.io
+import std.thread
+class Node {
+    peer: Option<Node> = none
+    id: int = 0
+    fn init(id: int) { self.id = id }
+    fn deinit() {
+        io.println("deinit {self.id}")
+        if self.id == 0 { panic("boom in teardown") }
+    }
+}
+fn make() {
+    var a: Node = new Node(0)
+    var b: Node = new Node(1)
+    var c: Node = new Node(2)
+    a.peer = some(b)
+    b.peer = some(c)
+    c.peer = some(a)
+}
+fn main() {
+    let worker: Thread<int> = thread.spawn(fn() -> int {
+        make()
+        return 3
+    })
+    io.println("joined {worker.join()}")
+    io.println("done")
+}
+BEANS
+
 echo "checking a collector pass finishes the white set a panic interrupted"
 # issue #81 in the collector: cc_run_cycle_deinits retains the whole white
 # set across the deinit bodies, so a panic anywhere in the pass used to

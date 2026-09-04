@@ -656,6 +656,10 @@ class TreeInterpreter {
     // never-joined thread has no join at all. Containment is what `brew`
     // is for (spec/CONCURRENCY.md); a thread is the raw primitive.
     fn report_thread_panic() {
+        // The exit sweep this triggers runs on the interpreter that already
+        // armed the guard (TreeThreadWork.run), but arm it here too so a future
+        // caller cannot leave it disarmed over a teardown death (#107).
+        self.entry_returned = true
         unsafe { beans_out_flush() }
         io.eprintln(self.panic_text)
         host_os.exit(3)
@@ -3693,23 +3697,41 @@ class TreeInterpreter {
     fn deinit_object(object: TreeValue) {
         if object.kind != "object" { return }
         if self.failed {
-            // A panic is in flight. During a contained unwind the owned
-            // locals still run their deinit on the way out — that is what the
-            // issue is about — so set the panic aside and run it, then restore
-            // the panic and keep unwinding. Each owned child the host cascade
-            // reaches next re-opens this same window on its own, which is
-            // equivalent: every deinit in the dying subtree runs with the
-            // panic set aside, and the panic is preserved across all of them.
-            // An uncontained panic drops the object without a deinit (spec: it
-            // leaves the process). A panic raised inside the deinit is the
-            // double-panic case that fail_at aborts on; the guard below never
-            // re-arms the old panic over it.
-            if !self.fiber_unwinding() { return }
+            // A panic is in flight. Two cases run the deinit anyway, with the
+            // panic set aside so the body executes: a contained unwind, where
+            // owned locals still run their deinit on the way out (#81); and the
+            // exit-time cycle sweep, where the host destroys the garbage the
+            // program left even though an uncontained panic is on its way out of
+            // the process — the native runtime runs those deinits, so the
+            // interpreter must too, rather than skipping them and printing a
+            // shorter teardown (#107). Each owned child the host cascade reaches
+            // next re-opens this same window on its own, and the panic is
+            // preserved across all of them. An uncontained panic DURING the
+            // program (neither of those) drops the object without a deinit
+            // (spec: it leaves the process).
+            if !self.fiber_unwinding() &&
+               !self.entry_returned {
+                return
+            }
             let saved: string = self.panic_text
             self.failed = false
             self.panic_text = ""
             self.deinit_chain(object.text, object)
-            if self.failed { return }
+            if self.failed {
+                // The deinit itself panicked. In the exit sweep that is an
+                // uncontained panic in teardown with no walker above it —
+                // surface it and leave with 3, the same as the normal branch
+                // below and the same as the native runtime. In a contained
+                // unwind it is the double-panic case fail_at aborts on; leave
+                // the panic set and return without re-arming the old one.
+                if self.entry_returned &&
+                   !self.panic_is_contained() {
+                    unsafe { beans_out_flush() }
+                    io.eprintln(self.panic_text)
+                    host_os.exit(3)
+                }
+                return
+            }
             self.failed = true
             self.panic_text = saved
             return
@@ -4876,6 +4898,12 @@ class TreeInterpreter {
         }
         if node.resolved == "std.os.exit" &&
            arguments.len() == 1 {
+            // An explicit exit leaves through the walker and never returns to
+            // run(), so arm the exit-sweep guard here too: a garbage cycle the
+            // host sweeps after this must surface an uncontained deinit panic
+            // and leave with 3, the way the native runtime does, rather than
+            // letting exit's own code stand over a death in teardown (#107).
+            self.entry_returned = true
             host_os.exit(
                 arguments[0].int_data)
             return TreeValue.unit()
