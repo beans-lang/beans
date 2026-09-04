@@ -234,6 +234,7 @@ test-runtime: $(BIN)
 	bash ./test/encoding.sh
 	bash ./test/json_direct.sh
 	bash ./test/list_iteration.sh
+	bash ./test/oom.sh
 
 test-ffi: $(BIN)
 	./test/raw_slices.sh
@@ -304,6 +305,7 @@ test-core: $(BIN)
 	bash ./test/list_header_cache.sh
 	./test/maps.sh
 	bash ./test/map_inline.sh
+	bash ./test/oom.sh
 	bash ./test/float_total_order.sh
 	./test/traits.sh
 	bash ./test/calendar.sh

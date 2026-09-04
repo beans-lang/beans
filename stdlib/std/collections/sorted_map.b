@@ -305,22 +305,48 @@ pub class SortedMap<K implements Order & Clone, V implements Clone> {
         return self.height_of(node.left) - self.height_of(node.right)
     }
 
+    // A new node carrying `source`'s key and value, sharing both of its
+    // children as they stand. This is the one place a subtree is grafted from
+    // the live tree into the one being built: `n.left = source.left` retains
+    // the child, it does not move it, so `source` — a node a reader may still be
+    // walking — keeps every child it had. The height and size are copied too;
+    // a caller that changes a child refreshes them.
+    fn fresh_copy(source: SortedNode<K, V>) -> SortedNode<K, V> {
+        var n: SortedNode<K, V> = new SortedNode<K, V>(source.key, source.value)
+        n.left = source.left
+        n.right = source.right
+        n.height = source.height
+        n.size = source.size
+        return n
+    }
+
+    // Both rotations build the rotated shape out of fresh copies and never
+    // touch the nodes they were handed. They have to: a rotation during a
+    // `remove` can pivot on the subtree the removal did NOT descend into, which
+    // is still shared with the tree `self.root` is publishing, and reversing two
+    // links in a node a reader is walking is exactly the tear this file exists
+    // to avoid. Copying `node` and `pivot` costs two nodes per rotation, and a
+    // rotation is O(1) per insert or remove.
     fn rotate_right(node: SortedNode<K, V>) -> SortedNode<K, V> {
-        let pivot: SortedNode<K, V> =
+        let pivot_src: SortedNode<K, V> =
             node.left.expect("a left-heavy node has a left child")
-        node.left = pivot.right
-        pivot.right = some(node)
-        self.refresh(node)
+        var pivot: SortedNode<K, V> = self.fresh_copy(pivot_src)
+        var top: SortedNode<K, V> = self.fresh_copy(node)
+        top.left = pivot.right
+        pivot.right = some(top)
+        self.refresh(top)
         self.refresh(pivot)
         return pivot
     }
 
     fn rotate_left(node: SortedNode<K, V>) -> SortedNode<K, V> {
-        let pivot: SortedNode<K, V> =
+        let pivot_src: SortedNode<K, V> =
             node.right.expect("a right-heavy node has a right child")
-        node.right = pivot.left
-        pivot.left = some(node)
-        self.refresh(node)
+        var pivot: SortedNode<K, V> = self.fresh_copy(pivot_src)
+        var top: SortedNode<K, V> = self.fresh_copy(node)
+        top.right = pivot.left
+        pivot.left = some(top)
+        self.refresh(top)
         self.refresh(pivot)
         return pivot
     }
@@ -355,26 +381,41 @@ pub class SortedMap<K implements Order & Clone, V implements Clone> {
     // value's `deinit` can run while this recursion is in flight and mutate
     // the same map, so anything shared between the two calls — a field, or
     // `len()` read before and after — is not a record of what THIS call did.
+    //
+    // The recursion never writes the live tree. Each node on the path to the
+    // change is copied fresh, with the child it does NOT descend into shared as
+    // it stands, and only the copies are rebalanced; the original nodes keep
+    // every child and every cached size. `set` and `insert` publish the whole
+    // new spine with the single `self.root = ...` store, so until that store
+    // `self.root` is entirely the old tree — a reader between any two writes
+    // here, including a `deinit` the collector runs at one of the allocations a
+    // copy makes, walks a tree whose keys and whose `size` agree. That is #92:
+    // an in-place insert linked the new node deep and refreshed `self.root`'s
+    // cached `size` only on the way back up, so `len()` under-counted the keys
+    // `contains_key` could already find. Copying the path is O(log n) nodes,
+    // the height the tree already is.
     fn insert_into(node: Option<SortedNode<K, V>>, key: K, value: V,
                    replace: bool,
                    inout added: bool) -> SortedNode<K, V> {
         match node {
             some(current) => {
+                var fresh: SortedNode<K, V> = self.fresh_copy(current)
                 if key < current.key {
-                    current.left =
+                    fresh.left =
                         some(self.insert_into(current.left, key, value,
                                               replace, inout added))
                 } else if current.key < key {
-                    current.right =
+                    fresh.right =
                         some(self.insert_into(current.right, key, value,
                                               replace, inout added))
                 } else {
                     // The key is already here. Nothing structural changes, so
-                    // there is nothing to rebalance and nothing was added.
-                    if replace { current.value = value }
-                    return current
+                    // there is nothing to rebalance and nothing was added; the
+                    // fresh copy carries the replacement value, or the old one.
+                    if replace { fresh.value = value }
+                    return move fresh
                 }
-                return self.rebalance(current)
+                return self.rebalance(fresh)
             }
             none => {
                 added = true
@@ -387,41 +428,57 @@ pub class SortedMap<K implements Order & Clone, V implements Clone> {
     // reason `insert_into` carries `added`: a value's `deinit` runs as its
     // node is dropped and may mutate this map, so a size read before and
     // after the recursion measures that reentrant call as well as this one.
+    //
+    // Like `insert_into`, this never writes the live tree: each node on the
+    // path is copied fresh with its off-path child shared, a node that keeps
+    // both children is replaced by a fresh node carrying its in-order
+    // successor's entry, and `remove` publishes the whole result with one
+    // `self.root = ...` store. Until that store `self.root` is entirely the old
+    // tree, so a reader — or a value's `deinit` — sees a `size` that matches the
+    // keys it can find, never the old count over a tree a node has already left.
     fn remove_from(node: Option<SortedNode<K, V>>, key: K,
                    inout unlinked: bool) -> Option<SortedNode<K, V>> {
         match node {
             some(current) => {
                 if key < current.key {
-                    current.left =
+                    var fresh: SortedNode<K, V> = self.fresh_copy(current)
+                    fresh.left =
                         self.remove_from(current.left, key, inout unlinked)
-                } else if current.key < key {
-                    current.right =
-                        self.remove_from(current.right, key, inout unlinked)
-                } else {
-                    unlinked = true
-                    // Found it. With one child or none, the child takes this
-                    // node's place. With two, the in-order successor's entry
-                    // moves up here and the successor is removed instead —
-                    // it has no left child, so that removal is the easy case.
-                    if self.height_of(current.left) == 0 {
-                        return current.right
-                    }
-                    if self.height_of(current.right) == 0 {
-                        return current.left
-                    }
-                    let successor: SortedNode<K, V> =
-                        self.leftmost(
-                            current.right.expect("a two-child node has a right child"))
-                    current.key = successor.key
-                    current.value = successor.value
-                    // The successor's own removal is part of this one; it
-                    // must not be able to clear the answer already recorded.
-                    var moved: bool = false
-                    current.right =
-                        self.remove_from(current.right, successor.key,
-                                         inout moved)
+                    return some(self.rebalance(fresh))
                 }
-                return some(self.rebalance(current))
+                if current.key < key {
+                    var fresh: SortedNode<K, V> = self.fresh_copy(current)
+                    fresh.right =
+                        self.remove_from(current.right, key, inout unlinked)
+                    return some(self.rebalance(fresh))
+                }
+                // Found it.
+                unlinked = true
+                // With one child or none, that child takes this node's place;
+                // it is shared from the live tree into the new one, and the
+                // parent frame rebalances it.
+                if self.height_of(current.left) == 0 {
+                    return current.right
+                }
+                if self.height_of(current.right) == 0 {
+                    return current.left
+                }
+                // With two children, the in-order successor's entry moves up
+                // into a fresh node and the successor is removed from the right
+                // subtree instead — it has no left child, so that removal is the
+                // easy case. The left subtree is shared as it stands.
+                let successor: SortedNode<K, V> =
+                    self.leftmost(
+                        current.right.expect("a two-child node has a right child"))
+                var fresh: SortedNode<K, V> =
+                    new SortedNode<K, V>(successor.key, successor.value)
+                fresh.left = current.left
+                // The successor's own removal is part of this one; it must not
+                // be able to clear the answer already recorded.
+                var moved: bool = false
+                fresh.right =
+                    self.remove_from(current.right, successor.key, inout moved)
+                return some(self.rebalance(fresh))
             }
             none => { return none }
         }

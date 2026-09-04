@@ -1,3 +1,7 @@
+priorityqueue churn done: len 0
+priorityqueue observed under collection: true
+sortedmap churn done: len 0
+sortedmap observed under collection: true
 clear() seen mid-drop — deque tears 0
 deque after contained panic: len 0 empty true first false
 list  after contained panic: len 0
