@@ -1,0 +1,20 @@
+-- scope discard n=1 --
+built
+drop s1.0
+-- scope discard n=2 --
+built
+drop s2.1
+drop s2.0
+-- scope discard n=4 --
+built
+drop s4.3
+drop s4.2
+drop s4.1
+drop s4.0
+-- cancel discard n=4 --
+built
+drop c4.3
+drop c4.2
+drop c4.1
+drop c4.0
+cancelled

@@ -121,13 +121,20 @@ exactly as a lone brew does, `next()` / `try_next()` answer
 `Option<Result<T>>`, `wait_all()` answers `Result<List<T>>` in spawn order —
 every child is joined even on failure, and the first failure in spawn order
 is the fleet's answer — `cancel_all()` cancels newest-first, joins, and
-discards every outcome (handling by discard, the v2 contract), and a
-drained group is reusable. One v2 semantic is deliberately changed:
+discards every outcome newest-first (handling by discard, the v2 contract),
+and a drained group is reusable. One v2 semantic is deliberately changed:
 `next()` delivers in **completion order**, spawn order breaking ties — a
 fleet exists to take answers as they land; `wait_all` keeps spawn order.
 The group carries the same scope-bound walls as a `Brew` handle (move,
 capture, signature, field, nesting, var) plus the same synthesized scope
-join, which escalates the first unseen panic; `group.brew` itself is legal
+join, which escalates the first unseen panic in spawn order and then
+releases the ok results nobody claimed **newest-first** — reverse spawn
+order, the LIFO order a scope drops what it owns, the same order the
+results a `wait_all` handed back would release in when the returned list
+dies — so a discarded value's `deinit` runs in the same order on both
+engines (#106). Delivery order (`next`, `wait_all`) is a separate promise
+kept above; this is only the order the fleet destroys what no one took.
+`group.brew` itself is legal
 at any block depth, unlike a lone brew, because the join references the
 group binding and the nested-block wall on `new TaskGroup` pins that
 binding to the function's own scope. Channels, `Gate` (the plan's `Event`,
