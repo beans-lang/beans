@@ -3908,8 +3908,13 @@ helpers, globals, and functions for a library package's consumers.
   element set above. `Slice.from_raw(ptr, len)`,
   `get`, `set`, indexing, `subslice`,
   `as_ptr`, and iteration require `unsafe`; reads and writes are bounds checked.
-  A non-empty slice rejects a null pointer. The caller must keep the backing
-  allocation alive and must not use the view after `free`.
+  Indexing is a place: `view[i] = v` stores through the pointer, and — as with
+  a fixed array, and unlike `List` and `Map` — a compound `view[i] += v` on a
+  numeric element is the read-modify-write of that one cell. The write lands in
+  the memory the view borrows, so it is visible through any other view of it,
+  and needs no `var` on the binding: the view is read-only, the memory it names
+  is not. A non-empty slice rejects a null pointer. The caller must keep the
+  backing allocation alive and must not use the view after `free`.
 
 - `struct` declares an inline value type. It copies by value and is passed and
   returned as an LLVM aggregate, with no ARC header or heap allocation. A

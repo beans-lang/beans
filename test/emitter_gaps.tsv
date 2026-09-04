@@ -41,7 +41,7 @@ src/llvm_emit_collections.b	LLVM emitter does not support this Map.contains yet	
 src/llvm_emit_collections.b	LLVM emitter does not support this Map.get yet	1	unknown
 src/llvm_emit_collections.b	LLVM emitter does not support this Map.insert yet	1	unknown
 src/llvm_emit_collections.b	LLVM emitter does not support this Map.reserve yet	1	unknown
-src/llvm_emit_collections.b	LLVM emitter does not support this index assignment yet	2	unknown
+src/llvm_emit_collections.b	LLVM emitter does not support this index assignment yet	3	unknown
 src/llvm_emit_collections.b	LLVM emitter does not support wide list elements in List.X yet	1	unknown
 src/llvm_emit_collections.b	LLVM emitter does not support wide list elements in List.contains yet	1	interpreter-ok
 src/llvm_emit_collections.b	LLVM emitter only supports list indexing yet	1	unknown

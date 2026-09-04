@@ -1724,7 +1724,7 @@ partial class LlvmTextEmitter {
                         instruction)
                 if instruction.text != "=" {
                     let address: int = self.fresh()
-                    return "{guard}  %field.assign.ptr{address} = getelementptr {llvm}, ptr {symbol}, i32 0\n{self.emit_field_compound(instruction, field.type, address, stored, instruction.text, "")}"
+                    return "{guard}  %field.assign.ptr{address} = getelementptr {llvm}, ptr {symbol}, i32 0\n{self.emit_field_compound(instruction, field.type, address, stored, instruction.text, "", "")}"
                 }
                 var output: string = ""
                 if self.type_has_owned_refs(field.type) {
@@ -2661,7 +2661,7 @@ partial class LlvmTextEmitter {
                             } else {
                                 ""
                             }
-                        return "{output}{self.emit_field_compound(instruction, field_type, address, stored, operation, access)}"
+                        return "{output}{self.emit_field_compound(instruction, field_type, address, stored, operation, access, "")}"
                     }
                     let access: string =
                         if layout.declaration.is_packed {
@@ -2740,7 +2740,7 @@ partial class LlvmTextEmitter {
                 var output: string =
                     "  %field.assign.ptr{address} = getelementptr i8, ptr {receiver}, i64 {layout.field_offsets[name]}\n"
                 if operation != "=" {
-                    return "{output}{self.emit_field_compound(instruction, field_type, address, stored, operation, "")}"
+                    return "{output}{self.emit_field_compound(instruction, field_type, address, stored, operation, "", "")}"
                 }
                 if self.type_has_owned_refs(field_type) {
                     output =
@@ -2776,7 +2776,8 @@ partial class LlvmTextEmitter {
         address: int,
         right: string,
         operation: string,
-        access: string) -> string {
+        access: string,
+        align_suffix: string) -> string {
         let llvm: string = self.type_text(field_type)
         let operator: string =
             operation.slice(0, operation.len() - 1)
@@ -2787,7 +2788,7 @@ partial class LlvmTextEmitter {
         let result: string =
             "%field.compound.result{result_id}"
         var output: string =
-            "  {left} = load {llvm}, ptr %field.assign.ptr{address}{access}\n"
+            "  {left} = load {llvm}, ptr %field.assign.ptr{address}{access}{align_suffix}\n"
         if llvm_type_is_integer(field_type) &&
            (operator == "/" || operator == "%") {
             output =
@@ -2863,7 +2864,7 @@ partial class LlvmTextEmitter {
                 "LLVM emitter does not support compound '{operation}' for {render_hir_type(field_type)} yet")
             return output
         }
-        return "{output}  store {llvm} {result}, ptr %field.assign.ptr{address}{access}\n"
+        return "{output}  store {llvm} {result}, ptr %field.assign.ptr{address}{access}{align_suffix}\n"
     }
 
     fn emit_make_error(
