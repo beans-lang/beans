@@ -100,6 +100,20 @@ class ExpressionChecker {
     // lands on the outer object, which must still be open to match.
     try_expectations: List<HirType>
 
+    // State for the init construction-safety pass (check_init_construction).
+    // An init proves its object fully built before anything reads it: every
+    // field assigned by the time the body returns, no field read before it is
+    // assigned, and no method call on self / self escaping / super.init before
+    // the fields those uses depend on are assigned. These hold the fixed facts
+    // for the init being analysed; `super_seen` is the one moving fact and is
+    // valid because super.init is required to be a single top-level statement.
+    ctor_owner: string
+    ctor_self_binding: int
+    ctor_own_fields: Map<string, bool>
+    ctor_inherited_fields: Map<string, bool>
+    ctor_requires_super: bool
+    ctor_super_seen: bool
+
     fn init(signature: SignatureChecker) {
         self.signature = signature
         self.program = signature.hir
@@ -145,6 +159,12 @@ class ExpressionChecker {
         self.call_generics_syntax = none
         self.call_generics_taken = true
         self.try_expectations = []
+        self.ctor_owner = ""
+        self.ctor_self_binding = 0 - 1
+        self.ctor_own_fields = {}
+        self.ctor_inherited_fields = {}
+        self.ctor_requires_super = false
+        self.ctor_super_seen = false
         for function: HirFunction in self.program.functions {
             if function.owner != "" {
                 self.methods["{function.owner}.{function.name}"] =
@@ -3060,6 +3080,871 @@ class ExpressionChecker {
             }
         }
         return move result
+    }
+
+    // A subclass field must not reuse the name of a field it inherits.
+    //
+    // The two backends store a redeclared name differently, so `check` was
+    // letting them mean different objects. The tree interpreter keys an
+    // object's fields by name (TreeFields in src/tree_value.b), so a base
+    // field and a subclass field of the same name land in one slot: the
+    // subclass's write overwrites the base's value mid-construction and
+    // releases it while the object is still being built. A native build lays
+    // every field of every class in the chain out at its own offset
+    // (src/llvm_emit_object.b), so the name is two slots and both survive.
+    // One field name has to mean one slot in both backends, so the shadowing
+    // is refused here rather than left to diverge at run time.
+    fn check_inherited_field_shadowing() {
+        for declaration: HirDeclaration in
+            self.program.declarations {
+            if declaration.kind != "class" { continue }
+            var owners: Map<string, string> = {}
+            var seen: Map<string, bool> = {}
+            self.collect_inherited_field_owners(
+                declaration, inout owners, inout seen)
+            for field: HirField in declaration.fields {
+                match owners.get(field.name) {
+                    some(owner) => {
+                        // A field credited to the class itself can only come
+                        // from an inheritance cycle, which is reported on its
+                        // own; do not add a self-referential shadow error.
+                        if owner == declaration.qualified {
+                            continue
+                        }
+                        self.current = new HirFunction(
+                            "$fields",
+                            "{declaration.qualified}.$fields",
+                            declaration.qualified, false, false,
+                            field.file, field.line, field.col)
+                        self.fail(
+                            new AstNode(
+                                "field", field.name,
+                                field.line, field.col),
+                            "field '{field.name}' redeclares a field '{declaration.name}' inherits from '{self.diagnostic_symbol(owner)}' — an inherited field name is a slot the base already owns, so a subclass cannot declare it again; rename this field")
+                    }
+                    none => {}
+                }
+            }
+        }
+    }
+
+    // The nearest base owner of every instance field declared above this
+    // class, walking the single `extends` base at each link. The first hit
+    // for a name is kept, so the owner reported is the closest ancestor. A
+    // `seen` set stops a malformed cyclic chain from looping forever;
+    // real cycles are already refused before this pass.
+    fn collect_inherited_field_owners(
+        declaration: HirDeclaration,
+        inout owners: Map<string, string>,
+        inout seen: Map<string, bool>) {
+        if seen.contains_key(declaration.qualified) { return }
+        seen[declaration.qualified] = true
+        var base_index: int = 0 - 1
+        for index: int in
+            0..declaration.relations.len() {
+            if index <
+                   declaration.relation_kinds.len() &&
+               declaration.relation_kinds[index] ==
+                   "extends" {
+                base_index = index
+                break
+            }
+        }
+        if base_index < 0 { return }
+        match self.declaration_for(
+                  declaration.relations[base_index]) {
+            some(base) => {
+                if base.kind != "class" { return }
+                for field: HirField in base.fields {
+                    if !owners.contains_key(field.name) {
+                        owners[field.name] = base.qualified
+                    }
+                }
+                self.collect_inherited_field_owners(
+                    base, inout owners, inout seen)
+            }
+            none => {}
+        }
+    }
+
+    // A class that declares no init of its own gets the implicit zero-argument
+    // initializer, which assigns nothing beyond the field defaults. So every
+    // own instance field of such a class must carry a default; a required field
+    // with no init to assign it would leave the object half-built — the
+    // interpreter panics reading its reserved slot and a native build reads
+    // whatever the allocation left there (issue #94). A class that does declare
+    // an init is proved instead by check_init_construction.
+    fn check_required_field_initializers() {
+        for declaration: HirDeclaration in
+            self.program.declarations {
+            if declaration.kind != "class" { continue }
+            // An abstract class is never constructed directly, so its own
+            // implicit initializer never runs; a required field it declares is
+            // the concrete subclass's job to assign (through super.init when it
+            // declares an init, or directly when it does not). Refusing it here
+            // would refuse a program nothing can build.
+            if declaration.is_abstract { continue }
+            if self.methods.contains_key(
+                   "{declaration.qualified}.init") {
+                continue
+            }
+            // A concrete class with no init of its own runs only the implicit
+            // zero-argument initializer, which assigns nothing. Every field it
+            // is responsible for must therefore carry a default: its own
+            // fields, and every field inherited from an ancestor that likewise
+            // has no init — the nearest ancestor that declares an init, and its
+            // own super chain, cover the classes at and above it.
+            for field: HirField in declaration.fields {
+                if field.is_static { continue }
+                if !field.has_default && !field.is_weak {
+                    self.current = new HirFunction(
+                        "$fields",
+                        "{declaration.qualified}.$fields",
+                        declaration.qualified, false, false,
+                        field.file, field.line, field.col)
+                    self.fail(
+                        new AstNode(
+                            "field", field.name,
+                            field.line, field.col),
+                        "field '{field.name}' has no default and '{declaration.name}' declares no init to assign it — give the field a default value or declare 'fn init' that assigns it")
+                }
+            }
+            var current_base: Option<HirDeclaration> =
+                self.ctor_base_declaration(declaration)
+            var seen: Map<string, bool> = {}
+            for true {
+                match current_base {
+                    some(base) => {
+                        if seen.contains_key(base.qualified) {
+                            break
+                        }
+                        seen[base.qualified] = true
+                        if self.methods.contains_key(
+                               "{base.qualified}.init") {
+                            break
+                        }
+                        for field: HirField in base.fields {
+                            if field.is_static { continue }
+                            if !field.has_default &&
+                               !field.is_weak {
+                                self.current = new HirFunction(
+                                    "$fields",
+                                    "{declaration.qualified}.$fields",
+                                    declaration.qualified, false, false,
+                                    declaration.file,
+                                    declaration.line,
+                                    declaration.col)
+                                self.fail(
+                                    new AstNode(
+                                        "class", declaration.name,
+                                        declaration.line,
+                                        declaration.col),
+                                    "'{declaration.name}' declares no init and inherits required field '{field.name}' from '{self.diagnostic_symbol(base.qualified)}', which has no init to assign it — give the field a default value or declare 'fn init' that assigns it")
+                            }
+                        }
+                        current_base =
+                            self.ctor_base_declaration(base)
+                    }
+                    none => { break }
+                }
+            }
+        }
+    }
+
+    // The init construction-safety proof (issue #94).
+    //
+    // spec/SYNTAX.md ("init and deinit") says the checker proves an object is
+    // fully built before anything reads it. It did not: a field an init never
+    // assigned passed `check`, then the interpreter panicked reading its
+    // reserved slot while a native build read whatever the allocation left
+    // there — one checked program answering two different things. This pass is
+    // that proof, run over the checked HIR body so self is a resolved `local`,
+    // a field access is a resolved `field` node, and an interpolation's pieces
+    // are already present as child expressions.
+    //
+    // Definite assignment is a dataflow question: a field is assigned at a
+    // point only when every path reaching it assigns it. Branches intersect,
+    // an exhaustive match intersects its arms, a loop body credits nothing that
+    // outlives it, and a path that always returns contributes nothing to the
+    // merge. Three things need all fields assigned: reading nothing before its
+    // own assignment, letting self escape (a method call on self, passing self,
+    // returning self, interpolating self), and returning at all. super.init is
+    // the one pivot — it must be a single top-level statement, it credits the
+    // whole base chain, and this class's own fields must be assigned before it.
+    fn check_init_construction(function: HirFunction) {
+        match self.declarations.get(function.owner) {
+            some(owner) => {
+                if owner.kind != "class" { return }
+                self.ctor_setup(function, owner)
+                var assigned: Map<string, bool> = {}
+                for name: string in
+                    self.ctor_own_fields.keys() {
+                    if self.ctor_own_fields[name] {
+                        assigned[name] = true
+                    }
+                }
+                if !self.ctor_requires_super {
+                    // No ancestor has an init, so this init's prefix covers the
+                    // inherited fields too (SYNTAX.md, "init and inheritance").
+                    // A defaulted inherited field starts assigned; a required
+                    // one does not — this init must assign it, because nothing
+                    // above it will.
+                    for name: string in
+                        self.ctor_inherited_fields.keys() {
+                        if self.ctor_inherited_fields[name] {
+                            assigned[name] = true
+                        }
+                    }
+                }
+                let diverges: bool =
+                    self.ctor_analyze_block(
+                        function.body, inout assigned, true)
+                if !diverges {
+                    self.ctor_require_complete(
+                        new AstNode(
+                            "init", function.name,
+                            function.line, function.col),
+                        inout assigned)
+                }
+            }
+            none => {}
+        }
+    }
+
+    fn ctor_setup(function: HirFunction,
+                  owner: HirDeclaration) {
+        self.current = function
+        self.ctor_owner = owner.qualified
+        self.ctor_self_binding = function.self_binding_id
+        self.ctor_own_fields = {}
+        self.ctor_inherited_fields = {}
+        self.ctor_super_seen = false
+        for field: HirField in owner.fields {
+            if !field.is_static {
+                // A weak field's slot is a zeroing handle whose only valid
+                // starting value is none, so it is assigned from the start
+                // whether or not the source wrote the `= none` (SYNTAX.md,
+                // "weak fields").
+                self.ctor_own_fields[field.name] =
+                    field.has_default || field.is_weak
+            }
+        }
+        var seen: Map<string, bool> = {}
+        self.ctor_collect_inherited(owner, inout seen)
+        self.ctor_requires_super = false
+        match self.ctor_base_declaration(owner) {
+            some(base) => {
+                match self.initializer_for(base) {
+                    some(base_init) => {
+                        self.ctor_requires_super = true
+                    }
+                    none => {}
+                }
+            }
+            none => {}
+        }
+    }
+
+    fn ctor_base_declaration(
+        declaration: HirDeclaration) -> Option<HirDeclaration> {
+        for index: int in
+            0..declaration.relations.len() {
+            if index <
+                   declaration.relation_kinds.len() &&
+               declaration.relation_kinds[index] ==
+                   "extends" {
+                return self.declaration_for(
+                    declaration.relations[index])
+            }
+        }
+        return none
+    }
+
+    fn ctor_collect_inherited(
+        declaration: HirDeclaration,
+        inout seen: Map<string, bool>) {
+        match self.ctor_base_declaration(declaration) {
+            some(base) => {
+                if seen.contains_key(base.qualified) {
+                    return
+                }
+                seen[base.qualified] = true
+                if base.kind == "class" {
+                    for field: HirField in base.fields {
+                        if !field.is_static {
+                            self.ctor_inherited_fields[
+                                field.name] =
+                                field.has_default ||
+                                field.is_weak
+                        }
+                    }
+                    self.ctor_collect_inherited(
+                        base, inout seen)
+                }
+            }
+            none => {}
+        }
+    }
+
+    fn ctor_copy(
+        source: Map<string, bool>) -> Map<string, bool> {
+        var result: Map<string, bool> = {}
+        for name: string in source.keys() {
+            result[name] = source[name]
+        }
+        return move result
+    }
+
+    fn ctor_is_self(node: HirNode) -> bool {
+        return node.kind == "local" &&
+               self.ctor_self_binding >= 0 &&
+               node.binding_id == self.ctor_self_binding
+    }
+
+    // A statement list; returns true when it always leaves through a return
+    // (or break/continue), so a caller merging branches drops it.
+    fn ctor_analyze_block(
+        statements: List<HirNode>,
+        inout assigned: Map<string, bool>,
+        top_level: bool) -> bool {
+        for statement: HirNode in statements {
+            if self.ctor_analyze_stmt(
+                   statement, inout assigned, top_level) {
+                return true
+            }
+        }
+        return false
+    }
+
+    fn ctor_analyze_stmt(
+        stmt: HirNode,
+        inout assigned: Map<string, bool>,
+        top_level: bool) -> bool {
+        let kind: string = stmt.kind
+        if kind == "assign" {
+            return self.ctor_analyze_assign(
+                stmt, inout assigned)
+        }
+        if kind == "let" || kind == "var" {
+            for child: HirNode in stmt.children {
+                self.ctor_analyze_expr(child, inout assigned)
+            }
+            return false
+        }
+        if kind == "return" {
+            for child: HirNode in stmt.children {
+                self.ctor_analyze_expr(child, inout assigned)
+            }
+            self.ctor_require_complete(
+                new AstNode(
+                    "return", stmt.value,
+                    stmt.line, stmt.col),
+                inout assigned)
+            return true
+        }
+        if kind == "expression" {
+            if stmt.children.len() != 0 {
+                let inner: HirNode = stmt.children[0]
+                if inner.kind == "super_init" {
+                    self.ctor_handle_super_init(
+                        inner, inout assigned, top_level)
+                    return false
+                }
+                if inner.kind == "match" {
+                    return self.ctor_analyze_match(
+                        inner, inout assigned)
+                }
+                self.ctor_analyze_expr(inner, inout assigned)
+                // `panic(...)` never comes back, so a branch that ends in one
+                // contributes nothing to a merge and its fields need not be
+                // assigned — the same body-terminating rule statement_always_
+                // returns and MIR already apply, so all three agree.
+                if inner.kind == "builtin_call" &&
+                   inner.resolved == "panic" {
+                    return true
+                }
+            }
+            return false
+        }
+        if kind == "match" {
+            return self.ctor_analyze_match(
+                stmt, inout assigned)
+        }
+        if kind == "if" {
+            return self.ctor_analyze_if(stmt, inout assigned)
+        }
+        if kind == "for" {
+            return self.ctor_analyze_for(stmt, inout assigned)
+        }
+        if kind == "defer" {
+            for child: HirNode in stmt.children {
+                self.ctor_analyze_expr(child, inout assigned)
+            }
+            return false
+        }
+        if kind == "unsafe" {
+            if stmt.children.len() != 0 {
+                return self.ctor_analyze_block(
+                    stmt.children[0].children,
+                    inout assigned, false)
+            }
+            return false
+        }
+        if kind == "block" {
+            return self.ctor_analyze_block(
+                stmt.children, inout assigned, false)
+        }
+        if kind == "break" || kind == "continue" {
+            return true
+        }
+        for child: HirNode in stmt.children {
+            self.ctor_analyze_expr(child, inout assigned)
+        }
+        return false
+    }
+
+    fn ctor_analyze_assign(
+        stmt: HirNode,
+        inout assigned: Map<string, bool>) -> bool {
+        if stmt.children.len() < 2 {
+            return false
+        }
+        let place: HirNode = stmt.children[0]
+        let value: HirNode = stmt.children[1]
+        self.ctor_analyze_expr(value, inout assigned)
+        if (place.kind == "field" ||
+            place.kind == "weak_field") &&
+           place.children.len() != 0 &&
+           self.ctor_is_self(place.children[0]) {
+            let fname: string = place.value
+            if self.ctor_inherited_fields.contains_key(
+                   fname) && self.ctor_requires_super {
+                if !self.ctor_super_seen {
+                    self.fail(
+                        new AstNode(
+                            "field", fname,
+                            place.line, place.col),
+                        "'{fname}' is a base class field, so super.init owns it — assign the fields '{self.ctor_diag_owner()}' declares itself, then call super.init")
+                    return false
+                }
+                assigned[fname] = true
+                return false
+            }
+            if stmt.value != "=" &&
+               !assigned.contains_key(fname) {
+                self.fail(
+                    new AstNode(
+                        "field", fname,
+                        place.line, place.col),
+                    "field '{fname}' is read by '{stmt.value}' before it is assigned")
+            }
+            assigned[fname] = true
+            return false
+        }
+        self.ctor_analyze_expr(place, inout assigned)
+        return false
+    }
+
+    fn ctor_analyze_expr(
+        expr: HirNode,
+        inout assigned: Map<string, bool>) {
+        let kind: string = expr.kind
+        if kind == "field" || kind == "weak_field" {
+            if expr.children.len() != 0 &&
+               self.ctor_is_self(expr.children[0]) {
+                self.ctor_check_field_read(expr, inout assigned)
+                return
+            }
+        }
+        if kind == "match" {
+            self.ctor_analyze_match(expr, inout assigned)
+            return
+        }
+        if kind == "if_expression" {
+            self.ctor_analyze_if_expression(
+                expr, inout assigned)
+            return
+        }
+        // `super.m(...)` carries only its arguments as children — its receiver
+        // is self, never a `local` node — so the self-escape test below never
+        // sees it. It runs the base method non-virtually on this object, and
+        // that body may call a method the subclass overrides, which reads a
+        // field the subclass has not assigned yet, so it escapes self exactly
+        // as a plain method call does and needs every field assigned first.
+        if kind == "super_call" {
+            for child: HirNode in expr.children {
+                self.ctor_analyze_expr(child, inout assigned)
+            }
+            self.ctor_report_self_escape(expr, inout assigned)
+            return
+        }
+        if self.ctor_is_self(expr) {
+            self.ctor_report_self_escape(expr, inout assigned)
+            return
+        }
+        for child: HirNode in expr.children {
+            self.ctor_analyze_expr(child, inout assigned)
+        }
+    }
+
+    // An inherited field is available once it is in `assigned` — seeded from
+    // its default, or assigned by this init when no ancestor has one — or once
+    // super.init has run, which constructs the whole base chain. Keeping the
+    // second half off the per-path map is what stops one misplaced super.init
+    // from cascading a "field unassigned" behind the real error.
+    fn ctor_inherited_satisfied(
+        name: string,
+        assigned: Map<string, bool>) -> bool {
+        if assigned.contains_key(name) { return true }
+        return self.ctor_requires_super &&
+               self.ctor_super_seen
+    }
+
+    fn ctor_check_field_read(
+        expr: HirNode,
+        inout assigned: Map<string, bool>) {
+        let fname: string = expr.value
+        if self.ctor_own_fields.contains_key(fname) {
+            if !assigned.contains_key(fname) {
+                self.fail(
+                    new AstNode(
+                        "field", fname, expr.line, expr.col),
+                    "field '{fname}' is read before it is assigned")
+            }
+            return
+        }
+        if self.ctor_inherited_fields.contains_key(fname) {
+            if self.ctor_inherited_satisfied(fname, assigned) {
+                return
+            }
+            if self.ctor_requires_super {
+                self.fail(
+                    new AstNode(
+                        "field", fname, expr.line, expr.col),
+                    "'{fname}' is a base class field and the base is not constructed yet — read it only after super.init")
+                return
+            }
+            self.fail(
+                new AstNode(
+                    "field", fname, expr.line, expr.col),
+                "field '{fname}' is read before it is assigned")
+        }
+    }
+
+    fn ctor_report_self_escape(
+        expr: HirNode,
+        inout assigned: Map<string, bool>) {
+        if self.ctor_all_assigned(assigned) {
+            return
+        }
+        self.fail(
+            new AstNode(
+                expr.kind, expr.value,
+                expr.line, expr.col),
+            "self is used here before the object is fully built — a method call on self, passing self on, returning self, or interpolating self is allowed only once every field is assigned{self.ctor_missing_note(assigned)}")
+    }
+
+    fn ctor_handle_super_init(
+        node: HirNode,
+        inout assigned: Map<string, bool>,
+        top_level: bool) {
+        for child: HirNode in node.children {
+            self.ctor_analyze_expr(child, inout assigned)
+        }
+        if !top_level {
+            self.fail(
+                new AstNode(
+                    "super_init", "init",
+                    node.line, node.col),
+                "super.init must be a top-level statement of init — it runs exactly once, not inside a branch, loop or block")
+            // Treat it as seen for the rest of the flow so the one real fault
+            // is reported, not a cascade of "super.init must be called" and
+            // "inherited field read before super.init" behind it.
+            self.ctor_super_seen = true
+            for name: string in
+                self.ctor_inherited_fields.keys() {
+                assigned[name] = true
+            }
+            return
+        }
+        if self.ctor_super_seen {
+            self.fail(
+                new AstNode(
+                    "super_init", "init",
+                    node.line, node.col),
+                "super.init is called more than once — it runs exactly once")
+            return
+        }
+        var missing: List<string> = []
+        for name: string in self.ctor_own_fields.keys() {
+            if !assigned.contains_key(name) {
+                missing.push(name)
+            }
+        }
+        if missing.len() != 0 {
+            self.fail(
+                new AstNode(
+                    "super_init", "init",
+                    node.line, node.col),
+                "super.init is called before '{self.ctor_diag_owner()}' assigns its own fields ({missing.join(", ")}) — assign them first, so a base initializer that calls an overridden method sees them")
+        }
+        self.ctor_super_seen = true
+        for name: string in
+            self.ctor_inherited_fields.keys() {
+            assigned[name] = true
+        }
+    }
+
+    // `if` statement: children are condition, then-block, and an optional
+    // else (block or another statement). A field is assigned after the if only
+    // when both arms assign it; an arm that always returns drops out.
+    fn ctor_analyze_if(
+        stmt: HirNode,
+        inout assigned: Map<string, bool>) -> bool {
+        if stmt.children.len() != 0 {
+            self.ctor_analyze_expr(
+                stmt.children[0], inout assigned)
+        }
+        var then_a: Map<string, bool> = self.ctor_copy(assigned)
+        var then_div: bool = false
+        if stmt.children.len() > 1 {
+            then_div = self.ctor_analyze_stmt(
+                stmt.children[1], inout then_a, false)
+        }
+        if stmt.children.len() > 2 {
+            var else_a: Map<string, bool> =
+                self.ctor_copy(assigned)
+            let else_div: bool = self.ctor_analyze_stmt(
+                stmt.children[2], inout else_a, false)
+            if then_div && else_div {
+                return true
+            }
+            if then_div {
+                self.ctor_merge_into(inout assigned, else_a)
+                return false
+            }
+            if else_div {
+                self.ctor_merge_into(inout assigned, then_a)
+                return false
+            }
+            self.ctor_intersect_into(
+                inout assigned, then_a, else_a)
+            return false
+        }
+        return false
+    }
+
+    fn ctor_analyze_match(
+        node: HirNode,
+        inout assigned: Map<string, bool>) -> bool {
+        if node.children.len() != 0 {
+            self.ctor_analyze_expr(
+                node.children[0], inout assigned)
+        }
+        var merged: Map<string, bool> = {}
+        var has_merged: bool = false
+        var any_continues: bool = false
+        for index: int in 1..node.children.len() {
+            let arm: HirNode = node.children[index]
+            var arm_a: Map<string, bool> =
+                self.ctor_copy(assigned)
+            var arm_div: bool = false
+            if arm.children.len() > 1 {
+                let body: HirNode = arm.children[1]
+                if body.kind == "block" {
+                    arm_div = self.ctor_analyze_block(
+                        body.children, inout arm_a, false)
+                } else {
+                    self.ctor_analyze_expr(
+                        body, inout arm_a)
+                }
+            }
+            if !arm_div {
+                any_continues = true
+                if !has_merged {
+                    merged = self.ctor_copy(arm_a)
+                    has_merged = true
+                } else {
+                    merged = self.ctor_and(merged, arm_a)
+                }
+            }
+        }
+        if !any_continues {
+            return true
+        }
+        self.ctor_merge_into(inout assigned, merged)
+        return false
+    }
+
+    fn ctor_analyze_if_expression(
+        expr: HirNode,
+        inout assigned: Map<string, bool>) {
+        if expr.children.len() == 0 { return }
+        self.ctor_analyze_expr(
+            expr.children[0], inout assigned)
+        var merged: Map<string, bool> = {}
+        var has_merged: bool = false
+        for index: int in 1..expr.children.len() {
+            var branch_a: Map<string, bool> =
+                self.ctor_copy(assigned)
+            self.ctor_analyze_expr(
+                expr.children[index], inout branch_a)
+            if !has_merged {
+                merged = self.ctor_copy(branch_a)
+                has_merged = true
+            } else {
+                merged = self.ctor_and(merged, branch_a)
+            }
+        }
+        if has_merged {
+            self.ctor_merge_into(inout assigned, merged)
+        }
+    }
+
+    // A loop may run zero times, so nothing its body assigns is definitely
+    // assigned afterwards, and its own reads cannot lean on an assignment a
+    // later iteration makes: the body is analysed against a copy that is
+    // thrown away. Everything that is not the body — the iterable — is read
+    // against the live set.
+    fn ctor_analyze_for(
+        stmt: HirNode,
+        inout assigned: Map<string, bool>) -> bool {
+        for child: HirNode in stmt.children {
+            if child.kind == "block" {
+                var body_a: Map<string, bool> =
+                    self.ctor_copy(assigned)
+                self.ctor_analyze_block(
+                    child.children, inout body_a, false)
+            } else if child.kind != "loop_binding" {
+                self.ctor_analyze_expr(child, inout assigned)
+            }
+        }
+        // An unconditional `for { }` — no iterable, no binding — that holds no
+        // `break` never falls through, so nothing after it runs. The same rule
+        // statement_always_returns applies, so all three halves agree.
+        if stmt.children.len() == 1 &&
+           stmt.children[0].kind == "block" &&
+           !self.ctor_has_break(stmt.children[0]) {
+            return true
+        }
+        return false
+    }
+
+    // A `break` that would leave THIS loop: one inside a nested loop targets
+    // that loop, and a closure body is a different function, so neither counts.
+    fn ctor_has_break(node: HirNode) -> bool {
+        if node.kind == "break" { return true }
+        if node.kind == "for" || node.kind == "closure" {
+            return false
+        }
+        for child: HirNode in node.children {
+            if self.ctor_has_break(child) { return true }
+        }
+        return false
+    }
+
+    // Add every name in `source` to `dest` (dest becomes dest ∪ source). Used
+    // where one branch's set flows through unchanged.
+    fn ctor_merge_into(
+        inout dest: Map<string, bool>,
+        source: Map<string, bool>) {
+        for name: string in source.keys() {
+            dest[name] = true
+        }
+    }
+
+    // dest gains every name assigned in BOTH arms. dest already holds the
+    // pre-branch set, which both arms kept, so only the shared new names are
+    // added — leaving dest equal to the intersection of the two arm sets.
+    fn ctor_intersect_into(
+        inout dest: Map<string, bool>,
+        left: Map<string, bool>,
+        right: Map<string, bool>) {
+        for name: string in left.keys() {
+            if right.contains_key(name) {
+                dest[name] = true
+            }
+        }
+    }
+
+    fn ctor_and(
+        left: Map<string, bool>,
+        right: Map<string, bool>) -> Map<string, bool> {
+        var result: Map<string, bool> = {}
+        for name: string in left.keys() {
+            if right.contains_key(name) {
+                result[name] = true
+            }
+        }
+        return move result
+    }
+
+    fn ctor_all_assigned(
+        assigned: Map<string, bool>) -> bool {
+        for name: string in self.ctor_own_fields.keys() {
+            if !assigned.contains_key(name) { return false }
+        }
+        for name: string in
+            self.ctor_inherited_fields.keys() {
+            if !self.ctor_inherited_satisfied(
+                   name, assigned) {
+                return false
+            }
+        }
+        return true
+    }
+
+    fn ctor_missing_note(
+        assigned: Map<string, bool>) -> string {
+        var missing: List<string> = []
+        for name: string in self.ctor_own_fields.keys() {
+            if !assigned.contains_key(name) {
+                missing.push(name)
+            }
+        }
+        for name: string in
+            self.ctor_inherited_fields.keys() {
+            if !self.ctor_inherited_satisfied(
+                   name, assigned) {
+                missing.push(name)
+            }
+        }
+        if missing.len() == 0 { return "" }
+        return " (still unassigned: {missing.join(", ")})"
+    }
+
+    fn ctor_diag_owner() -> string {
+        return self.diagnostic_symbol(self.ctor_owner)
+    }
+
+    fn ctor_require_complete(
+        node: AstNode,
+        inout assigned: Map<string, bool>) {
+        if self.ctor_requires_super &&
+           !self.ctor_super_seen {
+            self.fail(
+                node,
+                "super.init must be called before init returns — the base class's fields are left unassigned otherwise")
+            return
+        }
+        var missing: List<string> = []
+        for name: string in self.ctor_own_fields.keys() {
+            if !assigned.contains_key(name) {
+                missing.push(name)
+            }
+        }
+        for name: string in
+            self.ctor_inherited_fields.keys() {
+            if !self.ctor_inherited_satisfied(
+                   name, assigned) {
+                missing.push(name)
+            }
+        }
+        if missing.len() != 0 {
+            self.fail(
+                node,
+                "'{self.ctor_diag_owner()}' init returns with unassigned fields ({missing.join(", ")}) — every field must be assigned before construction finishes")
+        }
     }
 
     fn check_abstract_contracts() {
@@ -13336,6 +14221,9 @@ class ExpressionChecker {
             }
         }
         self.pop_scope()
+        if function.name == "init" && function.owner != "" {
+            self.check_init_construction(function)
+        }
     }
 
     // ---- module constants ---------------------------------------------------
@@ -14085,6 +14973,8 @@ class ExpressionChecker {
             self.validate_override(function)
         }
         self.check_abstract_contracts()
+        self.check_inherited_field_shadowing()
+        self.check_required_field_initializers()
         for function: HirFunction in self.program.functions {
             if (function.is_extern_c &&
                 !function.is_c_export) ||

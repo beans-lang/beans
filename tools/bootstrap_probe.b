@@ -3,7 +3,7 @@
 // compiler too old to build these sources says so in one line instead of
 // failing with a page of parse errors from src/llvm.b.
 partial class Probe {
-    value: int
+    value: int = 0
 }
 
 partial class Probe {

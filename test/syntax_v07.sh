@@ -11,6 +11,27 @@ trap 'rm -rf "$tmp"' EXIT
 diff -u test/cases/syntax_v07_ok.out "$tmp/interp"
 diff -u test/cases/syntax_v07_ok.out "$tmp/native.out"
 
+# #94: the construction-safety proof accepts branches and an exhaustive match
+# that assign on every arm, a method call once every field is assigned, and a
+# base initializer that calls a subclass override — safe because the subclass
+# assigns its own field before super.init. Both backends must agree.
+./build/beansc run test/cases/init_construction_ok.b >"$tmp/ic.interp"
+./build/beansc build test/cases/init_construction_ok.b -o "$tmp/ic.native" \
+    >"$tmp/ic.build" 2>&1
+"$tmp/ic.native" >"$tmp/ic.native.out"
+diff -u test/cases/init_construction_ok.out "$tmp/ic.interp"
+diff -u test/cases/init_construction_ok.out "$tmp/ic.native.out"
+
+# The Makefile checks tools/bootstrap_probe.b against BEANSC_BOOT before every
+# build (Makefile: "too old to build these sources"), so it must stay valid
+# under the current checker — a construction rule that refused it would turn
+# every `make` red with a message about `partial class` that is simply wrong.
+./build/beansc check tools/bootstrap_probe.b >"$tmp/probe" 2>&1 || {
+    echo "tools/bootstrap_probe.b no longer passes check — Makefile runs it before every build" >&2
+    cat "$tmp/probe" >&2
+    exit 1
+}
+
 compilers=(./build/beansc)
 for compiler in "${compilers[@]}"; do
     name=$(basename "$compiler")
@@ -42,6 +63,25 @@ check_bad() {
     grep -q "$message" "$tmp/bad"
 }
 
+# Like check_bad, but the error must land on the source line holding `marker`.
+# Two classes can share a message (a plain method call and a super.method()
+# call both "use self before the object is fully built"), so a bare grep could
+# pass on the wrong one; pinning the line proves this exact site is the one
+# refused. The line is found, not written down, so it survives edits above it.
+check_bad_at() {
+    local file=$1
+    local marker=$2
+    local message=$3
+    local line
+    line=$(grep -n "$marker" "test/cases/$file" | head -1 | cut -d: -f1)
+    [ -n "$line" ] || { echo "$file: marker '$marker' not found" >&2; exit 1; }
+    if ./build/beansc check "test/cases/$file" >"$tmp/bad" 2>&1; then
+        echo "$file unexpectedly passed" >&2
+        exit 1
+    fi
+    grep -q "$file:$line:.*$message" "$tmp/bad"
+}
+
 check_bad syntax_old_call_bad.b "classes are built with 'new Item(...)'"
 check_bad syntax_raw_class_bad.b "field literals are only for structs"
 check_bad syntax_dot_new_bad.b "use 'new Type(...)'"
@@ -59,6 +99,34 @@ if grep -q "no parent constructor to call" "$tmp/bad"; then
     echo "invalid builtin inheritance emitted a constructor cascade" >&2
     exit 1
 fi
+# #94: every clause of the construction proof refuses its own shape. One file
+# holds a class per clause, so each assertion re-runs it and greps its message.
+check_bad init_construction_bad.b "'NeverAssigned' init returns with unassigned fields (b)"
+check_bad init_construction_bad.b "'SlotUnset' init returns with unassigned fields (p)"
+check_bad init_construction_bad.b "self is used here before the object is fully built"
+# a non-init method reached through super escapes self too — the super_call HIR
+# node carries no `local self`, so this asserts the node-kind path catches it,
+# pinned to the super.describe() line so CallEarly's identical message can't
+# stand in for it.
+check_bad_at init_construction_bad.b "super.describe()" "self is used here before the object is fully built"
+check_bad init_construction_bad.b "field 'b' is read before it is assigned"
+# the interpolation clause: "{self.hidden}" is a resolved field read in the
+# checked HIR and is refused exactly as self.hidden is. Its field is named
+# apart from every other class so a bare grep cannot be satisfied by another.
+check_bad init_construction_bad.b "field 'hidden' is read before it is assigned"
+check_bad init_construction_bad.b "'PartialBranch' init returns with unassigned fields (a)"
+check_bad init_construction_bad.b "'LoopOnly' init returns with unassigned fields (a)"
+check_bad init_construction_bad.b "field 'x' has no default and 'NoInit' declares no init"
+check_bad init_construction_bad.b "super.init must be called before init returns"
+check_bad init_construction_bad.b "super.init is called before 'SuperTooEarly' assigns its own fields (w)"
+check_bad init_construction_bad.b "super.init must be a top-level statement of init"
+check_bad init_construction_bad.b "super.init is called more than once"
+
+# A subclass may not redeclare a field name it inherits (#95). Assert the
+# direct-parent and the grandparent-through-a-silent-middle shapes both refuse,
+# naming the base the slot belongs to.
+check_bad inherited_field_shadow_bad.b "field 'z' redeclares a field 'Sub' inherits from 'Middle'"
+check_bad inherited_field_shadow_bad.b "field 'x' redeclares a field 'Sub' inherits from 'Grand'"
 check_bad syntax_interface_static_bad.b "static interface methods are not supported"
 check_bad syntax_bound_bad.b "generic bound 'Value' is not an interface"
 check_bad syntax_old_take_bad.b "'take' was removed"
