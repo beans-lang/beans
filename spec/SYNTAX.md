@@ -1722,7 +1722,7 @@ let c: Conn = new Conn("db1")
 - The proof is about the paths the checker can see. A `panic` mid-`init` is not one of them:
   it unwinds the object under construction, and unwinding runs `deinit`, which reads fields
   the constructor had not reached. Releasing a still-constructing object must therefore skip
-  its `deinit` body — until it does (#121), a panic before the last field is assigned is
+  its `deinit` body — until it does (#120), a panic before the last field is assigned is
   undefined at this one boundary, the same on both backends.
 - A class whose fields all have defaults receives an implicit zero-argument
   initializer. A class with any required field must declare `init` — the implicit
