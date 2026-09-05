@@ -1,5 +1,22 @@
 package main
 
+// An array type whose length names a constant, and the name node that
+// says which one. A length is substituted once every constant is folded,
+// which is later than this — and walking the whole AST again to find these
+// would touch every node in the program to reach a handful. The resolver is
+// already standing on each of them, so it writes them down.
+class ArrayLengthSite {
+    array: AstNode
+    length: AstNode
+    file: string
+
+    fn init(array: AstNode, length: AstNode, file: string) {
+        self.array = array
+        self.length = length
+        self.file = file
+    }
+}
+
 struct SemanticSymbol {
     name: string
     qualified: string
@@ -144,6 +161,7 @@ class Resolver {
     loader: ModuleLoader
     symbols: Map<string, SemanticSymbol>
     annotation_symbols: Map<string, SemanticSymbol>
+    array_lengths: List<ArrayLengthSite>
     partial_types: Map<string, PartialType>
     errors: List<Diagnostic>
 
@@ -151,6 +169,7 @@ class Resolver {
         self.loader = loader
         self.symbols = {}
         self.annotation_symbols = {}
+        self.array_lengths = []
         self.partial_types = {}
         self.errors = []
     }
@@ -678,6 +697,16 @@ class Resolver {
                                        aliases, selected, generics,
                                        self_type, position,
                                        generic_bound)
+        }
+        if node.kind == "array_type" {
+            match ast_array_length_name(node) {
+                some(length) => {
+                    self.array_lengths.push(
+                        new ArrayLengthSite(
+                            node, length, file.path))
+                }
+                none => {}
+            }
         }
         if node.kind == "array_length" {
             node.resolved =

@@ -671,6 +671,11 @@ class SignatureChecker {
     // that names one is carried here and filled in once the fold is done.
     pending_array_lengths: List<PendingArrayLength>
     const_index: Map<string, HirConst>
+    // The expression checker that folded the constants, kept for whoever
+    // goes on to check the bodies. There is one per program: it indexes the
+    // whole program to be built, and a second one thrown away after the fold
+    // would be that index again, and then garbage for the collector to walk.
+    expressions: Option<ExpressionChecker>
 
     fn init(resolver: Resolver, target: TargetDescription,
             runtime_profile: string) {
@@ -693,6 +698,7 @@ class SignatureChecker {
         self.refused_capabilities = {}
         self.pending_array_lengths = []
         self.const_index = {}
+        self.expressions = none
     }
 
     fn fail(file: string, node: AstNode, message: string) {
@@ -2517,17 +2523,35 @@ class SignatureChecker {
         let expressions: ExpressionChecker =
             new ExpressionChecker(self)
         expressions.check_consts()
+        // The constants were checked by this stage, so their diagnostics are
+        // this stage's. Moving them rather than copying them is what keeps
+        // the one checker that goes on to check the bodies from reporting
+        // the same refusal a second time.
         for diagnostic: Diagnostic in expressions.errors {
             self.hir.errors.push(diagnostic)
         }
+        expressions.errors = []
+        self.expressions = some(expressions)
+    }
+
+    // The one expression checker for this program. run() builds it to fold
+    // the constants; anything that goes on to check bodies takes that one
+    // rather than indexing the program a second time.
+    fn expression_checker() -> ExpressionChecker {
+        match self.expressions {
+            some(existing) => { return existing }
+            none => {}
+        }
+        let built: ExpressionChecker = new ExpressionChecker(self)
+        self.expressions = some(built)
+        return built
     }
 
     fn resolve_array_lengths() {
-        for package: LoadedPackage in self.resolver.loader.packages {
-            for file: ParsedModuleFile in package.files {
-                self.substitute_array_lengths(
-                    file.ast, file.path)
-            }
+        for site: ArrayLengthSite in
+            self.resolver.array_lengths {
+            site.array.value =
+                self.array_length_value(site.length, site.file)
         }
         for pending: PendingArrayLength in
             self.pending_array_lengths {
@@ -2542,27 +2566,6 @@ class SignatureChecker {
                 continue
             }
             pending.type.array_length = length
-        }
-    }
-
-    fn substitute_array_lengths(node: AstNode, file: string) {
-        if node.kind == "array_type" {
-            match ast_array_length_name(node) {
-                some(length) => {
-                    node.value =
-                        self.array_length_value(length, file)
-                }
-                none => {}
-            }
-        }
-        for annotation: AstNode in node.annotations {
-            self.substitute_array_lengths(annotation, file)
-        }
-        for child: AstNode in node.children {
-            self.substitute_array_lengths(child, file)
-        }
-        for piece: AstNode in node.interpolations {
-            self.substitute_array_lengths(piece, file)
         }
     }
 
