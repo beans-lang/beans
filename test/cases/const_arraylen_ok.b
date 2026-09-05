@@ -3,11 +3,16 @@
 // the number the fold computed — in every position a fixed array can be
 // written, and identically on both backends.
 //
-// The lengths are all different and none is 1 or 2: an array indexed only at
-// 0 would pass with any length at all, so each one is read at its last
-// element, and the two whose elements are too many to write out are measured
-// with size_of instead.
+// Every length here is different, and each array is read at its *last*
+// element — an array indexed only at 0 would pass with any length at all. Both
+// ends of the range are here on purpose: 1, where a wrong length is hardest to
+// notice, and 4096, the largest a fixed array may be. The two whose elements
+// are too many to write out are measured with size_of instead.
 import std.io
+
+struct Early {
+    cells: [int; DECLARED_LAST]
+}
 
 const FOUR: int = 4
 const THREE: int = 3
@@ -29,7 +34,8 @@ const SEPARATED: int = 1_0
 // the 64-bit accumulator the fold ran in. 200 + 7 stays inside u8.
 const NARROW: u8 = 200 + 7
 
-// The largest length a fixed array may have, named rather than typed.
+// Both ends of the range a length may take, named rather than typed.
+const SMALLEST: int = 1
 const MAXIMUM: int = 4096
 
 struct Frame {
@@ -51,6 +57,7 @@ class Grid {
 fn last_of(values: [int; LINK_C]) -> int { return values[LINK_C - 1] }
 fn build() -> [int; HEX] { return [1, 2, 3, 4, 5, 6] }
 fn corner(grid: [[int; FOUR]; THREE]) -> int { return grid[2][3] }
+
 fn nested() -> [[int; THREE]; FOUR] {
     return [[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]]
 }
@@ -78,8 +85,18 @@ fn main() {
     let deep: [[int; THREE]; FOUR] = nested()
     io.println("nested {corner(grid.rows)} {deep[3][2]}")
 
+    let smallest: [int; SMALLEST] = [77]
+    io.println("smallest {smallest[SMALLEST - 1]} {size_of([int; SMALLEST])}")
+
+    let early: Early = Early { cells: [1, 2, 3, 4, 5, 66] }
+    io.println("declared last {early.cells[DECLARED_LAST - 1]}")
+
     // A length too long to write out: layout is the proof, and it is the
     // same question a field or a local would ask of the same type.
     io.println("narrow {size_of([u8; NARROW])} {size_of([int; NARROW])}")
     io.println("maximum {size_of([u8; MAXIMUM])} {size_of([[u8; FOUR]; MAXIMUM])}")
 }
+
+// Declared last on purpose: `Early` at the top of the file is sized by it, and
+// nothing about a length may depend on where its constant sits.
+const DECLARED_LAST: int = 6

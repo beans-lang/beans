@@ -3,5 +3,7 @@ class 12 5
 chain 5
 literals 6 8 10
 nested 12 12
+smallest 77 8
+declared last 66
 narrow 207 1656
 maximum 4096 16384

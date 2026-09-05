@@ -1005,10 +1005,10 @@ fn widen(row: [int; LIMIT]) -> [[int; LIMIT]; 2] { … }
   integer, or outside `1..4096` — is refused at the name and says which
   constant it is and what it holds.
 
-- A `const` **cannot be a parameter default** — a default is read while
-  signatures are checked, which is before any constant is folded
+- A `const` **cannot be a parameter default** — a default is read while the
+  signature holding it is lowered, and the fold runs at the end of that stage
   (`fn f(n: int = 128)`, not `= LIMIT`). It is refused where it is written,
-  with a message that names the name and the ordering.
+  with a message that names the name and says why an array length differs.
 - `const` is contextual. It is a declaration keyword only in `const <NAME>` at
   the start of a module-level declaration, and stays an ordinary identifier
   everywhere else.

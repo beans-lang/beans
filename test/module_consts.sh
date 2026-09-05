@@ -88,6 +88,8 @@ check_bad const_arraylen_bad.b \
     "an array length must be an integer, and const REAL is a float" \
     "fixed array length must be between 1 and 4096, and const ZERO is 0" \
     "fixed array length must be between 1 and 4096, and const HUGE is 5000" \
+    "fixed array length must be between 1 and 4096, and const OVER is 4097" \
+    "fixed array length must be between 1 and 4096, and const NEGATIVE is -1" \
     "const CALLED is not a compile-time value: a call runs at run time" \
     "const SELFREF is defined in terms of itself"
 if grep -Fq "SIZE" "$tmp/bad"; then
@@ -95,7 +97,7 @@ if grep -Fq "SIZE" "$tmp/bad"; then
     cat "$tmp/bad" >&2
     exit 1
 fi
-test "$(grep -c ': error:' "$tmp/bad")" -eq 15
+test "$(grep -c ': error:' "$tmp/bad")" -eq 17
 
 # The value a constant supplies is the same one wherever the type is written,
 # including inside a string's `{}` piece — which is parsed after every other

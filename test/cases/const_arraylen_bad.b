@@ -6,6 +6,8 @@
 const SIZE: int = 4
 const ZERO: int = 0
 const HUGE: int = 5000
+const OVER: int = 4097
+const NEGATIVE: int = 0 - 1
 const TEXT: string = "hi"
 const FLAG: bool = true
 const REAL: float = 2.5
@@ -40,6 +42,8 @@ fn main() {
     let cyclic: [int; SELFREF] = [1, 2, 3, 4]
     let zero: [int; ZERO] = [1, 2, 3, 4]
     let huge: [int; HUGE] = [1, 2, 3, 4]
+    let over: [int; OVER] = [1, 2, 3, 4]
+    let negative: [int; NEGATIVE] = [1, 2, 3, 4]
     let text: [int; TEXT] = [1, 2, 3, 4]
     let flag: [int; FLAG] = [1, 2, 3, 4]
     let real: [int; REAL] = [1, 2, 3, 4]
