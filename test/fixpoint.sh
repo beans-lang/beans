@@ -35,6 +35,14 @@ set -euo pipefail
 #
 #   2. The fixed point is stable: stage 2 and stage 3 agree.
 #
+# What claim 1 cannot see, said plainly: a compiler that is wrong *and*
+# reproduces itself. Bytes cannot separate that from a correct one, and no
+# rebuild will -- that is what the behavioural suites are for. The point is
+# that they now run against a binary something has checked. The defect this
+# was written for is not of that shape, and that was tested rather than
+# assumed: the stage 1 from beansc-boot-0.1.30 hashes 3bd6dc9f89eb8a64 and the
+# stage 2 it builds hashes 0d44b2f5f26f5165, so this check fails on it.
+#
 # Both stages, and the make-time build of build/beansc itself, use the SAME
 # output path and the SAME flags. That is load-bearing, not tidiness: the
 # compiler records its output path inside the binary it produces, so the same
