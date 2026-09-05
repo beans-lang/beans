@@ -270,6 +270,31 @@ class IStr extends IAbs<string> {
 fn i_heft(b: IBase<int>) -> int { return b.heft() }
 fn i_heft_str(b: IBase<string>) -> int { return b.heft() }
 
+// ---- J: the same override, with *no* non-generic class anywhere below the
+// base. Section I is answered through the concrete leaf's chain walk, so it
+// still passes when a generic class cannot be a candidate at all; here the
+// generic subclass is the only class that can stand behind the receiver, and
+// it is matched against `JBase<int>` by arguments it writes as `JBase<T>`.
+// Comparing those as written says no, the candidate is skipped, and the call
+// is compiled direct to the base body — the override never runs. Two
+// instantiations, and a second generic link below the first, so the walk has
+// more than one link to weigh.
+class JBase<T> {
+    v: T
+    fn init(v: T) { self.v = v }
+    fn heft() -> int { return 1 }
+}
+class JSub<T> extends JBase<T> {
+    fn init(v: T) { super.init(v) }
+    override fn heft() -> int { return 2 }
+}
+class JMore<T> extends JSub<T> {
+    fn init(v: T) { super.init(v) }
+    override fn heft() -> int { return 3 }
+}
+fn j_heft(b: JBase<int>) -> int { return b.heft() }
+fn j_heft_str(b: JBase<string>) -> int { return b.heft() }
+
 fn main() {
     // A — every field shape, twice over
     let a1: AEmpty<int> = new AEmpty<int>("a_empty_int")
@@ -326,5 +351,9 @@ fn main() {
     // I — the override on an abstract generic link
     io.println("I {i_heft(new IConc())} {i_heft(new IBase<int>(2))}")
     io.println("I {i_heft_str(new IStr())} {new IConc().name()} {new IStr().name()}")
+
+    // J — the override on a generic subclass with no plain class below it
+    io.println("J {j_heft(new JBase<int>(1))} {j_heft(new JSub<int>(2))}")
+    io.println("J {j_heft(new JMore<int>(3))} {j_heft_str(new JSub<string>("t"))}")
     io.println("made")
 }
