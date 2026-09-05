@@ -119,6 +119,18 @@ class TreeInterpreter {
     // double-panic case (a defer or deinit the unwind itself is running has
     // panicked): unrecoverable, reported and aborted.
     unwinds: Map<u64, string>
+    // The object id of a construction that did not finish, or -1. An
+    // initializer (or a field initializer) that panics leaves a half-built
+    // object behind, and the release the unwind then performs must not hand
+    // that object's `deinit` a `self` whose fields the initializer never
+    // reached (#120). Held as one id rather than a flag on the value because
+    // it describes ONE release: the one the construction unwind performs
+    // right after it is armed, with no interpreted code — and therefore no
+    // park and no other fiber — in between. If that release is not the
+    // object's death, some reference escaped the initializer (legal only once
+    // every field is assigned) and the object is an ordinary one from there;
+    // end_unwind disarms the id so its eventual death runs `deinit` normally.
+    unbuilt_object: int
     next_object_id: int
     // Zeroing weak fields: the registry maps a weakly referenced object's
     // id to an inner TreeValue sharing the same fields map, and the
@@ -200,6 +212,7 @@ class TreeInterpreter {
         self.panic_text = ""
         self.entry_returned = false
         self.unwinds = {}
+        self.unbuilt_object = -1
         self.next_object_id = 0
         self.weak_track = false
         self.weak_registry = {}
@@ -616,6 +629,13 @@ class TreeInterpreter {
     // not outlive the fiber it describes.
     fn end_unwind() {
         self.unwinds.remove(self.current_fiber_address())
+        // The unwind is over, so a construction that failed inside it has
+        // had its release: either the object died there (and deinit_object
+        // consumed the id) or a reference escaped the initializer and the
+        // object outlived the unwind. Either way the id describes nothing
+        // now, and leaving it armed would silence the deinit of a survivor
+        // that happens to die inside some later, unrelated unwind.
+        self.unbuilt_object = -1
     }
 
     // Is a panic raised right now contained, i.e. will a `join` catch it?
@@ -2169,6 +2189,7 @@ class TreeInterpreter {
                         }
                     }
                     var result: TreeValue = TreeValue.unit()
+                    var unbuilt: bool = false
                     if constructing {
                         if declaration.kind == "struct" {
                             result = new TreeValue("record")
@@ -2194,6 +2215,13 @@ class TreeInterpreter {
                                 }
                                 none => {}
                             }
+                            if self.failed {
+                                // reflective construction is construction:
+                                // an initializer that panicked leaves an
+                                // object no `deinit` may be handed (#120)
+                                self.unbuilt_object = result.object_id
+                                unbuilt = true
+                            }
                         }
                     } else {
                         result = TreeValue.sequence("variant", values)
@@ -2212,6 +2240,17 @@ class TreeInterpreter {
                             self.reflect_values.remove(handles[index])
                             self.reflect_value_types.remove(handles[index])
                         }
+                    }
+                    if unbuilt {
+                        // A construction that did not finish answers no
+                        // handle: keeping the half-built object in the
+                        // reflect registry left it for the exit-time cycle
+                        // sweep, which handed it to its own deinit long
+                        // after the unwind that made it -- the very body
+                        // #120 forbids. Dropping it here is where the
+                        // construction unwind releases it, so the id armed
+                        // above is what silences that one death.
+                        return TreeValue.integer(0)
                     }
                     let handle: int = self.next_reflect_value
                     self.next_reflect_value += 1
@@ -3730,6 +3769,21 @@ class TreeInterpreter {
     // children to its explicit work stack rather than recursing.
     fn deinit_object(object: TreeValue) {
         if object.kind != "object" { return }
+        // An object whose `init` never returned dies without its `deinit`
+        // body: the initializer may not have reached every field, and a
+        // body that reads one it never assigned is reading a slot that
+        // holds nothing (#120). The fields that WERE assigned still go —
+        // this only skips the interpreted chain; the host cascade releases
+        // the fields box afterwards either way. The object this stands for
+        // is the one whose construction unwind armed the id, and only for
+        // the release that follows arming, so an object the initializer
+        // legitimately handed out (possible only once every field is
+        // assigned) still runs `deinit` at its own later death.
+        if self.unbuilt_object >= 0 &&
+           object.object_id == self.unbuilt_object {
+            self.unbuilt_object = -1
+            return
+        }
         if self.failed {
             // A panic is in flight. Two cases run the deinit anyway, with the
             // panic set aside so the body executes: a contained unwind, where
@@ -9586,10 +9640,15 @@ class TreeInterpreter {
         }
         if receiver.kind == "thread" &&
            node.value == "join" {
-            if receiver.items.len() == 1 {
-                return tree_value_copy(
-                    receiver.items[0])
-            }
+            // A thread is joined once. beans_thread_join panics on a second
+            // join, and it moves the result out (t->result = 0) so the value
+            // belongs to the caller. The tree used to cache a copy on the
+            // handle instead, which made a second join answer the same value
+            // where native ends the process, and kept the handle owning a
+            // value it had already handed over — so the value's deinit ran
+            // when the handle died rather than when the binding that took it
+            // did. The cleared handle is the joined marker, the same one
+            // detach already sets.
             match receiver.thread_handle {
                 some(handle) => {
                     handle.join()
@@ -9597,7 +9656,7 @@ class TreeInterpreter {
                 none => {
                     return self.fail(
                         node,
-                        "thread has no host handle")
+                        "thread already joined")
                 }
             }
             var result: TreeValue =
@@ -9623,12 +9682,15 @@ class TreeInterpreter {
                                 }
                                 none => {}
                             }
+                            // the value moves out of the record, as
+                            // beans_thread_join zeroes t->result
+                            state.result = none
                         })
                 }
                 none => {}
             }
-            receiver.items = [
-                tree_value_copy(result)]
+            receiver.thread_handle = none
+            receiver.thread_work = none
             return result
         }
         if receiver.kind == "thread" &&
@@ -9685,16 +9747,8 @@ class TreeInterpreter {
                         return TreeValue.result_err(
                             TreeValue.error("", "cancelled"))
                     }
-                    match work.result {
-                        some(delivered) => {
-                            return TreeValue.result_ok(
-                                tree_value_copy(delivered))
-                        }
-                        none => {
-                            return TreeValue.result_ok(
-                                TreeValue.unit())
-                        }
-                    }
+                    return TreeValue.result_ok(
+                        tree_brew_take(work))
                 }
                 none => {
                     return self.fail(
@@ -9714,6 +9768,13 @@ class TreeInterpreter {
                             node,
                             "a brewed fiber panicked with no join to catch it: {work.panic_message}")
                     }
+                    // The result nobody claimed dies here, in the
+                    // synthesized join itself — the moment
+                    // beans_brew_scope_join's brew_drop_result picks. A
+                    // panic above escalated before this line, leaving the
+                    // result on the row for the handle's own death, which
+                    // is what native does too.
+                    tree_brew_drop(work)
                     return TreeValue.unit()
                 }
                 none => {
@@ -9793,17 +9854,12 @@ class TreeInterpreter {
                                             "", "cancelled"))
                                 }
                             } else {
-                                match work.result {
-                                    some(value) => {
-                                        collected.push(
-                                            tree_value_copy(
-                                                value))
-                                    }
-                                    none => {
-                                        collected.push(
-                                            TreeValue.unit())
-                                    }
-                                }
+                                // Each value moves out of its row into
+                                // the list, the way
+                                // beans_taskgroup_collect moves it with
+                                // beans_brew_value.
+                                collected.push(
+                                    tree_brew_take(work))
                             }
                         }
                     }
@@ -10412,35 +10468,42 @@ class TreeInterpreter {
     }
 
     // Joins one finished row and dresses its outcome as Result<T> — the
-    // tree mirror of the boxed join arm the native next() builds.
+    // tree mirror of the boxed join arm the native next() builds. The
+    // value MOVES out of the row: taskgroup_detach takes the row off the
+    // list and beans_brew_value zeroes h->value, so the arm that claimed
+    // it is its only owner. A row left holding a second reference to a
+    // value it has already handed over would keep it alive until the
+    // group itself died (#124).
     fn tree_group_claim(state: TreeTaskGroupState,
                         found: int) -> TreeValue {
         let work: TreeBrewState = state.children[found]
         self.tree_brew_reap(work)
         work.joined = true
         state.delivered += 1
-        if state.delivered == state.children.len() {
-            state.children = []
-            state.delivered = 0
-        }
         if work.panicked {
+            self.tree_group_retire(state)
             return TreeValue.result_err(
                 TreeValue.error(
                     work.panic_message, "panic"))
         }
         if work.cancelled {
+            self.tree_group_retire(state)
             return TreeValue.result_err(
                 TreeValue.error("", "cancelled"))
         }
-        match work.result {
-            some(delivered) => {
-                return TreeValue.result_ok(
-                    tree_value_copy(delivered))
-            }
-            none => {
-                return TreeValue.result_ok(
-                    TreeValue.unit())
-            }
+        // Taken before the drained group empties its list, so the row's
+        // release cannot be what ends the claimed value's life.
+        let claimed: TreeValue = tree_brew_take(work)
+        self.tree_group_retire(state)
+        return TreeValue.result_ok(claimed)
+    }
+
+    // A group that has handed out every row empties its list, so a
+    // drained group is reusable — the reset taskgroup_detach makes.
+    fn tree_group_retire(state: TreeTaskGroupState) {
+        if state.delivered == state.children.len() {
+            state.children = []
+            state.delivered = 0
         }
     }
 
@@ -11281,6 +11344,13 @@ class TreeInterpreter {
                         "unknown initializer '{node.resolved}'")
                 }
             }
+        }
+        if self.failed {
+            // Construction did not finish — a field initializer or the
+            // initializer body panicked, and this object never became one
+            // the program can be handed. The unwind releases it next; that
+            // release runs no `deinit` body (#120).
+            self.unbuilt_object = result.object_id
         }
         return result
     }

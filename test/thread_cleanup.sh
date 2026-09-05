@@ -5,7 +5,13 @@ cd "$(dirname "$0")/.."
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/beans-thread-cleanup.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 
-for name in thread_deinit thread_cycles shared_publication; do
+# thread_claim: issue #124's thread half. join() MOVES the result out of the
+# handle -- beans_thread_join zeroes t->result -- so the value dies with the
+# binding that took it. The interpreter used to cache a copy on the handle, so
+# the value outlived that binding and died only when the handle did. Each case
+# puts a loud local between the handle and the binding that joins it, at one,
+# two and three threads, so the LIFO teardown tells the two moments apart.
+for name in thread_deinit thread_cycles shared_publication thread_claim; do
     ./build/beansc run "test/cases/$name.b" >"$tmp/$name.interp"
     ./build/beansc build "test/cases/$name.b" -o "$tmp/$name.native" \
         >"$tmp/$name.build" 2>&1
@@ -99,5 +105,42 @@ if [[ "$allocations" -ne "$frees" ]]; then
     cat "$tmp/thread-live-cycles.stats" >&2
     exit 1
 fi
+
+# A thread is joined once, on both engines. beans_thread_join panics on the
+# second join; the interpreter used to answer the cached copy it kept on the
+# handle, so a double join quietly succeeded under `beansc run` and killed the
+# process the first time the same program was built (#124). The cleared handle
+# is the joined marker now, so both engines report and exit 3.
+cat >"$tmp/twice.b" <<'BEANS'
+import std.io
+import std.thread
+
+fn main() {
+    let worker: Thread<int> = thread.spawn(fn() -> int { return 7 })
+    io.println("first {worker.join()}")
+    io.println("second {worker.join()}")
+}
+BEANS
+expect_second_join_dies() { # <command...>
+    set +e
+    "$@" >"$tmp/twice.out" 2>"$tmp/twice.err"
+    local status=$?
+    set -e
+    if [ "$status" -ne 3 ]; then
+        echo "a second thread join should exit 3, got $status" >&2
+        cat "$tmp/twice.out" "$tmp/twice.err" >&2
+        exit 1
+    fi
+    grep -q '^first 7$' "$tmp/twice.out"
+    grep -q 'thread already joined' "$tmp/twice.err"
+    if grep -q '^second ' "$tmp/twice.out"; then
+        echo "a second thread join answered a value" >&2
+        cat "$tmp/twice.out" >&2
+        exit 1
+    fi
+}
+expect_second_join_dies ./build/beansc run "$tmp/twice.b"
+./build/beansc build "$tmp/twice.b" -o "$tmp/twice" >/dev/null 2>&1
+expect_second_join_dies "$tmp/twice"
 
 echo "ok worker-thread destructors and owner-local cycle collection"

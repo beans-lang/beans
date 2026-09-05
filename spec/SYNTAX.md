@@ -1719,11 +1719,20 @@ let c: Conn = new Conn("db1")
   `return`, no interpolating `self` whole — each could read a field that is not there yet. A
   field with a default counts as assigned from the start, and a `weak` field always does (its
   slot starts `none`); after the last field, anything goes.
-- The proof is about the paths the checker can see. A `panic` mid-`init` is not one of them:
-  it unwinds the object under construction, and unwinding runs `deinit`, which reads fields
-  the constructor had not reached. Releasing a still-constructing object must therefore skip
-  its `deinit` body — until it does (#120), a panic before the last field is assigned is
-  undefined at this one boundary, the same on both backends.
+- The proof is about the paths the checker can see, and a `panic` mid-`init` is not one of
+  them — so the guarantee is held at that boundary by a release rule instead. **An object
+  whose `init` has not returned is released without running its `deinit` body.** The fields it
+  did assign are still released, in the ordinary order; only the class's own `deinit` chain is
+  skipped, so nothing hands user code a `self` whose fields the initializer never reached.
+  This covers every way construction can stop partway: a `panic` in the `init` body, in a
+  field's default expression (evaluated before any body runs), or in a base `init` reached
+  through `super.init`, and it covers a `deinit` the class inherits as much as one it declares.
+  It is about that one object: everything it had already built and stored dies normally, and
+  a reference the initializer handed out — possible only once every field is assigned — keeps
+  the object alive, so its eventual death is an ordinary one that does run `deinit`. Both
+  backends pick the same moments (#120). Note the language gives construction no other way to
+  fail partway: `init` returns nothing, so `?` cannot leave it, and construction that can fail
+  is a named static returning `Result<T>`.
 - A class whose fields all have defaults receives an implicit zero-argument
   initializer. A class with any required field must declare `init` — the implicit
   initializer assigns nothing, so a required field left to it would never be assigned. Every
@@ -2366,6 +2375,11 @@ hits.add(1)
   error type are, so a worker can use `?` and return a typed error.
 - `Thread<T>.detach()` discards the result without waiting. The running thread
   keeps its work alive and the OS thread resource is released when it finishes.
+- `Thread<T>.join()` is called **once**, and the value it answers **moves** out
+  of the handle. The handle keeps no reference to what it handed over, so the
+  value dies with the binding that took it, not with the handle. Joining a
+  handle a second time — or joining one that was detached — is a panic
+  ("thread already joined"), not a second copy of the answer.
 
 ### brew — child fibers (spec/CONCURRENCY.md)
 

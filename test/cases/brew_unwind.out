@@ -77,10 +77,8 @@ iterator: panic
   drop pr-local
   drop pr-retval
 pending return: panic
-  deinit half, a=half-a
   drop half-a
 init after field: panic
-  deinit early, tag=default
   drop e-arg
 init before field: panic
   drop lo-second

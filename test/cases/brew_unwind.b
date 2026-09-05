@@ -254,8 +254,10 @@ fn temps_pending_return() -> Res {
     return mk("pr-retval")
 }
 
-// a panic inside init after one field is assigned: the half-built object
-// is released as a whole — its deinit runs, then its fields drop
+// a panic inside init after one field is assigned: the half-built object is
+// released -- the field it did assign drops -- but its deinit does NOT run.
+// The initializer never returned, so the body would be handed a self whose
+// remaining fields it never reached (#120)
 class Half {
     pub a: Res
     pub b: Res
@@ -268,7 +270,9 @@ class Half {
 }
 fn init_after_field() -> int { let h: Half = new Half(true); return 1 }
 
-// a panic inside init before anything is assigned: deinit sees defaults
+// a panic inside init before the body assigns anything: the defaults are in
+// the object, and its deinit still does not run -- an initializer that did
+// not return leaves an object no deinit body may be handed (#120)
 class Early {
     pub tag: string = "default"
     fn init() { let empty: List<int> = []; let unused: int = empty[0]; self.tag = "set" }

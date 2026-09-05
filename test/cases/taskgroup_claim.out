@@ -1,0 +1,128 @@
+-- next n=1 k=1 --
+claimed n1.0
+arm end
+drop n1.0
+fn end
+-- next n=2 k=1 --
+claimed n2.0
+arm end
+drop n2.0
+fn end
+drop n2.1
+-- next n=2 k=2 --
+claimed n2.0
+arm end
+drop n2.0
+claimed n2.1
+arm end
+drop n2.1
+fn end
+-- next n=4 k=1 --
+claimed n4.0
+arm end
+drop n4.0
+fn end
+drop n4.3
+drop n4.2
+drop n4.1
+-- next n=4 k=2 --
+claimed n4.0
+arm end
+drop n4.0
+claimed n4.1
+arm end
+drop n4.1
+fn end
+drop n4.3
+drop n4.2
+-- next n=4 k=4 --
+claimed n4.0
+arm end
+drop n4.0
+claimed n4.1
+arm end
+drop n4.1
+claimed n4.2
+arm end
+drop n4.2
+claimed n4.3
+arm end
+drop n4.3
+fn end
+-- try_next n=2 --
+claimed t2.0
+arm end
+drop t2.0
+try claimed t2.1
+try arm end
+drop t2.1
+fn end
+-- try_next n=4 --
+claimed t4.0
+arm end
+drop t4.0
+try claimed t4.1
+try arm end
+drop t4.1
+fn end
+drop t4.3
+drop t4.2
+-- kept n=2 --
+arm end
+still have k2.0
+fn end
+drop k2.1
+drop k2.0
+-- kept n=4 --
+arm end
+still have k4.0
+fn end
+drop k4.3
+drop k4.2
+drop k4.1
+drop k4.0
+-- wait_all n=1 --
+got 1
+have w1.0
+list end
+drop w1.0
+fn end
+-- wait_all n=2 --
+got 2
+have w2.0
+have w2.1
+list end
+drop w2.1
+drop w2.0
+fn end
+-- wait_all n=4 --
+got 4
+have w4.0
+have w4.1
+have w4.2
+have w4.3
+list end
+drop w4.3
+drop w4.2
+drop w4.1
+drop w4.0
+fn end
+-- claim err --
+claimed err
+arm end
+fn end
+drop e2
+drop e1
+-- reuse --
+claimed r0
+arm end
+drop r0
+claimed r1
+arm end
+drop r1
+drained
+claimed r2
+arm end
+drop r2
+fn end
+drop r3

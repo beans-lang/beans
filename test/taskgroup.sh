@@ -51,6 +51,22 @@ timeout 60 "$tmp/discard.native" >"$tmp/discard.native.out"
 diff -u test/cases/taskgroup_discard.out "$tmp/discard.interp"
 diff -u test/cases/taskgroup_discard.out "$tmp/discard.native.out"
 
+echo "checking a claimed TaskGroup result dies with the arm that claimed it"
+# issue #124: next(), try_next() and wait_all() MOVE the value out of its row --
+# the native runtime detaches the row and zeroes h->value, and the interpreter
+# now clears work.result the same way. It used to hand out a copy and keep the
+# row's reference, so a claimed value stayed alive until the group died: the
+# deinit ran at the end of the enclosing function instead of the end of the
+# match arm. n = 1 hides it (the one claim drains the group, which drops the row
+# list at that same moment), so every shape runs at n = 2 and n = 4 with only
+# some rows claimed. One golden, both engines.
+timeout 60 ./build/beansc run test/cases/taskgroup_claim.b >"$tmp/claim.interp"
+./build/beansc build test/cases/taskgroup_claim.b -o "$tmp/claim.native" \
+    >"$tmp/claim.build" 2>&1
+timeout 60 "$tmp/claim.native" >"$tmp/claim.native.out"
+diff -u test/cases/taskgroup_claim.out "$tmp/claim.interp"
+diff -u test/cases/taskgroup_claim.out "$tmp/claim.native.out"
+
 echo "checking the group walls refuse with named messages"
 cat >"$tmp/walls.b" <<'BEANS'
 fn work(a: int) -> int { return a }

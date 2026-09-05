@@ -386,12 +386,23 @@ BEANS_SANITIZE_CALLBACKS=1 bash ./test/stored_callbacks.sh
 # collections_models.b removes from an owned AVL tree. It was excluded from
 # every sanitizer here while that leaked in the native ARC codegen (#60);
 # #60 has landed, so it is checked like everything else.
+#
+# init_unwind.b is here because #120's rule is "release it, just do not run its
+# deinit body": not running a body is exactly how a release gets dropped
+# instead, and the object a failed construction leaves is only reclaimed by the
+# cleanup pad. brew_claim/taskgroup_claim/thread_claim are here for #124's
+# other half -- a claim MOVES the value out of its row, and a move is where a
+# double release or a dropped one shows up.
 if [[ "$(uname -s)" == Darwin ]] && command -v leaks >/dev/null 2>&1; then
     for file in bench/trees.b examples/box.b examples/arena.b examples/fmt.b \
                 test/cases/brew_unwind_leak.b \
                 test/cases/sort_unwind_leak.b \
                 test/cases/deinit_panic_cascade.b \
                 test/cases/unlink_leak.b \
+                test/cases/init_unwind.b \
+                test/cases/brew_claim.b \
+                test/cases/taskgroup_claim.b \
+                test/cases/thread_claim.b \
                 examples/shared_weak.b examples/inline_results.b examples/wide_lists.b \
                 examples/wide_maps.b examples/wide_enums.b examples/enum_repr.b \
                 examples/wide_owners.b \

@@ -143,6 +143,19 @@ renamed: `Event` is everyday user vocabulary — `std.poll` exports a
 stay library types; their `_async` API variants fold back into the plain
 names — a channel `receive` on a fiber simply parks.
 
+**A claimed result belongs to whoever claimed it.** `join()`, `next()`,
+`try_next()` and `wait_all()` *move* the value out of the child's row: the
+row keeps no reference to what it handed over, so the value's only owner is
+the binding that took it and its `deinit` runs when that binding dies — the
+end of the match arm that claimed it, or the death of the list `wait_all`
+answered. A claimed value is never held to the death of the handle or the
+group, and the group never destroys something it has already given away.
+The result nobody claimed is the same rule's other half: it dies inside the
+synthesized scope join itself, ahead of the scope's own locals — for a
+group, discarded newest-first as above; for a lone handle, at the join.
+Both engines pick these moments identically; a row that kept a second
+reference to a value it had handed over was #124.
+
 ### Cancellation
 
 - Cancellation is **cooperative and park-scoped**: a cancel request is

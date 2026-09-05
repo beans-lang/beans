@@ -168,6 +168,12 @@ partial class LlvmTextEmitter {
     unwind_temp_order: List<int>
     unwind_temp_position: Map<int, int>
     unwind_local_position: Map<int, int>
+    // The `under construction` flag of a temporary that is a `new`: the i1
+    // slot is true from the object's allocation until its initializer
+    // returns, so the pad can tell an unwind out of that object's own
+    // construction from an unwind that merely passed a finished object by
+    // (src/llvm_unwind.b, issue #120).
+    unwind_construct_flag: Map<int, string>
     unwind_position: int
     // The subprogram of the function being emitted, or -1 outside one and in
     // a function the debugger is not told about.
@@ -204,6 +210,7 @@ partial class LlvmTextEmitter {
         self.unwind_temp_order = []
         self.unwind_temp_position = {}
         self.unwind_local_position = {}
+        self.unwind_construct_flag = {}
         self.unwind_position = 0
         self.errors = []
         self.encoding_intrinsics = {}
