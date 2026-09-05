@@ -125,7 +125,13 @@ class LlvmClassLayout {
     field_types: Map<string, HirType>
     ordered_fields: List<HirField>
     deinit_owner: string
+    // The key this class's bodies are raised and filed under: the rendered
+    // instance for a generic class, the qualified name for a plain one.
     instance: string
+    // The same class as a type, arguments and all. `instance` is its rendered
+    // form and cannot be read back — a chain walk needs the arguments, so the
+    // type is kept rather than re-parsed out of the string.
+    instance_type: HirType
 
     fn init(declaration: HirDeclaration, id: int) {
         self.declaration = declaration
@@ -140,6 +146,8 @@ class LlvmClassLayout {
         self.ordered_fields = []
         self.deinit_owner = ""
         self.instance = declaration.qualified
+        self.instance_type =
+            new HirType(declaration.qualified)
     }
 }
 

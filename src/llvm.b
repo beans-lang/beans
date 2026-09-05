@@ -2077,57 +2077,6 @@ partial class LlvmTextEmitter {
         }
         var owned: string =
             "@beans_deinit_sel = global i64 {deinit_selector}\n"
-        // one entry per class id: the parent's id, or -1 at a root —
-        // beans_is_a walks this for `as?`. Generic instantiations
-        // mint ids past the declared classes and have no parents.
-        var parent_of: Map<int, int> = {}
-        for declaration: HirDeclaration in
-            self.program.declarations {
-            if declaration.kind != "class" ||
-               declaration.generics.len() != 0 {
-                continue
-            }
-            var parent: int = -1
-            let base_index: int =
-                self.class_base_index(declaration)
-            if base_index >= 0 {
-                match self.declaration_for(
-                          declaration.relations[
-                              base_index]) {
-                    some(base) => {
-                        if base.kind == "class" &&
-                           self.class_ids.contains_key(
-                               base.qualified) {
-                            parent =
-                                self.class_ids[
-                                    base.qualified]
-                        }
-                    }
-                    none => {}
-                }
-            }
-            if self.class_ids.contains_key(
-                   declaration.qualified) {
-                parent_of[
-                    self.class_ids[
-                        declaration.qualified]] =
-                    parent
-            }
-        }
-        var parent_entries: List<string> = []
-        for id: int in 0..self.class_id_count {
-            var parent: int = -1
-            match parent_of.get(id) {
-                some(found) => { parent = found }
-                none => {}
-            }
-            parent_entries.push("i64 {parent}")
-        }
-        if parent_entries.len() == 0 {
-            parent_entries.push("i64 -1")
-        }
-        owned =
-            "{owned}@beans_class_parents = global [{parent_entries.len()} x i64] [{parent_entries.join(", ")}]\n\n"
         let record_types: string = self.emit_record_types()
         let definitions: string =
             self.emit_global_definitions()
@@ -2137,6 +2086,10 @@ partial class LlvmTextEmitter {
         self.static_field_initializers()
         let static_fields: string =
             self.static_field_definitions.join("")
+        // The class-parent table comes last, after every id has been minted:
+        // it is sized by class_id_count, and an id minted after it was
+        // written would index past the array beans_is_a reads.
+        owned = "{owned}{self.class_parent_table()}"
         for text: string in self.value_eq_functions {
             functions.push(text)
             origins.push("")
@@ -2160,6 +2113,56 @@ partial class LlvmTextEmitter {
         // `!dbg` references to nothing. chunk_modules refuses to split a
         // module that has one at all.
         return "{output}{owned}{record_types}{definitions}\n{static_fields}{self.module_bodies.join("")}{self.debug_module_metadata()}"
+    }
+
+    // One entry per class id: the id of the class it extends, or -1 at a
+    // root. beans_is_a walks this for `as?`, from the object's own class up
+    // to the target.
+    //
+    // A class id names one runtime class, and a generic class is a different
+    // runtime class per argument list, so the walk is built from chains of
+    // *types*. Reading a base's id off the base declaration left two holes
+    // the moment a generic class could extend anything: an instantiation's
+    // own id had no parent at all, and a class extending a generic base
+    // pointed at the template's id, which no object ever carries. Either one
+    // ends the walk early, and `as?` then answers `none` for an object that
+    // really is one — a wrong answer, silently.
+    fn class_parent_table() -> string {
+        var parent_of: Map<int, int> = {}
+        for declaration: HirDeclaration in
+            self.program.declarations {
+            if declaration.kind != "class" ||
+               declaration.generics.len() != 0 {
+                continue
+            }
+            self.record_chain_parents(
+                parent_of, declaration,
+                new HirType(declaration.qualified))
+        }
+        // Every instantiation an object was built of. A generic link that a
+        // chain only passes through is numbered by record_chain_parents.
+        for layout: LlvmClassLayout in
+            self.ordered_class_layouts {
+            if layout.declaration.generics.len() == 0 {
+                continue
+            }
+            self.record_chain_parents(
+                parent_of, layout.declaration,
+                layout.instance_type)
+        }
+        var parent_entries: List<string> = []
+        for id: int in 0..self.class_id_count {
+            var parent: int = -1
+            match parent_of.get(id) {
+                some(found) => { parent = found }
+                none => {}
+            }
+            parent_entries.push("i64 {parent}")
+        }
+        if parent_entries.len() == 0 {
+            parent_entries.push("i64 -1")
+        }
+        return "@beans_class_parents = global [{parent_entries.len()} x i64] [{parent_entries.join(", ")}]\n\n"
     }
 
     // The module as `count` standalone chunks, or an empty list when the

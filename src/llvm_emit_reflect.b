@@ -406,50 +406,17 @@ partial class LlvmTextEmitter {
             if count == 0 { count = 1 }
             var slots: List<string> = []
             for slot_name: string in self.selector_order {
-                let method: string =
-                    self.dispatch_method(slot_name)
-                if layout.declaration.generics.len() !=
-                       0 {
-                    // instantiated methods register under the
-                    // rendered instance name; only the ones some
-                    // call site raised exist
-                    var slot: string = "null"
-                    match self.function_symbols.get(
-                              "{layout.instance}.{method}") {
-                        some(found) => { slot = found }
-                        none => {}
-                    }
-                    // A default body the class's interface supplies is not
-                    // raised per instantiation — it belongs to the
-                    // interface and takes `self` as a pointer. Without this
-                    // the row stayed null and calling it jumped to address
-                    // zero, which only happened once generic classes were
-                    // allowed to implement an interface at all.
-                    if slot == "null" {
-                        for index: int in
-                            0..layout.declaration.relations.len() {
-                            if index >=
-                                   layout.declaration.relation_kinds.len() ||
-                               layout.declaration.relation_kinds[
-                                   index] != "implements" {
-                                continue
-                            }
-                            let found: string =
-                                self.interface_default_symbol(
-                                    layout.declaration.relations[
-                                        index],
-                                    slot_name, 0)
-                            if found != "" {
-                                slot = found
-                                break
-                            }
-                        }
-                    }
-                    slots.push("ptr {slot}")
-                    continue
-                }
+                // One walk for every class. A generic class's own bodies are
+                // raised under its rendered instance name and a plain class's
+                // sit at its qualified name; `layout.instance` is that key
+                // either way, and method_slot_symbol walks the base chain and
+                // the interface defaults behind it. A generic class used to
+                // get a lookup of its own that asked only its instance name
+                // and its own `implements` relations — so a method it
+                // inherited from a base and did not override left a null row,
+                // and dispatching to it jumped to address zero.
                 slots.push(
-                    "ptr {self.method_slot_symbol(layout.declaration, slot_name)}")
+                    "ptr {self.method_slot_symbol(layout.declaration, layout.instance, slot_name)}")
             }
             if slots.len() == 0 {
                 slots.push("ptr null")

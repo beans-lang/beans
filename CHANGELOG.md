@@ -4,6 +4,42 @@ This file records user-facing changes in each Beans release.
 
 ## [Unreleased]
 
+### Added
+
+- **A generic class may now extend another class.** The language did not have
+  this: `spec/SYNTAX.md` said "a generic class may implement interfaces but
+  still may not extend a base class", and the native backend refused every such
+  shape at build time. Nothing enforced it earlier, though — `beansc check`
+  passed the program and the tree interpreter ran it, so the refusal arrived
+  from the emitter, about the emitter: *"LLVM emitter cannot form class layout
+  'main.Empty<int>': its pointer mask or class shape exceeds runtime metadata
+  capacity"*, printed for a class with no fields at all. The restriction is
+  lifted rather than moved into the checker, because `class Mid<T> extends
+  Base<T>` is the plainest generic inheritance there is.
+
+  A generic class may extend a plain class, a generic base at its own parameter
+  (`class Sub<T> extends Base<T>`), or one pinned at a concrete argument (`class
+  Sub<T> extends Base<int>`), and may extend and implement at the same time.
+  Each instantiation is its own class: `Sub<int>` and `Sub<string>` get their
+  own field offsets, their own method table, and their own row in the
+  class-parent walk `as?` uses — so a field typed at the parameter is a traced
+  reference in one instantiation and a plain word in the other. An override a
+  generic class declares wins for every receiver, including one written at the
+  base. This is new code that compiles, not a change to code that already did.
+  (#123)
+
+### Fixed
+
+- **A class chain deeper than 32 links builds.** The emitter capped the walk at
+  32 and reported giving up as *"its pointer mask or class shape exceeds
+  runtime metadata capacity"* — so a 41-link hierarchy of ordinary, non-generic
+  classes passed `check`, ran under the interpreter, and then failed the build
+  with a message about metadata that had nothing to do with it. The only real
+  bound is the program's own class count: a class appears at most once in an
+  acyclic chain, and an inheritance cycle is already refused at the
+  declaration. (#123)
+
+
 ## [0.1.38] - 2026-09-05
 
 Fourteen issues where the tree interpreter and the native backend disagreed

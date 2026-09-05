@@ -146,6 +146,24 @@ agree test/cases/parity/generic_base_dispatch.b 4
 # under two different instantiations, and a leaf whose deinit chains past a
 # middle that declares none. Thirteen objects built and released once.
 agree test/cases/parity/generic_base_deinit_chain.b 13
+# #123: a generic class that `extends` anything could not be laid out
+# natively at all — check passed, the interpreter ran it, and the build then
+# blamed its own metadata capacity on a class with no fields. Every field
+# shape, a generic class over a generic base at the same parameter / a pinned
+# one / a reordered one, a plain leaf under a generic middle, a deinit on a
+# generic middle (the case #119 could not write), a pointer mask that differs
+# per instantiation, dispatch to an inherited row through a base-typed
+# receiver, and `as?` walking through a generic link. Each section is at least
+# two instantiations wide, and a strong cycle held in a T-typed field is torn
+# down under the collector. Fifteen marked objects, built and released once.
+agree test/cases/parity/generic_subclass.b 15
+# Found alongside #123: the chain walk gave up past 32 links and class_layout
+# reported that as the class shape exceeding runtime metadata capacity — a
+# build-time failure, with a message about the emitter, on a program check
+# passed and the interpreter ran. 41 links, generic at three depths, with a
+# deinit at the root and at one generic link so the release chain is walked the
+# whole way too.
+agree test/cases/parity/deep_chain.b 4
 # #119, the blocker half: a plain class *above* a generic base, whose deinit
 # the parent walk stepped over because a generic link has no plain symbol —
 # dropping one deinit, chosen by declaration order. Both orders here (built in
@@ -216,7 +234,7 @@ agree test/cases/parity/inherited_field_slots.b 4
 
 # Every case in the directory has to be listed above with its own expected
 # count; a file added and forgotten would otherwise be silently unchecked.
-listed=40
+listed=42
 present=$(find test/cases/parity -name '*.b' | wc -l | tr -d ' ')
 if [ "$present" != "$listed" ]; then
     echo "test/cases/parity holds $present cases but $listed are run" >&2
@@ -356,6 +374,36 @@ if echo "$vtable" | grep -q 'ptr null'; then
     exit 1
 fi
 echo "  agree: test/cases/$name (generic base's method row survives a cross-package name clash)"
+
+# #123: a generic class extending a generic base in *another* package. The
+# override lives on a generic class, so the record of which slots a name
+# declares had no entry for it — a template carries no symbol, and the record
+# was written only for names that got one — and matching that class against a
+# `Base<int>` receiver by its written arguments, which say `Base<T>`, answered
+# no. Both told the emitter nothing could replace the base body, so the call
+# compiled direct while the interpreter dispatched to the override: a wrong
+# answer, not a refusal. The package-private `secret` is the other half — its
+# selector carries lib, so no subclass elsewhere can replace it, and its row on
+# a foreign generic subclass's descriptor must still be the base's own body.
+name=generic_subclass_pkg
+( cd "test/cases/$name" && "$root/build/beansc" run main.b ) \
+    >"$tmp/$name.interp"
+( cd "test/cases/$name" \
+  && "$root/build/beansc" build --release main.b \
+       -o "$tmp/$name.release" >/dev/null )
+"$tmp/$name.release" >"$tmp/$name.release.out"
+diff -u "$tmp/$name.interp" "$tmp/$name.release.out"
+grep -q "weigh 2 2 1" "$tmp/$name.interp" || {
+    echo "$name: a generic subclass's override did not win over the base body" >&2
+    cat "$tmp/$name.interp" >&2
+    exit 1
+}
+grep -q "secret 7 7 7" "$tmp/$name.interp" || {
+    echo "$name: the package-private base row is not the base's own body" >&2
+    cat "$tmp/$name.interp" >&2
+    exit 1
+}
+echo "  agree: test/cases/$name (a generic subclass overrides across packages)"
 
 # Reading one too early has to say so on both paths, not answer a zero on one.
 mkdir -p "$tmp/early"

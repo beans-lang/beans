@@ -202,11 +202,23 @@ partial class LlvmTextEmitter {
             // with another segment on the end; the family follows the
             // method itself, not this loop
             if method.contains(".") { continue }
+            let key: string =
+                "{layout.instance}.{method}"
             if self.instantiate_generic(
                    instruction, function.name,
-                   "{layout.instance}.{method}",
-                   bindings) == "" {
+                   key, bindings) == "" {
                 return false
+            }
+            // The raised instance is this class's own row for every
+            // selector the template answers. Register them under the
+            // instance key, the way the base-method and interface-default
+            // raises already do, so the descriptor walk can ask whether a
+            // symbol fills a slot instead of trusting the name alone —
+            // which is what lets one walk serve a generic class and a
+            // plain one.
+            for slot: string in function.dispatch_slots {
+                self.method_dispatch_slots[
+                    "{key}|{slot}"] = true
             }
         }
         return true
@@ -531,9 +543,20 @@ partial class LlvmTextEmitter {
         var current: HirDeclaration = declaration
         var depth: int = 0
         var supported: bool = true
+        // The only bound on a chain is the program's own declaration count: a
+        // class appears at most once in an acyclic chain, and the checker
+        // refuses an inheritance cycle outright (has_inheritance_cycle walks
+        // the whole relation graph for every declaration). A fixed cap of 32
+        // was not that — a 40-link hierarchy of plain classes checked, ran on
+        // the interpreter, and then failed the build claiming the class shape
+        // exceeded runtime metadata capacity, which was nothing to do with it.
+        // Overrunning this bound now means the HIR is cyclic, which is an
+        // invariant, not a program limit.
+        let limit: int =
+            self.program.declarations.len() + 1
         for self.class_base_index(current) >= 0 {
             depth += 1
-            if depth > 32 {
+            if depth > limit {
                 supported = false
                 break
             }
@@ -581,9 +604,13 @@ partial class LlvmTextEmitter {
         var current: HirDeclaration = declaration
         var current_type: HirType = instance
         var depth: int = 0
+        // the same bound class_chain uses, so the two lists stay the same
+        // length — class_layout refuses the pair when they differ
+        let limit: int =
+            self.program.declarations.len() + 1
         for self.class_base_index(current) >= 0 {
             depth += 1
-            if depth > 32 { break }
+            if depth > limit { break }
             let base_index: int =
                 self.class_base_index(current)
             let base_type: HirType =
@@ -619,14 +646,16 @@ partial class LlvmTextEmitter {
     // fixes the order: the symbol is handed back straight away and the body
     // follows off the generic queue.
     //
-    // The link is chain[index], raised for the concrete instance `owner` (a
-    // string form in `instance_name`), and filed under the @-key the chain
-    // walk resolves it by. `index` names the exact link because a chain can
-    // hold a generic class anywhere — above it, below it, or between two plain
-    // classes — and only that one is raisable here.
+    // The link is chain[index], raised for the concrete instance `owner`
+    // (`root` is that instance as a type, `instance_name` its key), and filed
+    // under the @-key the chain walk resolves it by. `root` is passed in
+    // rather than rebuilt from `owner.qualified`: when the instance is itself
+    // a generic class, its arguments are exactly what the chain below it is
+    // laid out at, and a bare qualified name carries none of them.
     fn raise_link_deinit(
         owner: HirDeclaration,
         instance_name: string,
+        root: HirType,
         chain: List<HirDeclaration>,
         index: int) -> string {
         if index < 0 || index >= chain.len() {
@@ -634,7 +663,6 @@ partial class LlvmTextEmitter {
         }
         let link: HirDeclaration = chain[index]
         if link.generics.len() == 0 { return "" }
-        let root: HirType = new HirType(owner.qualified)
         let chain_types: List<HirType> =
             self.class_chain_types(owner, root)
         if chain_types.len() != chain.len() { return "" }
@@ -1043,8 +1071,21 @@ partial class LlvmTextEmitter {
         return own
     }
 
+    // The symbol a class's descriptor names in one dispatch slot.
+    //
+    // `instance` is the key this class's own bodies are filed under, and it
+    // is the class's identity for every raise: a plain class keeps its
+    // qualified name, a generic one is raised per argument list under the
+    // rendered instance (`main.Holder<int>`), and every raiser —
+    // instantiate_dispatch_methods, instantiate_base_methods,
+    // instantiate_interface_default — files under that same key. Walking the
+    // chain with it is what lets one walk answer for both: a generic class
+    // used to get a separate lookup that only ever asked its own instance
+    // name and its own `implements` relations, so every row it inherited
+    // without overriding emitted null and calling one jumped to address zero.
     fn method_slot_symbol(
         declaration: HirDeclaration,
+        instance: string,
         slot: string) -> string {
         let method: string = self.dispatch_method(slot)
         let chain: List<HirDeclaration> =
@@ -1053,8 +1094,11 @@ partial class LlvmTextEmitter {
         for nearest > 0 {
             nearest -= 1
             let owner: HirDeclaration = chain[nearest]
-            let key: string =
+            var key: string =
                 "{owner.qualified}.{method}"
+            if owner.qualified == declaration.qualified {
+                key = "{instance}.{method}"
+            }
             if self.function_symbols.contains_key(key) &&
                (slot == "deinit" ||
                 self.function_has_dispatch_slot(key, slot)) {
@@ -1068,7 +1112,7 @@ partial class LlvmTextEmitter {
             // deinit chains into, read by deinit_parent_call, not here.
             if slot != "deinit" {
                 let raised: string =
-                    "{declaration.qualified}@{owner.qualified}.{method}"
+                    "{instance}@{owner.qualified}.{method}"
                 if self.function_symbols.contains_key(raised) &&
                    self.function_has_dispatch_slot(raised, slot) {
                     return self.function_symbols[raised]
@@ -1326,7 +1370,9 @@ partial class LlvmTextEmitter {
                 break
             }
             let symbol: string =
-                self.method_slot_symbol(declaration, slot)
+                self.method_slot_symbol(
+                    declaration, declaration.qualified,
+                    slot)
             if symbol == "null" {
                 resolved = ""
                 break
@@ -1342,6 +1388,118 @@ partial class LlvmTextEmitter {
         }
         self.static_dispatch_symbols[key] = resolved
         return resolved
+    }
+
+    // The type an instance key names — the key every raise files a class's
+    // bodies under, and the stem of every body's own name.
+    //
+    // A declared non-generic class keeps its qualified name, so the type is
+    // just that name. A generic class is filed under its *rendered* instance
+    // (`main.Holder<int>`), and rendering is lossy — it prints `::` as `.` —
+    // so the key cannot be read back as a type. The layout class_layout built
+    // when the instance was first laid out is what answers it; a body under a
+    // rendered key exists only because some site raised it, and that site
+    // built the layout first.
+    fn instance_key_type(instance_name: string) -> HirType {
+        match self.declarations.get(instance_name) {
+            some(declaration) => {
+                if declaration.generics.len() == 0 {
+                    return new HirType(
+                        declaration.qualified)
+                }
+            }
+            none => {}
+        }
+        match self.class_layouts.get(instance_name) {
+            some(layout) => {
+                return layout.instance_type
+            }
+            none => {}
+        }
+        return new HirType("")
+    }
+
+    // The runtime class id one link of a class chain stands at.
+    //
+    // A class with no arguments keeps the id the pre-pass gave its
+    // declaration. A generic one is a different runtime class per argument
+    // list — `G<int>` and `G<string>` share no object — so it is identified
+    // by its rendered instance, the same key class_layout numbers it under.
+    // A link no object was ever built of is numbered here so a walk can pass
+    // *through* it; nothing reads a descriptor by id, so a link with no
+    // object needs no descriptor.
+    fn chain_link_class_id(type: HirType) -> int {
+        var instantiated: bool = false
+        var qualified: string = ""
+        match self.declaration_for(type) {
+            some(declaration) => {
+                if declaration.kind != "class" {
+                    return 0 - 1
+                }
+                qualified = declaration.qualified
+                instantiated =
+                    declaration.generics.len() != 0 &&
+                    declaration.generics.len() ==
+                        type.args.len()
+            }
+            none => { return 0 - 1 }
+        }
+        if !instantiated {
+            match self.class_ids.get(qualified) {
+                some(id) => { return id }
+                none => { return 0 - 1 }
+            }
+        }
+        let key: string = render_hir_type(type)
+        match self.class_ids.get(key) {
+            some(id) => { return id }
+            none => {}
+        }
+        let minted: int = self.class_id_count
+        self.class_id_count += 1
+        self.class_ids[key] = minted
+        return minted
+    }
+
+    // File the parent id of every link of one class's chain into `parent_of`.
+    // A link shared by several chains gets the same answer from each of them,
+    // because which class a class extends is a property of the class.
+    //
+    // The topmost link reached is left alone unless it really is a root:
+    // class_chain_types stops if it cannot resolve a base, and writing -1 for
+    // a link that does have one would out-rank the entry that link's own walk
+    // files.
+    fn record_chain_parents(
+        parent_of: Map<int, int>,
+        declaration: HirDeclaration,
+        instance: HirType) {
+        let chain_types: List<HirType> =
+            self.class_chain_types(
+                declaration, instance)
+        var index: int = chain_types.len()
+        for index > 0 {
+            index -= 1
+            let own: int =
+                self.chain_link_class_id(
+                    chain_types[index])
+            if own < 0 { continue }
+            if index > 0 {
+                parent_of[own] =
+                    self.chain_link_class_id(
+                        chain_types[index - 1])
+                continue
+            }
+            var rooted: bool = true
+            match self.declaration_for(
+                      chain_types[index]) {
+                some(top) => {
+                    rooted =
+                        self.class_base_index(top) < 0
+                }
+                none => {}
+            }
+            if rooted { parent_of[own] = 0 - 1 }
+        }
     }
 
     fn class_layout(
@@ -1367,18 +1525,32 @@ partial class LlvmTextEmitter {
                     id = self.class_ids[
                         declaration.qualified]
                 } else {
-                    // an instantiation mints its own class id. A base
-                    // class stays unsupported: its fields would have to
-                    // be laid out through the instantiation. An
-                    // implemented interface contributes no fields, only
-                    // vtable rows, and emit_class_records fills those per
-                    // instantiation. Marker-only Send/Sync relations need
-                    // neither.
+                    // An instantiation mints its own class id: `G<int>`
+                    // and `G<string>` are different runtime classes, with
+                    // their own field offsets, pointer masks and descriptor.
+                    //
+                    // A base contributes its fields, laid out at the
+                    // arguments this class's `extends` pinned — the walk
+                    // below does that through class_chain_types, the same
+                    // way a non-generic class extending a generic base is
+                    // laid out. An implemented interface contributes no
+                    // fields, only vtable rows, which emit_global_definitions
+                    // fills per instantiation. Marker-only Send/Sync
+                    // relations need neither. Anything else has no shape here
+                    // and refuses; validate_relation_kinds has already turned
+                    // away a base that is not a class and an `implements`
+                    // that is not an interface, so this is the backstop.
                     for index: int in
                         0..declaration.relations.len() {
                         if index >=
-                               declaration.relation_kinds.len() ||
-                           declaration.relation_kinds[index] !=
+                               declaration.relation_kinds.len() {
+                            return none
+                        }
+                        if declaration.relation_kinds[index] ==
+                               "extends" {
+                            continue
+                        }
+                        if declaration.relation_kinds[index] !=
                                "implements" {
                             return none
                         }
@@ -1412,6 +1584,7 @@ partial class LlvmTextEmitter {
                 let layout: LlvmClassLayout =
                     new LlvmClassLayout(
                         declaration, id)
+                layout.instance_type = type
                 if declaration.generics.len() != 0 {
                     layout.instance = key
                 }
@@ -3340,12 +3513,31 @@ partial class LlvmTextEmitter {
             self.program.declarations {
             if candidate.kind == "interface" ||
                candidate.qualified ==
-                   declaration.qualified ||
-               !self.class_conforms_to_instance(
-                   candidate, declaration,
-                   receiver_type) {
+                   declaration.qualified {
                 continue
             }
+            // Whether an object of this class can stand behind the receiver.
+            // A generic candidate stands at arguments this walk does not
+            // know — `Sub<T> extends Base<T>` is behind a `Base<int>`
+            // receiver exactly when T is int — so comparing the arguments as
+            // written answers no for a class that can in fact be there, and
+            // its override was then never weighed at all. Such a candidate is
+            // matched by name, which over-approximates the set: every extra
+            // candidate can only add a reason to read the descriptor, never
+            // take one away, because `resolved` only ever goes to "".
+            var conforms: bool = false
+            if candidate.kind == "class" &&
+               candidate.generics.len() != 0 {
+                conforms =
+                    self.class_conforms(
+                        candidate, declaration)
+            } else {
+                conforms =
+                    self.class_conforms_to_instance(
+                        candidate, declaration,
+                        receiver_type)
+            }
+            if !conforms { continue }
             if candidate.kind != "class" {
                 resolved = ""
                 break
@@ -3354,10 +3546,6 @@ partial class LlvmTextEmitter {
             // behind a receiver; a concrete subclass of it is weighed on its
             // own row
             if candidate.is_abstract { continue }
-            if candidate.generics.len() != 0 {
-                resolved = ""
-                break
-            }
             // Walk this conformer's chain from itself up to — but not
             // including — the generic base. A link between them that declares
             // the method in this slot overrides the base body, so the object
@@ -3482,7 +3670,8 @@ partial class LlvmTextEmitter {
                         }
                     var symbol: string =
                         self.method_slot_symbol(
-                            declaration, slot)
+                            declaration,
+                            declaration.qualified, slot)
                     if symbol == "null" {
                         // a method inherited from a generic base, or a
                         // kept default from a generic interface, has no
@@ -3502,7 +3691,9 @@ partial class LlvmTextEmitter {
                         }
                         symbol =
                             self.method_slot_symbol(
-                                declaration, slot)
+                                declaration,
+                                declaration.qualified,
+                                slot)
                     }
                     if symbol == "null" {
                         self.fail(
@@ -3791,28 +3982,39 @@ partial class LlvmTextEmitter {
         instruction: MirInstruction) -> string {
         let parent_split: int =
             self.last_dot(instruction.resolved)
-        let self_split: int =
-            self.last_dot(function.name)
-        if parent_split <= 0 || self_split <= 0 {
-            return ""
-        }
+        if parent_split <= 0 { return "" }
         let parent_owner: string =
             instruction.resolved.slice(0, parent_split)
         let method: string =
             instruction.resolved.slice(
                 parent_split + 1,
                 instruction.resolved.len())
-        let self_owner: string =
-            function.name.slice(0, self_split)
+        // The class this body runs on comes from `self`, not from the
+        // function's name. Slicing the name off worked only while the class
+        // was non-generic: a generic class's body is emitted as a raised
+        // instance named for the *rendered* instance type — `main.Sub<int>`,
+        // which is no declaration's key — while the template's own name
+        // `main::Sub.init` names the declaration but not the arguments this
+        // instance stands at. The `self` parameter carries both at once:
+        // clone_generic_function substitutes local types, so self is
+        // `main::Sub<int>` in an instance and the plain `main::Leaf` in a
+        // non-generic body. Templates never reach here — only their
+        // instances are emitted.
+        var root: HirType = new HirType("")
+        for local: MirLocal in function.locals {
+            if local.parameter && local.name == "self" {
+                root = local.type
+            }
+        }
         var found: Option<HirDeclaration> =
-            self.declarations.get(self_owner)
+            self.declaration_for(root)
         match found {
             some(declaration) => {
-                if declaration.generics.len() != 0 {
+                // An open self type would raise the base at a type variable.
+                if declaration.generics.len() !=
+                       root.args.len() {
                     return ""
                 }
-                let root: HirType =
-                    new HirType(declaration.qualified)
                 let chain: List<HirDeclaration> =
                     self.class_chain(declaration)
                 let chain_types: List<HirType> =
