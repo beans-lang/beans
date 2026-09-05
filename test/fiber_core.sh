@@ -35,13 +35,35 @@ clang -O2 -std=c11 -Wall -Wextra -Werror \
 "$tmp/fiber_core"
 
 echo "checking the context-switch budget"
-"$tmp/fiber_core" bench | tee "$tmp/bench"
-awk '/^switch/ {
-    if ($2 + 0 >= 50) {
-        print "switch cost " $2 "ns breaks the 50ns budget" > "/dev/stderr"
+# One timing sample against a hard limit is a coin flip on a busy machine: the
+# switch costs 32-33ns on an idle laptop here and 104.7ns on the same laptop
+# with four other suites running. A real regression is a multiple, not a factor
+# of contention, so a sample that clears the budget still decides on its own --
+# a green run costs exactly one bench, as before -- and only a sample that
+# fails is re-measured, twice more, with the best of the three deciding. The
+# budget is not widened: it is still 50ns, and every sample is printed.
+best=
+for attempt in 1 2 3; do
+    "$tmp/fiber_core" bench >"$tmp/bench.$attempt"
+    cat "$tmp/bench.$attempt"
+    sample=$(awk '/^switch/ { print $2 + 0; exit }' "$tmp/bench.$attempt")
+    if [[ -z "$sample" ]]; then
+        echo "the fiber bench printed no switch cost" >&2
+        cat "$tmp/bench.$attempt" >&2
         exit 1
-    }
-}' "$tmp/bench"
+    fi
+    if [[ -z "$best" ]] ||
+       awk -v a="$sample" -v b="$best" 'BEGIN { exit !(a < b) }'; then
+        best=$sample
+    fi
+    awk -v v="$sample" 'BEGIN { exit !(v < 50) }' && break
+    echo "  switch cost ${sample}ns is over the 50ns budget;" \
+         "re-measuring (attempt $attempt of 3)" >&2
+done
+if ! awk -v v="$best" 'BEGIN { exit !(v < 50) }'; then
+    echo "switch cost ${best}ns breaks the 50ns budget (best of three)" >&2
+    exit 1
+fi
 
 echo "checking a stack overflow reports the fiber and aborts"
 set +e
