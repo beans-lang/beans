@@ -985,17 +985,30 @@ match n {
 - `size_of`, `align_of` and `offset_of` are **not** constant expressions: they
   are answered after layout, which runs later than a constant is folded, so
   they cannot appear in a `const` initializer.
-- Two places still take a literal and not a constant, for one reason: both
-  are read before any constant is folded.
-  - A `const` cannot **size a fixed array** — a length is read while types
-    are laid out (`[int; 128]`, not `[int; LIMIT]`).
-  - A `const` cannot be a **parameter default** — a default is read while
-    signatures are checked (`fn f(n: int = 128)`, not `= LIMIT`).
+- A constant may **size a fixed array**, in every position a type is written
+  — a local, a field, a parameter, a result, and nested inside another fixed
+  array. Constants are folded at the end of signature checking, before any
+  type is laid out, so the length is the folded value:
 
-  Both are refused where they are written, with a message that names the
-  name and the ordering. Lifting either means folding constant initializers
-  in an earlier pass, which is one change in one phase covering both; it is
-  the part of the original request that is not yet delivered.
+```
+const LIMIT: int = 128
+
+let frame: [int; LIMIT] = […]
+struct Row { cells: [int; LIMIT] }
+fn widen(row: [int; LIMIT]) -> [[int; LIMIT]; 2] { … }
+```
+
+  The constant is reached the way one is reached anywhere: bare in its own
+  package, qualified through a package alias (`[int; limits.SLOTS]`), or
+  selected with `import {SLOTS} from pkg`. A name that is not a constant is
+  refused for what it is, and a constant that cannot supply a length — not an
+  integer, or outside `1..4096` — is refused at the name and says which
+  constant it is and what it holds.
+
+- A `const` **cannot be a parameter default** — a default is read while
+  signatures are checked, which is before any constant is folded
+  (`fn f(n: int = 128)`, not `= LIMIT`). It is refused where it is written,
+  with a message that names the name and the ordering.
 - `const` is contextual. It is a declaration keyword only in `const <NAME>` at
   the start of a module-level declaration, and stays an ordinary identifier
   everywhere else.
@@ -3933,7 +3946,10 @@ helpers, globals, and functions for a library package's consumers.
     Shared, Mutex, Channel, and thread results. SIMD does not implement `Hash`, so
     it cannot be a Map key.
 - `[T; N]` is a fixed-size inline array. It accepts inline scalar, `RawPtr`,
-  nested fixed-array, and struct elements with `1 <= N <= 4096`. A list-shaped
+  nested fixed-array, and struct elements with `1 <= N <= 4096`. `N` is an
+  integer literal — decimal, hex, binary, digit separators and all — or a
+  module constant that folds to an integer in that range ("Module constants").
+  A list-shaped
   literal gets fixed-array meaning from its declared spot:
   `var lanes: [f32; 4] = [1, 2, 3, 4]`. Arrays copy by value, pass and return
   inline, support checked integer indexing, element assignment on `var`

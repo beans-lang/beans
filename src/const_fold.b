@@ -26,6 +26,55 @@ fn const_value_failed() -> ConstValue {
     return ConstValue { kind: "", number: 0, text: "" }
 }
 
+// The length a constant supplies for a fixed array, and why it supplies
+// none. `length` is -1 exactly when the constant cannot be one; `reason` is
+// then the sentence to report, or "" when the constant's own declaration
+// already reported the reason and a second line would only repeat it.
+//
+// One rule, in one place: a length written in a signature, in a body, or
+// inside a string's `{}` piece is decided here, so the same constant is
+// refused for the same reason with the same words wherever it is written.
+struct ConstArrayLength {
+    length: int
+    reason: string
+}
+
+fn const_array_length(constant: HirConst) -> ConstArrayLength {
+    if !constant.folded {
+        return ConstArrayLength { length: -1, reason: "" }
+    }
+    if constant.kind != "int" {
+        return ConstArrayLength {
+            length: -1,
+            reason: "an array length must be an integer, and const {constant.name} is {constant_kind_article(constant.kind)}",
+        }
+    }
+    // The same bounds a written length has. They are checked here, at the
+    // name, because a reader handed "must be between 1 and 4096" about a
+    // number they never typed has nothing to trace it back to.
+    if constant.number < 1 || constant.number > 4096 {
+        return ConstArrayLength {
+            length: -1,
+            reason: "fixed array length must be between 1 and 4096, and const {constant.name} is {constant.number}",
+        }
+    }
+    return ConstArrayLength {
+        length: constant.number, reason: "",
+    }
+}
+
+// What a folded constant is, in the words a diagnostic uses about it. The
+// kind is the fold's own word for the value; a reader who used a constant
+// where a number was wanted needs to be told what it holds instead.
+fn constant_kind_article(kind: string) -> string {
+    if kind == "int" { return "an integer" }
+    if kind == "float" { return "a float" }
+    if kind == "decimal" { return "a decimal" }
+    if kind == "bool" { return "a bool" }
+    if kind == "string" { return "a string" }
+    return "a {kind}"
+}
+
 fn const_value_int(value: int, text: string) -> ConstValue {
     return ConstValue { kind: "int", number: value, text: text }
 }

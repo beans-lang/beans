@@ -68,6 +68,39 @@ fn ast_open_end() -> int {
     return 1000000000
 }
 
+// The `array_length` child an `array_type` carries when its length was
+// written as a name. Absent when the length was written as a literal. The
+// node holds the name as source spelled it and sits on the identifier, so
+// an editor query and a diagnostic both point at the name and not at the
+// bracket the type opens with.
+fn ast_array_length_name(node: AstNode) -> Option<AstNode> {
+    for child: AstNode in node.children {
+        if child.kind == "array_length" { return some(child) }
+    }
+    return none
+}
+
+// How an array type's length reads in source, whichever form it took. A
+// substituted constant leaves its own name here, so a dump still prints the
+// program that was written rather than the number the checker computed.
+fn ast_array_length_text(node: AstNode) -> string {
+    match ast_array_length_name(node) {
+        some(length) => { return length.value }
+        none => { return node.value }
+    }
+}
+
+// The length an array type stands for. An integer literal is read the way
+// every integer literal in the language is read, so hex, binary and digit
+// separators all mean here what they mean everywhere else. A length that
+// names a constant answers -1 until the constant is folded and substituted,
+// and keeps answering -1 when that constant could not supply one — the
+// refusal was already reported at the name.
+fn ast_array_length(node: AstNode) -> int {
+    if node.value == "" { return -1 }
+    return tree_parse_int(node.value)
+}
+
 // Move a freshly parsed sub-expression onto the file position its bytes
 // really occupy. A string literal holds one line, so only line 1 of the
 // sub-parse can be placed; anything else keeps its own position and is simply

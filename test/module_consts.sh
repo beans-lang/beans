@@ -41,6 +41,9 @@ check_bad() {
 }
 
 run_both const_ok
+# #59: a constant sizes a fixed array, in every position one can be written,
+# with the same value on both backends.
+run_both const_arraylen_ok
 
 check_bad const_bad.b \
     "const BAD_CALL is not a compile-time value: a call runs at run time" \
@@ -67,33 +70,71 @@ check_bad const_cycle_bad.b \
 check_bad const_assign_bad.b \
     "'LIMIT' is a constant and has no storage to assign to"
 
-# The parser has no symbol table, so the message it gives a name here has to
-# be true of every name that can appear — not only the constant it was
-# written for.
+# An array length is an integer literal or a module constant (#59). Every
+# other name, and every constant that cannot supply a length, is refused here
+# — each told which of those it is, at the name, exactly once. The count is
+# the guard against a cascade: a poisoned array type must not go on to be
+# reported as a length nobody wrote.
 check_bad const_arraylen_bad.b \
-    "an array length must be an integer literal, not the name 'SIZE' — a length is read while types are laid out, which happens before any name has a value, module constants included" \
-    "not the name 'count'" \
-    "not the name 'Widget'" \
-    "not the name 'nosuchname'"
-
-# A parameter default waits on the same pass an array length does (#59). The
-# message says which name it is and why, rather than "must be a constant
-# literal" for a constant.
-check_bad const_default_bad.b \
-    "a parameter default must be a literal, not the name 'LIMIT' — a default is read while signatures are checked, which happens before any constant is folded, so a module const cannot be one yet" \
-    "a parameter default must be a constant literal"
-
-# `beansc hir` prints the signature stage, which runs before any constant is
-# folded. A value it has not computed must not be rendered as an empty one.
-./build/beansc hir test/cases/const_ok.b >"$tmp/hir" 2>&1
-grep -q "^const main::C_ADD i8$" "$tmp/hir" ||
-    { echo "beansc hir should print a constant with no folded value:" >&2
-      grep "^const " "$tmp/hir" >&2; exit 1; }
-if grep -qE "^const .* = *$" "$tmp/hir"; then
-    echo "beansc hir printed a constant with an empty value:" >&2
-    grep -E "^const .* = *$" "$tmp/hir" >&2
+    "no module constant named 'count' is in scope — an array length is read while types are laid out, before any function runs, so it must be an integer literal or a module const" \
+    "no module constant named 'nosuchname' is in scope" \
+    "'Widget' is a class, not a module constant — an array length must be an integer literal or a module const" \
+    "'helper' is a function, not a module constant" \
+    "an array length must be an integer, and const TEXT is a string" \
+    "an array length must be an integer, and const FLAG is a bool" \
+    "an array length must be an integer, and const REAL is a float" \
+    "fixed array length must be between 1 and 4096, and const ZERO is 0" \
+    "fixed array length must be between 1 and 4096, and const HUGE is 5000" \
+    "const CALLED is not a compile-time value: a call runs at run time" \
+    "const SELFREF is defined in terms of itself"
+if grep -Fq "SIZE" "$tmp/bad"; then
+    echo "a constant that can size an array was reported" >&2
+    cat "$tmp/bad" >&2
     exit 1
 fi
+test "$(grep -c ': error:' "$tmp/bad")" -eq 14
+
+# The value a constant supplies is the same one wherever the type is written,
+# including inside a string's `{}` piece — which is parsed after every other
+# length in the file has been substituted, so it is the one path that has to
+# look the constant up for itself.
+check_bad const_arraylen_interp_bad.b \
+    "an array length must be an integer, and const TEXT is a string" \
+    "fixed array length must be between 1 and 4096, and const ZERO is 0" \
+    "no module constant named 'nosuchconst' is in scope"
+test "$(grep -c ': error:' "$tmp/bad")" -eq 3
+
+# A parameter default is still a literal and not a constant: it is read while
+# the signature holding it is lowered, and the fold runs at the end of that
+# stage — which is where an array length reads it (#59). The message says
+# which name it is and why the two positions differ, rather than "must be a
+# constant literal" for a constant. The array length in the same file is the
+# control: the same constant, in the position the ordering does reach.
+check_bad const_default_bad.b \
+    "a parameter default must be a literal, not the name 'LIMIT' — a default is read while the signature holding it is lowered, and constants are folded at the end of that stage, which is why a constant can size an array but cannot be a default" \
+    "a parameter default must be a constant literal"
+test "$(grep -c ': error:' "$tmp/bad")" -eq 2
+
+# `beansc hir` prints the signature stage, and constants are folded in it
+# (#59) — an array length reads one before any type is laid out. So the value
+# is there, narrowed to the constant's own type: 100 + 100 is -56 in i8.
+./build/beansc hir test/cases/const_ok.b >"$tmp/hir" 2>&1
+grep -q "^const main::C_ADD i8 = -56$" "$tmp/hir" ||
+    { echo "beansc hir should print a constant's folded value:" >&2
+      grep "^const " "$tmp/hir" >&2; exit 1; }
+# A constant that is not a compile-time value has none, and a stage dump says
+# what the stage knows: no `= ` half rather than an empty one.
+./build/beansc hir test/cases/const_bad.b >"$tmp/hirbad" 2>&1 || true
+grep -q "^const main::BAD_CALL int$" "$tmp/hirbad" ||
+    { echo "beansc hir should print an unfoldable constant with no value:" >&2
+      grep "^const " "$tmp/hirbad" >&2; exit 1; }
+for dump in "$tmp/hir" "$tmp/hirbad"; do
+    if grep -qE "^const .* = *$" "$dump"; then
+        echo "beansc hir printed a constant with an empty value:" >&2
+        grep -E "^const .* = *$" "$dump" >&2
+        exit 1
+    fi
+done
 
 # pub const is the library case: a consumer in another package folds it,
 # reaches it qualified and through an import binding, and uses it in a match
@@ -113,5 +154,8 @@ fi
 grep -Fq "constant 'secret.HIDDEN' isn't pub in package 'priv_app.secret'" \
     "$tmp/priv" ||
     { echo "private const message wrong:" >&2; cat "$tmp/priv" >&2; exit 1; }
+# once for the read, once for the array length — a length is a constant use
+# and gets the same refusal, not a "no such constant"
+test "$(grep -c "isn't pub in package" "$tmp/priv")" -eq 2
 
 echo "ok module constants: folding matches run time, bad initializers named"

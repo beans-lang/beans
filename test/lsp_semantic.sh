@@ -567,6 +567,48 @@ grep -q '^item constant MAX_FRAME const:main::MAX_FRAME$' <<<"$got" ||
     fail "completion should offer the module constant:
 $got"
 
+# #59: a constant that sizes a fixed array is a use of that constant, in every
+# position a type can be written. The array length is not text the editor
+# re-scans — the resolver decided which constant it is, so hover, definition,
+# references and rename all answer from the same index a read answers from.
+cat >"$scratch/arraylen.b" <<'BEANS'
+package main
+import std.io
+
+const SLOTS: int = 4
+
+struct Frame { cells: [int; SLOTS] }
+
+fn widen(row: [int; SLOTS]) -> int { return row[0] }
+
+fn main() {
+    let a: [int; SLOTS] = [1, 2, 3, 4]
+    io.println("{widen(a)} {size_of(Frame)}")
+}
+BEANS
+
+for pos in 6:29 8:21 11:18; do
+    expect_line symbol "$scratch/arraylen.b:$pos" 'symbol const:main::SLOTS'
+    expect_line symbol "$scratch/arraylen.b:$pos" 'kind const'
+    expect_line symbol "$scratch/arraylen.b:$pos" 'detail const SLOTS: int = 4'
+    expect_line symbol "$scratch/arraylen.b:$pos" \
+        "decl $scratch/arraylen.b:4:7"
+    expect_line symbol "$scratch/arraylen.b:$pos" 'rename yes'
+done
+
+# References from the declaration find all three lengths — a field, a
+# parameter and a local — and nothing else.
+refs=$(probe refs "$scratch/arraylen.b:4:7")
+for expected in "arraylen.b:4:7+5 decl" "arraylen.b:6:29+5 read" \
+                "arraylen.b:8:21+5 read" "arraylen.b:11:18+5 read"; do
+    grep -q "$expected" <<<"$refs" ||
+        fail "array length is not indexed as a constant reference: $expected
+$refs"
+done
+test "$(grep -c '^ref ' <<<"$refs")" -eq 4 ||
+    fail "unexpected references for a constant used as an array length:
+$refs"
+
 echo "ok module constants: hover, definition, references, completion"
 
 # ---------------------------------------------------------------------------

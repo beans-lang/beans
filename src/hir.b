@@ -513,6 +513,12 @@ class HirConst {
     line: int
     col: int
     // filled in by the expression checker's const pass
+    // `checked` says the pass has run on this constant, whatever it decided.
+    // The pass runs once, while signatures are checked, because an array
+    // length needs the value before any type is laid out; every later
+    // expression checker reads the answer rather than folding again, so a
+    // constant that could not fold reports its reason exactly once.
+    checked: bool
     folded: bool
     kind: string
     number: int
@@ -530,11 +536,28 @@ class HirConst {
         self.file = file
         self.line = line
         self.col = col
+        self.checked = false
         self.folded = false
         self.kind = ""
         self.number = 0
         self.text = ""
         self.annotations = []
+    }
+}
+
+// An array type whose length names a constant, held from the moment its
+// signature is lowered until every constant has been folded. The HirType is
+// the one the signature carries, so filling the length in here fills it in
+// where it is read; `syntax` is the `array_type` node the length was
+// written on, which is where the substituted number is written back for
+// every type lowered afterwards.
+class PendingArrayLength {
+    type: HirType
+    syntax: AstNode
+
+    fn init(type: HirType, syntax: AstNode) {
+        self.type = type
+        self.syntax = syntax
     }
 }
 
@@ -580,8 +603,12 @@ fn type_child(node: AstNode) -> Option<AstNode> {
 
 // The whole constant-expression grammar for parameter defaults: a
 // literal, a negated numeric literal, or `none`. A module constant is not
-// one, and cannot be until constant initializers fold before signatures
-// are checked — the same pass an array length waits on (issue #59).
+// one. Constants are folded at the end of signature checking, which is
+// where an array length reads them (issue #59), and a default is read
+// while the signature holding it is lowered — before that. Admitting one
+// means carrying the default's name the way a pending array length is
+// carried and materializing it at every call site once the fold is done,
+// which is a change to how defaults are lowered, not to the fold.
 fn constant_default(node: AstNode) -> bool {
     if node.kind == "literal" { return true }
     if node.kind == "name" && node.value == "none" { return true }
@@ -638,6 +665,12 @@ class SignatureChecker {
     runtime_profile: string
     generic_arity: Map<string, int>
     refused_capabilities: Map<string, bool>
+    // Array types whose length names a constant, and the constants by
+    // qualified name. Signatures are lowered before constants are folded —
+    // a constant's own initializer is checked against them — so a length
+    // that names one is carried here and filled in once the fold is done.
+    pending_array_lengths: List<PendingArrayLength>
+    const_index: Map<string, HirConst>
 
     fn init(resolver: Resolver, target: TargetDescription,
             runtime_profile: string) {
@@ -658,6 +691,8 @@ class SignatureChecker {
         self.runtime_profile = runtime_profile
         self.generic_arity = {}
         self.refused_capabilities = {}
+        self.pending_array_lengths = []
+        self.const_index = {}
     }
 
     fn fail(file: string, node: AstNode, message: string) {
@@ -854,8 +889,15 @@ class SignatureChecker {
     fn lower_type(node: AstNode, file: string) -> HirType {
         if node.kind == "array_type" {
             let result: HirType = new HirType("array")
-            result.array_length =
-                node.value.to_int().expect("array length")
+            result.array_length = ast_array_length(node)
+            if result.array_length < 0 &&
+               ast_array_length_name(node).is_some() {
+                // The length names a constant. Signatures are lowered
+                // before any constant is folded, so the type is finished
+                // once the fold is — see resolve_array_lengths.
+                self.pending_array_lengths.push(
+                    new PendingArrayLength(result, node))
+            }
             match type_child(node) {
                 some(element) => {
                     result.args.push(self.lower_type(element, file))
@@ -1483,12 +1525,13 @@ class SignatureChecker {
                                 } else if !constant_default(value) {
                                     // A name is the mistake worth naming:
                                     // a module constant reads like it
-                                    // should work here, and the reason it
-                                    // does not is an ordering the message
-                                    // has to state (issue #59).
+                                    // should work here — it sizes an array
+                                    // two lines up — and the reason it does
+                                    // not is an ordering the message has to
+                                    // state.
                                     if value.kind == "name" {
                                         self.fail(file.path, part,
-                                                  "a parameter default must be a literal, not the name '{value.value}' — a default is read while signatures are checked, which happens before any constant is folded, so a module const cannot be one yet")
+                                                  "a parameter default must be a literal, not the name '{value.value}' — a default is read while the signature holding it is lowered, and constants are folded at the end of that stage, which is why a constant can size an array but cannot be a default")
                                     } else {
                                         self.fail(file.path, part,
                                                   "a parameter default must be a constant literal")
@@ -1679,6 +1722,7 @@ class SignatureChecker {
         constant.annotations =
             self.lower_annotations(
                 node.annotations, "const", file.path)
+        self.const_index[constant.qualified] = constant
         self.hir.consts.push(constant)
     }
 
@@ -2452,6 +2496,100 @@ class SignatureChecker {
         }
     }
 
+    // ---- module constants, and the array lengths that read them ----------
+    //
+    // A constant is folded on the *checked* HIR of its initializer, so the
+    // language's own typing decides what each operator means. That needs
+    // every signature lowered, which is why the fold runs here, at the end
+    // of signature checking, and not earlier: a constant that is not a
+    // compile-time value has to be told what it is instead — a call, a
+    // field read, an enum variant — and none of those can be named before
+    // the program's declarations exist.
+    //
+    // An array length is read while types are laid out, which is later than
+    // this and earlier than function bodies. So the fold happens once,
+    // here, and its answer is written back in two places: into the array
+    // types already lowered (they hold the length a signature reads), and
+    // onto the `array_type` node itself, which is what every type lowered
+    // after this point — every annotation in a body — reads its length
+    // from. One fold, one value, one place each reader looks.
+    fn fold_constants() {
+        let expressions: ExpressionChecker =
+            new ExpressionChecker(self)
+        expressions.check_consts()
+        for diagnostic: Diagnostic in expressions.errors {
+            self.hir.errors.push(diagnostic)
+        }
+    }
+
+    fn resolve_array_lengths() {
+        for package: LoadedPackage in self.resolver.loader.packages {
+            for file: ParsedModuleFile in package.files {
+                self.substitute_array_lengths(
+                    file.ast, file.path)
+            }
+        }
+        for pending: PendingArrayLength in
+            self.pending_array_lengths {
+            let length: int = ast_array_length(pending.syntax)
+            if length < 0 {
+                // The name supplied no length and said why at the name.
+                // Poisoning the type keeps that one refusal from becoming
+                // a second one about a length nobody wrote.
+                pending.type.name = "poison"
+                pending.type.args = []
+                pending.type.array_length = -1
+                continue
+            }
+            pending.type.array_length = length
+        }
+    }
+
+    fn substitute_array_lengths(node: AstNode, file: string) {
+        if node.kind == "array_type" {
+            match ast_array_length_name(node) {
+                some(length) => {
+                    node.value =
+                        self.array_length_value(length, file)
+                }
+                none => {}
+            }
+        }
+        for annotation: AstNode in node.annotations {
+            self.substitute_array_lengths(annotation, file)
+        }
+        for child: AstNode in node.children {
+            self.substitute_array_lengths(child, file)
+        }
+        for piece: AstNode in node.interpolations {
+            self.substitute_array_lengths(piece, file)
+        }
+    }
+
+    // The decimal length a named array length stands for, or "" when it
+    // stands for none. What a constant has to be to supply one is decided
+    // by const_array_length, so a length is refused for the same reason
+    // wherever it is written.
+    fn array_length_value(length: AstNode,
+                          file: string) -> string {
+        if length.resolved == "" || length.resolved == "poison" {
+            // The resolver already said the name is not a constant.
+            return ""
+        }
+        match self.const_index.get(length.resolved) {
+            some(constant) => {
+                let answer: ConstArrayLength =
+                    const_array_length(constant)
+                if answer.reason != "" {
+                    self.fail(file, length, answer.reason)
+                }
+                if answer.length < 0 { return "" }
+                return "{answer.length}"
+            }
+            none => { return "" }
+        }
+    }
+
     fn run() -> bool {
         self.validate_capabilities()
         self.register_arities()
@@ -2509,6 +2647,8 @@ class SignatureChecker {
                 }
             }
         }
+        self.fold_constants()
+        self.resolve_array_lengths()
         self.validate_runtime_hooks()
         self.validate_oop_modifiers()
         self.validate_inheritance()
@@ -2554,12 +2694,12 @@ fn render_hir_type(type: HirType) -> string {
 
 fn render_hir(program: HirProgram) -> string {
     var lines: List<string> = []
-    // The value is the expression checker's answer, and `beansc hir` prints
-    // this the moment signatures are checked — before any constant is
-    // folded. Rendering `= {constant.text}` unconditionally therefore
-    // printed an empty value for every constant in the program. A stage
-    // dump says what the stage knows: the value appears only once there is
-    // one.
+    // Constants are folded at the end of signature checking, because an
+    // array length reads one before any type is laid out, so `beansc hir`
+    // prints the value the stage computed. A constant whose initializer is
+    // not a compile-time value has none: a stage dump says what the stage
+    // knows, so the `= value` half appears only once there is one, rather
+    // than rendering an empty one.
     for constant: HirConst in program.consts {
         let value: string =
             if constant.folded { " = {constant.text}" } else { "" }

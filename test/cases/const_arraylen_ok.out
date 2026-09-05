@@ -1,0 +1,7 @@
+struct 30 31
+class 12 5
+chain 5
+literals 6 8 10
+nested 12 12
+narrow 207 1656
+maximum 4096 16384
