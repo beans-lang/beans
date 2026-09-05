@@ -38,6 +38,25 @@ This file records user-facing changes in each Beans release.
   refused before for no reason — the target carries the runtime identity, and
   it is a plain class. (#123)
 
+- **A module constant can size a fixed array.** `const LIMIT: int = 128`
+  followed by `[int; LIMIT]` now compiles, in every position a fixed-array type
+  can be written: a local, a struct or class field, a parameter, a result,
+  nested inside another fixed array, and inside `List`, `Option`, `Map`, an
+  enum payload, an `extern "C"` struct or union member, a static field, a
+  generic class's field and a partial class continuation. A constant defined
+  from another constant works, in any file order, as does a `pub const` from
+  another package — reached bare, qualified through a package alias, or
+  selected with `import {SLOTS} from pkg`. Constants are folded at the end of
+  signature checking, which is before any type is laid out; they used to be
+  folded after it, which is why a length could only ever be an integer literal.
+  A name that is not a constant is refused for what it is — a class, a
+  function, a type parameter, or nothing in scope — and a constant that cannot
+  supply one says which constant and what it holds: *"fixed array length must
+  be between 1 and 4096, and const ZERO is 0"*. A `const` still **cannot** be a
+  parameter default: a default is read while the signature holding it is
+  lowered, and the fold runs at the end of that stage, so only the array-length
+  half of that pair is lifted. (#59)
+
 ### Changed
 
 - **`+` on a string is refused by the checker.** The language has never had
@@ -54,6 +73,31 @@ This file records user-facing changes in each Beans release.
   must use interpolation, `std.fmt`, `list.join(sep)` or `fmt.StringBuilder`.
   (#133)
 
+- **An object whose `init` has not returned is released without running its
+  `deinit` body.** A panic inside an initializer left a half-built object, and
+  the release that followed still ran the class's `deinit` on it — handing user
+  code a `self` whose fields the initializer had never reached. The body read a
+  slot holding nothing: in the tree interpreter that was a second panic during
+  the unwind, reported as a double panic and exit 134, and in a native build a
+  segmentation fault. Either way a failure `brew`/`join` had correctly contained
+  became a dead process. Releasing the fields was always right; running the body
+  was not, so only the body is skipped now — every field the initializer did
+  assign is still released, in the ordinary order.
+
+  The rule covers every way construction stops partway: a panic in the `init`
+  body, in a field's default expression, or in a base `init` reached through
+  `super.init`, and a `deinit` a class inherits as much as one it declares. It
+  is about that one object — everything it had already built and stored dies
+  normally, and a reference the initializer handed out (possible only once every
+  field is assigned) keeps the object alive, so its own later death is an
+  ordinary one that does run `deinit`.
+
+  If a `deinit` was relied on to run after a failed construction — to close a
+  handle or unregister something the initializer had already taken — it will
+  stop running there. Move that work out of `deinit`: acquire the resource
+  through a named static returning `Result<T>` that validates before it calls
+  `new`, so a failure never builds the object at all. (#120)
+
 ### Fixed
 
 - **A class chain deeper than 32 links builds.** The emitter capped the walk at
@@ -64,6 +108,60 @@ This file records user-facing changes in each Beans release.
   bound is the program's own class count: a class appears at most once in an
   acyclic chain, and an inheritance cycle is already refused at the
   declaration. (#123)
+
+- **A claimed `Brew` or `TaskGroup` result now dies with the arm that claimed
+  it.** `join()`, `next()`, `try_next()` and `wait_all()` move the value out of
+  the child's row, so the binding that took it is its only owner. The tree
+  interpreter handed out a copy and left the row's own reference in place, so a
+  claimed value stayed alive until the handle or the group itself fell out of
+  scope — a whole function later than the native backend, which detaches the row
+  and zeroes the slot. A program with a loud `deinit` saw the two engines run it
+  at different moments and still exit 0, so nothing failed loudly. The result
+  nobody claims is the same rule's other half: it dies inside the synthesized
+  scope join, ahead of the scope's own locals, rather than later with the
+  handle. (#124)
+
+- **`Thread<T>.join()` moves its result out of the handle, and a thread is
+  joined once.** The interpreter cached a copy of the joined value on the
+  handle, so the value outlived the binding that joined it and died only when
+  the handle did; and a second `join()` answered that cached copy, where the
+  runtime panics `"thread already joined"`. A program that joined twice ran
+  clean under `beansc run` and died the first time it was built. Both engines
+  now hand the value to the caller and report on a second join.
+
+- **A fixed array length written in hex or binary, or with digit separators, no
+  longer panics the compiler.** `[int; 0x4]` and `[int; 1_0]` are integer
+  literals the lexer produces and the rest of the language accepts, but the
+  length position read its token with the decimal-only string conversion and
+  unwrapped the failure, so they crashed the stage that lays types out. A
+  magnitude past `i64` crashed the same way and is now refused as a length out
+  of range. Lengths are read with the parser every other integer literal uses.
+  (#59)
+
+- **The checker's internal `poison` marker no longer reaches a diagnostic.**
+  `poison` means "this value was already refused, with the reason, somewhere
+  else", and it was printed in six messages — *"poison cannot be indexed"*,
+  *"poison is not iterable"*, *"poison is not callable"*, *"'?' needs Result or
+  Option, got poison"*, the two unary ones, and *"size_of: poison is not a
+  declared value type"* — each a second line about a value with no type, naming
+  a type nobody wrote. A rule that reads a value's type now stops when that type
+  is poison. (#59)
+
+- **The installer downloads its package from the release its manifest named.**
+  `tools/install-release.sh` — the script behind the documented
+  `curl -fsSL … | sh`, and the copy `beansc upgrade` runs — chose its download
+  base before it knew which release it was installing. Without `--version` that
+  base is `.../releases/latest/download`, and `latest` moves: the manifest
+  fetched from it names a version, and the download that followed went back to
+  the same moving URL. A release published between those two fetches turned the
+  second into a 404 naming the correct version's asset under a `latest` that had
+  already moved past it, so the URL in the error looked right and the install
+  failed anyway. As soon as the manifest row is read, the base is repointed at
+  that release's own directory; a caller who sets `BEANS_INSTALL_BASE_URL` keeps
+  theirs, which is how a mirror points the installer at its own bytes.
+  `tools/install-release.ps1` had the same shape and takes the same fix, but it
+  is unverified — there was no Windows host here to run it on, and the new
+  regression test covers only the shell installer. (#118)
 
 ## [0.1.38] - 2026-09-05
 
