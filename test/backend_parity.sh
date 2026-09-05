@@ -146,6 +146,16 @@ agree test/cases/parity/generic_base_dispatch.b 4
 # under two different instantiations, and a leaf whose deinit chains past a
 # middle that declares none. Thirteen objects built and released once.
 agree test/cases/parity/generic_base_deinit_chain.b 13
+# #123: a generic class that `extends` anything could not be laid out
+# natively at all — check passed, the interpreter ran it, and the build then
+# blamed its own metadata capacity on a class with no fields. Every field
+# shape, a generic class over a generic base at the same parameter / a pinned
+# one / a reordered one, a plain leaf under a generic middle, a deinit on a
+# generic middle (the case #119 could not write), a pointer mask that differs
+# per instantiation, dispatch to an inherited row through a base-typed
+# receiver, and `as?` walking through a generic link. Each section is at least
+# two instantiations wide. Thirteen marked objects, built and released once.
+agree test/cases/parity/generic_subclass.b 13
 # #119, the blocker half: a plain class *above* a generic base, whose deinit
 # the parent walk stepped over because a generic link has no plain symbol —
 # dropping one deinit, chosen by declaration order. Both orders here (built in
@@ -216,7 +226,7 @@ agree test/cases/parity/inherited_field_slots.b 4
 
 # Every case in the directory has to be listed above with its own expected
 # count; a file added and forgotten would otherwise be silently unchecked.
-listed=40
+listed=41
 present=$(find test/cases/parity -name '*.b' | wc -l | tr -d ' ')
 if [ "$present" != "$listed" ]; then
     echo "test/cases/parity holds $present cases but $listed are run" >&2

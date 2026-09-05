@@ -1410,7 +1410,8 @@ partial class LlvmTextEmitter {
             }
             let symbol: string =
                 self.method_slot_symbol(
-                    declaration, dispatch_slot)
+                    declaration, declaration.qualified,
+                    dispatch_slot)
             if symbol == "null" { continue }
             candidates.push(declaration)
             symbols.push(symbol)
@@ -1578,11 +1579,38 @@ partial class LlvmTextEmitter {
             }
             none => {}
         }
-        if !self.declarations.contains_key(instance_name) {
-            return ""
+        // The instance as a type. A generic class's body is filed under its
+        // rendered instance — `main.Mid<int>.deinit` — which is not a
+        // declaration key, so looking the name up in `declarations` found
+        // nothing and the parent call was dropped: a deinit written on a
+        // generic class that is itself built never chained into its base, and
+        // whatever that base held leaked. instance_key_type answers both
+        // spellings. The arguments matter beyond the lookup — the chain below
+        // this instance is laid out at them.
+        let root: HirType =
+            self.instance_key_type(instance_name)
+        var found: Option<HirDeclaration> =
+            self.declaration_for(root)
+        match found {
+            some(owner) => {
+                return self.deinit_parent_body(
+                    function, owner, instance_name,
+                    root, link_qualified)
+            }
+            none => {}
         }
-        let owner: HirDeclaration =
-            self.declarations[instance_name]
+        return ""
+    }
+
+    // The chain call itself, once the body's own instance is known: which
+    // link of the chain this body stands at, and the nearest class strictly
+    // above it that declares a deinit.
+    fn deinit_parent_body(
+        function: MirFunction,
+        owner: HirDeclaration,
+        instance_name: string,
+        root: HirType,
+        link_qualified: string) -> string {
         let chain: List<HirDeclaration> =
             self.class_chain(owner)
         if chain.len() < 2 { return "" }
@@ -1644,7 +1672,8 @@ partial class LlvmTextEmitter {
             // dropped for want of a symbol, whatever order bodies emit in.
             parent_symbol =
                 self.raise_link_deinit(
-                    owner, instance_name, chain, index)
+                    owner, instance_name, root,
+                    chain, index)
             break
         }
         if parent_symbol == "" { return "" }
