@@ -1466,8 +1466,9 @@ partial class LlvmTextEmitter {
     // because which class a class extends is a property of the class.
     //
     // The topmost link reached is left alone unless it really is a root:
-    // class_chain_types stops at depth 32, and writing -1 for a link that
-    // does have a base would out-rank the entry that link's own walk files.
+    // class_chain_types stops if it cannot resolve a base, and writing -1 for
+    // a link that does have one would out-rank the entry that link's own walk
+    // files.
     fn record_chain_parents(
         parent_of: Map<int, int>,
         declaration: HirDeclaration,
