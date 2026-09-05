@@ -969,21 +969,24 @@ class Parser {
             let array: AstNode = self.node("array_type", "", start)
             array.add(self.parse_type())
             self.expect(";", "expected ';'")
-            // A name here is a parse error worth naming, because the
-            // grammar otherwise cascades three errors off a token it did
-            // not expect. The parser has no symbol table, so the message
-            // must hold for every name that can appear — a local, a type,
-            // a typo, a module constant — and may not claim to know which
-            // one this is. A length is laid out before any constant is
-            // folded, so the reason no name works is the same for all of
-            // them, and it is the reason worth stating.
+            // A length is an integer literal or the name of a module
+            // constant, written bare or through an import binding. The
+            // parser has no symbol table, so a name is carried as written
+            // in its own child node — positioned at the identifier, which
+            // is what an editor query points at — and the checker decides
+            // which constant it is once every constant has been folded.
+            // `array.value` stays empty until then and holds the decimal
+            // length the fold substituted, so every later reader of a
+            // length reads one number in one place.
             if self.check("ident") {
-                let name: Token = self.current()
-                self.fail(
-                    name,
-                    "an array length must be an integer literal, not the name '{name.text}' — a length is read while types are laid out, which happens before any name has a value, module constants included")
-                self.advance()
-                array.value = "0"
+                let first: Token = self.current()
+                var name: string = self.advance().text
+                for self.match_token(".") {
+                    let part: Token =
+                        self.expect("ident", "expected constant name")
+                    name = "{name}.{part.text}"
+                }
+                array.add(self.node("array_length", name, first))
                 self.expect("]", "expected ']'")
                 return array
             }

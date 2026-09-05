@@ -252,4 +252,20 @@ if [ -e "$tmp/static_slot" ]; then
     exit 1
 fi
 
+# "poison" is the checker's own word for a value it already refused. It used
+# to reach six messages — "poison cannot be indexed", "poison is not
+# iterable", "unary '-' needs a number, got poison" — each a second line
+# about a value whose real problem was already reported, naming a type nobody
+# wrote. A rule that reads a type stops when the type is poison.
+check_bad diagnostics_already_refused_bad
+if grep -Eq ': error: .*poison' "$tmp/diagnostics_already_refused_bad"; then
+    echo "a diagnostic leaked the poison marker" >&2
+    grep -E ': error: .*poison' "$tmp/diagnostics_already_refused_bad" >&2
+    exit 1
+fi
+grep -Fq ":10:12: error: unknown type 'NoSuchType'" \
+    "$tmp/diagnostics_already_refused_bad"
+# one for the declaration, one per array length that names no constant
+test "$(grep -c ': error:' "$tmp/diagnostics_already_refused_bad")" -eq 3
+
 echo "ok diagnostics: locations, imports, suggestions, wording, and recovery"

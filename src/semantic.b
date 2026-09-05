@@ -758,6 +758,31 @@ class SemanticBuilder {
             }
             return
         }
+        // An array length that names a constant is a use of that constant,
+        // indexed like any other: the resolver decided which one it is, and
+        // the node sits on the identifier a reader points at.
+        if node.kind == "array_length" {
+            if node.resolved == "" ||
+               node.resolved == "poison" {
+                return
+            }
+            let written: string = node.value
+            let last: string = sem_last_segment(written)
+            let head: int = written.len() - last.len()
+            if head > 0 {
+                let first: string = sem_first_segment(written)
+                if self.import_target(first) != "" {
+                    self.add_ref(
+                        sem_import_id(self.file_path, first),
+                        node.line, node.col, first.len(),
+                        false, false)
+                }
+            }
+            self.add_ref(
+                sem_const_id(node.resolved), node.line,
+                node.col + head, last.len(), false, false)
+            return
+        }
         if node.kind != "type" { return }
         let written: string = node.value
         if written != "" {

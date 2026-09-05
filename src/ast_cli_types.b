@@ -14,10 +14,11 @@ fn cli_ast_name(value: string) -> string {
 
 fn cli_ast_type(node: AstNode) -> string {
     if node.kind == "array_type" {
+        let length: string = ast_array_length_text(node)
         if node.children.len() == 0 {
-            return "[?; {node.value}]"
+            return "[?; {length}]"
         }
-        return "[{cli_ast_type(node.children[0])}; {node.value}]"
+        return "[{cli_ast_type(node.children[0])}; {length}]"
     }
     if node.kind == "fn_type" {
         var count: int = node.children.len()
