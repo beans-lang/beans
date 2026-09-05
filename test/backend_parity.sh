@@ -367,6 +367,36 @@ if echo "$vtable" | grep -q 'ptr null'; then
 fi
 echo "  agree: test/cases/$name (generic base's method row survives a cross-package name clash)"
 
+# #123: a generic class extending a generic base in *another* package. The
+# override lives on a generic class, so the record of which slots a name
+# declares had no entry for it — a template carries no symbol, and the record
+# was written only for names that got one — and matching that class against a
+# `Base<int>` receiver by its written arguments, which say `Base<T>`, answered
+# no. Both told the emitter nothing could replace the base body, so the call
+# compiled direct while the interpreter dispatched to the override: a wrong
+# answer, not a refusal. The package-private `secret` is the other half — its
+# selector carries lib, so no subclass elsewhere can replace it, and its row on
+# a foreign generic subclass's descriptor must still be the base's own body.
+name=generic_subclass_pkg
+( cd "test/cases/$name" && "$root/build/beansc" run main.b ) \
+    >"$tmp/$name.interp"
+( cd "test/cases/$name" \
+  && "$root/build/beansc" build --release main.b \
+       -o "$tmp/$name.release" >/dev/null )
+"$tmp/$name.release" >"$tmp/$name.release.out"
+diff -u "$tmp/$name.interp" "$tmp/$name.release.out"
+grep -q "weigh 2 2 1" "$tmp/$name.interp" || {
+    echo "$name: a generic subclass's override did not win over the base body" >&2
+    cat "$tmp/$name.interp" >&2
+    exit 1
+}
+grep -q "secret 7 7 7" "$tmp/$name.interp" || {
+    echo "$name: the package-private base row is not the base's own body" >&2
+    cat "$tmp/$name.interp" >&2
+    exit 1
+}
+echo "  agree: test/cases/$name (a generic subclass overrides across packages)"
+
 # Reading one too early has to say so on both paths, not answer a zero on one.
 mkdir -p "$tmp/early"
 printf 'module early\nkind application\n' >"$tmp/early/beans.pot"

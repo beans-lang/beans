@@ -200,6 +200,46 @@ fn is_leaf(r: GRoot) -> string {
     }
 }
 
+// ---- H: an override declared on a *generic* subclass of a *generic* base,
+// reached through a receiver written at the base. The receiver's static type
+// is only a generic base, so the emitter asks whether any class that could
+// stand behind it replaces the method — and a generic link answered no twice
+// over: its methods were left out of the record of which slots a name
+// declares (a template has no symbol, but its class still declares the
+// method), and a generic class was matched against the receiver by its
+// written arguments, which cannot match `Base<int>` when the class says
+// `Base<T>`. The call compiled direct to the base body and ran the wrong
+// method, silently, while the interpreter dispatched to the override.
+//
+// `heft` is the override, `carry` is inherited by every link, and the leaf
+// below the generic subclass is non-generic so both conformer shapes are
+// weighed. HPlainSub is the arrangement that already worked and must not
+// change.
+class HBase<T> {
+    v: T
+    fn init(v: T) { self.v = v }
+    fn heft() -> int { return 1 }
+    fn carry() -> string { return "hbase" }
+}
+class HGenSub<T> extends HBase<T> {
+    fn init(v: T) { super.init(v) }
+    override fn heft() -> int { return 2 }
+}
+class HLeaf extends HGenSub<int> {
+    fn init() { super.init(9) }
+}
+class HDeepGen<T> extends HGenSub<T> {
+    fn init(v: T) { super.init(v) }
+    override fn heft() -> int { return 3 }
+}
+class HPlainSub extends HBase<int> {
+    fn init() { super.init(8) }
+    override fn heft() -> int { return 4 }
+}
+fn hefted(b: HBase<int>) -> string {
+    return "{b.carry()}/{b.heft()}"
+}
+
 fn main() {
     // A — every field shape, twice over
     let a1: AEmpty<int> = new AEmpty<int>("a_empty_int")
@@ -247,5 +287,10 @@ fn main() {
     io.println("G {is_mid(new GRoot())} {is_mid(new GMid())}")
     io.println("G {is_mid(new GGen<int>(19))} {is_mid(new GLeaf())}")
     io.println("G {is_leaf(new GLeaf())} {is_leaf(new GGen<int>(20))}")
+
+    // H — an override on a generic subclass, through a base-typed receiver
+    io.println("H {hefted(new HBase<int>(1))} {hefted(new HGenSub<int>(2))}")
+    io.println("H {hefted(new HLeaf())} {hefted(new HDeepGen<int>(3))}")
+    io.println("H {hefted(new HPlainSub())} {new HGenSub<string>("s").heft()}")
     io.println("made")
 }

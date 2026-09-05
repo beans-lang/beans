@@ -13,6 +13,21 @@ partial class LlvmTextEmitter {
                 self.generic_templates[
                     function.name] = function
             }
+            // Which slots a *name* declares, recorded for every function
+            // including a template's. This is a fact about the source, not
+            // about symbols: a template has no symbol, but the class that
+            // wrote it still declares the method, and asking "does a link of
+            // this chain override the base's method?" is the same question
+            // whether that link is generic or not. Recorded here rather than
+            // in the symbol loop below, which skips generic families — so a
+            // generic class overriding a generic base's method looked to
+            // generic_base_dispatch_symbol like a class that overrides
+            // nothing, and the call was compiled direct to the base body
+            // while the interpreter dispatched to the override.
+            for slot: string in function.dispatch_slots {
+                self.declared_dispatch_slots[
+                    "{function.name}|{slot}"] = true
+            }
             if function.closure_id >= self.generic_count {
                 self.generic_count =
                     function.closure_id + 1
@@ -46,14 +61,6 @@ partial class LlvmTextEmitter {
                     "@.next.fn{next_id}"
                 }
             self.function_symbols[function.name] = symbol
-            // The slots this name answers to before any instance is
-            // raised. A later raise files under a name nothing holds yet
-            // and registers that name's slots then, so a name recorded
-            // here keeps the same slots for the whole emit.
-            for slot: string in function.dispatch_slots {
-                self.declared_dispatch_slots[
-                    "{function.name}|{slot}"] = true
-            }
             if function.cleanup_id >= 0 {
                 self.cleanup_functions[
                     function.cleanup_id] = function

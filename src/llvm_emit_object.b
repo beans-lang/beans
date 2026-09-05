@@ -3489,12 +3489,31 @@ partial class LlvmTextEmitter {
             self.program.declarations {
             if candidate.kind == "interface" ||
                candidate.qualified ==
-                   declaration.qualified ||
-               !self.class_conforms_to_instance(
-                   candidate, declaration,
-                   receiver_type) {
+                   declaration.qualified {
                 continue
             }
+            // Whether an object of this class can stand behind the receiver.
+            // A generic candidate stands at arguments this walk does not
+            // know — `Sub<T> extends Base<T>` is behind a `Base<int>`
+            // receiver exactly when T is int — so comparing the arguments as
+            // written answers no for a class that can in fact be there, and
+            // its override was then never weighed at all. Such a candidate is
+            // matched by name, which over-approximates the set: every extra
+            // candidate can only add a reason to read the descriptor, never
+            // take one away, because `resolved` only ever goes to "".
+            var conforms: bool = false
+            if candidate.kind == "class" &&
+               candidate.generics.len() != 0 {
+                conforms =
+                    self.class_conforms(
+                        candidate, declaration)
+            } else {
+                conforms =
+                    self.class_conforms_to_instance(
+                        candidate, declaration,
+                        receiver_type)
+            }
+            if !conforms { continue }
             if candidate.kind != "class" {
                 resolved = ""
                 break
@@ -3503,10 +3522,6 @@ partial class LlvmTextEmitter {
             // behind a receiver; a concrete subclass of it is weighed on its
             // own row
             if candidate.is_abstract { continue }
-            if candidate.generics.len() != 0 {
-                resolved = ""
-                break
-            }
             // Walk this conformer's chain from itself up to — but not
             // including — the generic base. A link between them that declares
             // the method in this slot overrides the base body, so the object
