@@ -344,6 +344,55 @@ class L5 extends L4<string> {
 }
 fn who_of(x: L0) -> string { return x.who() }
 
+// ---- L: the three things the spec now promises about an instantiation, with
+// every instantiation of one generic class live in the same program.
+//
+//   own field offsets  — `held: T` is 8 bytes at `int`, 8 at `string` and 16 at
+//                        a two-int struct, so `after` sits at a different byte
+//                        in each; one shared layout reads the wrong bytes back
+//   own method table   — `get()` is inherited, not overridden, and returns `T`,
+//                        so each instantiation runs a different raised body
+//   own row in the walk `as?` reads — a non-generic leaf under each is a type
+//                        of its own, and neither the other leaf nor a bare
+//                        instantiation answers to it
+struct LPair {
+    a: int
+    b: int
+}
+class LBase {
+    seq: int
+    fn init(seq: int) { self.seq = seq }
+}
+class LSub<T> extends LBase {
+    held: T
+    after: int
+    fn init(seq: int, held: T, after: int) {
+        self.held = held
+        self.after = after
+        super.init(seq)
+    }
+    fn get() -> T { return self.held }
+    fn width() -> int { return self.after }
+}
+class LIntLeaf extends LSub<int> {
+    fn init() { super.init(1, 11, 101) }
+}
+class LStrLeaf extends LSub<string> {
+    fn init() { super.init(2, "ss", 202) }
+}
+fn l_is_int(b: LBase) -> string {
+    match b as? LIntLeaf {
+        some(found) => { return "i" }
+        none => { return "-" }
+    }
+}
+fn l_is_str(b: LBase) -> string {
+    match b as? LStrLeaf {
+        some(found) => { return "s" }
+        none => { return "-" }
+    }
+}
+
 fn main() {
     // A — every field shape, twice over
     let a1: AEmpty<int> = new AEmpty<int>("a_empty_int")
@@ -423,5 +472,22 @@ fn main() {
     let nested: L1<L4<int>> = new L1<L4<int>>(new L4<int>(11))
     io.println("K {l1.a} {l1.b} {l1.c} {l1.d} {l2.c} {l3.c} {l3.d}")
     io.println("K {who_of(l1)} {who_of(l3)} {who_of(new L2())} {nested.a.c} {nested.a.d}")
+
+    // L — own field offsets: `after` follows a T of three different widths,
+    // and the base's own `seq` sits ahead of all of them
+    let m1: LSub<int> = new LSub<int>(3, 33, 303)
+    let m2: LSub<string> = new LSub<string>(4, "qq", 404)
+    let m3: LSub<LPair> = new LSub<LPair>(5, LPair { a: 55, b: 56 }, 505)
+    io.println("L {m1.seq} {m1.held} {m1.after} {m2.seq} {m2.held} {m2.after}")
+    io.println("L {m3.seq} {m3.held.a} {m3.held.b} {m3.after} {m3.width()}")
+    // L — own method table: `get` is inherited and returns T, so each
+    // instantiation runs its own raised body
+    io.println("L {m1.get()} {m2.get()} {m3.get().b} {m1.width()} {m2.width()}")
+    // L — own row in the class-parent walk: each leaf answers only to itself,
+    // and a bare instantiation answers to neither
+    let mi: LIntLeaf = new LIntLeaf()
+    let ms: LStrLeaf = new LStrLeaf()
+    io.println("L {l_is_int(mi)}{l_is_str(mi)} {l_is_int(ms)}{l_is_str(ms)} {l_is_int(m1)}{l_is_str(m2)}")
+    io.println("L {mi.get()} {mi.after} {ms.get()} {ms.after} {mi.seq} {ms.seq}")
     io.println("made")
 }

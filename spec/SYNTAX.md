@@ -1953,10 +1953,13 @@ generic base at its own parameter (`class Sub<T> extends Base<T>`), or one
 pinned at a concrete argument (`class Sub<T> extends Base<int>`), and it may
 extend and implement at once. Each instantiation is its own class: `Sub<int>`
 and `Sub<string>` have their own field offsets, their own method table, and
-their own identity under `as?`, and a field typed at the parameter is a
-traced reference in one instantiation and a plain word in another. A method a
-generic class overrides wins over the base's for every receiver, including one
-written at the base. A class chain is bounded only by the number of classes in
+their own row in the class-parent walk `as?` reads — so subclasses of the two
+are unrelated types, and a field typed at the parameter is a traced reference
+in one instantiation and a plain word in the other. A method a generic class
+overrides wins over the base's for every receiver, including one written at
+the base. `as?` still names only non-generic classes, so an instantiation is
+reached through a subclass of it rather than by writing `Sub<int>` as the
+target. A class chain is bounded only by the number of classes in
 the program — a cycle is refused at the declaration, and nothing else caps its
 depth.
 
