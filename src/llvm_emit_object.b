@@ -2258,6 +2258,15 @@ partial class LlvmTextEmitter {
                     output =
                         "{output}  %fin.addr{fin} = getelementptr i8, ptr {result}, i64 -16\n  %fin.word{fin} = load i64, ptr %fin.addr{fin}\n  %fin.flag{fin} = or i64 %fin.word{fin}, 2305843009213693952\n  store i64 %fin.flag{fin}, ptr %fin.addr{fin}\n"
                 }
+                // The object exists from here, so the pad owns it from
+                // here: a field initializer that panics used to unwind
+                // past an object nothing had recorded, which leaked it
+                // whole. The construction flag goes up with it — the
+                // fields are all still zero, and a release before the
+                // initializer returns must not run a deinit over them
+                // (#120).
+                output =
+                    "{output}{self.unwind_temp_define_new(function, instruction, result, scalar_local < 0)}{self.unwind_construct_open(function, instruction, scalar_local < 0)}"
                 output =
                     "{output}{self.emit_class_defaults(instruction, layout, result)}"
                 if instruction.resolved !=
@@ -2324,11 +2333,16 @@ partial class LlvmTextEmitter {
                         argument_setup =
                             "{argument_setup}{self.append_internal_argument(operand_type, operand, arguments)}"
                     }
-                    // the object exists from here: if its init panics
-                    // (contained), the cleanup pad releases it — deinit
-                    // and fields — as the interpreter does
+                    // If the init panics (contained), the cleanup pad
+                    // releases the object — fields yes, deinit no, since
+                    // its construction never finished — as the
+                    // interpreter does. The construction flag comes down
+                    // where the initializer returned: from here the
+                    // object is finished, and an unwind that passes it
+                    // still standing in its temporary releases it with
+                    // its deinit intact.
                     output =
-                        "{output}{argument_setup}{self.unwind_temp_define_new(function, instruction, result, scalar_local < 0)}  call void {initializer}({arguments.join(", ")})\n"
+                        "{output}{argument_setup}  call void {initializer}({arguments.join(", ")})\n"
                     // A borrow-passed consumed operand is an
                     // ownership-sink argument: the contraction makes
                     // every such call site pass its own reference
@@ -2340,6 +2354,8 @@ partial class LlvmTextEmitter {
                     // declared move parameter never reaches this point:
                     // its passing is not "borrow".
                 }
+                output =
+                    "{output}{self.unwind_construct_close(function, instruction, scalar_local < 0)}"
                 values[instruction.result] = result
                 return output
             }

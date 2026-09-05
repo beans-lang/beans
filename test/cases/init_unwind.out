@@ -1,0 +1,52 @@
+-- reached --
+  err runtime panic at 45:25: reached boom
+  after
+-- whole --
+  err runtime panic at 60:14: whole boom
+  after
+-- defaulted --
+  err runtime panic at 69:21: default boom
+  after
+-- base init --
+  err runtime panic at 89:25: base boom
+  after
+-- inherited deinit --
+  err runtime panic at 110:25: quiet boom
+  after
+-- subclass deinit only --
+  err runtime panic at 125:14: noisy boom
+  after
+-- owns finished objects --
+  drop owned-2
+  drop owned-1
+  err runtime panic at 143:25: owner boom
+  after
+-- finished neighbours --
+  drop around-early
+  drop around-before
+  err runtime panic at 158:14: around boom
+  after
+-- escapes --
+  err runtime panic at 177:14: escapes boom
+  survivors 1
+  survivor a=8
+  after
+  escapes deinit a=8
+-- construction finishes --
+  fine deinit a=9
+  ok 9
+  after
+-- no deinit at all --
+  err runtime panic at 218:25: silent boom
+  after
+-- finished temporary, later panic --
+  fine deinit a=12
+  err runtime panic at 229:29: later boom
+  after
+-- repeated construction --
+  sometimes deinit a=0
+  sometimes deinit a=1
+  sometimes deinit a=2
+  err runtime panic at 240:26: sometimes boom
+  after
+end

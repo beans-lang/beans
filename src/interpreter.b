@@ -119,6 +119,18 @@ class TreeInterpreter {
     // double-panic case (a defer or deinit the unwind itself is running has
     // panicked): unrecoverable, reported and aborted.
     unwinds: Map<u64, string>
+    // The object id of a construction that did not finish, or -1. An
+    // initializer (or a field initializer) that panics leaves a half-built
+    // object behind, and the release the unwind then performs must not hand
+    // that object's `deinit` a `self` whose fields the initializer never
+    // reached (#120). Held as one id rather than a flag on the value because
+    // it describes ONE release: the one the construction unwind performs
+    // right after it is armed, with no interpreted code — and therefore no
+    // park and no other fiber — in between. If that release is not the
+    // object's death, some reference escaped the initializer (legal only once
+    // every field is assigned) and the object is an ordinary one from there;
+    // end_unwind disarms the id so its eventual death runs `deinit` normally.
+    unbuilt_object: int
     next_object_id: int
     // Zeroing weak fields: the registry maps a weakly referenced object's
     // id to an inner TreeValue sharing the same fields map, and the
@@ -200,6 +212,7 @@ class TreeInterpreter {
         self.panic_text = ""
         self.entry_returned = false
         self.unwinds = {}
+        self.unbuilt_object = -1
         self.next_object_id = 0
         self.weak_track = false
         self.weak_registry = {}
@@ -616,6 +629,13 @@ class TreeInterpreter {
     // not outlive the fiber it describes.
     fn end_unwind() {
         self.unwinds.remove(self.current_fiber_address())
+        // The unwind is over, so a construction that failed inside it has
+        // had its release: either the object died there (and deinit_object
+        // consumed the id) or a reference escaped the initializer and the
+        // object outlived the unwind. Either way the id describes nothing
+        // now, and leaving it armed would silence the deinit of a survivor
+        // that happens to die inside some later, unrelated unwind.
+        self.unbuilt_object = -1
     }
 
     // Is a panic raised right now contained, i.e. will a `join` catch it?
@@ -2194,6 +2214,12 @@ class TreeInterpreter {
                                 }
                                 none => {}
                             }
+                            if self.failed {
+                                // reflective construction is construction:
+                                // an initializer that panicked leaves an
+                                // object no `deinit` may be handed (#120)
+                                self.unbuilt_object = result.object_id
+                            }
                         }
                     } else {
                         result = TreeValue.sequence("variant", values)
@@ -3730,6 +3756,21 @@ class TreeInterpreter {
     // children to its explicit work stack rather than recursing.
     fn deinit_object(object: TreeValue) {
         if object.kind != "object" { return }
+        // An object whose `init` never returned dies without its `deinit`
+        // body: the initializer may not have reached every field, and a
+        // body that reads one it never assigned is reading a slot that
+        // holds nothing (#120). The fields that WERE assigned still go —
+        // this only skips the interpreted chain; the host cascade releases
+        // the fields box afterwards either way. The object this stands for
+        // is the one whose construction unwind armed the id, and only for
+        // the release that follows arming, so an object the initializer
+        // legitimately handed out (possible only once every field is
+        // assigned) still runs `deinit` at its own later death.
+        if self.unbuilt_object >= 0 &&
+           object.object_id == self.unbuilt_object {
+            self.unbuilt_object = -1
+            return
+        }
         if self.failed {
             // A panic is in flight. Two cases run the deinit anyway, with the
             // panic set aside so the body executes: a contained unwind, where
@@ -11286,6 +11327,13 @@ class TreeInterpreter {
                         "unknown initializer '{node.resolved}'")
                 }
             }
+        }
+        if self.failed {
+            // Construction did not finish — a field initializer or the
+            // initializer body panicked, and this object never became one
+            // the program can be handed. The unwind releases it next; that
+            // release runs no `deinit` body (#120).
+            self.unbuilt_object = result.object_id
         }
         return result
     }
