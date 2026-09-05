@@ -21,12 +21,22 @@ This file records user-facing changes in each Beans release.
   (`class Sub<T> extends Base<T>`), or one pinned at a concrete argument (`class
   Sub<T> extends Base<int>`), and may extend and implement at the same time.
   Each instantiation is its own class: `Sub<int>` and `Sub<string>` get their
-  own field offsets, their own method table, and their own row in the
-  class-parent walk `as?` uses — so a field typed at the parameter is a traced
-  reference in one instantiation and a plain word in the other. An override a
-  generic class declares wins for every receiver, including one written at the
-  base. This is new code that compiles, not a change to code that already did.
-  (#123)
+  own field offsets and their own method table, so a field typed at the
+  parameter is a traced reference in one instantiation and a plain word in the
+  other. An override a generic class declares wins for every receiver,
+  including one written at the base. This is new code that compiles, not a
+  change to code that already did. (#123)
+
+  **`as?` still cannot name an instantiation.** `b as? Sub<int>` is refused: a
+  downcast is decided at run time from the object's own class, and an object
+  does not carry its type arguments, so `Sub<int>` and `Sub<string>` cannot be
+  told apart there — the interpreter would answer yes where the native backend
+  answers no. The message now says that instead of denying a parent/child
+  relation that does hold. What is newly allowed is the other direction: the
+  *source* of an `as?` may be written at an instantiation, so `b: Box<int>` can
+  be tested against a non-generic class that extends `Box<int>`. That was
+  refused before for no reason — the target carries the runtime identity, and
+  it is a plain class. (#123)
 
 ### Fixed
 

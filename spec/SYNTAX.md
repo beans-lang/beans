@@ -1952,16 +1952,36 @@ pin the same base differently.
 generic base at its own parameter (`class Sub<T> extends Base<T>`), or one
 pinned at a concrete argument (`class Sub<T> extends Base<int>`), and it may
 extend and implement at once. Each instantiation is its own class: `Sub<int>`
-and `Sub<string>` have their own field offsets, their own method table, and
-their own row in the class-parent walk `as?` reads — so subclasses of the two
-are unrelated types, and a field typed at the parameter is a traced reference
-in one instantiation and a plain word in the other. A method a generic class
-overrides wins over the base's for every receiver, including one written at
-the base. `as?` still names only non-generic classes, so an instantiation is
-reached through a subclass of it rather than by writing `Sub<int>` as the
-target. A class chain is bounded only by the number of classes in
-the program — a cycle is refused at the declaration, and nothing else caps its
-depth.
+and `Sub<string>` have their own field offsets and their own method table, so a
+field typed at the parameter is a traced reference in one instantiation and a
+plain word in the other, and subclasses of the two are unrelated types. A
+method a generic class overrides wins over the base's for every receiver,
+including one written at the base. A class chain is bounded only by the number
+of classes in the program — a cycle is refused at the declaration, and nothing
+else caps its depth.
+
+**`as?` cannot name an instantiation.** `b as? Sub<int>` is refused, and not
+because the relation is missing — `Sub<int>` really is a child of `Base<int>`.
+A downcast is decided at run time from the object's own class, and an object
+does not carry its type arguments, so `Sub<int>` and `Sub<string>` cannot be
+told apart there. The downcast that does work reads the other way round: the
+*source* may be written at an instantiation, and the target is a non-generic
+class that extends it.
+
+```
+class Box<T> {
+    v: T
+    fn init(v: T) { self.v = v }
+}
+class IntLeaf extends Box<int> { fn init() { super.init(1) } }
+
+fn probe(b: Box<int>) -> string {
+    match b as? IntLeaf {          // allowed: the target is a plain class
+        some(leaf) => { return "leaf" }
+        none => { return "other" }
+    }
+}
+```
 
 ```
 class Base<T> {

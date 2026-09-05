@@ -393,6 +393,45 @@ fn l_is_str(b: LBase) -> string {
     }
 }
 
+// ---- M: `as?` from a receiver written at an instantiation. The source is
+// only a static type — the test reads the object's runtime class — so an
+// instantiation is as good a source as a plain class, and this is the one
+// downcast a generic hierarchy can express. The target must stay non-generic:
+// a run-time test cannot tell `MBox<int>` from `MBox<string>`, because an
+// object does not carry its type arguments, so the checker refuses that
+// (test/cases/generic_downcast_bad.b pins the refusal and says why).
+//
+// Both instantiations are live and each has its own leaves, so an answer that
+// ignored the arguments would show up here.
+class MBox<T> {
+    v: T
+    fn init(v: T) { self.v = v }
+}
+class MIntLeaf extends MBox<int> {
+    fn init() { super.init(1) }
+}
+class MIntOther extends MBox<int> {
+    fn init() { super.init(2) }
+}
+class MStrLeaf extends MBox<string> {
+    fn init() { super.init("s") }
+}
+class MDeep extends MIntLeaf {
+    fn init() { super.init() }
+}
+fn m_int(b: MBox<int>) -> string {
+    match b as? MIntLeaf {
+        some(found) => { return "L" }
+        none => { return "-" }
+    }
+}
+fn m_str(b: MBox<string>) -> string {
+    match b as? MStrLeaf {
+        some(found) => { return "S" }
+        none => { return "-" }
+    }
+}
+
 fn main() {
     // A — every field shape, twice over
     let a1: AEmpty<int> = new AEmpty<int>("a_empty_int")
@@ -489,5 +528,10 @@ fn main() {
     let ms: LStrLeaf = new LStrLeaf()
     io.println("L {l_is_int(mi)}{l_is_str(mi)} {l_is_int(ms)}{l_is_str(ms)} {l_is_int(m1)}{l_is_str(m2)}")
     io.println("L {mi.get()} {mi.after} {ms.get()} {ms.after} {mi.seq} {ms.seq}")
+
+    // M — `as?` from a receiver written at an instantiation, to a plain class
+    // under it. MDeep is below MIntLeaf, so it answers too; MIntOther does not.
+    io.println("M {m_int(new MIntLeaf())} {m_int(new MIntOther())} {m_int(new MDeep())} {m_int(new MBox<int>(3))}")
+    io.println("M {m_str(new MStrLeaf())} {m_str(new MBox<string>("t"))}")
     io.println("made")
 }
