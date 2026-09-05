@@ -26,6 +26,20 @@ fn const_value_failed() -> ConstValue {
     return ConstValue { kind: "", number: 0, text: "" }
 }
 
+fn const_value_int(value: int, text: string) -> ConstValue {
+    return ConstValue { kind: "int", number: value, text: text }
+}
+
+fn const_value_bool(value: bool) -> ConstValue {
+    return ConstValue {
+        kind: "bool",
+        number: if value { 1 } else { 0 },
+        text: if value { "true" } else { "false" },
+    }
+}
+
+// The decimal spelling of a folded integer. Negative values keep the sign
+// here and are split back out when the node is built.
 // The length a constant supplies for a fixed array, and why it supplies
 // none. `length` is -1 exactly when the constant cannot be one; `reason` is
 // then the sentence to report, or "" when the constant's own declaration
@@ -75,20 +89,6 @@ fn constant_kind_article(kind: string) -> string {
     return "a {kind}"
 }
 
-fn const_value_int(value: int, text: string) -> ConstValue {
-    return ConstValue { kind: "int", number: value, text: text }
-}
-
-fn const_value_bool(value: bool) -> ConstValue {
-    return ConstValue {
-        kind: "bool",
-        number: if value { 1 } else { 0 },
-        text: if value { "true" } else { "false" },
-    }
-}
-
-// The decimal spelling of a folded integer. Negative values keep the sign
-// here and are split back out when the node is built.
 fn const_int_text(value: int) -> string {
     return "{value}"
 }

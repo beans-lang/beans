@@ -34,4 +34,5 @@ fn main() {
     let qualified: [int; limits.SLOTS] = [1, 2, 3, 40]
     let row: Row = Row { cells: [0, 0, 0, 50] }
     io.println("sized {last_cell(sized)} {qualified[3]} {row.cells[3]} {grid()[2][3]}")
+    io.println("interpolated {size_of([u8; limits.SLOTS])} {size_of([u8; SLOTS])}")
 }

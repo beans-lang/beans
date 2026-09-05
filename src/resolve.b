@@ -561,7 +561,18 @@ class Resolver {
                           file: ParsedModuleFile,
                           aliases: Map<string, string>,
                           selected: Map<string, string>,
+                          generics: Map<string, bool>,
                           node: AstNode) -> string {
+        // A type parameter is in scope here and reads like it should work —
+        // it is the shape someone reaching for a const generic writes. It
+        // stands for a type, and a length is a number, so say that rather
+        // than reporting the name as one nothing declares.
+        if generics.contains_key(name) {
+            self.fail(
+                file.path, node,
+                "'{name}' is a type parameter, not a module constant — an array length must be an integer literal or a module const")
+            return "poison"
+        }
         var resolved: string = ""
         if name.contains(".") {
             let qualifier: string = self.first_part(name)
@@ -711,7 +722,8 @@ class Resolver {
         if node.kind == "array_length" {
             node.resolved =
                 self.resolve_const_name(node.value, package, file,
-                                        aliases, selected, node)
+                                        aliases, selected, generics,
+                                        node)
         }
         for annotation: AstNode in node.annotations {
             if (node.kind == "annotation_decl" &&

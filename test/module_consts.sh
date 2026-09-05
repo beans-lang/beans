@@ -41,9 +41,11 @@ check_bad() {
 }
 
 run_both const_ok
-# #59: a constant sizes a fixed array, in every position one can be written,
-# with the same value on both backends.
+# #59: a constant sizes a fixed array, with the same value on both backends —
+# once for every way a length can be written and every way a constant can be
+# reached, and once for every position a fixed array type can sit in.
 run_both const_arraylen_ok
+run_both const_arraylen_places_ok
 
 check_bad const_bad.b \
     "const BAD_CALL is not a compile-time value: a call runs at run time" \
@@ -80,6 +82,7 @@ check_bad const_arraylen_bad.b \
     "no module constant named 'nosuchname' is in scope" \
     "'Widget' is a class, not a module constant — an array length must be an integer literal or a module const" \
     "'helper' is a function, not a module constant" \
+    "'N' is a type parameter, not a module constant — an array length must be an integer literal or a module const" \
     "an array length must be an integer, and const TEXT is a string" \
     "an array length must be an integer, and const FLAG is a bool" \
     "an array length must be an integer, and const REAL is a float" \
@@ -92,7 +95,7 @@ if grep -Fq "SIZE" "$tmp/bad"; then
     cat "$tmp/bad" >&2
     exit 1
 fi
-test "$(grep -c ': error:' "$tmp/bad")" -eq 14
+test "$(grep -c ': error:' "$tmp/bad")" -eq 15
 
 # The value a constant supplies is the same one wherever the type is written,
 # including inside a string's `{}` piece — which is parsed after every other

@@ -14,6 +14,13 @@ const SELFREF: int = SELFREF
 
 class Widget { fn init() {} }
 
+// A type parameter is in scope where a length is written and stands for a
+// type, which is the shape someone reaching for a const generic writes.
+class Slots<N> {
+    cells: [int; N]
+    fn init() { self.cells = [1] }
+}
+
 fn helper() -> int { return 4 }
 
 // A length in a signature reads the same constants a body does, and is
