@@ -152,8 +152,32 @@ BEANS
                 echo "--- stack limit: $(ulimit -s) ---" >&2
                 exit 1
             fi
-            grep -q 'runtime fault: stack overflow' "$tmp/fault.$lane.err"
-            grep -q '^depth 10000 = 10000$' "$tmp/fault.$lane.out"
+            # Both of these used to be bare `grep -q` under `set -e`: the
+            # assertion held or the script vanished with exit 1 and not one
+            # word about which of the two it was. The claims are unchanged;
+            # they just say what they saw now, and print the stack limit,
+            # because the second one is a claim ABOUT the stack and the
+            # reader's first question is how much of it there was.
+            if ! grep -q 'runtime fault: stack overflow' "$tmp/fault.$lane.err"; then
+                echo "$lane: faulted ($fault_status) without the runtime's" \
+                     "stack-overflow report" >&2
+                echo "--- stderr ---" >&2
+                cat "$tmp/fault.$lane.err" >&2
+                exit 1
+            fi
+            if ! grep -q '^depth 10000 = 10000$' "$tmp/fault.$lane.out"; then
+                echo "$lane: the 10,000-frame recursion that must SUCCEED did" \
+                     "not, so the fault below came from the wrong call" >&2
+                echo "--- stdout (expected 'depth 10000 = 10000' first) ---" >&2
+                cat "$tmp/fault.$lane.out" >&2
+                echo "--- stderr ---" >&2
+                sed -n '1,10p' "$tmp/fault.$lane.err" >&2
+                echo "--- stack limit: $(ulimit -s) ---" >&2
+                echo "10,000 frames is a fixed depth against whatever stack" >&2
+                echo "the host gives; if that is the whole story here, this" >&2
+                echo "gate is asserting a margin nobody has written down." >&2
+                exit 1
+            fi
         done
         echo "fault report ok"
         ;;
