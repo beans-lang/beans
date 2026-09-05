@@ -157,6 +157,13 @@ agree test/cases/parity/generic_base_deinit_chain.b 13
 # two instantiations wide, and a strong cycle held in a T-typed field is torn
 # down under the collector. Fifteen marked objects, built and released once.
 agree test/cases/parity/generic_subclass.b 15
+# Found alongside #123: the chain walk gave up past 32 links and class_layout
+# reported that as the class shape exceeding runtime metadata capacity — a
+# build-time failure, with a message about the emitter, on a program check
+# passed and the interpreter ran. 41 links, generic at three depths, with a
+# deinit at the root and at one generic link so the release chain is walked the
+# whole way too.
+agree test/cases/parity/deep_chain.b 4
 # #119, the blocker half: a plain class *above* a generic base, whose deinit
 # the parent walk stepped over because a generic link has no plain symbol —
 # dropping one deinit, chosen by declaration order. Both orders here (built in
@@ -227,7 +234,7 @@ agree test/cases/parity/inherited_field_slots.b 4
 
 # Every case in the directory has to be listed above with its own expected
 # count; a file added and forgotten would otherwise be silently unchecked.
-listed=41
+listed=42
 present=$(find test/cases/parity -name '*.b' | wc -l | tr -d ' ')
 if [ "$present" != "$listed" ]; then
     echo "test/cases/parity holds $present cases but $listed are run" >&2

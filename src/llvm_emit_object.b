@@ -543,9 +543,20 @@ partial class LlvmTextEmitter {
         var current: HirDeclaration = declaration
         var depth: int = 0
         var supported: bool = true
+        // The only bound on a chain is the program's own declaration count: a
+        // class appears at most once in an acyclic chain, and the checker
+        // refuses an inheritance cycle outright (has_inheritance_cycle walks
+        // the whole relation graph for every declaration). A fixed cap of 32
+        // was not that — a 40-link hierarchy of plain classes checked, ran on
+        // the interpreter, and then failed the build claiming the class shape
+        // exceeded runtime metadata capacity, which was nothing to do with it.
+        // Overrunning this bound now means the HIR is cyclic, which is an
+        // invariant, not a program limit.
+        let limit: int =
+            self.program.declarations.len() + 1
         for self.class_base_index(current) >= 0 {
             depth += 1
-            if depth > 32 {
+            if depth > limit {
                 supported = false
                 break
             }
@@ -593,9 +604,13 @@ partial class LlvmTextEmitter {
         var current: HirDeclaration = declaration
         var current_type: HirType = instance
         var depth: int = 0
+        // the same bound class_chain uses, so the two lists stay the same
+        // length — class_layout refuses the pair when they differ
+        let limit: int =
+            self.program.declarations.len() + 1
         for self.class_base_index(current) >= 0 {
             depth += 1
-            if depth > 32 { break }
+            if depth > limit { break }
             let base_index: int =
                 self.class_base_index(current)
             let base_type: HirType =
