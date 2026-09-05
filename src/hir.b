@@ -895,14 +895,20 @@ class SignatureChecker {
     fn lower_type(node: AstNode, file: string) -> HirType {
         if node.kind == "array_type" {
             let result: HirType = new HirType("array")
-            result.array_length = ast_array_length(node)
-            if result.array_length < 0 &&
-               ast_array_length_name(node).is_some() {
-                // The length names a constant. Signatures are lowered
-                // before any constant is folded, so the type is finished
-                // once the fold is — see resolve_array_lengths.
-                self.pending_array_lengths.push(
-                    new PendingArrayLength(result, node))
+            match ast_array_length_name(node) {
+                some(named) => {
+                    // The length names a constant, and signatures are
+                    // lowered before any constant is folded. Whatever the
+                    // node holds now is at best an answer a previous check
+                    // of the same syntax wrote, so the type waits for this
+                    // one — see resolve_array_lengths.
+                    result.array_length = -1
+                    self.pending_array_lengths.push(
+                        new PendingArrayLength(result, node))
+                }
+                none => {
+                    result.array_length = ast_array_length(node)
+                }
             }
             match type_child(node) {
                 some(element) => {
