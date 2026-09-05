@@ -175,7 +175,9 @@ fi
 
 # -------------------------------------------------------------- the manifest
 base=${BEANS_INSTALL_BASE_URL:-}
+base_is_ours=0
 if [ -z "$base" ]; then
+    base_is_ours=1
     if [ -n "$version" ]; then
         base="https://github.com/$REPO/releases/download/v$version"
     else
@@ -233,6 +235,19 @@ if [ -z "$row" ]; then
 fi
 
 release_version=$(printf '%s' "$row" | cut -f1)
+# Pin the rest of this install to the release the manifest just named. Without
+# a --version, `base` is .../releases/latest/download, and `latest` is a moving
+# target: a release published between the manifest fetch and the download turns
+# every asset URL under it into a 404 on a URL that still looks right. That
+# killed a CI job on main and, because this is the script behind the documented
+# `curl ... | sh`, it does the same to anyone installing during a release
+# (issue #118). The asset is the only thing fetched after this point -- the
+# checksum comes from the manifest row, not from a second download -- so this
+# one assignment covers all of it. A caller who set BEANS_INSTALL_BASE_URL
+# keeps theirs: that is how CI and a mirror point this at their own bytes.
+if [ "$base_is_ours" -eq 1 ]; then
+    base="https://github.com/$REPO/releases/download/v$release_version"
+fi
 package_class=$(printf '%s' "$row" | cut -f6)
 asset=$(printf '%s' "$row" | cut -f7)
 expected_sha=$(printf '%s' "$row" | cut -f8)

@@ -95,8 +95,17 @@ clang -O2 -pthread -Wno-override-module build/packed_c_abi.ll \
 clang -O1 -g -pthread -fsanitize=address -Wno-override-module \
     build/packed_c_abi.ll build/beans_rt.c build/packed_c_abi_ffi.c \
     test/fixtures/packed_helper.c -lm -o "$tmp/abi_asan"
-BEANS_NO_POOL=1 "$tmp/abi_asan" >"$tmp/abi.asan" 2>"$tmp/abi.asan.err"
-if grep -q 'AddressSanitizer' "$tmp/abi.asan.err"; then
+# A leak is a sanitizer failure like any other: LeakSanitizer rides inside
+# ASan on Linux and reports at exit, which makes the run exit non-zero. Hold
+# the status before reading the report, or this dies under `set -e` with the
+# report still unread in the capture file.
+if ! BEANS_NO_POOL=1 "$tmp/abi_asan" >"$tmp/abi.asan" 2>"$tmp/abi.asan.err"; then
+    cat "$tmp/abi.asan.err" >&2
+    echo "packed_c_abi exited non-zero under the sanitizers" >&2
+    exit 1
+fi
+if grep -Eq 'AddressSanitizer|UndefinedBehaviorSanitizer|LeakSanitizer' \
+    "$tmp/abi.asan.err"; then
     cat "$tmp/abi.asan.err" >&2
     exit 1
 fi

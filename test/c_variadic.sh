@@ -68,7 +68,11 @@ if ! BEANS_NO_POOL=1 "$tmp/asan" >"$tmp/asan.out" 2>"$tmp/asan.err"; then
     cat "$tmp/asan.err" >&2
     exit 1
 fi
-if grep -Eq 'AddressSanitizer|runtime error:' "$tmp/asan.err"; then
+# The guarded run above already fails on a leak (LeakSanitizer rides inside
+# ASan on Linux and exits non-zero); the grep names all three so a report that
+# does not change the exit status is caught too.
+if grep -Eq 'AddressSanitizer|UndefinedBehaviorSanitizer|LeakSanitizer|runtime error:' \
+    "$tmp/asan.err"; then
     cat "$tmp/asan.err" >&2
     exit 1
 fi

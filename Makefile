@@ -104,6 +104,7 @@ test-quick: $(BIN)
 	./test/differential.sh
 	bash ./test/ownership_fuzz.sh smoke
 	bash ./test/ci_coverage.sh
+	bash ./test/sanitizer_gates.sh
 	$(MAKE) fuzz-differential-smoke
 
 # Focused slices of the full suite for iterating on one area. Together the
@@ -235,6 +236,7 @@ test-runtime: $(BIN)
 	bash ./test/json_direct.sh
 	bash ./test/list_iteration.sh
 	bash ./test/oom.sh
+	bash ./test/sanitizer_gates.sh
 
 test-ffi: $(BIN)
 	./test/raw_slices.sh
@@ -306,6 +308,7 @@ test-core: $(BIN)
 	./test/maps.sh
 	bash ./test/map_inline.sh
 	bash ./test/oom.sh
+	bash ./test/sanitizer_gates.sh
 	bash ./test/float_total_order.sh
 	./test/traits.sh
 	bash ./test/calendar.sh

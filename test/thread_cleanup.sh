@@ -47,11 +47,55 @@ clang -O1 -pthread -DBEANS_ARC_STATS -Wno-override-module \
 grep -q '^collected while live true maker 1$' \
     "$tmp/thread-live-cycles.out"
 grep -q '^blocker 2$' "$tmp/thread-live-cycles.out"
-cycle_objects=$(sed -n \
-    's/.*cycle_objects=\([0-9][0-9]*\).*/\1/p' \
-    "$tmp/thread-live-cycles.stats")
-if [[ -z "$cycle_objects" || "$cycle_objects" -lt 9216 ]]; then
-    echo "expected 9216 collected cycle objects, got ${cycle_objects:-none}" >&2
+# The numbers below come from the ARC report an atexit handler writes, and the
+# collector's own atexit handler runs before it: `cc_at_exit` drains the entry
+# thread's owner-local buffer and then forces up to eight global passes, which
+# it is allowed to do because both workers are joined before main returns, so
+# cc_threads is zero. Measured with an instrumented copy of the program: it
+# reads 7680 collected objects itself, both at the `during` read below and
+# again after joining the blocker, and this report says 9216 -- the last 1536
+# are reclaimed by that forced sweep. So how far along the collector is *while
+# the program runs* is scheduling-dependent (that is the `collected while live`
+# claim above, and it is a bound on purpose), but this report's number is not.
+# It is read at quiescence, after the collector has been made to finish.
+#
+# That is why this is an equality and not a bound. The program builds
+# 2048 two-node cycles on the maker thread, 2048 more on the entry thread and
+# 256 four-object Mutex cycles: 2 * (2048 + 2048) + 4 * 256 = 9216 objects,
+# every one of them unreachable before main returns and none of them
+# reclaimable by reference counting alone, because each is in a real cycle.
+# The decomposition is measured, not assumed: dropping the Mutex loop gives
+# exactly 8192 and keeping only the Mutex loop gives exactly 1024.
+#
+# This was `-lt 9216` and CI saw 9213 once (#64) with frees two short of
+# allocations on the same run. That is not the collector being behind -- it has
+# been forced to quiescence by the time these numbers are written. It is three
+# objects one sweep did not reclaim, two of which were never freed at all.
+# Widening the bound would have buried both halves; the two checks below name
+# which half went wrong.
+stat_field() {
+    sed -n "s/.*$1=\([0-9][0-9]*\).*/\1/p" "$tmp/thread-live-cycles.stats"
+}
+cycle_objects=$(stat_field cycle_objects)
+allocations=$(stat_field allocations)
+frees=$(stat_field frees)
+if [[ -z "$cycle_objects" || -z "$allocations" || -z "$frees" ]]; then
+    echo "the ARC stats line no longer carries allocations, frees and" \
+         "cycle_objects; this gate read nothing rather than checking it" >&2
+    cat "$tmp/thread-live-cycles.stats" >&2
+    exit 1
+fi
+if [[ "$cycle_objects" -ne 9216 ]]; then
+    echo "the cycle collector reclaimed $cycle_objects objects, not the 9216" \
+         "this program builds. Both workers are joined and the exit sweep is" \
+         "forced before this number is written, so the difference is the" \
+         "collector, not the machine." >&2
+    cat "$tmp/thread-live-cycles.stats" >&2
+    exit 1
+fi
+if [[ "$allocations" -ne "$frees" ]]; then
+    echo "$((allocations - frees)) object(s) were allocated and never freed" \
+         "($allocations allocated, $frees freed)" >&2
     cat "$tmp/thread-live-cycles.stats" >&2
     exit 1
 fi

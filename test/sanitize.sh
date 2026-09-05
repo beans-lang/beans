@@ -53,7 +53,8 @@ run_asan() {
     local status=$?
     set -e
     if [[ "$status" -ne "$expected" ]] ||
-       grep -Eq 'AddressSanitizer|runtime error:' "$out/${name}.stderr"; then
+       grep -Eq 'AddressSanitizer|UndefinedBehaviorSanitizer|LeakSanitizer|runtime error:' \
+           "$out/${name}.stderr"; then
         echo "ASan/UBSan failed: $file (status $status, expected $expected)" >&2
         sed -n '1,160p' "$out/${name}.stderr" >&2
         return 1
@@ -171,7 +172,8 @@ run_bridge_asan() {
     local bridge_status=$?
     set -e
     if [[ "$bridge_status" -ne 0 ]] ||
-       grep -Eq 'AddressSanitizer|runtime error:' "$out/${name}_bridge.stderr" ||
+       grep -Eq 'AddressSanitizer|UndefinedBehaviorSanitizer|LeakSanitizer|runtime error:' \
+           "$out/${name}_bridge.stderr" ||
        ! grep -q "$marker" "$out/${name}_bridge.stdout"; then
         echo "native bridge sanitizer failed: $file" >&2
         sed -n '1,160p' "$out/${name}_bridge.stderr" >&2
@@ -221,11 +223,18 @@ echo "ASan/UBSan checking all std.log sinks"
     -Iruntime/log -Iruntime/log/vendor/quill/include \
     runtime/log/beans_log.cpp test/log_bridge.cpp \
     -o "$out/log_bridge_cpp_asan"
-ASAN_OPTIONS="detect_leaks=$asan_detect_leaks:halt_on_error=1" \
-    "$out/log_bridge_cpp_asan" "$out/log_bridge_asan_files" \
-    >"$out/log_bridge_cpp_asan.stdout" \
-    2>"$out/log_bridge_cpp_asan.stderr"
-if grep -Eq 'AddressSanitizer|runtime error:' \
+# This lane wrote its report into a file and then died at this very line
+# whenever the bridge leaked on Linux, because LeakSanitizer exits 23 and the
+# grep below never ran. Hold the status first.
+if ! ASAN_OPTIONS="detect_leaks=$asan_detect_leaks:halt_on_error=1" \
+        "$out/log_bridge_cpp_asan" "$out/log_bridge_asan_files" \
+        >"$out/log_bridge_cpp_asan.stdout" \
+        2>"$out/log_bridge_cpp_asan.stderr"; then
+    sed -n '1,200p' "$out/log_bridge_cpp_asan.stderr" >&2
+    echo "the std.log sink bridge exited non-zero under the sanitizers" >&2
+    exit 1
+fi
+if grep -Eq 'AddressSanitizer|UndefinedBehaviorSanitizer|LeakSanitizer|runtime error:' \
         "$out/log_bridge_cpp_asan.stderr"; then
     sed -n '1,200p' "$out/log_bridge_cpp_asan.stderr" >&2
     exit 1
@@ -240,7 +249,8 @@ ASAN_OPTIONS="detect_leaks=$asan_detect_leaks:halt_on_error=1" \
         sed -n '1,120p' "$out/tls_bridge.stdout" >&2
         exit 1
     }
-if grep -Eq 'AddressSanitizer|runtime error:' "$out/tls_bridge.stderr"; then
+if grep -Eq 'AddressSanitizer|UndefinedBehaviorSanitizer|LeakSanitizer|runtime error:' \
+        "$out/tls_bridge.stderr"; then
     sed -n '1,200p' "$out/tls_bridge.stderr" >&2
     exit 1
 fi
