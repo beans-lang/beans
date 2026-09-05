@@ -154,8 +154,9 @@ agree test/cases/parity/generic_base_deinit_chain.b 13
 # generic middle (the case #119 could not write), a pointer mask that differs
 # per instantiation, dispatch to an inherited row through a base-typed
 # receiver, and `as?` walking through a generic link. Each section is at least
-# two instantiations wide. Thirteen marked objects, built and released once.
-agree test/cases/parity/generic_subclass.b 13
+# two instantiations wide, and a strong cycle held in a T-typed field is torn
+# down under the collector. Fifteen marked objects, built and released once.
+agree test/cases/parity/generic_subclass.b 15
 # #119, the blocker half: a plain class *above* a generic base, whose deinit
 # the parent walk stepped over because a generic link has no plain symbol —
 # dropping one deinit, chosen by declaration order. Both orders here (built in

@@ -1509,13 +1509,21 @@ partial class LlvmTextEmitter {
                     id = self.class_ids[
                         declaration.qualified]
                 } else {
-                    // an instantiation mints its own class id. A base
-                    // class stays unsupported: its fields would have to
-                    // be laid out through the instantiation. An
-                    // implemented interface contributes no fields, only
-                    // vtable rows, and emit_class_records fills those per
-                    // instantiation. Marker-only Send/Sync relations need
-                    // neither.
+                    // An instantiation mints its own class id: `G<int>`
+                    // and `G<string>` are different runtime classes, with
+                    // their own field offsets, pointer masks and descriptor.
+                    //
+                    // A base contributes its fields, laid out at the
+                    // arguments this class's `extends` pinned — the walk
+                    // below does that through class_chain_types, the same
+                    // way a non-generic class extending a generic base is
+                    // laid out. An implemented interface contributes no
+                    // fields, only vtable rows, which emit_global_definitions
+                    // fills per instantiation. Marker-only Send/Sync
+                    // relations need neither. Anything else has no shape here
+                    // and refuses; validate_relation_kinds has already turned
+                    // away a base that is not a class and an `implements`
+                    // that is not an interface, so this is the backstop.
                     for index: int in
                         0..declaration.relations.len() {
                         if index >=

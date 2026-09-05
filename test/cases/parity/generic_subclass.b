@@ -295,6 +295,55 @@ class JMore<T> extends JSub<T> {
 fn j_heft(b: JBase<int>) -> int { return b.heft() }
 fn j_heft_str(b: JBase<string>) -> int { return b.heft() }
 
+// ---- K: a strong cycle held in a T-typed field, and a five-link chain that
+// alternates plain and generic with one generic class nested inside another.
+// The cycle is the pointer mask under the collector rather than under scope
+// exit: `KCell<KPay>` traces its held field and `KCell<int>` must not, and the
+// two are the same generic class. The chain is there because a generic link
+// can sit anywhere — above a plain one, below one, between two — and each
+// arrangement lays the fields out through a different composition.
+class KPay {
+    tag: string
+    fn init(tag: string) {
+        self.tag = tag
+        io.println("arc+{tag}")
+    }
+    fn deinit() { io.println("arc-{self.tag}") }
+}
+class KRoot { fn init() {} }
+class KCell<T> extends KRoot {
+    n: int
+    held: T
+    other: Option<KCell<T>> = none
+    fn init(n: int, held: T) {
+        self.n = n
+        self.held = held
+        super.init()
+    }
+}
+class L0 { fn init() {} fn who() -> string { return "L0" } }
+class L1<T> extends L0 {
+    a: T
+    fn init(a: T) { self.a = a; super.init() }
+}
+class L2 extends L1<int> {
+    b: string
+    fn init() { self.b = "L2"; super.init(2) }
+}
+class L3<T> extends L2 {
+    c: T
+    fn init(c: T) { self.c = c; super.init() }
+    override fn who() -> string { return "L3" }
+}
+class L4<T> extends L3<T> {
+    d: int
+    fn init(c: T) { self.d = 4; super.init(c) }
+}
+class L5 extends L4<string> {
+    fn init() { super.init("five") }
+}
+fn who_of(x: L0) -> string { return x.who() }
+
 fn main() {
     // A — every field shape, twice over
     let a1: AEmpty<int> = new AEmpty<int>("a_empty_int")
@@ -355,5 +404,24 @@ fn main() {
     // J — the override on a generic subclass with no plain class below it
     io.println("J {j_heft(new JBase<int>(1))} {j_heft(new JSub<int>(2))}")
     io.println("J {j_heft(new JMore<int>(3))} {j_heft_str(new JSub<string>("t"))}")
+
+    // K — a cycle through a traced T, an int T that must not be traced, and
+    // a five-link chain with a generic class nested inside another
+    // both payloads carry the same tag: the order two objects of one killed
+    // cycle are released in is not specified, and pinning it would assert
+    // something neither backend promises. What is asserted is that each is
+    // released exactly once, which the marker balance carries.
+    let k1: KCell<KPay> = new KCell<KPay>(1, new KPay("k_cyc"))
+    let k2: KCell<KPay> = new KCell<KPay>(2, new KPay("k_cyc"))
+    k1.other = some(k2)
+    k2.other = some(k1)
+    let k3: KCell<int> = new KCell<int>(3, 7)
+    io.println("K {k1.n} {k2.n} {k3.n} {k3.held} {k1.held.tag} {k2.held.tag}")
+    let l1: L4<int> = new L4<int>(9)
+    let l2: L4<string> = new L4<string>("nine")
+    let l3: L5 = new L5()
+    let nested: L1<L4<int>> = new L1<L4<int>>(new L4<int>(11))
+    io.println("K {l1.a} {l1.b} {l1.c} {l1.d} {l2.c} {l3.c} {l3.d}")
+    io.println("K {who_of(l1)} {who_of(l3)} {who_of(new L2())} {nested.a.c} {nested.a.d}")
     io.println("made")
 }
