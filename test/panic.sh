@@ -123,15 +123,52 @@ fn descend(n: int) -> int {
 
 fn main() {
     io.println("depth 10000 = {descend(10000)}")
+    // The stated floor. See the stack note below: this is what turns the
+    // pinned limit from a number that hides a regression into one that
+    // reports it.
+    io.println("depth 20000 = {descend(20000)}")
     // Deep enough that no stack limit any host offers survives it: the
     // frame is a few words, so this asks for gigabytes.
     io.println("depth 50000000 = {descend(50000000)}")
 }
 BEANS
         "$compiler" build "$tmp/overflow.b" -o "$tmp/overflow" >/dev/null
+
+        # This lane proves ONE thing: a fault flushes block-buffered stdout,
+        # names itself, and re-raises so the exit status is still the signal's.
+        # The recursions before the overflow are only the precondition -- they
+        # put something in the buffer for the fault to flush. Left to whatever
+        # RLIMIT_STACK the launching shell happened to carry, that precondition
+        # quietly became a second assertion nobody wrote down: that the tree
+        # interpreter can recurse 10,000 frames in that stack. Measured on
+        # macOS at the 8176 KiB default it reaches 9,000 and not 10,000, so
+        # this lane's verdict changed with the shell that started it -- red on
+        # a developer's Mac, green on Linux CI, same sources.
+        #
+        # So pin it. 32 MiB, chosen against measurement rather than taste: at
+        # that limit the interpreter reaches between 37,000 and 38,000 frames
+        # (~0.88 KiB each) and the native binary passes 160,000, so the
+        # interpreter is the binding lane and the 10,000-frame precondition has
+        # 3.7x of room. The program above also asserts 20,000, which is the
+        # floor this pin owes the reader: pinning a generous stack would
+        # otherwise keep the gate green while per-frame use doubled and say
+        # nothing. 20,000 sits 1.85x under the measured ceiling, so it cannot
+        # flake, and any regression of 1.85x or worse in stack per frame drops
+        # the ceiling below it and fails here.
+        fault_stack_kb=32768
+        if ! ( ulimit -s "$fault_stack_kb" ) 2>/dev/null; then
+            echo "fault report SKIPPED: cannot raise the stack limit to" \
+                 "${fault_stack_kb} KiB (soft $(ulimit -s), hard" \
+                 "$(ulimit -H -s)). Not run rather than run at this host's" \
+                 "limit, because the recursion would then fault before the" \
+                 "buffered write and the lane would be reporting on the wrong" \
+                 "crash. What is unchecked here: that a fault flushes stdout," \
+                 "names itself and re-raises." >&2
+        else
         for lane in interpreter native; do
             set +e
             (
+                ulimit -s "$fault_stack_kb"
                 ulimit -c 0
                 if test "$lane" = interpreter; then
                     "$compiler" run "$tmp/overflow.b"
@@ -167,18 +204,31 @@ BEANS
             fi
             if ! grep -q '^depth 10000 = 10000$' "$tmp/fault.$lane.out"; then
                 echo "$lane: the 10,000-frame recursion that must SUCCEED did" \
-                     "not, so the fault below came from the wrong call" >&2
+                     "not, so the fault below came from the wrong call and" \
+                     "this lane is reporting on the wrong crash" >&2
                 echo "--- stdout (expected 'depth 10000 = 10000' first) ---" >&2
                 cat "$tmp/fault.$lane.out" >&2
                 echo "--- stderr ---" >&2
                 sed -n '1,10p' "$tmp/fault.$lane.err" >&2
-                echo "--- stack limit: $(ulimit -s) ---" >&2
-                echo "10,000 frames is a fixed depth against whatever stack" >&2
-                echo "the host gives; if that is the whole story here, this" >&2
-                echo "gate is asserting a margin nobody has written down." >&2
+                echo "--- stack pinned to ${fault_stack_kb} KiB ---" >&2
+                exit 1
+            fi
+            # The floor the pin owes the reader. A pinned stack that nobody
+            # measures against goes on passing while per-frame use grows.
+            if ! grep -q '^depth 20000 = 20000$' "$tmp/fault.$lane.out"; then
+                echo "$lane: reached 10,000 frames but not 20,000 at a pinned" \
+                     "${fault_stack_kb} KiB stack. That is a stack-per-frame" \
+                     "regression, not a fault-reporting bug: when this floor" \
+                     "was set the interpreter reached 37,000-38,000 frames" \
+                     "here (~0.88 KiB each) and the native binary passed" \
+                     "160,000, so 20,000 had 1.85x of room." >&2
+                echo "--- stdout ---" >&2
+                cat "$tmp/fault.$lane.out" >&2
                 exit 1
             fi
         done
-        echo "fault report ok"
+        echo "fault report ok (stack pinned to ${fault_stack_kb} KiB;" \
+             "10,000-frame precondition and 20,000-frame floor both met)"
+        fi
         ;;
 esac
