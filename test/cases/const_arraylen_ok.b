@@ -88,7 +88,7 @@ fn main() {
     let smallest: [int; SMALLEST] = [77]
     io.println("smallest {smallest[SMALLEST - 1]} {size_of([int; SMALLEST])}")
 
-    let early: Early = Early { cells: [1, 2, 3, 4, 5, 66] }
+    let early: Early = Early { cells: [1, 2, 3, 4, 5, 6, 77] }
     io.println("declared last {early.cells[DECLARED_LAST - 1]}")
 
     // A length too long to write out: layout is the proof, and it is the
@@ -99,4 +99,4 @@ fn main() {
 
 // Declared last on purpose: `Early` at the top of the file is sized by it, and
 // nothing about a length may depend on where its constant sits.
-const DECLARED_LAST: int = 6
+const DECLARED_LAST: int = 7

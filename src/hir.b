@@ -2595,7 +2595,14 @@ class SignatureChecker {
                 if answer.length < 0 { return "" }
                 return "{answer.length}"
             }
-            none => { return "" }
+            none => {
+                // Unreachable: the resolver only ever hands back a symbol
+                // it registered as a constant, and every registered
+                // constant was lowered into const_index above. Answering
+                // no length rather than guessing one keeps that true even
+                // if the two ever drift.
+                return ""
+            }
         }
     }
 
