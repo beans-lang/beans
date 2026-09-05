@@ -100,7 +100,12 @@ for path in sorted(glob.glob("test/*.sh")):
             fail.append("%s:%d greps for AddressSanitizer without "
                         "LeakSanitizer: %s" % (path, ln, text.strip()[:110]))
         for tok in TOKEN.findall(text):
-            # the pattern itself is a quoted token; the files are the rest
+            # A capture file in these scripts is always a path under a temp
+            # directory ("$tmp/asan.err", "$out/${name}.stderr"). Requiring the
+            # slash keeps a grep whose *pattern* is in a double-quoted variable
+            # from being mistaken for the file it reads.
+            if "/" not in tok:
+                continue
             if any(s in tok for s in SANITIZERS) or "WARNING" in tok:
                 continue
             watched.setdefault(tok, []).append(ln)
@@ -112,8 +117,8 @@ for path in sorted(glob.glob("test/*.sh")):
             fail.append("%s links -fsanitize=address and never checks a run's "
                         "output for a sanitizer report; if that is deliberate, "
                         "say so in a `# sanitizer-gate:` line" % path)
-    # Single-quoted patterns leave the file as the only double-quoted token, so
     # `watched` is the set of capture files a sanitizer decision depends on.
+    traced = 0
     for tok, at in sorted(watched.items()):
         stats["files"] += 1
         writes = [(ln, text) for ln, text in lines
@@ -125,6 +130,7 @@ for path in sorted(glob.glob("test/*.sh")):
                         (path, tok, "" if len(at) == 1 else "s",
                          ",".join(str(a) for a in at), tok))
             continue
+        traced += 1
         # Is the failure of the writing command survivable, so the grep runs?
         errexit = False
         guarded_at = {}
@@ -145,6 +151,13 @@ for path in sorted(glob.glob("test/*.sh")):
                 fail.append("%s:%d writes %s and dies there under `set -e`, so "
                             "the grep that reads it never runs: %s" %
                             (path, ln, tok, stripped[:110]))
+    # A script whose sanitizer greps read nothing this check can follow gets no
+    # reachability check at all, which is the silent-skip shape this gate is
+    # about. Say so rather than counting it as covered.
+    if links_asan and sanitizer_greps and traced == 0:
+        fail.append("%s greps for a sanitizer report but no capture file it "
+                    "reads can be traced back to a `2>` write, so nothing here "
+                    "checks that the grep is reachable" % path)
 
 print("sanitizer gates: %d suite scripts, %d link -fsanitize=address, "
       "%d sanitizer greps over %d capture files, %d writes traced"
