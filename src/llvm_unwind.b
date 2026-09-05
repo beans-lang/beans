@@ -301,6 +301,14 @@ partial class LlvmTextEmitter {
     // and that object survives this release — disarming it there would
     // silence a deinit the surviving owner is entitled to. A count of one
     // means this frame holds the only reference and the object dies here.
+    //
+    // The rc word is read and written plainly, not atomically, which is
+    // what beans_do_deinit does at the same bit for the same reason. It is
+    // sound because an object under construction cannot be reachable from
+    // another thread: reaching one needs Send, Send classes are `unique`
+    // and therefore move-only, and `self` inside an initializer is a
+    // borrowed binding the checker refuses to move or to capture by move.
+    // So no other thread can hold this object while this runs.
     fn unwind_pad_unbuilt_disarm(id: int,
                                  held: string) -> string {
         match self.unwind_construct_flag.get(id) {
@@ -331,10 +339,14 @@ partial class LlvmTextEmitter {
     // with the object allocated and nothing assigned yet; `close` disarms it
     // where the initializer returned. A `new` with no initializer at all is
     // built the moment its defaults are in, and closes right there.
+    //
+    // `deinit` is the same condition the FIN bit is set under: a class chain
+    // with no deinit never has the bit, so there would be nothing for the
+    // pad to take off it and the flag would only cost the IR.
     fn unwind_construct_open(function: MirFunction,
                              instruction: MirInstruction,
-                             heap: bool) -> string {
-        if !heap { return "" }
+                             heap: bool, deinit: bool) -> string {
+        if !heap || !deinit { return "" }
         if !self.unwind_temp_wanted(
                function, instruction.result) {
             return ""

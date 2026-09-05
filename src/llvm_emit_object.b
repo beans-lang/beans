@@ -2249,7 +2249,9 @@ partial class LlvmTextEmitter {
                     output =
                         "  {result} = call ptr @beans_alloc(i64 {layout.size}, i64 {meta})\n  store ptr @.next.class{layout.id}, ptr {result}\n"
                 }
-                if layout.deinit_owner != "" {
+                let has_deinit: bool =
+                    layout.deinit_owner != ""
+                if has_deinit {
                     // FIN is rc-word bit 61: the release path only
                     // dispatches deinit when it sees the flag, so a
                     // construction path that forgets it kills the
@@ -2266,7 +2268,7 @@ partial class LlvmTextEmitter {
                 // initializer returns must not run a deinit over them
                 // (#120).
                 output =
-                    "{output}{self.unwind_temp_define_new(function, instruction, result, scalar_local < 0)}{self.unwind_construct_open(function, instruction, scalar_local < 0)}"
+                    "{output}{self.unwind_temp_define_new(function, instruction, result, scalar_local < 0)}{self.unwind_construct_open(function, instruction, scalar_local < 0, has_deinit)}"
                 output =
                     "{output}{self.emit_class_defaults(instruction, layout, result)}"
                 if instruction.resolved !=
