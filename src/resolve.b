@@ -1,5 +1,22 @@
 package main
 
+// An array type whose length names a constant, and the name node that
+// says which one. A length is substituted once every constant is folded,
+// which is later than this — and walking the whole AST again to find these
+// would touch every node in the program to reach a handful. The resolver is
+// already standing on each of them, so it writes them down.
+class ArrayLengthSite {
+    array: AstNode
+    length: AstNode
+    file: string
+
+    fn init(array: AstNode, length: AstNode, file: string) {
+        self.array = array
+        self.length = length
+        self.file = file
+    }
+}
+
 struct SemanticSymbol {
     name: string
     qualified: string
@@ -16,6 +33,21 @@ fn declaration_name(value: string) -> string {
     let words: List<string> = module_words(value)
     if words.len() == 0 { return "" }
     return words[words.len() - 1]
+}
+
+// What a declaration is, in the words a diagnostic uses about it. The kind
+// stored on a symbol is the parser's word for the declaration; a reader who
+// wrote the name needs to be told which kind of thing they reached, with
+// the article that reads.
+fn declaration_article(kind: string) -> string {
+    if kind == "fn" { return "a function" }
+    if kind == "c_global" { return "an extern C global" }
+    if kind == "class" { return "a class" }
+    if kind == "struct" { return "a struct" }
+    if kind == "union" { return "a union" }
+    if kind == "interface" { return "an interface" }
+    if kind == "enum" { return "an enum" }
+    return "a {kind}"
 }
 
 fn generic_name(value: string) -> string {
@@ -129,6 +161,7 @@ class Resolver {
     loader: ModuleLoader
     symbols: Map<string, SemanticSymbol>
     annotation_symbols: Map<string, SemanticSymbol>
+    array_lengths: List<ArrayLengthSite>
     partial_types: Map<string, PartialType>
     errors: List<Diagnostic>
 
@@ -136,6 +169,7 @@ class Resolver {
         self.loader = loader
         self.symbols = {}
         self.annotation_symbols = {}
+        self.array_lengths = []
         self.partial_types = {}
         self.errors = []
     }
@@ -516,6 +550,82 @@ class Resolver {
         return resolved
     }
 
+    // The constant an array length names. A length is read while types are
+    // laid out, so the only value that can supply one is a module constant:
+    // it is folded before any type is laid out and has no storage, which is
+    // exactly what a local, a field, a parameter and a C global do not have
+    // at that point. The lookups are the ones a constant use makes anywhere
+    // else — this package, an `import {…} from` binding, or a package
+    // alias — so a length reaches the same constant a body would.
+    fn resolve_const_name(name: string, package: LoadedPackage,
+                          file: ParsedModuleFile,
+                          aliases: Map<string, string>,
+                          selected: Map<string, string>,
+                          generics: Map<string, bool>,
+                          node: AstNode) -> string {
+        // A type parameter is in scope here and reads like it should work —
+        // it is the shape someone reaching for a const generic writes. It
+        // stands for a type, and a length is a number, so say that rather
+        // than reporting the name as one nothing declares.
+        if generics.contains_key(name) {
+            self.fail(
+                file.path, node,
+                "'{name}' is a type parameter, not a module constant — an array length must be an integer literal or a module const")
+            return "poison"
+        }
+        var resolved: string = ""
+        if name.contains(".") {
+            let qualifier: string = self.first_part(name)
+            if aliases.contains_key(qualifier) {
+                let import_path: string = aliases[qualifier]
+                if !self.is_loaded_package(import_path) {
+                    self.fail(file.path, node,
+                              "package '{import_path}' does not declare '{name}'")
+                    return "poison"
+                }
+                resolved =
+                    package_symbol(import_path,
+                                   self.after_first_part(name))
+            } else {
+                self.fail(file.path, node,
+                          "unknown array length qualifier '{qualifier}'")
+                return "poison"
+            }
+        } else {
+            resolved = self.package_qualified(package, name)
+            if !self.symbols.contains_key(resolved) {
+                let encoded: string = selected.get(name).or("")
+                if encoded != "" {
+                    let parts: List<string> = encoded.split("\n")
+                    if self.is_loaded_package(parts[0]) {
+                        resolved = package_symbol(parts[0], parts[1])
+                    }
+                }
+            }
+        }
+        if !self.symbols.contains_key(resolved) {
+            self.fail(
+                file.path, node,
+                "no module constant named '{name}' is in scope — an array length is read while types are laid out, before any function runs, so it must be an integer literal or a module const")
+            return "poison"
+        }
+        let symbol: SemanticSymbol = self.symbols[resolved]
+        if symbol.kind != "const" {
+            self.fail(
+                file.path, node,
+                "'{name}' is {declaration_article(symbol.kind)}, not a module constant — an array length must be an integer literal or a module const")
+            return "poison"
+        }
+        if symbol.package_path != package.import_path &&
+           !symbol.is_public {
+            self.fail(
+                file.path, node,
+                "constant '{name}' isn't pub in package '{symbol.package_path}'")
+            return "poison"
+        }
+        return resolved
+    }
+
     fn resolve_annotation_name(
         name: string, package: LoadedPackage,
         file: ParsedModuleFile, aliases: Map<string, string>,
@@ -598,6 +708,22 @@ class Resolver {
                                        aliases, selected, generics,
                                        self_type, position,
                                        generic_bound)
+        }
+        if node.kind == "array_type" {
+            match ast_array_length_name(node) {
+                some(length) => {
+                    self.array_lengths.push(
+                        new ArrayLengthSite(
+                            node, length, file.path))
+                }
+                none => {}
+            }
+        }
+        if node.kind == "array_length" {
+            node.resolved =
+                self.resolve_const_name(node.value, package, file,
+                                        aliases, selected, generics,
+                                        node)
         }
         for annotation: AstNode in node.annotations {
             if (node.kind == "annotation_decl" &&

@@ -1268,7 +1268,7 @@ fn main() {
                         }
                     }
                     let expressions: ExpressionChecker =
-                        new ExpressionChecker(checker)
+                        checker.expression_checker()
                     let expressions_ok: bool = expressions.run()
                     for diagnostic: Diagnostic in expressions.errors {
                         if public_diagnostics {

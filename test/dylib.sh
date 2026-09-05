@@ -232,9 +232,18 @@ BEANS_DYLIB_EXAMPLE="$tmp/libplug.$ext" ./build/beansc build examples/dynamic_li
     --emit ir >/dev/null
 clang -O1 -g -pthread -fsanitize=address -Wno-override-module \
     build/dynamic_library.ll build/beans_rt.c -lm -o "$tmp/asan" 2>"$tmp/asan.build"
-BEANS_DYLIB_EXAMPLE="$tmp/libplug.$ext" BEANS_NO_POOL=1 "$tmp/asan" \
-    >"$tmp/asan.out" 2>"$tmp/asan.err"
-if grep -q 'AddressSanitizer' "$tmp/asan.err"; then
+# A leak is a sanitizer failure like any other: LeakSanitizer rides inside
+# ASan on Linux and reports at exit, which makes the run exit non-zero. Hold
+# the status before reading the report, or this dies under `set -e` with the
+# report still unread in the capture file.
+if ! BEANS_DYLIB_EXAMPLE="$tmp/libplug.$ext" BEANS_NO_POOL=1 "$tmp/asan" \
+        >"$tmp/asan.out" 2>"$tmp/asan.err"; then
+    cat "$tmp/asan.err" >&2
+    echo "dynamic_library exited non-zero under the sanitizers" >&2
+    exit 1
+fi
+if grep -Eq 'AddressSanitizer|UndefinedBehaviorSanitizer|LeakSanitizer' \
+    "$tmp/asan.err"; then
     cat "$tmp/asan.err" >&2
     exit 1
 fi

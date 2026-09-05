@@ -243,6 +243,32 @@ class TreeBrewState {
     }
 }
 
+// Moves a finished row's result out to whoever claimed it. The row keeps
+// no reference afterwards, so the claimed value's only owner is the
+// caller and it dies with the binding that took it -- the tree mirror of
+// beans_brew_value, which reads h->value and zeroes the slot. Leaving the
+// row's copy in place kept a claimed value alive until the handle or the
+// group died, which is a later moment than the arm that claimed it (#124).
+// A row that finished with no value (a unit result) answers unit.
+fn tree_brew_take(work: TreeBrewState) -> TreeValue {
+    var claimed: TreeValue = TreeValue.unit()
+    match work.result {
+        some(delivered) => {
+            claimed = tree_value_copy(delivered)
+        }
+        none => {}
+    }
+    work.result = none
+    return claimed
+}
+
+// Releases a row's unclaimed result at the point the caller chose, rather
+// than leaving it for the row's own death -- what brew_drop_result does
+// for the synthesized scope join.
+fn tree_brew_drop(work: TreeBrewState) {
+    work.result = none
+}
+
 // One fleet's interpreter-side record (spec/CONCURRENCY.md, F3). The
 // children reuse TreeBrewState rows; delivery order is their done_stamp
 // under this clock, and a joined row counts as delivered. A plain aliased

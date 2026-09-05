@@ -126,7 +126,7 @@ fn dap_build(entry: string) -> DebugBuild {
         return result
     }
     let expressions: ExpressionChecker =
-        new ExpressionChecker(signatures)
+        signatures.expression_checker()
     if !expressions.run() {
         result.message =
             dap_first_error(expressions.errors, entry)

@@ -249,9 +249,18 @@ if [[ "${BEANS_SANITIZE_CALLBACKS:-0}" == "1" ]]; then
         -fno-sanitize-recover=undefined -Wno-override-module \
         build/main.ll build/main_ffi.c build/beans_rt.c \
         "$tmp/stored_fixture.c" -lm -o "$tmp/stored_asan"
-    BEANS_NO_POOL=1 "$tmp/stored_asan" >"$tmp/asan.out" \
-        2>"$tmp/asan.err"
-    if grep -Eq 'AddressSanitizer|runtime error:' "$tmp/asan.err"; then
+    # A leak is a sanitizer failure like any other: LeakSanitizer rides inside
+    # ASan on Linux and reports at exit, which makes the run exit non-zero. Hold
+    # the status before reading the report, or this dies under `set -e` with the
+    # report still unread in the capture file.
+    if ! BEANS_NO_POOL=1 "$tmp/stored_asan" >"$tmp/asan.out" \
+            2>"$tmp/asan.err"; then
+        sed -n '1,160p' "$tmp/asan.err" >&2
+        echo "stored_callbacks exited non-zero under the sanitizers" >&2
+        exit 1
+    fi
+    if grep -Eq 'AddressSanitizer|UndefinedBehaviorSanitizer|LeakSanitizer|runtime error:' \
+        "$tmp/asan.err"; then
         sed -n '1,160p' "$tmp/asan.err" >&2
         exit 1
     fi

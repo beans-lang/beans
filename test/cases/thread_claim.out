@@ -1,0 +1,24 @@
+-- one --
+joined o.h
+end
+drop o.h
+drop o.mid
+-- two --
+joined t.a t.b
+end
+drop t.b
+drop t.a
+drop t.mid
+-- three --
+joined h.a h.b h.c
+end
+drop h.c
+drop h.b
+drop h.a
+drop h.mid
+-- scoped --
+joined s.h
+drop s.h
+after block
+end
+drop s.mid

@@ -38,6 +38,22 @@ This file records user-facing changes in each Beans release.
   refused before for no reason — the target carries the runtime identity, and
   it is a plain class. (#123)
 
+### Changed
+
+- **`+` on a string is refused by the checker.** The language has never had
+  one — `spec/SYNTAX.md`, "Strings" — and the native backend never emitted
+  one, but the checker accepted it and the tree interpreter joined the two
+  strings. So `a + b` passed `beansc check`, printed the right answer under
+  `beansc run`, and failed only at `beansc build`, with a message about the
+  LLVM emitter rather than about the program — which is the fast iteration
+  loop people are told to use, so the rule arrived at release time. All three
+  entry points now refuse it in the program's own terms: *"'+' is not defined
+  for string — write the pieces as one interpolated string, "{a}{b}", or push
+  them onto a fmt.StringBuilder and call to_string() once."* Code that joined
+  strings with `+` and never ran a native build will stop passing `check`, and
+  must use interpolation, `std.fmt`, `list.join(sep)` or `fmt.StringBuilder`.
+  (#133)
+
 ### Fixed
 
 - **A class chain deeper than 32 links builds.** The emitter capped the walk at
@@ -48,7 +64,6 @@ This file records user-facing changes in each Beans release.
   bound is the program's own class count: a class appears at most once in an
   acyclic chain, and an inheritance cycle is already refused at the
   declaration. (#123)
-
 
 ## [0.1.38] - 2026-09-05
 

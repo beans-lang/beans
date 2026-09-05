@@ -59,6 +59,15 @@ grep -q "storing owned references into an array inside a class object is not sup
 # collector an untracked edge, the same open question a class-held array has.
 grep -q "storing owned references into an array inside a static is not supported yet" "$tmp/places.bad"
 
+echo "checking fixed array literal length forms"
+./build/beansc run test/cases/fixed_array_literal_lengths.b \
+    >"$tmp/lengths.interp"
+./build/beansc build test/cases/fixed_array_literal_lengths.b \
+    -o "$tmp/lengths.native" >"$tmp/lengths.build" 2>&1
+"$tmp/lengths.native" >"$tmp/lengths.native.out"
+diff -u test/cases/fixed_array_literal_lengths.out "$tmp/lengths.interp"
+diff -u test/cases/fixed_array_literal_lengths.out "$tmp/lengths.native.out"
+
 echo "checking fixed array compile failures"
 if ./build/beansc check test/cases/fixed_array_bad.b >"$tmp/bad" 2>&1; then
     echo "fixed_array_bad.b unexpectedly passed" >&2
@@ -68,5 +77,7 @@ grep -q 'fixed array literal needs 3 element(s), got 2' "$tmp/bad"
 grep -q 'fixed array length must be between 1 and 4096' "$tmp/bad"
 grep -q 'fixed arrays need inline scalar, RawPtr, fixed-array, or struct elements' "$tmp/bad"
 grep -q "'frozen' is a let — its elements can't be reassigned" "$tmp/bad"
+# a length past i64 used to panic the compiler rather than being refused
+test "$(grep -c 'fixed array length must be between 1 and 4096' "$tmp/bad")" -eq 2
 
 echo "ok inline fixed arrays, copy semantics, iteration, bounds, and native ABI"

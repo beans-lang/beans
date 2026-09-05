@@ -985,17 +985,30 @@ match n {
 - `size_of`, `align_of` and `offset_of` are **not** constant expressions: they
   are answered after layout, which runs later than a constant is folded, so
   they cannot appear in a `const` initializer.
-- Two places still take a literal and not a constant, for one reason: both
-  are read before any constant is folded.
-  - A `const` cannot **size a fixed array** — a length is read while types
-    are laid out (`[int; 128]`, not `[int; LIMIT]`).
-  - A `const` cannot be a **parameter default** — a default is read while
-    signatures are checked (`fn f(n: int = 128)`, not `= LIMIT`).
+- A constant may **size a fixed array**, in every position a type is written
+  — a local, a field, a parameter, a result, and nested inside another fixed
+  array. Constants are folded at the end of signature checking, before any
+  type is laid out, so the length is the folded value:
 
-  Both are refused where they are written, with a message that names the
-  name and the ordering. Lifting either means folding constant initializers
-  in an earlier pass, which is one change in one phase covering both; it is
-  the part of the original request that is not yet delivered.
+```
+const LIMIT: int = 128
+
+let frame: [int; LIMIT] = […]
+struct Row { cells: [int; LIMIT] }
+fn widen(row: [int; LIMIT]) -> [[int; LIMIT]; 2] { … }
+```
+
+  The constant is reached the way one is reached anywhere: bare in its own
+  package, qualified through a package alias (`[int; limits.SLOTS]`), or
+  selected with `import {SLOTS} from pkg`. A name that is not a constant is
+  refused for what it is, and a constant that cannot supply a length — not an
+  integer, or outside `1..4096` — is refused at the name and says which
+  constant it is and what it holds.
+
+- A `const` **cannot be a parameter default** — a default is read while the
+  signature holding it is lowered, and the fold runs at the end of that stage
+  (`fn f(n: int = 128)`, not `= LIMIT`). It is refused where it is written,
+  with a message that names the name and says why an array length differs.
 - `const` is contextual. It is a declaration keyword only in `const <NAME>` at
   the start of a module-level declaration, and stays an ordinary identifier
   everywhere else.
@@ -1719,11 +1732,20 @@ let c: Conn = new Conn("db1")
   `return`, no interpolating `self` whole — each could read a field that is not there yet. A
   field with a default counts as assigned from the start, and a `weak` field always does (its
   slot starts `none`); after the last field, anything goes.
-- The proof is about the paths the checker can see. A `panic` mid-`init` is not one of them:
-  it unwinds the object under construction, and unwinding runs `deinit`, which reads fields
-  the constructor had not reached. Releasing a still-constructing object must therefore skip
-  its `deinit` body — until it does (#120), a panic before the last field is assigned is
-  undefined at this one boundary, the same on both backends.
+- The proof is about the paths the checker can see, and a `panic` mid-`init` is not one of
+  them — so the guarantee is held at that boundary by a release rule instead. **An object
+  whose `init` has not returned is released without running its `deinit` body.** The fields it
+  did assign are still released, in the ordinary order; only the class's own `deinit` chain is
+  skipped, so nothing hands user code a `self` whose fields the initializer never reached.
+  This covers every way construction can stop partway: a `panic` in the `init` body, in a
+  field's default expression (evaluated before any body runs), or in a base `init` reached
+  through `super.init`, and it covers a `deinit` the class inherits as much as one it declares.
+  It is about that one object: everything it had already built and stored dies normally, and
+  a reference the initializer handed out — possible only once every field is assigned — keeps
+  the object alive, so its eventual death is an ordinary one that does run `deinit`. Both
+  backends pick the same moments (#120). Note the language gives construction no other way to
+  fail partway: `init` returns nothing, so `?` cannot leave it, and construction that can fail
+  is a named static returning `Result<T>`.
 - A class whose fields all have defaults receives an implicit zero-argument
   initializer. A class with any required field must declare `init` — the implicit
   initializer assigns nothing, so a required field left to it would never be assigned. Every
@@ -2418,6 +2440,11 @@ hits.add(1)
   error type are, so a worker can use `?` and return a typed error.
 - `Thread<T>.detach()` discards the result without waiting. The running thread
   keeps its work alive and the OS thread resource is released when it finishes.
+- `Thread<T>.join()` is called **once**, and the value it answers **moves** out
+  of the handle. The handle keeps no reference to what it handed over, so the
+  value dies with the binding that took it, not with the handle. Joining a
+  handle a second time — or joining one that was detached — is a panic
+  ("thread already joined"), not a second copy of the answer.
 
 ### brew — child fibers (spec/CONCURRENCY.md)
 
@@ -3985,7 +4012,10 @@ helpers, globals, and functions for a library package's consumers.
     Shared, Mutex, Channel, and thread results. SIMD does not implement `Hash`, so
     it cannot be a Map key.
 - `[T; N]` is a fixed-size inline array. It accepts inline scalar, `RawPtr`,
-  nested fixed-array, and struct elements with `1 <= N <= 4096`. A list-shaped
+  nested fixed-array, and struct elements with `1 <= N <= 4096`. `N` is an
+  integer literal — decimal, hex, binary, digit separators and all — or a
+  module constant that folds to an integer in that range ("Module constants").
+  A list-shaped
   literal gets fixed-array meaning from its declared spot:
   `var lanes: [f32; 4] = [1, 2, 3, 4]`. Arrays copy by value, pass and return
   inline, support checked integer indexing, element assignment on `var`

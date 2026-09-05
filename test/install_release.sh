@@ -91,6 +91,97 @@ BEANS_INSTALL_BASE_URL="$dist" sh tools/install-release.sh \
 grep -q 'already installed' "$tmp/install2.out"
 echo "  installer is idempotent"
 
+# ------------------------------------------------- the release cannot move
+# Every case above hands the installer a BEANS_INSTALL_BASE_URL, which leaves
+# the branch a real user takes -- the installer building its own base --
+# unexercised. With no --version that base is .../releases/latest/download, and
+# `latest` moves: the installer used to keep it for the asset download too, so a
+# release published between the manifest fetch and the asset fetch made the
+# download a 404 on a URL that still looked right. That killed a CI job on main,
+# and this is the script behind the documented `curl ... | sh` (issue #118).
+#
+# curl is stood in for here, so the shipped default-base path runs with no
+# network: URLs are served out of a tree keyed by their path. The tree carries
+# the manifest under latest/download and the package only under the release's
+# own directory -- which is exactly `latest` having moved on -- so an installer
+# that still asked latest/download for the asset cannot pass this.
+stub_root="$tmp/gh"
+stub_log="$tmp/urls.txt"
+mkdir -p "$stub_root/beans-lang/beans/releases/latest/download"
+mkdir -p "$stub_root/beans-lang/beans/releases/download/v$version"
+cp "$dist/beans-release-manifest.tsv" \
+    "$stub_root/beans-lang/beans/releases/latest/download/"
+cp "$dist/beans-release-manifest.tsv" \
+    "$stub_root/beans-lang/beans/releases/download/v$version/"
+cp "$dist/$asset" "$stub_root/beans-lang/beans/releases/download/v$version/"
+# The whole point of the case: the moving URL does not carry the asset.
+test ! -e "$stub_root/beans-lang/beans/releases/latest/download/$asset"
+
+mkdir -p "$tmp/stub"
+cat >"$tmp/stub/curl" <<'CURL'
+#!/bin/sh
+# Serve https://github.com/<path> out of $STUB_ROOT/<path> and record every URL
+# asked for. Anything the tree does not carry gets curl's "HTTP page not
+# retrieved" status, which is what a 404 looks like to the installer.
+out=
+url=
+while [ $# -gt 0 ]; do
+    case $1 in
+        -o|--output) out=$2; shift 2 ;;
+        --proto|--connect-timeout|--speed-limit|--speed-time) shift 2 ;;
+        -*) shift ;;
+        *) url=$1; shift ;;
+    esac
+done
+printf '%s\n' "$url" >>"$STUB_LOG"
+case $url in
+    https://github.com/*) src="$STUB_ROOT/${url#https://github.com/}" ;;
+    *) exit 22 ;;
+esac
+[ -f "$src" ] || exit 22
+cp "$src" "$out"
+CURL
+chmod +x "$tmp/stub/curl"
+
+pinned_case() { # <label> <prefix> <installer args...>
+    local label=$1 where=$2
+    shift 2
+    : >"$stub_log"
+    if ! env -u BEANS_INSTALL_BASE_URL -u BEANS_INSTALL_MANIFEST \
+            PATH="$tmp/stub:$PATH" STUB_ROOT="$stub_root" STUB_LOG="$stub_log" \
+            BEANS_INSTALL_ATTEMPTS=1 \
+            sh tools/install-release.sh --prefix "$where" --no-modify-path "$@" \
+            >"$tmp/pinned.out" 2>&1; then
+        echo "$label: the installer failed on its own default base" >&2
+        cat "$tmp/pinned.out" >&2
+        echo "URLs it asked for:" >&2
+        cat "$stub_log" >&2
+        exit 1
+    fi
+    if ! grep -q "^https://github.com/beans-lang/beans/releases/download/v$version/$asset\$" \
+            "$stub_log"; then
+        echo "$label: the asset did not come from the release the manifest names" >&2
+        cat "$stub_log" >&2
+        exit 1
+    fi
+    if grep -q "latest/download/$asset\$" "$stub_log"; then
+        echo "$label: the installer asked the moving 'latest' URL for the asset" >&2
+        cat "$stub_log" >&2
+        exit 1
+    fi
+    test "$("$where/bin/beansc" --version)" = "$version_text"
+}
+
+pinned_case "latest" "$tmp/pinned-latest"
+grep -q "^https://github.com/beans-lang/beans/releases/latest/download/beans-release-manifest.tsv\$" \
+    "$tmp/urls.txt" || {
+    echo "the manifest did not come from latest/download" >&2
+    cat "$tmp/urls.txt" >&2
+    exit 1
+}
+pinned_case "pinned" "$tmp/pinned-version" --version "$version"
+echo "  the asset comes from the release the manifest names, never from 'latest'"
+
 # The public compiler upgrades through the same checked installer. Make the
 # installed real binary report an older version; the launcher handles upgrade
 # before it starts that binary, so the checked package must replace it.

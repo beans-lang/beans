@@ -7,6 +7,17 @@ tmp=$(mktemp -d "${TMPDIR:-/tmp}/beans-self-host.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 trap 'failure=$?; case $- in *e*) echo "self_host.sh:$LINENO: command failed ($failure): $BASH_COMMAND" >&2;; esac' ERR
 
+# sanitizer-gate: the sanitized programs below capture stdout only and leave
+# stderr on this script's stderr, so an AddressSanitizer, UndefinedBehaviorSanitizer
+# or LeakSanitizer report is printed where it happens rather than into a file
+# nobody reads. `set -e` then stops the run and the ERR trap above names the
+# line, the exit status and the command. There is deliberately no per-run grep:
+# a sanitizer report already reaches the log, and a report that does not change
+# the exit status cannot occur here (ASan aborts, UBSan is built with
+# -fno-sanitize-recover, LeakSanitizer exits 23). The two places that do
+# capture the run's stderr -- the examples loop and the threads TSan lane --
+# compare the status themselves and print what was captured on a mismatch.
+
 "$reference_compiler" check src/main.b >/dev/null
 make build/beansc-next >/dev/null
 next_compiler="$PWD/build/beansc-next"

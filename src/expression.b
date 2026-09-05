@@ -1403,11 +1403,70 @@ class ExpressionChecker {
         return some(false)
     }
 
+    // The constant an array length inside a string's `{}` piece names. The
+    // piece is parsed here, long after the resolver ran and after every
+    // length in the file itself has been substituted, so the name is still
+    // a source spelling and nothing has looked it up. These are the lookups
+    // a constant use makes anywhere else, in the same order.
+    fn interpolated_const(name: string) -> Option<HirConst> {
+        if name.contains(".") {
+            let parts: List<string> = name.split(".")
+            if parts.len() != 2 { return none }
+            let target: string = self.imported_path(parts[0])
+            if target == "" { return none }
+            return self.consts.get(
+                package_symbol(target, parts[1]))
+        }
+        match self.current_const(name) {
+            some(constant) => { return some(constant) }
+            none => {}
+        }
+        let encoded: string = self.named_import_target(name)
+        if encoded != "" {
+            let parts: List<string> = encoded.split("\n")
+            return self.consts.get(
+                package_symbol(parts[0], parts[1]))
+        }
+        return none
+    }
+
+    // Substitute an array length written inside an interpolated piece. Every
+    // constant is folded by the time a body is checked, so the answer is the
+    // one the signature stage would have written, refused in the same words.
+    fn qualify_interpolated_array_length(node: AstNode) {
+        match ast_array_length_name(node) {
+            some(length) => {
+                if node.value != "" { return }
+                match self.interpolated_const(length.value) {
+                    some(constant) => {
+                        length.resolved = constant.qualified
+                        let answer: ConstArrayLength =
+                            const_array_length(constant)
+                        if answer.reason != "" {
+                            self.fail(length, answer.reason)
+                        }
+                        if answer.length < 0 { return }
+                        node.value = "{answer.length}"
+                    }
+                    none => {
+                        self.fail(
+                            length,
+                            "no module constant named '{length.value}' is in scope — an array length is read while types are laid out, before any function runs, so it must be an integer literal or a module const")
+                    }
+                }
+            }
+            none => {}
+        }
+    }
+
     // A re-parsed interpolation segment never went through the resolver, so
     // its type names are still source spellings. Bind them the way the
     // resolver would have: an import binding names its package, and a bare
     // name means this file's own package.
     fn qualify_unresolved_types(node: AstNode) {
+        if node.kind == "array_type" {
+            self.qualify_interpolated_array_length(node)
+        }
         if (node.kind == "type" || node.kind == "array_type" ||
             node.kind == "fn_type") && node.resolved == "" {
             let name: string = node.value
@@ -6934,20 +6993,23 @@ class ExpressionChecker {
             self.make_node(node, "unary", node.value, operand.type)
         result.children.push(operand)
         if node.value == "-" {
-            if !hir_is_numeric(operand.type) {
+            if !hir_is_numeric(operand.type) &&
+               !hir_already_refused(operand.type) {
                 self.fail(
                     node,
                     "unary '-' needs a number, got {render_hir_type(operand.type)}")
             }
         } else if node.value == "!" {
-            if operand.type.name != "bool" {
+            if operand.type.name != "bool" &&
+               !hir_already_refused(operand.type) {
                 self.fail(
                     node,
                     "unary '!' needs bool, got {render_hir_type(operand.type)}")
             }
             result.type = new HirType("bool")
         } else if node.value == "~" {
-            if !hir_is_integer(operand.type) {
+            if !hir_is_integer(operand.type) &&
+               !hir_already_refused(operand.type) {
                 self.fail(
                     node,
                     "unary '~' needs an integer, got {render_hir_type(operand.type)}")
@@ -7044,10 +7106,24 @@ class ExpressionChecker {
                     node,
                     "'{operation}' needs matching SIMD vectors")
             }
-        } else if operation == "+" && left.type.name == "string" {
-            if right.type.name != "string" {
-                self.fail(node, "string '+' needs another string")
-            }
+        } else if operation == "+" &&
+                  (canonical_hir_name(left.type.name) ==
+                       "string" ||
+                   canonical_hir_name(right.type.name) ==
+                       "string") {
+            // A string has no `+` (spec/SYNTAX.md, "Strings"). The checker
+            // took it anyway and the tree interpreter joined the two, so a
+            // program that passed `check` and printed the right answer under
+            // `beansc run` met the rule only at release build time — and met
+            // it as a message about the LLVM emitter rather than about the
+            // program. Refusing here is the language's own answer, the shape
+            // `+=` on a string has always had. Either side being a string
+            // reaches this: `n + text` is the same mistake written the other
+            // way round, and the numeric branch below would answer it with
+            // "needs matching numbers", which names the wrong rule.
+            self.fail(
+                node,
+                "'+' is not defined for string — write the pieces as one interpolated string, \"\{a\}\{b\}\", or push them onto a fmt.StringBuilder and call to_string() once")
         } else if operation == "+" || operation == "-" ||
                   operation == "*" || operation == "/" ||
                   operation == "%" {
@@ -8900,8 +8976,12 @@ class ExpressionChecker {
                 generic_layout = true
             }
         }
-        if generic_layout &&
-           node.value != "offset_of" {
+        if hir_already_refused(queried) {
+            // The type was already refused where it was written — an
+            // unknown name, or a length no constant could supply. A layout
+            // it never had is not a second thing to say about it.
+        } else if generic_layout &&
+                  node.value != "offset_of" {
             self.fail(
                 node,
                 "{node.value}: type parameter {queried.name} has no layout at this point")
@@ -10514,9 +10594,11 @@ class ExpressionChecker {
                     node, result.type, expected)
                 return result
             }
-            self.fail(
-                node,
-                "{render_hir_type(callable.type)} is not callable")
+            if !hir_already_refused(callable.type) {
+                self.fail(
+                    node,
+                    "{render_hir_type(callable.type)} is not callable")
+            }
             return self.make_node(
                 node, "error", "call",
                 poison_hir_type())
@@ -10563,9 +10645,11 @@ class ExpressionChecker {
                         node, result.type, expected)
                     return result
                 }
-                self.fail(
-                    callee,
-                    "{render_hir_type(binding.type)} is not callable")
+                if !hir_already_refused(binding.type) {
+                    self.fail(
+                        callee,
+                        "{render_hir_type(binding.type)} is not callable")
+                }
                 return self.make_node(
                     node, "error", "call",
                     poison_hir_type())
@@ -11262,7 +11346,7 @@ class ExpressionChecker {
             }
         } else if receiver.type.name == "Bytes" {
             result_type = new HirType("int")
-        } else {
+        } else if !hir_already_refused(receiver.type) {
             self.fail(
                 node,
                 "{render_hir_type(receiver.type)} cannot be indexed")
@@ -11345,7 +11429,7 @@ class ExpressionChecker {
                     node,
                     "'?' needs a function returning Option")
             }
-        } else {
+        } else if !hir_already_refused(operand.type) {
             self.fail(
                 node,
                 "'?' needs Result or Option, got {render_hir_type(operand.type)}")
@@ -13301,7 +13385,7 @@ class ExpressionChecker {
                         binding,
                         "map iteration needs key and value bindings")
                 }
-            } else {
+            } else if !hir_already_refused(iterable.type) {
                 self.fail(
                     node.children[iterable_index],
                     "{render_hir_type(iterable.type)} is not iterable")
@@ -14274,6 +14358,13 @@ class ExpressionChecker {
     // a use site materializes that, which makes a constant behave exactly
     // as if its value had been typed there — in both backends, with nothing
     // left for them to disagree about.
+    //
+    // The pass runs once per program, at the end of signature checking
+    // (SignatureChecker.fold_constants), because an array length needs the
+    // value before any type is laid out. `HirConst.checked` records that it
+    // ran, so a later expression checker over the same program reads the
+    // answer instead of folding a second time and reporting the same
+    // refusal twice.
 
     fn check_consts() {
         self.consts_folded = {}
@@ -14287,6 +14378,7 @@ class ExpressionChecker {
     // one. The ask arrives from the middle of that constant's own pass, so
     // the checking state around it is saved and put back.
     fn ensure_const(constant: HirConst) {
+        if constant.checked { return }
         if self.consts_folded.contains_key(
                constant.qualified) ||
            self.consts_visiting.contains_key(
@@ -14310,6 +14402,11 @@ class ExpressionChecker {
     }
 
     fn fold_one_const(constant: HirConst) {
+        if constant.checked {
+            // Folded while signatures were checked, which is where an array
+            // length reads it from. Its answer, and its refusal, stand.
+            return
+        }
         if self.consts_folded.contains_key(
                constant.qualified) {
             return
@@ -14353,6 +14450,7 @@ class ExpressionChecker {
         }
         self.pop_scope()
         self.consts_folded[constant.qualified] = true
+        constant.checked = true
     }
 
     fn const_failure(site: AstNode, name: string,

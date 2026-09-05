@@ -34,9 +34,18 @@ grep -q 'call i64 @beans_file_copy_out' build/fs_source.ll
 
 clang -O1 -g -pthread -fsanitize=address -Wno-override-module \
     build/fs_source.ll build/beans_rt.c -lm -o "$tmp/fs-asan"
-BEANS_NO_POOL=1 "$tmp/fs-asan" "$tmp/asan" \
-    >"$tmp/asan.out" 2>"$tmp/asan.err"
-if grep -q 'AddressSanitizer' "$tmp/asan.err"; then
+# A leak is a sanitizer failure like any other: LeakSanitizer rides inside
+# ASan on Linux and reports at exit, which makes the run exit non-zero. Hold
+# the status before reading the report, or this dies under `set -e` with the
+# report still unread in the capture file.
+if ! BEANS_NO_POOL=1 "$tmp/fs-asan" "$tmp/asan" \
+        >"$tmp/asan.out" 2>"$tmp/asan.err"; then
+    cat "$tmp/asan.err" >&2
+    echo "fs_source exited non-zero under the sanitizers" >&2
+    exit 1
+fi
+if grep -Eq 'AddressSanitizer|UndefinedBehaviorSanitizer|LeakSanitizer' \
+    "$tmp/asan.err"; then
     cat "$tmp/asan.err" >&2
     exit 1
 fi

@@ -53,7 +53,8 @@ run_asan() {
     local status=$?
     set -e
     if [[ "$status" -ne "$expected" ]] ||
-       grep -Eq 'AddressSanitizer|runtime error:' "$out/${name}.stderr"; then
+       grep -Eq 'AddressSanitizer|UndefinedBehaviorSanitizer|LeakSanitizer|runtime error:' \
+           "$out/${name}.stderr"; then
         echo "ASan/UBSan failed: $file (status $status, expected $expected)" >&2
         sed -n '1,160p' "$out/${name}.stderr" >&2
         return 1
@@ -179,7 +180,8 @@ run_bridge_asan() {
     local bridge_status=$?
     set -e
     if [[ "$bridge_status" -ne 0 ]] ||
-       grep -Eq 'AddressSanitizer|runtime error:' "$out/${name}_bridge.stderr" ||
+       grep -Eq 'AddressSanitizer|UndefinedBehaviorSanitizer|LeakSanitizer|runtime error:' \
+           "$out/${name}_bridge.stderr" ||
        ! grep -q "$marker" "$out/${name}_bridge.stdout"; then
         echo "native bridge sanitizer failed: $file" >&2
         sed -n '1,160p' "$out/${name}_bridge.stderr" >&2
@@ -229,11 +231,18 @@ echo "ASan/UBSan checking all std.log sinks"
     -Iruntime/log -Iruntime/log/vendor/quill/include \
     runtime/log/beans_log.cpp test/log_bridge.cpp \
     -o "$out/log_bridge_cpp_asan"
-ASAN_OPTIONS="detect_leaks=$asan_detect_leaks:halt_on_error=1" \
-    "$out/log_bridge_cpp_asan" "$out/log_bridge_asan_files" \
-    >"$out/log_bridge_cpp_asan.stdout" \
-    2>"$out/log_bridge_cpp_asan.stderr"
-if grep -Eq 'AddressSanitizer|runtime error:' \
+# This lane wrote its report into a file and then died at this very line
+# whenever the bridge leaked on Linux, because LeakSanitizer exits 23 and the
+# grep below never ran. Hold the status first.
+if ! ASAN_OPTIONS="detect_leaks=$asan_detect_leaks:halt_on_error=1" \
+        "$out/log_bridge_cpp_asan" "$out/log_bridge_asan_files" \
+        >"$out/log_bridge_cpp_asan.stdout" \
+        2>"$out/log_bridge_cpp_asan.stderr"; then
+    sed -n '1,200p' "$out/log_bridge_cpp_asan.stderr" >&2
+    echo "the std.log sink bridge exited non-zero under the sanitizers" >&2
+    exit 1
+fi
+if grep -Eq 'AddressSanitizer|UndefinedBehaviorSanitizer|LeakSanitizer|runtime error:' \
         "$out/log_bridge_cpp_asan.stderr"; then
     sed -n '1,200p' "$out/log_bridge_cpp_asan.stderr" >&2
     exit 1
@@ -248,7 +257,8 @@ ASAN_OPTIONS="detect_leaks=$asan_detect_leaks:halt_on_error=1" \
         sed -n '1,120p' "$out/tls_bridge.stdout" >&2
         exit 1
     }
-if grep -Eq 'AddressSanitizer|runtime error:' "$out/tls_bridge.stderr"; then
+if grep -Eq 'AddressSanitizer|UndefinedBehaviorSanitizer|LeakSanitizer|runtime error:' \
+        "$out/tls_bridge.stderr"; then
     sed -n '1,200p' "$out/tls_bridge.stderr" >&2
     exit 1
 fi
@@ -384,12 +394,23 @@ BEANS_SANITIZE_CALLBACKS=1 bash ./test/stored_callbacks.sh
 # collections_models.b removes from an owned AVL tree. It was excluded from
 # every sanitizer here while that leaked in the native ARC codegen (#60);
 # #60 has landed, so it is checked like everything else.
+#
+# init_unwind.b is here because #120's rule is "release it, just do not run its
+# deinit body": not running a body is exactly how a release gets dropped
+# instead, and the object a failed construction leaves is only reclaimed by the
+# cleanup pad. brew_claim/taskgroup_claim/thread_claim are here for #124's
+# other half -- a claim MOVES the value out of its row, and a move is where a
+# double release or a dropped one shows up.
 if [[ "$(uname -s)" == Darwin ]] && command -v leaks >/dev/null 2>&1; then
     for file in bench/trees.b examples/box.b examples/arena.b examples/fmt.b \
                 test/cases/brew_unwind_leak.b \
                 test/cases/sort_unwind_leak.b \
                 test/cases/deinit_panic_cascade.b \
                 test/cases/unlink_leak.b \
+                test/cases/init_unwind.b \
+                test/cases/brew_claim.b \
+                test/cases/taskgroup_claim.b \
+                test/cases/thread_claim.b \
                 examples/shared_weak.b examples/inline_results.b examples/wide_lists.b \
                 examples/wide_maps.b examples/wide_enums.b examples/enum_repr.b \
                 examples/wide_owners.b \

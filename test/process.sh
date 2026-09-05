@@ -344,7 +344,11 @@ if [[ -z "$held" ]]; then
 fi
 zombies=$(ps -ax -o stat=,ppid= | awk -v p="$many_pid" '$1 ~ /^Z/ && $2 == p' | wc -l | tr -d ' ')
 wait "$many_pid"
-grep -q '^all fifty ran true$' "$tmp/many.out"
+if ! grep -q '^all fifty ran true$' "$tmp/many.out"; then
+    echo "fifty runs did not all report success:" >&2
+    sed -n '1,25p' "$tmp/many.out" >&2
+    exit 1
+fi
 if [[ "$zombies" -ne 0 ]]; then
     echo "$zombies zombie children remain after fifty runs" >&2
     exit 1
@@ -354,19 +358,40 @@ echo "checking descriptors are not leaked or inherited"
 # Every pipe end the parent keeps is closed, so a run does not consume descriptors.
 # Running many children with a low descriptor limit is the direct test: a leak of even
 # one fd per run runs out well before the loop finishes.
-( ulimit -n 64 2>/dev/null || true
+# The lowering is load-bearing: at the host's own limit fifty leaked
+# descriptors exhaust nothing and this check passes having tested nothing. It
+# was written `ulimit -n 64 2>/dev/null || true`, which would have swallowed
+# exactly that. Lowering a soft limit is always permitted, so there is nothing
+# here to tolerate -- let it stand on its own, as the four sibling lanes in
+# child.sh, net.sh, poll.sh and signals.sh do, and a failure aborts with the
+# shell's own message rather than running the check for show.
+( ulimit -n 64
   if ! run_timeout 120 "$tmp/many" >"$tmp/many.limited" 2>&1; then
       echo "fifty runs failed under a 64-descriptor limit — a pipe end is leaking" >&2
       exit 1
   fi
-  grep -q '^all fifty ran true$' "$tmp/many.limited" )
+  if ! grep -q '^all fifty ran true$' "$tmp/many.limited"; then
+      echo "fifty runs under a 64-descriptor limit did not all report success:" >&2
+      sed -n '1,25p' "$tmp/many.limited" >&2
+      exit 1
+  fi )
 
 echo "checking no memory errors under ASan"
 ./build/beansc build examples/processes.b --emit ir >/dev/null
 clang -O1 -g -pthread -fsanitize=address -Wno-override-module \
     build/processes.ll build/beans_rt.c -lm -o "$tmp/asan" 2>"$tmp/asan.build"
-BEANS_NO_POOL=1 run_timeout 180 "$tmp/asan" >"$tmp/asan.out" 2>"$tmp/asan.err"
-if grep -q 'AddressSanitizer' "$tmp/asan.err"; then
+# A leak is a sanitizer failure like any other: LeakSanitizer rides inside
+# ASan on Linux and reports at exit, which makes the run exit non-zero. Hold
+# the status before reading the report, or this dies under `set -e` with the
+# report still unread in the capture file.
+if ! BEANS_NO_POOL=1 run_timeout 180 "$tmp/asan" \
+        >"$tmp/asan.out" 2>"$tmp/asan.err"; then
+    sed -n '1,25p' "$tmp/asan.err" >&2
+    echo "processes exited non-zero under the sanitizers" >&2
+    exit 1
+fi
+if grep -Eq 'AddressSanitizer|UndefinedBehaviorSanitizer|LeakSanitizer' \
+    "$tmp/asan.err"; then
     sed -n '1,25p' "$tmp/asan.err" >&2
     exit 1
 fi

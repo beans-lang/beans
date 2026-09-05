@@ -97,7 +97,9 @@ try {
 
     # ------------------------------------------------------------- manifest
     $base = $env:BEANS_INSTALL_BASE_URL
+    $baseIsOurs = $false
     if (-not $base) {
+        $baseIsOurs = $true
         if ($Version) {
             $base = "https://github.com/$Repo/releases/download/v$Version"
         } else {
@@ -166,6 +168,17 @@ try {
 
     if ($Version -and $Version -ne $row.Version) {
         Die "the manifest at $manifestSource publishes $($row.Version), not $Version"
+    }
+
+    # Pin the rest of this install to the release the manifest just named.
+    # Without a -Version, $base is .../releases/latest/download, and `latest` is
+    # a moving target: a release published between the manifest fetch and the
+    # download turns the asset URL under it into a 404 on a URL that still looks
+    # right (issue #118). The asset is the only thing fetched after this point
+    # -- the checksum comes from the manifest row, not a second download. A
+    # caller who set BEANS_INSTALL_BASE_URL keeps theirs.
+    if ($baseIsOurs) {
+        $base = "https://github.com/$Repo/releases/download/v$($row.Version)"
     }
 
     # ------------------------------------------------------ already installed

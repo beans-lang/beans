@@ -52,6 +52,16 @@ fn hir_types_equal(left: HirType, right: HirType) -> bool {
     return hir_type_key(left) == hir_type_key(right)
 }
 
+// A value whose type is poison was already refused, at the place it went
+// wrong and with the reason. Every rule that reads a value's type stops
+// there: a second message about a value that has no type tells a reader
+// nothing they can act on, and "poison" is the checker's own word for
+// "already reported" — never a type anyone wrote, so it must never reach a
+// diagnostic. test/diagnostics.sh fails if one does.
+fn hir_already_refused(type: HirType) -> bool {
+    return type.name == "poison"
+}
+
 fn hir_is_integer(type: HirType) -> bool {
     let name: string = canonical_hir_name(type.name)
     return name == "int" || name == "i8" || name == "i16" ||
@@ -136,9 +146,18 @@ fn hir_send_function(parameters: List<HirType>,
 
 fn hir_type_from_ast(node: AstNode) -> HirType {
     if node.kind == "array_type" {
+        // A length that names a constant was substituted while signatures
+        // were checked, so by the time a body's annotation is lowered the
+        // node holds a number like any other length. It holds none only
+        // when that constant could supply none, which was already reported
+        // at the name: the type is poison so the refusal is not repeated
+        // once per use.
+        let length: int = ast_array_length(node)
+        if length < 0 && ast_array_length_name(node).is_some() {
+            return poison_hir_type()
+        }
         let result: HirType = new HirType("array")
-        result.array_length =
-            node.value.to_int().expect("array length")
+        result.array_length = length
         match type_child(node) {
             some(element) => {
                 result.args.push(hir_type_from_ast(element))

@@ -283,7 +283,86 @@ partial class LlvmTextEmitter {
                     self.value_type(function, id),
                     held, false)
         }
-        return "  %eh.tmp.live{temporary} = load i1, ptr {slot}.live\n  br i1 %eh.tmp.live{temporary}, label %eh.tmp.release{release_block}, label %eh.tmp.next{merge_block}\neh.tmp.release{release_block}:\n  {held} = load {type}, ptr {slot}\n  store i1 false, ptr {slot}.live\n{release}  br label %eh.tmp.next{merge_block}\neh.tmp.next{merge_block}:\n"
+        return "  %eh.tmp.live{temporary} = load i1, ptr {slot}.live\n  br i1 %eh.tmp.live{temporary}, label %eh.tmp.release{release_block}, label %eh.tmp.next{merge_block}\neh.tmp.release{release_block}:\n  {held} = load {type}, ptr {slot}\n  store i1 false, ptr {slot}.live\n{self.unwind_pad_unbuilt_disarm(id, held)}{release}  br label %eh.tmp.next{merge_block}\neh.tmp.next{merge_block}:\n"
+    }
+
+    // An unwind out of a `new`'s own construction takes the object's
+    // deinit off it before releasing it: the initializer did not return, so
+    // its `deinit` body would read fields the initializer never reached
+    // (#120). RC_FIN is rc-word bit 61, the flag beans_release tests before
+    // it dispatches a deinit, and clearing it is what makes this one death
+    // silent while still releasing every field that WAS assigned.
+    //
+    // Two guards, and both are load-bearing. The construction flag is true
+    // only between the allocation and the initializer's return, so an
+    // unwind that merely passes a finished object still standing in its
+    // temporary releases it with its deinit intact. And the count must be
+    // one: an initializer may hand `self` out once every field is assigned,
+    // and that object survives this release — disarming it there would
+    // silence a deinit the surviving owner is entitled to. A count of one
+    // means this frame holds the only reference and the object dies here.
+    //
+    // The rc word is read and written plainly, not atomically, which is
+    // what beans_do_deinit does at the same bit for the same reason. It is
+    // sound because an object under construction cannot be reachable from
+    // another thread: reaching one needs Send, Send classes are `unique`
+    // and therefore move-only, and `self` inside an initializer is a
+    // borrowed binding the checker refuses to move or to capture by move.
+    // So no other thread can hold this object while this runs.
+    fn unwind_pad_unbuilt_disarm(id: int,
+                                 held: string) -> string {
+        match self.unwind_construct_flag.get(id) {
+            some(flag) => {
+                let mark: int = self.fresh()
+                return "  %eh.new.building{mark} = load i1, ptr {flag}\n  br i1 %eh.new.building{mark}, label %eh.new.check{mark}, label %eh.new.kept{mark}\neh.new.check{mark}:\n  %eh.new.rc.addr{mark} = getelementptr i8, ptr {held}, i64 -16\n  %eh.new.rc{mark} = load i64, ptr %eh.new.rc.addr{mark}\n  %eh.new.count{mark} = and i64 %eh.new.rc{mark}, 281474976710655\n  %eh.new.sole{mark} = icmp eq i64 %eh.new.count{mark}, 1\n  br i1 %eh.new.sole{mark}, label %eh.new.disarm{mark}, label %eh.new.kept{mark}\neh.new.disarm{mark}:\n  %eh.new.plain{mark} = and i64 %eh.new.rc{mark}, -2305843009213693953\n  store i64 %eh.new.plain{mark}, ptr %eh.new.rc.addr{mark}\n  br label %eh.new.kept{mark}\neh.new.kept{mark}:\n"
+            }
+            none => { return "" }
+        }
+    }
+
+    // The slot the pad reads to tell "this object is still being built"
+    // from "this object is finished and merely still in its temporary".
+    // Made on the first mention, like the temporary's own slot.
+    fn unwind_construct_slot(id: int) -> string {
+        match self.unwind_construct_flag.get(id) {
+            some(flag) => { return flag }
+            none => {}
+        }
+        let flag: string = "%eh.new.built.v{id}"
+        self.function_allocas.push(
+            "  {flag} = alloca i1\n  store i1 false, ptr {flag}\n")
+        self.unwind_construct_flag[id] = flag
+        return flag
+    }
+
+    // emit_new's two stores around the construction. `open` arms the flag
+    // with the object allocated and nothing assigned yet; `close` disarms it
+    // where the initializer returned. A `new` with no initializer at all is
+    // built the moment its defaults are in, and closes right there.
+    //
+    // `deinit` is the same condition the FIN bit is set under: a class chain
+    // with no deinit never has the bit, so there would be nothing for the
+    // pad to take off it and the flag would only cost the IR.
+    fn unwind_construct_open(function: MirFunction,
+                             instruction: MirInstruction,
+                             heap: bool, deinit: bool) -> string {
+        if !heap || !deinit { return "" }
+        if !self.unwind_temp_wanted(
+               function, instruction.result) {
+            return ""
+        }
+        return "  store i1 true, ptr {self.unwind_construct_slot(instruction.result)}\n"
+    }
+
+    fn unwind_construct_close(function: MirFunction,
+                              instruction: MirInstruction,
+                              heap: bool) -> string {
+        if !heap { return "" }
+        if !self.unwind_construct_flag.contains_key(
+               instruction.result) {
+            return ""
+        }
+        return "  store i1 false, ptr {self.unwind_construct_flag[instruction.result]}\n"
     }
 
     // ---- in-flight owned temporaries ----------------------------------
@@ -868,6 +947,7 @@ partial class LlvmTextEmitter {
         self.unwind_temp_order = []
         self.unwind_temp_position = {}
         self.unwind_local_position = {}
+        self.unwind_construct_flag = {}
         self.unwind_position = 0
         if !self.unwind_enabled() ||
            function.declaration || function.external {

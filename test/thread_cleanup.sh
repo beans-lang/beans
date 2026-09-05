@@ -5,7 +5,13 @@ cd "$(dirname "$0")/.."
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/beans-thread-cleanup.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 
-for name in thread_deinit thread_cycles shared_publication; do
+# thread_claim: issue #124's thread half. join() MOVES the result out of the
+# handle -- beans_thread_join zeroes t->result -- so the value dies with the
+# binding that took it. The interpreter used to cache a copy on the handle, so
+# the value outlived that binding and died only when the handle did. Each case
+# puts a loud local between the handle and the binding that joins it, at one,
+# two and three threads, so the LIFO teardown tells the two moments apart.
+for name in thread_deinit thread_cycles shared_publication thread_claim; do
     ./build/beansc run "test/cases/$name.b" >"$tmp/$name.interp"
     ./build/beansc build "test/cases/$name.b" -o "$tmp/$name.native" \
         >"$tmp/$name.build" 2>&1
@@ -47,13 +53,94 @@ clang -O1 -pthread -DBEANS_ARC_STATS -Wno-override-module \
 grep -q '^collected while live true maker 1$' \
     "$tmp/thread-live-cycles.out"
 grep -q '^blocker 2$' "$tmp/thread-live-cycles.out"
-cycle_objects=$(sed -n \
-    's/.*cycle_objects=\([0-9][0-9]*\).*/\1/p' \
-    "$tmp/thread-live-cycles.stats")
-if [[ -z "$cycle_objects" || "$cycle_objects" -lt 9216 ]]; then
-    echo "expected 9216 collected cycle objects, got ${cycle_objects:-none}" >&2
+# The numbers below come from the ARC report an atexit handler writes, and the
+# collector's own atexit handler runs before it: `cc_at_exit` drains the entry
+# thread's owner-local buffer and then forces up to eight global passes, which
+# it is allowed to do because both workers are joined before main returns, so
+# cc_threads is zero. Measured with an instrumented copy of the program: it
+# reads 7680 collected objects itself, both at the `during` read below and
+# again after joining the blocker, and this report says 9216 -- the last 1536
+# are reclaimed by that forced sweep. So how far along the collector is *while
+# the program runs* is scheduling-dependent (that is the `collected while live`
+# claim above, and it is a bound on purpose), but this report's number is not.
+# It is read at quiescence, after the collector has been made to finish.
+#
+# That is why this is an equality and not a bound. The program builds
+# 2048 two-node cycles on the maker thread, 2048 more on the entry thread and
+# 256 four-object Mutex cycles: 2 * (2048 + 2048) + 4 * 256 = 9216 objects,
+# every one of them unreachable before main returns and none of them
+# reclaimable by reference counting alone, because each is in a real cycle.
+# The decomposition is measured, not assumed: dropping the Mutex loop gives
+# exactly 8192 and keeping only the Mutex loop gives exactly 1024.
+#
+# This was `-lt 9216` and CI saw 9213 once (#64) with frees two short of
+# allocations on the same run. That is not the collector being behind -- it has
+# been forced to quiescence by the time these numbers are written. It is three
+# objects one sweep did not reclaim, two of which were never freed at all.
+# Widening the bound would have buried both halves; the two checks below name
+# which half went wrong.
+stat_field() {
+    sed -n "s/.*$1=\([0-9][0-9]*\).*/\1/p" "$tmp/thread-live-cycles.stats"
+}
+cycle_objects=$(stat_field cycle_objects)
+allocations=$(stat_field allocations)
+frees=$(stat_field frees)
+if [[ -z "$cycle_objects" || -z "$allocations" || -z "$frees" ]]; then
+    echo "the ARC stats line no longer carries allocations, frees and" \
+         "cycle_objects; this gate read nothing rather than checking it" >&2
     cat "$tmp/thread-live-cycles.stats" >&2
     exit 1
 fi
+if [[ "$cycle_objects" -ne 9216 ]]; then
+    echo "the cycle collector reclaimed $cycle_objects objects, not the 9216" \
+         "this program builds. Both workers are joined and the exit sweep is" \
+         "forced before this number is written, so the difference is the" \
+         "collector, not the machine." >&2
+    cat "$tmp/thread-live-cycles.stats" >&2
+    exit 1
+fi
+if [[ "$allocations" -ne "$frees" ]]; then
+    echo "$((allocations - frees)) object(s) were allocated and never freed" \
+         "($allocations allocated, $frees freed)" >&2
+    cat "$tmp/thread-live-cycles.stats" >&2
+    exit 1
+fi
+
+# A thread is joined once, on both engines. beans_thread_join panics on the
+# second join; the interpreter used to answer the cached copy it kept on the
+# handle, so a double join quietly succeeded under `beansc run` and killed the
+# process the first time the same program was built (#124). The cleared handle
+# is the joined marker now, so both engines report and exit 3.
+cat >"$tmp/twice.b" <<'BEANS'
+import std.io
+import std.thread
+
+fn main() {
+    let worker: Thread<int> = thread.spawn(fn() -> int { return 7 })
+    io.println("first {worker.join()}")
+    io.println("second {worker.join()}")
+}
+BEANS
+expect_second_join_dies() { # <command...>
+    set +e
+    "$@" >"$tmp/twice.out" 2>"$tmp/twice.err"
+    local status=$?
+    set -e
+    if [ "$status" -ne 3 ]; then
+        echo "a second thread join should exit 3, got $status" >&2
+        cat "$tmp/twice.out" "$tmp/twice.err" >&2
+        exit 1
+    fi
+    grep -q '^first 7$' "$tmp/twice.out"
+    grep -q 'thread already joined' "$tmp/twice.err"
+    if grep -q '^second ' "$tmp/twice.out"; then
+        echo "a second thread join answered a value" >&2
+        cat "$tmp/twice.out" >&2
+        exit 1
+    fi
+}
+expect_second_join_dies ./build/beansc run "$tmp/twice.b"
+./build/beansc build "$tmp/twice.b" -o "$tmp/twice" >/dev/null 2>&1
+expect_second_join_dies "$tmp/twice"
 
 echo "ok worker-thread destructors and owner-local cycle collection"

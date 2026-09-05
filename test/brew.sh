@@ -32,6 +32,22 @@ grep -Eq '(call|invoke) void @beans_brew_scope_join\(' build/brew.ll
 grep -Eq '(call|invoke) void @beans_brew_cancel\(' build/brew.ll
 grep -q 'define i64 @spawn.thunk' build/brew.ll
 
+echo "checking a claimed Brew result dies with the arm, an unclaimed one at the join"
+# issue #124: join() MOVES the value out of the handle's row -- beans_brew_value
+# reads h->value and zeroes the slot -- so the claimed value dies with the match
+# arm that took it, and the synthesized scope join drops an unclaimed result
+# where beans_brew_scope_join's brew_drop_result does, ahead of the scope's own
+# locals. The interpreter used to hand out a copy and keep the row's reference,
+# so both died only when the handle did, a whole function later. Each case puts
+# another loud object after the brew so the two moments are told apart; with one
+# object and nothing between them the orders coincide.
+./build/beansc run test/cases/brew_claim.b >"$tmp/claim.interp"
+./build/beansc build test/cases/brew_claim.b -o "$tmp/claim.native" \
+    >"$tmp/claim.build" 2>&1
+"$tmp/claim.native" >"$tmp/claim.native.out"
+diff -u test/cases/brew_claim.out "$tmp/claim.interp"
+diff -u test/cases/brew_claim.out "$tmp/claim.native.out"
+
 echo "checking a contained panic unwinds its frames on both backends"
 # issue #44: a panic caught by join runs every frame's defers newest-first and
 # drops what it owns on the way to the fiber entry — not abandoned. The golden
@@ -44,6 +60,126 @@ echo "checking a contained panic unwinds its frames on both backends"
 "$tmp/unwind.native" >"$tmp/unwind.native.out"
 diff -u test/cases/brew_unwind.out "$tmp/unwind.interp"
 diff -u test/cases/brew_unwind.out "$tmp/unwind.native.out"
+
+echo "checking a construction that does not finish runs no deinit on either backend"
+# issue #120: an object whose init has not returned is released WITHOUT its
+# deinit body -- the fields it did assign still drop. Running the body handed
+# user code a self whose fields the initializer never reached: in the tree that
+# was a second panic during the unwind, natively a segfault, and either way a
+# failure brew/join had contained became a dead process. The golden covers the
+# panic in the body, in a field default, in a base init through super.init, an
+# inherited deinit, a half-built object that owns finished ones, a reference the
+# initializer handed out (which still runs its deinit at its own later death), a
+# finished object still in a temporary when a later call panics (which still
+# runs its deinit), and repeated construction where only the last pass fails.
+# The last case is the control the issue used: the same shape with no deinit
+# anywhere was always contained, so if the two ever stop agreeing, deinit is
+# once again the only thing turning a handled error into process death.
+./build/beansc run test/cases/init_unwind.b >"$tmp/initunwind.interp"
+./build/beansc build test/cases/init_unwind.b -o "$tmp/initunwind.native" \
+    >"$tmp/initunwind.build" 2>&1
+"$tmp/initunwind.native" >"$tmp/initunwind.native.out"
+diff -u test/cases/init_unwind.out "$tmp/initunwind.interp"
+diff -u test/cases/init_unwind.out "$tmp/initunwind.native.out"
+
+# Initializer.call() is construction too, so the same rule holds under
+# reflection. The interpreter kept the half-built object in its reflect value
+# registry, where nothing released it until the exit-time cycle sweep -- which
+# then handed it to its own deinit, long after the unwind, and ended a
+# contained panic with an "has no initialized field" report at exit.
+./build/beansc run test/cases/init_unwind_reflect.b >"$tmp/initreflect.interp"
+./build/beansc build test/cases/init_unwind_reflect.b \
+    -o "$tmp/initreflect.native" >"$tmp/initreflect.build" 2>&1
+"$tmp/initreflect.native" >"$tmp/initreflect.native.out"
+diff -u test/cases/init_unwind_reflect.out "$tmp/initreflect.interp"
+diff -u test/cases/init_unwind_reflect.out "$tmp/initreflect.native.out"
+
+echo "checking a failed construction returns every byte it took"
+# The golden above says no deinit ran; this says the object still came back.
+# Skipping a deinit body is exactly how a release gets dropped instead, and a
+# panic in a FIELD default used to unwind past an object nothing had recorded
+# — the native emitter armed the pad only just before the initializer call —
+# which leaked the object and everything its earlier defaults had built. Two
+# round counts an order of magnitude apart in their own -DBEANS_ARC_STATS
+# builds: a per-failure leak shows as a gap that grows with the rounds.
+init_arc_rounds() { # <rounds>
+    local rounds=$1
+    sed "s/ROUNDS/$rounds/g" >"$tmp/initarc_$rounds.b" <<'BEANS'
+import std.io
+
+class Held {
+    pub tag: string = ""
+    pub fn init(tag: string) { self.tag = tag }
+    fn deinit() { }
+}
+
+fn blow(n: int) -> string { panic("default boom {n}") }
+
+// a panic in a field default, with an owned object in the default before it
+// and another in the default after it
+class Defaulted {
+    pub a: Held = new Held("kept")
+    pub b: string = blow(1)
+    pub c: Held = new Held("never")
+    fn deinit() { }
+}
+
+// a panic in the body, with one owned field assigned and one not
+class Body {
+    pub one: Held
+    pub two: Held
+    pub fn init(n: int) {
+        self.one = new Held("b1-{n}")
+        panic("body boom {n}")
+    }
+    fn deinit() { }
+}
+
+fn make_defaulted() -> int { let d: Defaulted = new Defaulted(); return 1 }
+fn make_body(n: int) -> int { let b: Body = new Body(n); return 1 }
+
+fn round(n: int) {
+    let h: Brew<int> = brew make_defaulted()
+    match h.join() { ok(v) => {} err(problem) => {} }
+    let g: Brew<int> = brew make_body(n)
+    match g.join() { ok(v) => {} err(problem) => {} }
+}
+
+fn main() {
+    var r: int = 0
+    for r < ROUNDS { round(r); r += 1 }
+    io.println("rounds=ROUNDS")
+}
+BEANS
+    ./build/beansc build --emit ir "$tmp/initarc_$rounds.b" >/dev/null 2>&1
+    clang -O1 -pthread -DBEANS_ARC_STATS -DBEANS_FIBER_UNWIND=1 \
+        -fexceptions -funwind-tables -Wno-override-module \
+        "build/initarc_$rounds.ll" build/beans_rt.c -lm -o "$tmp/initarc_$rounds"
+    "$tmp/initarc_$rounds" >"$tmp/initarc_$rounds.out" \
+        2>"$tmp/initarc_$rounds.stats"
+    grep -q "^rounds=$rounds\$" "$tmp/initarc_$rounds.out" || {
+        echo "the init arc-stats build did not run $rounds rounds" >&2
+        cat "$tmp/initarc_$rounds.out" >&2
+        exit 1
+    }
+    local allocations frees
+    allocations=$(sed -n 's/.*allocations=\([0-9][0-9]*\).*/\1/p' \
+        "$tmp/initarc_$rounds.stats")
+    frees=$(sed -n 's/.* frees=\([0-9][0-9]*\).*/\1/p' \
+        "$tmp/initarc_$rounds.stats")
+    if [ -z "$allocations" ] || [ -z "$frees" ]; then
+        echo "no arc stats from the $rounds-round init build" >&2
+        cat "$tmp/initarc_$rounds.stats" >&2
+        exit 1
+    fi
+    if [ "$allocations" -ne "$frees" ]; then
+        echo "a failed construction leaked: $rounds rounds allocated" \
+             "$allocations and freed $frees" >&2
+        exit 1
+    fi
+}
+init_arc_rounds 5
+init_arc_rounds 50
 
 echo "checking an unwind parked in its cleanup survives other fibers finishing"
 # issue #44 (B3): the unwind is per fiber on both backends. A child that
