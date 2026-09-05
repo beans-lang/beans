@@ -4662,10 +4662,14 @@ class TreeInterpreter {
         }
         if left.kind == "string" &&
            right.kind == "string" {
-            if node.value == "+" {
-                return TreeValue.string(
-                    "{left.text}{right.text}")
-            }
+            // No `+` row here on purpose. The language has no `+` for
+            // strings and the native backend never had one, so a row that
+            // joined them made the tree the only executor that answered —
+            // exactly the disagreement this pair of backends exists to
+            // catch. The checker refuses `+` on a string now, so nothing
+            // well-formed reaches this; anything that does falls to the
+            // "cannot evaluate" refusal below rather than quietly working
+            // on one backend.
             if node.value == "==" {
                 return TreeValue.boolean(
                     left.text == right.text)
