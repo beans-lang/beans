@@ -20,11 +20,20 @@
 #
 # This gate checks that in two ways.
 #
-#   1. Statically, over test/*.sh: every sanitizer grep names LeakSanitizer
-#      beside AddressSanitizer, and every capture file such a grep reads was
-#      written by a command whose failure the script survives -- so the grep is
-#      reachable. A capture file that is grepped but whose write cannot be found
-#      is a failure too: this check refuses to pass by matching nothing.
+#   1. Statically, over test/*.sh: a script that links -fsanitize=address checks
+#      some run's output for a sanitizer report or says in a `# sanitizer-gate:`
+#      line why it does not; every sanitizer grep names LeakSanitizer beside
+#      AddressSanitizer; and every capture file such a grep reads was written by
+#      a command whose failure the script survives, so the grep is reachable. A
+#      capture file that is grepped but whose write cannot be found is a failure
+#      too: this check refuses to pass by matching nothing.
+#
+#      What it does not see: a script with one checked lane and a second
+#      sanitized run whose captured stderr nothing ever greps. Finding that
+#      would mean deciding, from bash text, which command invocations are the
+#      sanitized binary -- guesswork that would either miss lanes or refuse
+#      valid ones. The live half below is the answer to the shape itself; this
+#      half is the ratchet on the scripts.
 #
 #   2. Live, on this machine: a program that leaks and a program that overflows
 #      are built under -fsanitize=address and run through the fixed shape, and
@@ -75,16 +84,10 @@ for path in sorted(glob.glob("test/*.sh")):
     body = "\n".join(t for _, t in lines)
     stats["scripts"] += 1
     links_asan = "-fsanitize=address" in body
-    if links_asan:
-        stats["asan"] += 1
-        marked = any(re.match(r"\s*#\s*sanitizer-gate:", t) for _, t in lines)
-        if "LeakSanitizer" not in body and not marked:
-            fail.append("%s links -fsanitize=address but never mentions "
-                        "LeakSanitizer, and carries no `# sanitizer-gate:` line "
-                        "saying why" % path)
 
     # Which files does a sanitizer grep read, and does every grep name leaks?
     watched = {}
+    sanitizer_greps = 0
     for ln, text in lines:
         if "grep" not in text:
             continue
@@ -92,6 +95,7 @@ for path in sorted(glob.glob("test/*.sh")):
         if not named:
             continue
         stats["greps"] += 1
+        sanitizer_greps += 1
         if "AddressSanitizer" in named and "LeakSanitizer" not in named:
             fail.append("%s:%d greps for AddressSanitizer without "
                         "LeakSanitizer: %s" % (path, ln, text.strip()[:110]))
@@ -100,6 +104,14 @@ for path in sorted(glob.glob("test/*.sh")):
             if any(s in tok for s in SANITIZERS) or "WARNING" in tok:
                 continue
             watched.setdefault(tok, []).append(ln)
+
+    if links_asan:
+        stats["asan"] += 1
+        marked = any(re.match(r"\s*#\s*sanitizer-gate:", t) for _, t in lines)
+        if sanitizer_greps == 0 and not marked:
+            fail.append("%s links -fsanitize=address and never checks a run's "
+                        "output for a sanitizer report; if that is deliberate, "
+                        "say so in a `# sanitizer-gate:` line" % path)
     # Single-quoted patterns leave the file as the only double-quoted token, so
     # `watched` is the set of capture files a sanitizer decision depends on.
     for tok, at in sorted(watched.items()):
