@@ -51,11 +51,12 @@ grep -q '^blocker 2$' "$tmp/thread-live-cycles.out"
 # collector's own atexit handler runs before it: `cc_at_exit` drains the entry
 # thread's owner-local buffer and then forces up to eight global passes, which
 # it is allowed to do because both workers are joined before main returns, so
-# cc_threads is zero. Measured: the program reads 7680 collected objects at its
-# own last statement and this report says 9216 -- the last 1536 are reclaimed
-# by that forced sweep. So how far along the collector is *while the program
-# runs* is scheduling-dependent (that is the `collected while live` claim
-# above, and it is a bound on purpose), but the number in the report is not.
+# cc_threads is zero. Measured with an instrumented copy of the program: it
+# reads 7680 collected objects itself, both at the `during` read below and
+# again after joining the blocker, and this report says 9216 -- the last 1536
+# are reclaimed by that forced sweep. So how far along the collector is *while
+# the program runs* is scheduling-dependent (that is the `collected while live`
+# claim above, and it is a bound on purpose), but this report's number is not.
 # It is read at quiescence, after the collector has been made to finish.
 #
 # That is why this is an equality and not a bound. The program builds
