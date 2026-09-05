@@ -144,32 +144,53 @@ echo "narrow extern arguments marshal by declared width on this host"
 # corruption found at free, 0xC0000409 is a stack cookie or __fastfail, and
 # 0xC0000005 during teardown is a different investigation from either.
 #
-# So on a mismatch, run it once more and ask PowerShell, which keeps the
-# whole 32-bit value. Only ever runs after a failure, and says nothing if the
-# second run does not reproduce — an intermittent fault is itself a finding.
+# So on a mismatch, run it again and ask PowerShell, which keeps the whole
+# 32-bit value. Only ever runs after a failure.
+#
+# It runs the binary WINDOWS_STATUS_RUNS times rather than once. #71 is a fault
+# that reproduces on roughly one Windows run in three, and "the second run
+# exited cleanly" told nobody anything they could act on: an intermittent fault
+# needs a rate and a status, not a coin flip. Each of these runs is also another
+# chance for Windows Error Reporting to write the dump the CI job collects.
+WINDOWS_STATUS_RUNS=${WINDOWS_STATUS_RUNS:-5}
+
+ntstatus_meaning() {
+    case "$1" in
+        0xC0000005) echo "access violation" ;;
+        0xC0000374) echo "heap corruption detected at free" ;;
+        0xC0000409) echo "stack cookie or __fastfail" ;;
+        0xC000001D) echo "illegal instruction" ;;
+        0xC0000094) echo "integer divide by zero" ;;
+        0xC00000FD) echo "stack overflow" ;;
+        *)          echo "see ntstatus.h" ;;
+    esac
+}
+
 windows_status() {
-    local exe=$1 raw
+    local exe=$1 raw run faulted=0 statuses=""
     command -v powershell.exe >/dev/null 2>&1 || return 0
-    raw=$(powershell.exe -NoProfile -NonInteractive -Command \
-              "\$p = Start-Process -FilePath '$exe' -PassThru -Wait \
-                        -WindowStyle Hidden; \
-               if (\$p.ExitCode -ne 0) { '0x{0:X8}' -f \$p.ExitCode }" \
-              2>/dev/null | tr -d '\r' | tr -d '[:space:]')
-    if [[ -z "$raw" ]]; then
-        echo "  the second run exited cleanly: this fault is intermittent"
+    for run in $(seq 1 "$WINDOWS_STATUS_RUNS"); do
+        raw=$(powershell.exe -NoProfile -NonInteractive -Command \
+                  "\$p = Start-Process -FilePath '$exe' -PassThru -Wait \
+                            -WindowStyle Hidden; \
+                   if (\$p.ExitCode -ne 0) { '0x{0:X8}' -f \$p.ExitCode }" \
+                  2>/dev/null | tr -d '\r' | tr -d '[:space:]')
+        [[ -z "$raw" ]] && continue
+        faulted=$((faulted + 1))
+        case " $statuses " in
+            *" $raw "*) ;;
+            *) statuses="${statuses:+$statuses }$raw" ;;
+        esac
+    done
+    if [[ "$faulted" -eq 0 ]]; then
+        echo "  $WINDOWS_STATUS_RUNS further runs all exited cleanly:" \
+             "this fault is intermittent"
         return 0
     fi
-    local meaning
-    case "$raw" in
-        0xC0000005) meaning="access violation" ;;
-        0xC0000374) meaning="heap corruption detected at free" ;;
-        0xC0000409) meaning="stack cookie or __fastfail" ;;
-        0xC000001D) meaning="illegal instruction" ;;
-        0xC0000094) meaning="integer divide by zero" ;;
-        0xC00000FD) meaning="stack overflow" ;;
-        *)          meaning="see ntstatus.h" ;;
-    esac
-    echo "  NTSTATUS $raw ($meaning)"
+    echo "  $faulted of $WINDOWS_STATUS_RUNS further runs faulted"
+    for raw in $statuses; do
+        echo "  NTSTATUS $raw ($(ntstatus_meaning "$raw"))"
+    done
 }
 
 fails=0

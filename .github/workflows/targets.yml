@@ -473,6 +473,14 @@ jobs:
           name: windows-native-bundle-${{ matrix.id }}
           path: build/windows_native
 
+      # #71: examples/logging.b faults here on roughly one run in three and on
+      # no developer machine, and nobody has ever seen the stack. From here on
+      # a process that dies from an unhandled exception leaves a full dump.
+      - name: Capture crash dumps
+        uses: ./.github/actions/windows-crash-dumps
+        with:
+          phase: enable
+
       # The claim is "this ran natively on this architecture", so the machine is
       # checked before anything is believed. On the ARM64 runner an x64 host
       # would mean the whole job was measuring emulation.
@@ -618,6 +626,17 @@ jobs:
             exit 1
           fi
 
+      # Runs whatever happened above: the fault this exists for is intermittent,
+      # so the dump has to be collected on the green runs too or the one run
+      # that crashed is the one that loses it.
+      - name: Collect crash dumps
+        if: always()
+        uses: ./.github/actions/windows-crash-dumps
+        with:
+          phase: collect
+          name: native-${{ matrix.id }}
+          search-root: build
+
   windows-msvc:
     name: MSVC host (${{ matrix.arch }})
     needs: windows-stage
@@ -653,6 +672,13 @@ jobs:
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: ${{ matrix.msvc_arch }}
+
+      # #71 again: this job runs test/windows_hosted.sh too, so the same
+      # intermittent fault can land here. See the note in windows-native.
+      - name: Capture crash dumps
+        uses: ./.github/actions/windows-crash-dumps
+        with:
+          phase: enable
 
       - name: Confirm LLVM and MSVC tools
         shell: bash
@@ -708,3 +734,11 @@ jobs:
         shell: bash
         run: |
           make BEANSC_BOOT=build/windows_msvc/beansc.exe test-fixpoint
+
+      - name: Collect crash dumps
+        if: always()
+        uses: ./.github/actions/windows-crash-dumps
+        with:
+          phase: collect
+          name: msvc-${{ matrix.arch }}
+          search-root: build
