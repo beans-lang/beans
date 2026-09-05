@@ -2366,6 +2366,11 @@ hits.add(1)
   error type are, so a worker can use `?` and return a typed error.
 - `Thread<T>.detach()` discards the result without waiting. The running thread
   keeps its work alive and the OS thread resource is released when it finishes.
+- `Thread<T>.join()` is called **once**, and the value it answers **moves** out
+  of the handle. The handle keeps no reference to what it handed over, so the
+  value dies with the binding that took it, not with the handle. Joining a
+  handle a second time — or joining one that was detached — is a panic
+  ("thread already joined"), not a second copy of the answer.
 
 ### brew — child fibers (spec/CONCURRENCY.md)
 

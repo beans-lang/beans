@@ -9582,10 +9582,15 @@ class TreeInterpreter {
         }
         if receiver.kind == "thread" &&
            node.value == "join" {
-            if receiver.items.len() == 1 {
-                return tree_value_copy(
-                    receiver.items[0])
-            }
+            // A thread is joined once. beans_thread_join panics on a second
+            // join, and it moves the result out (t->result = 0) so the value
+            // belongs to the caller. The tree used to cache a copy on the
+            // handle instead, which made a second join answer the same value
+            // where native ends the process, and kept the handle owning a
+            // value it had already handed over — so the value's deinit ran
+            // when the handle died rather than when the binding that took it
+            // did. The cleared handle is the joined marker, the same one
+            // detach already sets.
             match receiver.thread_handle {
                 some(handle) => {
                     handle.join()
@@ -9593,7 +9598,7 @@ class TreeInterpreter {
                 none => {
                     return self.fail(
                         node,
-                        "thread has no host handle")
+                        "thread already joined")
                 }
             }
             var result: TreeValue =
@@ -9619,12 +9624,15 @@ class TreeInterpreter {
                                 }
                                 none => {}
                             }
+                            // the value moves out of the record, as
+                            // beans_thread_join zeroes t->result
+                            state.result = none
                         })
                 }
                 none => {}
             }
-            receiver.items = [
-                tree_value_copy(result)]
+            receiver.thread_handle = none
+            receiver.thread_work = none
             return result
         }
         if receiver.kind == "thread" &&
