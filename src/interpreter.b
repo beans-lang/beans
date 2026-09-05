@@ -9681,16 +9681,8 @@ class TreeInterpreter {
                         return TreeValue.result_err(
                             TreeValue.error("", "cancelled"))
                     }
-                    match work.result {
-                        some(delivered) => {
-                            return TreeValue.result_ok(
-                                tree_value_copy(delivered))
-                        }
-                        none => {
-                            return TreeValue.result_ok(
-                                TreeValue.unit())
-                        }
-                    }
+                    return TreeValue.result_ok(
+                        tree_brew_take(work))
                 }
                 none => {
                     return self.fail(
@@ -9710,6 +9702,13 @@ class TreeInterpreter {
                             node,
                             "a brewed fiber panicked with no join to catch it: {work.panic_message}")
                     }
+                    // The result nobody claimed dies here, in the
+                    // synthesized join itself — the moment
+                    // beans_brew_scope_join's brew_drop_result picks. A
+                    // panic above escalated before this line, leaving the
+                    // result on the row for the handle's own death, which
+                    // is what native does too.
+                    tree_brew_drop(work)
                     return TreeValue.unit()
                 }
                 none => {
@@ -9789,17 +9788,12 @@ class TreeInterpreter {
                                             "", "cancelled"))
                                 }
                             } else {
-                                match work.result {
-                                    some(value) => {
-                                        collected.push(
-                                            tree_value_copy(
-                                                value))
-                                    }
-                                    none => {
-                                        collected.push(
-                                            TreeValue.unit())
-                                    }
-                                }
+                                // Each value moves out of its row into
+                                // the list, the way
+                                // beans_taskgroup_collect moves it with
+                                // beans_brew_value.
+                                collected.push(
+                                    tree_brew_take(work))
                             }
                         }
                     }
@@ -10408,35 +10402,42 @@ class TreeInterpreter {
     }
 
     // Joins one finished row and dresses its outcome as Result<T> — the
-    // tree mirror of the boxed join arm the native next() builds.
+    // tree mirror of the boxed join arm the native next() builds. The
+    // value MOVES out of the row: taskgroup_detach takes the row off the
+    // list and beans_brew_value zeroes h->value, so the arm that claimed
+    // it is its only owner. A row left holding a second reference to a
+    // value it has already handed over would keep it alive until the
+    // group itself died (#124).
     fn tree_group_claim(state: TreeTaskGroupState,
                         found: int) -> TreeValue {
         let work: TreeBrewState = state.children[found]
         self.tree_brew_reap(work)
         work.joined = true
         state.delivered += 1
-        if state.delivered == state.children.len() {
-            state.children = []
-            state.delivered = 0
-        }
         if work.panicked {
+            self.tree_group_retire(state)
             return TreeValue.result_err(
                 TreeValue.error(
                     work.panic_message, "panic"))
         }
         if work.cancelled {
+            self.tree_group_retire(state)
             return TreeValue.result_err(
                 TreeValue.error("", "cancelled"))
         }
-        match work.result {
-            some(delivered) => {
-                return TreeValue.result_ok(
-                    tree_value_copy(delivered))
-            }
-            none => {
-                return TreeValue.result_ok(
-                    TreeValue.unit())
-            }
+        // Taken before the drained group empties its list, so the row's
+        // release cannot be what ends the claimed value's life.
+        let claimed: TreeValue = tree_brew_take(work)
+        self.tree_group_retire(state)
+        return TreeValue.result_ok(claimed)
+    }
+
+    // A group that has handed out every row empties its list, so a
+    // drained group is reusable — the reset taskgroup_detach makes.
+    fn tree_group_retire(state: TreeTaskGroupState) {
+        if state.delivered == state.children.len() {
+            state.children = []
+            state.delivered = 0
         }
     }
 

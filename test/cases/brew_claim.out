@@ -1,0 +1,50 @@
+-- join --
+joined j.h
+drop j.h
+mid
+end
+drop j.after
+-- one joined one left --
+joined p.a
+drop p.a
+mid
+end
+drop p.b
+drop p.after
+-- unclaimed n=1 --
+built
+drop u1.a
+drop u1.after
+drop u1.before
+-- unclaimed n=2 --
+built
+drop u2.b
+drop u2.a
+drop u2.after
+drop u2.before
+-- unclaimed n=3 --
+built
+drop u3.c
+drop u3.b
+drop u3.a
+drop u3.after
+drop u3.before
+-- kept --
+mid
+still have k.h
+end
+drop k.after
+drop k.h
+-- join twice --
+joined d.h
+drop d.h
+second: brew handle already joined
+mid
+end
+drop d.after
+-- join err --
+failed
+mid
+end
+drop f.b
+drop f.after

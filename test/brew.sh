@@ -32,6 +32,22 @@ grep -Eq '(call|invoke) void @beans_brew_scope_join\(' build/brew.ll
 grep -Eq '(call|invoke) void @beans_brew_cancel\(' build/brew.ll
 grep -q 'define i64 @spawn.thunk' build/brew.ll
 
+echo "checking a claimed Brew result dies with the arm, an unclaimed one at the join"
+# issue #124: join() MOVES the value out of the handle's row -- beans_brew_value
+# reads h->value and zeroes the slot -- so the claimed value dies with the match
+# arm that took it, and the synthesized scope join drops an unclaimed result
+# where beans_brew_scope_join's brew_drop_result does, ahead of the scope's own
+# locals. The interpreter used to hand out a copy and keep the row's reference,
+# so both died only when the handle did, a whole function later. Each case puts
+# another loud object after the brew so the two moments are told apart; with one
+# object and nothing between them the orders coincide.
+./build/beansc run test/cases/brew_claim.b >"$tmp/claim.interp"
+./build/beansc build test/cases/brew_claim.b -o "$tmp/claim.native" \
+    >"$tmp/claim.build" 2>&1
+"$tmp/claim.native" >"$tmp/claim.native.out"
+diff -u test/cases/brew_claim.out "$tmp/claim.interp"
+diff -u test/cases/brew_claim.out "$tmp/claim.native.out"
+
 echo "checking a contained panic unwinds its frames on both backends"
 # issue #44: a panic caught by join runs every frame's defers newest-first and
 # drops what it owns on the way to the fiber entry — not abandoned. The golden
