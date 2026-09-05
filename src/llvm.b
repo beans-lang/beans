@@ -210,6 +210,7 @@ partial class LlvmTextEmitter {
         self.unwind_temp_order = []
         self.unwind_temp_position = {}
         self.unwind_local_position = {}
+        self.unwind_construct_flag = {}
         self.unwind_position = 0
         self.errors = []
         self.encoding_intrinsics = {}
