@@ -193,6 +193,8 @@ fi
 bridge_rate=$(sort -nr "$tmp/bridge.txt" | head -1)
 typed_rate=$(sort -nr "$tmp/typed_rate.txt" | head -1)
 typed_line="std.http: ${typed_rate} MB/s"
+echo "raw scan ${raw_rate} MB/s | copying C ${copy_rate} MB/s |" \
+     "bridge ${bridge_rate} MB/s | ${typed_line}"
 if [ "$((bridge_rate * 2))" -lt "$copy_rate" ]; then
     echo "the bridge fell below half the copying-C baseline (${bridge_rate} vs ${copy_rate} MB/s)" >&2
     exit 1
@@ -225,8 +227,7 @@ if [ "$budget_status" -eq 2 ]; then
     paste "$tmp/bridge.txt" "$tmp/typed_rate.txt" >&2
     exit 1
 fi
-echo "raw scan ${raw_rate} MB/s | copying C ${copy_rate} MB/s |" \
-     "bridge ${bridge_rate} MB/s | ${typed_line} | best typed:bridge 1:${ratio}"
+echo "best typed:bridge over three paired rounds 1:${ratio} (budget 1:7)"
 if [ "$budget_status" -ne 0 ]; then
     echo "the public typed parser fell below one seventh of its bridge" \
          "(best of three paired rounds was 1:${ratio}; ${typed_line}," \
