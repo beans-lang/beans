@@ -82,6 +82,18 @@ echo "checking a construction that does not finish runs no deinit on either back
 diff -u test/cases/init_unwind.out "$tmp/initunwind.interp"
 diff -u test/cases/init_unwind.out "$tmp/initunwind.native.out"
 
+# Initializer.call() is construction too, so the same rule holds under
+# reflection. The interpreter kept the half-built object in its reflect value
+# registry, where nothing released it until the exit-time cycle sweep -- which
+# then handed it to its own deinit, long after the unwind, and ended a
+# contained panic with an "has no initialized field" report at exit.
+./build/beansc run test/cases/init_unwind_reflect.b >"$tmp/initreflect.interp"
+./build/beansc build test/cases/init_unwind_reflect.b \
+    -o "$tmp/initreflect.native" >"$tmp/initreflect.build" 2>&1
+"$tmp/initreflect.native" >"$tmp/initreflect.native.out"
+diff -u test/cases/init_unwind_reflect.out "$tmp/initreflect.interp"
+diff -u test/cases/init_unwind_reflect.out "$tmp/initreflect.native.out"
+
 echo "checking a failed construction returns every byte it took"
 # The golden above says no deinit ran; this says the object still came back.
 # Skipping a deinit body is exactly how a release gets dropped instead, and a

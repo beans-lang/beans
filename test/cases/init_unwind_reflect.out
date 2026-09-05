@@ -1,0 +1,8 @@
+-- reflective init panics --
+  err runtime panic at 26:25: reflect boom
+  after
+-- reflective init finishes --
+  built fine a=7
+  ok 7
+  after
+end

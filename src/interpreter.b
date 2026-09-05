@@ -2189,6 +2189,7 @@ class TreeInterpreter {
                         }
                     }
                     var result: TreeValue = TreeValue.unit()
+                    var unbuilt: bool = false
                     if constructing {
                         if declaration.kind == "struct" {
                             result = new TreeValue("record")
@@ -2219,6 +2220,7 @@ class TreeInterpreter {
                                 // an initializer that panicked leaves an
                                 // object no `deinit` may be handed (#120)
                                 self.unbuilt_object = result.object_id
+                                unbuilt = true
                             }
                         }
                     } else {
@@ -2238,6 +2240,17 @@ class TreeInterpreter {
                             self.reflect_values.remove(handles[index])
                             self.reflect_value_types.remove(handles[index])
                         }
+                    }
+                    if unbuilt {
+                        // A construction that did not finish answers no
+                        // handle: keeping the half-built object in the
+                        // reflect registry left it for the exit-time cycle
+                        // sweep, which handed it to its own deinit long
+                        // after the unwind that made it -- the very body
+                        // #120 forbids. Dropping it here is where the
+                        // construction unwind releases it, so the id armed
+                        // above is what silences that one death.
+                        return TreeValue.integer(0)
                     }
                     let handle: int = self.next_reflect_value
                     self.next_reflect_value += 1
