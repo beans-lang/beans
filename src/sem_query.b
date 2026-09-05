@@ -72,7 +72,7 @@ fn semantic_build(entry: string,
     semantic_copy_diagnostics(signatures.hir.errors, snapshot)
 
     let expressions: ExpressionChecker =
-        new ExpressionChecker(signatures)
+        signatures.expression_checker()
     expressions.run()
     snapshot.expressions = some(expressions)
     semantic_copy_diagnostics(expressions.errors, snapshot)
