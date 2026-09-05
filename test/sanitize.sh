@@ -136,6 +136,14 @@ run_asan test/cases/parity/record_place.b record_place
 # under a sweep, not as a wrong count.
 run_asan test/cases/parity/static_place.b static_place
 run_asan test/cases/parity/try_ownership.b try_ownership
+# #123: a generic class that extends another lays its fields out through the
+# chain its `extends` pins, and mints a pointer mask per argument list — the
+# same class traces a field in one instantiation and must not in the other.
+# The arc markers count releases; only a sanitizer says whether the collector
+# followed a word that was never a pointer, or skipped one that was. The chain
+# case is the same question at depth, with a deinit twenty links up.
+run_asan test/cases/parity/generic_subclass.b generic_subclass
+run_asan test/cases/parity/deep_chain.b deep_chain
 run_asan examples/regress_mem.b regress_mem 3
 run_asan test/cases/decimal_precision.b decimal_precision
 run_asan test/cases/decimal_extrema.b decimal_extrema

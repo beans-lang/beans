@@ -4,6 +4,40 @@ This file records user-facing changes in each Beans release.
 
 ## [Unreleased]
 
+### Added
+
+- **A generic class may now extend another class.** The language did not have
+  this: `spec/SYNTAX.md` said "a generic class may implement interfaces but
+  still may not extend a base class", and the native backend refused every such
+  shape at build time. Nothing enforced it earlier, though — `beansc check`
+  passed the program and the tree interpreter ran it, so the refusal arrived
+  from the emitter, about the emitter: *"LLVM emitter cannot form class layout
+  'main.Empty<int>': its pointer mask or class shape exceeds runtime metadata
+  capacity"*, printed for a class with no fields at all. The restriction is
+  lifted rather than moved into the checker, because `class Mid<T> extends
+  Base<T>` is the plainest generic inheritance there is.
+
+  A generic class may extend a plain class, a generic base at its own parameter
+  (`class Sub<T> extends Base<T>`), or one pinned at a concrete argument (`class
+  Sub<T> extends Base<int>`), and may extend and implement at the same time.
+  Each instantiation is its own class: `Sub<int>` and `Sub<string>` get their
+  own field offsets and their own method table, so a field typed at the
+  parameter is a traced reference in one instantiation and a plain word in the
+  other. An override a generic class declares wins for every receiver,
+  including one written at the base. This is new code that compiles, not a
+  change to code that already did. (#123)
+
+  **`as?` still cannot name an instantiation.** `b as? Sub<int>` is refused: a
+  downcast is decided at run time from the object's own class, and an object
+  does not carry its type arguments, so `Sub<int>` and `Sub<string>` cannot be
+  told apart there — the interpreter would answer yes where the native backend
+  answers no. The message now says that instead of denying a parent/child
+  relation that does hold. What is newly allowed is the other direction: the
+  *source* of an `as?` may be written at an instantiation, so `c: Crate<int>` can
+  be tested against a non-generic class that extends `Crate<int>`. That was
+  refused before for no reason — the target carries the runtime identity, and
+  it is a plain class. (#123)
+
 ### Changed
 
 - **`+` on a string is refused by the checker.** The language has never had
@@ -19,6 +53,17 @@ This file records user-facing changes in each Beans release.
   strings with `+` and never ran a native build will stop passing `check`, and
   must use interpolation, `std.fmt`, `list.join(sep)` or `fmt.StringBuilder`.
   (#133)
+
+### Fixed
+
+- **A class chain deeper than 32 links builds.** The emitter capped the walk at
+  32 and reported giving up as *"its pointer mask or class shape exceeds
+  runtime metadata capacity"* — so a 41-link hierarchy of ordinary, non-generic
+  classes passed `check`, ran under the interpreter, and then failed the build
+  with a message about metadata that had nothing to do with it. The only real
+  bound is the program's own class count: a class appears at most once in an
+  acyclic chain, and an inheritance cycle is already refused at the
+  declaration. (#123)
 
 ## [0.1.38] - 2026-09-05
 

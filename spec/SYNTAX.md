@@ -1968,8 +1968,60 @@ Producer<int>>(p: P)` accepts only implementors pinned to `int`, and a bound
 may forward the call's own parameters, as in `fn twice<U, P implements
 Producer<U>>`. A class may also extend a generic base at a concrete
 argument — `class IntHolder extends Holder<int>` — and two subclasses may
-pin the same base differently. A generic class may implement interfaces but
-still may not extend a base class.
+pin the same base differently.
+
+**A generic class inherits like any other.** It may extend a plain class, a
+generic base at its own parameter (`class Sub<T> extends Base<T>`), or one
+pinned at a concrete argument (`class Sub<T> extends Base<int>`), and it may
+extend and implement at once. Each instantiation is its own class: `Sub<int>`
+and `Sub<string>` have their own field offsets and their own method table, so a
+field typed at the parameter is a traced reference in one instantiation and a
+plain word in the other, and subclasses of the two are unrelated types. A
+method a generic class overrides wins over the base's for every receiver,
+including one written at the base. A class chain is bounded only by the number
+of classes in the program — a cycle is refused at the declaration, and nothing
+else caps its depth.
+
+**`as?` cannot name an instantiation.** `b as? Sub<int>` is refused, and not
+because the relation is missing — `Sub<int>` really is a child of `Base<int>`.
+A downcast is decided at run time from the object's own class, and an object
+does not carry its type arguments, so `Sub<int>` and `Sub<string>` cannot be
+told apart there. The downcast that does work reads the other way round: the
+*source* may be written at an instantiation, and the target is a non-generic
+class that extends it.
+
+```
+class Crate<T> {
+    v: T
+    fn init(v: T) { self.v = v }
+}
+class IntLeaf extends Crate<int> { fn init() { super.init(1) } }
+
+fn probe(c: Crate<int>) -> string {
+    match c as? IntLeaf {          // allowed: the target is a plain class
+        some(leaf) => { return "leaf" }
+        none => { return "other" }
+    }
+}
+```
+
+```
+class Base<T> {
+    v: T
+    fn init(v: T) { self.v = v }
+    fn weight() -> int { return 1 }
+}
+class Sub<T> extends Base<T> {
+    fn init(v: T) { super.init(v) }
+    override fn weight() -> int { return 2 }
+}
+class Leaf extends Sub<int> { fn init() { super.init(9) } }
+
+fn weigh(b: Base<int>) -> int { return b.weight() }
+weigh(new Sub<int>(1))     // 2
+weigh(new Leaf())          // 2
+weigh(new Base<int>(1))    // 1
+```
 
 ```
 interface Producer<T> {

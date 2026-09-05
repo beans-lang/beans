@@ -2494,6 +2494,31 @@ class ExpressionChecker {
         }
     }
 
+    // A class type written with its type arguments: `Sub<int>`, not the bare
+    // `Sub` and not a plain class.
+    fn is_generic_instance_class(type: HirType) -> bool {
+        if type.args.len() == 0 { return false }
+        match self.declaration_for(type) {
+            some(declaration) => {
+                return declaration.kind == "class" &&
+                       declaration.generics.len() ==
+                           type.args.len()
+            }
+            none => { return false }
+        }
+    }
+
+    // What `as?` may test *from*. The source is only the static type of the
+    // expression — the test itself reads the object's runtime class — so an
+    // instantiation is as good a source as a plain class. Refusing it put the
+    // one downcast a generic hierarchy can express, to a non-generic class
+    // that extends the instantiation, out of reach along with the one that
+    // cannot work.
+    fn is_downcast_source(type: HirType) -> bool {
+        return self.is_plain_class(type) ||
+               self.is_generic_instance_class(type)
+    }
+
     fn is_plain_class(type: HirType) -> bool {
         if type.args.len() != 0 { return false }
         match self.declaration_for(type) {
@@ -11601,7 +11626,21 @@ class ExpressionChecker {
                     node,
                     "cannot copy move-only {render_hir_type(target)} out of reflect.Value; move the Value to take it")
             } else if !reflect_value &&
-                      (!self.is_plain_class(value.type) ||
+                      self.is_generic_instance_class(target) {
+                // Refused for a reason of its own, and saying so beats the
+                // parent/child message below, which would deny a relation that
+                // does hold: `Sub<int>` really is a child of `Base<int>`. The
+                // test is decided at run time from the object's class, and the
+                // tree interpreter carries no type arguments on an object —
+                // every instantiation of a class is one runtime name there — so
+                // it answers yes for a `G<string>` held as a `G<int>` where the
+                // native backend, which numbers each instantiation, answers no.
+                // Refusing is the only answer both backends can give.
+                self.fail(
+                    node,
+                    "as? cannot test for {render_hir_type(target)}: a downcast is decided at run time from the object's own class, and an object does not carry its type arguments — every instantiation of '{display_symbol(target.name)}' is one class there. Downcast to a non-generic class that extends {render_hir_type(target)} instead")
+            } else if !reflect_value &&
+                      (!self.is_downcast_source(value.type) ||
                        !self.is_plain_class(target) ||
                        hir_types_equal(value.type, target) ||
                        !self.is_subtype(target, value.type)) {

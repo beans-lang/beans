@@ -27,6 +27,24 @@ test "$(grep -c ': error:' "$tmp/diagnostics_interpolation_bad")" -eq 3
 grep -Fq ":6:21: error: unknown name 'missing_last'" \
     "$tmp/diagnostics_interpolation_bad"
 
+# #123: `as?` cannot name a generic instantiation, and the refusal has to say
+# why rather than deny a relation that holds — `Sub<int>` really is a child of
+# `Base<int>`. A downcast is decided at run time from the object's class, and
+# the interpreter carries no type arguments on an object, so relaxing this makes
+# the two backends disagree: the interpreter answers yes for a `G<string>` held
+# as a plain base where the native backend answers no. Two errors, one per
+# shape, so a change that only handles the direct base is caught too.
+check_bad generic_downcast_bad
+grep -Fq "error: as? cannot test for main.Sub<int>: a downcast is decided at run time" \
+    "$tmp/generic_downcast_bad"
+grep -Fq "every instantiation of 'main.Sub' is one class there" \
+    "$tmp/generic_downcast_bad"
+grep -Fq "Downcast to a non-generic class that extends main.Sub<int> instead" \
+    "$tmp/generic_downcast_bad"
+grep -Fq "error: as? cannot test for main.G<int>" \
+    "$tmp/generic_downcast_bad"
+test "$(grep -c ': error:' "$tmp/generic_downcast_bad")" -eq 2
+
 check_bad diagnostics_missing_import_bad
 grep -Fq ":1:1: error: no module 'std.nonexistent'" \
     "$tmp/diagnostics_missing_import_bad"
