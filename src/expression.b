@@ -7019,10 +7019,24 @@ class ExpressionChecker {
                     node,
                     "'{operation}' needs matching SIMD vectors")
             }
-        } else if operation == "+" && left.type.name == "string" {
-            if right.type.name != "string" {
-                self.fail(node, "string '+' needs another string")
-            }
+        } else if operation == "+" &&
+                  (canonical_hir_name(left.type.name) ==
+                       "string" ||
+                   canonical_hir_name(right.type.name) ==
+                       "string") {
+            // A string has no `+` (spec/SYNTAX.md, "Strings"). The checker
+            // took it anyway and the tree interpreter joined the two, so a
+            // program that passed `check` and printed the right answer under
+            // `beansc run` met the rule only at release build time — and met
+            // it as a message about the LLVM emitter rather than about the
+            // program. Refusing here is the language's own answer, the shape
+            // `+=` on a string has always had. Either side being a string
+            // reaches this: `n + text` is the same mistake written the other
+            // way round, and the numeric branch below would answer it with
+            // "needs matching numbers", which names the wrong rule.
+            self.fail(
+                node,
+                "'+' is not defined for string — write the pieces as one interpolated string, \"\{a\}\{b\}\", or push them onto a fmt.StringBuilder and call to_string() once")
         } else if operation == "+" || operation == "-" ||
                   operation == "*" || operation == "/" ||
                   operation == "%" {
