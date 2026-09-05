@@ -24,6 +24,13 @@ export BEANS_RUNTIME=runtime/beans_rt.c BEANS_STDLIB=stdlib/std \
        BEANS_ENCODING=runtime/encoding BEANS_NET=runtime/net BEANS_LOG=runtime/log
 # An out-of-memory panic legitimately leaves memory held, so the sanitizer pass
 # is checking use-after-free and overflow, not leaks.
+# sanitizer-gate: leaks are off here on purpose (detect_leaks=0) -- the whole
+# point of the sweep is to stop the program mid-allocation, and every injected
+# failure ends in a panic that never gets to unwind. A LeakSanitizer report
+# would fire on every one of the 251 points and say nothing about the defect
+# this gate exists to catch. `sweep` still classifies every exit status, so an
+# AddressSanitizer or UndefinedBehaviorSanitizer abort lands in the crash
+# bucket and is printed.
 export ASAN_OPTIONS=detect_leaks=0
 
 echo "emitting the OOM probe's IR"

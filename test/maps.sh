@@ -22,8 +22,17 @@ grep -q "map index assignment only supports '='" "$tmp/compound.bad"
 
 clang -O1 -g -pthread -fsanitize=address -Wno-override-module \
     build/map_models.ll build/beans_rt.c -lm -o "$tmp/asan"
-BEANS_NO_POOL=1 "$tmp/asan" >"$tmp/asan.out" 2>"$tmp/asan.err"
-if grep -q 'AddressSanitizer' "$tmp/asan.err"; then
+# A leak is a sanitizer failure like any other: LeakSanitizer rides inside
+# ASan on Linux and reports at exit, which makes the run exit non-zero. Hold
+# the status before reading the report, or this dies under `set -e` with the
+# report still unread in the capture file.
+if ! BEANS_NO_POOL=1 "$tmp/asan" >"$tmp/asan.out" 2>"$tmp/asan.err"; then
+    cat "$tmp/asan.err" >&2
+    echo "map_models exited non-zero under the sanitizers" >&2
+    exit 1
+fi
+if grep -Eq 'AddressSanitizer|UndefinedBehaviorSanitizer|LeakSanitizer' \
+    "$tmp/asan.err"; then
     cat "$tmp/asan.err" >&2
     exit 1
 fi
@@ -65,9 +74,18 @@ grep -q "map changed during iteration" "$tmp/mutation.out"
 
 clang -O1 -g -pthread -fsanitize=address -Wno-override-module \
     build/map_iteration.ll build/beans_rt.c -lm -o "$tmp/iteration.asan"
-BEANS_NO_POOL=1 "$tmp/iteration.asan" \
-    >"$tmp/iteration.asan.out" 2>"$tmp/iteration.asan.err"
-if grep -q 'AddressSanitizer' "$tmp/iteration.asan.err"; then
+# A leak is a sanitizer failure like any other: LeakSanitizer rides inside
+# ASan on Linux and reports at exit, which makes the run exit non-zero. Hold
+# the status before reading the report, or this dies under `set -e` with the
+# report still unread in the capture file.
+if ! BEANS_NO_POOL=1 "$tmp/iteration.asan" \
+        >"$tmp/iteration.asan.out" 2>"$tmp/iteration.asan.err"; then
+    cat "$tmp/iteration.asan.err" >&2
+    echo "map_iteration exited non-zero under the sanitizers" >&2
+    exit 1
+fi
+if grep -Eq 'AddressSanitizer|UndefinedBehaviorSanitizer|LeakSanitizer' \
+    "$tmp/iteration.asan.err"; then
     cat "$tmp/iteration.asan.err" >&2
     exit 1
 fi

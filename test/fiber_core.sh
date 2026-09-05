@@ -76,7 +76,22 @@ grep -q "fiber 'hopeless' parked" "$tmp/deadlock.log"
 echo "checking under AddressSanitizer"
 if clang -O1 -g -std=c11 -fsanitize=address \
     runtime/beans_fiber.c test/fiber_core.c -o "$tmp/fiber_asan" -lpthread; then
-    "$tmp/fiber_asan"
+    # A leak is a sanitizer failure like any other: LeakSanitizer rides inside
+    # ASan on Linux and reports at exit, which makes the run exit non-zero.
+    # Hold the status before reading the report, or this dies under `set -e`
+    # with the report still unread in the capture file.
+    if ! "$tmp/fiber_asan" >"$tmp/asan.stdout" 2>"$tmp/asan.stderr"; then
+        cat "$tmp/asan.stdout"
+        sed -n '1,160p' "$tmp/asan.stderr" >&2
+        echo "the fiber core exited non-zero under the sanitizers" >&2
+        exit 1
+    fi
+    cat "$tmp/asan.stdout"
+    if grep -Eq 'AddressSanitizer|UndefinedBehaviorSanitizer|LeakSanitizer' \
+        "$tmp/asan.stderr"; then
+        sed -n '1,160p' "$tmp/asan.stderr" >&2
+        exit 1
+    fi
 else
     echo "ASan unavailable here; skipped" >&2
 fi
