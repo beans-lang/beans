@@ -219,7 +219,9 @@ ratio=$(paste "$tmp/bridge.txt" "$tmp/typed_rate.txt" |
                 print "no round produced two usable rates" > "/dev/stderr"
                 exit 2
             }
-            printf "%.3f\n", best
+            # Four places, so a ratio that fails by a hair does not print as
+            # the limit it just missed.
+            printf "%.4f\n", best
             if (best > limit) exit 1
         }') || budget_status=$?
 if [ "$budget_status" -eq 2 ]; then
