@@ -670,12 +670,187 @@ fn main() {{
     )
 
 
+def generic_inheritance_program(rng):
+    """A generic class that *extends* — the axis every other generator misses.
+
+    generic_interface_program crosses generics with `implements`, and
+    class_graph_program builds deep chains out of plain classes. Neither ever
+    writes `class G<T> extends ...`, which is why #123 survived: a generic
+    class with a base could not be laid out natively at all, and no generated
+    program could reach the shape to say so.
+
+    The chain here is plain, plain, then one to three generic links stacked at
+    the same parameter, and both a plain and a generic leaf below them. That
+    puts a generic class above another generic class, below a plain one, and
+    in the middle of a chain, and it does it at two different arguments so a
+    layout, a pointer mask and a symbol key are each asked more than once.
+
+    The oracle counts as well as answers. A construction or release that runs
+    twice prints the same numbers as one that runs once, so the tallies are
+    what catch a base body chained in twice or dropped — and dropping one is
+    exactly what a deinit on a generic middle link used to do.
+    """
+    depth = rng.randint(1, 3)
+    base = rng.randint(2, 30)
+    steps = [rng.randint(1, 12) for _ in range(depth)]
+    tag = rng.randint(1, 40)
+    mark = rng.randint(1, 40)
+    leaf_held = rng.randint(2, 30)
+    tail_int = rng.randint(2, 30)
+    copies = rng.randint(2, 5)
+
+    definitions = []
+    # GMid1 is the first generic link: it extends a plain class and implements
+    # an interface at the same time, so both relation kinds meet on one
+    # generic class. It carries the T-typed field and the only override.
+    definitions.append(f'''class GMid1<T> extends GBridge implements Marked {{
+    pub held: T
+
+    fn init(held: T) {{
+        self.held = held
+        super.init()
+    }}
+
+    fn deinit() {{ Tally.released += 1 }}
+
+    pub override fn weight() -> int {{
+        return self.base + {steps[0]}
+    }}
+}}''')
+    # each further link is a generic class extending a generic class at the
+    # same parameter, adding a plain field so the layout differs per level
+    for level in range(2, depth + 1):
+        definitions.append(f'''class GMid{level}<T> extends GMid{level - 1}<T> {{
+    pub extra{level}: int
+
+    fn init(held: T) {{
+        self.extra{level} = {steps[level - 1]}
+        super.init(held)
+    }}
+}}''')
+
+    extra_reads = "".join(
+        f" + leaf.extra{level}" for level in range(2, depth + 1)
+    )
+    source = f'''import std.io
+
+class Tally {{
+    static built: int = 0
+    static released: int = 0
+}}
+
+interface Marked {{
+    fn mark() -> int {{ return {mark} }}
+}}
+
+class GRoot {{
+    pub base: int
+
+    fn init(base: int) {{
+        self.base = base
+        Tally.built += 1
+    }}
+
+    fn deinit() {{ Tally.released += 1 }}
+
+    pub fn weight() -> int {{ return self.base }}
+
+    pub fn tag() -> int {{ return {tag} }}
+}}
+
+// a plain class between the root and the generic links: it is the only
+// ancestor above a generic link that `as?` is allowed to name, so it is what
+// makes the class-parent walk cross one
+class GBridge extends GRoot {{
+    fn init() {{ super.init({base}) }}
+}}
+
+{chr(10).join(definitions)}
+
+// a plain leaf under the generic stack, and a generic one at two arguments
+class GLeafInt extends GMid{depth}<int> {{
+    fn init() {{ super.init({leaf_held}) }}
+}}
+
+class GTail<T> extends GMid{depth}<T> {{
+    fn init(held: T) {{ super.init(held) }}
+}}
+
+fn bridged(r: GRoot) -> int {{
+    match r as? GBridge {{
+        some(found) => {{ return 1 }}
+        none => {{ return 0 }}
+    }}
+}}
+
+fn work() -> int {{
+    var total: int = 0
+    let plain: GRoot = new GRoot({base})
+    total += plain.weight() + plain.tag()
+
+    let leaf: GLeafInt = new GLeafInt()
+    total += leaf.weight() + leaf.tag() + leaf.held{extra_reads}
+
+    let ti: GTail<int> = new GTail<int>({tail_int})
+    total += ti.weight() + ti.held
+
+    let ts: GTail<string> = new GTail<string>("s")
+    total += ts.weight() + ts.held.len()
+
+    // dispatch through a base-typed receiver: `weight` is overridden on the
+    // first generic link, `tag` is inherited and never replaced — the
+    // inherited row is the one that used to emit null
+    var many: List<GRoot> = []
+    var index: int = 0
+    for index < {copies} {{
+        many.push(new GLeafInt())
+        index += 1
+    }}
+    for r: GRoot in many {{
+        total += r.weight() + r.tag()
+    }}
+    return total
+}}
+
+fn main() {{
+    let total: int = work()
+    io.println("{{total}}")
+    // everything work() built is out of scope by now
+    io.println("{{Tally.built}} {{Tally.released}}")
+    let live: GTail<int> = new GTail<int>({tail_int})
+    let bare: GRoot = new GRoot({base})
+    io.println("{{bridged(live)}} {{bridged(bare)}} {{live.mark()}} {{live.tag()}}")
+}}
+'''
+    deep_weight = base + steps[0]
+    extras = sum(steps[1:])
+    total = base + tag
+    total += deep_weight + tag + leaf_held + extras
+    total += deep_weight + tail_int
+    total += deep_weight + 1
+    total += copies * (deep_weight + tag)
+    # one plain root plus three objects at or below the first generic link,
+    # then one leaf per copy; the root's release runs for every one of them
+    # and the generic link's for all but the plain root
+    built = 4 + copies
+    released = built + (3 + copies)
+    expected = (
+        f"{total}\n"
+        f"{built} {released}\n"
+        f"1 0 {mark} {tag}\n"
+    )
+    return Program(
+        "generic-inheritance", {"main.b": source}, "main.b", expected
+    )
+
+
 VALID_GENERATORS = (
     class_graph_program,
     singleton_static_program,
     generic_struct_program,
     package_graph_program,
     generic_interface_program,
+    generic_inheritance_program,
 )
 
 
