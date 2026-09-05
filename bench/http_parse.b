@@ -4,7 +4,9 @@
 // through the public std.http RequestParser with all events consumed. The
 // The native bridge has its own near-llhttp gate. This lane constructs the
 // public Request, Headers, body, and event values too, and test/http.sh keeps
-// that typed work within 6x of the bridge on the same machine.
+// that typed work within 7x of the bridge on the same machine. It said 6x here
+// while the gate has enforced 7 since eaa7540; that widening was compensating
+// for the measurement bug fixed below, not for the parser.
 //
 // Prints MB/s; test/http.sh compares against the C reference built from
 // the same vendored sources.
@@ -54,10 +56,19 @@ fn main() {
     }
     let elapsed: int = time.monotonic_nanos() - started
     let total: int = wire.len() * rounds
-    // MB/s with two decimals, in integer math.
-    let mb_hundredths: int = total * 100000 * 1000 / 1048576 / elapsed * 1000
+    // MB/s with two decimals, in integer math. Scale first and divide by the
+    // elapsed nanoseconds last: the old form divided by `elapsed` in the
+    // middle, and 8.9e9 over a few hundred million nanoseconds is a two-digit
+    // integer, so the trailing * 1000 could only ever land on a multiple of
+    // 10.00 MB/s. Every reading was truncated down to the next lower ten and
+    // the "two decimals" were always ".0" -- a systematic downward bias of up
+    // to 10 MB/s, which at the ~130 MB/s test/http.sh sees on a CI runner is
+    // 7.7% of the reading (issue #105).
+    let mb_hundredths: int = total * 100000 / 1048576 * 1000000 / elapsed
     let whole: int = mb_hundredths / 100
     let frac: int = mb_hundredths % 100
+    var frac_text: string = "{frac}"
+    if frac < 10 { frac_text = "0{frac}" }
     io.println("std.http: {total / 1048576} MB, {heads} messages, {body_bytes / 1048576} MB body")
-    io.println("std.http: {whole}.{frac} MB/s")
+    io.println("std.http: {whole}.{frac_text} MB/s")
 }

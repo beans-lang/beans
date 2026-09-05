@@ -165,27 +165,73 @@ fn main() {
 }
 EOF
 "$beansc" build "$tmp/bench_bridge.b" --release -o "$tmp/bench_bridge" >/dev/null 2>&1
-: >"$tmp/bridge.txt"
-for sample in 1 2 3; do
-    "$tmp/bench_bridge" >>"$tmp/bridge.txt"
-done
-bridge_rate=$(sort -nr "$tmp/bridge.txt" | head -1)
 "$beansc" build bench/http_parse.b --release -o "$tmp/bench_typed" >/dev/null 2>&1
+# Interleave the two lanes and keep each round's pair together. Both benches
+# are single-threaded and sub-second, so a runner that steals a core slows both
+# of a round's measurements; dividing them inside the round cancels the
+# machine's speed out of the ratio, where the best of one lane over the best of
+# the other leaves that factor in for the budget to absorb.
+: >"$tmp/bridge.txt"
 : >"$tmp/typed.txt"
 for sample in 1 2 3; do
+    "$tmp/bench_bridge" >>"$tmp/bridge.txt"
     "$tmp/bench_typed" | tail -1 >>"$tmp/typed.txt"
 done
-typed_rate=$(sed -n 's/^std\.http: \([0-9][0-9.]*\) MB\/s$/\1/p' "$tmp/typed.txt" | sort -nr | head -1)
+sed -n 's/^std\.http: \([0-9][0-9.]*\) MB\/s$/\1/p' "$tmp/typed.txt" \
+    >"$tmp/typed_rate.txt"
+# `paste` lines the two lanes up by position, so a lane that printed a
+# different number of rows would pair a round with somebody else's round and
+# still produce a plausible ratio. Count first.
+bridge_seen=$(wc -l <"$tmp/bridge.txt" | tr -d '[:space:]')
+typed_seen=$(wc -l <"$tmp/typed_rate.txt" | tr -d '[:space:]')
+if [ "$bridge_seen" -ne 3 ] || [ "$typed_seen" -ne 3 ]; then
+    echo "expected three rounds from each throughput lane, got ${bridge_seen}" \
+         "from the bridge and ${typed_seen} from std.http" >&2
+    cat "$tmp/bridge.txt" "$tmp/typed.txt" >&2
+    exit 1
+fi
+bridge_rate=$(sort -nr "$tmp/bridge.txt" | head -1)
+typed_rate=$(sort -nr "$tmp/typed_rate.txt" | head -1)
 typed_line="std.http: ${typed_rate} MB/s"
-echo "raw scan ${raw_rate} MB/s | copying C ${copy_rate} MB/s | bridge ${bridge_rate} MB/s | ${typed_line}"
 if [ "$((bridge_rate * 2))" -lt "$copy_rate" ]; then
     echo "the bridge fell below half the copying-C baseline (${bridge_rate} vs ${copy_rate} MB/s)" >&2
     exit 1
 fi
-typed_rate=${typed_rate%%.*}
-if ! [[ "$typed_rate" =~ ^[0-9]+$ ]] ||
-   [ "$((typed_rate * 7))" -lt "$bridge_rate" ]; then
-    echo "the public typed parser fell below one seventh of its bridge (${typed_line}, bridge ${bridge_rate} MB/s)" >&2
+# The budget is unchanged at one seventh, and the comparison no longer throws
+# the typed rate's fraction away. `typed_rate=${typed_rate%%.*}` rounded it
+# *down* to a whole MB/s before multiplying, which demanded up to a whole MB/s
+# of headroom the measurement does not have; issue #105 failed here at
+# 130 x 7 = 910 against a bridge of 912. The larger half of that failure was in
+# the bench, which reported the typed rate only in multiples of 10 MB/s and
+# always rounded down -- 7.7% low at the rate this gate sees on a CI runner.
+# Both are fixed; the ratio is not widened.
+budget_status=0
+ratio=$(paste "$tmp/bridge.txt" "$tmp/typed_rate.txt" |
+    awk -v limit=7 '
+        $1 + 0 > 0 && $2 + 0 > 0 {
+            r = ($1 + 0) / ($2 + 0)
+            if (n++ == 0 || r < best) best = r
+        }
+        END {
+            if (n == 0) {
+                print "no round produced two usable rates" > "/dev/stderr"
+                exit 2
+            }
+            printf "%.3f\n", best
+            if (best > limit) exit 1
+        }') || budget_status=$?
+if [ "$budget_status" -eq 2 ]; then
+    echo "the throughput lanes measured nothing; this gate checked nothing" >&2
+    paste "$tmp/bridge.txt" "$tmp/typed_rate.txt" >&2
+    exit 1
+fi
+echo "raw scan ${raw_rate} MB/s | copying C ${copy_rate} MB/s |" \
+     "bridge ${bridge_rate} MB/s | ${typed_line} | best typed:bridge 1:${ratio}"
+if [ "$budget_status" -ne 0 ]; then
+    echo "the public typed parser fell below one seventh of its bridge" \
+         "(best of three paired rounds was 1:${ratio}; ${typed_line}," \
+         "bridge ${bridge_rate} MB/s)" >&2
+    paste "$tmp/bridge.txt" "$tmp/typed_rate.txt" >&2
     exit 1
 fi
 
