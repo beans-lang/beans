@@ -1969,14 +1969,14 @@ told apart there. The downcast that does work reads the other way round: the
 class that extends it.
 
 ```
-class Box<T> {
+class Crate<T> {
     v: T
     fn init(v: T) { self.v = v }
 }
-class IntLeaf extends Box<int> { fn init() { super.init(1) } }
+class IntLeaf extends Crate<int> { fn init() { super.init(1) } }
 
-fn probe(b: Box<int>) -> string {
-    match b as? IntLeaf {          // allowed: the target is a plain class
+fn probe(c: Crate<int>) -> string {
+    match c as? IntLeaf {          // allowed: the target is a plain class
         some(leaf) => { return "leaf" }
         none => { return "other" }
     }

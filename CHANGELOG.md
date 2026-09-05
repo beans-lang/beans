@@ -33,8 +33,8 @@ This file records user-facing changes in each Beans release.
   told apart there — the interpreter would answer yes where the native backend
   answers no. The message now says that instead of denying a parent/child
   relation that does hold. What is newly allowed is the other direction: the
-  *source* of an `as?` may be written at an instantiation, so `b: Box<int>` can
-  be tested against a non-generic class that extends `Box<int>`. That was
+  *source* of an `as?` may be written at an instantiation, so `c: Crate<int>` can
+  be tested against a non-generic class that extends `Crate<int>`. That was
   refused before for no reason — the target carries the runtime identity, and
   it is a plain class. (#123)
 
