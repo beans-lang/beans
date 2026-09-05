@@ -240,6 +240,36 @@ fn hefted(b: HBase<int>) -> string {
     return "{b.carry()}/{b.heft()}"
 }
 
+// ---- I: the override sits on an *abstract* generic class between the base
+// and the concrete leaf. An abstract class is never the runtime class behind a
+// receiver, so it is passed over as a candidate — which leaves the concrete
+// leaf's chain walk as the only place its override can be noticed, and that
+// walk reads the record of which slots a name declares. A template's name got
+// no entry in that record, so the override was invisible and the call
+// compiled direct to the base body. Two instantiations of the abstract link,
+// because the record is keyed by the declaration and one proves nothing about
+// the other.
+class IBase<T> {
+    v: T
+    fn init(v: T) { self.v = v }
+    fn heft() -> int { return 1 }
+}
+abstract class IAbs<T> extends IBase<T> {
+    fn init(v: T) { super.init(v) }
+    override fn heft() -> int { return 2 }
+    abstract fn name() -> string
+}
+class IConc extends IAbs<int> {
+    fn init() { super.init(1) }
+    override fn name() -> string { return "i-int" }
+}
+class IStr extends IAbs<string> {
+    fn init() { super.init("s") }
+    override fn name() -> string { return "i-str" }
+}
+fn i_heft(b: IBase<int>) -> int { return b.heft() }
+fn i_heft_str(b: IBase<string>) -> int { return b.heft() }
+
 fn main() {
     // A — every field shape, twice over
     let a1: AEmpty<int> = new AEmpty<int>("a_empty_int")
@@ -292,5 +322,9 @@ fn main() {
     io.println("H {hefted(new HBase<int>(1))} {hefted(new HGenSub<int>(2))}")
     io.println("H {hefted(new HLeaf())} {hefted(new HDeepGen<int>(3))}")
     io.println("H {hefted(new HPlainSub())} {new HGenSub<string>("s").heft()}")
+
+    // I — the override on an abstract generic link
+    io.println("I {i_heft(new IConc())} {i_heft(new IBase<int>(2))}")
+    io.println("I {i_heft_str(new IStr())} {new IConc().name()} {new IStr().name()}")
     io.println("made")
 }
