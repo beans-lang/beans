@@ -39,31 +39,45 @@ runs:
       if: inputs.phase == 'enable'
       shell: pwsh
       run: |
+        # This is a rider on somebody else's gate. Writing under HKLM needs the
+        # elevated shell the hosted Windows runners give, and if a future image
+        # stops giving it, the right outcome is a warning and no dumps -- never
+        # a red job on a run that was otherwise fine.
         $ErrorActionPreference = 'Stop'
-        $folder = Join-Path $env:RUNNER_TEMP 'crashdumps'
-        New-Item -ItemType Directory -Force -Path $folder | Out-Null
-        $key = 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps'
-        New-Item -Path $key -Force | Out-Null
-        # DumpType 2 is a full dump: the heap matters here, because the leading
-        # theory for #71 is a sink outliving the thread that writes to it.
-        New-ItemProperty -Path $key -Name DumpFolder -Value $folder `
-            -PropertyType ExpandString -Force | Out-Null
-        New-ItemProperty -Path $key -Name DumpType -Value 2 `
-            -PropertyType DWord -Force | Out-Null
-        New-ItemProperty -Path $key -Name DumpCount -Value 5 `
-            -PropertyType DWord -Force | Out-Null
-        # A modal crash dialog would hang the job instead of failing it. The
-        # runner images already suppress it; say so explicitly so a changed
-        # image cannot turn a crash into a forty-minute timeout.
-        New-ItemProperty `
-            -Path 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting' `
-            -Name DontShowUI -Value 1 -PropertyType DWord -Force | Out-Null
-        Write-Host "crash dumps will be written to $folder"
+        try {
+            $folder = Join-Path $env:RUNNER_TEMP 'crashdumps'
+            New-Item -ItemType Directory -Force -Path $folder | Out-Null
+            $key = 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps'
+            New-Item -Path $key -Force | Out-Null
+            # DumpType 2 is a full dump: the heap matters here, because the
+            # leading theory for #71 is a sink outliving the thread that writes
+            # to it.
+            New-ItemProperty -Path $key -Name DumpFolder -Value $folder `
+                -PropertyType ExpandString -Force | Out-Null
+            New-ItemProperty -Path $key -Name DumpType -Value 2 `
+                -PropertyType DWord -Force | Out-Null
+            New-ItemProperty -Path $key -Name DumpCount -Value 5 `
+                -PropertyType DWord -Force | Out-Null
+            # A modal crash dialog would hang the job instead of failing it. The
+            # runner images already suppress it; say so explicitly so a changed
+            # image cannot turn a crash into a forty-minute timeout.
+            New-ItemProperty `
+                -Path 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting' `
+                -Name DontShowUI -Value 1 -PropertyType DWord -Force | Out-Null
+            Write-Host "crash dumps will be written to $folder"
+        } catch {
+            Write-Host ("::warning::could not enable Windows Error Reporting " +
+                        "dumps: " + $_.Exception.Message)
+            Write-Host "this job runs exactly as before; #71 simply leaves no dump here"
+        }
+        exit 0
 
     - name: Collect any crash dump
       if: inputs.phase == 'collect'
       shell: pwsh
       run: |
+        # Same rule as the enable step: this reports, it does not judge. A
+        # failure here must not turn a job's real verdict into a red run.
         $ErrorActionPreference = 'Continue'
         $folder = Join-Path $env:RUNNER_TEMP 'crashdumps'
         $dumps = @()
@@ -75,66 +89,72 @@ runs:
             "beans_crash_dumps=0" | Out-File -FilePath $env:GITHUB_ENV -Append
             exit 0
         }
-        "beans_crash_dumps=$($dumps.Count)" |
-            Out-File -FilePath $env:GITHUB_ENV -Append
-        Write-Host "::warning::$($dumps.Count) crash dump(s) captured; see the crash-dumps artifact"
+        try {
+            "beans_crash_dumps=$($dumps.Count)" |
+                Out-File -FilePath $env:GITHUB_ENV -Append
+            Write-Host "::warning::$($dumps.Count) crash dump(s) captured; see the crash-dumps artifact"
 
-        # A dump is only readable next to the image it came from. The file is
-        # named <image>.<pid>.dmp, so the image name is the first field.
-        $root = '${{ inputs.search-root }}'
-        foreach ($dump in $dumps) {
-            Write-Host ("dump {0} ({1:N0} bytes)" -f $dump.Name, $dump.Length)
-            $image = ($dump.Name -split '\.')[0] + '.exe'
-            if (Test-Path $root) {
-                $match = Get-ChildItem -Path $root -Filter $image -Recurse `
-                    -File -ErrorAction SilentlyContinue | Select-Object -First 1
-                if ($match) {
-                    Copy-Item $match.FullName -Destination $folder -Force
-                    Write-Host "  image: $($match.FullName)"
-                } else {
-                    Write-Host "  image: $image not found under $root"
+            # A dump is only readable next to the image it came from. The file is
+            # named <image>.<pid>.dmp, so the image name is the first field.
+            $root = '${{ inputs.search-root }}'
+            foreach ($dump in $dumps) {
+                Write-Host ("dump {0} ({1:N0} bytes)" -f $dump.Name, $dump.Length)
+                $image = ($dump.Name -split '\.')[0] + '.exe'
+                if (Test-Path $root) {
+                    $match = Get-ChildItem -Path $root -Filter $image -Recurse `
+                        -File -ErrorAction SilentlyContinue | Select-Object -First 1
+                    if ($match) {
+                        Copy-Item $match.FullName -Destination $folder -Force
+                        Write-Host "  image: $($match.FullName)"
+                    } else {
+                        Write-Host "  image: $image not found under $root"
+                    }
                 }
             }
-        }
 
-        # Debugging Tools for Windows ship with the SDK and are present on some
-        # runner images and not others. When cdb is here the artifact carries a
-        # readable stack; when it is not, say which, rather than leaving a
-        # missing stack.txt to be read as "no stack was produced".
-        $cdb = Get-ChildItem -Path 'C:\Program Files (x86)\Windows Kits\10\Debuggers' `
-            -Filter cdb.exe -Recurse -File -ErrorAction SilentlyContinue |
-            Select-Object -First 1
-        if ($cdb) {
-            foreach ($dump in $dumps) {
-                $text = Join-Path $folder ($dump.BaseName + '.stack.txt')
-                Write-Host "analysing $($dump.Name) with $($cdb.FullName)"
-                & $cdb.FullName -z $dump.FullName -c '.lines;!analyze -v;~*k;lm;q' |
-                    Out-File -FilePath $text -Encoding utf8
-                Get-Content $text -TotalCount 60 | Write-Host
+            # Debugging Tools for Windows ship with the SDK and are present on some
+            # runner images and not others. When cdb is here the artifact carries a
+            # readable stack; when it is not, say which, rather than leaving a
+            # missing stack.txt to be read as "no stack was produced".
+            $cdb = Get-ChildItem -Path 'C:\Program Files (x86)\Windows Kits\10\Debuggers' `
+                -Filter cdb.exe -Recurse -File -ErrorAction SilentlyContinue |
+                Select-Object -First 1
+            if ($cdb) {
+                foreach ($dump in $dumps) {
+                    $text = Join-Path $folder ($dump.BaseName + '.stack.txt')
+                    Write-Host "analysing $($dump.Name) with $($cdb.FullName)"
+                    & $cdb.FullName -z $dump.FullName -c '.lines;!analyze -v;~*k;lm;q' |
+                        Out-File -FilePath $text -Encoding utf8
+                    Get-Content $text -TotalCount 60 | Write-Host
+                }
+            } else {
+                $note = Join-Path $folder 'NO-CDB.txt'
+                @(
+                    "No cdb.exe under C:\Program Files (x86)\Windows Kits\10\Debuggers"
+                    "on this runner image, so no text stack was produced here."
+                    "Open the .dmp beside its .exe in WinDbg and run:"
+                    "    .lines; !analyze -v; ~*k; lm"
+                ) | Out-File -FilePath $note -Encoding utf8
+                Write-Host "no cdb on this runner; uploading the raw dump only"
             }
-        } else {
-            $note = Join-Path $folder 'NO-CDB.txt'
-            @(
-                "No cdb.exe under C:\Program Files (x86)\Windows Kits\10\Debuggers"
-                "on this runner image, so no text stack was produced here."
-                "Open the .dmp beside its .exe in WinDbg and run:"
-                "    .lines; !analyze -v; ~*k; lm"
-            ) | Out-File -FilePath $note -Encoding utf8
-            Write-Host "no cdb on this runner; uploading the raw dump only"
-        }
 
-        @(
-            "repository: ${{ github.repository }}"
-            "run:        ${{ github.run_id }}"
-            "commit:     ${{ github.sha }}"
-            "job:        ${{ github.job }} / ${{ inputs.name }}"
-            "runner:     $env:RUNNER_OS $env:PROCESSOR_ARCHITECTURE"
-            ""
-            "Each .dmp is a full Windows Error Reporting dump. The matching .exe"
-            "is beside it where the job could find one. Issue #71 is the reason"
-            "this exists: if a stack lands in quill's backend thread or in"
-            "ExportSink, the lifetime theory in that issue holds."
-        ) | Out-File -FilePath (Join-Path $folder 'README.txt') -Encoding utf8
+            @(
+                "repository: ${{ github.repository }}"
+                "run:        ${{ github.run_id }}"
+                "commit:     ${{ github.sha }}"
+                "job:        ${{ github.job }} / ${{ inputs.name }}"
+                "runner:     $env:RUNNER_OS $env:PROCESSOR_ARCHITECTURE"
+                ""
+                "Each .dmp is a full Windows Error Reporting dump. The matching .exe"
+                "is beside it where the job could find one. Issue #71 is the reason"
+                "this exists: if a stack lands in quill's backend thread or in"
+                "ExportSink, the lifetime theory in that issue holds."
+            ) | Out-File -FilePath (Join-Path $folder 'README.txt') -Encoding utf8
+        } catch {
+            Write-Host ("::warning::crash dump collection hit an error, " +
+                        "uploading what is there: " + $_.Exception.Message)
+        }
+        exit 0
 
     - name: Upload the crash dumps
       # An unset value means the collect step itself did not finish. Upload
