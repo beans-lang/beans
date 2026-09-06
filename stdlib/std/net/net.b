@@ -546,8 +546,18 @@ pub unique class TcpListener implements Send {
     }
 
     /// Binds an independent accept loop to a port shared with other listeners
-    /// created by this method. The OS spreads new connections between them.
-    /// This is available on macOS and Linux; Windows reports `unsupported`.
+    /// created by this method.
+    ///
+    /// Whether that spreads load is a property of the kernel, not of this
+    /// call. Linux hashes each connection's four-tuple across the listening
+    /// sockets, so N listeners really do serve N shares of the traffic. macOS
+    /// does not balance at all: the last socket to bind receives every
+    /// connection and the others sit idle, which is BSD behaviour — FreeBSD
+    /// spells the balancing variant `SO_REUSEPORT_LB` and Darwin has no
+    /// equivalent. So this is a way to use more cores on Linux and a way to
+    /// hand a port over without dropping connections everywhere else; on
+    /// macOS, spread work by accepting on one listener and dealing the
+    /// accepted streams out to workers. Windows reports `unsupported`.
     pub static fn bind_reuse_port(host: string, port: int) -> Result<TcpListener> {
         return TcpListener.bind_reuse_port_with_backlog(host, port, 128)
     }

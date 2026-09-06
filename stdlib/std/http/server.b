@@ -124,8 +124,14 @@ pub unique class Server implements Send {
     }
 
     /// Binds one independent accept loop to a port shared with other servers
-    /// created by this method. Use one server per worker thread. macOS and
-    /// Linux spread new connections between them; Windows reports unsupported.
+    /// created by this method.
+    ///
+    /// One server per worker thread spreads load on Linux, where the kernel
+    /// hashes each connection across the listening sockets. It does not on
+    /// macOS, where the last socket to bind receives every connection and the
+    /// rest stay idle; there, accept on one listener and hand the accepted
+    /// connections to workers. Windows reports `unsupported`. See
+    /// `net.TcpListener.bind_reuse_port` for the full rule.
     pub static fn bind_reuse_port(host: string, port: int) -> Result<Server> {
         let listener: net.TcpListener =
             net.TcpListener.bind_reuse_port(host, port)?
