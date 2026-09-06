@@ -738,6 +738,10 @@ static void* rt_alloc(unsigned long long n) { return beans_host_alloc(n, 16); }
 // what it was, so the allocation-heavy self-build sees no new work on the small
 // blocks that are almost all of it.
 //
+// That purity is load-bearing, which is why a failed mapping is a refusal and
+// never a heap fallback: a block at or past the threshold that was not mapped
+// would be handed to munmap by its free.
+//
 // Only the full hosted profile on a real POSIX maps. Minimal and freestanding
 // are one thread with no mmap to assume; Windows keeps malloc, whose RSS is not
 // the MADV_FREE problem this solves. In those builds the four are a
@@ -784,12 +788,45 @@ static size_t rt_big_maplen(unsigned long long n) {
     size_t page = rt_big_page();
     return ((size_t)n + page - 1) & ~(page - 1);
 }
+#ifdef BEANS_RT_ALLOC_FAILTEST
+// Test-only, and only alongside the allocation-failure injection: with
+// BEANS_RT_BIG_NOMMAP set, every large-block mapping fails, so the refusal
+// paths below are reachable without exhausting the machine's address space.
+// It is compiled out of a release build for the same reason the rest of the
+// injection is — an inherited environment variable must not be able to change
+// a shipped binary's allocator.
+static int rt_big_nomap(void) {
+    static int state = -1;            // benign race: every writer stores the same value
+    int s = state;
+    if (s < 0) {
+        const char* e = getenv("BEANS_RT_BIG_NOMMAP");
+        s = (e && *e && *e != '0') ? 1 : 0;
+        state = s;
+    }
+    return s;
+}
+#endif
+static void* rt_big_map(size_t maplen) {
+#ifdef BEANS_RT_ALLOC_FAILTEST
+    if (rt_big_nomap()) return MAP_FAILED;
+#endif
+    return mmap(NULL, maplen, PROT_READ | PROT_WRITE,
+                MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+}
 static void* rt_big_alloc_impl(unsigned long long n, int zero) {
     if (n >= RT_BIG_MMAP_MIN) {
-        void* p = mmap(NULL, rt_big_maplen(n), PROT_READ | PROT_WRITE,
-                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-        if (p != MAP_FAILED) return p; // mmap zeroes its pages; `zero` is already satisfied
-        // fall through to the heap on failure — never worse than before mmap
+        // mmap zeroes its pages, so `zero` is already satisfied.
+        void* p = rt_big_map(rt_big_maplen(n));
+        // No heap fallback here, on purpose. rt_big_free decides munmap-or-free
+        // from the byte size alone, so a block at or past the threshold has to
+        // BE a mapping: a malloc'd one reaching munmap unmaps live heap, and a
+        // large malloc is page-aligned often enough on macOS that the unmap
+        // would succeed and corrupt silently rather than fail with EINVAL. A
+        // mapping of this size failing means the address space is gone, where
+        // malloc's own large path — mmap on both glibc and macOS — would fail
+        // too, so the honest answer is the refusal every caller already turns
+        // into the documented "out of memory" panic.
+        return p == MAP_FAILED ? NULL : p;
     }
     return zero ? rt_zalloc(n) : rt_alloc(n);
 }
@@ -826,11 +863,15 @@ static void* rt_big_realloc(void* p, unsigned long long old_bytes,
 // there and is freed the plain way. The prefix keeps the object's 16-byte
 // alignment, and non-pooled objects are both large and rare (the pooled hot
 // path never reaches here), so it costs nothing that shows on the self-build.
+//
+// Because that prefix records the origin, this path CAN fall back to the heap
+// when a mapping fails and still free correctly — which is exactly what the
+// header-less backing allocator above cannot do, and the reason the two are
+// written differently rather than sharing one shape.
 static void* rt_obj_alloc(unsigned long long total) {
     if (total >= RT_BIG_MMAP_MIN) {
         size_t maplen = rt_big_maplen(16 + total);
-        void* base = mmap(NULL, maplen, PROT_READ | PROT_WRITE,
-                          MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        void* base = rt_big_map(maplen);
         if (base != MAP_FAILED) {      // zeroed pages; the object wants zeroed slots
             *(size_t*)base = maplen;   // nonzero marks a mapping
             return (char*)base + 16;
