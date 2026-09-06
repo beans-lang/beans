@@ -13,9 +13,20 @@
 // offset a short write could have stopped at and checks what arrives is
 // exactly the tail from there. The large cases still run the production loop
 // against whatever the kernel does.
+//
+// The writer runs on its own thread and the reader on this one. A thread,
+// not a fiber, on purpose: a fiber's blocked send holds the worker thread it
+// runs on, and on a platform with no fiber netpoller (Windows) the runtime
+// cannot park it — the reader would sit on that same held thread, and a
+// megabyte that needs draining would deadlock the example instead of testing
+// anything. On a thread the send blocks only that thread, which is what a
+// blocking socket is for. The fiber-parked form of the same send — the path
+// a server takes — is covered by test/fiber_net.sh and by espresso's own
+// large-body suite under its server.
 import std.io
 import std.net
 import std.http
+import std.thread
 
 // `count` bytes whose value repeats every 251 — a prime, so a resume that
 // lands on the wrong offset shifts the pattern instead of landing back on it.
@@ -77,16 +88,18 @@ fn case(label: string, head_len: int, body_len: int) {
 
     let head: Bytes = pattern(head_len)
     let body: Bytes = pattern(body_len)
-
-    // The writer parks on backpressure; the reader below is what wakes it.
-    let writer: Brew<Result<int>> = brew send_pair(server, head, body)
-
-    let arrived: Bytes = drain(client, head_len + body_len).expect("drain")
-    let calls: int = writer.join().expect("join").expect("send")
-
+    // Joined by hand first: the two buffers move into the writer's thread
+    // below and cannot be read from here afterwards.
     let joined: Bytes = new Bytes(0)
     joined.append(head)
     joined.append(body)
+
+    let writer: Thread<Result<int>> = thread.spawn(
+        fn() move(server, head, body) -> Result<int> {
+            return send_pair(server, head, body)
+        })
+    let arrived: Bytes = drain(client, head_len + body_len).expect("drain")
+    let calls: int = writer.join().expect("send")
 
     let identical: bool = arrived == joined
     io.println("{label} bytes {arrived.len()} identical {identical} calls>0 {calls > 0}")
@@ -106,16 +119,17 @@ fn resume_from(head_len: int, body_len: int, start: int) {
     let head: Bytes = pattern(head_len)
     let body: Bytes = pattern(body_len)
     let expected: int = head_len + body_len - start
-
-    let writer: Brew<Result<int>> =
-        brew send_pair_from(server, head, body, start)
-    let arrived: Bytes = drain(client, expected).expect("drain")
-    let calls: int = writer.join().expect("join").expect("send")
-
     let joined: Bytes = new Bytes(0)
     joined.append(head)
     joined.append(body)
     let tail: Bytes = joined.slice(start, joined.len())
+
+    let writer: Thread<Result<int>> = thread.spawn(
+        fn() move(server, head, body) -> Result<int> {
+            return send_pair_from(server, head, body, start)
+        })
+    let arrived: Bytes = drain(client, expected).expect("drain")
+    let calls: int = writer.join().expect("send")
     let identical: bool = arrived == tail
     io.println("resume from {start} of {head_len}+{body_len}: bytes {arrived.len()} identical {identical} calls {calls}")
 }
@@ -161,9 +175,9 @@ fn head_framing() {
 }
 
 // Keeps writing the pair from offset 0 until the socket refuses it, and
-// reports how it was refused. Runs on a fiber so a full socket buffer parks in
-// the netpoller rather than answering "timeout" from the thread path — the
-// refusal that matters here is the peer's, not the buffer's.
+// reports how it was refused. On its own thread the socket is blocking, so a
+// full buffer waits rather than answering "timeout" — the refusal that
+// matters here is the peer's, not the buffer's.
 fn write_until_refused(stream: net.TcpStream, head: Bytes, body: Bytes) -> string {
     for attempt: int in 0..64 {
         match stream.write_vectored(head, body, 0) {
@@ -190,8 +204,11 @@ fn peer_closed() {
     let closed: bool = client.close().expect("close")
     let head: Bytes = pattern(64)
     let body: Bytes = pattern(1048576)
-    let writer: Brew<string> = brew write_until_refused(server, head, body)
-    let outcome: string = writer.join().expect("join")
+    let writer: Thread<string> = thread.spawn(
+        fn() move(server, head, body) -> string {
+            return write_until_refused(server, head, body)
+        })
+    let outcome: string = writer.join()
     io.println("peer-closed: {outcome}")
 }
 
