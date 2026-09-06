@@ -13429,31 +13429,158 @@ long long beans_term_restore(long long fd);
 // all. The runtime-side socket calls the stdlib declares are answered from
 // inside the process instead — the interpreter asks here before it builds
 // any loader shim.
-void* beans_rt_host_symbol(const char* name) {
-    if (!name) return (void*)0;
-    if (strcmp(name, "beans_net_recv_into_wait") == 0)
-        return (void*)&beans_net_recv_into_wait;
-    if (strcmp(name, "beans_net_send_from_wait") == 0)
-        return (void*)&beans_net_send_from_wait;
-    if (strcmp(name, "beans_net_send_pair_wait") == 0)
-        return (void*)&beans_net_send_pair_wait;
+//
+// The address alone was not enough. The interpreter can call an address
+// directly only for the argument shapes its own word ABI covers; anything
+// wider went to a C shim it wrote and compiled with Clang at run time. So
+// `TcpStream.write_from` (4 parameters) and `write_vectored` (6) needed a
+// working C toolchain and a matching sysroot on every host that merely ran
+// a program, which is precisely what a cross-hosted CI runner does not have:
+// the i686 and aarch64 Windows legs failed with "cannot find dllcrt2.o" from
+// a socket write. Every row here therefore carries the call as well as the
+// address. beans_rt_host_invoke casts the interpreter's 64-bit words back to
+// the types the entry really declares — pointers included, which is what makes
+// it correct on a host where a pointer is half a word — and calls it
+// in-process, with no compiler in the loop. A row is the only way into the
+// table, so an entry can never be reachable by address while being
+// uncallable by word: adding one means writing its call.
+typedef long long (*BHostCall)(const unsigned long long* words);
+
+// The two entries the mechanism itself is made of. An interpreter that is
+// being interpreted asks its host for these by name like any other extern, so
+// leaving them out would put a C toolchain back on the path one level up —
+// and on Linux they cannot be found by name at all, because the executable
+// exports nothing. Listing them makes the lookup and the call reach the same
+// place at every nesting depth.
+void* beans_rt_host_symbol(const char* name);
+long long beans_rt_host_invoke(const char* name,
+                               const unsigned long long* words,
+                               long long count, long long* result);
+
+typedef struct {
+    const char* name;
+    void* address;
+    int arity;
+    BHostCall call;
+} BHostEntry;
+
+static long long host_call_net_recv_into_wait(const unsigned long long* w) {
+    return beans_net_recv_into_wait((long long)w[0],
+                                    (void*)(uintptr_t)w[1],
+                                    (unsigned long long*)(uintptr_t)w[2]);
+}
+
+static long long host_call_net_send_from_wait(const unsigned long long* w) {
+    return beans_net_send_from_wait((long long)w[0],
+                                    (const void*)(uintptr_t)w[1],
+                                    (long long)w[2],
+                                    (unsigned long long*)(uintptr_t)w[3]);
+}
+
+static long long host_call_net_send_pair_wait(const unsigned long long* w) {
+    return beans_net_send_pair_wait((long long)w[0],
+                                    (const void*)(uintptr_t)w[1],
+                                    (long long)w[2],
+                                    (const void*)(uintptr_t)w[3],
+                                    (long long)w[4],
+                                    (unsigned long long*)(uintptr_t)w[5]);
+}
+
+static long long host_call_term_is_tty(const unsigned long long* w) {
+    return beans_term_is_tty((long long)w[0]);
+}
+
+static long long host_call_term_size(const unsigned long long* w) {
+    return beans_term_size((long long)w[0], (void*)(uintptr_t)w[1]);
+}
+
+static long long host_call_term_set_raw(const unsigned long long* w) {
+    return beans_term_set_raw((long long)w[0]);
+}
+
+static long long host_call_term_restore(const unsigned long long* w) {
+    return beans_term_restore((long long)w[0]);
+}
+
+static long long host_call_width_utf8(const unsigned long long* w) {
+    return beans_width_utf8((const char*)(uintptr_t)w[0], (long long)w[1]);
+}
+
+// An address is a word like any other here: the caller declares the result
+// RawPtr<u8> and reads it back as one.
+static long long host_call_rt_host_symbol(const unsigned long long* w) {
+    return (long long)(uintptr_t)beans_rt_host_symbol(
+        (const char*)(uintptr_t)w[0]);
+}
+
+static long long host_call_rt_host_invoke(const unsigned long long* w) {
+    return beans_rt_host_invoke((const char*)(uintptr_t)w[0],
+                                (const unsigned long long*)(uintptr_t)w[1],
+                                (long long)w[2],
+                                (long long*)(uintptr_t)w[3]);
+}
+
+static const BHostEntry rt_host_table[] = {
+    {"beans_net_recv_into_wait", (void*)&beans_net_recv_into_wait, 3,
+     host_call_net_recv_into_wait},
+    {"beans_net_send_from_wait", (void*)&beans_net_send_from_wait, 4,
+     host_call_net_send_from_wait},
+    {"beans_net_send_pair_wait", (void*)&beans_net_send_pair_wait, 6,
+     host_call_net_send_pair_wait},
     // std.term's bridge. The interpreter reaches these by name; answering here
     // gives the same address on every platform and keeps the linker from
     // dropping symbols the natively-compiled interpreter never calls itself.
-    if (strcmp(name, "beans_term_is_tty") == 0)
-        return (void*)&beans_term_is_tty;
-    if (strcmp(name, "beans_term_size") == 0)
-        return (void*)&beans_term_size;
-    if (strcmp(name, "beans_term_set_raw") == 0)
-        return (void*)&beans_term_set_raw;
-    if (strcmp(name, "beans_term_restore") == 0)
-        return (void*)&beans_term_restore;
+    {"beans_term_is_tty", (void*)&beans_term_is_tty, 1, host_call_term_is_tty},
+    {"beans_term_size", (void*)&beans_term_size, 2, host_call_term_size},
+    {"beans_term_set_raw", (void*)&beans_term_set_raw, 1,
+     host_call_term_set_raw},
+    {"beans_term_restore", (void*)&beans_term_restore, 1,
+     host_call_term_restore},
     // The tree interpreter measures display width with the very function the
     // native backend calls, so the two can never answer differently. It has
     // to reach it by name, and this executable exports nothing.
-    if (strcmp(name, "beans_width_utf8") == 0)
-        return (void*)&beans_width_utf8;
-    return (void*)0;
+    {"beans_width_utf8", (void*)&beans_width_utf8, 2, host_call_width_utf8},
+    {"beans_rt_host_symbol", (void*)&beans_rt_host_symbol, 1,
+     host_call_rt_host_symbol},
+    {"beans_rt_host_invoke", (void*)&beans_rt_host_invoke, 4,
+     host_call_rt_host_invoke},
+};
+
+static const BHostEntry* rt_host_entry(const char* name) {
+    size_t index;
+    if (!name) return (const BHostEntry*)0;
+    for (index = 0; index < sizeof rt_host_table / sizeof rt_host_table[0];
+         index++) {
+        if (strcmp(rt_host_table[index].name, name) == 0)
+            return &rt_host_table[index];
+    }
+    return (const BHostEntry*)0;
+}
+
+void* beans_rt_host_symbol(const char* name) {
+    const BHostEntry* entry = rt_host_entry(name);
+    return entry ? entry->address : (void*)0;
+}
+
+// Calls a runtime-hosted entry with the words the interpreter packed for it.
+//   1  the name is hosted; it ran, and *result holds what it returned
+//   0  the name is not hosted; the caller resolves it the way it always did
+//  -1  the name is hosted but this call does not fit the entry — the
+//      `extern "C"` declaration in the program disagrees with the runtime's
+//      own signature. That is refused here rather than quietly re-routed to
+//      a compiled shim, which would call the same function with the wrong
+//      words on the hosts that still have a compiler and fail to build
+//      anywhere else.
+long long beans_rt_host_invoke(const char* name,
+                               const unsigned long long* words,
+                               long long count, long long* result) {
+    const BHostEntry* entry = rt_host_entry(name);
+    if (!entry) return 0;
+    if (!result) return -1;
+    if (count != (long long)entry->arity) return -1;
+    if (count > 0 && !words) return -1;
+    *result = entry->call(words);
+    return 1;
 }
 
 static BRes net_recv_many(long long fd, long long limit, int exact) {

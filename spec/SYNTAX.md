@@ -3865,7 +3865,18 @@ beansc build --target riscv32imac-unknown-none-elf --runtime freestanding f.b --
   generated pointer-ABI wrapper, and the interpreter compiles and caches a tiny
   trampoline for each bridged signature. Sub-32-bit integers and `bool` also
   take that wrapper, because Clang gives them a sign/zero-extension contract
-  that a plain call cannot express. A parameter may be a C callback such
+  that a plain call cannot express.
+  **The runtime's own entries are the exception, and are never bridged.** A
+  `beans_*` name the Beans runtime hosts lives in the process already, so the
+  interpreter calls it there through the runtime's dispatcher whatever the
+  signature's width — `beansc run` never needs a C toolchain to reach one, which
+  is what lets a program write to a socket on a host whose Clang cannot link for
+  itself. A declaration naming one of those entries that does not fit its real
+  signature is refused where the call is made, with a message about the
+  declaration. Native builds cannot see that mistake — a linker does not compare
+  types — so, as everywhere else here, a wrong `extern "C"` signature is the
+  programmer's job; the interpreter simply cannot guess past it.
+  A parameter may be a C callback such
   as `fn(i32, i32) -> i32`; its arguments and return use the same C-safe type
   set and may include C-layout records. Beans closures and stored top-level
   functions both work. `as "native_name"` gives an import a different C symbol

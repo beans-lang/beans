@@ -230,6 +230,7 @@ test-runtime: $(BIN)
 	./test/websocket.sh
 	./test/signals.sh
 	./test/term.sh
+	bash ./test/hosted_calls.sh
 	./test/dylib.sh
 	./test/child.sh
 	bash ./test/encoding.sh
@@ -432,6 +433,7 @@ test-core: $(BIN)
 	./test/websocket.sh
 	./test/signals.sh
 	./test/term.sh
+	bash ./test/hosted_calls.sh
 	./test/dylib.sh
 	./test/child.sh
 
