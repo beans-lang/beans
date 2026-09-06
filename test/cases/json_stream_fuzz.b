@@ -1,14 +1,14 @@
 package main
 
-// Differential fuzz for typed JSON decoding: the streaming scanner
-// (beans_enc_json_typed_decode_stream) against the DOM reference
-// (BEANS_JSON_NO_DIRECT_DECODE=1). Run twice over the same seeded documents,
-// once each way; the transcript this prints must be byte-identical. It carries
-// the decoded value (re-encoded), and for a refusal the exact error code, byte
+// Differential fuzz for typed JSON decoding: the default DOM path against the
+// streaming scanner (beans_enc_json_typed_decode_stream), reached by
+// BEANS_JSON_STREAM_DECODE=1. Run twice over the same seeded documents, once
+// each way; the transcript this prints must be byte-identical. It carries the
+// decoded value (re-encoded), and for a refusal the exact error code, byte
 // offset and field index the request buffer held, read back through the test
 // probe. The transcript also carries the count of valid documents the stream
-// engine did NOT decode itself, which is zero on the streaming run and, being
-// in the diffed output, makes any silent fall-back to the DOM a failure.
+// engine did NOT decode itself, which is zero on the stream run and, being in
+// the diffed output, makes any silent fall-back to the DOM a failure.
 
 import std.encoding.json
 import std.io
@@ -178,17 +178,17 @@ fn outcome_line(label: string, encoded: Result<string>, info: ProbeInfo) -> stri
 
 // A decode is a fall-back when a document decoded successfully but the stream
 // engine did not do it. Only meaningful on the streaming run.
-fn note(info: ProbeInfo, ok: bool, dom_lever: bool, stats: Stats) {
-    if ok && !dom_lever && info.used != 1 { stats.fallbacks += 1 }
+fn note(info: ProbeInfo, ok: bool, stream_leg: bool, stats: Stats) {
+    if ok && stream_leg && info.used != 1 { stats.fallbacks += 1 }
 }
 
-fn check_scalars(label: string, doc: string, dom_lever: bool, stats: Stats) {
+fn check_scalars(label: string, doc: string, stream_leg: bool, stats: Stats) {
     let decoded: Result<Scalars> = json.decode(doc)
     let info: ProbeInfo = read_probe()
     var line: string = ""
     match decoded {
         ok(value) => {
-            note(info, true, dom_lever, stats)
+            note(info, true, stream_leg, stats)
             line = outcome_line(label, json.encode(value), info)
         }
         err(problem) => {
@@ -198,13 +198,13 @@ fn check_scalars(label: string, doc: string, dom_lever: bool, stats: Stats) {
     io.println(line)
 }
 
-fn check_nest(label: string, doc: string, dom_lever: bool, stats: Stats) {
+fn check_nest(label: string, doc: string, stream_leg: bool, stats: Stats) {
     let decoded: Result<Nest> = json.decode(doc)
     let info: ProbeInfo = read_probe()
     var line: string = ""
     match decoded {
         ok(value) => {
-            note(info, true, dom_lever, stats)
+            note(info, true, stream_leg, stats)
             line = outcome_line(label, json.encode(value), info)
         }
         err(problem) => {
@@ -214,12 +214,12 @@ fn check_nest(label: string, doc: string, dom_lever: bool, stats: Stats) {
     io.println(line)
 }
 
-fn check_inner_list(label: string, doc: string, dom_lever: bool, stats: Stats) {
+fn check_inner_list(label: string, doc: string, stream_leg: bool, stats: Stats) {
     let decoded: Result<List<Inner>> = json.decode(doc)
     let info: ProbeInfo = read_probe()
     match decoded {
         ok(value) => {
-            note(info, true, dom_lever, stats)
+            note(info, true, stream_leg, stats)
             io.println(outcome_line(label, json.encode(value), info))
         }
         err(problem) => {
@@ -229,12 +229,12 @@ fn check_inner_list(label: string, doc: string, dom_lever: bool, stats: Stats) {
 }
 
 fn check_scalars_opts(label: string, doc: string, options: json.DecodeOptions,
-                      dom_lever: bool, stats: Stats) {
+                      stream_leg: bool, stats: Stats) {
     let decoded: Result<Scalars> = json.decode_with_options(doc, options)
     let info: ProbeInfo = read_probe()
     match decoded {
         ok(value) => {
-            note(info, true, dom_lever, stats)
+            note(info, true, stream_leg, stats)
             io.println(outcome_line(label, json.encode(value), info))
         }
         err(problem) => {
@@ -245,15 +245,15 @@ fn check_scalars_opts(label: string, doc: string, options: json.DecodeOptions,
 
 // Truncate a document at every byte offset and flip one byte at a time; every
 // broken variant must be refused identically by both paths.
-fn break_document(label: string, doc: string, dom_lever: bool, stats: Stats,
+fn break_document(label: string, doc: string, stream_leg: bool, stats: Stats,
                   kind: int) {
     let bytes: Bytes = Bytes.from(doc)
     let n: int = bytes.len()
     // truncations at every prefix length
     for cut: int in 0..n {
         let text: string = bytes.slice(0, cut).to_string()
-        if kind == 0 { check_scalars("{label}.t{cut}", text, dom_lever, stats) }
-        else { check_nest("{label}.t{cut}", text, dom_lever, stats) }
+        if kind == 0 { check_scalars("{label}.t{cut}", text, stream_leg, stats) }
+        else { check_nest("{label}.t{cut}", text, stream_leg, stats) }
     }
     // single-byte flips at a spread of positions
     var step: int = n / 23
@@ -267,8 +267,8 @@ fn break_document(label: string, doc: string, dom_lever: bool, stats: Stats,
             else { flipped.push(bytes.get(i)) }
         }
         let text: string = flipped.to_string()
-        if kind == 0 { check_scalars("{label}.f{at}", text, dom_lever, stats) }
-        else { check_nest("{label}.f{at}", text, dom_lever, stats) }
+        if kind == 0 { check_scalars("{label}.f{at}", text, stream_leg, stats) }
+        else { check_nest("{label}.f{at}", text, stream_leg, stats) }
         at += step
     }
 }
@@ -276,25 +276,25 @@ fn break_document(label: string, doc: string, dom_lever: bool, stats: Stats,
 fn main() {
     let seed: int = os.env("FUZZ_SEED").or("20260906").to_int().or(20260906)
     let rounds: int = os.env("FUZZ_ROUNDS").or("400").to_int().or(400)
-    let dom_lever: bool = os.env("BEANS_JSON_NO_DIRECT_DECODE").is_some()
+    let stream_leg: bool = os.env("BEANS_JSON_STREAM_DECODE").is_some()
     let rng: Rng = new Rng(seed)
     let stats: Stats = new Stats()
 
     // 1. Round-trip: build a value, encode it, decode it back on both paths.
     for round: int in 0..rounds {
         match json.encode(build_scalars(rng)) {
-            ok(doc) => check_scalars("s{round}", doc, dom_lever, stats)
+            ok(doc) => check_scalars("s{round}", doc, stream_leg, stats)
             err(_) => io.println("s{round}: encode-failed")
         }
         match json.encode(build_nest(rng)) {
-            ok(doc) => check_nest("n{round}", doc, dom_lever, stats)
+            ok(doc) => check_nest("n{round}", doc, stream_leg, stats)
             err(_) => io.println("n{round}: encode-failed")
         }
         if round % 5 == 0 {
             var list: List<Inner> = []
             for i: int in 0..rng.below(4) { list.push(build_inner(rng)) }
             match json.encode(list) {
-                ok(doc) => check_inner_list("l{round}", doc, dom_lever, stats)
+                ok(doc) => check_inner_list("l{round}", doc, stream_leg, stats)
                 err(_) => io.println("l{round}: encode-failed")
             }
         }
@@ -348,7 +348,7 @@ fn main() {
     ]
     var e: int = 0
     for doc: string in edges {
-        check_scalars("e{e}", doc, dom_lever, stats)
+        check_scalars("e{e}", doc, stream_leg, stats)
         e += 1
     }
 
@@ -360,19 +360,19 @@ fn main() {
     let lenient: json.DecodeOptions = new json.DecodeOptions()
     lenient.parse.allow_comments = true
     lenient.parse.allow_trailing_commas = true
-    check_scalars_opts("opt.strict", commented, strict, dom_lever, stats)
-    check_scalars_opts("opt.lenient", commented, lenient, dom_lever, stats)
+    check_scalars_opts("opt.strict", commented, strict, stream_leg, stats)
+    check_scalars_opts("opt.lenient", commented, lenient, stream_leg, stats)
     // depth limits under a known nested list and an unknown deep key
     let deep_known: json.DecodeOptions = new json.DecodeOptions()
     deep_known.max_depth = 2
     check_scalars_opts("opt.depth-unknown",
         "\{\"b\":true,\"small\":0,\"mid\":0,\"wide\":0,\"un\":0,\"ratio\":0,\"exact\":0,\"name\":\"n\",\"extra\":[[1]]\}",
-        deep_known, dom_lever, stats)
+        deep_known, stream_leg, stats)
 
     // 4. Truncations and byte flips over a valid document of each schema.
-    break_document("bs", base, dom_lever, stats, 0)
+    break_document("bs", base, stream_leg, stats, 0)
     match json.encode(build_nest(new Rng(seed + 1))) {
-        ok(doc) => break_document("bn", doc, dom_lever, stats, 1)
+        ok(doc) => break_document("bn", doc, stream_leg, stats, 1)
         err(_) => io.println("bn: encode-failed")
     }
 

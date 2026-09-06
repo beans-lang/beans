@@ -650,6 +650,8 @@ partial class LlvmTextEmitter {
             "ptr @beans_list_new_typed_capacity(i64, i64, i64)")
         self.require_declare(
             "beans_alloc_bytes", "ptr @beans_alloc_bytes(i64, i64)")
+        // beans_list_push_typed is already declared in the module preamble
+        // (llvm.b), so it needs no require_declare here.
         let source_value: string = self.value(
             function, values, instruction.operands[0], instruction)
         var consume_source: string = ""
@@ -658,7 +660,7 @@ partial class LlvmTextEmitter {
                 "  call void @beans_release(ptr {source_value})\n"
         }
         let req: string = self.spill_slot(
-            "[12 x i64]", "json.decode.direct.req")
+            "[13 x i64]", "json.decode.direct.req")
         let result_slot: string = self.spill_slot(
             self.type_text(instruction.type), "json.decode.direct.result")
         var record_slot: string = ""
@@ -704,11 +706,11 @@ partial class LlvmTextEmitter {
             destination = "%json.direct.destination{id}"
         }
         output =
-            "{output}  %json.direct.req.len{id} = getelementptr [12 x i64], ptr {req}, i64 0, i64 0\n  store i64 {length}, ptr %json.direct.req.len{id}\n  %json.direct.req.flags{id} = getelementptr [12 x i64], ptr {req}, i64 0, i64 1\n  store i64 {read_flags}, ptr %json.direct.req.flags{id}\n  %json.direct.schema.bits{id} = ptrtoint ptr {schema} to i64\n  %json.direct.req.schema{id} = getelementptr [12 x i64], ptr {req}, i64 0, i64 2\n  store i64 %json.direct.schema.bits{id}, ptr %json.direct.req.schema{id}\n  %json.direct.req.output{id} = getelementptr [12 x i64], ptr {req}, i64 0, i64 3\n  store i64 {destination}, ptr %json.direct.req.output{id}\n"
+            "{output}  %json.direct.req.len{id} = getelementptr [13 x i64], ptr {req}, i64 0, i64 0\n  store i64 {length}, ptr %json.direct.req.len{id}\n  %json.direct.req.flags{id} = getelementptr [13 x i64], ptr {req}, i64 0, i64 1\n  store i64 {read_flags}, ptr %json.direct.req.flags{id}\n  %json.direct.schema.bits{id} = ptrtoint ptr {schema} to i64\n  %json.direct.req.schema{id} = getelementptr [13 x i64], ptr {req}, i64 0, i64 2\n  store i64 %json.direct.schema.bits{id}, ptr %json.direct.req.schema{id}\n  %json.direct.req.output{id} = getelementptr [13 x i64], ptr {req}, i64 0, i64 3\n  store i64 {destination}, ptr %json.direct.req.output{id}\n"
         output =
-            "{output}  %json.direct.new.list{id} = ptrtoint ptr @beans_list_new_typed_capacity to i64\n  %json.direct.req.new.list{id} = getelementptr [12 x i64], ptr {req}, i64 0, i64 8\n  store i64 %json.direct.new.list{id}, ptr %json.direct.req.new.list{id}\n  %json.direct.alloc.bytes{id} = ptrtoint ptr @beans_alloc_bytes to i64\n  %json.direct.req.alloc.bytes{id} = getelementptr [12 x i64], ptr {req}, i64 0, i64 9\n  store i64 %json.direct.alloc.bytes{id}, ptr %json.direct.req.alloc.bytes{id}\n"
+            "{output}  %json.direct.new.list{id} = ptrtoint ptr @beans_list_new_typed_capacity to i64\n  %json.direct.req.new.list{id} = getelementptr [13 x i64], ptr {req}, i64 0, i64 8\n  store i64 %json.direct.new.list{id}, ptr %json.direct.req.new.list{id}\n  %json.direct.alloc.bytes{id} = ptrtoint ptr @beans_alloc_bytes to i64\n  %json.direct.req.alloc.bytes{id} = getelementptr [13 x i64], ptr {req}, i64 0, i64 9\n  store i64 %json.direct.alloc.bytes{id}, ptr %json.direct.req.alloc.bytes{id}\n  %json.direct.push{id} = ptrtoint ptr @beans_list_push_typed to i64\n  %json.direct.req.push{id} = getelementptr [13 x i64], ptr {req}, i64 0, i64 12\n  store i64 %json.direct.push{id}, ptr %json.direct.req.push{id}\n"
         output =
-            "{output}  %json.direct.allocate{id} = ptrtoint ptr @beans_alloc to i64\n  %json.direct.req.string{id} = getelementptr [12 x i64], ptr {req}, i64 0, i64 10\n  store i64 %json.direct.allocate{id}, ptr %json.direct.req.string{id}\n  %json.direct.release{id} = ptrtoint ptr @beans_release to i64\n  %json.direct.req.release{id} = getelementptr [12 x i64], ptr {req}, i64 0, i64 11\n  store i64 %json.direct.release{id}, ptr %json.direct.req.release{id}\n  %json.direct.status{id} = call i64 @beans_enc_json_typed_decode_direct(ptr {source}, ptr {req})\n{consume_source}  %json.direct.good{id} = icmp eq i64 %json.direct.status{id}, 0\n  br i1 %json.direct.good{id}, label %json.direct.success{id}, label %json.direct.failure{id}\njson.direct.success{id}:\n"
+            "{output}  %json.direct.allocate{id} = ptrtoint ptr @beans_alloc to i64\n  %json.direct.req.string{id} = getelementptr [13 x i64], ptr {req}, i64 0, i64 10\n  store i64 %json.direct.allocate{id}, ptr %json.direct.req.string{id}\n  %json.direct.release{id} = ptrtoint ptr @beans_release to i64\n  %json.direct.req.release{id} = getelementptr [13 x i64], ptr {req}, i64 0, i64 11\n  store i64 %json.direct.release{id}, ptr %json.direct.req.release{id}\n  %json.direct.status{id} = call i64 @beans_enc_json_typed_decode_direct(ptr {source}, ptr {req})\n{consume_source}  %json.direct.good{id} = icmp eq i64 %json.direct.status{id}, 0\n  br i1 %json.direct.good{id}, label %json.direct.success{id}, label %json.direct.failure{id}\njson.direct.success{id}:\n"
         var decoded: string = ""
         if root_array {
             output =

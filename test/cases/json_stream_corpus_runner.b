@@ -1,8 +1,8 @@
 package main
 
 // Replays the JSONTestSuite parsing corpus (github.com/nst/JSONTestSuite, MIT)
-// through typed JSON decoding, once on the streaming scanner and once on the
-// DOM reference (BEANS_JSON_NO_DIRECT_DECODE=1). Every file is decoded as two
+// through typed JSON decoding, once on the default DOM path and once on the
+// streaming scanner (BEANS_JSON_STREAM_DECODE=1). Every file is decoded as two
 // permissive shapes: a struct that allows unknown fields, and a list of that
 // struct. The struct names one uniquely-spelled optional field and nothing
 // else, so every key a corpus object carries is an unknown field the scanner
@@ -66,10 +66,10 @@ class Stats {
 }
 
 fn line_object(name: string, decoded: Result<AnyObject>, info: ProbeInfo,
-               dom_lever: bool, stats: Stats) -> string {
+               stream_leg: bool, stats: Stats) -> string {
     match decoded {
         ok(_) => {
-            if !dom_lever && info.used != 1 { stats.fallbacks += 1 }
+            if stream_leg && info.used != 1 { stats.fallbacks += 1 }
             return "{name}:obj OK"
         }
         err(_) => {
@@ -79,10 +79,10 @@ fn line_object(name: string, decoded: Result<AnyObject>, info: ProbeInfo,
 }
 
 fn line_list(name: string, decoded: Result<List<AnyObject>>, info: ProbeInfo,
-             dom_lever: bool, stats: Stats) -> string {
+             stream_leg: bool, stats: Stats) -> string {
     match decoded {
         ok(_) => {
-            if !dom_lever && info.used != 1 { stats.fallbacks += 1 }
+            if stream_leg && info.used != 1 { stats.fallbacks += 1 }
             return "{name}:arr OK"
         }
         err(_) => {
@@ -98,7 +98,7 @@ fn main() {
         os.exit(2)
     }
     let dir: string = arguments[0]
-    let dom_lever: bool = os.env("BEANS_JSON_NO_DIRECT_DECODE").is_some()
+    let stream_leg: bool = os.env("BEANS_JSON_STREAM_DECODE").is_some()
     let stats: Stats = new Stats()
 
     var names: List<string> = []
@@ -121,11 +121,11 @@ fn main() {
             ok(data) => {
                 let as_object: Result<AnyObject> = json.decode_bytes(data)
                 let p1: ProbeInfo = read_probe()
-                io.println(line_object(name, as_object, p1, dom_lever, stats))
+                io.println(line_object(name, as_object, p1, stream_leg, stats))
 
                 let as_list: Result<List<AnyObject>> = json.decode_bytes(data)
                 let p2: ProbeInfo = read_probe()
-                io.println(line_list(name, as_list, p2, dom_lever, stats))
+                io.println(line_list(name, as_list, p2, stream_leg, stats))
             }
             err(problem) => {
                 io.println("{name}: read-failed {problem.kind}")
