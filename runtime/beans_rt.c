@@ -2122,8 +2122,14 @@ static void cc_append_roots(void** roots, long long count) {
 }
 
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
-static void cc_worker_root_append(void* root) {
-    BeansHotTls* _bhot = beans_hot_tls_ptr();
+// Takes the resolved struct like the rest of this path. Resolving it here
+// instead cost twice: the lookup is redundant — every caller reached this
+// function through cc_possible_root_hot, which already holds the pointer — and
+// the call it added to a four-line function pushed it past the inliner's
+// threshold, so a release cascade that parks a root per node went from an
+// inlined append to a call per node. That, not the lookup itself, was most of
+// what bench/trees.b lost.
+static void cc_worker_root_append(void* root, BeansHotTls* _bhot) {
     if (cc_worker_root_len == cc_worker_root_cap) {
         long long next = cc_worker_root_cap ? cc_worker_root_cap * 2 : 256;
         if (next < cc_worker_root_cap || next > (1LL << 60))
@@ -2154,7 +2160,7 @@ static void cc_worker_roots_begin(void) {
     // and owner-local buffers after threading begins.
     if (!cc_is_mt() && cc_len) {
         for (long long i = 0; i < cc_len; i++)
-            cc_worker_root_append(cc_roots[i]);
+            cc_worker_root_append(cc_roots[i], _bhot);
         cc_len = 0;
         cc_pending = 0;
         cc_threshold = 256;
@@ -2199,7 +2205,7 @@ static void cc_possible_root_hot(void* p, BeansHotTls* _bhot) {
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
     if (cc_worker_root_batching &&
         cc_owner_local_node(h)) {
-        cc_worker_root_append(p);
+        cc_worker_root_append(p, _bhot);
         return;
     }
 #else
