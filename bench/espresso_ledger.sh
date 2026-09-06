@@ -44,6 +44,23 @@
 # CPU comes from bench/rusage_wrap.c rather than `/usr/bin/time -l`, which
 # prints nothing but `real` when its child is killed by a signal — and a server
 # under test is always killed by a signal.
+#
+# Linux arm (written, NOT run here). The 5 September benchmark this rules is a
+# macOS one, and this box has no Linux with Bun/Go/wrk parity, so the Linux
+# path below has not been run end to end — only http_floor and rusage_wrap were
+# built and smoke-tested in a container. Two things are Linux-only:
+#   * CPU pinning. With taskset the server runs on one set of cores and wrk on
+#     another, so the rusage the ledger reads is the server's own and the load
+#     generator is not stealing its cycles. --server-cores / --wrk-cores, or a
+#     sensible half/half default from nproc. On macOS there is no taskset and
+#     the pinning is inert, so the macOS path is byte-for-byte what it was.
+#   * --reuse-port-compare adds a second espresso row that binds with
+#     SO_REUSEPORT (BENCH_REUSE_PORT=1) instead of the acceptor handoff
+#     serve_workers uses, to see whether Linux's balancing SO_REUSEPORT beats
+#     the acceptor (on Darwin it does not balance — espresso's README explains
+#     why the acceptor exists). This needs espresso to honor BENCH_REUSE_PORT,
+#     which it does not yet (lane D owns espresso); until it does, the row runs
+#     the same acceptor server twice and says so. Do not read it as a result.
 set -uo pipefail
 
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -63,6 +80,12 @@ NOISE_MAX=${NOISE_MAX:-28}
 NOISE_WAIT=${NOISE_WAIT:-10}
 NOISE_TRIES=${NOISE_TRIES:-30}
 
+# Linux-only CPU pinning; inert on macOS (no taskset). See the header.
+KERNEL="$(uname -s)"
+SERVER_CORES="${SERVER_CORES:-}"   # e.g. 0-3   (default: the first half of nproc)
+WRK_CORES="${WRK_CORES:-}"         # e.g. 4-7   (default: the rest)
+REUSE_PORT_COMPARE=0
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --routes)   ROUTES="$2"; shift 2 ;;
@@ -71,6 +94,9 @@ while [ $# -gt 0 ]; do
     --rounds)   ROUNDS="$2"; shift 2 ;;
     --label)    LABEL="$2"; shift 2 ;;
     --out)      OUT="$2"; shift 2 ;;
+    --server-cores) SERVER_CORES="$2"; shift 2 ;;
+    --wrk-cores)    WRK_CORES="$2"; shift 2 ;;
+    --reuse-port-compare) REUSE_PORT_COMPARE=1; shift ;;
     --no-noise-guard) NOISE_GUARD=0; shift ;;
     -h|--help)  sed -n '2,40p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
@@ -85,12 +111,46 @@ fi
 BENCH3="$(cd -- "$BENCH3" && pwd)"
 ESPRESSO_BIN="${ESPRESSO_BIN:-$BENCH3/bench-beans}"
 
+# CPU-pinning plan. On Linux split the cores — the server on one set, wrk on the
+# other — so neither steals the other's cycles and the rusage the ledger reads
+# is the server's own. On macOS there is no taskset and both prefixes stay
+# empty, so the command lines are exactly what they were. (Guarded array
+# expansion below, because macOS bash 3.2 under `set -u` errors on "${a[@]}"
+# for an empty array.)
+TASKSET_SRV=()
+TASKSET_WRK=()
+PIN_NOTE="none (macOS/no taskset)"
+if [ "$KERNEL" = "Linux" ] && command -v taskset >/dev/null 2>&1; then
+  ncpu="$(nproc 2>/dev/null || echo 4)"
+  half=$(( ncpu / 2 )); [ "$half" -ge 1 ] || half=1
+  [ -n "$SERVER_CORES" ] || SERVER_CORES="0-$(( half - 1 ))"
+  [ -n "$WRK_CORES" ]    || WRK_CORES="$half-$(( ncpu - 1 ))"
+  TASKSET_SRV=(taskset -c "$SERVER_CORES")
+  TASKSET_WRK=(taskset -c "$WRK_CORES")
+  PIN_NOTE="server=$SERVER_CORES wrk=$WRK_CORES (linux taskset)"
+fi
+
+# The reuse-port comparison defines its own server set: the floor as the ruler,
+# then the same espresso binary as an acceptor and as SO_REUSEPORT workers.
+if [ "$REUSE_PORT_COMPARE" = "1" ]; then
+  if [ "$KERNEL" != "Linux" ]; then
+    echo "  ! --reuse-port-compare is Linux-only — Darwin's SO_REUSEPORT does not balance; ignoring" >&2
+    REUSE_PORT_COMPARE=0
+  else
+    [ -n "$RP_WORKERS" ] || RP_WORKERS="$(nproc 2>/dev/null || echo 4)"
+    SERVERS="floor espresso-acceptor espresso-reuseport"
+    echo "  reuse-port compare: $RP_WORKERS workers each — acceptor vs SO_REUSEPORT" \
+         "(NOTE: espresso ignores BENCH_REUSE_PORT until lane D adds it, so both rows are the acceptor today)" >&2
+  fi
+fi
+
 if [ -z "$OUT" ]; then
   stamp="$(date +%Y%m%d-%H%M%S)"
   OUT="$REPO/build/ledger/${LABEL:+$LABEL-}$stamp"
 fi
 mkdir -p "$OUT"
 
+mkdir -p "$REPO/build"   # a fresh checkout (or container) may not have built yet
 FLOOR_BIN="$REPO/build/http_floor"
 if ! clang -O2 -Wall -o "$FLOOR_BIN" "$HERE/http_floor.c" 2>"$OUT/floor-build.log"; then
   echo "http_floor.c did not build:" >&2; cat "$OUT/floor-build.log" >&2; exit 1
@@ -104,13 +164,18 @@ PORT_FLOOR=9490
 PORT_ESPRESSO=9491
 PORT_BUN=9492
 PORT_GO=9493
+PORT_ESPRESSO_RP=9494
+# Workers for the reuse-port comparison (balancing only matters with several).
+RP_WORKERS="${RP_WORKERS:-}"
 
 port_of() {
   case "$1" in
-    floor)    echo $PORT_FLOOR ;;
-    espresso) echo $PORT_ESPRESSO ;;
-    bun)      echo $PORT_BUN ;;
-    go)       echo $PORT_GO ;;
+    floor)              echo $PORT_FLOOR ;;
+    espresso)           echo $PORT_ESPRESSO ;;
+    espresso-acceptor)  echo $PORT_ESPRESSO ;;
+    espresso-reuseport) echo $PORT_ESPRESSO_RP ;;
+    bun)                echo $PORT_BUN ;;
+    go)                 echo $PORT_GO ;;
     *) echo "unknown server: $1" >&2; return 2 ;;
   esac
 }
@@ -147,6 +212,14 @@ server_cmd() { # <server> <route>  -> prints the argv, one word per line
   case "$s" in
     floor)    printf '%s\n' "$FLOOR_BIN"; for a in $(floor_args "$r"); do printf '%s\n' "$a"; done ;;
     espresso) printf '%s\n' env "BENCH_PORT=$PORT_ESPRESSO" BENCH_WORKERS=1 "$ESPRESSO_BIN" ;;
+    # The reuse-port comparison: the same espresso binary with the same worker
+    # count, differing only in BENCH_REUSE_PORT. The acceptor row is 0 (one
+    # accept loop hands connections to the workers), the reuseport row is 1
+    # (each worker binds the port with SO_REUSEPORT and the kernel balances).
+    # espresso does not honor BENCH_REUSE_PORT yet (lane D), so today both run
+    # the acceptor and the two rows should read the same — see the header.
+    espresso-acceptor)  printf '%s\n' env "BENCH_PORT=$PORT_ESPRESSO" "BENCH_WORKERS=${RP_WORKERS:-1}" BENCH_REUSE_PORT=0 "$ESPRESSO_BIN" ;;
+    espresso-reuseport) printf '%s\n' env "BENCH_PORT=$PORT_ESPRESSO_RP" "BENCH_WORKERS=${RP_WORKERS:-1}" BENCH_REUSE_PORT=1 "$ESPRESSO_BIN" ;;
     go)       printf '%s\n' env "BENCH_PORT=$PORT_GO" BENCH_WORKERS=1 "$BENCH3/bench-go" ;;
     bun)      printf '%s\n' env NODE_ENV=production "BENCH_PORT=$PORT_BUN" BENCH_REUSE_PORT=0 \
                               bun run "$BENCH3/bun/server.ts" ;;
@@ -188,7 +261,7 @@ start_server() { # <server> <route> <logfile> <statsfile>
   local s=$1 r=$2 log=$3 stats=$4 port; port=$(port_of "$s")
   local -a argv=(); while IFS= read -r line; do argv+=("$line"); done < <(server_cmd "$s" "$r")
   rm -f "$stats"
-  "$RUSAGE_WRAP" "$stats" "${argv[@]}" > "$log" 2>&1 &
+  "${TASKSET_SRV[@]+"${TASKSET_SRV[@]}"}" "$RUSAGE_WRAP" "$stats" "${argv[@]}" > "$log" 2>&1 &
   SPID=$!
   local probe="http://127.0.0.1:$port$(route_path "$r")"
   local i
@@ -250,9 +323,11 @@ run_one() { # <server> <route> <round> -> appends a row to ledger.tsv
   local url="http://127.0.0.1:$port$(route_path "$r")"
   if [ "$r" = "echo" ]; then
     BENCH_ECHO_BODY="$BENCH3/echo_body.json" \
+      "${TASKSET_WRK[@]+"${TASKSET_WRK[@]}"}" \
       wrk -t4 -c"$(wrk_conns "$r")" -d"$DUR" --latency -s "$BENCH3/echo.lua" "$url" > "$wlog" 2>&1
   else
-    wrk -t4 -c"$(wrk_conns "$r")" -d"$DUR" --latency "$url" > "$wlog" 2>&1
+    "${TASKSET_WRK[@]+"${TASKSET_WRK[@]}"}" \
+      wrk -t4 -c"$(wrk_conns "$r")" -d"$DUR" --latency "$url" > "$wlog" 2>&1
   fi
   stop_server
   python3 "$HERE/espresso_ledger_row.py" "$r" "$s" "$round" "$wlog" "$stats" >> "$OUT/ledger.tsv"
@@ -267,6 +342,7 @@ echo "  duration: $DUR   rounds: $ROUNDS"
 echo "  espresso: $ESPRESSO_BIN"
 echo "  bench3  : $BENCH3"
 echo "  out     : $OUT"
+echo "  cpu pin : $PIN_NOTE"
 echo
 
 for ((round = 1; round <= ROUNDS; round++)); do
