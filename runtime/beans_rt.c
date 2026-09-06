@@ -761,11 +761,18 @@ static void* rt_alloc(unsigned long long n) { return beans_host_alloc(n, 16); }
 #define RT_BIG_SANITIZED 0
 #endif
 #if BEANS_RT_PROFILE >= BEANS_RT_FULL && !defined(_WIN32) && !defined(__wasm__) && !RT_BIG_SANITIZED
-// 256 KB: below it, the pool and malloc already reuse freed space well and an
-// mmap per allocation would be a syscall where malloc had a cached page. The
-// number is measured against `time` on the compiler's own self-build, which is
-// allocation-heavy, not only against the HTTP benchmark.
-#define RT_BIG_MMAP_MIN (256u * 1024u)
+// 128 KB. Below the threshold a block stays on malloc, whose free reuses a
+// cached page; at or above it a block is mapped, so freeing one returns its
+// pages. The number is the rule, not the benchmark's exact size: measured by
+// churning a buffer of a given size a fixed number of times and timing it at
+// several thresholds. A 101 KB buffer (an /echo body) churned 200k times cost
+// ~0.62 s whether the threshold was 256 KB or 128 KB — both keep it on
+// malloc — but 3.3x that, ~2.05 s, at 64 KB, where each cycle became an
+// mmap/munmap pair. So 128 KB is the lowest threshold that still leaves a hot
+// per-request buffer on the fast path, while it reaches down to the response
+// bodies a server holds and frees — a 247 KB /records body, and anything from
+// here to 256 KB — which at 256 KB stayed on malloc and never left RSS.
+#define RT_BIG_MMAP_MIN (128u * 1024u)
 
 static size_t rt_big_page(void) {
     static size_t cached = 0;          // benign race: every writer stores the same value

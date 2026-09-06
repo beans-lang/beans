@@ -24,7 +24,7 @@ fn marker(name: string) {
 
 fn main() {
     let count: int = 32
-    let bytes_len: int = 1048576        // one mebibyte, well past the 256 KB map threshold
+    let bytes_len: int = 1048576        // one mebibyte, well past the map threshold
     let ints_len: int = 131072          // 131072 * 8 bytes = one mebibyte
 
     marker("baseline")
@@ -50,4 +50,29 @@ fn main() {
     marker("allocated-lists")
     ints_hold = []                      // drop all 32
     marker("freed-lists")
+
+    // 32 live 1 MiB strings. A large string is a non-pooled beans_alloc object,
+    // so it takes the rt_obj map path, not the backing path — this checks that
+    // path returns RSS too. repeat builds and touches the whole string.
+    var str_hold: List<string> = []
+    for i: int in 0..count {
+        str_hold.push("x".repeat(bytes_len))
+    }
+    marker("allocated-strings")
+    str_hold = []                       // drop all 32; each string is unmapped here
+    marker("freed-strings")
+
+    // Records-sized backings: 200 KB each — above a 128 KB threshold, below a
+    // 256 KB one. This is the range a held-and-freed response body lives in, and
+    // the phase returns its pages only when the threshold reaches down to it.
+    // 160 of them so the total clears the same resident bar as the phases above.
+    let rec_len: int = 204800
+    let rec_count: int = 160
+    var rec_hold: List<Bytes> = []
+    for i: int in 0..rec_count {
+        rec_hold.push(Bytes.filled(rec_len, 65))
+    }
+    marker("allocated-records")
+    rec_hold = []                       // drop all 160
+    marker("freed-records")
 }

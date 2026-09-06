@@ -14,12 +14,14 @@ set -euo pipefail
 # the "allocated" sample to the "freed" one: with the fix it is the whole
 # 32 MiB; without it, near zero on macOS.
 #
-# The native backend is the definitive test — a program's Bytes and its
-# List<int> are both real runtime backings there. In the tree interpreter a
-# program's Bytes is still a real runtime Bytes (so its drop is asserted too),
-# but a program's List<int> is 131072 boxed interpreter values, not one
-# backing, so its resident set is interpreter object churn and is only run, not
-# asserted.
+# Three shapes: a Bytes backing and a List<int> backing (the rt_big path) and
+# a large string (a non-pooled beans_alloc object — the rt_obj path). The
+# native backend is the definitive test: a program's Bytes, its List<int> and
+# its string are each one real runtime allocation there. In the tree
+# interpreter a program's Bytes is still a real runtime Bytes (so its drop is
+# asserted too), but a program's List<int> is 131072 boxed interpreter values
+# and its string is the interpreter's own churned storage — not one runtime
+# allocation — so those two are only run, not asserted.
 
 cd "$(dirname "$0")/.."
 BEANSC=${BEANSC:-./build/beansc}
@@ -46,7 +48,8 @@ drive() {
     exec 7>"$work/in"   # hold stdin open so read_line blocks rather than seeing EOF
 
     local out="" m sample tries
-    for m in baseline allocated-bytes freed-bytes allocated-lists freed-lists; do
+    for m in baseline allocated-bytes freed-bytes allocated-lists freed-lists \
+             allocated-strings freed-strings allocated-records freed-records; do
         tries=0
         until grep -q "phase $m" "$work/err" 2>/dev/null; do
             if ! kill -0 "$pid" 2>/dev/null; then
@@ -90,16 +93,24 @@ want_drop() {
 }
 
 echo "checking freed large allocations leave RSS (native)"
-read -r n_base n_ab n_fb n_al n_fl < <(drive "$tmp/rss-native")
+read -r n_base n_ab n_fb n_al n_fl n_as n_fs n_ar n_fr < <(drive "$tmp/rss-native")
 want_drop "native bytes" "$n_base" "$n_ab" "$n_fb"
 want_drop "native lists" "$n_base" "$n_al" "$n_fl"
+want_drop "native strings" "$n_base" "$n_as" "$n_fs"
+# The records-sized (200 KB) blocks return only when the threshold reaches below
+# them: at a 256 KB threshold they stay on malloc and macOS keeps them resident.
+want_drop "native records (200 KB)" "$n_base" "$n_ar" "$n_fr"
 
 echo "checking freed large allocations leave RSS (interpreter, Bytes)"
-read -r i_base i_ab i_fb i_al i_fl < <(drive "$BEANSC" run "$prog")
+read -r i_base i_ab i_fb i_al i_fl i_as i_fs i_ar i_fr < <(drive "$BEANSC" run "$prog")
 want_drop "interp bytes" "$i_base" "$i_ab" "$i_fb"
-# The interpreter's List<int> phase is run (it must not crash) but not asserted:
-# there a program's ints are boxed interpreter objects, not one runtime backing,
-# so its resident set is object churn, not the mmap the fix returns.
+# The interpreter's List<int> and string phases are run (they must not crash)
+# but not asserted: there a program's ints and its strings are the interpreter's
+# own churned objects, not a single runtime allocation, so their resident set is
+# interpreter churn, not the mmap the fix returns. The native backend, which
+# holds each as one runtime object, is where the rt_obj map path is asserted.
 echo "  interp lists ran (base=${i_base}K allocated=${i_al}K freed=${i_fl}K); not asserted — boxed values, not a backing"
+echo "  interp strings ran (base=${i_base}K allocated=${i_as}K freed=${i_fs}K); not asserted — interpreter string churn, not one object"
+echo "  interp records ran (base=${i_base}K allocated=${i_ar}K freed=${i_fr}K); not asserted — the interpreter's per-iteration churn dominates 160 blocks"
 
 echo "ok rss: 32 MiB of freed Bytes and List backings returned to the OS"
