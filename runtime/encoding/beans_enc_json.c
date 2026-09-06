@@ -1328,10 +1328,35 @@ static int beans_json_direct_grow(BeansJsonDirect* out, size_t extra) {
     return 1;
 }
 
-static int beans_json_direct_raw(BeansJsonDirect* out, const char* text,
-                                 size_t len) {
+// always_inline, not merely inline: this is called once per token and the
+// chunked copy below made the body large enough that the compiler stopped
+// folding it into its callers, which cost more in call overhead than the
+// copy saved.
+__attribute__((always_inline))
+static inline int beans_json_direct_raw(BeansJsonDirect* out, const char* text,
+                                        size_t len) {
     if (!beans_json_direct_grow(out, len)) return 0;
-    memcpy(out->data + out->len, text, len);
+    char* destination = out->data + out->len;
+    // Almost every append here is a token, not a payload: a key fragment, a
+    // run of digits, a short string field. Encoding a thousand records of
+    // eight fields is around twenty-five thousand of these per document, and
+    // at that size the call into memcpy costs more than the bytes do — it was
+    // 63 of the 358 microseconds of user time the benchmark's /records route
+    // spends per request.
+    //
+    // The chunks are fixed-size memcpys on purpose. A byte loop would be
+    // turned back into a memcpy call by loop-idiom recognition, which is the
+    // thing being avoided; a copy of a size the compiler knows becomes a load
+    // and a store. Longer runs are left to memcpy, which is better at length.
+    if (len <= 32) {
+        size_t at = 0;
+        for (; at + 8 <= len; at += 8) memcpy(destination + at, text + at, 8);
+        if (at + 4 <= len) { memcpy(destination + at, text + at, 4); at += 4; }
+        if (at + 2 <= len) { memcpy(destination + at, text + at, 2); at += 2; }
+        if (at < len) destination[at] = text[at];
+    } else {
+        memcpy(destination, text, len);
+    }
     out->len += len;
     return 1;
 }
