@@ -202,13 +202,24 @@ for pool in pooled nopool; do
         echo "the corpus runner failed under ASan/UBSan ($pool)" >&2
         exit 1
     fi
-    for leg in fuzz corpus; do
-        if grep -Eq "AddressSanitizer|UndefinedBehaviorSanitizer|LeakSanitizer" \
-            "$tmp/$leg.san.$pool.err"; then
-            cat "$tmp/$leg.san.$pool.err" >&2
-            exit 1
-        fi
-    done
+    # A sanitizer can report without failing the run (ASan's abort_on_error=0,
+    # UBSan's non-fatal checks), so the captured stderr is inspected too. Each
+    # grep names its capture file literally rather than building the name from
+    # a loop variable: test/sanitizer_gates.sh traces every such grep back to
+    # the `2>` that writes the file, and a name it cannot trace is a check
+    # nothing proves is reachable.
+    if grep -Eq "AddressSanitizer|UndefinedBehaviorSanitizer|LeakSanitizer" \
+        "$tmp/fuzz.san.$pool.err"; then
+        cat "$tmp/fuzz.san.$pool.err" >&2
+        echo "the fuzz reported a sanitizer error ($pool)" >&2
+        exit 1
+    fi
+    if grep -Eq "AddressSanitizer|UndefinedBehaviorSanitizer|LeakSanitizer" \
+        "$tmp/corpus.san.$pool.err"; then
+        cat "$tmp/corpus.san.$pool.err" >&2
+        echo "the corpus runner reported a sanitizer error ($pool)" >&2
+        exit 1
+    fi
     # The instrumented build must reach the same answers as the shipped one.
     diff -u "test/cases/json_typed_decode_fuzz.$seed.out" "$tmp/fuzz.san.$pool"
     diff -u test/cases/json_typed_corpus.out "$tmp/corpus.san.$pool"
