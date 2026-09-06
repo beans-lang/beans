@@ -35,6 +35,9 @@
 #                 bun/server.ts, bench-go, bench-beans.
 #                 default: ../community-libs/espresso/examples/bench3
 #   ESPRESSO_BIN  the espresso server binary (default: $BENCH3/bench-beans)
+#   BEANS_LEDGER_LOCK   the machine-wide lock directory that keeps two ledgers
+#                 from measuring at once (default: $TMPDIR/beans-espresso-ledger.lock)
+#   LEDGER_LOCK_WAIT    seconds to wait for that lock before refusing (default 3600)
 #
 # The rusage covers the server's whole life: startup, the readiness probe and
 # the measured run. At these request rates startup is under a tenth of a
@@ -245,17 +248,98 @@ server_cmd() { # <server> <route>  -> prints the argv, one word per line
 NOISELOG="$OUT/noise.log"
 : > "$NOISELOG"
 
+# The process group every process this run starts belongs to. It is NOT $$: a
+# script run from another script inherits its parent's group, so the group has
+# to be read rather than assumed.
+MY_PGID=$(ps -o pgid= -p $$ | tr -d ' ')
+[ -n "$MY_PGID" ] || MY_PGID=$$
+
+# ---- one ledger at a time, machine-wide ------------------------------------
+#
+# The ports above are fixed, so two ledgers cannot run at once: the second one's
+# servers fail to bind and its rows come out dropped or, worse, measured while
+# the first one's wrk holds four threads. Both happened when two worktrees on
+# this machine benchmarked at the same time. So a run takes a machine-wide lock
+# and waits for it, rather than racing and writing down a number that is wrong
+# with no sign that it is.
+#
+# The lock is a directory — mkdir is atomic on every filesystem this runs on,
+# where a test-then-create is not — holding the owner's pid so a lock left by a
+# killed run is detected and cleared instead of blocking the machine forever.
+#
+# A ledger from a checkout that predates this lock takes no lock at all, so the
+# wait also watches for any other espresso_ledger.sh process. That check is a
+# count, deliberately: `ps | grep -q` under `set -o pipefail` reports failure
+# when grep matches, because grep exits early and ps dies of SIGPIPE — which
+# inverts the answer exactly when the box is busy.
+LOCKDIR="${BEANS_LEDGER_LOCK:-${TMPDIR:-/tmp}/beans-espresso-ledger.lock}"
+LOCK_HELD=0
+release_lock() {
+  [ "$LOCK_HELD" = "1" ] || return 0
+  rm -f "$LOCKDIR/pid" 2>/dev/null
+  rmdir "$LOCKDIR" 2>/dev/null
+  LOCK_HELD=0
+}
+# Ledger processes that are not this run's. Counted by process group, not by
+# subtracting one for self: a command-substitution subshell carries the parent's
+# argv, so a run looking for itself by name finds three of itself and waits on a
+# lock it already holds.
+other_ledgers() {
+  local n
+  n=$(ps -Ao pgid=,args= | awk -v mine="$MY_PGID" '
+        $1 + 0 == mine + 0 { next }
+        /espresso_ledger\.sh/ { c++ }
+        END { print c + 0 }')
+  echo "${n:-0}"
+}
+take_lock() {
+  local waited=0 owner
+  while :; do
+    if [ "$(other_ledgers)" -eq 0 ] && mkdir "$LOCKDIR" 2>/dev/null; then
+      echo $$ > "$LOCKDIR/pid"
+      LOCK_HELD=1
+      trap 'release_lock' EXIT INT TERM
+      [ "$waited" -gt 0 ] && echo "  (waited ${waited}s for the machine's ledger lock)"
+      return 0
+    fi
+    owner=$(cat "$LOCKDIR/pid" 2>/dev/null)
+    if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; then
+      echo "  clearing a ledger lock left by dead pid $owner" >&2
+      rm -f "$LOCKDIR/pid" 2>/dev/null; rmdir "$LOCKDIR" 2>/dev/null
+      continue
+    fi
+    if [ "$waited" -ge "${LEDGER_LOCK_WAIT:-3600}" ]; then
+      echo "another espresso ledger has held the machine for ${waited}s — refusing to" >&2
+      echo "measure beside it. Wait for it, or point BEANS_LEDGER_LOCK elsewhere if" >&2
+      echo "you are certain the ports do not collide." >&2
+      exit 3
+    fi
+    [ "$waited" = 0 ] && echo "  waiting for another espresso ledger to finish (the ports are fixed)"
+    sleep 5
+    waited=$((waited + 5))
+  done
+}
+take_lock
+
 # Wait until nothing outside this benchmark is eating a core. `ps -A -o
-# %cpu,comm -r` is the per-process list; the load average lies on macOS.
+# %cpu,pgid,comm -r` is the per-process list; the load average lies on macOS.
+#
+# What counts as "this benchmark" is the process group, not the program name.
+# Exempting by name — bun, wrk, http_floor, bench-beans — exempts ANOTHER
+# ledger's load too, and two ledgers running at once is not hypothetical: this
+# repo's benchmark work is done by several worktrees on one machine. When it
+# happened the guard saw a quiet box while a second lane's wrk held four
+# threads, and every row was written down at roughly half its real rate with no
+# warning printed. Every process this run starts — the server, its rusage
+# wrapper, wrk — inherits this script's process group, so `pgid == $$` is the
+# exact test, and it cannot be spoofed by a name.
 noise_guard() {
   local label="$1" try worst snap
   [ "$NOISE_GUARD" = "1" ] || return 0
   for ((try = 1; try <= NOISE_TRIES; try++)); do
-    snap=$(ps -A -o %cpu,comm -r | head -6)
-    worst=$(printf '%s\n' "$snap" | tail -n +2 | awk '
-      { n = split($2, parts, "/"); base = parts[n]
-        if (base == "bun" || base == "wrk" || base == "http_floor" ||
-            base == "bench-beans" || base == "bench-go" || base == "time") next
+    snap=$(ps -A -o %cpu,pgid,comm -r | head -6)
+    worst=$(printf '%s\n' "$snap" | tail -n +2 | awk -v mine="$MY_PGID" '
+      { if ($2 + 0 == mine + 0) next
         print $1 + 0; exit }')
     [ -n "$worst" ] || worst=0
     if awk "BEGIN{exit !($worst <= $NOISE_MAX)}"; then

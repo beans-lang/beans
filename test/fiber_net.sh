@@ -83,4 +83,31 @@ run_deadline ./build/beansc run "$tmp/deadline.b"
 ./build/beansc build "$tmp/deadline.b" -o "$tmp/deadline" >/dev/null 2>&1
 run_deadline "$tmp/deadline"
 
+# Many parked reads with interleaved deadlines, plus the stale-entry shape:
+# the single accept-deadline probe above only ever puts one entry in the
+# sleeper heap. This one fills the heap out of deadline order and asserts the
+# timeouts fire in deadline order (ids 2,4,5,1,3 for 30,50,70,90,110 ms), and
+# that a fiber signalled before its deadline and re-parked with a new one times
+# out at the new deadline while the abandoned entry does not fire at it. Both
+# engines run the one fiber runtime, so both must print the same lines; a
+# broken sleeper heap reorders them or misses a timeout.
+echo "checking interleaved and re-armed fiber read deadlines in both backends"
+started=$(date +%s)
+timeout 30 ./build/beansc run test/cases/fiber_deadlines.b >"$tmp/dl-interp"
+./build/beansc build test/cases/fiber_deadlines.b -o "$tmp/dl-native" >/dev/null 2>&1
+timeout 30 "$tmp/dl-native" >"$tmp/dl-native.out"
+finished=$(date +%s)
+diff -u "$tmp/dl-interp" "$tmp/dl-native.out"
+diff -u - "$tmp/dl-interp" <<'EXPECTED'
+one: 1
+many order: 24513
+stale: 7
+EXPECTED
+# The whole run is well under a second when deadlines fire on time; the stale
+# 300ms entry firing at the wrong fiber would show up as a hang toward it.
+if [ $((finished - started)) -gt 8 ]; then
+    echo "the deadline cases took $((finished - started))s — a deadline did not fire on time" >&2
+    exit 1
+fi
+
 echo "ok netpoller: fiber TCP on one worker, both engines identical, deadlines hold"

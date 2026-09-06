@@ -49,6 +49,17 @@ language=1.0
 # hosted row now carries its call beside its address, and beans_rt_host_symbol
 # and beans_rt_host_invoke are themselves rows, so an interpreter running under
 # an interpreter reaches them the same way at every depth.
+# 17: beans_net_send_pair_text — the string form of that vectored send. A
+# server holds a response body as a string, the shape a handler hands back,
+# and framing it into a Bytes to send it is the copy the pair send exists to
+# remove; this entry sends the string body where it already lives, its length
+# read with beans_slen exactly as beans_net_send_text reads its text's. It
+# reuses beans_net_send_pair_wait's sendmsg engine rather than a second loop,
+# driving it from a local req, so it needs no scratch of its own and no
+# per-response iovec allocation. std.sock.send_pair_text lowers to it, the way
+# std.sock.send_text lowers to beans_net_send_text; the tree interpreter,
+# whose bootstrap predates the entry, joins head and body and sends that once,
+# which writes the same bytes and short-writes at the same boundary.
 # 16: order kind 7 — a payload-free enum slot is a pointer at its tag word;
 # sort, min and max compare the loaded tags, where an older runtime compared
 # the pointers. No new symbol: the order kind is a compiler-to-runtime contract
