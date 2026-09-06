@@ -63,6 +63,36 @@ if [[ "$copy_fnv" != "$simd_fnv" ]]; then
     echo "encode and encode_into produced different bytes ($copy_fnv vs $simd_fnv)" >&2
     exit 1
 fi
+# encode_into does strictly less than encode-then-copy — the same writer, minus
+# a quarter-megabyte string allocation and two copies of it — so it must not be
+# slower. A same-box, same-run ratio, which is what makes it usable as a floor
+# on a shared machine where an absolute GB/s number only says how busy the box
+# was. Measured 1.14x; the floor is 1.00x, so it fires on an inversion and not
+# on noise.
+copy_mgbps=$(sed -E 's/.*gbps_milli=([0-9]+).*/\1/' <<<"$records_copy")
+records_mgbps=$(sed -E 's/.*gbps_milli=([0-9]+).*/\1/' <<<"$records_simd")
+echo "  encode_into ${records_mgbps} milli-GB/s vs encode+copy ${copy_mgbps} milli-GB/s (need >= ${copy_mgbps})"
+if [[ "$records_mgbps" -lt "$copy_mgbps" ]]; then
+    echo "encode_into is slower than the encode-then-copy shape it replaces" >&2
+    exit 1
+fi
+
+# Context, not a floor: the same document through the path the direct writer
+# replaced. BEANS_JSON_NO_DIRECT builds a yyjson mutable document out of the
+# records and writes that, so this is the DOM build plus yyjson's writer, not
+# yyjson's writer on its own. The gap is narrow on this shape — the records
+# document is short fields and per-field framing, where neither writer can do
+# much — which is the same reason the 16-byte scan does not move it. It is
+# reported so the direct writer's remaining headroom is visible; it is too
+# narrow to floor without flaking.
+records_dom=$(ROUNDS="$rounds" MODE=records BEANS_JSON_NO_DIRECT=1 \
+    build/bench_json_encode_records_simd)
+echo "  DOM path (yyjson doc + write): $records_dom"
+dom_fnv=$(sed -E 's/.*fnv1a64=([0-9]+).*/\1/' <<<"$records_dom")
+if [[ "$dom_fnv" != "$simd_fnv" ]]; then
+    echo "the direct writer and the DOM path produced different bytes" >&2
+    exit 1
+fi
 
 echo "== string-heavy shape (the scan is the work here) =="
 strings_simd=$(MODE=strings ROUNDS="$rounds" build/bench_json_encode_records_simd)
