@@ -1271,9 +1271,20 @@ typedef struct {
 void beans_panic(const char* msg, long long line, long long col);
 // Darwin hosted: the struct lives behind one runtime-owned key, allocated
 // lazily per thread and freed when the thread exits. The key is created in the
-// pool_setup constructor below, which runs before any allocation, so the fast
-// path is a bare pthread_getspecific with no lazy-init check.
+// pool_setup constructor below, which normally runs before any allocation.
 static pthread_key_t beans_hot_key;
+static pthread_once_t beans_hot_once = PTHREAD_ONCE_INIT;
+// beans_hot_key must NOT be read until the key exists: Darwin's TSD slot 0 is
+// _PTHREAD_TSD_SLOT_PTHREAD_SELF, so pthread_getspecific(0) returns a non-NULL
+// pthread_t that the accessor would use as a BeansHotTls* — silent corruption.
+// A constructor in a translation unit the driver links before this one could
+// allocate before pool_setup runs (Darwin honours no cross-TU constructor
+// priority), so the fast path cannot assume the constructor already ran. This
+// flag gates it. Plain, not atomic: the key is only ever created while the
+// process is single-threaded — a worker thread cannot exist before something
+// on the main thread allocated, which is what creates the key, and the spawn
+// that starts a worker is itself a barrier — so no worker ever races the write.
+static int beans_hot_key_ready;
 static void beans_hot_drop(void* raw) {
     BeansHotTls* h = (BeansHotTls*)raw;
     if (!h) return;
@@ -1285,26 +1296,30 @@ static void beans_hot_drop(void* raw) {
 }
 static void beans_hot_make_key(void) {
     if (pthread_key_create(&beans_hot_key, beans_hot_drop) != 0) {
-        // Grabbed once at process start, where a key is always available. If it
-        // is not, the runtime cannot separate its allocator state per thread,
-        // and reading a foreign TSD slot would corrupt it — fail loudly here
-        // rather than corrupt silently. (beans_panic is not yet usable this
-        // early; write+abort is.)
+        // A key is always available at process start; if it is not, the runtime
+        // cannot separate its allocator state per thread, and reading a foreign
+        // TSD slot would corrupt it — fail loudly rather than corrupt silently.
+        // (beans_panic is not usable this early; write+abort is.)
         static const char m[] =
             "beans runtime: cannot create the allocator's thread-local key\n";
         ssize_t wr = write(2, m, sizeof m - 1);
         (void)wr;
         abort();
     }
+    beans_hot_key_ready = 1; // after the key is valid; see the note above
 }
 __attribute__((noinline, cold)) static BeansHotTls* beans_hot_tls_alloc(void) {
-    BeansHotTls* h = (BeansHotTls*)calloc(1, sizeof *h);
+    pthread_once(&beans_hot_once, beans_hot_make_key); // covers a pre-constructor caller
+    BeansHotTls* h = (BeansHotTls*)pthread_getspecific(beans_hot_key);
+    if (h) return h;
+    h = (BeansHotTls*)calloc(1, sizeof *h);
     if (!h) beans_panic("out of memory", 0, 0);
     if (pthread_setspecific(beans_hot_key, h) != 0)
         beans_panic("out of memory", 0, 0);
     return h;
 }
 static inline BeansHotTls* beans_hot_tls_ptr(void) {
+    if (__builtin_expect(!beans_hot_key_ready, 0)) return beans_hot_tls_alloc();
     BeansHotTls* h = (BeansHotTls*)pthread_getspecific(beans_hot_key);
     if (__builtin_expect(h == NULL, 0)) h = beans_hot_tls_alloc();
     return h;
@@ -1345,7 +1360,9 @@ static int pool_off;
 __attribute__((constructor)) static void pool_setup(void) {
     pool_off = getenv("BEANS_NO_POOL") != NULL;
 #if defined(__APPLE__)
-    beans_hot_make_key(); // before main, so the hot-struct fast path needs no init check
+    // Normally this makes the key before main; the cold path's pthread_once
+    // covers the case where an earlier-linked constructor allocated first.
+    pthread_once(&beans_hot_once, beans_hot_make_key);
 #endif
 }
 #endif
@@ -1624,7 +1641,11 @@ static void* shared_shell_drop(void* p, long long extra) {
 }
 
 // free the box and its side allocations WITHOUT touching child refs
-static void* cc_free_shell(void* p, long long meta) {
+// _bhot is threaded in by the caller: every caller frees shells in a loop
+// (a release cascade, a husk sweep, a collector's white set), so resolving the
+// hot struct once at the top of that loop and passing it here turns a
+// per-shell lookup into one per walk.
+static void* cc_free_shell(void* p, long long meta, BeansHotTls* _bhot) {
     ARC_ADD(arc_freed_shells, 1);
     long long kind = meta & 7;
     long long extra = (meta & CC_SHAPE) >> 3;
@@ -1686,7 +1707,6 @@ static void* cc_free_shell(void* p, long long meta) {
     BHead* h = head_of(p);
     long long cls = (h->rc >> RC_CLS_SHIFT) & RC_CLS_MAX;
     if (cls) {
-        BeansHotTls* _bhot = beans_hot_tls_ptr();
         *(void**)h = pool_free[cls];
         pool_free[cls] = h;
     } else {
@@ -2041,6 +2061,7 @@ static void cc_sweep_husks(void) {
     // re-arm below decides how soon the next slice runs.
     enum { CC_SWEEP_BUDGET = 8192 };
     long long budget = CC_SWEEP_BUDGET;
+    BeansHotTls* _bhot = beans_hot_tls_ptr();
     for (long long i = cc_len; i-- > 0 && budget-- > 0;) {
         void* p = cc_roots[i];
         BHead* h = head_of(p);
@@ -2052,7 +2073,7 @@ static void cc_sweep_husks(void) {
             // happens-before the free
             __atomic_thread_fence(__ATOMIC_ACQUIRE);
             rt_w_and(&h->meta, ~CC_BUF);
-            void* child = cc_free_shell(p, cc_meta(h));
+            void* child = cc_free_shell(p, cc_meta(h), _bhot);
             if (child) cc_push(&deferred, child);
             cc_roots[i] = cc_roots[--cc_len];
         }
@@ -2164,21 +2185,31 @@ static void cc_worker_roots_end(void) {
 }
 #endif
 
-static void cc_possible_root(void* p) {
+// The _hot form takes the resolved struct. A release loop that parks a root
+// per node — a tree traversal's retain/release is exactly this — would
+// otherwise resolve the struct once per node: clang hoists a _Thread_local
+// access out of such a loop for free, but pthread_getspecific is an opaque call
+// it cannot hoist, so the loop must hand the resolved pointer in. Every caller
+// outside a hot loop uses the wrapper below, which resolves once per call.
+static void cc_possible_root_hot(void* p, BeansHotTls* _bhot) {
     BHead* h = head_of(p);
     long long old = rt_w_fetch_or(&h->meta, CC_PURPLE | CC_BUF);
     if (old & CC_BUF) return; // already parked
     ARC_ADD(arc_possible_roots, 1);
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
-    BeansHotTls* _bhot = beans_hot_tls_ptr();
     if (cc_worker_root_batching &&
         cc_owner_local_node(h)) {
         cc_worker_root_append(p);
         return;
     }
+#else
+    (void)_bhot;
 #endif
     void* root = p;
     cc_append_roots(&root, 1);
+}
+static void cc_possible_root(void* p) {
+    cc_possible_root_hot(p, beans_hot_tls_ptr());
 }
 
 // iterative: a dropped million-node chain pushes children on an explicit
@@ -2194,7 +2225,7 @@ static int weak_live;
 // cascade reaches it twice — once on the ordinary path, once from the
 // unwind guard below.
 __attribute__((always_inline)) static inline void rt_finish_death(
-    void* p, CCStack* st) {
+    void* p, CCStack* st, BeansHotTls* _bhot) {
     BHead* h = head_of(p);
     long long meta = cc_meta(h);
     cc_release_children(p, meta, st);
@@ -2210,7 +2241,7 @@ __attribute__((always_inline)) static inline void rt_finish_death(
 #endif
         rt_w_and(&h->meta, ~CC_COLOR);
     } else {
-        void* child = cc_free_shell(p, meta);
+        void* child = cc_free_shell(p, meta, _bhot);
         if (child) cc_push(st, child);
     }
 }
@@ -2241,7 +2272,7 @@ static void rt_cascade_unwound(RtCascadeUnwound* g) {
     if (g->dying) {
         void* dying = g->dying;
         g->dying = NULL;
-        rt_finish_death(dying, st);
+        rt_finish_death(dying, st, beans_hot_tls_ptr());
     }
     while (st->len) beans_release(st->v[--st->len]);
     if (st->v && st->v != st->local) rt_free(st->v);
@@ -2249,6 +2280,13 @@ static void rt_cascade_unwound(RtCascadeUnwound* g) {
 
 void beans_release(void* p) {
     if (!p) return;
+    // Resolved lazily and once for the whole cascade. The common case — a
+    // decrement that does not reach zero — touches the hot struct not at all,
+    // so it must pay no lookup (a tree traversal is mostly these). A death that
+    // drops a K-node subtree loops here, and rt_finish_death frees each node's
+    // shell; the first death resolves the struct and every later node in the
+    // same cascade reuses it, one lookup instead of K (the trees benchmark).
+    BeansHotTls* _bhot = NULL;
     ARC_ADD(arc_release_calls, 1);
     void* local[64];
     CCStack st = {local, 0, 64, local};
@@ -2279,7 +2317,10 @@ void beans_release(void* p) {
                  kind_before == 5 || kind_before == 7) &&
                  (meta_before & (1LL << 3)));
             int mt = cc_is_mt();
-            if (mt && cyclic && RC_COUNT(rc0) > 1) cc_possible_root(cur);
+            if (mt && cyclic && RC_COUNT(rc0) > 1) {
+                if (!_bhot) _bhot = beans_hot_tls_ptr();
+                cc_possible_root_hot(cur, _bhot);
+            }
             long long nrc = rt_rc_dec(h);
             if (RC_COUNT(nrc) == 0) {
                 // weak handles must read "gone" before user deinit code
@@ -2299,13 +2340,17 @@ void beans_release(void* p) {
                     beans_do_deinit(cur, h, nrc);
                     st_unwound.dying = NULL;
                 }
-                rt_finish_death(cur, &st);
+                if (!_bhot) _bhot = beans_hot_tls_ptr();
+                rt_finish_death(cur, &st, _bhot);
             } else {
                 // could this shape sit on a cycle? leaves, pointer-free
                 // containers, and objects with an empty pointer mask never can
                 // — a cycle member needs an outgoing edge — which keeps
                 // int-field churn off the buffer
-                if (!mt && cyclic) cc_possible_root(cur);
+                if (!mt && cyclic) {
+                    if (!_bhot) _bhot = beans_hot_tls_ptr();
+                    cc_possible_root_hot(cur, _bhot);
+                }
             }
         }
         if (!st.len) break;
@@ -3211,6 +3256,7 @@ static int cc_run_cycle_deinits(void** dead, long long len, int owner_local) {
 // a zero count is exactly the husk the candidate filter already knows how to
 // free, and beans_release takes the same branch for the same reason.
 static void cc_free_cycle_shells(void** dead, long long len, CCStack* deferred) {
+    BeansHotTls* _bhot = beans_hot_tls_ptr();
     for (long long i = 0; i < len; i++) {
         void* p = dead[i];
         BHead* h = head_of(p);
@@ -3222,7 +3268,7 @@ static void cc_free_cycle_shells(void** dead, long long len, CCStack* deferred) 
             rt_w_and(&h->meta, ~CC_COLOR);
             continue;
         }
-        void* child = cc_free_shell(p, meta);
+        void* child = cc_free_shell(p, meta, _bhot);
         if (child) cc_push(deferred, child);
     }
 }
@@ -3296,7 +3342,7 @@ static void cc_worker_collect(void) {
             } else {
                 rt_w_and(&h->meta, ~CC_BUF);
                 if (RC_COUNT(rc) == 0) {
-                    void* child = cc_free_shell(p, cc_meta(h));
+                    void* child = cc_free_shell(p, cc_meta(h), _bhot);
                     if (child) cc_push(&deferred, child);
                 }
             }
@@ -3461,6 +3507,7 @@ static void cc_collect(int force) {
     CCStack doomed = {0, 0, 0};
     __attribute__((cleanup(rt_stack_unwound)))
     RtStackUnwound doomed_unwound = {&doomed, 1};
+    BeansHotTls* _bhot = beans_hot_tls_ptr();
     CC_LOCK();
 
     // keep only live purple candidates; zombies (released while parked)
@@ -3474,7 +3521,7 @@ static void cc_collect(int force) {
         } else {
             rt_w_and(&h->meta, ~CC_BUF);
             if (RC_COUNT(h->rc) == 0) {
-                void* child = cc_free_shell(p, h->meta);
+                void* child = cc_free_shell(p, h->meta, _bhot);
                 if (child) cc_push(&deferred, child);
             }
         }
