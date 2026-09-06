@@ -123,6 +123,21 @@ grep -q "@beans_bytes_reserve_raw" \
     build/encoding_json_typed_encode.ll
 echo "ok typed JSON struct output in interpreter and native code"
 
+# The escape scan must actually have a 16-byte vector path, not just the SWAR
+# fallback. Compiling the bridge with and without BEANS_JSON_SCALAR_SCAN must
+# differ: forcing the scalar path only changes the object if a vector path is
+# there to force off. x86-64 (SSE2) and arm64 (NEON) — the shipped targets and
+# where CI runs — both have one; reverting the vector block collapses the two.
+clang -O2 -S -Wno-override-module runtime/encoding/beans_enc_json.c \
+    -o "$tmp/bridge_vector.s"
+clang -O2 -S -DBEANS_JSON_SCALAR_SCAN -Wno-override-module \
+    runtime/encoding/beans_enc_json.c -o "$tmp/bridge_scalar.s"
+if cmp -s "$tmp/bridge_vector.s" "$tmp/bridge_scalar.s"; then
+    echo "the JSON escape scan has no vector path (the scalar switch changed nothing)" >&2
+    exit 1
+fi
+echo "ok JSON escape scan compiles a 16-byte vector path"
+
 ./build/beansc build test/cases/encoding_json_typed_options.b \
     -o "$tmp/encoding_json_typed_options" >/dev/null
 "$tmp/encoding_json_typed_options" \

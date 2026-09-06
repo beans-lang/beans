@@ -23,6 +23,17 @@
 
 #include "beans_enc_common.h"
 
+// The escape scan reads 16 bytes at a time where the machine has a vector
+// unit — NEON on aarch64, SSE2 on x86-64, both baseline for the targets Beans
+// ships. These headers are compiler intrinsics with no runtime library behind
+// them, so encoding_symbols.sh still sees the bridge resolve against libc
+// alone. The 8-byte SWAR path stays as the fallback and for the tail.
+#if defined(__ARM_NEON)
+#include <arm_neon.h>
+#elif defined(__SSE2__)
+#include <emmintrin.h>
+#endif
+
 // Nothing here may reference a symbol outside libc — encoding_symbols.sh
 // holds that line, which is why the ABI passes callbacks instead of calling
 // runtime entry points directly. That rules out pthread and thread-locals,
@@ -1435,8 +1446,66 @@ static int beans_json_direct_sint(BeansJsonDirect* out, int64_t value) {
 // Bytes that end a plain copy run: below 0x20, the quote, the backslash, or
 // anything non-ASCII. Eight at a time on little-endian hosts, the same trick
 // yyjson's writer uses; the classification is identical to the byte loop.
+// BEANS_JSON_SCALAR_SCAN forces the 8-byte SWAR path even where a vector unit
+// is present — the compile-time A/B lever the encode bench uses to prove the
+// 16-byte scan is doing the work, the way BEANS_JSON_NO_DIRECT is the runtime
+// lever for the direct writer. It never affects output, only which scan runs.
 static size_t beans_json_plain_span(const unsigned char* src, size_t len) {
     size_t at = 0;
+#if defined(__ARM_NEON) && !defined(BEANS_JSON_SCALAR_SCAN)
+    // Sixteen bytes at a time. A byte ends the run if it is below 0x20, has its
+    // high bit set (start or continuation of a multibyte sequence), or is a
+    // quote or a backslash — byte for byte the classification the scalar loop
+    // below uses. Strings shorter than sixteen bytes skip this entirely and
+    // take the 8-byte SWAR path, so the short fields a record schema is full
+    // of are no slower than before.
+    {
+        const uint8x16_t ctrl = vdupq_n_u8(0x20);
+        const uint8x16_t highbit = vdupq_n_u8(0x80);
+        const uint8x16_t quote = vdupq_n_u8('"');
+        const uint8x16_t backslash = vdupq_n_u8('\\');
+        while (at + 16 <= len) {
+            uint8x16_t v = vld1q_u8(src + at);
+            uint8x16_t breaks = vorrq_u8(
+                vorrq_u8(vcltq_u8(v, ctrl), vtstq_u8(v, highbit)),
+                vorrq_u8(vceqq_u8(v, quote), vceqq_u8(v, backslash)));
+            if (vmaxvq_u8(breaks) == 0) {
+                at += 16;
+                continue;
+            }
+            // Each flagged lane is 0xFF, so the first set bit of a half word is
+            // in the first flagged byte; ctz >> 3 turns it into that byte's
+            // index.
+            uint64_t low = vgetq_lane_u64(vreinterpretq_u64_u8(breaks), 0);
+            if (low) return at + (size_t)(__builtin_ctzll(low) >> 3);
+            uint64_t high = vgetq_lane_u64(vreinterpretq_u64_u8(breaks), 1);
+            return at + 8 + (size_t)(__builtin_ctzll(high) >> 3);
+        }
+    }
+#elif defined(__SSE2__) && !defined(BEANS_JSON_SCALAR_SCAN)
+    {
+        const __m128i ctrl = _mm_set1_epi8(0x1F);   // c <= 0x1F  <=>  c < 0x20
+        const __m128i sign = _mm_set1_epi8((char)0x80);
+        const __m128i quote = _mm_set1_epi8('"');
+        const __m128i backslash = _mm_set1_epi8('\\');
+        while (at + 16 <= len) {
+            __m128i v = _mm_loadu_si128((const __m128i*)(src + at));
+            // max(c, 0x1F) == 0x1F  iff  c <= 0x1F; (c & 0x80) == 0x80 iff high.
+            __m128i is_ctrl = _mm_cmpeq_epi8(_mm_max_epu8(v, ctrl), ctrl);
+            __m128i is_high = _mm_cmpeq_epi8(_mm_and_si128(v, sign), sign);
+            __m128i is_quote = _mm_cmpeq_epi8(v, quote);
+            __m128i is_bs = _mm_cmpeq_epi8(v, backslash);
+            __m128i breaks = _mm_or_si128(_mm_or_si128(is_ctrl, is_high),
+                                          _mm_or_si128(is_quote, is_bs));
+            int mask = _mm_movemask_epi8(breaks);
+            if (mask == 0) {
+                at += 16;
+                continue;
+            }
+            return at + (size_t)__builtin_ctz((unsigned)mask);
+        }
+    }
+#endif
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
     while (at + 8 <= len) {
         uint64_t word;
