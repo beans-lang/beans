@@ -275,25 +275,42 @@ static const BeansJsonTypedKey* beans_json_typed_find_key(
     return NULL;
 }
 
+// Rejects a document nested deeper than `maximum`, counting the root as 1.
+//
+// Every value counts as a level, scalars included: in {"inner":{"value":7}}
+// the 7 sits at depth 3, so a maximum of 2 refuses that document. That is what
+// test/cases/encoding_json_typed_options.b pins, and it is the reason this
+// cannot simply skip scalars.
+//
+// It does not have to visit them, though. Every child of a container sits at
+// depth + 1 whatever it is, so one test against a non-empty container settles
+// every scalar it holds, and only containers are recursed into. Scalars are
+// almost all of a document — the benchmark's 101 KB body is a thousand objects
+// of four scalar fields each — so this is four calls in five that no longer
+// happen, with the same answer for every input.
 static int beans_json_typed_within_depth(yyjson_val* value,
                                          uint64_t depth,
                                          uint64_t maximum) {
     if (depth > maximum) return 0;
     if (yyjson_is_arr(value)) {
+        if (yyjson_arr_size(value) > 0 && depth + 1 > maximum) return 0;
         yyjson_arr_iter iterator;
         yyjson_arr_iter_init(value, &iterator);
         yyjson_val* item;
         while ((item = yyjson_arr_iter_next(&iterator)) != NULL) {
+            if (!yyjson_is_ctn(item)) continue;
             if (!beans_json_typed_within_depth(item, depth + 1, maximum))
                 return 0;
         }
     } else if (yyjson_is_obj(value)) {
+        if (yyjson_obj_size(value) > 0 && depth + 1 > maximum) return 0;
         yyjson_obj_iter iterator;
         yyjson_obj_iter_init(value, &iterator);
         yyjson_val* key;
         while ((key = yyjson_obj_iter_next(&iterator)) != NULL) {
-            if (!beans_json_typed_within_depth(
-                    yyjson_obj_iter_get_val(key), depth + 1, maximum))
+            yyjson_val* child = yyjson_obj_iter_get_val(key);
+            if (!yyjson_is_ctn(child)) continue;
+            if (!beans_json_typed_within_depth(child, depth + 1, maximum))
                 return 0;
         }
     }
