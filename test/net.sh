@@ -526,12 +526,14 @@ fi
 
 # --- write_vectored: two buffers, one send, an offset spanning both ---------
 #
-# The cases that matter are the short writes. One megabyte does not leave a
-# loopback socket in a single call, so `one-mib` and `both-large` exercise the
-# resume, and each is compared byte for byte against the same two buffers
-# joined the old way. `short-writes true` on those rows is part of the golden:
-# if a kernel ever took them whole, the resume would stop being tested and the
-# expectation would fail rather than quietly passing.
+# The cases that matter are the resumes. Whether the kernel short-writes is
+# not something a golden can assume — macOS loopback splits a megabyte, Linux
+# loopback takes it in one call (seen on Ubuntu 24.04, arm64) — so the resume
+# offset is driven by hand: `resume from N` starts the pair at every offset a
+# short write could stop at and the peer must receive exactly the tail from
+# there. The large cases run the production loop against whatever the kernel
+# does and are compared byte for byte against the two buffers joined the old
+# way.
 #
 # `peer-closed` is the SIGPIPE case: the pair is sent with sendmsg and
 # MSG_NOSIGNAL, so a peer that has gone away is `err reset`. macOS sets
@@ -545,11 +547,19 @@ echo "checking vectored writes in both backends"
 diff -u "$tmp/vec-interp" "$tmp/vec-native.out"
 
 diff -u - "$tmp/vec-interp" <<'EXPECTED'
-empty-body bytes 64 identical true short-writes false
-empty-head bytes 4096 identical true short-writes false
-small bytes 167 identical true short-writes false
-one-mib bytes 1048713 identical true short-writes true
-both-large bytes 524288 identical true short-writes true
+empty-body bytes 64 identical true calls>0 true
+empty-head bytes 4096 identical true calls>0 true
+small bytes 167 identical true calls>0 true
+one-mib bytes 1048713 identical true calls>0 true
+both-large bytes 524288 identical true calls>0 true
+resume from 0 of 137+4096: bytes 4233 identical true calls 1
+resume from 1 of 137+4096: bytes 4232 identical true calls 1
+resume from 136 of 137+4096: bytes 4097 identical true calls 1
+resume from 137 of 137+4096: bytes 4096 identical true calls 1
+resume from 138 of 137+4096: bytes 4095 identical true calls 1
+resume from 2000 of 137+4096: bytes 2233 identical true calls 1
+resume from 4232 of 137+4096: bytes 1 identical true calls 1
+resume from 4233 of 137+4096: bytes 0 identical true calls 0
 head-only forbids-body false declares-1MiB true ends-blank-line true
 head+body equals whole response: true lens 1048661 1048661
 204 with a body: refused invalid

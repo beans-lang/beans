@@ -5,8 +5,14 @@
 // the body; a caller that gets that wrong sends a valid-looking response with
 // bytes missing from the middle, which no small case would catch. So every
 // case here is compared byte for byte against the same two buffers joined the
-// old way, and the large ones are large enough that loopback cannot take them
-// in one write.
+// old way.
+//
+// Whether a kernel short-writes is the kernel's business, not the test's:
+// macOS loopback splits a megabyte, Linux loopback takes it whole. So the
+// resume is not left to chance — `resume_from` starts the write at every
+// offset a short write could have stopped at and checks what arrives is
+// exactly the tail from there. The large cases still run the production loop
+// against whatever the kernel does.
 import std.io
 import std.net
 import std.http
@@ -23,10 +29,17 @@ fn pattern(count: int) -> Bytes {
 }
 
 // Writes head then body with one vectored call per turn, resuming from the
-// combined offset until the pair is gone. Returns the number of calls, so a
-// case that never short-wrote can be told from one that did.
+// combined offset until the pair is gone. Returns the number of calls.
 fn send_pair(stream: net.TcpStream, head: Bytes, body: Bytes) -> Result<int> {
-    var offset: int = 0
+    return send_pair_from(stream, head, body, 0)
+}
+
+// The same loop, started at `start` as though a short write had already put
+// that many bytes on the wire. What the peer receives must be the tail of the
+// pair from `start`, whichever buffer `start` falls in.
+fn send_pair_from(stream: net.TcpStream, head: Bytes, body: Bytes,
+                  start: int) -> Result<int> {
+    var offset: int = start
     var calls: int = 0
     let total: int = head.len() + body.len()
     for offset < total {
@@ -76,8 +89,35 @@ fn case(label: string, head_len: int, body_len: int) {
     joined.append(body)
 
     let identical: bool = arrived == joined
-    let short_wrote: bool = calls > 1
-    io.println("{label} bytes {arrived.len()} identical {identical} short-writes {short_wrote}")
+    io.println("{label} bytes {arrived.len()} identical {identical} calls>0 {calls > 0}")
+}
+
+// Starts the pair at `start` and checks the peer receives exactly the tail
+// from there — the offset arithmetic a short write depends on, driven by hand
+// so it is tested on every kernel.
+fn resume_from(head_len: int, body_len: int, start: int) {
+    let listener: net.TcpListener = net.TcpListener.bind("127.0.0.1", 0)
+        .expect("bind")
+    let port: int = listener.port().expect("port")
+    let client: net.TcpStream = net.TcpStream.connect("127.0.0.1", port)
+        .expect("connect")
+    let server: net.TcpStream = listener.accept().expect("accept")
+
+    let head: Bytes = pattern(head_len)
+    let body: Bytes = pattern(body_len)
+    let expected: int = head_len + body_len - start
+
+    let writer: Brew<Result<int>> =
+        brew send_pair_from(server, head, body, start)
+    let arrived: Bytes = drain(client, expected).expect("drain")
+    let calls: int = writer.join().expect("join").expect("send")
+
+    let joined: Bytes = new Bytes(0)
+    joined.append(head)
+    joined.append(body)
+    let tail: Bytes = joined.slice(start, joined.len())
+    let identical: bool = arrived == tail
+    io.println("resume from {start} of {head_len}+{body_len}: bytes {arrived.len()} identical {identical} calls {calls}")
 }
 
 // The head-only framing the vectored path needs: a body that never enters the
@@ -167,6 +207,17 @@ fn main() {
     case("one-mib", 137, 1048576)
     // Both large, so a resume can land inside either.
     case("both-large", 262144, 262144)
+    // Every place a short write could stop: inside the head, on the last
+    // byte of it, exactly on the boundary, one into the body, deep inside
+    // the body, on the last byte, and with nothing left to send.
+    resume_from(137, 4096, 0)
+    resume_from(137, 4096, 1)
+    resume_from(137, 4096, 136)
+    resume_from(137, 4096, 137)
+    resume_from(137, 4096, 138)
+    resume_from(137, 4096, 2000)
+    resume_from(137, 4096, 4232)
+    resume_from(137, 4096, 4233)
     head_framing()
     peer_closed()
 }
