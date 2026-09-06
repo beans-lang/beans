@@ -60,3 +60,8 @@ option_float_absent: err invalid: cannot encode value as JSON
 float_list: err invalid: cannot write NaN or infinity as JSON
 float_list_into: err invalid: cannot write NaN or infinity as JSON :: A
 float_list_clean: err invalid: cannot encode value as JSON
+pretty_string_then_float: err invalid: cannot encode value as JSON
+pretty_float_then_string: err invalid: cannot write NaN or infinity as JSON
+pretty_after_refusal: {
+  "code": 7
+}

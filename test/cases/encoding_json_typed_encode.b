@@ -506,4 +506,31 @@ fn main() {
         err(error) =>
             io.println("float_list_clean: err {error.kind}: {error.msg}"),
     }
+
+    // encode_pretty is the third door into the same serializer and the same
+    // reason-carrying flag, so the rule has to hold there too. It always takes
+    // the DOM writer natively, whatever the schema, which makes it the one
+    // entry point where the two backends run different code for every value.
+    let sfp: StringThenFloat =
+        StringThenFloat { label: surrogate_string(), score: 0.0 / 0.0 }
+    match json.encode_pretty(sfp, "  ") {
+        ok(_) => io.println("pretty_string_then_float: unexpected ok"),
+        err(error) =>
+            io.println("pretty_string_then_float: err {error.kind}: {error.msg}"),
+    }
+    let fsp: FloatThenString =
+        FloatThenString { score: 0.0 / 0.0, label: surrogate_string() }
+    match json.encode_pretty(fsp, "    ") {
+        ok(_) => io.println("pretty_float_then_string: unexpected ok"),
+        err(error) =>
+            io.println("pretty_float_then_string: err {error.kind}: {error.msg}"),
+    }
+    // A pretty encode that refuses must not leave the reason set for the next
+    // one: this value is clean, and it has to succeed rather than inherit the
+    // refusal above.
+    match json.encode_pretty(Tiny { code: 7 }, "  ") {
+        ok(text) => io.println("pretty_after_refusal: {text}"),
+        err(error) =>
+            io.println("pretty_after_refusal: err {error.kind}: {error.msg}"),
+    }
 }
