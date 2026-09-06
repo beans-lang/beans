@@ -118,4 +118,14 @@ fn encode_scalar() -> Result<string> {
     return json.encode(1)
 }
 
+// encode_into validates its value type exactly as encode does: a scalar and a
+// List of scalars are both refused, with the same message encode produces.
+fn encode_into_scalar(target: Bytes) -> Result<int> {
+    return json.encode_into(1, target)
+}
+
+fn encode_into_list_scalar(target: Bytes) -> Result<int> {
+    return json.encode_into([1, 2, 3], target)
+}
+
 fn main() {}

@@ -12,6 +12,7 @@ partial class LlvmTextEmitter {
     fn json_encoder_id(short_name: string) -> int {
         if short_name == "encode" { return 1 }
         if short_name == "encode_pretty" { return 2 }
+        if short_name == "encode_into" { return 3 }
         return 0
     }
 
@@ -445,6 +446,10 @@ partial class LlvmTextEmitter {
     fn emit_json_encode(
         function: MirFunction, instruction: MirInstruction,
         values: Map<int, string>, encoder: int) -> string {
+        if encoder == 3 {
+            return self.emit_json_encode_into(
+                function, instruction, values)
+        }
         let expected: int = if encoder == 2 { 2 } else { 1 }
         if instruction.operands.len() != expected ||
            canonical_hir_name(instruction.type.name) != "Result" ||
@@ -517,6 +522,78 @@ partial class LlvmTextEmitter {
         let error_type: HirType = self.result_error_type(instruction.type)
         output =
             "{output}{self.emit_result_value(instruction.type, error_type, error, false, failed, "json.encode.error{id}")}  store {self.type_text(instruction.type)} {failed}, ptr {result_slot}\n  br label %json.encode.merge{id}\njson.encode.merge{id}:\n  %v{instruction.result} = load {self.type_text(instruction.type)}, ptr {result_slot}\n"
+        values[instruction.result] = "%v{instruction.result}"
+        return output
+    }
+
+    // encode_into(value, target) -> Result<int>. The direct writer appends
+    // straight into `target`'s Bytes backing through beans_bytes_reserve_raw
+    // (passed as req[6]); req[8] is the Bytes handle, req[9] the length it
+    // already holds, and req[4] comes back as the count appended. Compact
+    // bytes only — the same schema validation and the same encoder entry as
+    // `encode`, so both write the identical output.
+    fn emit_json_encode_into(
+        function: MirFunction, instruction: MirInstruction,
+        values: Map<int, string>) -> string {
+        if instruction.operands.len() != 2 ||
+           canonical_hir_name(instruction.type.name) != "Result" ||
+           instruction.type.args.len() < 1 ||
+           canonical_hir_name(instruction.type.args[0].name) != "int" {
+            return ""
+        }
+        let input_id: int = instruction.operands[0]
+        let input_type: HirType = self.value_type(function, input_id)
+        var record_type: HirType = input_type
+        var root_array: bool = false
+        if canonical_hir_name(input_type.name) == "List" &&
+           input_type.args.len() == 1 {
+            record_type = input_type.args[0]
+            root_array = true
+        }
+        if !self.json_native_struct(record_type) { return "" }
+        let schema: string = self.json_schema(record_type, root_array)
+        if schema == "" { return "" }
+
+        self.require_declare(
+            "beans_str_len", "i64 @beans_str_len(ptr)")
+        self.require_declare(
+            "beans_bytes_len", "i64 @beans_bytes_len(ptr)")
+        self.require_declare(
+            "beans_bytes_reserve_raw",
+            "ptr @beans_bytes_reserve_raw(ptr, i64, i64, ptr)")
+        self.require_declare(
+            "beans_enc_json_typed_encode",
+            "i64 @beans_enc_json_typed_encode(ptr, ptr)")
+        let input: string = self.value(
+            function, values, input_id, instruction)
+        let target: string = self.value(
+            function, values, instruction.operands[1], instruction)
+        let req: string = self.spill_slot(
+            "[10 x i64]", "json.into.req")
+        let result_slot: string = self.spill_slot(
+            self.type_text(instruction.type), "json.into.result")
+        let id: int = self.fresh()
+        var output: string = ""
+        var root: string = input
+        if !root_array {
+            let record_slot: string = self.spill_slot(
+                self.type_text(record_type), "json.into.record")
+            output =
+                "{output}  store {self.type_text(record_type)} {input}, ptr {record_slot}\n"
+            root = record_slot
+        }
+        output =
+            "{output}  %json.into.start{id} = call i64 @beans_bytes_len(ptr {target})\n  %json.into.schema.bits{id} = ptrtoint ptr {schema} to i64\n  %json.into.req.schema{id} = getelementptr [10 x i64], ptr {req}, i64 0, i64 0\n  store i64 %json.into.schema.bits{id}, ptr %json.into.req.schema{id}\n  %json.into.req.mode{id} = getelementptr [10 x i64], ptr {req}, i64 0, i64 1\n  store i64 3, ptr %json.into.req.mode{id}\n  %json.into.strlen.bits{id} = ptrtoint ptr @beans_str_len to i64\n  %json.into.req.strlen{id} = getelementptr [10 x i64], ptr {req}, i64 0, i64 2\n  store i64 %json.into.strlen.bits{id}, ptr %json.into.req.strlen{id}\n  %json.into.grow.bits{id} = ptrtoint ptr @beans_bytes_reserve_raw to i64\n  %json.into.req.grow{id} = getelementptr [10 x i64], ptr {req}, i64 0, i64 6\n  store i64 %json.into.grow.bits{id}, ptr %json.into.req.grow{id}\n  %json.into.handle.bits{id} = ptrtoint ptr {target} to i64\n  %json.into.req.handle{id} = getelementptr [10 x i64], ptr {req}, i64 0, i64 8\n  store i64 %json.into.handle.bits{id}, ptr %json.into.req.handle{id}\n  %json.into.req.startlen{id} = getelementptr [10 x i64], ptr {req}, i64 0, i64 9\n  store i64 %json.into.start{id}, ptr %json.into.req.startlen{id}\n  %json.into.status{id} = call i64 @beans_enc_json_typed_encode(ptr {root}, ptr {req})\n  %json.into.good{id} = icmp eq i64 %json.into.status{id}, 0\n  br i1 %json.into.good{id}, label %json.into.success{id}, label %json.into.failure{id}\njson.into.success{id}:\n  %json.into.req.count{id} = getelementptr [10 x i64], ptr {req}, i64 0, i64 4\n  %json.into.count{id} = load i64, ptr %json.into.req.count{id}\n"
+        let okay: string = "%json.into.result.ok{id}"
+        output =
+            "{output}{self.emit_result_value(instruction.type, instruction.type.args[0], "%json.into.count{id}", true, okay, "json.into.ok{id}")}  store {self.type_text(instruction.type)} {okay}, ptr {result_slot}\n  br label %json.into.merge{id}\njson.into.failure{id}:\n  %json.into.req.code{id} = getelementptr [10 x i64], ptr {req}, i64 0, i64 5\n  %json.into.code{id} = load i64, ptr %json.into.req.code{id}\n  %json.into.nan{id} = icmp eq i64 %json.into.code{id}, 2\n  %json.into.message{id} = select i1 %json.into.nan{id}, ptr {self.string_pointer("cannot write NaN or infinity as JSON")}, ptr {self.string_pointer("cannot encode value as JSON")}\n"
+        let error: string = "%json.into.error{id}"
+        output =
+            "{output}{self.emit_make_error(instruction, "%json.into.message{id}", false, self.string_pointer("invalid"), false, error)}"
+        let failed: string = "%json.into.result.error{id}"
+        let error_type: HirType = self.result_error_type(instruction.type)
+        output =
+            "{output}{self.emit_result_value(instruction.type, error_type, error, false, failed, "json.into.error{id}")}  store {self.type_text(instruction.type)} {failed}, ptr {result_slot}\n  br label %json.into.merge{id}\njson.into.merge{id}:\n  %v{instruction.result} = load {self.type_text(instruction.type)}, ptr {result_slot}\n"
         values[instruction.result] = "%v{instruction.result}"
         return output
     }

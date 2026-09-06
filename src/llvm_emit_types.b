@@ -1462,15 +1462,22 @@ partial class LlvmTextEmitter {
             for local: MirLocal in function.locals {
                 if local.parameter { parameters.push(local.type) }
             }
-            let count: int = if id == 2 { 2 } else { 1 }
+            let count: int = if id == 1 { 1 } else { 2 }
             if parameters.len() != count { continue }
             if id == 2 &&
                canonical_hir_name(parameters[1].name) != "string" {
                 continue
             }
+            if id == 3 &&
+               canonical_hir_name(parameters[1].name) != "Bytes" {
+                continue
+            }
+            // encode/encode_pretty return Result<string>; encode_into returns
+            // Result<int>, the count of bytes appended.
+            let payload: string = if id == 3 { "int" } else { "string" }
             if canonical_hir_name(function.result.name) != "Result" ||
                function.result.args.len() < 1 ||
-               canonical_hir_name(function.result.args[0].name) != "string" {
+               canonical_hir_name(function.result.args[0].name) != payload {
                 continue
             }
             self.json_encoders[function.name] = id

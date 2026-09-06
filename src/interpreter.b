@@ -177,6 +177,16 @@ class TreeInterpreter {
     manifest_handles: List<int>
     encoding_handles: Map<string, int>
     encoding_error: string
+    // Why the JSON serializer refused, recorded where the refusal
+    // happens rather than worked out afterwards. yyjson — the writer
+    // the native backend runs — stops at the FIRST value it cannot
+    // write in document order and reports that one, so a value that
+    // carries both a string that is not UTF-8 and a NaN reports
+    // whichever comes first. Set true only by the float leaf of
+    // tree_json_value, cleared at the top of every encode: the walk
+    // returns at its first failure, so the flag is the reason for
+    // that failure and no other.
+    json_write_nan: bool
     log_handle: int
     log_error: string
     net_handles: Map<string, int>
@@ -259,6 +269,7 @@ class TreeInterpreter {
         self.manifest_handles = []
         self.encoding_handles = {}
         self.encoding_error = ""
+        self.json_write_nan = false
         self.log_handle = -1
         self.log_error = ""
         self.net_handles = {}
@@ -955,47 +966,85 @@ class TreeInterpreter {
         return field.name
     }
 
-    fn tree_json_string(value: string) -> string {
+    // Encodes a JSON string, or `none` when the bytes are not valid UTF-8.
+    // Both native writers (the direct writer and yyjson) reject a string that
+    // is not well-formed UTF-8 — overlong forms, surrogates, anything past
+    // U+10FFFF, truncated or stray continuation bytes — so the interpreter
+    // has to reject the very same set, or the two backends disagree on a
+    // struct that carries such a string (encode returns a value on one side
+    // and an error on the other). The multibyte classification below is byte
+    // for byte the one in beans_json_direct_string.
+    fn tree_json_string(value: string) -> Option<string> {
         let source: Bytes = Bytes.from(value)
         let hex: string = "0123456789ABCDEF"
+        let length: int = source.len()
         var output: Bytes = new Bytes(0)
         output.push(34)
-        for index: int in 0..source.len() {
+        var index: int = 0
+        for index < length {
             let byte: int = source.get(index)
-            if byte == 34 {
-                output.push(92)
-                output.push(34)
-            } else if byte == 92 {
-                output.push(92)
-                output.push(92)
-            } else if byte == 8 {
-                output.push(92)
-                output.push(98)
-            } else if byte == 12 {
-                output.push(92)
-                output.push(102)
-            } else if byte == 10 {
-                output.push(92)
-                output.push(110)
-            } else if byte == 13 {
-                output.push(92)
-                output.push(114)
-            } else if byte == 9 {
-                output.push(92)
-                output.push(116)
-            } else if byte < 32 {
-                output.push(92)
-                output.push(117)
-                output.push(48)
-                output.push(48)
-                output.push(hex.byte_at(byte / 16))
-                output.push(hex.byte_at(byte % 16))
+            if byte < 128 {
+                if byte == 34 {
+                    output.push(92)
+                    output.push(34)
+                } else if byte == 92 {
+                    output.push(92)
+                    output.push(92)
+                } else if byte == 8 {
+                    output.push(92)
+                    output.push(98)
+                } else if byte == 12 {
+                    output.push(92)
+                    output.push(102)
+                } else if byte == 10 {
+                    output.push(92)
+                    output.push(110)
+                } else if byte == 13 {
+                    output.push(92)
+                    output.push(114)
+                } else if byte == 9 {
+                    output.push(92)
+                    output.push(116)
+                } else if byte < 32 {
+                    output.push(92)
+                    output.push(117)
+                    output.push(48)
+                    output.push(48)
+                    output.push(hex.byte_at(byte / 16))
+                    output.push(hex.byte_at(byte % 16))
+                } else {
+                    output.push(byte)
+                }
+                index += 1
             } else {
-                output.push(byte)
+                var need: int = 0
+                if byte >= 194 && byte <= 223 { need = 2 }
+                else if byte >= 224 && byte <= 239 { need = 3 }
+                else if byte >= 240 && byte <= 244 { need = 4 }
+                else { return none }
+                if index + need > length { return none }
+                let c1: int = source.get(index + 1)
+                if (c1 & 192) != 128 { return none }
+                if need == 3 {
+                    let c2: int = source.get(index + 2)
+                    if (c2 & 192) != 128 { return none }
+                    if byte == 224 && c1 < 160 { return none } // overlong
+                    if byte == 237 && c1 > 159 { return none } // surrogate
+                } else if need == 4 {
+                    let c2: int = source.get(index + 2)
+                    let c3: int = source.get(index + 3)
+                    if (c2 & 192) != 128 || (c3 & 192) != 128 { return none }
+                    if byte == 240 && c1 < 144 { return none } // overlong
+                    if byte == 244 && c1 > 143 { return none } // > U+10FFFF
+                }
+                for offset: int in 0..need {
+                    output.push(source.get(index + offset))
+                }
+                index += need
             }
         }
         output.push(34)
-        return output.to_string()
+        return some(output.to_string())
     }
 
     fn tree_json_padding(depth: int, indent: int) -> string {
@@ -1024,12 +1073,15 @@ class TreeInterpreter {
             if shown == "nan" || shown == "inf" || shown == "-inf" ||
                shown == "NaN" || shown == "Infinity" ||
                shown == "-Infinity" {
+                // The reason for THIS refusal. The walk unwinds from here
+                // without visiting anything else, so nothing overwrites it.
+                self.json_write_nan = true
                 return none
             }
             return some(shown)
         }
         if value.kind == "string" {
-            return some(self.tree_json_string(value.text))
+            return self.tree_json_string(value.text)
         }
         if value.kind == "none" {
             return some("null")
@@ -1077,8 +1129,13 @@ class TreeInterpreter {
                                 let name: string =
                                     self.tree_json_field_name(
                                         declaration, field)
-                                output =
-                                    "{output}{self.tree_json_string(name)}:{if indent != 0 { " " } else { "" }}"
+                                match self.tree_json_string(name) {
+                                    some(key) => {
+                                        output =
+                                            "{output}{key}:{if indent != 0 { " " } else { "" }}"
+                                    }
+                                    none => { return none }
+                                }
                                 match self.tree_json_value(
                                         field_value, depth + 1, indent) {
                                     some(encoded) => {
@@ -1103,6 +1160,25 @@ class TreeInterpreter {
         return none
     }
 
+    // A checked encode can fail at runtime on a NaN or infinity float, or on
+    // a string whose bytes are not valid UTF-8. yyjson — the writer the
+    // native backend runs — stops at the first of those it meets in document
+    // order and names that one, so a value carrying both reports whichever
+    // came first. tree_json_value collapses every refusal into `none`, and
+    // json_write_nan carries the reason out from the leaf that refused; a
+    // scan of the finished value cannot, because it does not know which
+    // failure the writer reached first, nor that an @json.ignore'd field is
+    // never written at all.
+    fn tree_json_encode_error() -> TreeValue {
+        let message: string = if self.json_write_nan {
+            "cannot write NaN or infinity as JSON"
+        } else {
+            "cannot encode value as JSON"
+        }
+        return TreeValue.result_err(
+            TreeValue.error(message, "invalid"))
+    }
+
     fn tree_json_encode(
         value: TreeValue, indent_text: Option<string>
     ) -> TreeValue {
@@ -1120,14 +1196,34 @@ class TreeInterpreter {
             }
             none => {}
         }
+        self.json_write_nan = false
         match self.tree_json_value(value, 0, indent) {
             some(encoded) => {
                 return TreeValue.result_ok(TreeValue.string(encoded))
             }
             none => {
-                return TreeValue.result_err(
-                    TreeValue.error(
-                        "cannot encode value as JSON", "invalid"))
+                return self.tree_json_encode_error()
+            }
+        }
+    }
+
+    // encode_into: the same compact serializer as tree_json_encode, appended
+    // to the caller's Bytes after whatever it already holds, returning the
+    // count of bytes appended. On refusal the target is left untouched, and
+    // the error matches tree_json_encode byte for byte.
+    fn tree_json_encode_into(
+        value: TreeValue, target: Bytes
+    ) -> TreeValue {
+        self.json_write_nan = false
+        match self.tree_json_value(value, 0, 0) {
+            some(encoded) => {
+                let before: int = target.len()
+                target.append_string(encoded)
+                return TreeValue.result_ok(
+                    TreeValue.integer(target.len() - before))
+            }
+            none => {
+                return self.tree_json_encode_error()
             }
         }
     }
@@ -10864,6 +10960,18 @@ class TreeInterpreter {
            arguments.len() == 2 {
             return self.tree_json_encode(
                 arguments[0], some(arguments[1].text))
+        }
+        if node.kind == "call" &&
+           display_symbol(node.resolved) ==
+               "std.encoding.json.encode_into" &&
+           arguments.len() == 2 {
+            match arguments[1].bytes_data {
+                some(target) => {
+                    return self.tree_json_encode_into(
+                        arguments[0], target)
+                }
+                none => {}
+            }
         }
         if node.kind == "builtin_call" {
             return self.builtin_call(node, move arguments)
