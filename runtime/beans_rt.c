@@ -1552,6 +1552,69 @@ void* beans_alloc(long long size, long long meta) {
     return (char*)h + 16;
 }
 
+// Like beans_alloc, but the pooled recycled path does not zero the payload.
+//
+// Fill-completely contract: the caller MUST write every one of the returned
+// `size` payload bytes before anything reads them — a string's bytes and its
+// NUL terminator, a Bytes buffer's whole length. A caller that leaves any
+// payload byte unwritten reads a previous allocation's bytes; that is a bug in
+// the caller, not here. beans_alloc zeroes a recycled block because most
+// callers expect zeroed slots; the typed JSON decoder fills string payloads
+// end to end, so for those the zeroing is 404 samples of _platform_memset that
+// only writes bytes overwritten the same instant (issue #144).
+//
+// The block is otherwise identical to a beans_alloc block — same size class,
+// same 16-byte header, same shape to the collector, the freelist and every ARC
+// path — because the header is written in full by the rc and meta stores, so
+// no stale header survives, and only the recycled-block *payload* zeroing is
+// skipped. Virgin slab memory is already zero (so the fresh-carve arm needs no
+// memset, exactly as beans_alloc's does not), and the non-pooled arm for large
+// blocks still zeroes through rt_zalloc. That large arm is Lane A's to change;
+// this stays confined to the pooled recycled path.
+void* beans_alloc_bytes(long long size, long long meta) {
+    ARC_ADD(arc_allocations, 1);
+    ARC_ADD(arc_allocated_bytes, size);
+#if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
+    if (cc_worker_pending && !cc_worker_collecting)
+        cc_worker_collect();
+#endif
+    if (cc_pending && !cc_collecting && cc_threads == 0) cc_collect(0);
+    size_t total = (16 + (size_t)size + 15) & ~(size_t)15;
+    long long cls = (long long)(total >> 4);
+    BHead* h;
+    if (cls < POOL_CLASSES && !pool_off) {
+        if (pool_free[cls]) {
+            h = pool_free[cls];
+            pool_free[cls] = *(void**)h;
+            // No payload memset here: the caller fills every byte. The 16-byte
+            // header is set in full by the rc and meta stores below.
+        } else {
+            if (!pool_cur || pool_cur + total > pool_end) {
+                pool_cur = rt_zalloc(POOL_SLAB);
+                if (!pool_cur) beans_panic("out of memory", 0, 0);
+                pool_end = pool_cur + POOL_SLAB;
+                POOL_LOCK();
+                if (pool_slab_len == pool_slab_cap) {
+                    pool_slab_cap = pool_slab_cap ? pool_slab_cap * 2 : 64;
+                    pool_slabs = rt_realloc(pool_slabs,
+                                         (size_t)pool_slab_cap * sizeof(void*));
+                }
+                pool_slabs[pool_slab_len++] = pool_cur;
+                POOL_UNLOCK();
+            }
+            h = (BHead*)pool_cur; // virgin slab memory, already zero
+            pool_cur += total;
+        }
+        h->rc = 1 | (cls << RC_CLS_SHIFT);
+    } else {
+        h = rt_zalloc(total);
+        if (!h) beans_panic("out of memory", 0, 0);
+        h->rc = 1;
+    }
+    h->meta = meta;
+    return (char*)h + 16;
+}
+
 void beans_retain(void* p) {
     if (!p) return;
     ARC_ADD(arc_retain_calls, 1);
@@ -13819,6 +13882,11 @@ static long long host_call_rt_host_invoke(const unsigned long long* w) {
                                 (long long*)(uintptr_t)w[3]);
 }
 
+static long long host_call_alloc_bytes(const unsigned long long* w) {
+    return (long long)(uintptr_t)beans_alloc_bytes((long long)w[0],
+                                                   (long long)w[1]);
+}
+
 static const BHostEntry rt_host_table[] = {
     {"beans_net_recv_into_wait", (void*)&beans_net_recv_into_wait, 3,
      host_call_net_recv_into_wait},
@@ -13839,6 +13907,11 @@ static const BHostEntry rt_host_table[] = {
     // native backend calls, so the two can never answer differently. It has
     // to reach it by name, and this executable exports nothing.
     {"beans_width_utf8", (void*)&beans_width_utf8, 2, host_call_width_utf8},
+    // The non-zeroing allocator the typed JSON decoder hands its bridge as the
+    // string-payload callback. It is here for the same two reasons as the rest:
+    // the linker must not drop a symbol this executable only ever passes by
+    // address, and a natively-compiled interpreter reaches it by name.
+    {"beans_alloc_bytes", (void*)&beans_alloc_bytes, 2, host_call_alloc_bytes},
     {"beans_rt_host_symbol", (void*)&beans_rt_host_symbol, 1,
      host_call_rt_host_symbol},
     {"beans_rt_host_invoke", (void*)&beans_rt_host_invoke, 4,

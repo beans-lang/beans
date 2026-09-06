@@ -68,6 +68,17 @@ language=1.0
 # reaches it only through this pointer (req[6]). Emitted only into programs
 # that call json.encode_into; not reached by name from the interpreter, which
 # runs its own append.
+# 17 (also): beans_alloc_bytes — the pooled allocator without the recycled-block
+# memset, for callers that fill the whole payload the same instant (a decoded
+# string's bytes and its NUL terminator, a Bytes buffer's length). The typed
+# JSON decoder hands it to its bridge as the string-payload callback so a
+# 101 KB /echo body stops zeroing two thousand string buffers it overwrites
+# immediately (issue #144). Same size class, header and collector shape as
+# beans_alloc; only the recycled payload zeroing is skipped, and only on the
+# pooled arm — the non-pooled arm for large blocks still zeroes. It is a row
+# in the host table like every other hosted entry, so the interpreter can both
+# find its address and call it by word; a row is the only way in, which is what
+# keeps an entry from being reachable by address while uncallable by word.
 # 16: order kind 7 — a payload-free enum slot is a pointer at its tag word;
 # sort, min and max compare the loaded tags, where an older runtime compared
 # the pointers. No new symbol: the order kind is a compiler-to-runtime contract
