@@ -81,10 +81,17 @@ NOISE_WAIT=${NOISE_WAIT:-10}
 NOISE_TRIES=${NOISE_TRIES:-30}
 
 # Linux-only CPU pinning; inert on macOS (no taskset). See the header.
-KERNEL="$(uname -s)"
+# KERNEL is overridable so the Linux planning branches can be unit-tested from
+# any host (e.g. KERNEL=Linux ... --reuse-port-compare --plan-only).
+KERNEL="${KERNEL:-$(uname -s)}"
 SERVER_CORES="${SERVER_CORES:-}"   # e.g. 0-3   (default: the first half of nproc)
 WRK_CORES="${WRK_CORES:-}"         # e.g. 4-7   (default: the rest)
+# Every variable a planning branch reads must have a default before that branch,
+# because the script runs under `set -u`: the reuse-port block below reads
+# RP_WORKERS, so it is defaulted here and not at its later point of use.
+RP_WORKERS="${RP_WORKERS:-}"
 REUSE_PORT_COMPARE=0
+PLAN_ONLY=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -97,6 +104,7 @@ while [ $# -gt 0 ]; do
     --server-cores) SERVER_CORES="$2"; shift 2 ;;
     --wrk-cores)    WRK_CORES="$2"; shift 2 ;;
     --reuse-port-compare) REUSE_PORT_COMPARE=1; shift ;;
+    --plan-only) PLAN_ONLY=1; shift ;;   # print the resolved plan and exit (no build/run)
     --no-noise-guard) NOISE_GUARD=0; shift ;;
     -h|--help)  sed -n '2,40p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
@@ -144,6 +152,15 @@ if [ "$REUSE_PORT_COMPARE" = "1" ]; then
   fi
 fi
 
+# A dry run: everything above (option parsing, kernel detection, the taskset and
+# reuse-port planning — the branches that run under `set -u`) has executed. Print
+# the resolved plan and stop, before any clang or wrk. This is what a smoke test
+# drives to prove the Linux planning branch reaches its note instead of dying.
+if [ "$PLAN_ONLY" = "1" ]; then
+  echo "plan: kernel=$KERNEL servers='$SERVERS' pin='$PIN_NOTE' reuse_port_compare=$REUSE_PORT_COMPARE rp_workers='${RP_WORKERS}'"
+  exit 0
+fi
+
 if [ -z "$OUT" ]; then
   stamp="$(date +%Y%m%d-%H%M%S)"
   OUT="$REPO/build/ledger/${LABEL:+$LABEL-}$stamp"
@@ -165,8 +182,7 @@ PORT_ESPRESSO=9491
 PORT_BUN=9492
 PORT_GO=9493
 PORT_ESPRESSO_RP=9494
-# Workers for the reuse-port comparison (balancing only matters with several).
-RP_WORKERS="${RP_WORKERS:-}"
+# (RP_WORKERS is defaulted up in the config block, before its first use.)
 
 port_of() {
   case "$1" in
