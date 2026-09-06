@@ -49,12 +49,12 @@ fn read_probe() -> ProbeInfo {
     var pos: int = 0
     var field: int = 0
     unsafe {
-        let buf: RawPtr<u64> = RawPtr.alloc(5)
+        let buf: RawPtr<u64> = RawPtr.alloc(4)
         beans_enc_json_decode_probe(buf)
-        status = buf.offset(1).read() as int
-        code = buf.offset(2).read() as int
-        pos = buf.offset(3).read() as int
-        field = buf.offset(4).read() as int
+        status = buf.offset(0).read() as int
+        code = buf.offset(1).read() as int
+        pos = buf.offset(2).read() as int
+        field = buf.offset(3).read() as int
         buf.free()
     }
     return ProbeInfo {
