@@ -237,6 +237,7 @@ test-runtime: $(BIN)
 	bash ./test/list_iteration.sh
 	bash ./test/oom.sh
 	bash ./test/rss_release.sh
+	bash ./test/fiber_stacks.sh
 	bash ./test/sanitizer_gates.sh
 
 test-ffi: $(BIN)
@@ -310,6 +311,7 @@ test-core: $(BIN)
 	bash ./test/map_inline.sh
 	bash ./test/oom.sh
 	bash ./test/rss_release.sh
+	bash ./test/fiber_stacks.sh
 	bash ./test/sanitizer_gates.sh
 	bash ./test/float_total_order.sh
 	./test/traits.sh
