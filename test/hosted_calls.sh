@@ -167,4 +167,37 @@ check_refusal "$tmp/wrong_kind.b" "takes only integers and pointers"
 check_refusal "$tmp/wrong_result.b" "every one of those returns an integer"
 check_refusal "$tmp/wrong_variadic.b" "is variadic, but that name is a Beans runtime entry"
 
-echo "ok hosted_calls: the interpreter reached every runtime entry with no C compiler, and both backends printed the same bytes"
+echo "checking an interpreter running under an interpreter reaches the same entries"
+# beans_rt_host_symbol and beans_rt_host_invoke are rows in the table they
+# implement, and nothing else can exercise that: it only matters when the
+# program doing the asking is the interpreter, interpreted. The inner
+# interpreter looks each hosted name up and then calls through the invoker,
+# which is four words — one past the direct path — so if the invoker were not
+# itself hosted this run would need the shim, and BEANS_CC points at nothing.
+# On Linux it would not even be found: an ELF executable exports no names.
+#
+# `beansc run src/main.b` resolves stdlib and runtime against the working
+# directory, which is the repository root here.
+cat >"$tmp/nested.b" <<'NESTED'
+import std.io
+import std.term
+extern "C" fn beans_width_utf8(text: RawPtr<u8>, length: int) -> int
+fn main() {
+    var buffer: Bytes = new Bytes(0)
+    buffer.append_string("a\u{65e5}b")
+    let text: string = "a\u{65e5}b"
+    var direct: int = 0
+    unsafe { direct = beans_width_utf8(buffer.as_ptr(), buffer.len()) }
+    io.println("nested width extern {direct} method {text.width()} tty {term.is_tty(0)}")
+}
+NESTED
+BEANS_CC="$nocc" "$beansc" run "$tmp/nested.b" \
+    </dev/null >"$tmp/nested.one" 2>&1
+BEANS_CC="$nocc" "$beansc" run src/main.b -- run "$tmp/nested.b" \
+    </dev/null >"$tmp/nested.two" 2>&1
+diff -u - "$tmp/nested.one" <<'EXPECTED'
+nested width extern 4 method 4 tty false
+EXPECTED
+diff -u "$tmp/nested.one" "$tmp/nested.two"
+
+echo "ok hosted_calls: the interpreter reached every runtime entry with no C compiler, at one level and at two, and both backends printed the same bytes"
