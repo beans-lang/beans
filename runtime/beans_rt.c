@@ -1236,10 +1236,21 @@ void beans_runtime_hook_leave(void) {
     beans_runtime_hook_depth = 0;
 }
 
-// The allocator pool and the collector's root state share one thread-local
-// struct. On Darwin every distinct _Thread_local variable is its own TLV
-// descriptor and costs its own _tlv_get_addr call; one variable means the
-// hot paths pay that call once, not once per field.
+// The allocator pool and the collector's root state share one hot per-thread
+// struct. Reaching it has to be cheap: the hot paths touch it hundreds of times
+// per request. On Darwin a _Thread_local access is an indirect call into
+// libdyld's _tlv_get_addr — clang resolves it once per non-inlined runtime
+// function, and with a dozen such functions on the hot path that one call is
+// the second most expensive symbol on /json (issue #141): ~12% of user time.
+// pthread_getspecific is a direct call to a tiny leaf (a TPIDRRO_EL0 read and
+// an index) that does not thrash the indirect-branch predictor, so Darwin
+// reaches the struct through a runtime-owned key. glibc resolves a
+// _Thread_local in an executable as an %fs-relative load already, so Linux
+// keeps _Thread_local; freestanding has one thread by construction and uses a
+// plain static with no thread-local storage and no pthread dependency. Either
+// way each hot function resolves the struct once into the local the field
+// macros below read (_bhot), so the lookup is still paid once per function —
+// but now it is the cheap one.
 typedef struct {
     void* pool_free[POOL_CLASSES];
     char* pool_cur;
@@ -1255,18 +1266,69 @@ typedef struct {
     int cc_worker_collecting;
 #endif
 } BeansHotTls;
-static POOL_LOCAL BeansHotTls beans_hot_tls;
-#define pool_free (beans_hot_tls.pool_free)
-#define pool_cur (beans_hot_tls.pool_cur)
-#define pool_end (beans_hot_tls.pool_end)
-#define cc_worker_roots (beans_hot_tls.cc_worker_roots)
-#define cc_worker_root_len (beans_hot_tls.cc_worker_root_len)
-#define cc_worker_root_cap (beans_hot_tls.cc_worker_root_cap)
-#define cc_worker_threshold (beans_hot_tls.cc_worker_threshold)
-#define cc_worker_walk_min (beans_hot_tls.cc_worker_walk_min)
-#define cc_worker_root_batching (beans_hot_tls.cc_worker_root_batching)
-#define cc_worker_pending (beans_hot_tls.cc_worker_pending)
-#define cc_worker_collecting (beans_hot_tls.cc_worker_collecting)
+
+#if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL && defined(__APPLE__)
+void beans_panic(const char* msg, long long line, long long col);
+// Darwin hosted: the struct lives behind one runtime-owned key, allocated
+// lazily per thread and freed when the thread exits. The key is created in the
+// pool_setup constructor below, which runs before any allocation, so the fast
+// path is a bare pthread_getspecific with no lazy-init check.
+static pthread_key_t beans_hot_key;
+static void beans_hot_drop(void* raw) {
+    BeansHotTls* h = (BeansHotTls*)raw;
+    if (!h) return;
+    // cc_worker_roots is NULL between batches; a worker that somehow exited
+    // mid-batch would otherwise strand that heap array — exactly as the old
+    // _Thread_local struct did — so free it and keep `leaks` clean either way.
+    free(h->cc_worker_roots);
+    free(h);
+}
+static void beans_hot_make_key(void) {
+    if (pthread_key_create(&beans_hot_key, beans_hot_drop) != 0) {
+        // Grabbed once at process start, where a key is always available. If it
+        // is not, the runtime cannot separate its allocator state per thread,
+        // and reading a foreign TSD slot would corrupt it — fail loudly here
+        // rather than corrupt silently. (beans_panic is not yet usable this
+        // early; write+abort is.)
+        static const char m[] =
+            "beans runtime: cannot create the allocator's thread-local key\n";
+        ssize_t wr = write(2, m, sizeof m - 1);
+        (void)wr;
+        abort();
+    }
+}
+__attribute__((noinline, cold)) static BeansHotTls* beans_hot_tls_alloc(void) {
+    BeansHotTls* h = (BeansHotTls*)calloc(1, sizeof *h);
+    if (!h) beans_panic("out of memory", 0, 0);
+    if (pthread_setspecific(beans_hot_key, h) != 0)
+        beans_panic("out of memory", 0, 0);
+    return h;
+}
+static inline BeansHotTls* beans_hot_tls_ptr(void) {
+    BeansHotTls* h = (BeansHotTls*)pthread_getspecific(beans_hot_key);
+    if (__builtin_expect(h == NULL, 0)) h = beans_hot_tls_alloc();
+    return h;
+}
+#else
+// Linux hosted: %fs-relative _Thread_local. Freestanding: plain static, one
+// thread, no thread-local storage, no pthread dependency.
+static POOL_LOCAL BeansHotTls beans_hot_tls_storage;
+static inline BeansHotTls* beans_hot_tls_ptr(void) {
+    return &beans_hot_tls_storage;
+}
+#endif
+
+#define pool_free (_bhot->pool_free)
+#define pool_cur (_bhot->pool_cur)
+#define pool_end (_bhot->pool_end)
+#define cc_worker_roots (_bhot->cc_worker_roots)
+#define cc_worker_root_len (_bhot->cc_worker_root_len)
+#define cc_worker_root_cap (_bhot->cc_worker_root_cap)
+#define cc_worker_threshold (_bhot->cc_worker_threshold)
+#define cc_worker_walk_min (_bhot->cc_worker_walk_min)
+#define cc_worker_root_batching (_bhot->cc_worker_root_batching)
+#define cc_worker_pending (_bhot->cc_worker_pending)
+#define cc_worker_collecting (_bhot->cc_worker_collecting)
 static void** pool_slabs;
 static long long pool_slab_len, pool_slab_cap;
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
@@ -1282,11 +1344,15 @@ static int pool_off;
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
 __attribute__((constructor)) static void pool_setup(void) {
     pool_off = getenv("BEANS_NO_POOL") != NULL;
+#if defined(__APPLE__)
+    beans_hot_make_key(); // before main, so the hot-struct fast path needs no init check
+#endif
 }
 #endif
 
 void beans_panic(const char* msg, long long line, long long col);
 void* beans_alloc(long long size, long long meta) {
+    BeansHotTls* _bhot = beans_hot_tls_ptr();
     ARC_ADD(arc_allocations, 1);
     ARC_ADD(arc_allocated_bytes, size);
     // allocation is the one safe point: never inside a release cascade,
@@ -1620,6 +1686,7 @@ static void* cc_free_shell(void* p, long long meta) {
     BHead* h = head_of(p);
     long long cls = (h->rc >> RC_CLS_SHIFT) & RC_CLS_MAX;
     if (cls) {
+        BeansHotTls* _bhot = beans_hot_tls_ptr();
         *(void**)h = pool_free[cls];
         pool_free[cls] = h;
     } else {
@@ -2035,6 +2102,7 @@ static void cc_append_roots(void** roots, long long count) {
 
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
 static void cc_worker_root_append(void* root) {
+    BeansHotTls* _bhot = beans_hot_tls_ptr();
     if (cc_worker_root_len == cc_worker_root_cap) {
         long long next = cc_worker_root_cap ? cc_worker_root_cap * 2 : 256;
         if (next < cc_worker_root_cap || next > (1LL << 60))
@@ -2050,6 +2118,7 @@ static void cc_worker_root_append(void* root) {
         cc_worker_pending = 1;
 }
 static void cc_worker_roots_begin(void) {
+    BeansHotTls* _bhot = beans_hot_tls_ptr();
     if (cc_worker_root_batching) return;
     cc_worker_roots = NULL;
     cc_worker_root_len = 0;
@@ -2071,6 +2140,7 @@ static void cc_worker_roots_begin(void) {
     }
 }
 static void cc_worker_roots_end(void) {
+    BeansHotTls* _bhot = beans_hot_tls_ptr();
     if (!cc_worker_root_batching) return;
     // Detach the buffer before publishing anything. cc_append_roots can
     // sweep husks, and that sweep runs beans_release outside the lock — a
@@ -2100,6 +2170,7 @@ static void cc_possible_root(void* p) {
     if (old & CC_BUF) return; // already parked
     ARC_ADD(arc_possible_roots, 1);
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
+    BeansHotTls* _bhot = beans_hot_tls_ptr();
     if (cc_worker_root_batching &&
         cc_owner_local_node(h)) {
         cc_worker_root_append(p);
@@ -3181,10 +3252,12 @@ static long long cc_walk_min = 256; // adaptive gate for trial deletion
 // or the collecting flag — both gate every future worker collection.
 static void cc_worker_flags_unwound(int* armed) {
     if (!*armed) return;
+    BeansHotTls* _bhot = beans_hot_tls_ptr();
     cc_worker_collecting = 0;
     __atomic_sub_fetch(&cc_worker_walkers, 1, __ATOMIC_SEQ_CST);
 }
 static void cc_worker_collect(void) {
+    BeansHotTls* _bhot = beans_hot_tls_ptr();
     if (!cc_worker_root_batching || cc_worker_collecting) return;
     if (beans_local_in_deinit) return;
     __atomic_add_fetch(&cc_worker_walkers, 1, __ATOMIC_SEQ_CST);
@@ -3471,6 +3544,7 @@ static void cc_at_exit(void) {
     // global buffer instead would strand them — the forced sweep below only
     // runs at zero workers. Drop the adaptive gate so the trial walk cannot
     // decline this last pass.
+    BeansHotTls* _bhot = beans_hot_tls_ptr();
     if (cc_worker_root_batching) {
         // Twice: the pass that runs a cycle member's deinit hands the set
         // back as candidates rather than freeing it, and the pass after is
