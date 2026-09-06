@@ -18,6 +18,12 @@
 // the server and still produces the stats. The file is written with one
 // key-value pair per line, and only after the child is reaped, so a reader that
 // finds the file complete knows the numbers are final.
+// wait4 is a BSD extension and sigaction is POSIX; on glibc both are hidden
+// unless a feature set is requested. Without this a strict -std=c11 build gets
+// an implicit wait4, which on LP64 is a real bug and not just a warning — the
+// 64-bit `struct rusage*` argument is passed as int and truncated. macOS
+// declares them regardless, so the define is a no-op there.
+#define _DEFAULT_SOURCE
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <sys/resource.h>
