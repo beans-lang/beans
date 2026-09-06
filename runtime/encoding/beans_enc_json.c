@@ -525,6 +525,10 @@ typedef struct {
     BeansJsonAllocFn alloc_bytes;
     BeansJsonReleaseFn release;
     uint64_t* req;
+    // The document depth limit, folded into the walk instead of a separate
+    // pre-pass (issue #142): a value deeper than this is refused as it is
+    // reached, and a subtree the schema skips is measured against it too.
+    uint64_t max_depth;
 } BeansJsonDecodeContext;
 
 static void beans_json_typed_write_integer(unsigned char* target,
@@ -564,7 +568,8 @@ static int beans_json_typed_object_direct(
         const BeansJsonTypedSchema* schema,
         yyjson_val* object,
         unsigned char* record,
-        BeansJsonDecodeContext* context);
+        BeansJsonDecodeContext* context,
+        uint64_t depth);
 
 static int beans_json_typed_value_direct(
         uint64_t kind,
@@ -576,14 +581,18 @@ static int beans_json_typed_value_direct(
         uint64_t element_pointer_mask,
         yyjson_val* value,
         unsigned char* target,
-        BeansJsonDecodeContext* context);
+        BeansJsonDecodeContext* context,
+        uint64_t depth);
 
+// `depth` is the field value's own depth (the object's depth plus one), so the
+// limit is enforced inline as the walk descends instead of by a pre-pass.
 static int beans_json_typed_store_direct(
         const BeansJsonTypedSchema* schema,
         uint64_t field_index,
         yyjson_val* value,
         unsigned char* record,
-        BeansJsonDecodeContext* context) {
+        BeansJsonDecodeContext* context,
+        uint64_t depth) {
     const BeansJsonTypedField* field = &schema->fields[field_index];
     const BeansJsonTypedComplex* complex = schema->complex
         ? &schema->complex[field_index] : NULL;
@@ -608,7 +617,7 @@ static int beans_json_typed_store_direct(
         complex ? complex->element_schema : NULL,
         complex ? complex->element_size : 0,
         complex ? complex->element_pointer_mask : 0,
-        value, target, context);
+        value, target, context, depth);
     if (status) return status;
     if (field->presence_offset != UINT64_MAX)
         record[field->presence_offset] = 1;
@@ -622,7 +631,8 @@ static int beans_json_typed_list_direct(
         uint64_t element_pointer_mask,
         yyjson_val* value,
         unsigned char* target,
-        BeansJsonDecodeContext* context) {
+        BeansJsonDecodeContext* context,
+        uint64_t depth) {
     if (!yyjson_is_arr(value) || !context->new_list || element_size == 0)
         return BEANS_JSON_TYPED_ERR_TYPE;
     size_t count = yyjson_arr_size(value);
@@ -649,7 +659,7 @@ static int beans_json_typed_list_direct(
                 ? element_size * 8 << 8 : 0;
         int status = beans_json_typed_value_direct(
             element_kind, element_flags, element_schema, 0, NULL, 0, 0,
-            item, destination, context);
+            item, destination, context, depth + 1);
         if (status) return status;
     }
     return 0;
@@ -665,7 +675,11 @@ static int beans_json_typed_value_direct(
         uint64_t element_pointer_mask,
         yyjson_val* value,
         unsigned char* target,
-        BeansJsonDecodeContext* context) {
+        BeansJsonDecodeContext* context,
+        uint64_t depth) {
+    // The whole-document depth limit, checked as the walk reaches each value
+    // (issue #142). Counts the root as 1, exactly as the pre-pass did.
+    if (depth > context->max_depth) return BEANS_JSON_TYPED_ERR_DEPTH;
     switch (kind) {
         case BEANS_JSON_TYPED_BOOL:
             if (!yyjson_is_bool(value)) return BEANS_JSON_TYPED_ERR_TYPE;
@@ -713,24 +727,26 @@ static int beans_json_typed_value_direct(
             beans_json_typed_init_record(child_schema, target);
             {
                 int status = beans_json_typed_object_direct(
-                    child_schema, value, target, context);
+                    child_schema, value, target, context, depth);
                 return status == BEANS_ENC_OK ? 0 : -status;
             }
         case BEANS_JSON_TYPED_LIST:
             return beans_json_typed_list_direct(
                 element_kind, element_schema, element_size,
-                element_pointer_mask, value, target, context);
+                element_pointer_mask, value, target, context, depth);
         default:
             return BEANS_JSON_TYPED_ERR_TYPE;
     }
     return 0;
 }
 
+// `depth` is this object's own depth; its field values sit at depth + 1.
 static int beans_json_typed_object_direct(
         const BeansJsonTypedSchema* schema,
         yyjson_val* object,
         unsigned char* record,
-        BeansJsonDecodeContext* context) {
+        BeansJsonDecodeContext* context,
+        uint64_t depth) {
     uint64_t* req = context->req;
     if (!yyjson_is_obj(object)) {
         req[5] = BEANS_JSON_TYPED_ERR_ROOT;
@@ -771,7 +787,20 @@ static int beans_json_typed_object_direct(
             const BeansJsonTypedKey* key = beans_json_typed_find_key(
                 schema, name, name_len);
             if (!key) {
-                if (schema->flags & BEANS_JSON_TYPED_ALLOW_UNKNOWN) continue;
+                if (schema->flags & BEANS_JSON_TYPED_ALLOW_UNKNOWN) {
+                    // The depth limit is a whole-document policy: a value nested
+                    // past it under a skipped key must still be refused, so the
+                    // skipped subtree is measured here (issue #142). Its own
+                    // depth is depth + 1, like a field value's.
+                    if (!beans_json_typed_within_depth(
+                            yyjson_obj_iter_get_val(json_key),
+                            depth + 1, context->max_depth)) {
+                        req[5] = BEANS_JSON_TYPED_ERR_DEPTH;
+                        if (seen != local_seen) free(seen);
+                        return BEANS_ENC_ERR_INVALID;
+                    }
+                    continue;
+                }
                 req[5] = BEANS_JSON_TYPED_ERR_UNKNOWN;
                 if (seen != local_seen) free(seen);
                 return BEANS_ENC_ERR_INVALID;
@@ -788,7 +817,7 @@ static int beans_json_typed_object_direct(
         req[7] = index;
         int code = beans_json_typed_store_direct(
             schema, index, yyjson_obj_iter_get_val(json_key),
-            record, context);
+            record, context, depth + 1);
         if (code != 0) {
             if (code < 0) {
                 if (seen != local_seen) free(seen);
@@ -902,7 +931,12 @@ BEANS_ENC_API long long beans_enc_json_typed_decode_dom(
     }
 
     yyjson_val* root = yyjson_doc_get_root(doc);
-    if (!beans_json_typed_check_depth(root, req[1], req)) {
+    // The depth limit is no longer a whole-document pre-pass; it is folded into
+    // the walk below (issue #142). A limit of 0 refuses everything — the root
+    // itself sits at depth 1 — which is the one case the walk cannot reach.
+    uint64_t max_depth = req[1] >> 8;
+    if (max_depth == 0) {
+        req[5] = BEANS_JSON_TYPED_ERR_DEPTH;
         yyjson_doc_free(doc);
         return BEANS_ENC_ERR_INVALID;
     }
@@ -916,7 +950,7 @@ BEANS_ENC_API long long beans_enc_json_typed_decode_dom(
     size_t count = root_array ? yyjson_arr_size(root) : 1;
     req[6] = (uint64_t)count;
     BeansJsonDecodeContext context =
-        {new_list, allocate, alloc_bytes, release, req};
+        {new_list, allocate, alloc_bytes, release, req, max_depth};
 
     long long status = BEANS_ENC_OK;
     void* list = NULL;
@@ -924,6 +958,11 @@ BEANS_ENC_API long long beans_enc_json_typed_decode_dom(
         if (!new_list || count > INT64_MAX) {
             status = BEANS_ENC_ERR_MEMORY;
             req[5] = BEANS_JSON_ERR_MEMORY;
+        } else if (count > 0 && 2 > max_depth) {
+            // The root array is depth 1; its records sit at depth 2. If that is
+            // already past the limit, no record can be decoded (issue #142).
+            req[5] = BEANS_JSON_TYPED_ERR_DEPTH;
+            status = BEANS_ENC_ERR_INVALID;
         } else {
             list = new_list(
                             beans_json_typed_storage_stride(
@@ -945,7 +984,7 @@ BEANS_ENC_API long long beans_enc_json_typed_decode_dom(
                 beans_json_typed_init_record(schema, record);
                 output->len = (uint64_t)++index;
                 status = beans_json_typed_object_direct(
-                    schema, item, record, &context);
+                    schema, item, record, &context, 2);
                 if (status != BEANS_ENC_OK) break;
             }
         }
@@ -957,7 +996,7 @@ BEANS_ENC_API long long beans_enc_json_typed_decode_dom(
         unsigned char* record = (unsigned char*)(uintptr_t)req[3];
         beans_json_typed_init_record(schema, record);
         status = beans_json_typed_object_direct(
-            schema, root, record, &context);
+            schema, root, record, &context, 1);
         if (status != BEANS_ENC_OK)
             beans_json_typed_release_record(schema, record, release);
     }
