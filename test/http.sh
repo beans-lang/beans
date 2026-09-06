@@ -112,15 +112,14 @@ EOF
 clang -O2 -Iruntime/net/vendor/llhttp "$tmp/bench_raw.c" \
     runtime/net/vendor/llhttp/llhttp.c runtime/net/vendor/llhttp/api.c \
     runtime/net/vendor/llhttp/http.c -o "$tmp/bench_raw"
-# Shared CI runners can briefly steal a core between these sub-second lanes.
-# Keep the same budgets, but compare each lane's best of three samples so one
-# scheduling hiccup cannot make an otherwise healthy build fail.
-: >"$tmp/raw.txt"
-for sample in 1 2 3; do
-    "$tmp/bench_raw" >>"$tmp/raw.txt"
-done
-raw_rate=$(awk 'NR % 2 == 1 && $1 > best { best = $1 } END { print best }' "$tmp/raw.txt")
-copy_rate=$(awk 'NR % 2 == 0 && $1 > best { best = $1 } END { print best }' "$tmp/raw.txt")
+# The C lanes are measured below, inside the same round as the Beans lanes
+# they are compared against. Running them here instead — minutes and two
+# compiler invocations before the bridge lane — is what made this gate fail on
+# a busy box while nothing was wrong with the build: the copying-C baseline
+# landed in a quiet moment and the bridge in a loaded one, and best-of-three
+# per lane cannot cancel that, because the two bests come from different
+# moments. Measured: 1271 MB/s of copying C against 397 MB/s of bridge, where
+# the same tree in isolation gives 1273 against 1013.
 
 cat >"$tmp/bench_bridge.b" <<'EOF'
 package main
@@ -166,37 +165,77 @@ fn main() {
 EOF
 "$beansc" build "$tmp/bench_bridge.b" --release -o "$tmp/bench_bridge" >/dev/null 2>&1
 "$beansc" build bench/http_parse.b --release -o "$tmp/bench_typed" >/dev/null 2>&1
-# Interleave the two lanes and keep each round's pair together. Both benches
-# are single-threaded and sub-second, so a runner that steals a core slows both
-# of a round's measurements; dividing them inside the round cancels the
-# machine's speed out of the ratio, where the best of one lane over the best of
-# the other leaves that factor in for the budget to absorb.
+# Interleave every lane and keep each round's samples together. All four
+# benches are single-threaded and sub-second, so a runner that steals a core
+# slows every measurement in the round it steals it from; dividing one lane by
+# another *inside* the round cancels the machine's speed out of the ratio,
+# where the best of one lane over the best of another leaves that factor in for
+# the budget to absorb — and the two bests can come from moments the machine
+# was running at different speeds, which is a difference no budget can absorb.
+# bench_raw prints its two lanes as two lines, raw then copying C.
+: >"$tmp/raw.txt"
 : >"$tmp/bridge.txt"
 : >"$tmp/typed.txt"
 for sample in 1 2 3; do
+    "$tmp/bench_raw" >>"$tmp/raw.txt"
     "$tmp/bench_bridge" >>"$tmp/bridge.txt"
     "$tmp/bench_typed" | tail -1 >>"$tmp/typed.txt"
 done
+awk 'NR % 2 == 1' "$tmp/raw.txt" >"$tmp/raw_rate.txt"
+awk 'NR % 2 == 0' "$tmp/raw.txt" >"$tmp/copy_rate.txt"
 sed -n 's/^std\.http: \([0-9][0-9.]*\) MB\/s$/\1/p' "$tmp/typed.txt" \
     >"$tmp/typed_rate.txt"
-# `paste` lines the two lanes up by position, so a lane that printed a
-# different number of rows would pair a round with somebody else's round and
-# still produce a plausible ratio. Count first.
+# `paste` lines the lanes up by position, so a lane that printed a different
+# number of rows would pair a round with somebody else's round and still
+# produce a plausible ratio. Count first.
+raw_seen=$(wc -l <"$tmp/raw_rate.txt" | tr -d '[:space:]')
+copy_seen=$(wc -l <"$tmp/copy_rate.txt" | tr -d '[:space:]')
 bridge_seen=$(wc -l <"$tmp/bridge.txt" | tr -d '[:space:]')
 typed_seen=$(wc -l <"$tmp/typed_rate.txt" | tr -d '[:space:]')
-if [ "$bridge_seen" -ne 3 ] || [ "$typed_seen" -ne 3 ]; then
-    echo "expected three rounds from each throughput lane, got ${bridge_seen}" \
-         "from the bridge and ${typed_seen} from std.http" >&2
-    cat "$tmp/bridge.txt" "$tmp/typed.txt" >&2
+if [ "$raw_seen" -ne 3 ] || [ "$copy_seen" -ne 3 ] ||
+   [ "$bridge_seen" -ne 3 ] || [ "$typed_seen" -ne 3 ]; then
+    echo "expected three rounds from each throughput lane, got ${raw_seen}" \
+         "raw, ${copy_seen} copying C, ${bridge_seen} from the bridge and" \
+         "${typed_seen} from std.http" >&2
+    cat "$tmp/raw.txt" "$tmp/bridge.txt" "$tmp/typed.txt" >&2
     exit 1
 fi
+raw_rate=$(sort -nr "$tmp/raw_rate.txt" | head -1)
+copy_rate=$(sort -nr "$tmp/copy_rate.txt" | head -1)
 bridge_rate=$(sort -nr "$tmp/bridge.txt" | head -1)
 typed_rate=$(sort -nr "$tmp/typed_rate.txt" | head -1)
 typed_line="std.http: ${typed_rate} MB/s"
 echo "raw scan ${raw_rate} MB/s | copying C ${copy_rate} MB/s |" \
      "bridge ${bridge_rate} MB/s | ${typed_line}"
-if [ "$((bridge_rate * 2))" -lt "$copy_rate" ]; then
-    echo "the bridge fell below half the copying-C baseline (${bridge_rate} vs ${copy_rate} MB/s)" >&2
+# Budget unchanged: the bridge stays within a factor of two of copying C. It is
+# the best *paired* ratio now, over the three rounds, so the comparison asks
+# how the two lanes did against each other on one machine at one moment.
+bridge_status=0
+bridge_ratio=$(paste "$tmp/copy_rate.txt" "$tmp/bridge.txt" |
+    awk -v limit=2 '
+        $1 + 0 > 0 && $2 + 0 > 0 {
+            r = ($1 + 0) / ($2 + 0)
+            if (n++ == 0 || r < best) best = r
+        }
+        END {
+            if (n == 0) {
+                print "no round produced two usable rates" > "/dev/stderr"
+                exit 2
+            }
+            printf "%.4f\n", best
+            if (best > limit) exit 1
+        }') || bridge_status=$?
+if [ "$bridge_status" -eq 2 ]; then
+    echo "the C and bridge lanes measured nothing; this gate checked nothing" >&2
+    paste "$tmp/copy_rate.txt" "$tmp/bridge.txt" >&2
+    exit 1
+fi
+echo "best bridge:copying-C over three paired rounds 1:${bridge_ratio} (budget 1:2)"
+if [ "$bridge_status" -ne 0 ]; then
+    echo "the bridge fell below half the copying-C baseline (best of three" \
+         "paired rounds was 1:${bridge_ratio}; bridge ${bridge_rate} MB/s," \
+         "copying C ${copy_rate} MB/s)" >&2
+    paste "$tmp/copy_rate.txt" "$tmp/bridge.txt" >&2
     exit 1
 fi
 # The budget is unchanged at one seventh, and the comparison no longer throws
