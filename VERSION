@@ -16,6 +16,69 @@
 compiler=0.1.39
 language=1.0
 
+# 17: beans_net_send_pair_wait — one write of two buffers, so a response can
+# be sent without first being assembled. A server frames a head and already
+# holds a body; joining them copies the body, and on a one-megabyte response
+# that copy costs more than everything else the process does for that request.
+# The entry takes the two buffers and an offset into their concatenation, so a
+# short write resumes correctly whether it stopped inside the head or inside
+# the body and the caller never has to know which. sendmsg on POSIX — the
+# vectored send that still takes MSG_NOSIGNAL, so a peer that has gone away is
+# an EPIPE and not a SIGPIPE — and WSASend on Windows. Two buffers rather than
+# an iovec array: a response is a head and a
+# body, the pair needs no allocation to describe, and an array built per
+# response would be the hot-path allocation this entry exists to remove.
+#
+# 17: beans_rt_host_invoke — the runtime calls its own entries for the tree
+# interpreter, so running a program never needs a C compiler. beans_rt_host_
+# symbol already answered the address of an entry that lives in this process;
+# an address is only usable by the interpreter's 64-bit word ABI, which does
+# not cover every hosted shape, and everything wider went to a C shim written
+# and compiled with Clang while the program ran. beans_net_send_from_wait is
+# four parameters and beans_net_send_pair_wait is six, so under `beansc run`
+# every socket write started a compiler — invisible where a toolchain matches
+# the host, fatal where none does: the i686 and aarch64 Windows legs died on a
+# socket write with "cannot find dllcrt2.o". The entry takes a name, the
+# packed words, their count and a result slot, casts each word back to the
+# type the named entry really declares — pointers included, which is what
+# makes it right where a pointer is half a word — and calls it in-process. It
+# answers 1 when it called the entry, 0 when the name is not hosted, and -1
+# when the name is hosted but the `extern "C"` declaration naming it does not
+# fit, which the interpreter reports against the program rather than re-routing
+# to a shim that would call the same function with the wrong words. Every
+# hosted row now carries its call beside its address, and beans_rt_host_symbol
+# and beans_rt_host_invoke are themselves rows, so an interpreter running under
+# an interpreter reaches them the same way at every depth.
+# 17: beans_net_send_pair_text — the string form of that vectored send. A
+# server holds a response body as a string, the shape a handler hands back,
+# and framing it into a Bytes to send it is the copy the pair send exists to
+# remove; this entry sends the string body where it already lives, its length
+# read with beans_slen exactly as beans_net_send_text reads its text's. It
+# reuses beans_net_send_pair_wait's sendmsg engine rather than a second loop,
+# driving it from a local req, so it needs no scratch of its own and no
+# per-response iovec allocation. std.sock.send_pair_text lowers to it, the way
+# std.sock.send_text lowers to beans_net_send_text; the tree interpreter,
+# whose bootstrap predates the entry, joins head and body and sends that once,
+# which writes the same bytes and short-writes at the same boundary.
+# 17 (also): beans_bytes_reserve_raw — the grow hook json.encode_into hands
+# the std.encoding.json direct writer so it appends JSON straight into a
+# caller-owned Bytes instead of a private malloc it then copies out. One call
+# sets the Bytes length and ensures capacity, returning the backing base and
+# capacity; the bridge, a separate translation unit that must not touch BList,
+# reaches it only through this pointer (req[6]). Emitted only into programs
+# that call json.encode_into; not reached by name from the interpreter, which
+# runs its own append.
+# 17 (also): beans_alloc_bytes — the pooled allocator without the recycled-block
+# memset, for callers that fill the whole payload the same instant (a decoded
+# string's bytes and its NUL terminator, a Bytes buffer's length). The typed
+# JSON decoder hands it to its bridge as the string-payload callback so a
+# 101 KB /echo body stops zeroing two thousand string buffers it overwrites
+# immediately (issue #144). Same size class, header and collector shape as
+# beans_alloc; only the recycled payload zeroing is skipped, and only on the
+# pooled arm — the non-pooled arm for large blocks still zeroes. It is a row
+# in the host table like every other hosted entry, so the interpreter can both
+# find its address and call it by word; a row is the only way in, which is what
+# keeps an entry from being reachable by address while uncallable by word.
 # 16: order kind 7 — a payload-free enum slot is a pointer at its tag word;
 # sort, min and max compare the loaded tags, where an older runtime compared
 # the pointers. No new symbol: the order kind is a compiler-to-runtime contract
@@ -81,4 +144,4 @@ language=1.0
 # caller-owned event buffer instead of returning a fresh one.
 # Version 7 added Bytes.filled, Bytes.append_int_text, and Thread.detach.
 # Version 6 added per-thread runtime-hook guard entry points.
-runtime_abi=16
+runtime_abi=17

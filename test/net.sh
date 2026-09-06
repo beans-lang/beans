@@ -523,3 +523,127 @@ if grep -q 'net_pack' runtime/beans_rt.c; then
     echo "socket payloads are still packed into a staging Bytes" >&2
     exit 1
 fi
+
+# --- write_vectored: two buffers, one send, an offset spanning both ---------
+#
+# The cases that matter are the resumes. Whether the kernel short-writes is
+# not something a golden can assume — macOS loopback splits a megabyte, Linux
+# loopback takes it in one call (seen on Ubuntu 24.04, arm64) — so the resume
+# offset is driven by hand: `resume from N` starts the pair at every offset a
+# short write could stop at and the peer must receive exactly the tail from
+# there. The large cases run the production loop against whatever the kernel
+# does and are compared byte for byte against the two buffers joined the old
+# way.
+#
+# `peer-closed` is the SIGPIPE case: the pair is sent with sendmsg and
+# MSG_NOSIGNAL, so a peer that has gone away is `err reset`. macOS sets
+# SO_NOSIGPIPE on every socket and passes this line either way; on Linux a
+# vectored write without the flag ends the process instead of printing it.
+#
+# The `text-*` and `text resume from` rows are write_vectored_text: the same
+# pair send with a string body instead of a Bytes one, driven the same thread
+# way and with the resume driven by hand so it does not depend on the kernel.
+# The native backend sends the string where it lives with sendmsg; the tree
+# interpreter, whose bootstrap predates the entry, joins head and body and
+# sends that once — so both must print the same bytes, the same resumed tails,
+# and `peer-closed-text: err reset`.
+#
+# The last block is the corners the sending loops never reach, both forms side
+# by side: the offset sitting exactly at the end of the pair (`ok 0`, not a
+# write of nothing and not an error — a resumed short write lands there on its
+# last turn), an empty pair, an offset past the end or below zero (`err
+# invalid`), a stream already closed (`err closed`), and the one-byte-left case,
+# which is the only corner that reaches the send itself and so pins the return
+# value and the byte that arrives. The two forms must answer every one of them
+# identically: a server picks the form from whether its body is a `Bytes` or a
+# `string` and must not pick different behaviour with it.
+echo "checking vectored writes in both backends"
+./build/beansc run examples/net_vectored.b >"$tmp/vec-interp"
+./build/beansc build examples/net_vectored.b -o "$tmp/vec-native" \
+    >"$tmp/vec-build.log" 2>&1
+"$tmp/vec-native" >"$tmp/vec-native.out"
+diff -u "$tmp/vec-interp" "$tmp/vec-native.out"
+
+diff -u - "$tmp/vec-interp" <<'EXPECTED'
+empty-body bytes 64 identical true calls>0 true
+empty-head bytes 4096 identical true calls>0 true
+small bytes 167 identical true calls>0 true
+one-mib bytes 1048713 identical true calls>0 true
+both-large bytes 524288 identical true calls>0 true
+resume from 0 of 137+4096: bytes 4233 identical true calls 1
+resume from 1 of 137+4096: bytes 4232 identical true calls 1
+resume from 136 of 137+4096: bytes 4097 identical true calls 1
+resume from 137 of 137+4096: bytes 4096 identical true calls 1
+resume from 138 of 137+4096: bytes 4095 identical true calls 1
+resume from 2000 of 137+4096: bytes 2233 identical true calls 1
+resume from 4232 of 137+4096: bytes 1 identical true calls 1
+resume from 4233 of 137+4096: bytes 0 identical true calls 0
+head-only forbids-body false declares-1MiB true ends-blank-line true
+head+body equals whole response: true lens 1048661 1048661
+204 with a body: refused invalid
+peer-closed: err reset
+text-empty-body bytes 64 identical true calls>0 true
+text-empty-head bytes 39 identical true calls>0 true
+text-small bytes 176 identical true calls>0 true
+text-one-mib bytes 1048713 identical true calls>0 true
+text resume from 0 of 137+4096: bytes 4233 identical true calls 1
+text resume from 1 of 137+4096: bytes 4232 identical true calls 1
+text resume from 136 of 137+4096: bytes 4097 identical true calls 1
+text resume from 137 of 137+4096: bytes 4096 identical true calls 1
+text resume from 138 of 137+4096: bytes 4095 identical true calls 1
+text resume from 2000 of 137+4096: bytes 2233 identical true calls 1
+text resume from 4232 of 137+4096: bytes 1 identical true calls 1
+text resume from 4233 of 137+4096: bytes 0 identical true calls 0
+peer-closed-text: err reset
+at-end bytes: ok 0
+at-end text: ok 0
+empty-pair bytes: ok 0
+empty-pair text: ok 0
+past-end bytes: err invalid
+past-end text: err invalid
+negative bytes: err invalid
+negative text: err invalid
+last-byte bytes: ok 1
+last-byte bytes arrived 128 expected 128
+last-byte text: ok 1
+last-byte text arrived 71 expected 71
+closed bytes: err closed
+closed text: err closed
+EXPECTED
+
+# The same corners one layer down. Everything above drives net.TcpStream, which
+# answers the offset and closed-socket corners itself and returns before it ever
+# calls the builtin — so none of it reaches std.sock.send_pair_text's own
+# guards, and breaking every one of them leaves the whole block above green.
+# std.sock is a module a program may import (the handles are written in Beans on
+# top of it), so those guards are a public contract, and an offset that is not
+# checked there is a send that reads past the end of the head or the body.
+#
+# The two backends arrive at these answers by different routes — the native
+# backend lowers the builtin to beans_net_send_pair_text, the tree interpreter
+# joins head and body and sends the join from the same offset through
+# beans_net_send — so this is also where the two are held to the same contract
+# at the layer where they actually differ.
+echo "checking the raw send_pair_text builtin's own corners in both backends"
+./build/beansc run test/cases/sock_pair_text_corners.b >"$tmp/sockpair-interp"
+./build/beansc build test/cases/sock_pair_text_corners.b -o "$tmp/sockpair" \
+    >"$tmp/sockpair.build" 2>&1
+"$tmp/sockpair" >"$tmp/sockpair-native"
+diff -u "$tmp/sockpair-interp" "$tmp/sockpair-native"
+diff -u - "$tmp/sockpair-native" <<'EXPECTED'
+at-end: ok 0
+empty-pair: ok 0
+past-end: err invalid
+far-past-end: err invalid
+negative: err invalid
+from-head: ok 7
+from-head arrived BCdefgh
+from-body: ok 3
+from-body arrived fgh
+whole: ok 8
+whole arrived ABCdefgh
+closed-fd: err closed
+closed-fd-bad-offset: err closed
+EXPECTED
+
+echo "ok vectored writes: head+body in one send, resume across the boundary"

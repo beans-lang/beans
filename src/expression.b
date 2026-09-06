@@ -5653,6 +5653,11 @@ class ExpressionChecker {
                     [integer, string, integer],
                     hir_result(integer)))
             }
+            if name == "send_pair_text" {
+                return some(new BuiltinSignature(
+                    [integer, bytes, string, integer],
+                    hir_result(integer)))
+            }
             if name == "recv" ||
                name == "recv_exact" ||
                name == "recv_to_end" {
@@ -8089,7 +8094,9 @@ class ExpressionChecker {
                        function.qualified ==
                            package_symbol("std.encoding.json", "encode") ||
                        function.qualified ==
-                           package_symbol("std.encoding.json", "encode_pretty") {
+                           package_symbol("std.encoding.json", "encode_pretty") ||
+                       function.qualified ==
+                           package_symbol("std.encoding.json", "encode_into") {
                         continue
                     }
                     if function.qualified ==
@@ -8645,7 +8652,8 @@ class ExpressionChecker {
                     }
                     if import_path == "std.encoding.json" &&
                        (callee.value == "encode" ||
-                        callee.value == "encode_pretty") &&
+                        callee.value == "encode_pretty" ||
+                        callee.value == "encode_into") &&
                        result.children.len() != 0 {
                         self.validate_json_encode(
                             node, result.children[0].type)

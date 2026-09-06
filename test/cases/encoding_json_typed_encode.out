@@ -26,3 +26,42 @@
 {"s8":-8,"s16":-1600,"s32":-320000,"s64":-6400000000,"u8_value":8,"u16_value":1600,"u32_value":320000,"u64_value":6400000000,"small":0.25,"values":[-2,300]}
 [{"code":-3},{"code":400}]
 indent: invalid
+-- encode_into --
+struct_empty: n=186 prefix_ok=true eq=true :: {"userId":7,"fullName":"Ada \"A\"","active":true,"score":1.5,"note":null,"alternate":{"city":"Ipoh","zip":30000},"links":["web"],"address":{"city":"KL","zip":50000},"tags":["one","two"]}
+struct_prefix: n=186 prefix_ok=true eq=true :: {"userId":7,"fullName":"Ada \"A\"","active":true,"score":1.5,"note":null,"alternate":{"city":"Ipoh","zip":30000},"links":["web"],"address":{"city":"KL","zip":50000},"tags":["one","two"]}
+double: n1=186 n2=186 eq=true :: >>{"userId":7,"fullName":"Ada \"A\"","active":true,"score":1.5,"note":null,"alternate":{"city":"Ipoh","zip":30000},"links":["web"],"address":{"city":"KL","zip":50000},"tags":["one","two"]}{"userId":7,"fullName":"Ada \"A\"","active":true,"score":1.5,"note":null,"alternate":{"city":"Ipoh","zip":30000},"links":["web"],"address":{"city":"KL","zip":50000},"tags":["one","two"]}
+list0: n=2 prefix_ok=true eq=true :: []
+list1: n=13 prefix_ok=true eq=true :: [{"code":-3}]
+list2: n=26 prefix_ok=true eq=true :: [{"code":-3},{"code":400}]
+list1000: n=13283 prefix_ok=true eq=true len=13283 sum=17285508121426366956
+empty_str: n=19 prefix_ok=true eq=true :: {"city":"","zip":0}
+escapes: n=42 prefix_ok=true eq=true :: {"city":"\"\\\n\t\r\u0001\u001Fa","zip":2}
+mib_string: n=1048595 prefix_ok=true eq=true len=1048595 sum=14168337825855931366
+nan_into: err invalid: cannot write NaN or infinity as JSON :: KEEP
+nan_encode: err invalid: cannot write NaN or infinity as JSON
+bad_utf8_into: err invalid: cannot encode value as JSON :: HOLD
+bad_utf8_encode: err invalid: cannot encode value as JSON
+string_then_float: err invalid: cannot encode value as JSON
+string_then_float_into: err invalid: cannot encode value as JSON :: A
+float_then_string: err invalid: cannot write NaN or infinity as JSON
+float_then_string_into: err invalid: cannot write NaN or infinity as JSON :: A
+mixed_list: err invalid: cannot encode value as JSON
+ignored_float: err invalid: cannot encode value as JSON
+ignored_float_into: err invalid: cannot encode value as JSON :: A
+deep_refusal: err invalid: cannot encode value as JSON kept=true len=6
+deep_refusal_encode: err invalid: cannot encode value as JSON
+wide_prefix: n=128691 prefix_ok=true eq=true len=128691 sum=9019799782165089767
+nested_float_then_string: err invalid: cannot write NaN or infinity as JSON
+nested_float_then_string_into: err invalid: cannot write NaN or infinity as JSON :: A
+string_then_nested_float: err invalid: cannot encode value as JSON
+string_then_nested_float_into: err invalid: cannot encode value as JSON :: A
+option_float: err invalid: cannot write NaN or infinity as JSON
+option_float_absent: err invalid: cannot encode value as JSON
+float_list: err invalid: cannot write NaN or infinity as JSON
+float_list_into: err invalid: cannot write NaN or infinity as JSON :: A
+float_list_clean: err invalid: cannot encode value as JSON
+pretty_string_then_float: err invalid: cannot encode value as JSON
+pretty_float_then_string: err invalid: cannot write NaN or infinity as JSON
+pretty_after_refusal: {
+  "code": 7
+}

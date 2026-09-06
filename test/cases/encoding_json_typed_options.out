@@ -2,4 +2,7 @@ allowed: 7 -2 300
 depth: invalid
 zero: invalid
 negative: invalid
+empty-at-limit: 0
+scalar-past-limit: invalid
+scalar-at-limit: 1
 tiny: -3 400

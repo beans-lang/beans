@@ -36,8 +36,18 @@ extern "C" fn beans_worker_current() -> RawPtr<u8>
 // Runtime-side externs (the fiber-parking socket calls) live inside this
 // very process, where the dynamic loader cannot always see them — an ELF
 // executable exports nothing without --export-dynamic, a PE one nothing at
-// all. The runtime answers their addresses itself.
+// all. The runtime answers their addresses itself, and calls them itself:
+// an address is only usable by the word ABI below, which does not cover
+// every hosted shape, and the C shim that covered the rest needed a working
+// Clang and a matching sysroot on a host that only wanted to run a program.
+// beans_rt_host_invoke casts the packed words back to each entry's declared
+// parameter types and calls it in-process. It answers 1 when it called the
+// entry, 0 when the name is not hosted, and -1 when the name is hosted but
+// the declaration in the program does not fit it.
 extern "C" fn beans_rt_host_symbol(name: RawPtr<u8>) -> RawPtr<u8>
+extern "C" fn beans_rt_host_invoke(
+    name: RawPtr<u8>, words: RawPtr<u64>,
+    count: int, result: RawPtr<i64>) -> int
 extern "C" fn beans_fiber_spawn(
     worker: RawPtr<u8>,
     entry: fn(RawPtr<u8>),
@@ -80,6 +90,22 @@ extern "C" fn beans_gate_is_open(
 // knows string.width, so the call goes through the C name until one ships.
 extern "C" fn beans_width_utf8(
     text: RawPtr<u8>, length: int) -> int
+
+// The address the runtime answers for one of its own hosted entries, or 0
+// when `name` is not one of them. Every caller that gets a non-zero answer
+// must also *call* through beans_rt_host_invoke: the address is here only so
+// the two questions have one answer, and reaching a hosted entry any other
+// way is what put a C compiler on the path of a socket write.
+fn host_symbol_address(name: string) -> int {
+    var buffer: Bytes = new Bytes(0)
+    buffer.append_string(name)
+    buffer.append(new Bytes(1))
+    unsafe {
+        let hosted: RawPtr<u8> =
+            beans_rt_host_symbol(buffer.as_ptr())
+        return hosted.address() as int
+    }
+}
 
 // The column count of a string, the measure `{s:12}` pads to.
 fn tree_display_width(text: string) -> int {
@@ -151,6 +177,16 @@ class TreeInterpreter {
     manifest_handles: List<int>
     encoding_handles: Map<string, int>
     encoding_error: string
+    // Why the JSON serializer refused, recorded where the refusal
+    // happens rather than worked out afterwards. yyjson — the writer
+    // the native backend runs — stops at the FIRST value it cannot
+    // write in document order and reports that one, so a value that
+    // carries both a string that is not UTF-8 and a NaN reports
+    // whichever comes first. Set true only by the float leaf of
+    // tree_json_value, cleared at the top of every encode: the walk
+    // returns at its first failure, so the flag is the reason for
+    // that failure and no other.
+    json_write_nan: bool
     log_handle: int
     log_error: string
     net_handles: Map<string, int>
@@ -233,6 +269,7 @@ class TreeInterpreter {
         self.manifest_handles = []
         self.encoding_handles = {}
         self.encoding_error = ""
+        self.json_write_nan = false
         self.log_handle = -1
         self.log_error = ""
         self.net_handles = {}
@@ -929,47 +966,85 @@ class TreeInterpreter {
         return field.name
     }
 
-    fn tree_json_string(value: string) -> string {
+    // Encodes a JSON string, or `none` when the bytes are not valid UTF-8.
+    // Both native writers (the direct writer and yyjson) reject a string that
+    // is not well-formed UTF-8 — overlong forms, surrogates, anything past
+    // U+10FFFF, truncated or stray continuation bytes — so the interpreter
+    // has to reject the very same set, or the two backends disagree on a
+    // struct that carries such a string (encode returns a value on one side
+    // and an error on the other). The multibyte classification below is byte
+    // for byte the one in beans_json_direct_string.
+    fn tree_json_string(value: string) -> Option<string> {
         let source: Bytes = Bytes.from(value)
         let hex: string = "0123456789ABCDEF"
+        let length: int = source.len()
         var output: Bytes = new Bytes(0)
         output.push(34)
-        for index: int in 0..source.len() {
+        var index: int = 0
+        for index < length {
             let byte: int = source.get(index)
-            if byte == 34 {
-                output.push(92)
-                output.push(34)
-            } else if byte == 92 {
-                output.push(92)
-                output.push(92)
-            } else if byte == 8 {
-                output.push(92)
-                output.push(98)
-            } else if byte == 12 {
-                output.push(92)
-                output.push(102)
-            } else if byte == 10 {
-                output.push(92)
-                output.push(110)
-            } else if byte == 13 {
-                output.push(92)
-                output.push(114)
-            } else if byte == 9 {
-                output.push(92)
-                output.push(116)
-            } else if byte < 32 {
-                output.push(92)
-                output.push(117)
-                output.push(48)
-                output.push(48)
-                output.push(hex.byte_at(byte / 16))
-                output.push(hex.byte_at(byte % 16))
+            if byte < 128 {
+                if byte == 34 {
+                    output.push(92)
+                    output.push(34)
+                } else if byte == 92 {
+                    output.push(92)
+                    output.push(92)
+                } else if byte == 8 {
+                    output.push(92)
+                    output.push(98)
+                } else if byte == 12 {
+                    output.push(92)
+                    output.push(102)
+                } else if byte == 10 {
+                    output.push(92)
+                    output.push(110)
+                } else if byte == 13 {
+                    output.push(92)
+                    output.push(114)
+                } else if byte == 9 {
+                    output.push(92)
+                    output.push(116)
+                } else if byte < 32 {
+                    output.push(92)
+                    output.push(117)
+                    output.push(48)
+                    output.push(48)
+                    output.push(hex.byte_at(byte / 16))
+                    output.push(hex.byte_at(byte % 16))
+                } else {
+                    output.push(byte)
+                }
+                index += 1
             } else {
-                output.push(byte)
+                var need: int = 0
+                if byte >= 194 && byte <= 223 { need = 2 }
+                else if byte >= 224 && byte <= 239 { need = 3 }
+                else if byte >= 240 && byte <= 244 { need = 4 }
+                else { return none }
+                if index + need > length { return none }
+                let c1: int = source.get(index + 1)
+                if (c1 & 192) != 128 { return none }
+                if need == 3 {
+                    let c2: int = source.get(index + 2)
+                    if (c2 & 192) != 128 { return none }
+                    if byte == 224 && c1 < 160 { return none } // overlong
+                    if byte == 237 && c1 > 159 { return none } // surrogate
+                } else if need == 4 {
+                    let c2: int = source.get(index + 2)
+                    let c3: int = source.get(index + 3)
+                    if (c2 & 192) != 128 || (c3 & 192) != 128 { return none }
+                    if byte == 240 && c1 < 144 { return none } // overlong
+                    if byte == 244 && c1 > 143 { return none } // > U+10FFFF
+                }
+                for offset: int in 0..need {
+                    output.push(source.get(index + offset))
+                }
+                index += need
             }
         }
         output.push(34)
-        return output.to_string()
+        return some(output.to_string())
     }
 
     fn tree_json_padding(depth: int, indent: int) -> string {
@@ -998,12 +1073,15 @@ class TreeInterpreter {
             if shown == "nan" || shown == "inf" || shown == "-inf" ||
                shown == "NaN" || shown == "Infinity" ||
                shown == "-Infinity" {
+                // The reason for THIS refusal. The walk unwinds from here
+                // without visiting anything else, so nothing overwrites it.
+                self.json_write_nan = true
                 return none
             }
             return some(shown)
         }
         if value.kind == "string" {
-            return some(self.tree_json_string(value.text))
+            return self.tree_json_string(value.text)
         }
         if value.kind == "none" {
             return some("null")
@@ -1051,8 +1129,13 @@ class TreeInterpreter {
                                 let name: string =
                                     self.tree_json_field_name(
                                         declaration, field)
-                                output =
-                                    "{output}{self.tree_json_string(name)}:{if indent != 0 { " " } else { "" }}"
+                                match self.tree_json_string(name) {
+                                    some(key) => {
+                                        output =
+                                            "{output}{key}:{if indent != 0 { " " } else { "" }}"
+                                    }
+                                    none => { return none }
+                                }
                                 match self.tree_json_value(
                                         field_value, depth + 1, indent) {
                                     some(encoded) => {
@@ -1077,6 +1160,25 @@ class TreeInterpreter {
         return none
     }
 
+    // A checked encode can fail at runtime on a NaN or infinity float, or on
+    // a string whose bytes are not valid UTF-8. yyjson — the writer the
+    // native backend runs — stops at the first of those it meets in document
+    // order and names that one, so a value carrying both reports whichever
+    // came first. tree_json_value collapses every refusal into `none`, and
+    // json_write_nan carries the reason out from the leaf that refused; a
+    // scan of the finished value cannot, because it does not know which
+    // failure the writer reached first, nor that an @json.ignore'd field is
+    // never written at all.
+    fn tree_json_encode_error() -> TreeValue {
+        let message: string = if self.json_write_nan {
+            "cannot write NaN or infinity as JSON"
+        } else {
+            "cannot encode value as JSON"
+        }
+        return TreeValue.result_err(
+            TreeValue.error(message, "invalid"))
+    }
+
     fn tree_json_encode(
         value: TreeValue, indent_text: Option<string>
     ) -> TreeValue {
@@ -1094,14 +1196,34 @@ class TreeInterpreter {
             }
             none => {}
         }
+        self.json_write_nan = false
         match self.tree_json_value(value, 0, indent) {
             some(encoded) => {
                 return TreeValue.result_ok(TreeValue.string(encoded))
             }
             none => {
-                return TreeValue.result_err(
-                    TreeValue.error(
-                        "cannot encode value as JSON", "invalid"))
+                return self.tree_json_encode_error()
+            }
+        }
+    }
+
+    // encode_into: the same compact serializer as tree_json_encode, appended
+    // to the caller's Bytes after whatever it already holds, returning the
+    // count of bytes appended. On refusal the target is left untouched, and
+    // the error matches tree_json_encode byte for byte.
+    fn tree_json_encode_into(
+        value: TreeValue, target: Bytes
+    ) -> TreeValue {
+        self.json_write_nan = false
+        match self.tree_json_value(value, 0, 0) {
+            some(encoded) => {
+                let before: int = target.len()
+                target.append_string(encoded)
+                return TreeValue.result_ok(
+                    TreeValue.integer(target.len() - before))
+            }
+            none => {
+                return self.tree_json_encode_error()
             }
         }
     }
@@ -5232,6 +5354,32 @@ class TreeInterpreter {
                     arguments[0].int_data,
                     arguments[1].text,
                     arguments[2].int_data))
+        }
+        if node.resolved == "std.sock.send_pair_text" &&
+           arguments.len() == 4 {
+            match arguments[1].bytes_data {
+                some(head) => {
+                    // The compiler that bootstraps this source predates the
+                    // send_pair_text runtime entry, so the interpreter cannot
+                    // name it. Its observable behaviour is one send of the
+                    // head-and-body pair from the given offset, and joining
+                    // head and body into one buffer and sending that from the
+                    // offset writes exactly those bytes and takes exactly as
+                    // many of them per call — so a short write lands at the
+                    // same boundary the vectored entry would leave it at.
+                    // Compiled programs reach the allocation-free vectored
+                    // entry below the ABI; the join here is the interpreter's
+                    // and never touches the wire the native backend uses.
+                    let joined: Bytes = new Bytes(0)
+                    joined.append(head)
+                    joined.append_string(arguments[2].text)
+                    return self.host_int_result(
+                        host_sock.send(
+                            arguments[0].int_data,
+                            joined, arguments[3].int_data))
+                }
+                none => {}
+            }
         }
         if node.resolved == "std.sock.recv" &&
            arguments.len() == 2 {
@@ -10813,6 +10961,18 @@ class TreeInterpreter {
             return self.tree_json_encode(
                 arguments[0], some(arguments[1].text))
         }
+        if node.kind == "call" &&
+           display_symbol(node.resolved) ==
+               "std.encoding.json.encode_into" &&
+           arguments.len() == 2 {
+            match arguments[1].bytes_data {
+                some(target) => {
+                    return self.tree_json_encode_into(
+                        arguments[0], target)
+                }
+                none => {}
+            }
+        }
         if node.kind == "builtin_call" {
             return self.builtin_call(node, move arguments)
         }
@@ -14743,21 +14903,11 @@ class TreeInterpreter {
         return library_path
     }
 
+    // Where a symbol the loader owns lives. Runtime-hosted names never reach
+    // here: call_extern asks host_symbol_address first and dispatches those
+    // inside the process, because an address alone is not enough to call one.
     fn extern_symbol_address(
         function: HirFunction) -> int {
-        // Runtime-side externs are answered by this very process first:
-        // the same address on every platform, where the loader lookups
-        // below depend on what the executable happens to export.
-        var host_name: Bytes = new Bytes(0)
-        host_name.append_string(function.extern_name)
-        host_name.append(new Bytes(1))
-        unsafe {
-            let hosted: RawPtr<u8> =
-                beans_rt_host_symbol(host_name.as_ptr())
-            if hosted.address() != 0 {
-                return hosted.address() as int
-            }
-        }
         match host_dl.global_symbol(
                   function.extern_name) {
             ok(address) => { return address }
@@ -14859,9 +15009,151 @@ class TreeInterpreter {
         }
     }
 
+    // Calls one of the entries the runtime answers from inside this process.
+    // The arguments are packed exactly the way the direct word path packs
+    // them — a pointer as its host address, an integer as its value — and the
+    // runtime casts each word back to the type its own entry declares. That
+    // last part is what makes this correct where the direct path is not even
+    // usable: on a 32-bit host a word spans two argument slots, so the direct
+    // path gives up on any pointer that is not the final parameter, while the
+    // dispatcher simply casts the word back to a pointer.
+    fn call_extern_hosted(
+        function: HirFunction,
+        arguments: List<TreeValue>) -> TreeValue {
+        if function.variadic_from >= 0 {
+            return self.fail_extern(
+                function,
+                "the extern C declaration of {function.extern_name} is variadic, but that name is a Beans runtime entry with a fixed signature")
+        }
+        // `bool` is refused along with `float`, and for a sharper reason than
+        // "the invoker cannot carry it". It can: the word comes back whole.
+        // But a native build would read the same call as a C `_Bool`, which
+        // Clang takes from the low byte of the returned register — so a status
+        // of 256, or an address ending in a zero byte, is `false` there and
+        // `true` here. Every one of these entries returns a whole `long long`;
+        // a declaration that narrows it to one bit is wrong, and the two
+        // backends would disagree about a wrong answer rather than refuse it.
+        let result_name: string =
+            canonical_hir_name(function.result.name)
+        if result_name != "unit" &&
+           result_name != "RawPtr" &&
+           result_name != "CFunctionPtr" &&
+           !hir_is_integer(function.result) {
+            return self.fail_extern(
+                function,
+                "the extern C declaration of {function.extern_name} returns {function.result.name}, but that name is a Beans runtime entry and every one of those returns an integer")
+        }
+        let count: int = function.parameters.len()
+        if arguments.len() != count {
+            return self.fail_extern(
+                function,
+                "the extern C declaration of {function.extern_name} takes {count} arguments but was called with {arguments.len()}")
+        }
+        var bridges: List<TreeFfiMemory> = []
+        var words: List<int> = []
+        for index: int in 0..count {
+            let type: HirType =
+                function.parameters[index].type
+            let name: string =
+                canonical_hir_name(type.name)
+            if name == "RawPtr" ||
+               name == "CFunctionPtr" {
+                words.push(
+                    self.ffi_pointer_word(
+                        function, arguments[index],
+                        bridges))
+            } else if hir_is_integer(type) {
+                words.push(arguments[index].int_data)
+            } else if name == "bool" {
+                words.push(
+                    if arguments[index].bool_data {
+                        1
+                    } else {
+                        0
+                    })
+            } else {
+                self.ffi_sync_and_free(bridges)
+                return self.fail_extern(
+                    function,
+                    "the extern C declaration of {function.extern_name} passes {type.name}, but a Beans runtime entry takes only integers and pointers")
+            }
+        }
+        if self.failed {
+            self.ffi_sync_and_free(bridges)
+            return TreeValue.unit()
+        }
+        var status: int = 0
+        var raw: int = 0
+        unsafe {
+            let packed: RawPtr<u64> =
+                RawPtr.alloc(
+                    if count > 0 { count } else { 1 })
+            for index: int in 0..count {
+                packed.offset(index).write(
+                    words[index] as u64)
+            }
+            let slot: RawPtr<i64> = RawPtr.alloc(1)
+            slot.write(0)
+            var host_name: Bytes = new Bytes(0)
+            host_name.append_string(
+                function.extern_name)
+            host_name.append(new Bytes(1))
+            status = beans_rt_host_invoke(
+                host_name.as_ptr(), packed, count,
+                slot)
+            raw = slot.read() as int
+            slot.free()
+            packed.free()
+        }
+        if status != 1 {
+            // 0 cannot arrive here: the caller only takes this path after the
+            // runtime answered this name's own address. -1 is the runtime
+            // refusing the call, because the declaration in the program does
+            // not fit the entry it names. Refusing is the point — routing it
+            // to a compiled shim instead would call the same function with the
+            // wrong words wherever a C compiler happens to exist.
+            self.ffi_sync_and_free(bridges)
+            return self.fail_extern(
+                function,
+                "the extern C declaration of {function.extern_name} does not match the Beans runtime entry of that name")
+        }
+        var result: TreeValue = TreeValue.unit()
+        if result_name == "RawPtr" {
+            result = self.ffi_pointer_result(
+                function.result, raw, bridges)
+        } else if result_name == "CFunctionPtr" {
+            let callback_type: HirType =
+                if function.result.args.len() == 1 {
+                    function.result.args[0]
+                } else {
+                    new HirType("poison")
+                }
+            result = TreeValue.host_pointer(
+                raw as u64, callback_type)
+        } else if result_name != "unit" {
+            result = self.ffi_integer_result(
+                function.result, raw)
+        }
+        self.ffi_sync_and_free(bridges)
+        return result
+    }
+
     fn call_extern(
         function: HirFunction,
         arguments: List<TreeValue>) -> TreeValue {
+        // The runtime's own entries — the fiber-parking socket calls,
+        // std.term's bridge, the display-width table — are called inside this
+        // process whatever their shape. Everything below this line exists to
+        // reach a symbol the dynamic loader owns: the word ABI for the shapes
+        // it covers, and a C shim written and compiled with Clang at run time
+        // for the rest. A hosted entry needs neither, and must not need a C
+        // toolchain at all: `beansc run` on a host whose Clang cannot link for
+        // the target still has to be able to write to a socket.
+        if host_symbol_address(function.extern_name) !=
+           0 {
+            return self.call_extern_hosted(
+                function, arguments)
+        }
         let symbol: int =
             self.extern_symbol_address(function)
         if self.failed { return TreeValue.unit() }

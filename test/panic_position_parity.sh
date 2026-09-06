@@ -22,6 +22,27 @@
 # backends, or named in EXCLUDED with a reason. A new panicking builtin added
 # to the runtime fails this check until it is one or the other — so the list
 # cannot silently fall behind the surface.
+#
+# The runtime function each case drives is named beside it, and that name is
+# checked rather than believed. It used to be believed, and the two halves of
+# this file were then matched by two rules that never met: the covered side was
+# a string typed here by hand, the surface side was read out of the runtime. A
+# name typed wrong made a real function read UNCOVERED while its case passed.
+# Far worse in the other direction, a name that stopped being true — because
+# the emitter changed which runtime entry a shape lowers to — kept reading as
+# covered for a path nothing drove. Three did: List<C> of a *class* lowers to
+# beans_list_insert / beans_list_remove, not the _typed pair the cases claimed,
+# and a slice taken as a value calls beans_list_slice, not the
+# beans_list_slice_check that only a slice *iterator* emits. Those three
+# (line, col) paths were asserted covered while no case called them at all.
+#
+# So every claim is now verified twice against facts, before it is allowed to
+# count: it must name a real (line, col) runtime function, and it must appear
+# as a call site in the LLVM IR the compiler actually emits for that very case.
+# The IR is the same compiler under test saying what the program calls, so the
+# claim cannot drift away from the program again. What the IR does NOT show is
+# the interpreter's own path — that half is what `agree` proves, by holding the
+# two backends to the same panic line and the same message.
 set -uo pipefail
 
 cd "$(dirname "$0")/.."
@@ -34,6 +55,24 @@ checked=0
 probed="$tmp/probed"   # runtime functions a passing case actually drove
 : >"$probed"
 
+# The authoritative surface, read before any case runs because every case is
+# now checked against it: a host op that can panic with a position takes
+# (line, col), so pulling every Bytes/List/string/fmt-pad function with that
+# signature out of the runtime gives the set, complete by construction.
+runtime_family=$(perl -0777 -ne '
+  while (/\b(beans_(?:bytes_|list_|str_|fmt_pad_)[a-z0-9_]*)\s*\(([^;{)]*?(?:\([^)]*\)[^;{)]*)*?)\)\s*\{/gs) {
+    my ($n, $a) = ($1, $2);
+    print "$n\n" if $a =~ /long long line/ && $a =~ /long long col/;
+  }' runtime/beans_rt.c | sort -u)
+if [ -z "$runtime_family" ]; then
+    echo "the runtime scan found no (line, col) functions at all — the pattern has rotted" >&2
+    exit 1
+fi
+declare -A runtime_is_family=()
+while read -r fn; do
+    [ -n "$fn" ] && runtime_is_family[$fn]=1
+done <<<"$runtime_family"
+
 # panic_line <file> — the sole "runtime panic at ..." line a run printed, or
 # empty. Both backends use the identical wording, so a byte compare of this
 # line proves position and message agree at once.
@@ -45,7 +84,8 @@ panic_line() {
 # panic at the same place with the same message. <rtfns> is a comma list of
 # the runtime functions this case drives (for the coverage check), or "-" for
 # a regression case outside the Bytes/List/string/fmt families. A case is
-# counted as covering its rtfns only when it actually agrees.
+# counted as covering its rtfns only when it actually agrees AND the compiler
+# emits a call to each of them for this program — see `claims_hold`.
 agree() {
     local name=$1 rtfns=$2 program=$3
     printf '%s\n' "$program" >"$tmp/$name.b"
@@ -87,9 +127,54 @@ agree() {
         fails=$((fails + 1)); return
     fi
     if [ "$rtfns" != "-" ]; then
+        claims_hold "$name" "$rtfns" || return
         printf '%s\n' "${rtfns//,/$'\n'}" >>"$probed"
     fi
     echo "  agree: $name ($i)"
+}
+
+# claims_hold <name> <rtfns> — a case may only be credited with what it can be
+# shown to do. Every name it claims has to be a real (line, col) runtime
+# function, and has to appear as a call site in the IR the compiler emits for
+# this exact program. `beansc llvm` is the compiler under test answering the
+# question itself, so a case cannot drift away from the entry it was written
+# for without saying so here, by name.
+#
+# The IR names a callee on the same line as the `call`, but a call that yields
+# a value is written `%v4 = call i64 @beans_bytes_get(...)`, so the line does
+# not start with `call`. Anchoring on the line start reads every such case as
+# calling nothing — which is how a check like this quietly passes everything.
+# `declare` lines are dropped instead, and the rest matched on the keyword.
+claims_hold() {
+    local name=$1 rtfns=$2 fn
+    local ir="$tmp/$name.ll"
+    if ! "$beansc" llvm "$tmp/$name.b" >"$ir" 2>"$tmp/$name.llerr"; then
+        echo "FAIL $name: cannot dump the IR to check what it calls" >&2
+        sed 's/^/  /' "$tmp/$name.llerr" >&2
+        fails=$((fails + 1)); return 1
+    fi
+    local called
+    called=$(grep -vE '^[[:space:]]*declare\b' "$ir" |
+             grep -E '\b(call|invoke)\b' |
+             grep -oE '@beans_[a-z0-9_]+' | tr -d '@' | sort -u)
+    local -A emitted=()
+    while read -r fn; do
+        [ -n "$fn" ] && emitted[$fn]=1
+    done <<<"$called"
+    local ok=0
+    for fn in ${rtfns//,/ }; do
+        if [ -z "${runtime_is_family[$fn]+x}" ]; then
+            echo "FAIL $name: claims $fn, which is not a (line, col) runtime function" >&2
+            ok=1
+        elif [ -z "${emitted[$fn]+x}" ]; then
+            echo "FAIL $name: claims $fn but the compiler emits no call to it here" >&2
+            ok=1
+        fi
+    done
+    if [ "$ok" -ne 0 ]; then
+        fails=$((fails + 1)); return 1
+    fi
+    return 0
 }
 
 echo "checking host-builtin panics carry the program's position on both backends"
@@ -152,23 +237,42 @@ agree list_insert beans_list_insert 'fn main() {
     xs.insert(9, 7)
 }'
 
-# A list of a reference element lowers to the _typed runtime calls natively;
-# the interpreter guards every list the same way, so this must agree too.
-agree list_insert_typed beans_list_insert_typed 'class C { fn init() {} }
+# A list whose element is stored INLINE lowers to the _typed runtime calls
+# natively (see list_element_inline in src/llvm_emit_collections.b); the
+# interpreter guards every list the same way, so this must agree too.
+#
+# A struct, not a class. These two cases named a `List<C>` of a class for a
+# long time and were credited with the _typed pair the whole time, but a class
+# element is a pointer and a pointer is not inline: the emitter took the plain
+# beans_list_insert / beans_list_remove branch, and the two paths that carry
+# (line, col) for an inline element were tested by nothing. `claims_hold`
+# refuses that now, and a struct element is what actually reaches them.
+agree list_insert_typed beans_list_insert_typed 'struct P { x: int, y: int }
 fn main() {
-    var xs: List<C> = [new C()]
-    xs.insert(9, new C())
+    var xs: List<P> = [P { x: 1, y: 2 }]
+    xs.insert(9, P { x: 3, y: 4 })
 }'
 
-agree list_remove_typed beans_list_remove_typed 'class C { fn init() {} }
+agree list_remove_typed beans_list_remove_typed 'struct P { x: int, y: int }
 fn main() {
-    var xs: List<C> = [new C()]
-    let c: C = xs.remove(9)
+    var xs: List<P> = [P { x: 1, y: 2 }]
+    let p: P = xs.remove(9)
 }'
 
-agree list_slice beans_list_slice,beans_list_slice_check 'fn main() {
+agree list_slice beans_list_slice 'fn main() {
     let xs: List<int> = [1, 2, 3]
     let s: List<int> = xs.slice(1, 9)
+}'
+
+# beans_list_slice_check is not the slice-as-a-value call above — that is
+# beans_list_slice. It is emitted only when a slice is ITERATED, where the
+# bound has to be checked before the loop can start reading. Taking the slice
+# as a value never reaches it, so the case that claimed both covered only one.
+agree list_slice_iter beans_list_slice_check 'fn main() {
+    let xs: List<int> = [1, 2, 3]
+    for v: int in xs.slice(1, 9) {
+        let q: int = v
+    }
 }'
 
 # ---- string ----
@@ -314,20 +418,23 @@ declare -A EXCLUDED=(
   [beans_bytes_slice_to_string_full]="not exposed as a Bytes method (the checker refuses it)"
 )
 
-runtime_family=$(perl -0777 -ne '
-  while (/\b(beans_(?:bytes_|list_|str_|fmt_pad_)[a-z0-9_]*)\s*\(([^;{)]*?(?:\([^)]*\)[^;{)]*)*?)\)\s*\{/gs) {
-    my ($n, $a) = ($1, $2);
-    print "$n\n" if $a =~ /long long line/ && $a =~ /long long col/;
-  }' runtime/beans_rt.c | sort -u)
-
-probed_set=$(sort -u "$probed")
-
 echo
 echo "coverage over Bytes/List/string/fmt-pad panic paths:"
 cover_fail=0
+# Membership is an array lookup, not `printf ... | grep -q`. That pipeline
+# lies under `set -o pipefail`: grep -q exits the moment it matches, printf is
+# then killed by SIGPIPE, and the pipeline's status becomes 141 — so a name
+# that WAS found reads as missing. It only bites once the haystack outgrows a
+# pipe buffer, which is to say it sits harmless until the day the surface
+# grows and then reports UNCOVERED for something demonstrably covered.
+declare -A is_probed=()
+while read -r fn; do
+    [ -n "$fn" ] && is_probed[$fn]=1
+done < <(sort -u "$probed")
+
 while read -r fn; do
     [ -z "$fn" ] && continue
-    if printf '%s\n' "$probed_set" | grep -qx "$fn"; then
+    if [ -n "${is_probed[$fn]+x}" ]; then
         continue
     fi
     if [ -n "${EXCLUDED[$fn]+x}" ]; then
@@ -340,8 +447,17 @@ done <<<"$runtime_family"
 
 # A stale exclusion (a function that no longer exists) hides drift too.
 for fn in "${!EXCLUDED[@]}"; do
-    if ! printf '%s\n' "$runtime_family" | grep -qx "$fn"; then
+    if [ -z "${runtime_is_family[$fn]+x}" ]; then
         echo "STALE EXCLUSION: $fn is excluded but no longer a (line,col) runtime function" >&2
+        cover_fail=1
+    fi
+done
+
+# A name that is probed but not in the surface means the two sides have drifted
+# apart in the direction the coverage loop cannot see.
+for fn in "${!is_probed[@]}"; do
+    if [ -z "${runtime_is_family[$fn]+x}" ]; then
+        echo "PROBED BUT NOT IN THE SURFACE: $fn" >&2
         cover_fail=1
     fi
 done

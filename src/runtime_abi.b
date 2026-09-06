@@ -1016,6 +1016,11 @@ pub fn runtime_builtin_fn(key: string) -> Option<RuntimeBuiltin> {
             ["i64", "str", "i64"],
             "res_i64", "beans_net_send_text", false))
     }
+    if key == "std.sock.send_pair_text" {
+        return some(new RuntimeBuiltin(
+            ["i64", "bytes", "str", "i64"],
+            "res_i64", "beans_net_send_pair_text", false))
+    }
     if key == "std.sock.recv" {
         return some(new RuntimeBuiltin(
             ["i64", "i64"],
