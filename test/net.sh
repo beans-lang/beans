@@ -539,6 +539,12 @@ fi
 # MSG_NOSIGNAL, so a peer that has gone away is `err reset`. macOS sets
 # SO_NOSIGPIPE on every socket and passes this line either way; on Linux a
 # vectored write without the flag ends the process instead of printing it.
+#
+# The `text-*` rows are write_vectored_text: the same pair send with a string
+# body instead of a Bytes one. The native backend sends the string where it
+# lives with sendmsg; the tree interpreter, whose bootstrap predates the entry,
+# joins head and body and sends that once — so both must print the same bytes,
+# the same short-write boundary, and `peer-closed-text: err reset`.
 echo "checking vectored writes in both backends"
 ./build/beansc run examples/net_vectored.b >"$tmp/vec-interp"
 ./build/beansc build examples/net_vectored.b -o "$tmp/vec-native" \
@@ -564,6 +570,11 @@ head-only forbids-body false declares-1MiB true ends-blank-line true
 head+body equals whole response: true lens 1048661 1048661
 204 with a body: refused invalid
 peer-closed: err reset
+text-empty-body bytes 64 identical true short-writes false
+text-empty-head bytes 39 identical true short-writes false
+text-small bytes 176 identical true short-writes false
+text-one-mib bytes 1048713 identical true short-writes true
+peer-closed-text: err reset
 EXPECTED
 
 echo "ok vectored writes: head+body in one send, resume across the boundary"

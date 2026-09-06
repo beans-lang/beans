@@ -5653,6 +5653,11 @@ class ExpressionChecker {
                     [integer, string, integer],
                     hir_result(integer)))
             }
+            if name == "send_pair_text" {
+                return some(new BuiltinSignature(
+                    [integer, bytes, string, integer],
+                    hir_result(integer)))
+            }
             if name == "recv" ||
                name == "recv_exact" ||
                name == "recv_to_end" {

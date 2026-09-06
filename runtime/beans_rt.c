@@ -13247,6 +13247,49 @@ long long beans_net_send_pair_wait(long long fd,
     }
 }
 
+// The string form of send_pair: the body is a Beans string, sent where it
+// already lives. A server holds a response body as a string — that is the
+// shape a handler hands back — and framing it into a Bytes to send it is the
+// copy write_vectored exists to remove, so the string twin has to take the
+// string itself. Its byte length is read with beans_slen exactly as
+// beans_net_send_text reads its text's, so there is no separate length
+// argument that could disagree with the bytes on the wire.
+//
+// It carries no scratch of its own. write_vectored's caller owns a req buffer
+// because it caches the fiber-prepared flag across the short writes of one
+// response; a builtin has nowhere to keep that, so a local req drives the
+// shared engine and the fiber is prepared per call, exactly as beans_net_send
+// and beans_net_send_text prepare it. The engine — the one sendmsg loop that
+// carries MSG_NOSIGNAL and parks the fiber — is beans_net_send_pair_wait's,
+// reused, never a second copy of the loop.
+//
+// The offset counts into head+body; a short write returns the bytes this send
+// took, whether it stopped inside the head or inside the body, so a caller
+// resumes from the returned total the same way it does with write_vectored.
+BRes beans_net_send_pair_text(long long fd, BList* head, char* body,
+                              long long offset) {
+    net_init();
+    if (fd < 0) return (BRes){0, net_closed_err("send")};
+    long long head_len = head ? head->len : 0;
+    const void* head_ptr = (head_len > 0) ? (const void*)head->data : NULL;
+    long long body_len = body ? beans_slen(body) : 0;
+    long long total = head_len + body_len;
+    if (offset < 0 || offset > total)
+        return (BRes){0, mk_error("send: offset is outside the data", "invalid")};
+    if (offset == total) return (BRes){0, NULL}; // nothing to do, not an error
+    unsigned long long req[4];
+    req[0] = (unsigned long long)offset;
+    req[1] = 0;
+    req[2] = 0; // let the engine prepare the fiber, like send / send_text
+    req[3] = (unsigned long long)net_op_timeout_ms(fd, 1);
+    long long status = beans_net_send_pair_wait(fd, head_ptr, head_len,
+                                                body, body_len, req);
+    if (status == 0) return (BRes){(long long)req[0], NULL};
+    // req[1] carries the OS errno the engine stopped on; net_err_op turns it
+    // into the same Error.kind the Bytes form's sockx_error maps that errno to.
+    return (BRes){0, net_err_op("send", (int)req[1])};
+}
+long long beans_net_send_pair_text_out(long long fd, BList* head, char* body, long long offset, void** e_out) { BRes r = beans_net_send_pair_text(fd, head, body, offset); *e_out = r.err; return r.val; }
 
 BRes beans_net_send_text(long long fd, char* text, long long from) {
     net_init();

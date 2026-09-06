@@ -212,6 +212,92 @@ fn peer_closed() {
     io.println("peer-closed: {outcome}")
 }
 
+// The string twin of `pattern`: `count` printable-ASCII bytes whose value
+// repeats every 89 — a prime, so a resume from a wrong offset shifts the
+// pattern instead of realigning on it. It is a string because the string send
+// path is what carries it; the bytes are ASCII, which is its own UTF-8, so
+// `Bytes.to_string` neither rejects nor rewrites a single one of them.
+fn pattern_text(count: int) -> string {
+    let out: Bytes = new Bytes(0)
+    out.reserve(count)
+    for index: int in 0..count {
+        out.push((index % 89) + 33)
+    }
+    return out.to_string()
+}
+
+// Writes a Bytes head then a string body with one vectored-text call per turn,
+// resuming from the combined offset until the pair is gone. Returns the number
+// of calls, so a case that never short-wrote is told from one that did.
+fn send_pair_text(stream: net.TcpStream, head: Bytes, body: string) -> Result<int> {
+    var offset: int = 0
+    var calls: int = 0
+    let total: int = head.len() + body.len()
+    for offset < total {
+        let wrote: int = stream.write_vectored_text(head, body, offset)?
+        if wrote <= 0 { return err("the peer took nothing", "reset") }
+        offset += wrote
+        calls += 1
+    }
+    return ok(calls)
+}
+
+// Send a Bytes head and a string body vectored from a fiber while the main
+// fiber reads, then compare what arrived against the head and the body's bytes
+// joined by hand — the string send must put the same bytes on the wire the
+// Bytes send would, and resume across the head/body boundary the same way.
+fn case_text(label: string, head_len: int, body_len: int) {
+    let listener: net.TcpListener = net.TcpListener.bind("127.0.0.1", 0)
+        .expect("bind")
+    let port: int = listener.port().expect("port")
+    let client: net.TcpStream = net.TcpStream.connect("127.0.0.1", port)
+        .expect("connect")
+    let server: net.TcpStream = listener.accept().expect("accept")
+
+    let head: Bytes = pattern(head_len)
+    let body: string = pattern_text(body_len)
+
+    let writer: Brew<Result<int>> = brew send_pair_text(server, head, body)
+
+    let arrived: Bytes = drain(client, head_len + body_len).expect("drain")
+    let calls: int = writer.join().expect("join").expect("send")
+
+    let joined: Bytes = new Bytes(0)
+    joined.append(head)
+    joined.append_string(body)
+
+    let identical: bool = arrived == joined
+    let short_wrote: bool = calls > 1
+    io.println("{label} bytes {arrived.len()} identical {identical} short-writes {short_wrote}")
+}
+
+// The string form must refuse a vanished peer the same way: sendmsg with
+// MSG_NOSIGNAL, so a gone peer is `err reset` and never a signal.
+fn write_until_refused_text(stream: net.TcpStream, head: Bytes, body: string) -> string {
+    for attempt: int in 0..64 {
+        match stream.write_vectored_text(head, body, 0) {
+            ok(_) => {}
+            err(problem) => { return "err {problem.kind}" }
+        }
+    }
+    return "no error after 64 writes"
+}
+
+fn peer_closed_text() {
+    let listener: net.TcpListener = net.TcpListener.bind("127.0.0.1", 0)
+        .expect("bind")
+    let port: int = listener.port().expect("port")
+    let client: net.TcpStream = net.TcpStream.connect("127.0.0.1", port)
+        .expect("connect")
+    let server: net.TcpStream = listener.accept().expect("accept")
+    let closed: bool = client.close().expect("close")
+    let head: Bytes = pattern(64)
+    let body: string = pattern_text(1048576)
+    let writer: Brew<string> = brew write_until_refused_text(server, head, body)
+    let outcome: string = writer.join().expect("join")
+    io.println("peer-closed-text: {outcome}")
+}
+
 fn main() {
     // The body is empty and the head is the whole write.
     case("empty-body", 64, 0)
@@ -237,4 +323,13 @@ fn main() {
     resume_from(137, 4096, 4233)
     head_framing()
     peer_closed()
+    // The string body form. A body of 0 (the head is the whole write), 39
+    // (one write, the offset never leaves the pair), and one megabyte (which
+    // no loopback socket takes whole, so the resume across the head/body
+    // boundary is exercised and `short-writes true` is part of the golden).
+    case_text("text-empty-body", 64, 0)
+    case_text("text-empty-head", 0, 39)
+    case_text("text-small", 137, 39)
+    case_text("text-one-mib", 137, 1048576)
+    peer_closed_text()
 }

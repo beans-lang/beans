@@ -5233,6 +5233,32 @@ class TreeInterpreter {
                     arguments[1].text,
                     arguments[2].int_data))
         }
+        if node.resolved == "std.sock.send_pair_text" &&
+           arguments.len() == 4 {
+            match arguments[1].bytes_data {
+                some(head) => {
+                    // The compiler that bootstraps this source predates the
+                    // send_pair_text runtime entry, so the interpreter cannot
+                    // name it. Its observable behaviour is one send of the
+                    // head-and-body pair from the given offset, and joining
+                    // head and body into one buffer and sending that from the
+                    // offset writes exactly those bytes and takes exactly as
+                    // many of them per call — so a short write lands at the
+                    // same boundary the vectored entry would leave it at.
+                    // Compiled programs reach the allocation-free vectored
+                    // entry below the ABI; the join here is the interpreter's
+                    // and never touches the wire the native backend uses.
+                    let joined: Bytes = new Bytes(0)
+                    joined.append(head)
+                    joined.append_string(arguments[2].text)
+                    return self.host_int_result(
+                        host_sock.send(
+                            arguments[0].int_data,
+                            joined, arguments[3].int_data))
+                }
+                none => {}
+            }
+        }
         if node.resolved == "std.sock.recv" &&
            arguments.len() == 2 {
             return self.host_bytes_result(
