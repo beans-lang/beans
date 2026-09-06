@@ -28,4 +28,30 @@ BEANS_JSON_NO_DIRECT_DECODE=1 "$tmp/depth" >"$tmp/depth.dom"
 diff -u test/cases/encoding_json_typed_depth_unknown.out "$tmp/depth.stream"
 diff -u "$tmp/depth.stream" "$tmp/depth.dom"
 
-echo "ok json stream decode: depth policy"
+# 2. Differential fuzz: the stream path against the DOM path over round-tripped
+#    values across every schema shape, hand-built edge documents, option
+#    combinations, and every truncation and byte flip of a valid document. The
+#    two transcripts must be byte-identical — same decoded values, and the same
+#    error code, byte offset and field index on every refusal — and the stream
+#    engine must have decoded every valid document itself (FALLBACKS:0).
+echo "checking the stream path and the DOM path agree over the fuzz"
+"$beansc" build test/cases/json_stream_fuzz.b -o "$tmp/fuzz" >/dev/null
+for seed in 20260906 3 99999 1; do
+    FUZZ_SEED=$seed FUZZ_ROUNDS=400 "$tmp/fuzz" >"$tmp/fuzz.stream.$seed"
+    FUZZ_SEED=$seed FUZZ_ROUNDS=400 BEANS_JSON_NO_DIRECT_DECODE=1 \
+        "$tmp/fuzz" >"$tmp/fuzz.dom.$seed"
+    cmp "$tmp/fuzz.stream.$seed" "$tmp/fuzz.dom.$seed"
+    grep -q '^FALLBACKS:0$' "$tmp/fuzz.stream.$seed" || {
+        echo "the stream engine fell back to the DOM on a valid document" >&2
+        grep '^FALLBACKS:' "$tmp/fuzz.stream.$seed" >&2
+        exit 1
+    }
+done
+# The transcript must actually contain the error variety the parity rests on:
+# parse errors with byte offsets and typed errors with field indices.
+grep -q 'code=108' "$tmp/fuzz.stream.20260906"   # depth, under an unknown key
+grep -q 'code=106' "$tmp/fuzz.stream.20260906"   # a missing required field
+grep -q 'code=2 pos=' "$tmp/fuzz.stream.20260906" # truncation, an EOF at an offset
+grep -q 'go😀odA' "$tmp/fuzz.stream.20260906"     # a surrogate pair unescaped
+
+echo "ok json stream decode: depth policy, differential fuzz"

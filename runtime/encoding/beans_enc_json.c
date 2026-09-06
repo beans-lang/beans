@@ -518,6 +518,11 @@ static size_t beans_json_typed_list_stride(
 typedef struct {
     BeansJsonNewListFn new_list;
     BeansJsonAllocFn allocate;
+    // beans_alloc_bytes: like allocate, but does not zero the payload, for
+    // string buffers the decoder fills end to end. Falls back to allocate when
+    // the caller did not supply it (an older emitter, or the interpreter),
+    // which only costs the memset this exists to avoid.
+    BeansJsonAllocFn alloc_bytes;
     BeansJsonReleaseFn release;
     uint64_t* req;
 } BeansJsonDecodeContext;
@@ -694,9 +699,12 @@ static int beans_json_typed_value_direct(
         case BEANS_JSON_TYPED_STRING: {
             if (!yyjson_is_str(value)) return BEANS_JSON_TYPED_ERR_TYPE;
             size_t length = yyjson_get_len(value);
-            char* string = (char*)context->allocate(
+            char* string = (char*)context->alloc_bytes(
                 (long long)length + 1, (long long)length << 3);
             memcpy(string, yyjson_get_str(value), length);
+            // alloc_bytes does not zero the payload, so the NUL that makes this
+            // a C string is written here rather than left to the allocator.
+            string[length] = '\0';
             memcpy(target, &string, sizeof(string));
             break;
         }
@@ -840,14 +848,17 @@ static void beans_json_typed_release_record(
     }
 }
 
-// Direct native path. It maps into the final Beans struct/list storage while
-// the yyjson tree is hot, avoiding the large field-slot table used by the
-// portable fallback.
+// DOM decode path. It parses the whole document into a yyjson tree, then maps
+// that tree into the final Beans struct/list storage while it is hot, avoiding
+// the large field-slot table used by the portable fallback. This is the
+// reference the streaming path (beans_enc_json_typed_decode_stream) is proved
+// against and the path it defers to for a rejected document's exact error
+// position; BEANS_JSON_NO_DIRECT_DECODE routes every decode through here.
 // req[0]=length, [1]=read flags, [2]=schema, [3]=scalar output/list output,
 // [5]=error, [6]=record count/error byte, [7]=field index,
-// [8]=new-list callback, [10]=Beans allocator callback,
-// [11]=release callback.
-BEANS_ENC_API long long beans_enc_json_typed_decode_direct(
+// [8]=new-list callback, [9]=Beans bytes-allocator callback,
+// [10]=Beans allocator callback, [11]=release callback.
+BEANS_ENC_API long long beans_enc_json_typed_decode_dom(
         unsigned char* src, uint64_t* req) {
     const BeansJsonTypedSchema* schema =
         (const BeansJsonTypedSchema*)(uintptr_t)req[2];
@@ -855,6 +866,9 @@ BEANS_ENC_API long long beans_enc_json_typed_decode_direct(
         (BeansJsonNewListFn)(uintptr_t)req[8];
     BeansJsonAllocFn allocate =
         (BeansJsonAllocFn)(uintptr_t)req[10];
+    BeansJsonAllocFn alloc_bytes =
+        (BeansJsonAllocFn)(uintptr_t)req[9];
+    if (!alloc_bytes) alloc_bytes = allocate;
     BeansJsonReleaseFn release =
         (BeansJsonReleaseFn)(uintptr_t)req[11];
     req[5] = 0;
@@ -901,7 +915,8 @@ BEANS_ENC_API long long beans_enc_json_typed_decode_direct(
     }
     size_t count = root_array ? yyjson_arr_size(root) : 1;
     req[6] = (uint64_t)count;
-    BeansJsonDecodeContext context = {new_list, allocate, release, req};
+    BeansJsonDecodeContext context =
+        {new_list, allocate, alloc_bytes, release, req};
 
     long long status = BEANS_ENC_OK;
     void* list = NULL;
@@ -949,6 +964,849 @@ BEANS_ENC_API long long beans_enc_json_typed_decode_direct(
     yyjson_doc_free(doc);
     if (status == BEANS_ENC_OK) req[7] = UINT64_MAX;
     return status;
+}
+
+// ---------------------------------------------------------------------------
+// Streaming decode path (issue #144). It stores straight from the document
+// bytes into the target structs, with no intermediate yyjson_doc, and folds
+// the whole-document depth guarantee into the single pass (issue #142).
+//
+// Value semantics are yyjson's, not a second implementation: numbers go
+// through read_num, literals through read_true/read_false/read_null, unicode
+// escapes through read_uni_esc, and UTF-8 validation through is_utf8_seqN, all
+// of them the vendored reader's own primitives, called here because this file
+// includes yyjson.c. The only new code is the structural driver — the object,
+// array and string state machine — and it never writes the source buffer, so
+// the scanner keeps a pristine copy of the input.
+//
+// On any rejection (a malformed document, a value nested past the limit, a
+// type that does not fit the field, a duplicate, a missing required field, an
+// unknown field where the schema forbids one) the scanner abandons its partial
+// work and hands the *original* bytes to the DOM path above, which produces
+// the exact error code and byte position the DOM path would have produced.
+// The scanner therefore has to detect invalidity, not locate it: the reference
+// locates it. The valid path — the benchmark's path — never touches the DOM.
+// A telemetry word (req[4]) records whether the stream engine finished the
+// decode or deferred, so a test can prove the fast path actually ran.
+typedef struct {
+    BeansJsonNewListFn new_list;
+    BeansJsonAllocFn allocate;
+    BeansJsonAllocFn alloc_bytes;
+    BeansJsonReleaseFn release;
+    uint64_t* req;
+    yyjson_read_flag flags;
+    uint64_t max_depth;
+    unsigned char* eof;
+} BeansJsonStreamCtx;
+
+// Skip whitespace, and comments when they are allowed, exactly where the
+// vendored reader would. Returns the first byte that is neither; that byte may
+// be eof (the caller decides whether that is an error). A comment yyjson would
+// reject leaves the cursor at eof, which the caller reads as end-of-input and
+// defers to the DOM path to name.
+static unsigned char* beans_json_stream_ws(
+        BeansJsonStreamCtx* ctx, unsigned char* cur) {
+    unsigned char* eof = ctx->eof;
+    while (cur < eof && char_is_space(*cur)) cur++;
+    if ((ctx->flags & YYJSON_READ_ALLOW_COMMENTS) &&
+        cur < eof && *cur == '/') {
+        skip_trivia(&cur, eof, ctx->flags);
+    }
+    return cur;
+}
+
+// Validate one JSON string and, when `dst` is non-NULL, unescape it there.
+// `*pcur` is at the opening quote. On success `*pcur` advances past the closing
+// quote and `*out_len` is the unescaped length even when it exceeds `cap` (the
+// bytes past `cap` are validated but not written, which the key scan relies on
+// for keys too long to name a field). Returns 0 to bail. The source is never
+// written; unicode escapes and UTF-8 validation are yyjson's own.
+static int beans_json_stream_string(
+        BeansJsonStreamCtx* ctx, unsigned char** pcur,
+        unsigned char* dst, size_t cap, size_t* out_len) {
+    unsigned char* eof = ctx->eof;
+    unsigned char* src = *pcur + 1; // past opening quote
+    size_t n = 0;
+    for (;;) {
+        if (src >= eof) return 0; // unterminated
+        unsigned char c = *src;
+        if (c == '"') { *pcur = src + 1; *out_len = n; return 1; }
+        if (c == '\\') {
+            unsigned char out;
+            switch (src[1]) {
+                case '"':  out = '"';  break;
+                case '\\': out = '\\'; break;
+                case '/':  out = '/';  break;
+                case 'b':  out = '\b'; break;
+                case 'f':  out = '\f'; break;
+                case 'n':  out = '\n'; break;
+                case 'r':  out = '\r'; break;
+                case 't':  out = '\t'; break;
+                case 'u': {
+                    unsigned char sink[4];
+                    unsigned char* dd = sink;
+                    unsigned char* s2 = src; // at the backslash
+                    const char* umsg;
+                    if (!read_uni_esc(&s2, &dd, &umsg)) return 0;
+                    size_t produced = (size_t)(dd - sink);
+                    if (dst && n + produced <= cap)
+                        memcpy(dst + n, sink, produced);
+                    n += produced;
+                    src = s2;
+                    continue;
+                }
+                default: return 0; // an escape the strict grammar rejects
+            }
+            if (dst && n < cap) dst[n] = out;
+            n++;
+            src += 2;
+            continue;
+        }
+        if (c < 0x20) return 0; // a raw control character
+        if (c < 0x80) { // ASCII
+            if (dst && n < cap) dst[n] = c;
+            n++; src++;
+            continue;
+        }
+        // A multi-byte UTF-8 sequence, validated the way the reader validates.
+        // is_utf8_seqN expand to expressions over a scratch `tmp`, the same
+        // local read_str_opt declares.
+        uint32_t uni = byte_load_4(src);
+        uint32_t tmp;
+        size_t seqlen = is_utf8_seq2(uni) ? 2 :
+                        is_utf8_seq3(uni) ? 3 :
+                        is_utf8_seq4(uni) ? 4 : 0;
+        if (seqlen == 0 || src + seqlen > eof) return 0;
+        for (size_t i = 0; i < seqlen; i++)
+            if (dst && n + i < cap) dst[n + i] = src[i];
+        n += seqlen;
+        src += seqlen;
+    }
+}
+
+// Validate and skip a value of any shape (an unknown field's value, or an
+// array element the schema does not type), enforcing the depth limit as it
+// descends so the whole-document guarantee reaches subtrees the typed walk
+// never stores (issue #142). Returns 0 to bail.
+static int beans_json_stream_skip(
+        BeansJsonStreamCtx* ctx, unsigned char** pcur, uint64_t depth) {
+    if (depth > ctx->max_depth) return 0;
+    unsigned char* eof = ctx->eof;
+    unsigned char* cur = beans_json_stream_ws(ctx, *pcur);
+    if (cur >= eof) { *pcur = cur; return 0; }
+    unsigned char c = *cur;
+    yyjson_val v;
+    const char* msg;
+    unsigned char raw_end[1];
+    unsigned char* raw_ptr = raw_end;
+    unsigned char** pre = &raw_ptr;
+    if (c == '{') {
+        cur++;
+        cur = beans_json_stream_ws(ctx, cur);
+        if (cur < eof && *cur == '}') { *pcur = cur + 1; return 1; }
+        for (;;) {
+            cur = beans_json_stream_ws(ctx, cur);
+            if (cur >= eof || *cur != '"') { *pcur = cur; return 0; }
+            size_t klen;
+            if (!beans_json_stream_string(ctx, &cur, NULL, 0, &klen)) {
+                *pcur = cur; return 0;
+            }
+            cur = beans_json_stream_ws(ctx, cur);
+            if (cur >= eof || *cur != ':') { *pcur = cur; return 0; }
+            cur++;
+            if (!beans_json_stream_skip(ctx, &cur, depth + 1)) {
+                *pcur = cur; return 0;
+            }
+            cur = beans_json_stream_ws(ctx, cur);
+            if (cur >= eof) { *pcur = cur; return 0; }
+            if (*cur == ',') {
+                cur++;
+                if (ctx->flags & YYJSON_READ_ALLOW_TRAILING_COMMAS) {
+                    unsigned char* p2 = beans_json_stream_ws(ctx, cur);
+                    if (p2 < eof && *p2 == '}') { *pcur = p2 + 1; return 1; }
+                }
+                continue;
+            }
+            if (*cur == '}') { *pcur = cur + 1; return 1; }
+            *pcur = cur; return 0;
+        }
+    }
+    if (c == '[') {
+        cur++;
+        cur = beans_json_stream_ws(ctx, cur);
+        if (cur < eof && *cur == ']') { *pcur = cur + 1; return 1; }
+        for (;;) {
+            if (!beans_json_stream_skip(ctx, &cur, depth + 1)) {
+                *pcur = cur; return 0;
+            }
+            cur = beans_json_stream_ws(ctx, cur);
+            if (cur >= eof) { *pcur = cur; return 0; }
+            if (*cur == ',') {
+                cur++;
+                if (ctx->flags & YYJSON_READ_ALLOW_TRAILING_COMMAS) {
+                    unsigned char* p2 = beans_json_stream_ws(ctx, cur);
+                    if (p2 < eof && *p2 == ']') { *pcur = p2 + 1; return 1; }
+                }
+                continue;
+            }
+            if (*cur == ']') { *pcur = cur + 1; return 1; }
+            *pcur = cur; return 0;
+        }
+    }
+    if (c == '"') {
+        size_t slen;
+        if (!beans_json_stream_string(ctx, &cur, NULL, 0, &slen)) {
+            *pcur = cur; return 0;
+        }
+        *pcur = cur; return 1;
+    }
+    if (c == 't') {
+        if (!read_true(&cur, &v)) { *pcur = cur; return 0; }
+        *pcur = cur; return 1;
+    }
+    if (c == 'f') {
+        if (!read_false(&cur, &v)) { *pcur = cur; return 0; }
+        *pcur = cur; return 1;
+    }
+    if (c == 'n') {
+        if (read_null(&cur, &v)) { *pcur = cur; return 1; }
+        if ((ctx->flags & YYJSON_READ_ALLOW_INF_AND_NAN) &&
+            read_nan(&cur, pre, ctx->flags, &v)) { *pcur = cur; return 1; }
+        *pcur = cur; return 0;
+    }
+    if (char_is_num(c) ||
+        ((ctx->flags & YYJSON_READ_ALLOW_INF_AND_NAN) &&
+         (c == 'i' || c == 'I' || c == 'N'))) {
+        if (!read_num(&cur, pre, ctx->flags, &v, &msg)) { *pcur = cur; return 0; }
+        *pcur = cur; return 1;
+    }
+    *pcur = cur; return 0;
+}
+
+static int beans_json_stream_object(
+        BeansJsonStreamCtx* ctx, unsigned char** pcur,
+        const BeansJsonTypedSchema* schema, unsigned char* record,
+        uint64_t depth);
+
+static int beans_json_stream_list(
+        BeansJsonStreamCtx* ctx, unsigned char** pcur,
+        const BeansJsonTypedComplex* complex, unsigned char* target,
+        uint64_t list_depth);
+
+// Store the JSON value at *pcur (already past whitespace is NOT assumed) into
+// field `field_index` of `record`, at `value_depth`. Mirrors the DOM path's
+// store_direct/value_direct: null on an optional field is left as the record's
+// initialised (none) value, a boxed option allocates its box, scalars reuse the
+// exact integer and float checks, strings unescape through the non-zeroing
+// allocator, and structs and lists recurse. Any shape the field cannot take
+// returns 0 so the whole decode defers to the DOM path. Returns 1 on success.
+static int beans_json_stream_store(
+        BeansJsonStreamCtx* ctx, unsigned char** pcur,
+        const BeansJsonTypedSchema* schema, uint64_t field_index,
+        unsigned char* record, uint64_t value_depth) {
+    if (value_depth > ctx->max_depth) return 0;
+    const BeansJsonTypedField* field = &schema->fields[field_index];
+    const BeansJsonTypedComplex* complex = schema->complex
+        ? &schema->complex[field_index] : NULL;
+    unsigned char* eof = ctx->eof;
+    unsigned char* cur = beans_json_stream_ws(ctx, *pcur);
+    if (cur >= eof) { *pcur = cur; return 0; }
+    yyjson_val v;
+    const char* msg;
+    unsigned char raw_end[1];
+    unsigned char* raw_ptr = raw_end;
+    unsigned char** pre = &raw_ptr;
+
+    // A JSON null is only legal on an optional field, where it means the field
+    // keeps the "none" value init_record already wrote; presence stays unset.
+    if (*cur == 'n') {
+        unsigned char* probe = cur;
+        if (read_null(&probe, &v)) {
+            if (!(field->flags & BEANS_JSON_TYPED_OPTIONAL)) {
+                *pcur = probe; return 0; // null in a required field
+            }
+            *pcur = probe; return 1;
+        }
+    }
+
+    unsigned char* target = record + field->value_offset;
+    if (field->flags & BEANS_JSON_TYPED_BOXED_OPTION) {
+        if (!complex) { *pcur = cur; return 0; }
+        void* box = ctx->allocate(
+            (long long)complex->box_size, (long long)complex->box_meta);
+        memset(box, 0, (size_t)complex->box_size);
+        memcpy(record + field->value_offset, &box, sizeof(box));
+        target = (unsigned char*)box + complex->box_value_offset;
+    }
+
+    switch (field->kind) {
+        case BEANS_JSON_TYPED_BOOL: {
+            if (*cur == 't') { if (!read_true(&cur, &v)) { *pcur = cur; return 0; } }
+            else if (*cur == 'f') { if (!read_false(&cur, &v)) { *pcur = cur; return 0; } }
+            else { *pcur = cur; return 0; }
+            *target = yyjson_get_bool(&v) ? 1 : 0;
+            break;
+        }
+        case BEANS_JSON_TYPED_SINT:
+        case BEANS_JSON_TYPED_UINT: {
+            if (!(char_is_num(*cur) ||
+                  ((ctx->flags & YYJSON_READ_ALLOW_INF_AND_NAN) &&
+                   (*cur == 'i' || *cur == 'I' || *cur == 'N')))) {
+                *pcur = cur; return 0;
+            }
+            if (!read_num(&cur, pre, ctx->flags, &v, &msg)) { *pcur = cur; return 0; }
+            unsigned bits = (unsigned)(field->flags >> 8);
+            uint64_t integer = 0;
+            int result = beans_json_typed_integer(
+                &v, field->kind == BEANS_JSON_TYPED_UINT, bits, &integer);
+            if (result <= 0) { *pcur = cur; return 0; }
+            beans_json_typed_write_integer(target, integer, bits);
+            break;
+        }
+        case BEANS_JSON_TYPED_F32:
+        case BEANS_JSON_TYPED_F64: {
+            if (!(char_is_num(*cur) ||
+                  ((ctx->flags & YYJSON_READ_ALLOW_INF_AND_NAN) &&
+                   (*cur == 'i' || *cur == 'I' || *cur == 'N')))) {
+                *pcur = cur; return 0;
+            }
+            if (!read_num(&cur, pre, ctx->flags, &v, &msg)) { *pcur = cur; return 0; }
+            if (!yyjson_is_num(&v)) { *pcur = cur; return 0; }
+            double number = yyjson_get_num(&v);
+            if (field->kind == BEANS_JSON_TYPED_F32) {
+                float narrowed = (float)number;
+                if (!isfinite(narrowed)) { *pcur = cur; return 0; }
+                memcpy(target, &narrowed, sizeof(narrowed));
+            } else {
+                memcpy(target, &number, sizeof(number));
+            }
+            break;
+        }
+        case BEANS_JSON_TYPED_STRING: {
+            if (*cur != '"') { *pcur = cur; return 0; }
+            unsigned char* start = cur;
+            // The bridge cannot touch a block's length word after the fact, so
+            // the unescaped length has to be known before the allocation. A
+            // measure pass validates and counts; the second pass writes the
+            // bytes. Both are the same deterministic scan, so a string the
+            // first pass accepts the second cannot reject.
+            size_t len;
+            unsigned char* probe = start;
+            if (!beans_json_stream_string(ctx, &probe, NULL, 0, &len)) {
+                *pcur = probe; return 0;
+            }
+            char* text = (char*)ctx->alloc_bytes(
+                (long long)len + 1, (long long)len << 3);
+            size_t len2;
+            unsigned char* c2 = start;
+            if (!beans_json_stream_string(ctx, &c2, (unsigned char*)text,
+                                          len, &len2)) {
+                ctx->release(text);
+                *pcur = c2; return 0;
+            }
+            text[len] = '\0';
+            memcpy(target, &text, sizeof(text));
+            cur = c2;
+            break;
+        }
+        case BEANS_JSON_TYPED_STRUCT: {
+            if (!complex || !complex->child_schema) { *pcur = cur; return 0; }
+            if (*cur != '{') { *pcur = cur; return 0; }
+            beans_json_typed_init_record(complex->child_schema, target);
+            if (!beans_json_stream_object(
+                    ctx, &cur, complex->child_schema, target, value_depth)) {
+                *pcur = cur; return 0;
+            }
+            break;
+        }
+        case BEANS_JSON_TYPED_LIST: {
+            if (*cur != '[') { *pcur = cur; return 0; }
+            if (!complex) { *pcur = cur; return 0; }
+            int r = beans_json_stream_list(ctx, &cur, complex, target, value_depth);
+            if (!r) { *pcur = cur; return 0; }
+            break;
+        }
+        default:
+            *pcur = cur; return 0;
+    }
+
+    if (field->presence_offset != UINT64_MAX)
+        record[field->presence_offset] = 1;
+    *pcur = cur;
+    return 1;
+}
+
+// Decode a schema object at *pcur (which is at '{') into `record`. `obj_depth`
+// is the object's own depth; its field values sit at obj_depth + 1. Mirrors
+// beans_json_typed_object_direct: the ordered fast path for keys in schema
+// order, a hash lookup otherwise, a seen-set for duplicates, unknown fields
+// skipped only where the schema allows them, and a required-field sweep at the
+// end. Any of those checks failing returns 0 so the decode defers to the DOM
+// path. Returns 1 on success.
+static int beans_json_stream_object(
+        BeansJsonStreamCtx* ctx, unsigned char** pcur,
+        const BeansJsonTypedSchema* schema, unsigned char* record,
+        uint64_t obj_depth) {
+    if (obj_depth > ctx->max_depth) return 0;
+    unsigned char* eof = ctx->eof;
+    unsigned char* cur = *pcur; // at '{'
+    cur++;
+
+    size_t seen_words = ((size_t)schema->field_count + 63) / 64;
+    uint64_t local_seen[2];
+    uint64_t* seen = seen_words <= 2 ? local_seen :
+        (uint64_t*)malloc(seen_words * sizeof(uint64_t));
+    if (!seen) { *pcur = cur; return 0; }
+    memset(seen, 0, seen_words * sizeof(uint64_t));
+    uint64_t expected = 0;
+    int ordered = 1;
+    int ok = 1;
+
+    cur = beans_json_stream_ws(ctx, cur);
+    if (cur < eof && *cur == '}') { cur++; goto missing_sweep; }
+
+    for (;;) {
+        cur = beans_json_stream_ws(ctx, cur);
+        if (cur >= eof || *cur != '"') { ok = 0; goto done; }
+        // Read the key into a scratch buffer long enough for any realistic
+        // field name; a key longer than that cannot name a field, and is left
+        // for the unknown path (which still validates it).
+        unsigned char key[512];
+        size_t key_len;
+        unsigned char* kcur = cur;
+        if (!beans_json_stream_string(ctx, &kcur, key, sizeof(key), &key_len)) {
+            ok = 0; goto done;
+        }
+        cur = kcur;
+        cur = beans_json_stream_ws(ctx, cur);
+        if (cur >= eof || *cur != ':') { ok = 0; goto done; }
+        cur++;
+
+        uint64_t index;
+        int known = 0;
+        const BeansJsonTypedField* expected_field =
+            expected < schema->field_count ? &schema->fields[expected] : NULL;
+        if (ordered && key_len <= sizeof(key) && expected_field &&
+            expected_field->primary_name_len == key_len &&
+            beans_json_name_eq(expected_field->primary_name, key, key_len)) {
+            index = expected++;
+            known = 1;
+        } else {
+            if (ordered) {
+                memset(seen, 0, seen_words * sizeof(uint64_t));
+                for (uint64_t prior = 0; prior < expected; prior++)
+                    seen[prior >> 6] |= UINT64_C(1) << (prior & 63);
+                ordered = 0;
+            }
+            const BeansJsonTypedKey* key_entry = key_len <= sizeof(key)
+                ? beans_json_typed_find_key(schema, key, key_len) : NULL;
+            if (!key_entry) {
+                if (!(schema->flags & BEANS_JSON_TYPED_ALLOW_UNKNOWN)) {
+                    ok = 0; goto done; // unknown field, schema forbids it
+                }
+                if (!beans_json_stream_skip(ctx, &cur, obj_depth + 1)) {
+                    ok = 0; goto done;
+                }
+                goto after_value;
+            }
+            index = key_entry->field - 1;
+            uint64_t bit = UINT64_C(1) << (index & 63);
+            if (seen[index >> 6] & bit) { ok = 0; goto done; } // duplicate
+            seen[index >> 6] |= bit;
+            known = 1;
+        }
+        (void)known;
+        ctx->req[7] = index;
+        if (!beans_json_stream_store(
+                ctx, &cur, schema, index, record, obj_depth + 1)) {
+            ok = 0; goto done;
+        }
+
+    after_value:
+        cur = beans_json_stream_ws(ctx, cur);
+        if (cur >= eof) { ok = 0; goto done; }
+        if (*cur == ',') {
+            cur++;
+            if (ctx->flags & YYJSON_READ_ALLOW_TRAILING_COMMAS) {
+                unsigned char* p2 = beans_json_stream_ws(ctx, cur);
+                if (p2 < eof && *p2 == '}') { cur = p2 + 1; goto missing_sweep; }
+            }
+            continue;
+        }
+        if (*cur == '}') { cur++; goto missing_sweep; }
+        ok = 0; goto done;
+    }
+
+missing_sweep:
+    {
+        uint64_t first = ordered ? expected : 0;
+        for (uint64_t i = first; i < schema->field_count; i++) {
+            if (!ordered && (seen[i >> 6] & (UINT64_C(1) << (i & 63)))) continue;
+            const BeansJsonTypedField* f = &schema->fields[i];
+            if (f->flags & (BEANS_JSON_TYPED_OPTIONAL |
+                            BEANS_JSON_TYPED_DEFAULT |
+                            BEANS_JSON_TYPED_IGNORED)) continue;
+            ctx->req[7] = i;
+            ok = 0; goto done; // a required field was missing
+        }
+    }
+
+done:
+    if (seen != local_seen) free(seen);
+    *pcur = cur;
+    return ok;
+}
+
+// Decode a JSON array at *pcur (which is at '[') into a typed List stored at
+// `target`. `list_depth` is the array's own depth; its elements sit at
+// list_depth + 1. The element count is not known in advance, so the array is
+// measured once (validating and depth-checking every element) to size the one
+// list allocation, then decoded. Returns 1 on success, 0 to defer.
+static int beans_json_stream_list(
+        BeansJsonStreamCtx* ctx, unsigned char** pcur,
+        const BeansJsonTypedComplex* complex, unsigned char* target,
+        uint64_t list_depth) {
+    if (list_depth > ctx->max_depth) return 0;
+    if (!ctx->new_list || complex->element_size == 0) return 0;
+    unsigned char* eof = ctx->eof;
+    unsigned char* cur = *pcur; // at '['
+
+    // Count pass: measure the elements without storing anything.
+    size_t count = 0;
+    {
+        unsigned char* p = cur + 1;
+        p = beans_json_stream_ws(ctx, p);
+        if (p < eof && *p == ']') {
+            // empty array
+        } else {
+            for (;;) {
+                if (!beans_json_stream_skip(ctx, &p, list_depth + 1)) {
+                    *pcur = p; return 0;
+                }
+                count++;
+                p = beans_json_stream_ws(ctx, p);
+                if (p >= eof) { *pcur = p; return 0; }
+                if (*p == ',') {
+                    p++;
+                    if (ctx->flags & YYJSON_READ_ALLOW_TRAILING_COMMAS) {
+                        unsigned char* p2 = beans_json_stream_ws(ctx, p);
+                        if (p2 < eof && *p2 == ']') break;
+                    }
+                    continue;
+                }
+                if (*p == ']') break;
+                *pcur = p; return 0;
+            }
+        }
+    }
+    if (count > INT64_MAX) return 0;
+
+    void* list = ctx->new_list(
+        beans_json_typed_storage_stride(complex->element_size, complex->element_kind),
+        (long long)complex->element_pointer_mask,
+        (long long)count);
+    memcpy(target, &list, sizeof(list));
+    BeansJsonListPrefix* output = (BeansJsonListPrefix*)list;
+    size_t stride = beans_json_typed_list_stride(output);
+
+    // Decode pass.
+    cur++; // past '['
+    cur = beans_json_stream_ws(ctx, cur);
+    if (cur < eof && *cur == ']') { *pcur = cur + 1; return 1; }
+    size_t index = 0;
+    for (;;) {
+        if (index >= count) return 0; // count and decode disagree; defer
+        unsigned char* destination = (unsigned char*)output->data + index * stride;
+        memset(destination, 0, (size_t)complex->element_size);
+        output->len = (uint64_t)(index + 1);
+        uint64_t element_depth = list_depth + 1;
+        if (element_depth > ctx->max_depth) return 0;
+        cur = beans_json_stream_ws(ctx, cur);
+        if (cur >= eof) return 0;
+        if (complex->element_kind == BEANS_JSON_TYPED_STRUCT) {
+            if (*cur != '{' || !complex->element_schema) return 0;
+            beans_json_typed_init_record(complex->element_schema, destination);
+            if (!beans_json_stream_object(
+                    ctx, &cur, complex->element_schema, destination,
+                    element_depth)) return 0;
+        } else if (complex->element_kind == BEANS_JSON_TYPED_STRING) {
+            if (*cur != '"') return 0;
+            size_t len;
+            unsigned char* probe = cur;
+            if (!beans_json_stream_string(ctx, &probe, NULL, 0, &len)) return 0;
+            char* text = (char*)ctx->alloc_bytes(
+                (long long)len + 1, (long long)len << 3);
+            size_t len2;
+            unsigned char* c2 = cur;
+            if (!beans_json_stream_string(ctx, &c2, (unsigned char*)text,
+                                          len, &len2)) {
+                ctx->release(text); return 0;
+            }
+            text[len] = '\0';
+            memcpy(destination, &text, sizeof(text));
+            cur = c2;
+        } else {
+            // A scalar element: read the token and reuse the exact DOM checks.
+            yyjson_val v;
+            const char* msg;
+            unsigned char raw_end[1];
+            unsigned char* raw_ptr = raw_end;
+            unsigned char** pre = &raw_ptr;
+            uint64_t k = complex->element_kind;
+            if (k == BEANS_JSON_TYPED_BOOL) {
+                if (*cur == 't') { if (!read_true(&cur, &v)) return 0; }
+                else if (*cur == 'f') { if (!read_false(&cur, &v)) return 0; }
+                else return 0;
+                *destination = yyjson_get_bool(&v) ? 1 : 0;
+            } else if (k == BEANS_JSON_TYPED_SINT || k == BEANS_JSON_TYPED_UINT) {
+                if (!(char_is_num(*cur) ||
+                      ((ctx->flags & YYJSON_READ_ALLOW_INF_AND_NAN) &&
+                       (*cur == 'i' || *cur == 'I' || *cur == 'N')))) return 0;
+                if (!read_num(&cur, pre, ctx->flags, &v, &msg)) return 0;
+                unsigned bits = (unsigned)(complex->element_size * 8);
+                uint64_t integer = 0;
+                int r = beans_json_typed_integer(
+                    &v, k == BEANS_JSON_TYPED_UINT, bits, &integer);
+                if (r <= 0) return 0;
+                beans_json_typed_write_integer(destination, integer, bits);
+            } else if (k == BEANS_JSON_TYPED_F32 || k == BEANS_JSON_TYPED_F64) {
+                if (!(char_is_num(*cur) ||
+                      ((ctx->flags & YYJSON_READ_ALLOW_INF_AND_NAN) &&
+                       (*cur == 'i' || *cur == 'I' || *cur == 'N')))) return 0;
+                if (!read_num(&cur, pre, ctx->flags, &v, &msg)) return 0;
+                if (!yyjson_is_num(&v)) return 0;
+                double number = yyjson_get_num(&v);
+                if (k == BEANS_JSON_TYPED_F32) {
+                    float narrowed = (float)number;
+                    if (!isfinite(narrowed)) return 0;
+                    memcpy(destination, &narrowed, sizeof(narrowed));
+                } else {
+                    memcpy(destination, &number, sizeof(number));
+                }
+            } else {
+                return 0;
+            }
+        }
+        index++;
+        cur = beans_json_stream_ws(ctx, cur);
+        if (cur >= eof) return 0;
+        if (*cur == ',') {
+            cur++;
+            if (ctx->flags & YYJSON_READ_ALLOW_TRAILING_COMMAS) {
+                unsigned char* p2 = beans_json_stream_ws(ctx, cur);
+                if (p2 < eof && *p2 == ']') { *pcur = p2 + 1; return 1; }
+            }
+            continue;
+        }
+        if (*cur == ']') { *pcur = cur + 1; return 1; }
+        return 0;
+    }
+}
+
+// Read-once lever: BEANS_JSON_NO_DIRECT_DECODE routes every typed decode
+// through the DOM path, the way BEANS_JSON_NO_DIRECT does for the writer. Set
+// before main, read-only afterwards, so no atomics and no getenv on the hot
+// path.
+static int beans_json_stream_disabled;
+__attribute__((constructor)) static void beans_json_stream_setup(void) {
+    beans_json_stream_disabled = getenv("BEANS_JSON_NO_DIRECT_DECODE") != NULL;
+}
+
+// The streaming decode. Same request layout as beans_enc_json_typed_decode_dom,
+// and it defers to that function for any document it will not accept, so the
+// error code and byte offset it reports are exactly the reference's. req[4] is
+// set to 1 when the stream engine finished the decode and 0 when it deferred.
+BEANS_ENC_API long long beans_enc_json_typed_decode_stream(
+        unsigned char* src, uint64_t* req) {
+    const BeansJsonTypedSchema* schema =
+        (const BeansJsonTypedSchema*)(uintptr_t)req[2];
+    BeansJsonNewListFn new_list = (BeansJsonNewListFn)(uintptr_t)req[8];
+    BeansJsonAllocFn allocate = (BeansJsonAllocFn)(uintptr_t)req[10];
+    BeansJsonAllocFn alloc_bytes = (BeansJsonAllocFn)(uintptr_t)req[9];
+    if (!alloc_bytes) alloc_bytes = allocate;
+    BeansJsonReleaseFn release = (BeansJsonReleaseFn)(uintptr_t)req[11];
+    req[4] = 0;
+
+    // Anything the reference would reject before the walk — a broken schema, an
+    // empty document — is left to it, so it reports the same error identically.
+    size_t len = (size_t)req[0];
+    if (!schema || !schema->keys || !schema->fields || !allocate || !release ||
+        schema->record_size == 0 || len == 0) {
+        return beans_enc_json_typed_decode_dom(src, req);
+    }
+
+    uint64_t options = req[1];
+    yyjson_read_flag flags = YYJSON_READ_NOFLAG;
+    if (options & BEANS_JSON_READ_ALLOW_COMMENTS)
+        flags |= YYJSON_READ_ALLOW_COMMENTS;
+    if (options & BEANS_JSON_READ_ALLOW_TRAILING_COMMAS)
+        flags |= YYJSON_READ_ALLOW_TRAILING_COMMAS;
+    if (options & BEANS_JSON_READ_ALLOW_INF_AND_NAN)
+        flags |= YYJSON_READ_ALLOW_INF_AND_NAN;
+    uint64_t max_depth = options >> 8;
+
+    // The scanner needs four bytes of readable zero padding after the input so
+    // the vendored number, string and unicode readers stay in bounds — exactly
+    // yyjson's own contract. An in-situ input already carries it (the emitter
+    // pads the buffer); a borrowed input is copied once to add it, which is the
+    // copy the DOM path makes for a borrowed input anyway.
+    int insitu = (options & BEANS_JSON_READ_INSITU) != 0;
+    unsigned char* work = src;
+    unsigned char* work_alloc = NULL;
+    if (!insitu) {
+        work_alloc = (unsigned char*)malloc(len + YYJSON_PADDING_SIZE);
+        if (!work_alloc) return beans_enc_json_typed_decode_dom(src, req);
+        memcpy(work_alloc, src, len);
+        memset(work_alloc + len, 0, YYJSON_PADDING_SIZE);
+        work = work_alloc;
+    }
+
+    BeansJsonStreamCtx ctx = {
+        new_list, allocate, alloc_bytes, release, req, flags, max_depth,
+        work + len,
+    };
+    req[5] = 0;
+    req[7] = UINT64_MAX;
+
+    unsigned char* cur = beans_json_stream_ws(&ctx, work);
+    int root_array = (schema->flags & BEANS_JSON_TYPED_ROOT_ARRAY) != 0;
+    int ok = 1;
+    uint64_t count = 0;
+    void* list = NULL;
+
+    if (max_depth == 0) ok = 0; // the whole-document depth policy: 0 refuses all
+
+    if (ok && root_array) {
+        if (cur >= ctx.eof || *cur != '[') {
+            ok = 0;
+        } else {
+            // Count the top-level records to size the list once.
+            unsigned char* p = cur + 1;
+            p = beans_json_stream_ws(&ctx, p);
+            if (!(p < ctx.eof && *p == ']')) {
+                for (;;) {
+                    if (!beans_json_stream_skip(&ctx, &p, 2)) { ok = 0; break; }
+                    count++;
+                    p = beans_json_stream_ws(&ctx, p);
+                    if (p >= ctx.eof) { ok = 0; break; }
+                    if (*p == ',') {
+                        p++;
+                        if (flags & YYJSON_READ_ALLOW_TRAILING_COMMAS) {
+                            unsigned char* p2 = beans_json_stream_ws(&ctx, p);
+                            if (p2 < ctx.eof && *p2 == ']') break;
+                        }
+                        continue;
+                    }
+                    if (*p == ']') break;
+                    ok = 0; break;
+                }
+            }
+            if (ok && count > INT64_MAX) ok = 0;
+            if (ok) {
+                list = new_list(
+                    beans_json_typed_storage_stride(
+                        schema->record_size, BEANS_JSON_TYPED_STRUCT),
+                    (long long)schema->pointer_mask, (long long)count);
+                req[3] = (uint64_t)(uintptr_t)list;
+                BeansJsonListPrefix* output = (BeansJsonListPrefix*)list;
+                size_t stride = beans_json_typed_list_stride(output);
+                cur++; // past '['
+                cur = beans_json_stream_ws(&ctx, cur);
+                size_t index = 0;
+                if (!(cur < ctx.eof && *cur == ']')) {
+                    for (;;) {
+                        if (index >= count) { ok = 0; break; }
+                        unsigned char* record =
+                            (unsigned char*)output->data + index * stride;
+                        beans_json_typed_init_record(schema, record);
+                        output->len = (uint64_t)(index + 1);
+                        cur = beans_json_stream_ws(&ctx, cur);
+                        if (cur >= ctx.eof || *cur != '{') { ok = 0; break; }
+                        if (!beans_json_stream_object(
+                                &ctx, &cur, schema, record, 2)) { ok = 0; break; }
+                        index++;
+                        cur = beans_json_stream_ws(&ctx, cur);
+                        if (cur >= ctx.eof) { ok = 0; break; }
+                        if (*cur == ',') {
+                            cur++;
+                            if (flags & YYJSON_READ_ALLOW_TRAILING_COMMAS) {
+                                unsigned char* p2 = beans_json_stream_ws(&ctx, cur);
+                                if (p2 < ctx.eof && *p2 == ']') { cur = p2 + 1; break; }
+                            }
+                            continue;
+                        }
+                        if (*cur == ']') { cur++; break; }
+                        ok = 0; break;
+                    }
+                } else {
+                    cur++;
+                }
+                if (ok && index != count) ok = 0;
+            }
+            if (ok) {
+                cur = beans_json_stream_ws(&ctx, cur);
+                if (cur != ctx.eof) ok = 0; // trailing content after the array
+            }
+            if (!ok && list) { release(list); req[3] = 0; }
+        }
+    } else if (ok) {
+        if (cur >= ctx.eof || *cur != '{') {
+            ok = 0;
+        } else {
+            unsigned char* record = (unsigned char*)(uintptr_t)req[3];
+            beans_json_typed_init_record(schema, record);
+            if (!beans_json_stream_object(&ctx, &cur, schema, record, 1)) {
+                ok = 0;
+            } else {
+                cur = beans_json_stream_ws(&ctx, cur);
+                if (cur != ctx.eof) ok = 0; // trailing content after the object
+            }
+            count = 1;
+            if (!ok) beans_json_typed_release_record(schema, record, release);
+        }
+    }
+
+    if (work_alloc) free(work_alloc);
+    if (!ok) return beans_enc_json_typed_decode_dom(src, req);
+
+    req[5] = 0;
+    req[6] = count;
+    req[7] = UINT64_MAX;
+    req[4] = 1; // the stream engine finished this decode
+    return BEANS_ENC_OK;
+}
+
+// Test observability. The last decode's telemetry, stashed so a differential
+// test can read what the request buffer held: whether the stream engine
+// finished (index 0), the status (1), and the error code, byte offset and
+// field index the caller would have raised (2..4). Written on every decode —
+// a handful of stores against the thousands of operations a decode already
+// runs — and read only by beans_enc_json_decode_probe, which nothing but a
+// test calls. Not thread-safe on purpose: the differential fuzz is one thread.
+static uint64_t beans_json_decode_probe_data[5];
+
+BEANS_ENC_API long long beans_enc_json_typed_decode_direct(
+        unsigned char* src, uint64_t* req) {
+    long long status;
+    if (beans_json_stream_disabled) {
+        req[4] = 0; // the forced-DOM path runs no stream engine
+        status = beans_enc_json_typed_decode_dom(src, req);
+    } else {
+        status = beans_enc_json_typed_decode_stream(src, req);
+    }
+    beans_json_decode_probe_data[0] = req[4];
+    beans_json_decode_probe_data[1] = (uint64_t)status;
+    beans_json_decode_probe_data[2] = req[5];
+    beans_json_decode_probe_data[3] = req[6];
+    beans_json_decode_probe_data[4] = req[7];
+    return status;
+}
+
+// out[0]=stream engine finished, out[1]=status, out[2]=error code,
+// out[3]=byte offset (parse errors) or record count, out[4]=field index.
+BEANS_ENC_API long long beans_enc_json_decode_probe(uint64_t* out) {
+    for (int i = 0; i < 5; i++) out[i] = beans_json_decode_probe_data[i];
+    return 0;
 }
 
 // req[0]=text length, req[1]=yyjson read flags, req[2]=schema pointer
