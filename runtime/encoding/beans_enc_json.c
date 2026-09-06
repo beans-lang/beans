@@ -28,9 +28,31 @@
 // ships. These headers are compiler intrinsics with no runtime library behind
 // them, so encoding_symbols.sh still sees the bridge resolve against libc
 // alone. The 8-byte SWAR path stays as the fallback and for the tail.
-#if defined(__ARM_NEON)
+//
+// __aarch64__, not __ARM_NEON: clang defines __ARM_NEON for
+// armv7-unknown-linux-gnueabihf as well — it is a supported target and its
+// default FPU is NEON — but vmaxvq_u8 and the other across-vector reductions
+// the scan uses are AArch64 instructions arm32 does not have, so the vector
+// block does not compile there. Guarding on the feature macro alone made a
+// program whose only sin was importing std.encoding.json fail its arm32 build
+// with a C error naming this file. The byte-order test is here for the same
+// reason the SWAR block has one: the lane index comes from counting trailing
+// zeros of the flag vector read as two 64-bit words, which is the first
+// flagged byte only on a little-endian machine.
+//
+// One decision, named once: the include below and the scan itself both read
+// it, so the header and the code that needs it cannot drift apart.
+#if defined(__aarch64__) && defined(__ARM_NEON) && \
+    defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__ && \
+    !defined(BEANS_JSON_SCALAR_SCAN)
+#define BEANS_JSON_SCAN_NEON 1
+#elif defined(__SSE2__) && !defined(BEANS_JSON_SCALAR_SCAN)
+#define BEANS_JSON_SCAN_SSE2 1
+#endif
+
+#if defined(BEANS_JSON_SCAN_NEON)
 #include <arm_neon.h>
-#elif defined(__SSE2__)
+#elif defined(BEANS_JSON_SCAN_SSE2)
 #include <emmintrin.h>
 #endif
 
@@ -1452,7 +1474,10 @@ static int beans_json_direct_sint(BeansJsonDirect* out, int64_t value) {
 // lever for the direct writer. It never affects output, only which scan runs.
 static size_t beans_json_plain_span(const unsigned char* src, size_t len) {
     size_t at = 0;
-#if defined(__ARM_NEON) && !defined(BEANS_JSON_SCALAR_SCAN)
+// BEANS_JSON_SCAN_NEON / _SSE2 are decided beside the intrinsic includes at
+// the top of this file; anything they leave out takes the SWAR path below,
+// then the scalar one.
+#if defined(BEANS_JSON_SCAN_NEON)
     // Sixteen bytes at a time. A byte ends the run if it is below 0x20, has its
     // high bit set (start or continuation of a multibyte sequence), or is a
     // quote or a backslash — byte for byte the classification the scalar loop
@@ -1482,7 +1507,7 @@ static size_t beans_json_plain_span(const unsigned char* src, size_t len) {
             return at + 8 + (size_t)(__builtin_ctzll(high) >> 3);
         }
     }
-#elif defined(__SSE2__) && !defined(BEANS_JSON_SCALAR_SCAN)
+#elif defined(BEANS_JSON_SCAN_SSE2)
     {
         const __m128i ctrl = _mm_set1_epi8(0x1F);   // c <= 0x1F  <=>  c < 0x20
         const __m128i sign = _mm_set1_epi8((char)0x80);

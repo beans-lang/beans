@@ -148,6 +148,120 @@ if cmp -s "$tmp/bridge_vector.s" "$tmp/bridge_scalar.s"; then
 fi
 echo "ok JSON escape scan compiles a 16-byte vector path"
 
+# ...and the vector path must be the one the host actually took, not a block
+# the optimiser folded away. The across-lane reduction is one instruction and
+# it is there only when the scan compiled: umaxv on AArch64, pmovmskb on
+# x86-64. The scalar build has neither.
+case "$(uname -m)" in
+    arm64|aarch64) reduction="umaxv" ;;
+    x86_64|amd64)  reduction="pmovmskb" ;;
+    *)             reduction="" ;;
+esac
+if [[ -n "$reduction" ]]; then
+    grep -q "$reduction" "$tmp/bridge_vector.s"
+    if grep -q "$reduction" "$tmp/bridge_scalar.s"; then
+        echo "$reduction survives BEANS_JSON_SCALAR_SCAN — the lever is broken" >&2
+        exit 1
+    fi
+    echo "ok JSON escape scan emits $reduction on $(uname -m)"
+else
+    echo "  skip the reduction-instruction check: no mapping for $(uname -m)"
+fi
+
+# ...and it must be selected only where its instructions exist. arm32 is a
+# supported target (armv7-unknown-linux-gnueabihf, and the two ARMv6 triples),
+# clang defines __ARM_NEON for the ARMv7 one because its default FPU is NEON,
+# and the across-vector reduction the scan uses is an AArch64 instruction that
+# arm32 does not have. A scan guarded on the feature macro alone compiles here
+# and fails there, with a C error naming this bridge, on a program whose only
+# sin is importing std.encoding.json — examples/zero_copy_json.b, which the
+# armv7 lane of linux-cross cross-builds and runs under qemu on every pull
+# request.
+#
+# Three checks, so no one of them can rot into a tautology. Ground truth
+# first: the bridge itself, put through a compiler aimed at each arm32 triple
+# the release ships. That needs a set of C headers the cross target can parse
+# — the macOS SDK's do, an installed armhf sysroot does, a plain x86-64 glibc
+# /usr/include does not — and the probe below is what decides, rather than a
+# guess about the host. When no header root parses, this leg says so out loud
+# instead of vanishing; the armv7 lane of linux-cross still compiles the
+# bridge for real, against a genuine libc6-dev-armhf-cross, on every pull
+# request. Then the two checks that keep it from rotting: the guard in the
+# source has to name the architecture, and the intrinsic really has to still
+# be absent on arm32 while __ARM_NEON is still set there.
+arm_headers=""
+{
+    printf '#include <string.h>\n#include <stdlib.h>\n#include <stdio.h>\n'
+    printf '#include <math.h>\nint probe(void) { return 0; }\n'
+} >"$tmp/arm_headers.c"
+sdk_include=""
+if command -v xcrun >/dev/null 2>&1; then
+    sdk_path=$(xcrun --show-sdk-path 2>/dev/null || true)
+    [[ -n "$sdk_path" ]] && sdk_include="$sdk_path/usr/include"
+fi
+for root in "$sdk_include" /usr/arm-linux-gnueabihf/include \
+            /usr/arm-linux-gnueabi/include /usr/include; do
+    [[ -n "$root" && -d "$root" ]] || continue
+    if clang --target=armv7-unknown-linux-gnueabihf -fsyntax-only \
+            -isystem "$root" "$tmp/arm_headers.c" 2>/dev/null; then
+        arm_headers="$root"
+        break
+    fi
+done
+if [[ -n "$arm_headers" ]]; then
+    for triple in armv7-unknown-linux-gnueabihf arm-unknown-linux-gnueabi \
+                  arm-unknown-linux-gnueabihf; do
+        # An implicit declaration is the shape this bug takes. Clang has made
+        # that an error for years; say so anyway, so a laxer front end cannot
+        # turn the failure into a warning here and a link error later.
+        clang --target="$triple" -fsyntax-only \
+            -Werror=implicit-function-declaration \
+            -Wno-tautological-constant-out-of-range-compare \
+            -isystem "$arm_headers" runtime/encoding/beans_enc_json.c
+    done
+    echo "ok JSON bridge compiles for arm32 (headers: $arm_headers)"
+else
+    echo "  skip the arm32 bridge compile: no C headers on this host parse" \
+         "with --target=armv7-unknown-linux-gnueabihf"
+fi
+python3 - "$PWD/runtime/encoding/beans_enc_json.c" <<'SCANGUARD'
+import sys
+text = open(sys.argv[1], encoding="utf-8").read()
+mark = "#define BEANS_JSON_SCAN_NEON"
+if mark not in text:
+    sys.exit("the bridge no longer defines BEANS_JSON_SCAN_NEON: the NEON "
+             "scan has to stay behind one named, architecture-guarded macro "
+             "so this check can read the guard")
+at = text.index(mark)
+guard = text[text.rindex("#if", 0, at):at]
+if "__aarch64__" not in guard:
+    sys.exit("BEANS_JSON_SCAN_NEON is not guarded on __aarch64__: " + guard)
+if "BEANS_JSON_SCAN_NEON" not in text[text.index("beans_json_plain_span"):]:
+    sys.exit("the escape scan no longer reads BEANS_JSON_SCAN_NEON")
+SCANGUARD
+cat >"$tmp/neon_reduce.c" <<'NEONPROBE'
+#include <arm_neon.h>
+unsigned probe(uint8x16_t v) { return vmaxvq_u8(v); }
+NEONPROBE
+if ! clang --target=aarch64-unknown-linux-gnu -ffreestanding -O2 -c \
+        "$tmp/neon_reduce.c" -o "$tmp/neon_reduce.a64.o" 2>/dev/null; then
+    echo "vmaxvq_u8 does not compile for aarch64 — the scan probe is broken" >&2
+    exit 1
+fi
+armv7_neon=$(printf '' | clang --target=armv7-unknown-linux-gnueabihf -dM -E - \
+    2>/dev/null | grep -c '^#define __ARM_NEON 1$' || true)
+if [[ "$armv7_neon" != 1 ]]; then
+    echo "clang no longer defines __ARM_NEON for armv7 — revisit the scan guard" >&2
+    exit 1
+fi
+if clang --target=armv7-unknown-linux-gnueabihf -ffreestanding -O2 -c \
+        "$tmp/neon_reduce.c" -o "$tmp/neon_reduce.arm32.o" 2>/dev/null; then
+    echo "vmaxvq_u8 now compiles for arm32 — the scan guard can be widened" >&2
+    exit 1
+fi
+
+echo "ok JSON escape scan takes its vector path only on AArch64"
+
 ./build/beansc build test/cases/encoding_json_typed_options.b \
     -o "$tmp/encoding_json_typed_options" >/dev/null
 "$tmp/encoding_json_typed_options" \
