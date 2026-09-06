@@ -48,6 +48,22 @@ if [[ "$simd_fnv" != "$scalar_fnv" ]]; then
     exit 1
 fi
 
+# What encode_into buys over the encode-then-copy shape a server takes without
+# it, on the same document and the same buffer. Not a floor — the saving is a
+# fraction of one route's time and the box it is measured on is shared — but
+# the two numbers are taken back to back on one binary, so the gap between
+# them is the string and its copies and nothing else.
+echo "== encode + copy into a buffer, against encode_into =="
+records_copy=$(ROUNDS="$rounds" MODE=copy \
+    build/bench_json_encode_records_simd)
+echo "  encode+copy: $records_copy"
+echo "  encode_into: $records_simd"
+copy_fnv=$(sed -E 's/.*fnv1a64=([0-9]+).*/\1/' <<<"$records_copy")
+if [[ "$copy_fnv" != "$simd_fnv" ]]; then
+    echo "encode and encode_into produced different bytes ($copy_fnv vs $simd_fnv)" >&2
+    exit 1
+fi
+
 echo "== string-heavy shape (the scan is the work here) =="
 strings_simd=$(MODE=strings ROUNDS="$rounds" build/bench_json_encode_records_simd)
 strings_scalar=$(MODE=strings ROUNDS="$rounds" \

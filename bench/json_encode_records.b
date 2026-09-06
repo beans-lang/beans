@@ -128,6 +128,32 @@ fn main() {
     for index: int in 0..count { rows.push(make_record(index)) }
     let size: int = json.encode_into(rows, buffer).expect("encode")
     let checksum: u64 = fnv1a64(buffer)
+
+    // What encode_into removes, on the same document and the same buffer: the
+    // shape a server takes without it. json.encode fills the writer's own
+    // malloc, copies that into a fresh Beans string, hands the string over,
+    // and the caller copies it again into the buffer the response is built
+    // in. MODE=copy times exactly that, so the pair of numbers is the cost of
+    // the string and its two copies and nothing else.
+    if mode == "copy" {
+        var copy_best: int = 0
+        for trial: int in 0..trials {
+            let started: int = time.monotonic_nanos()
+            for round: int in 0..rounds {
+                buffer.resize(0)
+                buffer.append_string(json.encode(rows).expect("encode"))
+                if buffer.len() != size {
+                    io.eprintln("encode byte count moved")
+                    os.exit(1)
+                }
+            }
+            let elapsed: int = time.monotonic_nanos() - started
+            if trial == 0 || elapsed < copy_best { copy_best = elapsed }
+        }
+        report("copy", size, rounds, copy_best, fnv1a64(buffer))
+        return
+    }
+
     var best: int = 0
     for trial: int in 0..trials {
         let started: int = time.monotonic_nanos()
