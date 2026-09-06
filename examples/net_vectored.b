@@ -191,10 +191,28 @@ fn head_framing() {
     }
 }
 
-// Keeps writing the pair from offset 0 until the socket refuses it, and
-// reports how it was refused. On its own thread the socket is blocking, so a
-// full buffer waits rather than answering "timeout" — the refusal that
-// matters here is the peer's, not the buffer's.
+// A peer that has gone away must come back as an error, never as a signal.
+// send() carries MSG_NOSIGNAL on Linux for exactly this; both vectored sends
+// have to carry it too, or a client that disconnects while a large response is
+// in flight takes the whole server down with it. macOS sets SO_NOSIGPIPE on the
+// socket and cannot show the difference, so this case is only a real test on
+// Linux — which is where CI runs it.
+//
+// One case for both forms, driven by `text_form`, and not a pair of twins.
+// Everything here except the send itself — how big the pair is, how many turns
+// the loop takes, and the pause between them — is platform contract rather
+// than anything about vectored writing, and a twin is precisely how that
+// contract gets lost. It did: the string form was written by copying this case
+// while it still sent a megabyte in 64 unpaused turns, the Bytes form learned
+// both rules before the two branches merged, and the copy inherited neither.
+// The result sent a megabyte at a vanished peer and hung the Wine gate for the
+// full 600-second cap, twice — once as the cross-compiled binary and once
+// under beansc.exe's own interpreter. A third form has to come through here.
+//
+// On its own thread the socket is blocking, so a full buffer waits rather than
+// answering "timeout" — the refusal that matters here is the peer's, not the
+// buffer's. Both buffers are non-empty, so the send this covers really is the
+// two-iovec one.
 //
 // The pair is small and the loop pauses between turns, and both of those are
 // load-bearing.
@@ -204,9 +222,13 @@ fn head_framing() {
 // waits for a peer that is never going to read again. Under Wine it does not
 // even end there — a plain Win32 `send` of a megabyte to a closed peer, built
 // with mingw and with no Beans runtime in it, never returns at all, while the
-// same program with a small buffer answers WSAECONNRESET. How much is being
+// same program with a small buffer answers WSAECONNRESET. Real Windows breaks
+// the send on the reset and the native Windows CI legs run either size to
+// completion, so this is Wine's alone; but test/windows.sh runs every example
+// under Wine, and a megabyte here stops that gate dead. How much is being
 // written has nothing to do with whether a vanished peer is an error or a
-// signal, so nothing here writes more than a socket buffer holds.
+// signal, so nothing here writes more than a socket buffer holds — in either
+// form, which is the half that was missing.
 //
 // Paused, because the reset is not synchronous with our write. The first
 // turn's bytes are what provoke it, and back-to-back turns can put a dozen
@@ -215,26 +237,10 @@ fn head_framing() {
 // answer arrives on the turn after the first, thirty runs out of thirty. Two
 // hundred turns of one millisecond is a fifth of a second of slack and 25 KB
 // at most, and running them out prints a line no golden accepts rather than
-// waiting forever.
-fn write_until_refused(stream: net.TcpStream, head: Bytes, body: Bytes) -> string {
-    for attempt: int in 0..200 {
-        match stream.write_vectored(head, body, 0) {
-            ok(_) => {}
-            err(problem) => { return "err {problem.kind}" }
-        }
-        time.sleep_nanos(1000000)
-    }
-    return "no error after 200 writes"
-}
-
-// A peer that has gone away must come back as an error, never as a signal.
-// send() carries MSG_NOSIGNAL on Linux for exactly this; the vectored send has
-// to carry it too, or a client that disconnects while a large response is in
-// flight takes the whole server down with it. macOS sets SO_NOSIGPIPE on the
-// socket and cannot show the difference, so this case is only a real test on
-// Linux — which is where CI runs it. Two buffers, both non-empty, so the send
-// this covers really is the two-iovec one.
-fn peer_closed() {
+// waiting forever. Unpaused, the two backends disagree instead of hanging —
+// the interpreter is slow enough to see the reset where the native binary
+// outruns it — which is the same defect wearing a different face.
+fn peer_closed_case(label: string, text_form: bool) {
     let listener: net.TcpListener = net.TcpListener.bind("127.0.0.1", 0)
         .expect("bind")
     let port: int = listener.port().expect("port")
@@ -244,12 +250,25 @@ fn peer_closed() {
     let closed: bool = client.close().expect("close")
     let head: Bytes = pattern(64)
     let body: Bytes = pattern(64)
+    let text: string = pattern_text(64)
     let writer: Thread<string> = thread.spawn(
-        fn() move(server, head, body) -> string {
-            return write_until_refused(server, head, body)
+        fn() move(server, head, body, text) -> string {
+            for attempt: int in 0..200 {
+                let outcome: Result<int> = if text_form {
+                    server.write_vectored_text(head, text, 0)
+                } else {
+                    server.write_vectored(head, body, 0)
+                }
+                match outcome {
+                    ok(_) => {}
+                    err(problem) => { return "err {problem.kind}" }
+                }
+                time.sleep_nanos(1000000)
+            }
+            return "no error after 200 writes"
         })
     let outcome: string = writer.join()
-    io.println("peer-closed: {outcome}")
+    io.println("{label}: {outcome}")
 }
 
 // The string twin of `pattern`: `count` printable-ASCII bytes whose value
@@ -347,36 +366,6 @@ fn resume_from_text(head_len: int, body_len: int, start: int) {
     io.println("text resume from {start} of {head_len}+{body_len}: bytes {arrived.len()} identical {identical} calls {calls}")
 }
 
-// The string form must refuse a vanished peer the same way: sendmsg with
-// MSG_NOSIGNAL, so a gone peer is `err reset` and never a signal.
-fn write_until_refused_text(stream: net.TcpStream, head: Bytes, body: string) -> string {
-    for attempt: int in 0..64 {
-        match stream.write_vectored_text(head, body, 0) {
-            ok(_) => {}
-            err(problem) => { return "err {problem.kind}" }
-        }
-    }
-    return "no error after 64 writes"
-}
-
-fn peer_closed_text() {
-    let listener: net.TcpListener = net.TcpListener.bind("127.0.0.1", 0)
-        .expect("bind")
-    let port: int = listener.port().expect("port")
-    let client: net.TcpStream = net.TcpStream.connect("127.0.0.1", port)
-        .expect("connect")
-    let server: net.TcpStream = listener.accept().expect("accept")
-    let closed: bool = client.close().expect("close")
-    let head: Bytes = pattern(64)
-    let body: string = pattern_text(1048576)
-    let writer: Thread<string> = thread.spawn(
-        fn() move(server, head, body) -> string {
-            return write_until_refused_text(server, head, body)
-        })
-    let outcome: string = writer.join()
-    io.println("peer-closed-text: {outcome}")
-}
-
 // Prints one call's outcome as either its count or its error kind, so a
 // corner's answer is compared as text between the two backends and against the
 // golden rather than only being asserted not to panic.
@@ -472,7 +461,7 @@ fn main() {
     resume_from(137, 4096, 4232)
     resume_from(137, 4096, 4233)
     head_framing()
-    peer_closed()
+    peer_closed_case("peer-closed", false)
     // The string body form. Same cases, driven the same thread way: a body of
     // 0 (the head is the whole write), 39 (one write), and one megabyte.
     case_text("text-empty-body", 64, 0)
@@ -488,7 +477,7 @@ fn main() {
     resume_from_text(137, 4096, 2000)
     resume_from_text(137, 4096, 4232)
     resume_from_text(137, 4096, 4233)
-    peer_closed_text()
+    peer_closed_case("peer-closed-text", true)
     // The offsets and the closed stream neither loop ever reaches, both forms.
     contract_corners()
 }
