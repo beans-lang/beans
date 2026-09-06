@@ -54,4 +54,31 @@ grep -q 'code=106' "$tmp/fuzz.stream.20260906"   # a missing required field
 grep -q 'code=2 pos=' "$tmp/fuzz.stream.20260906" # truncation, an EOF at an offset
 grep -q 'go😀odA' "$tmp/fuzz.stream.20260906"     # a surrogate pair unescaped
 
-echo "ok json stream decode: depth policy, differential fuzz"
+# 3. The JSONTestSuite corpus (github.com/nst/JSONTestSuite, MIT), vendored
+#    under test/corpus/jsontestsuite. Every y_/n_/i_ file, decoded as a
+#    permissive object shape and a permissive list shape, must give the same
+#    accept/reject verdict and the same error position on the stream path and
+#    the DOM path, and the stream engine must have decoded every accepted file.
+echo "checking the stream path and the DOM path agree over JSONTestSuite"
+corpus_dir=test/corpus/jsontestsuite
+corpus_files=$(find "$corpus_dir" -name '*.json' | wc -l | tr -d ' ')
+if [[ "$corpus_files" -lt 300 ]]; then
+    echo "JSONTestSuite corpus is missing ($corpus_files files under $corpus_dir)" >&2
+    exit 1
+fi
+"$beansc" build test/cases/json_stream_corpus_runner.b -o "$tmp/corpus" >/dev/null
+"$tmp/corpus" "$corpus_dir" >"$tmp/corpus.stream"
+BEANS_JSON_NO_DIRECT_DECODE=1 "$tmp/corpus" "$corpus_dir" >"$tmp/corpus.dom"
+cmp "$tmp/corpus.stream" "$tmp/corpus.dom"
+grep -q '^FALLBACKS:0$' "$tmp/corpus.stream" || {
+    echo "the stream engine fell back to the DOM on a corpus document" >&2
+    grep '^FALLBACKS:' "$tmp/corpus.stream" >&2
+    exit 1
+}
+# The runner must actually have read every file, not skipped a moved layout.
+processed=$(grep -c ':obj ' "$tmp/corpus.stream")
+if [[ "$processed" -ne "$corpus_files" ]]; then
+    echo "corpus runner read $processed of $corpus_files files" >&2
+    exit 1
+fi
+echo "ok json stream decode: depth policy, differential fuzz, JSONTestSuite ($corpus_files files)"
