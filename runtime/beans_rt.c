@@ -12401,6 +12401,12 @@ static int net_errno(void) { return net_errno_map((int)WSAGetLastError()); }
 // closed" test the entry points already make stays exactly true, and no valid
 // handle loses a bit crossing the boundary. Only the conversions are named; the
 // word representation is unchanged.
+// writev, for beans_net_send_pair_wait. The Windows arm uses WSASend from
+// winsock2.h, included above.
+#if !defined(_WIN32)
+#include <sys/uio.h>
+#endif
+
 #if defined(_WIN32)
 typedef SOCKET net_fd_t;
 #define NET_FD_NONE INVALID_SOCKET
@@ -13100,6 +13106,137 @@ long long beans_net_send_from_wait(long long fd, const void* bytes,
     }
 }
 
+// send_pair's engine: one write of two buffers, parking the calling fiber on
+// backpressure exactly as beans_net_send_from_wait does.
+//
+// This exists so a response can be sent without first being assembled. A
+// server frames a head and already holds a body; joining them means copying
+// the body, and on a 1 MiB response that copy is the single most expensive
+// thing the process does. writev takes the two where they already are.
+//
+// Two buffers, not an array of them: a response is a head and a body, the
+// pair needs no allocation to describe, and an iovec array built per response
+// would be exactly the kind of hot-path allocation this call exists to
+// remove. A third buffer, if a trailer ever needs one, is a third parameter.
+//
+// The offset is into the concatenation, so a short write resumes correctly
+// whether it stopped inside the head or inside the body, and the caller never
+// has to know which.
+//   req[0] in: offset into head+body; out: bytes written by this call
+//   req[1] out: OS error code when the returned status is not 0
+//   req[2] in: 1 skips the nonblocking flip; out: 1 when fiber-prepared
+//   req[3] in: wait budget in milliseconds, -1 to wait forever
+// Status: 0 ok; sockx codes otherwise.
+long long beans_net_send_pair_wait(long long fd,
+                                   const void* head, long long head_len,
+                                   const void* body, long long body_len,
+                                   unsigned long long* req) {
+    if (!req) return 1; // invalid
+    if (head_len < 0 || body_len < 0) return 1;
+    if ((head_len > 0 && !head) || (body_len > 0 && !body)) return 1;
+    net_init();
+    if (fd < 0) { req[1] = 0; return 112; } // closed
+    long long total = head_len + body_len;
+    long long from = (long long)req[0];
+    if (from < 0 || from > total) { req[1] = 0; return 1; }
+    if (from == total) { req[0] = 0; req[1] = 0; return 0; }
+
+    if (req[2]) {
+        req[2] = 1;
+    } else {
+        net_fiber_prepare(fd);
+        req[2] = net_on_fiber() ? 1 : 0;
+    }
+    long long budget = (long long)req[3];
+    for (;;) {
+        // Rebuilt each turn round the loop because a park may have been
+        // preceded by a partial write on an earlier turn.
+        const char* first;
+        long long first_len;
+        const char* second;
+        long long second_len;
+        if (from < head_len) {
+            first = (const char*)head + from;
+            first_len = head_len - from;
+            second = (const char*)body;
+            second_len = body_len;
+        } else {
+            first = (const char*)body + (from - head_len);
+            first_len = body_len - (from - head_len);
+            second = NULL;
+            second_len = 0;
+        }
+
+        rt_ssize_t wrote;
+#if defined(_WIN32)
+        WSABUF bufs[2];
+        DWORD count = 0;
+        DWORD sent = 0;
+        // WSABUF lengths are 32-bit. A buffer larger than that is written in
+        // 2 GB pieces across successive calls; the offset makes that correct
+        // without the caller seeing it.
+        bufs[0].buf = (CHAR*)first;
+        bufs[0].len = (ULONG)(first_len > 0x7fffffff ? 0x7fffffff : first_len);
+        count = 1;
+        if (second_len > 0 && bufs[0].len == (ULONG)first_len) {
+            bufs[1].buf = (CHAR*)second;
+            bufs[1].len =
+                (ULONG)(second_len > 0x7fffffff ? 0x7fffffff : second_len);
+            count = 2;
+        }
+        int rc;
+        do {
+            if (net_fp("send", NET_FP_SEND)) { rc = SOCKET_ERROR; break; }
+            rc = WSASend(net_fd_of(fd), bufs, count, &sent, 0, NULL, NULL);
+        } while (rc == SOCKET_ERROR && net_errno() == EINTR);
+        wrote = (rc == SOCKET_ERROR) ? -1 : (rt_ssize_t)sent;
+#else
+        struct iovec iov[2];
+        int count = 1;
+        iov[0].iov_base = (void*)first;
+        iov[0].iov_len = (size_t)first_len;
+        if (second_len > 0) {
+            iov[1].iov_base = (void*)second;
+            iov[1].iov_len = (size_t)second_len;
+            count = 2;
+        }
+        do {
+            if (net_fp("send", NET_FP_SEND)) { wrote = -1; continue; }
+            wrote = writev(net_fd_of(fd), iov, count);
+        } while (wrote < 0 && net_errno() == EINTR);
+#endif
+        if (wrote >= 0) {
+            req[0] = (unsigned long long)wrote;
+            req[1] = 0;
+            return 0;
+        }
+        int blocked = net_errno();
+        if ((blocked == EAGAIN || blocked == EWOULDBLOCK) &&
+            net_on_fiber()) {
+            int ready = net_wait(net_fd_of(fd), POLLOUT, budget);
+            if (ready > 0) continue;
+            if (ready == 0) { // the socket deadline expired
+                req[1] = (unsigned long long)blocked;
+                return 110; // timeout
+            }
+            blocked = net_errno();
+        }
+        req[1] = (unsigned long long)blocked;
+        if (blocked == EAGAIN || blocked == EWOULDBLOCK ||
+            blocked == ETIMEDOUT)
+            return 110; // timeout
+        if (blocked == ECONNRESET || blocked == ECONNABORTED ||
+            blocked == EPIPE)
+            return 111; // reset
+        if (blocked == EBADF || blocked == ENOTCONN)
+            return 112; // closed
+        if (blocked == EACCES || blocked == EPERM)
+            return 114; // permission
+        return 116; // io
+    }
+}
+
+
 BRes beans_net_send_text(long long fd, char* text, long long from) {
     net_init();
     if (fd < 0) return (BRes){0, net_closed_err("send")};
@@ -13287,6 +13424,8 @@ void* beans_rt_host_symbol(const char* name) {
         return (void*)&beans_net_recv_into_wait;
     if (strcmp(name, "beans_net_send_from_wait") == 0)
         return (void*)&beans_net_send_from_wait;
+    if (strcmp(name, "beans_net_send_pair_wait") == 0)
+        return (void*)&beans_net_send_pair_wait;
     // std.term's bridge. The interpreter reaches these by name; answering here
     // gives the same address on every platform and keeps the linker from
     // dropping symbols the natively-compiled interpreter never calls itself.

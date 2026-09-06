@@ -16,6 +16,16 @@
 compiler=0.1.39
 language=1.0
 
+# 17: beans_net_send_pair_wait — one write of two buffers, so a response can
+# be sent without first being assembled. A server frames a head and already
+# holds a body; joining them copies the body, and on a one-megabyte response
+# that copy costs more than everything else the process does for that request.
+# The entry takes the two buffers and an offset into their concatenation, so a
+# short write resumes correctly whether it stopped inside the head or inside
+# the body and the caller never has to know which. writev on POSIX, WSASend on
+# Windows. Two buffers rather than an iovec array: a response is a head and a
+# body, the pair needs no allocation to describe, and an array built per
+# response would be the hot-path allocation this entry exists to remove.
 # 16: order kind 7 — a payload-free enum slot is a pointer at its tag word;
 # sort, min and max compare the loaded tags, where an older runtime compared
 # the pointers. No new symbol: the order kind is a compiler-to-runtime contract
@@ -81,4 +91,4 @@ language=1.0
 # caller-owned event buffer instead of returning a fresh one.
 # Version 7 added Bytes.filled, Bytes.append_int_text, and Thread.detach.
 # Version 6 added per-thread runtime-hook guard entry points.
-runtime_abi=16
+runtime_abi=17

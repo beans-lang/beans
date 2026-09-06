@@ -26,7 +26,7 @@ pub class ServedRequest {
 fn check_response_frame(status: int,
                         reason: string,
                         headers: Headers,
-                        body: Bytes) -> Result<bool> {
+                        body_len: int) -> Result<bool> {
     check_response_line(status, reason)?
     check_headers(headers)?
     if headers.has("Content-Length") || headers.has("Transfer-Encoding") {
@@ -37,19 +37,19 @@ fn check_response_frame(status: int,
     }
     let body_forbidden: bool =
         (status >= 100 && status < 200) || status == 204 || status == 304
-    if body_forbidden && body.len() != 0 {
+    if body_forbidden && body_len != 0 {
         return err("status {status} cannot carry a response body", "invalid")
     }
     return ok(body_forbidden)
 }
 
-fn write_response_frame(target: Bytes,
-                        status: int,
-                        reason: string,
-                        headers: Headers,
-                        body: Bytes,
-                        keep_alive: bool,
-                        body_forbidden: bool) {
+fn write_response_head(target: Bytes,
+                       status: int,
+                       reason: string,
+                       headers: Headers,
+                       body_len: int,
+                       keep_alive: bool,
+                       body_forbidden: bool) {
     target.append_string("HTTP/1.1 ")
     target.append_int_text(status)
     target.push(32)
@@ -57,7 +57,7 @@ fn write_response_frame(target: Bytes,
     target.append_string("\r\n")
     if !body_forbidden {
         target.append_string("Content-Length: ")
-        target.append_int_text(body.len())
+        target.append_int_text(body_len)
         target.append_string("\r\n")
     }
     if !keep_alive {
@@ -70,6 +70,17 @@ fn write_response_frame(target: Bytes,
         target.append_string("\r\n")
     }
     target.append_string("\r\n")
+}
+
+fn write_response_frame(target: Bytes,
+                        status: int,
+                        reason: string,
+                        headers: Headers,
+                        body: Bytes,
+                        keep_alive: bool,
+                        body_forbidden: bool) {
+    write_response_head(target, status, reason, headers, body.len(),
+                        keep_alive, body_forbidden)
     target.append(body)
 }
 
@@ -83,7 +94,7 @@ pub fn encode_response_into(target: Bytes,
                             body: Bytes,
                             keep_alive: bool) -> Result<bool> {
     let body_forbidden: bool =
-        check_response_frame(status, reason, headers, body)?
+        check_response_frame(status, reason, headers, body.len())?
     target.resize(0)
     write_response_frame(target, status, reason, headers, body, keep_alive,
                          body_forbidden)
@@ -101,10 +112,35 @@ pub fn encode_response_append(target: Bytes,
                               body: Bytes,
                               keep_alive: bool) -> Result<bool> {
     let body_forbidden: bool =
-        check_response_frame(status, reason, headers, body)?
+        check_response_frame(status, reason, headers, body.len())?
     write_response_frame(target, status, reason, headers, body, keep_alive,
                          body_forbidden)
     return ok(true)
+}
+
+/// Encodes a response's head only, appending after whatever `target` already
+/// holds, and reports whether the status forbids a body.
+///
+/// This is the form for a server that means to write the head and the body in
+/// one vectored send instead of joining them: the body never enters `target`,
+/// so a large one is never copied. `body_len` is what the `Content-Length`
+/// will say, and validation is identical to `encode_response_append` — a
+/// status that forbids a body still refuses a non-zero length here.
+///
+/// `ok(true)` means the status forbids a body and the caller must send the
+/// head alone. That is also what a HEAD request needs, which is why framing a
+/// HEAD through this form never touches the body at all.
+pub fn encode_response_head_append(target: Bytes,
+                                   status: int,
+                                   reason: string,
+                                   headers: Headers,
+                                   body_len: int,
+                                   keep_alive: bool) -> Result<bool> {
+    let body_forbidden: bool =
+        check_response_frame(status, reason, headers, body_len)?
+    write_response_head(target, status, reason, headers, body_len, keep_alive,
+                        body_forbidden)
+    return ok(body_forbidden)
 }
 
 /// A listening HTTP server socket.

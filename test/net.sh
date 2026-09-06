@@ -523,3 +523,31 @@ if grep -q 'net_pack' runtime/beans_rt.c; then
     echo "socket payloads are still packed into a staging Bytes" >&2
     exit 1
 fi
+
+# --- write_vectored: two buffers, one send, an offset spanning both ---------
+#
+# The cases that matter are the short writes. One megabyte does not leave a
+# loopback socket in a single call, so `one-mib` and `both-large` exercise the
+# resume, and each is compared byte for byte against the same two buffers
+# joined the old way. `short-writes true` on those rows is part of the golden:
+# if a kernel ever took them whole, the resume would stop being tested and the
+# expectation would fail rather than quietly passing.
+echo "checking vectored writes in both backends"
+./build/beansc run examples/net_vectored.b >"$tmp/vec-interp"
+./build/beansc build examples/net_vectored.b -o "$tmp/vec-native" \
+    >"$tmp/vec-build.log" 2>&1
+"$tmp/vec-native" >"$tmp/vec-native.out"
+diff -u "$tmp/vec-interp" "$tmp/vec-native.out"
+
+diff -u - "$tmp/vec-interp" <<'EXPECTED'
+empty-body bytes 64 identical true short-writes false
+empty-head bytes 4096 identical true short-writes false
+small bytes 167 identical true short-writes false
+one-mib bytes 1048713 identical true short-writes true
+both-large bytes 524288 identical true short-writes true
+head-only forbids-body false declares-1MiB true ends-blank-line true
+head+body equals whole response: true lens 1048661 1048661
+204 with a body: refused invalid
+EXPECTED
+
+echo "ok vectored writes: head+body in one send, resume across the boundary"
