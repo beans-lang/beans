@@ -48,6 +48,34 @@ struct IgnoredFloat {
     pub hidden: f64 = 0.0
 }
 
+// The same two faults, but not side by side in one record: the float sits one
+// level down, inside an Option, or inside a list. Whatever encloses the leaf
+// that refuses, the reason has to travel out from that leaf — a writer stops
+// at it exactly the same way.
+struct ScoreOnly {
+    pub score: f64
+}
+
+struct NestedFloatThenString {
+    pub inner: ScoreOnly
+    pub label: string
+}
+
+struct StringThenNestedFloat {
+    pub label: string
+    pub inner: ScoreOnly
+}
+
+struct OptionalFloat {
+    pub score: Option<f64>
+    pub label: string
+}
+
+struct FloatList {
+    pub scores: List<f64>
+    pub label: string
+}
+
 @json.naming(value: json.Naming.camel_case)
 struct User {
     pub user_id: u64
@@ -396,4 +424,86 @@ fn main() {
     let wide: Bytes = Bytes.from(wide_head)
     into_big("wide_prefix", json.encode(rows).expect("rows"), wide_head, wide,
              json.encode_into(rows, wide))
+
+    // The refusal-order rule across a struct boundary, an Option and a list.
+    // Which fault is named still has to be the one the writer reaches first,
+    // and the leaf that refuses is a level down from the record that decides
+    // the order.
+    let nfs: NestedFloatThenString = NestedFloatThenString {
+        inner: ScoreOnly { score: 0.0 / 0.0 },
+        label: surrogate_string(),
+    }
+    match json.encode(nfs) {
+        ok(_) => io.println("nested_float_then_string: unexpected ok"),
+        err(error) =>
+            io.println("nested_float_then_string: err {error.kind}: {error.msg}"),
+    }
+    let nfsb: Bytes = Bytes.from("A")
+    match json.encode_into(nfs, nfsb) {
+        ok(count) =>
+            io.println("nested_float_then_string_into: unexpected ok {count}"),
+        err(error) =>
+            io.println("nested_float_then_string_into: err {error.kind}: {error.msg} :: {nfsb.to_string()}"),
+    }
+
+    let snf: StringThenNestedFloat = StringThenNestedFloat {
+        label: surrogate_string(),
+        inner: ScoreOnly { score: 0.0 / 0.0 },
+    }
+    match json.encode(snf) {
+        ok(_) => io.println("string_then_nested_float: unexpected ok"),
+        err(error) =>
+            io.println("string_then_nested_float: err {error.kind}: {error.msg}"),
+    }
+    let snfb: Bytes = Bytes.from("A")
+    match json.encode_into(snf, snfb) {
+        ok(count) =>
+            io.println("string_then_nested_float_into: unexpected ok {count}"),
+        err(error) =>
+            io.println("string_then_nested_float_into: err {error.kind}: {error.msg} :: {snfb.to_string()}"),
+    }
+
+    // A NaN inside a present Option, ahead of the bad string.
+    let opt_nan: Option<f64> = some(0.0 / 0.0)
+    let of: OptionalFloat =
+        OptionalFloat { score: opt_nan, label: surrogate_string() }
+    match json.encode(of) {
+        ok(_) => io.println("option_float: unexpected ok"),
+        err(error) => io.println("option_float: err {error.kind}: {error.msg}"),
+    }
+    // ...and an absent Option ahead of it, which writes null and refuses on
+    // the string instead.
+    let absent_score: Option<f64> = none
+    let ofn: OptionalFloat =
+        OptionalFloat { score: absent_score, label: surrogate_string() }
+    match json.encode(ofn) {
+        ok(_) => io.println("option_float_absent: unexpected ok"),
+        err(error) =>
+            io.println("option_float_absent: err {error.kind}: {error.msg}"),
+    }
+
+    // A NaN in the second element of a float list: the first element writes
+    // fine, so the refusal comes from inside the list and not from its first
+    // value.
+    let fl: FloatList =
+        FloatList { scores: [1.5, 0.0 / 0.0], label: surrogate_string() }
+    match json.encode(fl) {
+        ok(_) => io.println("float_list: unexpected ok"),
+        err(error) => io.println("float_list: err {error.kind}: {error.msg}"),
+    }
+    let flb: Bytes = Bytes.from("A")
+    match json.encode_into(fl, flb) {
+        ok(count) => io.println("float_list_into: unexpected ok {count}"),
+        err(error) =>
+            io.println("float_list_into: err {error.kind}: {error.msg} :: {flb.to_string()}"),
+    }
+    // The list holds no NaN, so the string is what refuses even though a
+    // float field came first in the document.
+    let fl_ok: FloatList =
+        FloatList { scores: [1.5, 2.5], label: surrogate_string() }
+    match json.encode(fl_ok) {
+        ok(_) => io.println("float_list_clean: unexpected ok"),
+        err(error) =>
+            io.println("float_list_clean: err {error.kind}: {error.msg}"),
+    }
 }

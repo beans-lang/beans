@@ -51,3 +51,12 @@ ignored_float_into: err invalid: cannot encode value as JSON :: A
 deep_refusal: err invalid: cannot encode value as JSON kept=true len=6
 deep_refusal_encode: err invalid: cannot encode value as JSON
 wide_prefix: n=128691 prefix_ok=true eq=true len=128691 sum=9019799782165089767
+nested_float_then_string: err invalid: cannot write NaN or infinity as JSON
+nested_float_then_string_into: err invalid: cannot write NaN or infinity as JSON :: A
+string_then_nested_float: err invalid: cannot encode value as JSON
+string_then_nested_float_into: err invalid: cannot encode value as JSON :: A
+option_float: err invalid: cannot write NaN or infinity as JSON
+option_float_absent: err invalid: cannot encode value as JSON
+float_list: err invalid: cannot write NaN or infinity as JSON
+float_list_into: err invalid: cannot write NaN or infinity as JSON :: A
+float_list_clean: err invalid: cannot encode value as JSON
