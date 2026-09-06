@@ -151,6 +151,16 @@ class TreeInterpreter {
     manifest_handles: List<int>
     encoding_handles: Map<string, int>
     encoding_error: string
+    // Why the JSON serializer refused, recorded where the refusal
+    // happens rather than worked out afterwards. yyjson — the writer
+    // the native backend runs — stops at the FIRST value it cannot
+    // write in document order and reports that one, so a value that
+    // carries both a string that is not UTF-8 and a NaN reports
+    // whichever comes first. Set true only by the float leaf of
+    // tree_json_value, cleared at the top of every encode: the walk
+    // returns at its first failure, so the flag is the reason for
+    // that failure and no other.
+    json_write_nan: bool
     log_handle: int
     log_error: string
     net_handles: Map<string, int>
@@ -233,6 +243,7 @@ class TreeInterpreter {
         self.manifest_handles = []
         self.encoding_handles = {}
         self.encoding_error = ""
+        self.json_write_nan = false
         self.log_handle = -1
         self.log_error = ""
         self.net_handles = {}
@@ -1036,6 +1047,9 @@ class TreeInterpreter {
             if shown == "nan" || shown == "inf" || shown == "-inf" ||
                shown == "NaN" || shown == "Infinity" ||
                shown == "-Infinity" {
+                // The reason for THIS refusal. The walk unwinds from here
+                // without visiting anything else, so nothing overwrites it.
+                self.json_write_nan = true
                 return none
             }
             return some(shown)
@@ -1120,49 +1134,17 @@ class TreeInterpreter {
         return none
     }
 
-    // A checked encode can only fail at runtime on a NaN or infinity float;
-    // the native backend reports that as its own message (yyjson write code
-    // 2) and any other refusal as the generic one. tree_json_value collapses
-    // both into `none`, so the driver walks the value to tell them apart and
-    // print the message the native backend prints, keeping the two agreeing.
-    fn tree_json_bad_float(value: TreeValue) -> bool {
-        if value.kind == "float" {
-            let shown: string = "{value.float_data}"
-            return shown == "nan" || shown == "inf" || shown == "-inf" ||
-                   shown == "NaN" || shown == "Infinity" ||
-                   shown == "-Infinity"
-        }
-        if value.kind == "some" && value.items.len() == 1 {
-            return self.tree_json_bad_float(value.items[0])
-        }
-        if value.kind == "list" {
-            for item: TreeValue in value.items {
-                if self.tree_json_bad_float(item) { return true }
-            }
-            return false
-        }
-        if value.kind == "record" {
-            match self.declaration(value.text) {
-                some(declaration) => {
-                    for field: HirField in declaration.fields {
-                        match value.fields.value(field.name) {
-                            some(field_value) => {
-                                if self.tree_json_bad_float(field_value) {
-                                    return true
-                                }
-                            }
-                            none => {}
-                        }
-                    }
-                }
-                none => {}
-            }
-        }
-        return false
-    }
-
-    fn tree_json_encode_error(value: TreeValue) -> TreeValue {
-        let message: string = if self.tree_json_bad_float(value) {
+    // A checked encode can fail at runtime on a NaN or infinity float, or on
+    // a string whose bytes are not valid UTF-8. yyjson — the writer the
+    // native backend runs — stops at the first of those it meets in document
+    // order and names that one, so a value carrying both reports whichever
+    // came first. tree_json_value collapses every refusal into `none`, and
+    // json_write_nan carries the reason out from the leaf that refused; a
+    // scan of the finished value cannot, because it does not know which
+    // failure the writer reached first, nor that an @json.ignore'd field is
+    // never written at all.
+    fn tree_json_encode_error() -> TreeValue {
+        let message: string = if self.json_write_nan {
             "cannot write NaN or infinity as JSON"
         } else {
             "cannot encode value as JSON"
@@ -1188,12 +1170,13 @@ class TreeInterpreter {
             }
             none => {}
         }
+        self.json_write_nan = false
         match self.tree_json_value(value, 0, indent) {
             some(encoded) => {
                 return TreeValue.result_ok(TreeValue.string(encoded))
             }
             none => {
-                return self.tree_json_encode_error(value)
+                return self.tree_json_encode_error()
             }
         }
     }
@@ -1205,6 +1188,7 @@ class TreeInterpreter {
     fn tree_json_encode_into(
         value: TreeValue, target: Bytes
     ) -> TreeValue {
+        self.json_write_nan = false
         match self.tree_json_value(value, 0, 0) {
             some(encoded) => {
                 let before: int = target.len()
@@ -1213,7 +1197,7 @@ class TreeInterpreter {
                     TreeValue.integer(target.len() - before))
             }
             none => {
-                return self.tree_json_encode_error(value)
+                return self.tree_json_encode_error()
             }
         }
     }

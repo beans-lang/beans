@@ -41,3 +41,13 @@ nan_into: err invalid: cannot write NaN or infinity as JSON :: KEEP
 nan_encode: err invalid: cannot write NaN or infinity as JSON
 bad_utf8_into: err invalid: cannot encode value as JSON :: HOLD
 bad_utf8_encode: err invalid: cannot encode value as JSON
+string_then_float: err invalid: cannot encode value as JSON
+string_then_float_into: err invalid: cannot encode value as JSON :: A
+float_then_string: err invalid: cannot write NaN or infinity as JSON
+float_then_string_into: err invalid: cannot write NaN or infinity as JSON :: A
+mixed_list: err invalid: cannot encode value as JSON
+ignored_float: err invalid: cannot encode value as JSON
+ignored_float_into: err invalid: cannot encode value as JSON :: A
+deep_refusal: err invalid: cannot encode value as JSON kept=true len=6
+deep_refusal_encode: err invalid: cannot encode value as JSON
+wide_prefix: n=128691 prefix_ok=true eq=true len=128691 sum=9019799782165089767

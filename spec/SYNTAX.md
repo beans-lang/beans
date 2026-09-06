@@ -739,13 +739,18 @@ io.println(json.encode(user)?)
   come from `@json.name` or `@json.naming`; `@json.alias` is input-only;
   `@json.ignore` fields are omitted; and absent options write `null`. Use
   `io.println(json.encode(value)?)` to print a struct as JSON. NaN and infinity
-  are rejected.
+  are rejected, and so is a string whose bytes are not valid UTF-8. A value
+  that carries more than one such fault is reported by the first one the
+  writer reaches in document order — a field that is omitted from the document
+  cannot be the one reported.
 - `encode_into<T>(value, target)` appends that same compact encoding to the
   caller's `Bytes` — after whatever it already holds — and returns
   `Result<int>`, the number of bytes appended. `T` is validated exactly as for
   `encode`, and the bytes it writes equal `encode(value)` byte for byte; it
   exists so a body can be serialized straight into an output buffer without a
-  fresh string and its copy. A refused `T` refuses identically to `encode`.
+  fresh string and its copy. A refused `T` refuses identically to `encode`, and
+  a refusal at run time leaves `target` exactly as it was — every byte it held
+  before the call, and nothing appended.
 - Typed JSON currently supports bool, integer, float, string, nested struct,
   list, and option fields. Struct and `List<struct>` are the only root shapes.
   Classes, enums, maps, fixed arrays, bytes, decimal, unit, generic structs,

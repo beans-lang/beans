@@ -114,6 +114,16 @@ diff -u test/cases/encoding_json_typed_encode.out \
     "$tmp/encoding_json_typed_encode.interp"
 diff -u test/cases/encoding_json_typed_encode.out \
     "$tmp/encoding_json_typed_encode.native"
+# The same golden through the DOM writer. encode_into has two append paths —
+# the direct writer writes into the caller's Bytes as it goes, the DOM path
+# serializes into yyjson's buffer and appends once — and the schemas here pick
+# between them by whether they carry a float. BEANS_JSON_NO_DIRECT forces
+# every one of them onto the DOM path, so the bytes, the counts, the refusal
+# messages and the rollbacks have to be the same document either way.
+BEANS_JSON_NO_DIRECT=1 "$tmp/encoding_json_typed_encode" \
+    >"$tmp/encoding_json_typed_encode.dom" 2>&1
+diff -u test/cases/encoding_json_typed_encode.out \
+    "$tmp/encoding_json_typed_encode.dom"
 grep -q "call i64 @beans_enc_json_typed_encode" \
     build/encoding_json_typed_encode.ll
 # encode_into lowers to the same encoder entry with the append-into grow

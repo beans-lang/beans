@@ -23,6 +23,31 @@ struct Tiny {
     pub code: i16
 }
 
+// A record that can carry both runtime refusals at once — a string whose
+// bytes are not UTF-8 and a NaN float. The writer stops at the FIRST one it
+// meets in document order, so field order decides which refusal is reported,
+// and both backends have to report the same one.
+struct StringThenFloat {
+    pub label: string
+    pub score: f64
+}
+
+struct FloatThenString {
+    pub score: f64
+    pub label: string
+}
+
+// The NaN here is never written: @json.ignore keeps the field out of the
+// document, so the only refusal the writer can reach is the string. A
+// backend that decided the message by scanning the whole value afterwards
+// would name the float nobody serialized.
+struct IgnoredFloat {
+    pub label: string
+
+    @json.ignore
+    pub hidden: f64 = 0.0
+}
+
 @json.naming(value: json.Naming.camel_case)
 struct User {
     pub user_id: u64
@@ -275,4 +300,100 @@ fn main() {
         ok(_) => io.println("bad_utf8_encode: unexpected ok"),
         err(error) => io.println("bad_utf8_encode: err {error.kind}: {error.msg}"),
     }
+
+    // Which refusal is reported when a value carries both. yyjson writes in
+    // document order and names the first value it cannot write; the tree
+    // interpreter must name the same one instead of preferring the float it
+    // would find by walking the whole value after the fact.
+    let sf: StringThenFloat =
+        StringThenFloat { label: surrogate_string(), score: 0.0 / 0.0 }
+    let sfb: Bytes = Bytes.from("A")
+    match json.encode(sf) {
+        ok(_) => io.println("string_then_float: unexpected ok"),
+        err(error) =>
+            io.println("string_then_float: err {error.kind}: {error.msg}"),
+    }
+    match json.encode_into(sf, sfb) {
+        ok(count) => io.println("string_then_float_into: unexpected ok {count}"),
+        err(error) =>
+            io.println("string_then_float_into: err {error.kind}: {error.msg} :: {sfb.to_string()}"),
+    }
+
+    let fs: FloatThenString =
+        FloatThenString { score: 0.0 / 0.0, label: surrogate_string() }
+    let fsb: Bytes = Bytes.from("A")
+    match json.encode(fs) {
+        ok(_) => io.println("float_then_string: unexpected ok"),
+        err(error) =>
+            io.println("float_then_string: err {error.kind}: {error.msg}"),
+    }
+    match json.encode_into(fs, fsb) {
+        ok(count) => io.println("float_then_string_into: unexpected ok {count}"),
+        err(error) =>
+            io.println("float_then_string_into: err {error.kind}: {error.msg} :: {fsb.to_string()}"),
+    }
+
+    // A list whose first element carries the bad string and whose second
+    // carries the NaN: the string is what the writer reaches.
+    let mixed_list: List<StringThenFloat> = [
+        StringThenFloat { label: surrogate_string(), score: 1.5 },
+        StringThenFloat { label: "fine", score: 0.0 / 0.0 },
+    ]
+    match json.encode(mixed_list) {
+        ok(_) => io.println("mixed_list: unexpected ok"),
+        err(error) => io.println("mixed_list: err {error.kind}: {error.msg}"),
+    }
+
+    // The NaN sits in an ignored field, so it is not part of the document at
+    // all and the string is the only thing that can refuse.
+    let ig: IgnoredFloat =
+        IgnoredFloat { label: surrogate_string(), hidden: 0.0 / 0.0 }
+    match json.encode(ig) {
+        ok(_) => io.println("ignored_float: unexpected ok"),
+        err(error) => io.println("ignored_float: err {error.kind}: {error.msg}"),
+    }
+    let igb: Bytes = Bytes.from("A")
+    match json.encode_into(ig, igb) {
+        ok(count) => io.println("ignored_float_into: unexpected ok {count}"),
+        err(error) =>
+            io.println("ignored_float_into: err {error.kind}: {error.msg} :: {igb.to_string()}"),
+    }
+
+    // A refusal the writer only reaches after appending tens of kilobytes and
+    // growing the target's backing several times. The direct writer is the
+    // only path that writes into the caller's Bytes before it can refuse — the
+    // DOM path serializes into its own buffer first — so this is the case that
+    // proves the rollback restores the pre-call length rather than merely
+    // never having written. Address carries no float, so it takes that path.
+    let pad: string = filled(97, 300)
+    var deep: List<Address> = []
+    for index: int in 0..400 {
+        deep.push(Address { city: pad, zip: (index as u32) })
+    }
+    deep.push(Address { city: surrogate_string(), zip: 999 })
+    let keep: Bytes = Bytes.from("KEEPME")
+    let keep_orig: Bytes = Bytes.from("KEEPME")
+    match json.encode_into(deep, keep) {
+        ok(count) => io.println("deep_refusal: unexpected ok {count}"),
+        err(error) =>
+            io.println("deep_refusal: err {error.kind}: {error.msg} kept={keep == keep_orig} len={keep.len()}"),
+    }
+    match json.encode(deep) {
+        ok(_) => io.println("deep_refusal_encode: unexpected ok"),
+        err(error) =>
+            io.println("deep_refusal_encode: err {error.kind}: {error.msg}"),
+    }
+
+    // The same shape without the broken string, appended after a forty-
+    // kilobyte prefix: the append starts past the prefix and the backing is
+    // reallocated more than once while writing, so every prefix byte has to
+    // survive the moves.
+    var rows: List<Address> = []
+    for index: int in 0..400 {
+        rows.push(Address { city: pad, zip: (index as u32) })
+    }
+    let wide_head: string = filled(66, 40960)
+    let wide: Bytes = Bytes.from(wide_head)
+    into_big("wide_prefix", json.encode(rows).expect("rows"), wide_head, wide,
+             json.encode_into(rows, wide))
 }

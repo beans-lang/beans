@@ -106,7 +106,13 @@ fn control_string() -> string {
     return bytes.to_string()
 }
 
-// Deliberately broken UTF-8: both writers must refuse it identically.
+// Deliberately broken UTF-8: both writers must refuse it identically. One
+// shape per rule the validators carry, so a rule that is dropped on one side
+// and kept on the other has a value that finds it: an impossible lead byte
+// below and above the legal range, a two-, three- and four-byte overlong, a
+// surrogate, a scalar past U+10FFFF, a stray continuation, a sequence whose
+// continuation byte is not one, and a lead byte that is the last byte in the
+// string (the length check rather than the continuation check).
 fn invalid_string(which: int) -> string {
     let bytes: Bytes = new Bytes(0)
     bytes.push(111)
@@ -119,8 +125,28 @@ fn invalid_string(which: int) -> string {
         bytes.push(160)
         bytes.push(128)
     } else if which == 3 { bytes.push(128) }
-    else {
+    else if which == 4 {
         bytes.push(226)
+    } else if which == 5 {
+        bytes.push(224)
+        bytes.push(128)
+        bytes.push(128)
+    } else if which == 6 {
+        bytes.push(240)
+        bytes.push(128)
+        bytes.push(128)
+        bytes.push(128)
+    } else if which == 7 {
+        bytes.push(244)
+        bytes.push(144)
+        bytes.push(128)
+        bytes.push(128)
+    } else if which == 8 { bytes.push(245) }
+    else {
+        // The lead byte is the last byte in the string: the scan runs off the
+        // end instead of meeting a byte that is not a continuation.
+        bytes.push(195)
+        return bytes.to_string()
     }
     bytes.push(107)
     return bytes.to_string()
@@ -135,7 +161,7 @@ fn build_string(rng: Rng) -> string {
     let pick: int = rng.below(24)
     if pick == 20 { return control_string() }
     if pick == 21 { return sized_string(200 + rng.below(200)) }
-    if pick == 22 && !rng.clean { return invalid_string(rng.below(5)) }
+    if pick == 22 && !rng.clean { return invalid_string(rng.below(10)) }
     var built: string = ""
     let parts: int = rng.below(5)
     for index: int in 0..parts {
@@ -395,6 +421,20 @@ fn main() {
     let rounds: int = os.env("FUZZ_ROUNDS").or("2000").to_int().or(2000)
     let rng: Rng = new Rng(seed)
     let tally: Tally = new Tally()
+    // Every broken-UTF-8 shape, deterministically, ahead of the seeded
+    // rounds. The seeded builder reaches one only by chance — one string in
+    // twenty-four, then one shape in ten — so a validation rule dropped on
+    // one side could hide behind a seed that never picks its shape. Walking
+    // them here puts all ten through the four comparisons this suite makes:
+    // direct writer against DOM, native against interpreter, encode against
+    // encode_into, and the target left untouched by a refusal.
+    for which: int in 0..10 {
+        check_inner("utf8-{which}", tally, Inner {
+            label: invalid_string(which),
+            count: which,
+            flag: false,
+        })
+    }
     for round: int in 0..rounds {
         check_outer("{round}", tally, build_outer(rng))
         if round % 7 == 0 {
