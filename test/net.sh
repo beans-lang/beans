@@ -611,4 +611,39 @@ closed bytes: err closed
 closed text: err closed
 EXPECTED
 
+# The same corners one layer down. Everything above drives net.TcpStream, which
+# answers the offset and closed-socket corners itself and returns before it ever
+# calls the builtin — so none of it reaches std.sock.send_pair_text's own
+# guards, and breaking every one of them leaves the whole block above green.
+# std.sock is a module a program may import (the handles are written in Beans on
+# top of it), so those guards are a public contract, and an offset that is not
+# checked there is a send that reads past the end of the head or the body.
+#
+# The two backends arrive at these answers by different routes — the native
+# backend lowers the builtin to beans_net_send_pair_text, the tree interpreter
+# joins head and body and sends the join from the same offset through
+# beans_net_send — so this is also where the two are held to the same contract
+# at the layer where they actually differ.
+echo "checking the raw send_pair_text builtin's own corners in both backends"
+./build/beansc run test/cases/sock_pair_text_corners.b >"$tmp/sockpair-interp"
+./build/beansc build test/cases/sock_pair_text_corners.b -o "$tmp/sockpair" \
+    >"$tmp/sockpair.build" 2>&1
+"$tmp/sockpair" >"$tmp/sockpair-native"
+diff -u "$tmp/sockpair-interp" "$tmp/sockpair-native"
+diff -u - "$tmp/sockpair-native" <<'EXPECTED'
+at-end: ok 0
+empty-pair: ok 0
+past-end: err invalid
+far-past-end: err invalid
+negative: err invalid
+from-head: ok 7
+from-head arrived BCdefgh
+from-body: ok 3
+from-body arrived fgh
+whole: ok 8
+whole arrived ABCdefgh
+closed-fd: err closed
+closed-fd-bad-offset: err closed
+EXPECTED
+
 echo "ok vectored writes: head+body in one send, resume across the boundary"
