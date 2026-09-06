@@ -28,6 +28,15 @@ language=1.0
 # an iovec array: a response is a head and a
 # body, the pair needs no allocation to describe, and an array built per
 # response would be the hot-path allocation this entry exists to remove.
+#
+# beans_alloc_bytes — the pooled allocator without the recycled-block payload
+# memset, for callers that fill the whole payload the same instant (a decoded
+# string's bytes and its NUL terminator, a Bytes buffer's length). The typed
+# JSON stream decoder hands it to its bridge as the string-payload callback so
+# a 101 KB /echo body stops zeroing two thousand string buffers it overwrites
+# immediately (issue #144). Same size class, header and collector shape as
+# beans_alloc; only the recycled payload zeroing is skipped, and only on the
+# pooled arm — the non-pooled arm for large blocks still zeroes.
 # 16: order kind 7 — a payload-free enum slot is a pointer at its tag word;
 # sort, min and max compare the loaded tags, where an older runtime compared
 # the pointers. No new symbol: the order kind is a compiler-to-runtime contract
