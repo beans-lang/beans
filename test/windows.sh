@@ -534,8 +534,8 @@ if command -v python3 >/dev/null 2>&1; then
                 continue
             fi
             run "$WINE" "$corpus/$cname.exe" > "$corpus/$cname.out" 2> "$corpus/$cname.err"
-            hung $? "$cname.exe under wine"
             corpus_code=$?
+            hung $corpus_code "$cname.exe under wine" && continue
             want_exit=$(cat "$corpus/$cname.exit")
             if [[ $corpus_code -ne $want_exit ]]; then
                 fail "differential corpus $cname: wine exit $corpus_code, oracle exit $want_exit"
@@ -577,8 +577,8 @@ if command -v python3 >/dev/null 2>&1; then
                 continue
             fi
             run "$WINE" "$corpus2/$cname.exe" > "$corpus2/$cname.out" 2> "$corpus2/$cname.err"
-            hung $? "$cname.exe under wine"
             corpus_code=$?
+            hung $corpus_code "$cname.exe under wine" && continue
             want_exit=$(cat "$cwant_exit_file")
             if [[ $corpus_code -ne $want_exit ]]; then
                 fail "classes corpus $cname: wine exit $corpus_code, oracle exit $want_exit"
