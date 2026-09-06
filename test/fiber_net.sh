@@ -110,4 +110,35 @@ if [ $((finished - started)) -gt 8 ]; then
     exit 1
 fi
 
-echo "ok netpoller: fiber TCP on one worker, both engines identical, deadlines hold"
+# write_vectored and write_vectored_text driven from a fiber: the
+# park-on-backpressure turn of the pair engine. Every other vectored case in
+# the tree sends from a std.thread, where the socket stays blocking and the
+# kernel does the waiting, so beans_net_send_pair_wait's netpoller branch —
+# the turn a server actually takes, since espresso sends a body of 16 KB or
+# more beside its head from the handler's fiber — was reached by nothing.
+#
+# Both ends are fibers of one worker and the payload is eight mebibytes, which
+# is more than any loopback socket buffer holds unread, so the send cannot
+# finish without parking and a send that failed to park would hold the only
+# thread the reader could run on. Rebuilding the case against a runtime with
+# that one branch disabled (`if (0)` in place of the EAGAIN-on-a-fiber test)
+# and nothing else changed turns all five lines below into a single "failed:
+# the peer closed early"; the same scratch runtime with the branch intact
+# prints them. The two backends reach the wire by different routes for the
+# string form — the native backend through beans_net_send_pair_text, the tree
+# interpreter through the joined buffer it emulates that entry with, which
+# parks in beans_net_send's own loop — so the diff between them is load-bearing.
+echo "checking a fiber's vectored sends park on backpressure in both backends"
+timeout 180 ./build/beansc run test/cases/fiber_vectored.b >"$tmp/vec-interp"
+./build/beansc build test/cases/fiber_vectored.b -o "$tmp/vec-native" >"$tmp/vec-build" 2>&1
+timeout 180 "$tmp/vec-native" >"$tmp/vec-native.out"
+diff -u "$tmp/vec-interp" "$tmp/vec-native.out"
+diff -u - "$tmp/vec-interp" <<'EXPECTED'
+vectored 137+8388608: identical true calls>0 true
+vectored-text 137+8388608: identical true calls>0 true
+vectored head-only 8388608+0: identical true calls>0 true
+vectored-text body-only 0+8388608: identical true calls>0 true
+parked sends 4
+EXPECTED
+
+echo "ok netpoller: fiber TCP on one worker, both engines identical, deadlines hold, vectored sends park"
