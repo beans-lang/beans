@@ -547,6 +547,16 @@ fi
 # interpreter, whose bootstrap predates the entry, joins head and body and
 # sends that once — so both must print the same bytes, the same resumed tails,
 # and `peer-closed-text: err reset`.
+#
+# The last block is the corners the sending loops never reach, both forms side
+# by side: the offset sitting exactly at the end of the pair (`ok 0`, not a
+# write of nothing and not an error — a resumed short write lands there on its
+# last turn), an empty pair, an offset past the end or below zero (`err
+# invalid`), a stream already closed (`err closed`), and the one-byte-left case,
+# which is the only corner that reaches the send itself and so pins the return
+# value and the byte that arrives. The two forms must answer every one of them
+# identically: a server picks the form from whether its body is a `Bytes` or a
+# `string` and must not pick different behaviour with it.
 echo "checking vectored writes in both backends"
 ./build/beansc run examples/net_vectored.b >"$tmp/vec-interp"
 ./build/beansc build examples/net_vectored.b -o "$tmp/vec-native" \
@@ -585,6 +595,20 @@ text resume from 2000 of 137+4096: bytes 2233 identical true calls 1
 text resume from 4232 of 137+4096: bytes 1 identical true calls 1
 text resume from 4233 of 137+4096: bytes 0 identical true calls 0
 peer-closed-text: err reset
+at-end bytes: ok 0
+at-end text: ok 0
+empty-pair bytes: ok 0
+empty-pair text: ok 0
+past-end bytes: err invalid
+past-end text: err invalid
+negative bytes: err invalid
+negative text: err invalid
+last-byte bytes: ok 1
+last-byte bytes arrived 128 expected 128
+last-byte text: ok 1
+last-byte text arrived 71 expected 71
+closed bytes: err closed
+closed text: err closed
 EXPECTED
 
 echo "ok vectored writes: head+body in one send, resume across the boundary"

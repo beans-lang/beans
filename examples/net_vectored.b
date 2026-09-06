@@ -337,6 +337,77 @@ fn peer_closed_text() {
     io.println("peer-closed-text: {outcome}")
 }
 
+// Prints one call's outcome as either its count or its error kind, so a
+// corner's answer is compared as text between the two backends and against the
+// golden rather than only being asserted not to panic.
+fn corner(label: string, outcome: Result<int>) {
+    match outcome {
+        ok(count) => { io.println("{label}: ok {count}") }
+        err(problem) => { io.println("{label}: err {problem.kind}") }
+    }
+}
+
+// The corners the sending loops never reach, for both forms side by side.
+//
+// The loops stop at `offset < total`, so nothing above ever calls either form
+// with the offset sitting exactly at the end, past it, or below zero, and
+// nothing calls either on a stream that is already closed. Those four answers
+// are part of the contract — a caller resuming a short write arrives at
+// `offset == total` on its last turn and must get `ok(0)` rather than a write
+// of nothing or an error — and the two forms must give the same one. A server
+// picks the form from whether its body is a `Bytes` or a `string`, and must
+// not pick different behaviour along with it.
+//
+// The last-byte case is the one corner that does reach the send itself: it puts
+// exactly one byte on the wire from the far end of the pair, so the return
+// value and the byte that arrives are both checked. The native backend gets
+// there through the vectored engine and the tree interpreter through the joined
+// buffer it emulates the string form with, and they must agree.
+fn contract_corners() {
+    let listener: net.TcpListener = net.TcpListener.bind("127.0.0.1", 0)
+        .expect("bind")
+    let port: int = listener.port().expect("port")
+    let client: net.TcpStream = net.TcpStream.connect("127.0.0.1", port)
+        .expect("connect")
+    let server: net.TcpStream = listener.accept().expect("accept")
+
+    let head: Bytes = pattern(64)
+    let body: Bytes = pattern(128)
+    let text: string = pattern_text(128)
+    let total: int = head.len() + body.len()
+    let empty: Bytes = new Bytes(0)
+
+    // Nothing left to send: not an error, and nothing goes on the wire.
+    corner("at-end bytes", server.write_vectored(head, body, total))
+    corner("at-end text", server.write_vectored_text(head, text, total))
+    // The same case when the pair itself is empty.
+    corner("empty-pair bytes", server.write_vectored(empty, empty, 0))
+    corner("empty-pair text", server.write_vectored_text(empty, "", 0))
+    // Past the end and before the start are the caller's bug, not the socket's.
+    corner("past-end bytes", server.write_vectored(head, body, total + 1))
+    corner("past-end text", server.write_vectored_text(head, text, total + 1))
+    corner("negative bytes", server.write_vectored(head, body, -1))
+    corner("negative text", server.write_vectored_text(head, text, -1))
+
+    // One byte left: the send runs, returns 1, and that byte is the pair's
+    // last. Read it back before anything else is written, so what arrives can
+    // only be this write's.
+    corner("last-byte bytes", server.write_vectored(head, body, total - 1))
+    let got_bytes: Bytes = drain(client, 1).expect("drain byte")
+    io.println("last-byte bytes arrived {got_bytes.get(0)} expected {body.get(body.len() - 1)}")
+    corner("last-byte text", server.write_vectored_text(head, text, total - 1))
+    let got_text: Bytes = drain(client, 1).expect("drain text byte")
+    let text_tail: Bytes = new Bytes(0)
+    text_tail.append_string(text)
+    io.println("last-byte text arrived {got_text.get(0)} expected {text_tail.get(text_tail.len() - 1)}")
+
+    // A closed stream refuses both forms, before it looks at the offset at all.
+    let shut: bool = server.close().expect("close")
+    corner("closed bytes", server.write_vectored(head, body, 0))
+    corner("closed text", server.write_vectored_text(head, text, 0))
+    let gone: bool = client.close().expect("close client")
+}
+
 fn main() {
     // The body is empty and the head is the whole write.
     case("empty-body", 64, 0)
@@ -378,4 +449,6 @@ fn main() {
     resume_from_text(137, 4096, 4232)
     resume_from_text(137, 4096, 4233)
     peer_closed_text()
+    // The offsets and the closed stream neither loop ever reaches, both forms.
+    contract_corners()
 }
