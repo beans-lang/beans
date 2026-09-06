@@ -236,6 +236,7 @@ test-runtime: $(BIN)
 	bash ./test/json_direct.sh
 	bash ./test/list_iteration.sh
 	bash ./test/oom.sh
+	bash ./test/rss_release.sh
 	bash ./test/sanitizer_gates.sh
 
 test-ffi: $(BIN)
@@ -308,6 +309,7 @@ test-core: $(BIN)
 	./test/maps.sh
 	bash ./test/map_inline.sh
 	bash ./test/oom.sh
+	bash ./test/rss_release.sh
 	bash ./test/sanitizer_gates.sh
 	bash ./test/float_total_order.sh
 	./test/traits.sh
