@@ -765,18 +765,48 @@ static void* rt_alloc(unsigned long long n) { return beans_host_alloc(n, 16); }
 #define RT_BIG_SANITIZED 0
 #endif
 #if BEANS_RT_PROFILE >= BEANS_RT_FULL && !defined(_WIN32) && !defined(__wasm__) && !RT_BIG_SANITIZED
-// 128 KB. Below the threshold a block stays on malloc, whose free reuses a
-// cached page; at or above it a block is mapped, so freeing one returns its
-// pages. The number is the rule, not the benchmark's exact size: measured by
-// churning a buffer of a given size a fixed number of times and timing it at
-// several thresholds. A 101 KB buffer (an /echo body) churned 200k times cost
-// ~0.62 s whether the threshold was 256 KB or 128 KB — both keep it on
-// malloc — but 3.3x that, ~2.05 s, at 64 KB, where each cycle became an
-// mmap/munmap pair. So 128 KB is the lowest threshold that still leaves a hot
-// per-request buffer on the fast path, while it reaches down to the response
-// bodies a server holds and frees — a 247 KB /records body, and anything from
-// here to 256 KB — which at 256 KB stayed on malloc and never left RSS.
-#define RT_BIG_MMAP_MIN (128u * 1024u)
+// 256 KB. Below the threshold a block stays on malloc, whose free reuses a
+// warm, already-faulted region; at or above it a block is mapped, so freeing
+// one returns its pages.
+//
+// The threshold is a trade, not a free win, and the number is where the trade
+// is worth making. A mapped block is fresh address space every time, so each
+// allocation faults its pages in one by one where malloc handed back memory
+// that was already resident. Churning one — allocate, write, free, repeat, the
+// shape a server has with a per-request body — measured at 50k iterations:
+//
+//     buffer     write        malloc   mapped
+//     101 KB     all of it    0.216s   (stays on malloc at both thresholds)
+//     200 KB     all of it    0.392s   1.073s     2.7x
+//     247 KB     all of it    0.525s   1.286s     2.4x
+//     1 MiB      all of it    0.235s   0.563s     2.4x   (6k iterations)
+//     247 KB     ends only    0.070s   0.247s     3.5x
+//
+// The "ends only" row is the syscall pair alone; the rest of the "all of it"
+// gap is the page faults. So every size above the threshold pays roughly 2.4x
+// to be churned, and the threshold decides which sizes that is.
+//
+// 256 KB, not lower, because a buffer that grows by doubling lands on 131072
+// on its way to anything over 64 KB, and that step is everywhere — a 128 KB
+// threshold would map it and make every such buffer 2.7x more expensive to
+// churn. The first doubling step 256 KB captures is 262144, which is where a
+// 247 KB response body's backing actually ends up, so the /records-sized body
+// this exists for is mapped and returns its pages at this threshold anyway.
+// Below it, a 101 KB /echo body and the compiler's own allocations are
+// untouched: the self-build measures 7.29-7.41s with the map path and
+// 7.31-8.05s without it, which is the same number.
+//
+// An earlier revision of this file used 128 KB on the strength of the 101 KB
+// row alone — a size that stays on malloc at every candidate threshold, so the
+// measurement could not see the cost it was choosing.
+//
+// The churn cost is removable, and this does not remove it: a small bounded
+// cache of freed mappings would let a churning caller reuse one instead of
+// unmapping and re-faulting, at the price of holding that many blocks
+// resident. It needs a size-keyed free list and a lock on a path that has
+// neither today, and it must re-zero what it hands to rt_big_zalloc, so it is
+// a change with its own measurement to make, not a line to add here.
+#define RT_BIG_MMAP_MIN (256u * 1024u)
 
 static size_t rt_big_page(void) {
     static size_t cached = 0;          // benign race: every writer stores the same value

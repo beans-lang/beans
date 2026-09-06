@@ -62,11 +62,14 @@ fn main() {
     str_hold = []                       // drop all 32; each string is unmapped here
     marker("freed-strings")
 
-    // Records-sized backings: 200 KB each — above a 128 KB threshold, below a
-    // 256 KB one. This is the range a held-and-freed response body lives in, and
-    // the phase returns its pages only when the threshold reaches down to it.
+    // Records-sized backings. 262144 bytes each, which is not a round number
+    // chosen for the test: a Bytes grows by doubling, so a 247 KB response body
+    // — the /records route's — ends up in a backing of exactly this size. It is
+    // the first doubling step at or above the map threshold, so this phase is
+    // the tripwire directly above it: raise the threshold past 256 KB and a
+    // real response body stops returning its pages, and this phase says so.
     // 160 of them so the total clears the same resident bar as the phases above.
-    let rec_len: int = 204800
+    let rec_len: int = 262144
     let rec_count: int = 160
     var rec_hold: List<Bytes> = []
     for i: int in 0..rec_count {

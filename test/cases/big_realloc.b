@@ -18,10 +18,15 @@
 //
 // Contents are checked with crc32 over the whole range, which changes if a
 // copy started at the wrong offset, stopped short, or landed in the wrong
-// block. The threshold is 128 KB today, so the sizes bracket 64 KB, 128 KB and
-// 256 KB: the case still crosses if the threshold moves anywhere between them.
-// Every number is printed rather than compared in the program, so the two
-// backends are diffed against each other and against a golden.
+// block. Every number is printed rather than compared in the program, so the
+// two backends are diffed against each other and against a golden.
+//
+// The sizes are chosen against a 256 KB (262144-byte) threshold, and a Bytes
+// or List capacity only ever doubles, so which side of the line a case lands on
+// is a property of the number written here. Move the threshold and these stop
+// crossing — they keep passing, having tested nothing — so test/rss_release.sh
+// pins the threshold's value and fails if it changes, which is the signal to
+// come back and retune every size below.
 
 import std.io
 
@@ -46,7 +51,8 @@ fn built_by_push(count: int) -> Bytes {
 fn filled_with_markers(count: int, base: int) -> Bytes {
     let out: Bytes = Bytes.filled(count, base)
     let marks: List<int> = [0, 1, 4095, 4096, 65535, 65536, 65537,
-                            131071, 131072, 131073, 262143, 262144]
+                            131071, 131072, 131073, 262143, 262144, 262145,
+                            524287, 524288]
     for i: int in 0..marks.len() {
         let at: int = marks[i]
         if at < count { out.set(at, (i % 200) + 40) }
@@ -71,47 +77,48 @@ fn list_digest(values: List<int>) -> int {
 
 fn main() {
     // --- Bytes: push, from an empty buffer up past two doublings of the
-    // threshold. The doublings go 8, 16, ... 65536 (heap), 131072 (mapped),
-    // 262144 (mapped), so this crosses once and then grows map-to-map.
-    let pushed: Bytes = built_by_push(200000)
+    // threshold. The doublings go 8, 16, ... 131072 (heap), 262144 (mapped),
+    // 524288 (mapped), so this crosses once and then grows map-to-map.
+    let pushed: Bytes = built_by_push(300000)
     report("bytes-push", pushed)
 
     // --- Bytes: reserve, heap block to mapped block, with a real payload to
-    // copy. 100000 bytes sits under the threshold; the reserve doubles it to
-    // 200000, which is over.
-    let grown: Bytes = filled_with_markers(100000, 65)
+    // copy. 200000 bytes sits under the threshold; the reserve doubles it to
+    // 400000, which is over.
+    let grown: Bytes = filled_with_markers(200000, 65)
     let before_grown: int = grown.crc32(0, grown.len())
-    grown.reserve(131072)
+    grown.reserve(300000)
     io.println("bytes-reserve-cross len {grown.len()} crc {grown.crc32(0, grown.len())} unchanged {grown.crc32(0, grown.len()) == before_grown}")
 
-    // --- Bytes: reserve, mapped block to a larger mapped block. 150000 is
+    // --- Bytes: reserve, mapped block to a larger mapped block. 300000 is
     // already over the threshold, so this is the map-to-map copy.
-    let mapped: Bytes = filled_with_markers(150000, 66)
+    let mapped: Bytes = filled_with_markers(300000, 66)
     let before_mapped: int = mapped.crc32(0, mapped.len())
-    mapped.reserve(400000)
+    mapped.reserve(700000)
     io.println("bytes-reserve-mapped len {mapped.len()} crc {mapped.crc32(0, mapped.len())} unchanged {mapped.crc32(0, mapped.len()) == before_mapped}")
 
     // --- Bytes: resize across the threshold. The kept prefix must survive the
     // copy and the regrown range must read zero, which is the rule resize has
-    // whichever side of the threshold it lands on.
+    // whichever side of the threshold it lands on. 100000 doubles to 200000 and
+    // then to 400000, which is over.
     let resized: Bytes = filled_with_markers(100000, 67)
     let before_resized: int = resized.crc32(0, 100000)
     resized.resize(300000)
     io.println("bytes-resize len {resized.len()} kept {resized.crc32(0, 100000) == before_resized} tail-crc {resized.crc32(100000, 300000)}")
 
     // --- List: push across the threshold. Slots are eight bytes, so the
-    // capacity doublings cross at 16384 slots = 131072 bytes and grow
-    // map-to-map after that.
+    // capacity doublings cross at 32768 slots = 262144 bytes and grow
+    // map-to-map at 65536 slots after that.
     var ints: List<int> = []
-    for index: int in 0..40000 {
+    for index: int in 0..70000 {
         ints.push(index * 3 + 1)
     }
     io.println("list-push len {ints.len()} digest {list_digest(ints)} first {ints[0]} last {ints[ints.len() - 1]}")
 
-    // --- List: reserve from a heap backing (8192 slots = 65536 bytes) to a
-    // mapped one (32768 slots = 262144 bytes), copying 64 KB of live slots.
+    // --- List: reserve from a heap backing (16384 slots = 131072 bytes) to a
+    // mapped one (32768 slots = 262144 bytes), copying 128 KB of live slots.
     var reserved: List<int> = []
-    for index: int in 0..8192 {
+    for index: int in 0..16384 {
         reserved.push(index * 7 + 2)
     }
     let before_reserved: int = list_digest(reserved)
@@ -120,10 +127,10 @@ fn main() {
 
     // --- List: insert at the front on a full heap backing, which grows across
     // the threshold and then memmoves every live slot up one inside the new
-    // block. Pushing exactly 8192 leaves length equal to capacity, so the
-    // insert is the call that grows.
+    // block. Pushing exactly 16384 (131072 bytes, the last heap doubling)
+    // leaves length equal to capacity, so the insert is the call that grows.
     var inserted: List<int> = []
-    for index: int in 0..8192 {
+    for index: int in 0..16384 {
         inserted.push(index * 11 + 5)
     }
     inserted.insert(0, 424242)

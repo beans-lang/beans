@@ -97,9 +97,12 @@ read -r n_base n_ab n_fb n_al n_fl n_as n_fs n_ar n_fr < <(drive "$tmp/rss-nativ
 want_drop "native bytes" "$n_base" "$n_ab" "$n_fb"
 want_drop "native lists" "$n_base" "$n_al" "$n_fl"
 want_drop "native strings" "$n_base" "$n_as" "$n_fs"
-# The records-sized (200 KB) blocks return only when the threshold reaches below
-# them: at a 256 KB threshold they stay on malloc and macOS keeps them resident.
-want_drop "native records (200 KB)" "$n_base" "$n_ar" "$n_fr"
+# The records-sized blocks are 262144 bytes, the backing a 247 KB response body
+# actually lands in once a Bytes has doubled its way there, and the first
+# doubling step at or above the map threshold. It is the tripwire directly above
+# the threshold: raise the threshold and a real response body stops returning
+# its pages, and this line fails.
+want_drop "native records (256 KB)" "$n_base" "$n_ar" "$n_fr"
 
 echo "checking freed large allocations leave RSS (interpreter, Bytes)"
 read -r i_base i_ab i_fb i_al i_fl i_as i_fs i_ar i_fr < <(drive "$BEANSC" run "$prog")
@@ -126,19 +129,36 @@ echo "  interp records ran (base=${i_base}K allocated=${i_ar}K freed=${i_fr}K); 
 # golden, so a copy that started at the wrong offset, stopped short, or landed
 # in the wrong block shows up as a changed number rather than as nothing.
 echo "checking a grown backing keeps its bytes across the map threshold"
+# Every size in big_realloc.b is chosen to land on a particular side of the map
+# threshold, and a Bytes or List capacity only ever doubles, so moving the
+# threshold silently moves the cases to the wrong side: they stop crossing it
+# and go on passing, having tested nothing. The same is true of the records
+# phase above, whose 262144-byte blocks are the first doubling step at or over
+# the threshold. So the number itself is pinned here — not as a test of the
+# value, but so that changing it fails loudly and sends whoever changed it back
+# to retune the sizes in both files.
+want_threshold='#define RT_BIG_MMAP_MIN (256u * 1024u)'
+if ! grep -qF "$want_threshold" runtime/beans_rt.c; then
+    echo "rss_release: the large-block map threshold is no longer 256 KB." >&2
+    echo "The sizes in test/cases/big_realloc.b and the records phase of" >&2
+    echo "test/cases/rss_release.b bracket that number and must be retuned" >&2
+    echo "around the new one, or they will keep passing without crossing it." >&2
+    grep -n 'define RT_BIG_MMAP_MIN' runtime/beans_rt.c >&2
+    exit 1
+fi
 realloc_prog=test/cases/big_realloc.b
 "$BEANSC" build "$realloc_prog" -o "$tmp/big-realloc" >"$tmp/realloc-build.log" 2>&1
 "$tmp/big-realloc" >"$tmp/realloc-native.out"
 "$BEANSC" run "$realloc_prog" >"$tmp/realloc-interp.out"
 diff -u "$tmp/realloc-interp.out" "$tmp/realloc-native.out"
 diff -u - "$tmp/realloc-native.out" <<'EXPECTED'
-bytes-push len 200000 crc 928319269
-bytes-reserve-cross len 100000 crc 694084198 unchanged true
-bytes-reserve-mapped len 150000 crc 1918666032 unchanged true
+bytes-push len 300000 crc 2471502865
+bytes-reserve-cross len 200000 crc 842714851 unchanged true
+bytes-reserve-mapped len 300000 crc 1574020299 unchanged true
 bytes-resize len 300000 kept true tail-crc 1558206587
-list-push len 40000 digest 433613750 first 1 last 119998
-list-reserve len 8192 unchanged true digest 622694251
-list-insert len 8193 head 424242 second 5 last 90106 digest 695412420
+list-push len 70000 digest 176966798 first 1 last 209998
+list-reserve len 16384 unchanged true digest 203612390
+list-insert len 16385 head 424242 second 5 last 180218 digest 809618687
 EXPECTED
 
 echo "ok rss: 32 MiB of freed Bytes and List backings returned to the OS, and a grow across the threshold keeps every byte"
