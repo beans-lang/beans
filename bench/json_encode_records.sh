@@ -32,7 +32,8 @@ clang -DBEANS_JSON_SCALAR_SCAN "${common[@]}" \
     -o build/bench_json_encode_records_scalar
 
 echo "== records shape (reported; scan is not this shape's bottleneck) =="
-records_simd=$(ROUNDS="$rounds" build/bench_json_encode_records_simd)
+records_simd=$(ROUNDS="$rounds" MODE=records \
+    build/bench_json_encode_records_simd)
 records_scalar=$(ROUNDS="$rounds" MODE=records \
     build/bench_json_encode_records_scalar)
 echo "  vector: $records_simd"
