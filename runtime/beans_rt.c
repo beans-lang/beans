@@ -849,6 +849,14 @@ static void* rt_big_realloc(void* p, unsigned long long old_bytes,
     // A transition, or a grow of a mapped block: place fresh, copy the overlap,
     // release the old mapping or block. realloc does not zero grown bytes, so
     // neither does this; a caller that grows a list fills the new tail itself.
+    //
+    // The overlap is min(old, new), so this is also a correct shrink, including
+    // one that crosses back below the threshold onto the heap. No caller shrinks
+    // a backing — bytes_grow, beans_bytes_resize and beans_list_reserve all
+    // return early when the request fits, and push and insert only double — so
+    // the direction that runs is the grow, which test/cases/big_realloc.b drives
+    // through this arm from both sides of the threshold. Writing the general
+    // realloc rather than a grow-only one keeps that the caller's choice.
     void* np = rt_big_alloc(new_bytes);
     if (!np) return NULL;
     unsigned long long copy = old_bytes < new_bytes ? old_bytes : new_bytes;

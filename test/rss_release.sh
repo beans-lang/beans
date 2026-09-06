@@ -113,4 +113,32 @@ echo "  interp lists ran (base=${i_base}K allocated=${i_al}K freed=${i_fl}K); no
 echo "  interp strings ran (base=${i_base}K allocated=${i_as}K freed=${i_fs}K); not asserted — interpreter string churn, not one object"
 echo "  interp records ran (base=${i_base}K allocated=${i_ar}K freed=${i_fr}K); not asserted — the interpreter's per-iteration churn dominates 160 blocks"
 
-echo "ok rss: 32 MiB of freed Bytes and List backings returned to the OS"
+# --- contents across the threshold ------------------------------------------
+#
+# The samples above count pages; they say nothing about what is in them. A grow
+# that crosses the threshold is not a realloc: it is a fresh block, a memcpy of
+# the overlap and a release of the old one, and so is a grow of a block that is
+# already mapped. test/cases/big_realloc.b drives every call site that can do
+# that — push, reserve and resize on a Bytes, push, reserve and insert on a
+# List — starting once below the threshold so the grow crosses it and once
+# above so it is map-to-map, and prints a crc32 or a positional digest of the
+# result. Both backends must print the same lines and both must match the
+# golden, so a copy that started at the wrong offset, stopped short, or landed
+# in the wrong block shows up as a changed number rather than as nothing.
+echo "checking a grown backing keeps its bytes across the map threshold"
+realloc_prog=test/cases/big_realloc.b
+"$BEANSC" build "$realloc_prog" -o "$tmp/big-realloc" >"$tmp/realloc-build.log" 2>&1
+"$tmp/big-realloc" >"$tmp/realloc-native.out"
+"$BEANSC" run "$realloc_prog" >"$tmp/realloc-interp.out"
+diff -u "$tmp/realloc-interp.out" "$tmp/realloc-native.out"
+diff -u - "$tmp/realloc-native.out" <<'EXPECTED'
+bytes-push len 200000 crc 928319269
+bytes-reserve-cross len 100000 crc 694084198 unchanged true
+bytes-reserve-mapped len 150000 crc 1918666032 unchanged true
+bytes-resize len 300000 kept true tail-crc 1558206587
+list-push len 40000 digest 433613750 first 1 last 119998
+list-reserve len 8192 unchanged true digest 622694251
+list-insert len 8193 head 424242 second 5 last 90106 digest 695412420
+EXPECTED
+
+echo "ok rss: 32 MiB of freed Bytes and List backings returned to the OS, and a grow across the threshold keeps every byte"
