@@ -120,6 +120,41 @@ fn head_framing() {
     }
 }
 
+// Keeps writing the pair from offset 0 until the socket refuses it, and
+// reports how it was refused. Runs on a fiber so a full socket buffer parks in
+// the netpoller rather than answering "timeout" from the thread path — the
+// refusal that matters here is the peer's, not the buffer's.
+fn write_until_refused(stream: net.TcpStream, head: Bytes, body: Bytes) -> string {
+    for attempt: int in 0..64 {
+        match stream.write_vectored(head, body, 0) {
+            ok(_) => {}
+            err(problem) => { return "err {problem.kind}" }
+        }
+    }
+    return "no error after 64 writes"
+}
+
+// A peer that has gone away must come back as an error, never as a signal.
+// send() carries MSG_NOSIGNAL on Linux for exactly this; the vectored send has
+// to carry it too, or a client that disconnects while a large response is in
+// flight takes the whole server down with it. macOS sets SO_NOSIGPIPE on the
+// socket and cannot show the difference, so this case is only a real test on
+// Linux — which is where CI runs it.
+fn peer_closed() {
+    let listener: net.TcpListener = net.TcpListener.bind("127.0.0.1", 0)
+        .expect("bind")
+    let port: int = listener.port().expect("port")
+    let client: net.TcpStream = net.TcpStream.connect("127.0.0.1", port)
+        .expect("connect")
+    let server: net.TcpStream = listener.accept().expect("accept")
+    let closed: bool = client.close().expect("close")
+    let head: Bytes = pattern(64)
+    let body: Bytes = pattern(1048576)
+    let writer: Brew<string> = brew write_until_refused(server, head, body)
+    let outcome: string = writer.join().expect("join")
+    io.println("peer-closed: {outcome}")
+}
+
 fn main() {
     // The body is empty and the head is the whole write.
     case("empty-body", 64, 0)
@@ -133,4 +168,5 @@ fn main() {
     // Both large, so a resume can land inside either.
     case("both-large", 262144, 262144)
     head_framing()
+    peer_closed()
 }

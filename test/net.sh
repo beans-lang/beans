@@ -532,6 +532,11 @@ fi
 # joined the old way. `short-writes true` on those rows is part of the golden:
 # if a kernel ever took them whole, the resume would stop being tested and the
 # expectation would fail rather than quietly passing.
+#
+# `peer-closed` is the SIGPIPE case: the pair is sent with sendmsg and
+# MSG_NOSIGNAL, so a peer that has gone away is `err reset`. macOS sets
+# SO_NOSIGPIPE on every socket and passes this line either way; on Linux a
+# vectored write without the flag ends the process instead of printing it.
 echo "checking vectored writes in both backends"
 ./build/beansc run examples/net_vectored.b >"$tmp/vec-interp"
 ./build/beansc build examples/net_vectored.b -o "$tmp/vec-native" \
@@ -548,6 +553,7 @@ both-large bytes 524288 identical true short-writes true
 head-only forbids-body false declares-1MiB true ends-blank-line true
 head+body equals whole response: true lens 1048661 1048661
 204 with a body: refused invalid
+peer-closed: err reset
 EXPECTED
 
 echo "ok vectored writes: head+body in one send, resume across the boundary"

@@ -12401,8 +12401,8 @@ static int net_errno(void) { return net_errno_map((int)WSAGetLastError()); }
 // closed" test the entry points already make stays exactly true, and no valid
 // handle loses a bit crossing the boundary. Only the conversions are named; the
 // word representation is unchanged.
-// writev, for beans_net_send_pair_wait. The Windows arm uses WSASend from
-// winsock2.h, included above.
+// struct iovec, for beans_net_send_pair_wait's sendmsg. The Windows arm uses
+// WSASend from winsock2.h, included above.
 #if !defined(_WIN32)
 #include <sys/uio.h>
 #endif
@@ -13122,6 +13122,13 @@ long long beans_net_send_from_wait(long long fd, const void* bytes,
 // The offset is into the concatenation, so a short write resumes correctly
 // whether it stopped inside the head or inside the body, and the caller never
 // has to know which.
+//
+// sendmsg, not writev. writev takes no flags, so on Linux it cannot carry
+// MSG_NOSIGNAL, and a peer that has gone away would end the process with
+// SIGPIPE instead of answering EPIPE — the exact failure the comment above
+// NET_NOSIGNAL says every send here must rule out. macOS covers the socket
+// with SO_NOSIGPIPE at creation, so it never showed there; Linux has only the
+// per-call flag, and sendmsg is the vectored call that takes one.
 //   req[0] in: offset into head+body; out: bytes written by this call
 //   req[1] out: OS error code when the returned status is not 0
 //   req[2] in: 1 skips the nonblocking flip; out: 1 when fiber-prepared
@@ -13200,9 +13207,13 @@ long long beans_net_send_pair_wait(long long fd,
             iov[1].iov_len = (size_t)second_len;
             count = 2;
         }
+        struct msghdr msg;
+        memset(&msg, 0, sizeof msg);
+        msg.msg_iov = iov;
+        msg.msg_iovlen = count;
         do {
             if (net_fp("send", NET_FP_SEND)) { wrote = -1; continue; }
-            wrote = writev(net_fd_of(fd), iov, count);
+            wrote = sendmsg(net_fd_of(fd), &msg, NET_NOSIGNAL);
         } while (wrote < 0 && net_errno() == EINTR);
 #endif
         if (wrote >= 0) {
