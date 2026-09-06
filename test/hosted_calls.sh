@@ -98,12 +98,13 @@ for line in 'tty=true' 'size=24x80' 'done fd=0' 'TERM_START=cooked' \
 done
 
 echo "checking a declaration that does not fit a runtime entry is refused"
-# These two run with a working C driver on purpose. A declaration that lies
-# about one of the runtime's own signatures must be refused where the call is
-# made, not quietly re-routed to a shim that would call the same function with
-# the wrong words. The C ABI cannot diagnose either of these: the linker does
-# not compare types, so the natively built form of the first one calls a
-# one-argument function with two words and is answered rather than refused.
+# Every one of these runs with a working C driver on purpose. A declaration
+# that lies about one of the runtime's own signatures must be refused where the
+# call is made, not quietly re-routed to a shim that would call the same
+# function with the wrong words wherever a compiler happens to exist. The C ABI
+# diagnoses none of them: a linker does not compare types, so the natively
+# built form of the first calls a one-argument function with two words and is
+# answered rather than refused.
 cat >"$tmp/wrong_arity.b" <<'ARITY'
 import std.io
 extern "C" fn beans_term_is_tty(fd: int, extra: int) -> int
@@ -141,6 +142,18 @@ fn main() {
     unsafe { io.println("tty {beans_term_is_tty(0, 1 as i32)}") }
 }
 VARIADIC
+# A result narrowed to one bit. The invoker could carry it — the word comes
+# back whole — but a native build reads the same call as a C `_Bool`, which
+# Clang takes from the low byte, so a width of 256 or an address ending in a
+# zero byte would be false there and true here. Two backends disagreeing about
+# a wrong answer is worse than one refusing it.
+cat >"$tmp/narrow_result.b" <<'NARROW'
+import std.io
+extern "C" fn beans_term_is_tty(fd: int) -> bool
+fn main() {
+    unsafe { io.println("tty {beans_term_is_tty(0)}") }
+}
+NARROW
 # One `local` per name: bash expands every argument of `local` before it
 # assigns any of them, so a name used in a later assignment on the same line
 # is still unset when it is read. Under `set -u` that read happens inside the
@@ -165,6 +178,7 @@ check_refusal() {
 check_refusal "$tmp/wrong_arity.b" "does not match the Beans runtime entry"
 check_refusal "$tmp/wrong_kind.b" "takes only integers and pointers"
 check_refusal "$tmp/wrong_result.b" "every one of those returns an integer"
+check_refusal "$tmp/narrow_result.b" "every one of those returns an integer"
 check_refusal "$tmp/wrong_variadic.b" "is variadic, but that name is a Beans runtime entry"
 
 echo "checking an interpreter running under an interpreter reaches the same entries"

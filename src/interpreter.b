@@ -14891,12 +14891,19 @@ class TreeInterpreter {
                 function,
                 "the extern C declaration of {function.extern_name} is variadic, but that name is a Beans runtime entry with a fixed signature")
         }
+        // `bool` is refused along with `float`, and for a sharper reason than
+        // "the invoker cannot carry it". It can: the word comes back whole.
+        // But a native build would read the same call as a C `_Bool`, which
+        // Clang takes from the low byte of the returned register — so a status
+        // of 256, or an address ending in a zero byte, is `false` there and
+        // `true` here. Every one of these entries returns a whole `long long`;
+        // a declaration that narrows it to one bit is wrong, and the two
+        // backends would disagree about a wrong answer rather than refuse it.
         let result_name: string =
             canonical_hir_name(function.result.name)
         if result_name != "unit" &&
            result_name != "RawPtr" &&
            result_name != "CFunctionPtr" &&
-           result_name != "bool" &&
            !hir_is_integer(function.result) {
             return self.fail_extern(
                 function,
@@ -14990,9 +14997,6 @@ class TreeInterpreter {
             result = TreeValue.host_pointer(
                 raw as u64, callback_type)
         } else if result_name != "unit" {
-            // `bool` is safe here where the direct word path refuses it: a
-            // hosted entry returns a whole `long long`, so every bit of the
-            // word is defined, not just the low byte a C `_Bool` would set.
             result = self.ffi_integer_result(
                 function.result, raw)
         }
