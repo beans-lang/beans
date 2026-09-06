@@ -234,6 +234,7 @@ test-runtime: $(BIN)
 	./test/child.sh
 	bash ./test/encoding.sh
 	bash ./test/json_direct.sh
+	bash ./test/json_stream_decode.sh
 	bash ./test/list_iteration.sh
 	bash ./test/oom.sh
 	bash ./test/sanitizer_gates.sh
@@ -372,6 +373,7 @@ test-core: $(BIN)
 	bash ./test/api_names.sh
 	bash ./test/encoding.sh
 	bash ./test/json_direct.sh
+	bash ./test/json_stream_decode.sh
 	bash ./test/encoding_symbols.sh
 	bash ./test/encoding_outputs.sh
 	bash ./test/encoding_cache.sh
