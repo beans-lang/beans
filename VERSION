@@ -32,8 +32,8 @@ language=1.0
 # beans_alloc_bytes — the pooled allocator without the recycled-block payload
 # memset, for callers that fill the whole payload the same instant (a decoded
 # string's bytes and its NUL terminator, a Bytes buffer's length). The typed
-# JSON stream decoder hands it to its bridge as the string-payload callback so
-# a 101 KB /echo body stops zeroing two thousand string buffers it overwrites
+# JSON decoder hands it to its bridge as the string-payload callback so a
+# 101 KB /echo body stops zeroing two thousand string buffers it overwrites
 # immediately (issue #144). Same size class, header and collector shape as
 # beans_alloc; only the recycled payload zeroing is skipped, and only on the
 # pooled arm — the non-pooled arm for large blocks still zeroes.
