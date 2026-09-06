@@ -4,6 +4,26 @@ This file records user-facing changes in each Beans release.
 
 ## [Unreleased]
 
+## [0.1.39] - 2026-09-06
+
+Two things the language did not have, one refusal it should always have made,
+and one rule about what happens when construction fails. The runtime ABI is
+unchanged at 16.
+
+Read the two entries under Changed before upgrading. Both are breaking, and
+both are breaking because the two backends had been reading the same program
+differently, so there was no single meaning to keep. `+` on a string passed
+`beansc check` and ran under the tree interpreter, and only a native build
+refused it — as a message about the LLVM emitter rather than about the program.
+A `deinit` ran on an object whose `init` had panicked, read a field the
+initializer never reached, and turned a contained failure into a dead process.
+
+The additions are the other half of the same story: a generic class could not
+extend a base class, and a `const` could not size a fixed array. Neither was
+refused where it was written — the first reached the emitter, the second the
+parser — so both are cases of the checker and the backends disagreeing about
+what the language is.
+
 ### Added
 
 - **A generic class may now extend another class.** The language did not have
