@@ -540,11 +540,13 @@ fi
 # SO_NOSIGPIPE on every socket and passes this line either way; on Linux a
 # vectored write without the flag ends the process instead of printing it.
 #
-# The `text-*` rows are write_vectored_text: the same pair send with a string
-# body instead of a Bytes one. The native backend sends the string where it
-# lives with sendmsg; the tree interpreter, whose bootstrap predates the entry,
-# joins head and body and sends that once — so both must print the same bytes,
-# the same short-write boundary, and `peer-closed-text: err reset`.
+# The `text-*` and `text resume from` rows are write_vectored_text: the same
+# pair send with a string body instead of a Bytes one, driven the same thread
+# way and with the resume driven by hand so it does not depend on the kernel.
+# The native backend sends the string where it lives with sendmsg; the tree
+# interpreter, whose bootstrap predates the entry, joins head and body and
+# sends that once — so both must print the same bytes, the same resumed tails,
+# and `peer-closed-text: err reset`.
 echo "checking vectored writes in both backends"
 ./build/beansc run examples/net_vectored.b >"$tmp/vec-interp"
 ./build/beansc build examples/net_vectored.b -o "$tmp/vec-native" \
@@ -570,10 +572,18 @@ head-only forbids-body false declares-1MiB true ends-blank-line true
 head+body equals whole response: true lens 1048661 1048661
 204 with a body: refused invalid
 peer-closed: err reset
-text-empty-body bytes 64 identical true short-writes false
-text-empty-head bytes 39 identical true short-writes false
-text-small bytes 176 identical true short-writes false
-text-one-mib bytes 1048713 identical true short-writes true
+text-empty-body bytes 64 identical true calls>0 true
+text-empty-head bytes 39 identical true calls>0 true
+text-small bytes 176 identical true calls>0 true
+text-one-mib bytes 1048713 identical true calls>0 true
+text resume from 0 of 137+4096: bytes 4233 identical true calls 1
+text resume from 1 of 137+4096: bytes 4232 identical true calls 1
+text resume from 136 of 137+4096: bytes 4097 identical true calls 1
+text resume from 137 of 137+4096: bytes 4096 identical true calls 1
+text resume from 138 of 137+4096: bytes 4095 identical true calls 1
+text resume from 2000 of 137+4096: bytes 2233 identical true calls 1
+text resume from 4232 of 137+4096: bytes 1 identical true calls 1
+text resume from 4233 of 137+4096: bytes 0 identical true calls 0
 peer-closed-text: err reset
 EXPECTED
 
