@@ -106,7 +106,69 @@ for class in y n i; do
     fi
 done
 
-# 4. ASan/UBSan over both, in both allocator modes. The emitted IR, the runtime
+# 4. A decoded string must still be a C string.
+#
+#    Every Beans string is allocated one byte longer than its length because
+#    the runtime hands the pointer straight to C — beans_file_open, lstat and
+#    open all take one as a `char*`. Nothing inside the language reads that
+#    byte, since a string's length lives in its allocation header, so no
+#    amount of decoding, printing or re-encoding above can tell a terminated
+#    string from an unterminated one. The decoder used to get the terminator
+#    for free from beans_alloc, which zeroes a recycled block; it now uses
+#    beans_alloc_bytes, which deliberately does not, and writes the terminator
+#    itself. This is what holds it to that.
+#
+#    A missing terminator is only visible when the byte it should occupy is
+#    not already zero, so the case decodes a LONGER string of the same size
+#    class first and lets it drop: the pool recycles that block without
+#    zeroing it, leaving the long string's characters where the short string's
+#    terminator belongs. That also means BEANS_NO_POOL=1 cannot see this — its
+#    blocks all come from a zeroing allocator — which is why this runs pooled
+#    and why the golden records the size class each path exercised. The path
+#    lengths below span three classes.
+echo "checking a decoded string is still a C string"
+"$beansc" build test/cases/encoding_json_typed_cstring.b -o "$tmp/cstring" >/dev/null
+probe_dir=build/json_nul_probe
+rm -rf "$probe_dir"
+mkdir -p "$probe_dir"
+repeat_char() {
+    local want=$1 char=$2 out=''
+    while [[ ${#out} -lt $want ]]; do out+="$char"; done
+    printf '%s' "$out"
+}
+: >"$tmp/cstring.out"
+for stem_len in 1 6 10 17 27; do
+    target="$probe_dir/$(repeat_char "$stem_len" f).t"
+    length=${#target}
+    # A path whose length is 15 mod 16 fills its class exactly, so no longer
+    # string of the same class exists to prime the block with — the case would
+    # pass whatever the decoder did. Refuse rather than pretend to test.
+    if [[ $(( length % 16 )) -eq 15 ]]; then
+        echo "path $target (length $length) fills its size class; no primer" \
+             "can reach past it, so this case would prove nothing" >&2
+        exit 1
+    fi
+    total=$(( (32 + length) & ~15 ))
+    primer_len=$(( total - 16 - 1 ))
+    printf 'hello' >"$target"
+    printf '{"s":"%s"}' "$(repeat_char "$primer_len" X)" >"$tmp/cstring.prime"
+    printf '{"s":"%s"}' "$target" >"$tmp/cstring.path"
+    echo "path length $length in size class $total, primed with $primer_len" \
+        >>"$tmp/cstring.out"
+    "$tmp/cstring" "$tmp/cstring.prime" "$tmp/cstring.path" >>"$tmp/cstring.out"
+done
+diff -u test/cases/encoding_json_typed_cstring.out "$tmp/cstring.out"
+# More than one size class must have been exercised: a run that collapsed onto
+# a single class would be a much weaker test than the golden claims.
+classes=$(sed -n 's/.*in size class \([0-9]*\),.*/\1/p' "$tmp/cstring.out" \
+    | sort -u | wc -l | tr -d ' ')
+if [[ "$classes" -lt 3 ]]; then
+    echo "the C-string check covered $classes size classes, expected 3" >&2
+    exit 1
+fi
+rm -rf "$probe_dir"
+
+# 5. ASan/UBSan over both, in both allocator modes. The emitted IR, the runtime
 #    and the same bridge source the driver compiles are instrumented together,
 #    exactly as encoding.sh does it.
 echo "checking the decoder under ASan/UBSan, pooled and unpooled"
@@ -152,4 +214,4 @@ for pool in pooled nopool; do
     diff -u test/cases/json_typed_corpus.out "$tmp/corpus.san.$pool"
 done
 
-echo "ok json typed decode: depth policy, invariant fuzz (${#fuzz_seeds[@]} seeds), JSONTestSuite ($corpus_files files), ASan/UBSan in both pool modes"
+echo "ok json typed decode: depth policy, invariant fuzz (${#fuzz_seeds[@]} seeds), JSONTestSuite ($corpus_files files), C-string terminator across $classes size classes, ASan/UBSan in both pool modes"
