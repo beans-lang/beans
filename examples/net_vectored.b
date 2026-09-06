@@ -27,6 +27,7 @@ import std.io
 import std.net
 import std.http
 import std.thread
+import std.time
 
 // `count` bytes whose value repeats every 251 — a prime, so a resume that
 // lands on the wrong offset shifts the pattern instead of landing back on it.
@@ -178,14 +179,36 @@ fn head_framing() {
 // reports how it was refused. On its own thread the socket is blocking, so a
 // full buffer waits rather than answering "timeout" — the refusal that
 // matters here is the peer's, not the buffer's.
+//
+// The pair is small and the loop pauses between turns, and both of those are
+// load-bearing.
+//
+// Small, because a blocking send does not short-write on Windows: it returns
+// when every byte has been accepted, so a send larger than the send buffer
+// waits for a peer that is never going to read again. Under Wine it does not
+// even end there — a plain Win32 `send` of a megabyte to a closed peer, built
+// with mingw and with no Beans runtime in it, never returns at all, while the
+// same program with a small buffer answers WSAECONNRESET. How much is being
+// written has nothing to do with whether a vanished peer is an error or a
+// signal, so nothing here writes more than a socket buffer holds.
+//
+// Paused, because the reset is not synchronous with our write. The first
+// turn's bytes are what provoke it, and back-to-back turns can put a dozen
+// more on the wire before it lands: sixteen immediate turns of 256 bytes
+// raced past it on a loaded macOS and printed "no error". With a pause the
+// answer arrives on the turn after the first, thirty runs out of thirty. Two
+// hundred turns of one millisecond is a fifth of a second of slack and 25 KB
+// at most, and running them out prints a line no golden accepts rather than
+// waiting forever.
 fn write_until_refused(stream: net.TcpStream, head: Bytes, body: Bytes) -> string {
-    for attempt: int in 0..64 {
+    for attempt: int in 0..200 {
         match stream.write_vectored(head, body, 0) {
             ok(_) => {}
             err(problem) => { return "err {problem.kind}" }
         }
+        time.sleep_nanos(1000000)
     }
-    return "no error after 64 writes"
+    return "no error after 200 writes"
 }
 
 // A peer that has gone away must come back as an error, never as a signal.
@@ -193,7 +216,8 @@ fn write_until_refused(stream: net.TcpStream, head: Bytes, body: Bytes) -> strin
 // to carry it too, or a client that disconnects while a large response is in
 // flight takes the whole server down with it. macOS sets SO_NOSIGPIPE on the
 // socket and cannot show the difference, so this case is only a real test on
-// Linux — which is where CI runs it.
+// Linux — which is where CI runs it. Two buffers, both non-empty, so the send
+// this covers really is the two-iovec one.
 fn peer_closed() {
     let listener: net.TcpListener = net.TcpListener.bind("127.0.0.1", 0)
         .expect("bind")
@@ -203,7 +227,7 @@ fn peer_closed() {
     let server: net.TcpStream = listener.accept().expect("accept")
     let closed: bool = client.close().expect("close")
     let head: Bytes = pattern(64)
-    let body: Bytes = pattern(1048576)
+    let body: Bytes = pattern(64)
     let writer: Thread<string> = thread.spawn(
         fn() move(server, head, body) -> string {
             return write_until_refused(server, head, body)
