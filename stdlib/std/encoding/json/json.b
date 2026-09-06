@@ -886,6 +886,17 @@ pub fn encode_pretty<T>(value: T, indent: string) -> Result<string> {
     return err("typed JSON encoding was not lowered", "unsupported")
 }
 
+/// Appends the compact RFC 8259 encoding of `value` to `target`, after
+/// whatever bytes it already holds, and returns the number of bytes
+/// appended. `target` keeps its existing contents; a caller building a
+/// response body encodes straight into the output buffer instead of taking a
+/// fresh string and copying it in. `T` is validated exactly as `encode`
+/// validates it, and the bytes written match `encode(value)` byte for byte.
+/// The compiler validates the concrete type and replaces this body.
+pub fn encode_into<T>(value: T, target: Bytes) -> Result<int> {
+    return err("typed JSON encoding was not lowered", "unsupported")
+}
+
 fn write_value(value: Value, mode: int) -> Result<string> {
     var status: int = 0
     var buffer: int = 0

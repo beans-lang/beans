@@ -929,47 +929,85 @@ class TreeInterpreter {
         return field.name
     }
 
-    fn tree_json_string(value: string) -> string {
+    // Encodes a JSON string, or `none` when the bytes are not valid UTF-8.
+    // Both native writers (the direct writer and yyjson) reject a string that
+    // is not well-formed UTF-8 — overlong forms, surrogates, anything past
+    // U+10FFFF, truncated or stray continuation bytes — so the interpreter
+    // has to reject the very same set, or the two backends disagree on a
+    // struct that carries such a string (encode returns a value on one side
+    // and an error on the other). The multibyte classification below is byte
+    // for byte the one in beans_json_direct_string.
+    fn tree_json_string(value: string) -> Option<string> {
         let source: Bytes = Bytes.from(value)
         let hex: string = "0123456789ABCDEF"
+        let length: int = source.len()
         var output: Bytes = new Bytes(0)
         output.push(34)
-        for index: int in 0..source.len() {
+        var index: int = 0
+        for index < length {
             let byte: int = source.get(index)
-            if byte == 34 {
-                output.push(92)
-                output.push(34)
-            } else if byte == 92 {
-                output.push(92)
-                output.push(92)
-            } else if byte == 8 {
-                output.push(92)
-                output.push(98)
-            } else if byte == 12 {
-                output.push(92)
-                output.push(102)
-            } else if byte == 10 {
-                output.push(92)
-                output.push(110)
-            } else if byte == 13 {
-                output.push(92)
-                output.push(114)
-            } else if byte == 9 {
-                output.push(92)
-                output.push(116)
-            } else if byte < 32 {
-                output.push(92)
-                output.push(117)
-                output.push(48)
-                output.push(48)
-                output.push(hex.byte_at(byte / 16))
-                output.push(hex.byte_at(byte % 16))
+            if byte < 128 {
+                if byte == 34 {
+                    output.push(92)
+                    output.push(34)
+                } else if byte == 92 {
+                    output.push(92)
+                    output.push(92)
+                } else if byte == 8 {
+                    output.push(92)
+                    output.push(98)
+                } else if byte == 12 {
+                    output.push(92)
+                    output.push(102)
+                } else if byte == 10 {
+                    output.push(92)
+                    output.push(110)
+                } else if byte == 13 {
+                    output.push(92)
+                    output.push(114)
+                } else if byte == 9 {
+                    output.push(92)
+                    output.push(116)
+                } else if byte < 32 {
+                    output.push(92)
+                    output.push(117)
+                    output.push(48)
+                    output.push(48)
+                    output.push(hex.byte_at(byte / 16))
+                    output.push(hex.byte_at(byte % 16))
+                } else {
+                    output.push(byte)
+                }
+                index += 1
             } else {
-                output.push(byte)
+                var need: int = 0
+                if byte >= 194 && byte <= 223 { need = 2 }
+                else if byte >= 224 && byte <= 239 { need = 3 }
+                else if byte >= 240 && byte <= 244 { need = 4 }
+                else { return none }
+                if index + need > length { return none }
+                let c1: int = source.get(index + 1)
+                if (c1 & 192) != 128 { return none }
+                if need == 3 {
+                    let c2: int = source.get(index + 2)
+                    if (c2 & 192) != 128 { return none }
+                    if byte == 224 && c1 < 160 { return none } // overlong
+                    if byte == 237 && c1 > 159 { return none } // surrogate
+                } else if need == 4 {
+                    let c2: int = source.get(index + 2)
+                    let c3: int = source.get(index + 3)
+                    if (c2 & 192) != 128 || (c3 & 192) != 128 { return none }
+                    if byte == 240 && c1 < 144 { return none } // overlong
+                    if byte == 244 && c1 > 143 { return none } // > U+10FFFF
+                }
+                for offset: int in 0..need {
+                    output.push(source.get(index + offset))
+                }
+                index += need
             }
         }
         output.push(34)
-        return output.to_string()
+        return some(output.to_string())
     }
 
     fn tree_json_padding(depth: int, indent: int) -> string {
@@ -1003,7 +1041,7 @@ class TreeInterpreter {
             return some(shown)
         }
         if value.kind == "string" {
-            return some(self.tree_json_string(value.text))
+            return self.tree_json_string(value.text)
         }
         if value.kind == "none" {
             return some("null")
@@ -1051,8 +1089,13 @@ class TreeInterpreter {
                                 let name: string =
                                     self.tree_json_field_name(
                                         declaration, field)
-                                output =
-                                    "{output}{self.tree_json_string(name)}:{if indent != 0 { " " } else { "" }}"
+                                match self.tree_json_string(name) {
+                                    some(key) => {
+                                        output =
+                                            "{output}{key}:{if indent != 0 { " " } else { "" }}"
+                                    }
+                                    none => { return none }
+                                }
                                 match self.tree_json_value(
                                         field_value, depth + 1, indent) {
                                     some(encoded) => {
@@ -1077,6 +1120,57 @@ class TreeInterpreter {
         return none
     }
 
+    // A checked encode can only fail at runtime on a NaN or infinity float;
+    // the native backend reports that as its own message (yyjson write code
+    // 2) and any other refusal as the generic one. tree_json_value collapses
+    // both into `none`, so the driver walks the value to tell them apart and
+    // print the message the native backend prints, keeping the two agreeing.
+    fn tree_json_bad_float(value: TreeValue) -> bool {
+        if value.kind == "float" {
+            let shown: string = "{value.float_data}"
+            return shown == "nan" || shown == "inf" || shown == "-inf" ||
+                   shown == "NaN" || shown == "Infinity" ||
+                   shown == "-Infinity"
+        }
+        if value.kind == "some" && value.items.len() == 1 {
+            return self.tree_json_bad_float(value.items[0])
+        }
+        if value.kind == "list" {
+            for item: TreeValue in value.items {
+                if self.tree_json_bad_float(item) { return true }
+            }
+            return false
+        }
+        if value.kind == "record" {
+            match self.declaration(value.text) {
+                some(declaration) => {
+                    for field: HirField in declaration.fields {
+                        match value.fields.value(field.name) {
+                            some(field_value) => {
+                                if self.tree_json_bad_float(field_value) {
+                                    return true
+                                }
+                            }
+                            none => {}
+                        }
+                    }
+                }
+                none => {}
+            }
+        }
+        return false
+    }
+
+    fn tree_json_encode_error(value: TreeValue) -> TreeValue {
+        let message: string = if self.tree_json_bad_float(value) {
+            "cannot write NaN or infinity as JSON"
+        } else {
+            "cannot encode value as JSON"
+        }
+        return TreeValue.result_err(
+            TreeValue.error(message, "invalid"))
+    }
+
     fn tree_json_encode(
         value: TreeValue, indent_text: Option<string>
     ) -> TreeValue {
@@ -1099,9 +1193,27 @@ class TreeInterpreter {
                 return TreeValue.result_ok(TreeValue.string(encoded))
             }
             none => {
-                return TreeValue.result_err(
-                    TreeValue.error(
-                        "cannot encode value as JSON", "invalid"))
+                return self.tree_json_encode_error(value)
+            }
+        }
+    }
+
+    // encode_into: the same compact serializer as tree_json_encode, appended
+    // to the caller's Bytes after whatever it already holds, returning the
+    // count of bytes appended. On refusal the target is left untouched, and
+    // the error matches tree_json_encode byte for byte.
+    fn tree_json_encode_into(
+        value: TreeValue, target: Bytes
+    ) -> TreeValue {
+        match self.tree_json_value(value, 0, 0) {
+            some(encoded) => {
+                let before: int = target.len()
+                target.append_string(encoded)
+                return TreeValue.result_ok(
+                    TreeValue.integer(target.len() - before))
+            }
+            none => {
+                return self.tree_json_encode_error(value)
             }
         }
     }
@@ -10812,6 +10924,18 @@ class TreeInterpreter {
            arguments.len() == 2 {
             return self.tree_json_encode(
                 arguments[0], some(arguments[1].text))
+        }
+        if node.kind == "call" &&
+           display_symbol(node.resolved) ==
+               "std.encoding.json.encode_into" &&
+           arguments.len() == 2 {
+            match arguments[1].bytes_data {
+                some(target) => {
+                    return self.tree_json_encode_into(
+                        arguments[0], target)
+                }
+                none => {}
+            }
         }
         if node.kind == "builtin_call" {
             return self.builtin_call(node, move arguments)

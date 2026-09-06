@@ -116,7 +116,8 @@ for compiler in "${compilers[@]}"; do
         "Bytes" \
         "typed JSON list items must be scalar or struct values" \
         "cannot combine ignored fields with nested structs or lists" \
-        "typed JSON encoding needs a struct or List<struct>, got int"
+        "typed JSON encoding needs a struct or List<struct>, got int" \
+        "typed JSON encoding needs a struct or List<struct>, got List<int>"
     reject_with "$compiler" test/cases/encoding_xml_typed_bad.b xml_typed \
         "XML element name 'same' maps to both 'first' and 'second'" \
         "XML attribute name 'same' maps to both 'first' and 'second'" \

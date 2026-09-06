@@ -28,6 +28,15 @@ language=1.0
 # an iovec array: a response is a head and a
 # body, the pair needs no allocation to describe, and an array built per
 # response would be the hot-path allocation this entry exists to remove.
+#
+# 17 (also): beans_bytes_reserve_raw — the grow hook json.encode_into hands
+# the std.encoding.json direct writer so it appends JSON straight into a
+# caller-owned Bytes instead of a private malloc it then copies out. One call
+# sets the Bytes length and ensures capacity, returning the backing base and
+# capacity; the bridge, a separate translation unit that must not touch BList,
+# reaches it only through this pointer (req[6]). Emitted only into programs
+# that call json.encode_into; not reached by name from the interpreter, which
+# runs its own append.
 # 16: order kind 7 — a payload-free enum slot is a pointer at its tag word;
 # sort, min and max compare the loaded tags, where an older runtime compared
 # the pointers. No new symbol: the order kind is a compiler-to-runtime contract

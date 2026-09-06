@@ -183,7 +183,23 @@ enum {
     BEANS_JSON_WRITE_COMPACT = 0,
     BEANS_JSON_WRITE_PRETTY_FOUR = 1,
     BEANS_JSON_WRITE_PRETTY_TWO = 2,
+    // encode_into: same bytes as COMPACT, but appended straight into a
+    // caller-owned Bytes through the grow callback in req[6] instead of a
+    // fresh malloc. req[8] is the Bytes handle, req[9] the length it already
+    // holds, and req[4] returns the count of bytes appended.
+    BEANS_JSON_WRITE_APPEND = 3,
 };
+
+// Grows a caller-owned Bytes for the direct writer's append-into mode. See
+// beans_bytes_reserve_raw in runtime/beans_rt.c: sets the logical length to
+// `len`, ensures capacity for `min_cap`, returns the (possibly moved) base
+// pointer, and reports the new capacity through *cap_out. Passed as a
+// function pointer because this bridge is a separate translation unit and
+// must not reach into BList itself.
+typedef unsigned char* (*BeansJsonBytesReserveFn)(void* handle,
+                                                  unsigned long long len,
+                                                  unsigned long long min_cap,
+                                                  unsigned long long* cap_out);
 
 static uint64_t beans_enc_json_map_read_code(yyjson_read_code code) {
     if (code == YYJSON_READ_ERROR_MEMORY_ALLOCATION) return BEANS_JSON_ERR_MEMORY;
@@ -1290,6 +1306,12 @@ typedef struct {
     size_t len;
     size_t cap;
     int oom;
+    // Append-into mode (encode_into): when `reserve` is non-NULL, `data`
+    // points into a caller-owned Bytes rather than a private malloc, and a
+    // grow goes through the callback so the writer writes straight into that
+    // backing. NULL leaves the malloc/realloc path untouched.
+    BeansJsonBytesReserveFn reserve;
+    void* handle;
 } BeansJsonDirect;
 
 typedef struct {
@@ -1310,6 +1332,19 @@ static int beans_json_direct_grow(BeansJsonDirect* out, size_t extra) {
         return 0;
     }
     if (need <= out->cap) return 1;
+    if (out->reserve) {
+        // Append-into mode: the caller's Bytes owns the store and its own
+        // doubling policy. Hand it the bytes already written (out->len) so it
+        // keeps them, and the total it now needs. It panics on real OOM, so a
+        // return is always a success with the base and capacity refreshed.
+        unsigned long long cap = 0;
+        unsigned char* base =
+            out->reserve(out->handle, (unsigned long long)out->len,
+                         (unsigned long long)need, &cap);
+        out->data = (char*)base;
+        out->cap = (size_t)cap;
+        return 1;
+    }
     size_t cap = out->cap ? out->cap : BEANS_JSON_DIRECT_FIRST;
     while (cap < need) {
         if (cap > (SIZE_MAX >> 1)) {
@@ -1814,18 +1849,37 @@ static size_t beans_json_direct_first_cap(
     return want;
 }
 
+// `reserve` NULL means the original mode: the writer owns a private malloc,
+// req[3] returns it, req[4] its length. Non-NULL is encode_into: the writer
+// appends into the caller's Bytes after `start_len` bytes, req[4] returns the
+// count appended, and on error the Bytes is rolled back to `start_len`.
 static long long beans_json_direct_encode(unsigned char* root,
                                           const BeansJsonTypedSchema* schema,
                                           BeansJsonStringLenFn string_len,
-                                          uint64_t* req) {
+                                          uint64_t* req,
+                                          BeansJsonBytesReserveFn reserve,
+                                          void* handle,
+                                          uint64_t start_len) {
     BeansJsonDirectContext context;
     size_t first = beans_json_direct_first_cap(schema, root);
     context.string_len = string_len;
     context.req = req;
-    context.out.data = (char*)malloc(first);
-    context.out.len = 0;
-    context.out.cap = context.out.data ? first : 0;
     context.out.oom = 0;
+    context.out.reserve = reserve;
+    context.out.handle = handle;
+    if (reserve) {
+        unsigned long long cap = 0;
+        unsigned char* base = reserve(handle, start_len,
+                                      (unsigned long long)start_len + first,
+                                      &cap);
+        context.out.data = (char*)base;
+        context.out.len = (size_t)start_len;
+        context.out.cap = (size_t)cap;
+    } else {
+        context.out.data = (char*)malloc(first);
+        context.out.len = 0;
+        context.out.cap = context.out.data ? first : 0;
+    }
     int wrote;
     if (schema->flags & BEANS_JSON_TYPED_ROOT_ARRAY) {
         void* list = root;
@@ -1836,7 +1890,15 @@ static long long beans_json_direct_encode(unsigned char* root,
         wrote = beans_json_direct_object(schema, root, NULL, &context);
     }
     if (wrote != 1) {
-        free(context.out.data);
+        if (reserve) {
+            // Nothing to free — the store is the caller's. Roll the Bytes
+            // back to what it held before, so a failed encode_into leaves the
+            // target exactly as it was.
+            unsigned long long cap = 0;
+            reserve(handle, start_len, start_len, &cap);
+        } else {
+            free(context.out.data);
+        }
         // The DOM walk reports its refusals — null strings and lists, memory
         // trouble — as a memory error, and only bad string bytes as invalid;
         // this path keeps that exact mapping.
@@ -1847,8 +1909,18 @@ static long long beans_json_direct_encode(unsigned char* root,
         req[5] = BEANS_JSON_WERR_MEMORY;
         return BEANS_ENC_ERR_MEMORY;
     }
-    req[3] = (uint64_t)(uintptr_t)context.out.data;
-    req[4] = (uint64_t)context.out.len;
+    if (reserve) {
+        // Commit the final length: the tail written since the last grow lands
+        // now. min_cap == len, so this only sets the length.
+        unsigned long long cap = 0;
+        reserve(handle, (unsigned long long)context.out.len,
+                (unsigned long long)context.out.len, &cap);
+        req[3] = 0;
+        req[4] = (uint64_t)(context.out.len - (size_t)start_len);
+    } else {
+        req[3] = (uint64_t)(uintptr_t)context.out.data;
+        req[4] = (uint64_t)context.out.len;
+    }
     req[7] = UINT64_MAX;
     return BEANS_ENC_OK;
 }
@@ -1858,18 +1930,26 @@ static long long beans_json_direct_encode(unsigned char* root,
 // req[0]=schema, [1]=write mode, [2]=beans_str_len callback
 // out: req[3]=buffer handle, [4]=byte length, [5]=write error,
 //      [7]=field index on an invalid value.
+// encode_into (mode BEANS_JSON_WRITE_APPEND): req[6]=Bytes grow callback,
+// req[8]=Bytes handle, req[9]=length already held; the JSON is appended into
+// that Bytes and req[4] returns the count appended, not a fresh buffer.
 BEANS_ENC_API long long beans_enc_json_typed_encode(
         unsigned char* root, uint64_t* req) {
     const BeansJsonTypedSchema* schema =
         (const BeansJsonTypedSchema*)(uintptr_t)req[0];
     BeansJsonStringLenFn string_len =
         (BeansJsonStringLenFn)(uintptr_t)req[2];
+    int append = req[1] == BEANS_JSON_WRITE_APPEND;
+    BeansJsonBytesReserveFn reserve =
+        append ? (BeansJsonBytesReserveFn)(uintptr_t)req[6] : NULL;
+    void* handle = append ? (void*)(uintptr_t)req[8] : NULL;
+    uint64_t start_len = append ? req[9] : 0;
     req[3] = 0;
     req[4] = 0;
     req[5] = 0;
     req[7] = UINT64_MAX;
     if (!root || !schema || !schema->fields || !schema->complex ||
-        !string_len) {
+        !string_len || (append && !reserve)) {
         req[5] = BEANS_JSON_WERR_INVALID;
         return BEANS_ENC_ERR_INVALID;
     }
@@ -1878,10 +1958,13 @@ BEANS_ENC_API long long beans_enc_json_typed_encode(
     // A/B lever the byte-equality fuzz uses, and the escape hatch if the
     // direct writer is ever suspected in the field. Read once before main,
     // so the hot path neither rescans the environment nor races on a lazy
-    // first read.
-    if (!beans_json_direct_disabled && req[1] == BEANS_JSON_WRITE_COMPACT &&
+    // first read. Append mode writes the same compact bytes, so it takes the
+    // same direct path (and the same DOM fallback for float schemas).
+    int compact = req[1] == BEANS_JSON_WRITE_COMPACT || append;
+    if (!beans_json_direct_disabled && compact &&
         beans_json_direct_eligible(schema, 0))
-        return beans_json_direct_encode(root, schema, string_len, req);
+        return beans_json_direct_encode(root, schema, string_len, req,
+                                        reserve, handle, start_len);
 
     yyjson_mut_doc* doc = yyjson_mut_doc_new(NULL);
     if (!doc) {
@@ -1923,8 +2006,23 @@ BEANS_ENC_API long long beans_enc_json_typed_encode(
             req[5] = BEANS_JSON_WERR_INVALID;
         return BEANS_ENC_ERR_INVALID;
     }
-    req[3] = (uint64_t)(uintptr_t)text;
-    req[4] = (uint64_t)length;
+    if (append) {
+        // A float schema still routes here. yyjson wrote to its own buffer;
+        // append that once into the caller's Bytes and free it — the copy the
+        // direct path avoids, but this path is not the hot one.
+        unsigned long long cap = 0;
+        unsigned char* base =
+            reserve(handle, start_len, start_len + (uint64_t)length, &cap);
+        memcpy(base + start_len, text, length);
+        reserve(handle, start_len + (uint64_t)length,
+                start_len + (uint64_t)length, &cap);
+        free(text);
+        req[3] = 0;
+        req[4] = (uint64_t)length;
+    } else {
+        req[3] = (uint64_t)(uintptr_t)text;
+        req[4] = (uint64_t)length;
+    }
     req[7] = UINT64_MAX;
     return BEANS_ENC_OK;
 }

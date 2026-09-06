@@ -116,6 +116,11 @@ diff -u test/cases/encoding_json_typed_encode.out \
     "$tmp/encoding_json_typed_encode.native"
 grep -q "call i64 @beans_enc_json_typed_encode" \
     build/encoding_json_typed_encode.ll
+# encode_into lowers to the same encoder entry with the append-into grow
+# callback threaded through the request. Lock that callback in the emitted IR
+# so the append path cannot silently fall back to a copy.
+grep -q "@beans_bytes_reserve_raw" \
+    build/encoding_json_typed_encode.ll
 echo "ok typed JSON struct output in interpreter and native code"
 
 ./build/beansc build test/cases/encoding_json_typed_options.b \

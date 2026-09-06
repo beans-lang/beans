@@ -201,9 +201,112 @@ fn show(tag: string, encoded: Result<string>) {
     }
 }
 
-fn giant_cases(rng: Rng) {
+// encode_into is checked against encode on every seeded value: it must append
+// exactly encode's bytes after the target's existing content, return that
+// count, leave the prefix untouched, and — when encode refuses — refuse with
+// the same kind and message while leaving the target unchanged. A mismatch is
+// printed (so direct-vs-dom cmp and the interpreter run both see it) and
+// counted, and the run asserts the count is zero and the checks ran.
+class Tally {
+    pub count: int = 0
+    pub bad: int = 0
+    fn init() {}
+    fn note(matched: bool) {
+        self.count += 1
+        if !matched { self.bad += 1 }
+    }
+}
+
+// `orig` is the target's content before encode_into; `target` its content
+// after. Compare against what encode produced for the same value.
+fn into_matches(encoded: Result<string>, orig: Bytes, target: Bytes,
+                appended: Result<int>) -> bool {
+    match encoded {
+        ok(text) => {
+            match appended {
+                ok(count) => {
+                    let want: Bytes = Bytes.from(text)
+                    if target.len() < orig.len() { return false }
+                    let head: Bytes = target.slice(0, orig.len())
+                    let tail: Bytes = target.slice(orig.len(), target.len())
+                    return head == orig && tail == want &&
+                           count == want.len()
+                }
+                err(_) => { return false }
+            }
+        }
+        err(problem) => {
+            match appended {
+                ok(_) => { return false }
+                err(other) => {
+                    return other.kind == problem.kind &&
+                           other.msg == problem.msg && target == orig
+                }
+            }
+        }
+    }
+}
+
+fn verify_into(tag: string, tally: Tally, encoded: Result<string>,
+               empty_orig: Bytes, empty: Bytes, r_empty: Result<int>,
+               prefix_orig: Bytes, prefix: Bytes, r_prefix: Result<int>) {
+    show(tag, encoded)
+    let ok_empty: bool = into_matches(encoded, empty_orig, empty, r_empty)
+    let ok_prefix: bool = into_matches(encoded, prefix_orig, prefix, r_prefix)
+    tally.note(ok_empty && ok_prefix)
+    if !(ok_empty && ok_prefix) {
+        io.println("{tag}:INTO_MISMATCH empty={ok_empty} prefix={ok_prefix}")
+    }
+}
+
+fn check_outer(tag: string, tally: Tally, value: Outer) {
+    let encoded: Result<string> = json.encode(value)
+    let empty: Bytes = new Bytes(0)
+    let r_empty: Result<int> = json.encode_into(value, empty)
+    let prefix: Bytes = Bytes.from("PFX-")
+    let prefix_orig: Bytes = prefix.slice(0, prefix.len())
+    let r_prefix: Result<int> = json.encode_into(value, prefix)
+    verify_into(tag, tally, encoded, new Bytes(0), empty, r_empty,
+                prefix_orig, prefix, r_prefix)
+}
+
+fn check_outer_list(tag: string, tally: Tally, value: List<Outer>) {
+    let encoded: Result<string> = json.encode(value)
+    let empty: Bytes = new Bytes(0)
+    let r_empty: Result<int> = json.encode_into(value, empty)
+    let prefix: Bytes = Bytes.from("PFX-")
+    let prefix_orig: Bytes = prefix.slice(0, prefix.len())
+    let r_prefix: Result<int> = json.encode_into(value, prefix)
+    verify_into(tag, tally, encoded, new Bytes(0), empty, r_empty,
+                prefix_orig, prefix, r_prefix)
+}
+
+fn check_inner(tag: string, tally: Tally, value: Inner) {
+    let encoded: Result<string> = json.encode(value)
+    let empty: Bytes = new Bytes(0)
+    let r_empty: Result<int> = json.encode_into(value, empty)
+    let prefix: Bytes = Bytes.from("PFX-")
+    let prefix_orig: Bytes = prefix.slice(0, prefix.len())
+    let r_prefix: Result<int> = json.encode_into(value, prefix)
+    verify_into(tag, tally, encoded, new Bytes(0), empty, r_empty,
+                prefix_orig, prefix, r_prefix)
+}
+
+fn check_l1(tag: string, tally: Tally, value: L1) {
+    let encoded: Result<string> = json.encode(value)
+    let empty: Bytes = new Bytes(0)
+    let r_empty: Result<int> = json.encode_into(value, empty)
+    let prefix: Bytes = Bytes.from("PFX-")
+    let prefix_orig: Bytes = prefix.slice(0, prefix.len())
+    let r_prefix: Result<int> = json.encode_into(value, prefix)
+    verify_into(tag, tally, encoded, new Bytes(0), empty, r_empty,
+                prefix_orig, prefix, r_prefix)
+}
+
+fn giant_cases(rng: Rng, tally: Tally) {
     rng.clean = true
-    // Growth-boundary strings: sizes straddling every doubling edge.
+    // Growth-boundary strings: sizes straddling every doubling edge. The
+    // encode_into target's own backing crosses those same boundaries here.
     let sizes: List<int> = [1, 2, 3, 7, 8, 9, 127, 128, 129, 255, 256, 257,
                             511, 512, 513, 1023, 1024, 1025, 4095, 4096,
                             4097, 8191, 65536]
@@ -213,7 +316,7 @@ fn giant_cases(rng: Rng) {
             count: sizes[index],
             flag: true,
         }
-        show("boundary{sizes[index]}", json.encode(value))
+        check_inner("boundary{sizes[index]}", tally, value)
     }
     // A string a megabyte long, twice over.
     for index: int in 0..2 {
@@ -222,7 +325,7 @@ fn giant_cases(rng: Rng) {
             count: index,
             flag: false,
         }
-        show("mega{index}", json.encode(value))
+        check_inner("mega{index}", tally, value)
     }
     // Fifty thousand integers in one list field.
     var wide: List<int> = []
@@ -242,7 +345,7 @@ fn giant_cases(rng: Rng) {
         perhaps: some(50000),
         boxed: none,
     }
-    show("wide", json.encode(wide_outer))
+    check_outer("wide", tally, wide_outer)
     // Five thousand strings, escapes included.
     var chorus: List<string> = []
     for index: int in 0..5000 {
@@ -261,7 +364,7 @@ fn giant_cases(rng: Rng) {
         perhaps: none,
         boxed: some(build_inner(rng)),
     }
-    show("chorus", json.encode(chorus_outer))
+    check_outer("chorus", tally, chorus_outer)
     // Deep nesting through six struct levels.
     let deep: L1 = L1 {
         next: L2 {
@@ -278,33 +381,46 @@ fn giant_cases(rng: Rng) {
         },
         ok: true,
     }
-    show("deep", json.encode(deep))
+    check_l1("deep", tally, deep)
     // Two thousand structs as a root list.
     var flood: List<Outer> = []
     for index: int in 0..2000 {
         flood.push(build_outer(rng))
     }
-    show("flood", json.encode(flood))
+    check_outer_list("flood", tally, flood)
 }
 
 fn main() {
     let seed: int = os.env("FUZZ_SEED").or("20260821").to_int().or(20260821)
     let rounds: int = os.env("FUZZ_ROUNDS").or("2000").to_int().or(2000)
     let rng: Rng = new Rng(seed)
+    let tally: Tally = new Tally()
     for round: int in 0..rounds {
-        show("{round}", json.encode(build_outer(rng)))
+        check_outer("{round}", tally, build_outer(rng))
         if round % 7 == 0 {
             var batch: List<Outer> = []
             for extra: int in 0..rng.below(3) {
                 batch.push(build_outer(rng))
             }
-            show("{round}L", json.encode(batch))
+            check_outer_list("{round}L", tally, batch)
         }
     }
     // The giant section is heavy for the interpreter lane; FUZZ_GIANTS=0
     // keeps that lane to the ordinary rounds.
     if os.env("FUZZ_GIANTS").or("1") != "0" {
-        giant_cases(rng)
+        giant_cases(rng, tally)
+    }
+    io.println("into: checks={tally.count} mismatches={tally.bad}")
+    // Fail loudly and non-zero rather than lean on grepping a transcript that
+    // carries raw control and multibyte bytes: reverting either backend's
+    // encode_into makes this exit non-zero, which the gate's `set -e` catches.
+    if tally.bad > 0 {
+        io.println("FAIL: encode_into disagreed with encode on {tally.bad} of {tally.count} values")
+        os.exit(1)
+    }
+    if tally.count == 0 {
+        io.println("FAIL: no encode_into checks ran")
+        os.exit(1)
     }
     io.println("ok json_direct_fuzz")
 }

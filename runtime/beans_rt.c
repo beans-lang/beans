@@ -8742,6 +8742,25 @@ void beans_bytes_reserve(BList* b, long long n, long long line, long long col) {
     if (n > (1LL << 58)) beans_panic("reserve capacity too large", line, col);
     bytes_grow(b, n);
 }
+// The append-into hook for the std.encoding.json direct writer. That writer
+// lives in a separate translation unit (runtime/encoding/beans_enc_json.c)
+// that may not touch BList, so it grows a caller-owned Bytes only through
+// this pointer, handed to it as req[6]. One call both sets the Bytes logical
+// length to `len` (bytes already written into the backing) and ensures the
+// backing can hold `min_cap` bytes; it returns the — possibly moved — base
+// pointer and reports the capacity through *cap_out, so the writer keeps
+// writing straight into the store without a second buffer. Growth failure
+// panics, exactly as every other Bytes append does.
+unsigned char* beans_bytes_reserve_raw(BList* b, unsigned long long len,
+                                       unsigned long long min_cap,
+                                       unsigned long long* cap_out) {
+    if (min_cap > (unsigned long long)(1LL << 58))
+        beans_panic("JSON output too large", 0, 0);
+    bytes_grow(b, (long long)min_cap);
+    b->len = (long long)len;
+    if (cap_out) *cap_out = (unsigned long long)b->cap;
+    return (unsigned char*)b->data;
+}
 void beans_bytes_fill(BList* b, long long v) {
     memset(b->data, (int)(v & 255), (size_t)b->len);
 }
