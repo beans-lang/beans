@@ -1,4 +1,4 @@
-sizes pair=16 quad=32 five=40
+sizes pair=16 quad=32 five=40 slab=160
 ints n=0 len=0 digest=7
   after insert len=3 digest=230086
   clone=230086 head len=1 digest=239
@@ -65,24 +65,31 @@ ints n=100 len=100 digest=951040833
 pairs n=0 len=1 total=0 copy=1 part=0 first=-1
 quads n=0 len=1 total=0 copy=1 last=9
 fives n=0 len=1 total=0 part=1
+slabs n=0 len=1 total=0 copy=1
 pairs n=1 len=2 total=0 copy=2 part=1 first=-1
 quads n=1 len=2 total=3 copy=2 last=9
 fives n=1 len=2 total=0 part=2
+slabs n=1 len=2 total=0 copy=2
 pairs n=3 len=4 total=966562 copy=4 part=3 first=-1
 quads n=3 len=4 total=742571 copy=4 last=9
 fives n=3 len=4 total=629726 part=4
+slabs n=3 len=4 total=405194 copy=4
 pairs n=4 len=5 total=16499956 copy=5 part=4 first=-1
 quads n=4 len=5 total=9721828 copy=5 last=9
 fives n=4 len=5 total=6995382 part=5
+slabs n=4 len=5 total=2904754 copy=5
 pairs n=5 len=6 total=280523786 copy=6 part=5 first=-1
 quads n=5 len=6 total=126408301 copy=6 last=9
 fives n=5 len=6 total=76973728 part=6
+slabs n=5 len=6 total=20357804 copy=6
 pairs n=17 len=18 total=479045792 copy=18 part=17 first=-1
 quads n=17 len=18 total=393776079 copy=18 last=9
 fives n=17 len=18 total=442386889 part=18
+slabs n=17 len=18 total=630484171 copy=18
 pairs n=100 len=101 total=416686298 copy=101 part=100 first=-1
 quads n=100 len=101 total=5194141 copy=101 last=9
 fives n=100 len=101 total=839938252 part=101
+slabs n=100 len=101 total=946868633 copy=101
 tags n=0 len=1 names= copy=1 sliced=1 first=head
   cleared len=0
 strings n=0 len=0 joined_len=0 copy_first=none

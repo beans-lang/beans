@@ -20,9 +20,13 @@
 //   twenty a twenty-element literal: 160 bytes of slots      1 backing
 //          is past the threshold, but asking once still
 //          costs one buffer where doubling costs four
+//   slab   three 160-byte structs: one element alone is       1 backing
+//          wider than the whole allowance, which is the
+//          other way the fit test can answer no
 //
-// `wide` is the half that proves the threshold is a threshold. Without it a
-// runtime that put every buffer inline, at any size, would pass.
+// `wide` and `slab` are the half that proves the threshold is a threshold.
+// Without them a runtime that put every buffer inline, at any size, would pass
+// every other mode here and blow the pool's size classes in production.
 
 import std.io
 import std.os
@@ -91,6 +95,25 @@ fn wide_round(index: int) -> int {
     return total
 }
 
+struct Slab {
+    pub cells: [int; 20]
+}
+
+fn slab_round(index: int) -> int {
+    var rows: List<Slab> = []
+    for step: int in 0..3 {
+        var cells: [int; 20] =
+            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        cells[0] = index + step
+        rows.push(Slab { cells: cells })
+    }
+    var total: int = 0
+    for slot: int in 0..rows.len() {
+        total = total + rows[slot].cells[0]
+    }
+    return total
+}
+
 fn main() {
     let mode: string = os.env("MODE").or("small")
     let rounds: int = os.env("ROUNDS").or("1000").to_int().or(1000)
@@ -104,8 +127,15 @@ fn main() {
             total = total + six_round(index)
         } else if mode == "twenty" {
             total = total + twenty_round(index)
-        } else {
+        } else if mode == "slab" {
+            total = total + slab_round(index)
+        } else if mode == "wide" {
             total = total + wide_round(index)
+        } else {
+            // Not a fallback: a mistyped mode in the gate would otherwise
+            // count some other shape and pass.
+            io.eprintln("unknown mode '{mode}'")
+            os.exit(2)
         }
     }
     io.println("{mode} rounds={rounds} total={total}")

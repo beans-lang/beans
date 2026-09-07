@@ -11,6 +11,9 @@
 //   Pair                  16 bytes -> 4 slots =  64   inline
 //   Quad                  32 bytes -> 4 slots = 128   inline, exactly at the edge
 //   Five                  40 bytes -> 4 slots = 160   its own buffer from the start
+//   Slab                 160 bytes -> one element is already wider than the
+//                        whole allowance, which is the other way the fit test
+//                        can answer no
 //
 // Lengths 0..5 straddle the initial capacity of 4, 17 forces two doublings, and
 // 100 forces the buffer well past anything that could ride inside a block.
@@ -35,6 +38,10 @@ struct Five {
     pub c: int
     pub d: int
     pub e: int
+}
+
+struct Slab {
+    pub cells: [int; 20]
 }
 
 class Tag {
@@ -172,6 +179,26 @@ fn drive_fives(count: int) {
 // the list must release each one exactly once — which is what the sanitizer
 // lane of this case is checking.
 
+fn drive_slabs(count: int) {
+    var rows: List<Slab> = []
+    for index: int in 0..count {
+        var cells: [int; 20] =
+            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        cells[0] = index
+        cells[19] = mix(index)
+        rows.push(Slab { cells: cells })
+    }
+    var total: int = 0
+    for index: int in 0..rows.len() {
+        total = (total * 7 + rows[index].cells[0] + rows[index].cells[19]) % 1000000007
+    }
+    rows.reserve(24)
+    rows.insert(0, Slab { cells:
+        [7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7] })
+    let copy: List<Slab> = rows.clone()
+    io.println("slabs n={count} len={rows.len()} total={total} copy={copy.len()}")
+}
+
 fn drive_tags(count: int) {
     var tags: List<Tag> = []
     for index: int in 0..count {
@@ -241,7 +268,7 @@ fn drive_map_lists(count: int) {
 }
 
 fn main() {
-    io.println("sizes pair={size_of(Pair)} quad={size_of(Quad)} five={size_of(Five)}")
+    io.println("sizes pair={size_of(Pair)} quad={size_of(Quad)} five={size_of(Five)} slab={size_of(Slab)}")
 
     let lengths: List<int> = [0, 1, 3, 4, 5, 17, 100]
     for index: int in 0..lengths.len() {
@@ -251,6 +278,7 @@ fn main() {
         drive_pairs(lengths[index])
         drive_quads(lengths[index])
         drive_fives(lengths[index])
+        drive_slabs(lengths[index])
     }
     for index: int in 0..lengths.len() {
         drive_tags(lengths[index])

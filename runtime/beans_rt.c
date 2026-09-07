@@ -1334,6 +1334,15 @@ static unsigned long long arc_cycle_objects;
 // is not an object and never went through beans_alloc — so without this
 // counter a list that costs two blocks and a list that costs one report the
 // same number.
+//
+// Reading the pair: a list whose backing rides inside its block adds one to
+// arc_allocations and nothing here, and its backing bytes land in
+// arc_allocated_bytes because they are part of the object's size. A list with
+// its own backing adds one to each counter, and the backing's bytes appear in
+// neither — rt_big_alloc is not beans_alloc. So allocated_bytes went up when
+// the inline backing landed without a byte of new memory being asked for; what
+// moved is which counter the same bytes are counted in. The bench report's
+// memory figure is peak RSS and is unaffected.
 static unsigned long long arc_list_backings;
 #define ARC_ADD(name, value) \
     __atomic_add_fetch(&(name), (unsigned long long)(value), __ATOMIC_RELAXED)
@@ -1716,6 +1725,16 @@ static long long* list_inline_base(BList* l) {
 }
 static int list_backing_is_inline(BList* l, long long meta) {
     return (meta & LIST_INLINE_SHAPE) != 0 && l->data == list_inline_base(l);
+}
+// Whether `capacity` elements of `stride` bytes fit behind a header. Written
+// as a division rather than as `capacity * stride <= LIST_INLINE_MAX` on
+// purpose: the product overflows for a capacity and a stride the callers
+// already accept — the reserve ceiling alone is 2^58 — and an overflowed
+// product wrapping to something small would answer "it fits" for a list whose
+// elements are nowhere near the block. The stride is validated positive by
+// both callers before this is asked, so the division is safe.
+static int list_backing_fits(long long capacity, long long stride) {
+    return capacity <= (long long)(LIST_INLINE_MAX / (unsigned long long)stride);
 }
 typedef struct {
     long long* data;
@@ -4769,10 +4788,9 @@ static void list_backing_grow(BList* l, long long new_cap, long long stride,
 BList* beans_list_new_typed(long long stride, long long ptr_mask) {
     if (stride <= 0 || stride > (1LL << 30))
         beans_panic("invalid list element size", 0, 0);
-    unsigned long long backing = (unsigned long long)4 * (unsigned long long)stride;
-    int inline_backing = backing <= LIST_INLINE_MAX;
+    int inline_backing = list_backing_fits(4, stride);
     BList* l = beans_alloc(
-        (long long)(sizeof(BList) + (inline_backing ? (size_t)backing : 0)),
+        (long long)(sizeof(BList) + (inline_backing ? (size_t)(4 * stride) : 0)),
         2 | ((ptr_mask != 0) << 3) | (inline_backing ? LIST_INLINE_SHAPE : 0));
     l->cap = 4;
     l->stride = stride;
@@ -4780,8 +4798,9 @@ BList* beans_list_new_typed(long long stride, long long ptr_mask) {
     // beans_alloc zeroes what it hands back, so the inline arm is already the
     // zeroed buffer rt_big_zalloc would have made.
     if (!inline_backing) ARC_ADD(arc_list_backings, 1);
-    l->data = inline_backing ? list_inline_base(l)
-                             : rt_big_zalloc(backing);
+    l->data = inline_backing
+                  ? list_inline_base(l)
+                  : rt_big_zalloc((unsigned long long)4 * (unsigned long long)stride);
     if (!l->data) beans_panic("out of memory", 0, 0);
     return l;
 }
@@ -4805,11 +4824,9 @@ static BList* list_new_capacity(long long stride, long long ptr_mask,
     if (byte_stride <= 0 || byte_stride > (1LL << 30))
         beans_panic("invalid list element size", line, col);
     long long cap = capacity > 4 ? capacity : 4;
-    unsigned long long backing =
-        (unsigned long long)cap * (unsigned long long)byte_stride;
-    int inline_backing = backing <= LIST_INLINE_MAX;
+    int inline_backing = list_backing_fits(cap, byte_stride);
     BList* l = beans_alloc(
-        (long long)(sizeof(BList) + (inline_backing ? (size_t)backing : 0)),
+        (long long)(sizeof(BList) + (inline_backing ? (size_t)(cap * byte_stride) : 0)),
         2 | ((ptr_mask != 0) << 3) | (inline_backing ? LIST_INLINE_SHAPE : 0));
     l->cap = cap;
     l->stride = stride;
@@ -4819,8 +4836,9 @@ static BList* list_new_capacity(long long stride, long long ptr_mask,
     // memset in one piece when it is recycled, whether or not the backing
     // rides in it. The fill-[0,len) contract above is unchanged either way.
     if (!inline_backing) ARC_ADD(arc_list_backings, 1);
-    l->data = inline_backing ? list_inline_base(l)
-                             : rt_big_alloc((size_t)backing);
+    l->data = inline_backing
+                  ? list_inline_base(l)
+                  : rt_big_alloc((size_t)cap * (size_t)byte_stride);
     if (!l->data) beans_panic("out of memory", line, col);
     return l;
 }

@@ -32,7 +32,7 @@ diff -u "$tmp/interp" "$tmp/native.out"
 # The golden prints the struct widths it is testing with. If a layout change
 # moved one of them across the threshold the golden would have to change, and
 # these lines say which side each case is on rather than leaving it implied.
-grep -q '^sizes pair=16 quad=32 five=40$' "$tmp/interp"
+grep -q '^sizes pair=16 quad=32 five=40 slab=160$' "$tmp/interp"
 
 echo "counting the blocks a list costs"
 ./build/beansc build test/cases/list_inline_counts.b -o "$tmp/counts" >"$tmp/counts.build"
@@ -52,6 +52,8 @@ clang -O1 -pthread -DBEANS_ARC_STATS -Wno-override-module \
 #          would leave the inline room behind and cost a buffer
 #   twenty a twenty-element literal: 160 bytes of slots is past the
 #          threshold, so one buffer, where doubling from four costs four
+#   slab   three 160-byte structs: one element is already wider than the
+#          whole allowance, the other way the fit test says no
 expect_backings() {
     local mode="$1" per_round="$2" low high
     low=$(MODE="$mode" ROUNDS=1000 "$tmp/counts.stats" 2>&1 >/dev/null \
@@ -75,6 +77,7 @@ expect_backings grow   2
 expect_backings wide   1
 expect_backings six    0
 expect_backings twenty 1
+expect_backings slab   1
 
 # A literal longer than the default four has to reach the capacity constructor;
 # nothing else in the emitter would ask for an exact size.
@@ -99,6 +102,7 @@ expect_headers grow
 expect_headers wide
 expect_headers six
 expect_headers twenty
+expect_headers slab
 
 echo "checking the inline backing under ASan, UBSan and LeakSanitizer"
 clang -O1 -g -pthread -fsanitize=address,undefined -fno-sanitize-recover=undefined \
@@ -107,30 +111,38 @@ clang -O1 -g -pthread -fsanitize=address,undefined -fno-sanitize-recover=undefin
 # Twice, because the two arms of beans_alloc place the block differently and
 # only one of them is a plain malloc ASan can see the bounds of:
 #
-#   BEANS_NO_POOL=1  every object is its own malloc'd block, so freeing or
-#                    reallocating a pointer into the middle of one is a report
-#                    rather than a silently accepted slab address;
-#   pooled           the shipped path, where the block is carved out of a 64 KB
-#                    slab and the check is that nothing walks off it.
+#   pool off  every object is its own malloc'd block, so freeing or
+#             reallocating a pointer into the middle of one is a report rather
+#             than a silently accepted slab address;
+#   pool on   the shipped path, where the block is carved out of a 64 KB slab
+#             and the check is that nothing walks off it.
+#
+# `env -u` and not BEANS_NO_POOL= for the second: the runtime reads that
+# variable with getenv() != NULL, so setting it to the empty string turns the
+# pool OFF and this would have run the first lane twice.
 #
 # This program drops everything it builds, so LeakSanitizer — on by default
 # inside ASan on Linux, absent on macOS — must stay silent either way.
-for pool in "BEANS_NO_POOL=1" "BEANS_NO_POOL="; do
-    status=0
-    env "$pool" "$tmp/asan" >"$tmp/asan.out" 2>"$tmp/asan.err" || status=$?
+asan_lane() {
+    local label="$1"
+    shift
+    local status=0
+    "$@" >"$tmp/asan.out" 2>"$tmp/asan.err" || status=$?
     if [ "$status" != 0 ]; then
         cat "$tmp/asan.err" >&2
-        echo "list_inline_backing exited $status under the sanitizers ($pool)" >&2
+        echo "list_inline_backing exited $status under the sanitizers ($label)" >&2
         exit 1
     fi
     if grep -Eq 'AddressSanitizer|UndefinedBehaviorSanitizer|LeakSanitizer' \
         "$tmp/asan.err"; then
         cat "$tmp/asan.err" >&2
-        echo "sanitizer report from list_inline_backing ($pool)" >&2
+        echo "sanitizer report from list_inline_backing ($label)" >&2
         exit 1
     fi
     diff -u test/cases/list_inline_backing.out "$tmp/asan.out"
-    echo "  clean with ${pool:-BEANS_NO_POOL unset}"
-done
+    echo "  clean with the pool $label"
+}
+asan_lane off env BEANS_NO_POOL=1 "$tmp/asan"
+asan_lane on  env -u BEANS_NO_POOL "$tmp/asan"
 
 echo "list backing checks passed"
