@@ -1,0 +1,2 @@
+caught panic
+runtime panic at 33:10: outside any frame

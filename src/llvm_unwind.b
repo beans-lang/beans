@@ -936,6 +936,7 @@ partial class LlvmTextEmitter {
     fn unwind_open(function: MirFunction) {
         self.unwind_pad = ""
         self.unwind_used = false
+        self.contained_used = false
         self.unwind_block = ""
         self.unwind_alias_from = []
         self.unwind_alias_to = []

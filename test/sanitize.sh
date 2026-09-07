@@ -202,6 +202,15 @@ run_bridge_asan() {
 run_bridge_asan test/cases/brew_unwind_leak.b brew_unwind_leak \
     'contained 600 panics'
 
+# The same unwind stopped one frame earlier (issue #145): a `contained` call
+# catches in the CALLING frame, so on top of everything the pads drop, the
+# catch path has to release the closure box the hoisted arguments ride in —
+# on the caught path, where the callee never took them, as much as on the
+# returning one. Two hundred rounds of four shapes, 800 caught panics, each
+# holding a filled 64 KiB buffer.
+run_bridge_asan test/cases/contained_unwind_leak.b contained_unwind_leak \
+    'caught 800 panics'
+
 # A contained panic unwinding through a runtime frame frees the frame's
 # scratch and leaves the collection it was permuting as it was (issue #73):
 # every sort variant's merge/radix buffers, a key function panicking first,
@@ -568,6 +577,8 @@ BEANS_SANITIZE_CALLBACKS=1 bash ./test/stored_callbacks.sh
 if [[ "$(uname -s)" == Darwin ]] && command -v leaks >/dev/null 2>&1; then
     for file in bench/trees.b examples/box.b examples/arena.b examples/fmt.b \
                 test/cases/brew_unwind_leak.b \
+                test/cases/contained_unwind_leak.b \
+                test/cases/contained.b \
                 test/cases/sort_unwind_leak.b \
                 test/cases/deinit_panic_cascade.b \
                 test/cases/unlink_leak.b \
@@ -617,6 +628,18 @@ if [[ "$(uname -s)" == Darwin ]] && command -v leaks >/dev/null 2>&1; then
         exit 1
     fi
     echo "resident set ok test/cases/brew_unwind_leak.b (${rss} bytes)"
+    # A contained call catches on a live stack, so `leaks` does see what it
+    # holds — but the witness that scales is the same one: 800 caught panics
+    # that each held (and filled) 64 KiB stand above 50 MB when the unwind or
+    # the catch path leaks them, and under 2 MB when they are reclaimed.
+    echo "resident set checking test/cases/contained_unwind_leak.b"
+    rss=$(/usr/bin/time -l "$out/contained_unwind_leak_leaks" 2>&1 >/dev/null \
+        | awk '/maximum resident set size/ { print $1 }')
+    if [[ -z "$rss" ]] || (( rss > 16 * 1024 * 1024 )); then
+        echo "contained_unwind_leak kept ${rss:-?} bytes resident: the catch is leaking" >&2
+        exit 1
+    fi
+    echo "resident set ok test/cases/contained_unwind_leak.b (${rss} bytes)"
 else
     # A gate that skips on a missing tool has to say so, or a green run reads
     # as coverage it does not have. Off macOS the ASan lanes above carry

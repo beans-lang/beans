@@ -151,6 +151,13 @@ struct BeansFiber {
     int unwind_status;
     unsigned char unwind_exc[64 + 16];
 
+    // How many `contained` catch frames stand on this fiber's stack
+    // (spec/CONCURRENCY.md). Non-zero is what makes a panic unwind on a
+    // fiber that would otherwise end the process — the root fiber of a
+    // plain program. Per fiber rather than per thread: the catch frame is a
+    // frame, and one fiber's frames are not on another fiber's stack.
+    int contained_depth;
+
     BeansFiber* joiner;    // parked fiber waiting on this one, if any
     int forgotten;         // nobody will join; reclaim on finish
     int joined;            // join already delivered (a second join aborts)
@@ -1340,6 +1347,37 @@ const char* beans_fiber_message(BeansFiber* fiber) {
     return fiber ? fiber->message : "";
 }
 
+// ---- contained calls -------------------------------------------------------
+//
+// The catch frame itself is emitted code — an `invoke` whose landing pad does
+// not resume (src/llvm_emit_concurrency.b). What lives here is the count of
+// such frames, because the panic path has to know whether one is standing
+// before it decides between unwinding and ending the process, and it has to
+// ask that of one fiber rather than of the thread.
+
+int beans_fiber_contained_depth(BeansFiber* fiber) {
+    return fiber ? fiber->contained_depth : 0;
+}
+
+void beans_fiber_contained_enter(BeansFiber* fiber) {
+    if (fiber) fiber->contained_depth += 1;
+}
+
+void beans_fiber_contained_leave(BeansFiber* fiber) {
+    if (fiber && fiber->contained_depth > 0) fiber->contained_depth -= 1;
+}
+
+// The pad reached the boundary. Three things end together: the fiber is no
+// longer unwinding (so a later panic on it is an ordinary panic and not the
+// double-panic case), the report it was carrying is spent, and the frame that
+// caught is gone. The pad reads the message before calling this.
+void beans_fiber_contained_caught(BeansFiber* fiber) {
+    if (!fiber) return;
+    fiber->unwind_status = 0;
+    fiber->message[0] = '\0';
+    if (fiber->contained_depth > 0) fiber->contained_depth -= 1;
+}
+
 #if BEANS_FIBER_UNWIND
 #include <unwind.h>
 
@@ -1361,6 +1399,25 @@ static _Unwind_Reason_Code fiber_unwind_stop(
     (void)argument;
     if (actions & _UA_END_OF_STACK) {
         BeansFiber* fiber = tls_worker->current;
+        // The root fiber is the promoted thread itself and is never joined,
+        // so there is no fiber for the scheduler to end here. It unwinds for
+        // one reason — a `contained` call put a catch frame on its stack —
+        // and reaching the end of the stack means the walk could not get back
+        // to that frame: something in between carries no unwind table, which
+        // for a Beans program means a C frame built without one. Nothing is
+        // left to catch with, so the failure ends the process exactly as it
+        // would have with no frame at all, and says why. Finishing the root
+        // fiber instead would switch to a scheduler with nowhere to return.
+        if (fiber->is_root) {
+            fprintf(stderr,
+                    "%s\n"
+                    "  a contained call could not catch it: the unwind "
+                    "reached the end of the stack, so a frame between the "
+                    "panic and the catch has no unwind table\n",
+                    fiber->message);
+            fflush(stderr);
+            _exit(3);
+        }
         fiber_finish(fiber->unwind_status);
     }
     return _URC_NO_REASON;
@@ -1391,6 +1448,24 @@ void beans_fiber_begin_unwind(int status) {
 void beans_fiber_begin_unwind(int status) {
     BeansFiber* fiber = tls_worker->current;
     fiber->unwind_status = status;
+    // No cleanup pads in this build, so a brewed fiber ends here with its
+    // frames abandoned — F1's behaviour, and what a target without the
+    // unwinder keeps. The root fiber has no such ending: only a `contained`
+    // call brings it here, and this build has no pad for that call to catch
+    // with. So the failure ends the process the way it would have with no
+    // catch frame at all, rather than finishing a fiber the scheduler has
+    // nowhere to return from. The checker refuses `contained` on a target
+    // without the unwind, so a compiled program cannot reach this; a runtime
+    // linked by hand without BEANS_FIBER_UNWIND can.
+    if (fiber->is_root) {
+        fprintf(stderr,
+                "%s\n"
+                "  a contained call could not catch it: this runtime was "
+                "built without the controlled unwind\n",
+                fiber->message);
+        fflush(stderr);
+        _exit(3);
+    }
     fiber_finish(status);
     __builtin_unreachable();
 }

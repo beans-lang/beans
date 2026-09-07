@@ -12583,6 +12583,9 @@ class ExpressionChecker {
         if node.kind == "match" {
             return self.check_match(node, expected)
         }
+        if node.kind == "contained" {
+            return self.check_contained_value(node)
+        }
         if node.kind == "brew" {
             self.fail(
                 node,
@@ -13645,7 +13648,7 @@ class ExpressionChecker {
             return self.make_node(
                 node, "error", "brew", poison_hir_type())
         }
-        if !self.check_brewable_call(node, "brew", call) {
+        if !self.check_brewable_call(node, "brew", call, true) {
             return self.make_node(
                 node, "error", "brew", poison_hir_type())
         }
@@ -13688,15 +13691,25 @@ class ExpressionChecker {
         return self.scopes.len() == body_floor
     }
 
-    // Shared by brew and group.brew: the checked expression must be a real
-    // user call, through a class receiver if a method, with no inout
-    // crossing to the child fiber.
+    // Shared by brew, group.brew and contained: the checked expression must
+    // be a real user call, through a class receiver if a method, with no
+    // inout among its arguments. All three lower through the same
+    // hoist-and-fabricate transform below, so all three inherit its walls;
+    // only the reason differs, which is why the phrasing is a parameter and
+    // the rule is not.
     fn check_brewable_call(node: AstNode, verb: string,
-                           call: HirNode) -> bool {
+                           call: HirNode,
+                           on_a_fiber: bool) -> bool {
         if call.kind != "call" && call.kind != "method_call" {
-            self.fail(
-                node,
-                "{verb} starts a user function or method on a child fiber — this call cannot be brewed")
+            if on_a_fiber {
+                self.fail(
+                    node,
+                    "{verb} starts a user function or method on a child fiber — this call cannot be brewed")
+            } else {
+                self.fail(
+                    node,
+                    "{verb} runs a user function or method under a catch frame — this call cannot be contained")
+            }
             return false
         }
         if call.kind == "method_call" && call.children.len() >= 1 {
@@ -13708,19 +13721,118 @@ class ExpressionChecker {
                 none => {}
             }
             if !class_receiver {
-                self.fail(
-                    node,
-                    "{verb} a method through a class receiver — a value receiver would run on the fiber's own copy")
+                if on_a_fiber {
+                    self.fail(
+                        node,
+                        "{verb} a method through a class receiver — a value receiver would run on the fiber's own copy")
+                } else {
+                    self.fail(
+                        node,
+                        "{verb} a method through a class receiver — a value receiver would run on the hoisted copy, so what it mutated would not come back")
+                }
             }
         }
         for passing: string in call.argument_passing {
             if passing == "inout" {
-                self.fail(
-                    node,
-                    "{verb} arguments are moved or copied onto the child fiber — inout cannot cross to it")
+                if on_a_fiber {
+                    self.fail(
+                        node,
+                        "{verb} arguments are moved or copied onto the child fiber — inout cannot cross to it")
+                } else {
+                    self.fail(
+                        node,
+                        "{verb} arguments are hoisted into locals before the call — inout cannot ride through the hoist")
+                }
             }
         }
         return true
+    }
+
+    // contained <call> — run the call on THIS fiber under a catch frame, and
+    // answer Result<T> (spec/CONCURRENCY.md). The checked shape is the same
+    // one brew produces — hoisted argument bindings followed by a fabricated
+    // zero-parameter closure — because the two differ in where the failure
+    // is caught, not in how the call is packaged. What differs from brew:
+    // there is no handle and no scope join, so it is an ordinary expression
+    // legal at any block depth, and it needs the platform unwinder rather
+    // than a scheduler.
+    fn check_contained_value(node: AstNode) -> HirNode {
+        self.require_contained(node)
+        if node.children.len() != 1 ||
+           node.children[0].kind != "call" {
+            self.fail(
+                node,
+                "contained runs a call under a catch frame — write contained f(arguments)")
+            return self.make_node(
+                node, "error", "contained",
+                poison_hir_type())
+        }
+        let call: HirNode =
+            self.check_expression(
+                node.children[0], no_hir_type())
+        if call.type.name == "poison" {
+            return self.make_node(
+                node, "error", "contained",
+                poison_hir_type())
+        }
+        if !self.check_brewable_call(
+               node, "contained", call, false) {
+            return self.make_node(
+                node, "error", "contained",
+                poison_hir_type())
+        }
+        // Result<unit> is not a type Beans has: `ok` takes a value, so there
+        // is no ok arm to write for one and no backend builds one. A brew
+        // gets away with a unit child because its statement form never makes
+        // a Result — the scope join escalates instead — but `contained`
+        // ANSWERS the Result, so a unit call has nothing to answer with.
+        if canonical_hir_name(call.type.name) ==
+               "unit" {
+            self.fail(
+                node,
+                "contained answers Result<T>, and there is no Result<unit> — `ok` takes a value. give the call a result to carry, or wrap it in one that returns something")
+            return self.make_node(
+                node, "error", "contained",
+                poison_hir_type())
+        }
+        let contained_node: HirNode =
+            self.make_node(
+                node, "contained",
+                if call.value != "" {
+                    call.value
+                } else {
+                    call.resolved
+                },
+                hir_result(call.type))
+        self.build_brew_transform(
+            node, contained_node, call)
+        return contained_node
+    }
+
+    // The one capability refusal for `contained`. Containment at a call
+    // boundary is the platform's forced unwind stopping at a landing pad, so
+    // it needs both a runtime with the fiber core (the unwind state lives on
+    // the fiber) and a target whose unwinder the backend emits pads for. On
+    // a target without one the native backend could not catch at all — the
+    // panic would end the process while the tree interpreter caught it — so
+    // the refusal is here, about the program, rather than a divergence
+    // discovered at run time.
+    fn require_contained(node: AstNode) {
+        if self.signature.runtime_profile == "freestanding" &&
+           !self.signature.refused_capabilities.contains_key(
+               "contained") {
+            self.signature.refused_capabilities["contained"] = true
+            self.fail(
+                node,
+                "contained needs the controlled unwind, which the freestanding runtime does not have — it needs at least the minimal runtime")
+        } else if !self.program.target.supports_unwind() &&
+                  !self.signature.refused_capabilities.contains_key(
+                      "contained") {
+            self.signature.refused_capabilities["contained"] = true
+            self.fail(
+                node,
+                "contained needs the controlled unwind, which target {self.program.target.triple} does not have — a panic there would end the process instead of becoming an err. use brew and join to contain it on that target")
+        }
     }
 
     // The shared brew transform. Hoist every evaluated child of the call —
@@ -13802,7 +13914,7 @@ class ExpressionChecker {
             return self.make_node(
                 node, "error", "brew", poison_hir_type())
         }
-        if !self.check_brewable_call(node, "group.brew", call) {
+        if !self.check_brewable_call(node, "group.brew", call, true) {
             return self.make_node(
                 node, "error", "brew", poison_hir_type())
         }

@@ -240,6 +240,100 @@ contract:
 - A panic **inside a defer** during an unwind is the one unrecoverable
   case: double panic aborts the process with both positions, as today.
 
+### Contained calls — containment without a fiber
+
+Containment came in with `brew`, so for a while the only place a failure could
+stop was a fiber's entry. That coupled two things that are not the same: a
+server that wants a panicking handler to become a 500 was paying a fiber spawn,
+two context switches and a join on every request, whether or not anything ever
+panicked (issue #145). The unwind was never the fiber's — it is the platform's
+forced unwind, and it stops wherever a landing pad declines to resume. So the
+boundary moves to a call:
+
+```beans
+match contained handle(request) {
+    ok(response) => { return response }
+    err(problem) => { return error_page(problem.msg) }
+}
+```
+
+> `contained f(args)` runs `f` **on the current fiber, in the current frame's
+> call position**, under a catch frame, and answers `Result<T>` where `T` is
+> `f`'s declared result type. A panic raised anywhere under that call unwinds
+> the frames between it and the boundary — each frame's defers newest-first
+> exactly once, each frame's owned values dropped — and arrives at the call
+> site as `err` of kind `panic`, carrying the same message and source position
+> a brewed fiber's `join` would have delivered for the same panic. Nothing is
+> spawned, nothing switches, nothing is joined.
+
+- **The nearest frame catches.** Nesting is ordinary stack nesting: the
+  innermost `contained` between the panic and the top of the stack is the one
+  that answers, and the frames above it are untouched.
+- **The caller's frame is not unwound.** The callee's frame is inside the
+  boundary and the caller's is outside it: execution continues at the
+  `contained` expression with the caller's locals, defers and children exactly
+  as they were.
+- **Arguments are evaluated outside.** `contained f(g())` where `g` panics is
+  not this call's failure to catch, the same way `brew f(g())` evaluates `g`
+  on the parent fiber. Only the call is contained.
+- **Cancellation is not contained.** A cancel is delivered inside a park
+  primitive and does not unwind on either backend (see `beans_fiber_exit_
+  cancelled`), so it never reaches a catch frame: the fiber ends and its join
+  reports `cancelled`. A `contained` call that a cancel interrupts simply does
+  not return.
+- **A double panic is still fatal.** A panic raised while the fiber is already
+  unwinding — from a defer or a deinit that the unwind itself is running — is
+  the one unrecoverable case, and a catch frame does not change it: both
+  reports go out and the process stops. The runtime asks "is this fiber
+  unwinding" before it asks whether a frame is standing, and the tree walker
+  asks the same question in the same order.
+- **Resources**: the unwind is the same one `brew` containment uses, so ARC
+  reclamation is complete — every frame it passes drops what it owned, in
+  reverse construction order, and an object whose initializer did not return
+  is released without its `deinit` body (issue #120). Nothing is resurrected:
+  a value the callee was building is gone, and the caught `err` carries only
+  the report. The cycle collector needs nothing special — it sees the same
+  releases a return would have made.
+- **`defer`** in the callee's frames runs during the unwind, newest-first.
+  `defer` in the *caller's* frame is untouched: the caller did not exit.
+  A `contained` call inside a `defer` is an ordinary contained call while the
+  frame is exiting normally, and is subject to the double-panic rule while an
+  unwind is running that defer.
+- **`brew` under a `contained` call** keeps its own boundary: a child's panic
+  belongs to the child's join, not to the frame standing on the parent. A
+  child nobody joined escalates at the scope exit, and *that* panic — raised
+  on the parent — is the contained boundary's to catch.
+- **Where the count lives.** Whether a catch frame is standing is asked of one
+  fiber, not of the thread. Fibers of a worker share thread storage but not
+  stacks, so a frame on one fiber's stack is not one another fiber's failure
+  can reach; both backends keep the count on the fiber (`contained_depth` in
+  the fiber record, a per-fiber entry in the tree walker).
+
+**How it differs from `brew`.** `brew` is for concurrency and gives
+containment as a side effect; `contained` is for containment and gives no
+concurrency. `brew` answers a scope-bound `Brew<T>` handle whose `join` may
+also report `cancelled` or `closed`; `contained` answers a `Result<T>`
+immediately, whose only failure kind is `panic`. `brew` may only appear at a
+function body's own scope (the synthesized scope join rides function-exit
+defers); `contained` is an ordinary expression, legal wherever one is —
+inside a loop, an `if`, a match arm. `brew` runs a unit-returning call
+happily; `contained` cannot, because it has to *answer* a `Result` and there
+is no `Result<unit>` in Beans — `ok` takes a value.
+
+**Where it is refused**, at check time, about the program:
+
+- a target without the controlled unwind (`TargetDescription.supports_unwind`
+  — today that is Windows/COFF, wasm, and 32-bit ARM). On those the native
+  backend has no landing pad to catch with, so allowing it would let a panic
+  end the process where the tree interpreter caught it. `brew` and `join`
+  remain the way to contain a panic there, at the cost of the fiber;
+  widening this needs SEH funclets for COFF, proven on that target.
+- `--runtime freestanding`, which has no fiber core to keep the count on.
+- a unit-returning call (no `Result<unit>` to answer with).
+- the walls the fabricated closure imposes, shared with `brew`: the operand
+  must be a call to a user function or method, a method's receiver must be a
+  class, and no argument may be `inout`.
+
 ### The lock question, answered: poison
 
 The one sharp edge is a panic while holding worker-shared state — inside

@@ -1819,7 +1819,8 @@ can still read them. Deterministic, like C++/Swift: no GC pause, no "sometime la
 - `self` must not escape a `deinit`. The object is being destroyed; storing `self` anywhere
   is use-after-free by definition.
 - A panic inside `deinit` is the same rule as one inside a `defer`: uncontained it ends
-  the process, and contained by `brew`/`join` (spec/CONCURRENCY.md) the join reports it —
+  the process; contained by `brew`/`join` or by a `contained` call
+  (spec/CONCURRENCY.md) the boundary reports it —
   **without stopping the destruction that was running it**. The `deinit` is not run again,
   but the object's fields are still released and its memory still returned, and everything
   else the release was going to destroy is still destroyed: the remaining elements of a
@@ -2493,6 +2494,44 @@ fn handle(order: Order) -> Result<Receipt> {
   run on the fiber's own copy. `inout` arguments cannot cross to a fiber.
 - Fibers need the thread runtime: `--runtime freestanding` and wasm targets
   refuse `brew` at check time.
+
+### contained — a catch frame at a call (spec/CONCURRENCY.md)
+
+`contained f(args)` runs the call **on the current fiber, in place**, under a
+catch frame, and answers `Result<T>` where `T` is `f`'s declared result type.
+A panic raised anywhere under that call unwinds the frames between it and the
+boundary — defers newest-first, owned values dropped — and arrives here as an
+`err` of kind `panic` carrying the panic's message and position. No fiber is
+spawned, nothing switches, nothing is joined.
+
+```
+fn shielded(request: Request) -> Response {
+    match contained handle(request) {          // runs right here
+        ok(response) => { return response }
+        err(problem) => { return error_page(problem.msg) }
+    }
+}
+```
+
+- `contained` is contextual, like `brew`, `unique` and `packed`: it opens a
+  catch frame only before a call to a user function or method; a local named
+  `contained` stays an ordinary name.
+- Unlike `brew` it is an ordinary expression, legal wherever one is — inside a
+  loop, an `if`, a match arm, a `let` initializer, a match scrutinee.
+- The **arguments are evaluated outside** the frame, as a `brew`'s are: a
+  panic while evaluating one is not this call's to catch.
+- The **innermost** `contained` between a panic and the top of the stack is
+  the one that answers. The caller's own frame is not unwound.
+- A **cancel is not caught** — it does not unwind — and a panic raised while
+  the fiber is already unwinding is still the fatal double panic.
+- Method calls contain through class receivers only, and `inout` arguments
+  cannot ride through the hoist — the same two walls `brew` has, for the same
+  reason: the call is packaged as a fabricated closure over hoisted bindings.
+- The call must return something: `contained` answers `Result<T>`, and there
+  is no `Result<unit>` in Beans because `ok` takes a value.
+- It needs the controlled unwind, so `--runtime freestanding` and every
+  target without it (Windows/COFF, wasm, 32-bit ARM) refuse `contained` at
+  check time. `brew` + `join` is the way to contain a panic there.
 
 ### async and await (removed)
 
@@ -3834,10 +3873,11 @@ beansc build --target riscv32imac-unknown-none-elf --runtime freestanding f.b --
   gone. Must sit at the top level of the function body (not inside `if`/`for`/blocks — it
   is a function-exit hook, and nested registration would need runtime capture the native
   backend does not do); the checker refuses a nested one. Each defer runs at most once. An *uncontained* panic exits the
-  process without running defers. A panic *contained* by `brew`/`join`
-  (spec/CONCURRENCY.md) does the opposite: it unwinds the fiber's frames on the way to the
-  fiber entry, running each function's defers newest-first and dropping what it owns — the
-  same cleanup a return runs, in the same order — and the join reports the failure. A defer
+  process without running defers. A panic *contained* by `brew`/`join`, or by a `contained`
+  call (spec/CONCURRENCY.md), does the opposite: it unwinds the frames on the way to that
+  boundary — the fiber entry, or the contained call itself — running each function's defers
+  newest-first and dropping what it owns, the same cleanup a return runs, in the same
+  order, and the boundary reports the failure. A defer
   that panics while the function is exiting normally is a contained panic like any other
   when the fiber is brewed: it is not run again, the older defers still run, and the locals
   still drop. A panic inside a defer *during* a contained unwind is fatal — it aborts the

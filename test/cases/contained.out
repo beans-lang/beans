@@ -1,0 +1,80 @@
+fast path: ok 42
+nested frames:
+  deep defer B
+  deep defer A
+  drop deep-second
+  drop deep-first
+  middle defer
+  drop middle-held
+  outer defer
+  drop outer-carried
+  caught panic: runtime panic at 58:17: list index 7 out of range (len 0)
+  counter back to 0
+move-only:
+  moveonly defer
+  drop token 7
+  caught panic
+captured cell:
+  capture defer
+  drop captured-res
+  caught panic
+container:
+  container defer
+  drop in-list-2
+  drop in-list-1
+  caught panic
+nested containment:
+  drop inner
+  inner-catches defer
+  drop inner-guard
+  outer sees ok: inner caught panic
+nested then own failure:
+  drop first
+  first caught panic
+  inner-then-own defer
+  drop second-guard
+  outer caught panic: runtime panic at 156:10: and then this frame
+contained inside a defer:
+  drop in-defer
+  defer caught panic
+  returned 3
+contained on a brewed fiber:
+  drop on-fiber
+  fiber caught panic
+  join ok 11
+brew under a contained call:
+  drop child
+  ok: child panic
+escalated scope join:
+  drop unjoined
+  caught panic: runtime panic at 229:5: a brewed fiber panicked with no join to catch it: runtime panic at 134:10: unjoined refused
+payload shapes:
+  string ok a string
+  string err panic
+  resource ok returned-res
+  drop returned-res
+  resource err panic
+  option ok 9
+  option err panic
+  decimal ok 1.25
+  decimal err panic
+  result ok err domain
+  result err panic
+  list ok 3
+  list err panic
+method receiver:
+  ok 10
+  err panic
+unfinished construction:
+  drop HalfBuilt whole
+  drop half-built-field
+  ok whole
+  drop half-built-field
+  err panic
+nested blocks and loops:
+  summed 7, caught 2
+repeated: 200 caught, still running
+  drop bound
+bound results: true false
+bound value: 8
+done

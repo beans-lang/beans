@@ -2032,8 +2032,12 @@ partial class LlvmTextEmitter {
         // carries only what the emitter wrote.
         let unwind_attribute: string =
             if self.unwind_enabled() { " uwtable" } else { "" }
+        // A `contained` catch pad is a landing pad too, and a landing pad
+        // without a personality does not verify — so the definition names one
+        // whether the frame's own cleanup pad was used or the catch pad was.
         let personality: string =
-            if self.unwind_used {
+            if self.unwind_used ||
+               self.contained_used {
                 self.unwind_personality()
             } else {
                 ""
