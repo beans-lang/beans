@@ -281,10 +281,9 @@ match contained handle(request) {
   returns — again exactly as a `brew`'s arguments do. Inside a loop body that
   is the iteration; at a function's own scope it is the function.
 - **Cancellation is not contained.** A cancel is delivered inside a park
-  primitive and does not unwind on either backend (see `beans_fiber_exit_
-  cancelled`), so it never reaches a catch frame: the fiber ends and its join
-  reports `cancelled`. A `contained` call that a cancel interrupts simply does
-  not return.
+  primitive and does not unwind on either backend, so it never reaches a catch
+  frame: the fiber ends and its join reports `cancelled`. A `contained` call
+  that a cancel interrupts simply does not return.
 - **A double panic is still fatal.** A panic raised while the fiber is already
   unwinding — from a defer or a deinit that the unwind itself is running — is
   the one unrecoverable case, and a catch frame does not change it: both
@@ -312,6 +311,19 @@ match contained handle(request) {
   stacks, so a frame on one fiber's stack is not one another fiber's failure
   can reach; both backends keep the count on the fiber (`contained_depth` in
   the fiber record, a per-fiber entry in the tree walker).
+- **A thread is not a fiber, but a catch frame still works on one.** A panic
+  that reaches the entry of a `thread.spawn` closure still ends the process —
+  `Thread<T>.join()` answers `T` and has no join-shaped place to put a failure
+  — but that is about the *entry*, and a `contained` call needs no join to
+  deliver to. The first `contained` call on a thread promotes it to a worker so
+  the count has a fiber to live on, and from there the boundary answers exactly
+  as it does on the main worker.
+- **If the walk cannot reach the frame**, the process ends with the panic's own
+  report and a line saying the catch could not be found, rather than doing
+  something undefined. That needs a frame between the panic and the boundary
+  with no unwind table, which for a Beans program means a C frame built without
+  one — the driver passes `-funwind-tables` for every unit it compiles in a
+  build that can unwind, so it takes a hand-linked object to get there.
 
 **How it differs from `brew`.** `brew` is for concurrency and gives
 containment as a side effect; `contained` is for containment and gives no
