@@ -142,7 +142,13 @@ struct BeansFiber {
     // the double-panic case. unwind_exc is storage for the platform's
     // _Unwind_Exception: it must outlive every frame the unwind pops, so it
     // cannot sit on the stack being unwound, and one per fiber is enough
-    // because a fiber unwinds at most once. The record wants 16-byte
+    // because a fiber unwinds one at a time. A brewed fiber's unwind ends the
+    // fiber, so it has exactly one; a `contained` call's ends at the catch
+    // pad and the fiber runs on, so the same fiber may unwind again and
+    // reuse this — safely, because the record is only live between
+    // begin_unwind and the pad that stops the walk, and a panic raised in
+    // between is the double panic, which aborts instead of starting a second
+    // unwind. The record wants 16-byte
     // alignment and this struct comes from calloc, which promises only
     // max_align_t's — 8 on a 32-bit target — so the storage is over-allocated
     // and the record is aligned where it is used, not declared _Alignas on

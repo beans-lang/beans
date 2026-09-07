@@ -18155,12 +18155,20 @@ void beans_contained_leave(void) {
 // exactly what a brewed fiber's join delivers for the same panic — the whole
 // "runtime panic at <line>:<col>: <text>" line — so a failure reads the same
 // whichever boundary caught it.
+// The report is copied to the stack and the fiber taken out of the unwind
+// BEFORE the Beans string is minted. Minting it allocates, an allocation can
+// run a cycle-collector pass, and a deinit that pass runs can panic — with the
+// fiber still marked unwinding that ordinary panic would be reported as the
+// fatal double panic. The walk is over by the time this pad runs, so the flag
+// has no business outliving it. 512 is the fiber record's own message size.
 char* beans_contained_caught(void) {
     BeansFiber* fiber = beans_fiber_current();
-    const char* text = beans_fiber_message(fiber);
-    char* message = str_make(text, (long long)strlen(text));
+    char text[512];
+    const char* carried = beans_fiber_message(fiber);
+    strncpy(text, carried ? carried : "", sizeof text - 1);
+    text[sizeof text - 1] = '\0';
     beans_fiber_contained_caught(fiber);
-    return message;
+    return str_make(text, (long long)strlen(text));
 }
 
 // ---------------------------------------------------------------------------

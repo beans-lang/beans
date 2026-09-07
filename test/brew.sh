@@ -1031,6 +1031,22 @@ echo "checking a contained panic unwinds to the call boundary on both backends"
 diff -u test/cases/contained.out "$tmp/contained.interp"
 diff -u test/cases/contained.out "$tmp/contained.native.out"
 
+echo "checking a program that can unwind builds with debug information"
+# A landing pad written across two lines took the debug pass's `, !dbg !N` in
+# the middle of itself — the pass appends one to every line it does not
+# recognise as a label — so `beansc build --debug` died in the LLVM parser at
+# "cleanup, !dbg" for EVERY program that could unwind. That is every brewing
+# program since the pads landed, and every containing one since. Both goldens
+# have to come back from a --debug build too.
+./build/beansc build --debug test/cases/brew_unwind.b \
+    -o "$tmp/unwind.debug" >"$tmp/unwind.debug.build" 2>&1
+"$tmp/unwind.debug" >"$tmp/unwind.debug.out"
+diff -u test/cases/brew_unwind.out "$tmp/unwind.debug.out"
+./build/beansc build --debug test/cases/contained.b \
+    -o "$tmp/contained.debug" >"$tmp/contained.debug.build" 2>&1
+"$tmp/contained.debug" >"$tmp/contained.debug.out"
+diff -u test/cases/contained.out "$tmp/contained.debug.out"
+
 echo "checking a catch frame belongs to one fiber, not to the thread"
 # The count of standing frames lives on the fiber record on both backends. A
 # per-thread count reads the wrong answer the moment the fiber holding the
@@ -1043,6 +1059,20 @@ echo "checking a catch frame belongs to one fiber, not to the thread"
 "$tmp/ccpark.native" >"$tmp/ccpark.native.out"
 diff -u test/cases/contained_park.out "$tmp/ccpark.interp"
 diff -u test/cases/contained_park.out "$tmp/ccpark.native.out"
+
+echo "checking a catch frame works off the main worker"
+# A spawned thread is not a fiber and containment has never reached one — a
+# panic at a thread's entry ends the process, because Thread<T>.join() answers
+# T and has nowhere to put a failure. A `contained` call needs no join to
+# deliver to, so it works where it stands; the first enter on a thread promotes
+# it to a worker, which is what gives the count a fiber to live on. The group
+# case is the same thing a fleet at a time.
+./build/beansc run test/cases/contained_threads.b >"$tmp/ccthreads.interp"
+./build/beansc build test/cases/contained_threads.b \
+    -o "$tmp/ccthreads.native" >"$tmp/ccthreads.build" 2>&1
+"$tmp/ccthreads.native" >"$tmp/ccthreads.native.out"
+diff -u test/cases/contained_threads.out "$tmp/ccthreads.interp"
+diff -u test/cases/contained_threads.out "$tmp/ccthreads.native.out"
 
 echo "checking a contained call costs no fiber"
 # The whole point of the issue: containment used to need a spawn, two context

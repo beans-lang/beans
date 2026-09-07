@@ -465,7 +465,9 @@ partial class LlvmTextEmitter {
         self.require_declare(
             "beans_fiber_unwind_finish",
             "void @beans_fiber_unwind_finish()")
-        return "spawn.eh:\n  %spawn.lp = landingpad \{ ptr, i32 \}\n          cleanup\n  call void @beans_fiber_unwind_finish()\n  unreachable\n"
+        // One line, for the reason unwind_pad_block gives: a wrapped
+        // `landingpad` takes a `!dbg` in the middle of itself.
+        return "spawn.eh:\n  %spawn.lp = landingpad \{ ptr, i32 \} cleanup\n  call void @beans_fiber_unwind_finish()\n  unreachable\n"
     }
 
     // brew — start the fabricated closure on a child fiber of this worker

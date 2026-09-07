@@ -136,8 +136,13 @@ partial class LlvmTextEmitter {
         function: MirFunction) -> string {
         let id: int = self.fresh()
         let token: string = "%eh.lp{id}"
+        // One line, never a continuation. The debug pass appends `, !dbg !N`
+        // to every line it does not recognise as a label, so a wrapped
+        // `landingpad` took one in the middle of itself: `--debug` on any
+        // program that could unwind died in the LLVM parser at "cleanup, !dbg"
+        // — every brewing program, since the pads landed.
         var output: string =
-            "{self.unwind_pad}:\n  {token} = landingpad \{ ptr, i32 \}\n          cleanup\n"
+            "{self.unwind_pad}:\n  {token} = landingpad \{ ptr, i32 \} cleanup\n"
         output =
             "{output}{self.unwind_pad_inner_units(function)}"
         let position: MirInstruction =
