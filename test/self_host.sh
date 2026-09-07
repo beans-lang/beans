@@ -190,7 +190,7 @@ for worker in 1 2 3 4; do
     self_env_pids+=("$!")
 done
 self_env_failed=0
-for pid in "${self_env_pids[@]}"; do
+for pid in ${self_env_pids+"${self_env_pids[@]}"}; do
     if ! wait "$pid"; then self_env_failed=1; fi
 done
 [[ "$self_env_failed" -eq 0 ]] || exit 1

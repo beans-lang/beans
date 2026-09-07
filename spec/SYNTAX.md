@@ -739,7 +739,18 @@ io.println(json.encode(user)?)
   come from `@json.name` or `@json.naming`; `@json.alias` is input-only;
   `@json.ignore` fields are omitted; and absent options write `null`. Use
   `io.println(json.encode(value)?)` to print a struct as JSON. NaN and infinity
-  are rejected.
+  are rejected, and so is a string whose bytes are not valid UTF-8. A value
+  that carries more than one such fault is reported by the first one the
+  writer reaches in document order — a field that is omitted from the document
+  cannot be the one reported.
+- `encode_into<T>(value, target)` appends that same compact encoding to the
+  caller's `Bytes` — after whatever it already holds — and returns
+  `Result<int>`, the number of bytes appended. `T` is validated exactly as for
+  `encode`, and the bytes it writes equal `encode(value)` byte for byte; it
+  exists so a body can be serialized straight into an output buffer without a
+  fresh string and its copy. A refused `T` refuses identically to `encode`, and
+  a refusal at run time leaves `target` exactly as it was — every byte it held
+  before the call, and nothing appended.
 - Typed JSON currently supports bool, integer, float, string, nested struct,
   list, and option fields. Struct and `List<struct>` are the only root shapes.
   Classes, enums, maps, fixed arrays, bytes, decimal, unit, generic structs,
@@ -3865,7 +3876,18 @@ beansc build --target riscv32imac-unknown-none-elf --runtime freestanding f.b --
   generated pointer-ABI wrapper, and the interpreter compiles and caches a tiny
   trampoline for each bridged signature. Sub-32-bit integers and `bool` also
   take that wrapper, because Clang gives them a sign/zero-extension contract
-  that a plain call cannot express. A parameter may be a C callback such
+  that a plain call cannot express.
+  **The runtime's own entries are the exception, and are never bridged.** A
+  `beans_*` name the Beans runtime hosts lives in the process already, so the
+  interpreter calls it there through the runtime's dispatcher whatever the
+  signature's width — `beansc run` never needs a C toolchain to reach one, which
+  is what lets a program write to a socket on a host whose Clang cannot link for
+  itself. A declaration naming one of those entries that does not fit its real
+  signature is refused where the call is made, with a message about the
+  declaration. Native builds cannot see that mistake — a linker does not compare
+  types — so, as everywhere else here, a wrong `extern "C"` signature is the
+  programmer's job; the interpreter simply cannot guess past it.
+  A parameter may be a C callback such
   as `fn(i32, i32) -> i32`; its arguments and return use the same C-safe type
   set and may include C-layout records. Beans closures and stored top-level
   functions both work. `as "native_name"` gives an import a different C symbol

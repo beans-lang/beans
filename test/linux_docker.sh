@@ -85,7 +85,7 @@ if [[ -n "$platform" ]]; then platform_args=(--platform "$platform"); fi
 tag="${image}:${platform//\//-}"
 
 echo "building $tag"
-docker build "${platform_args[@]}" \
+docker build ${platform_args+"${platform_args[@]}"} \
     -f test/docker/linux.Dockerfile \
     -t "$tag" .
 
@@ -109,8 +109,8 @@ if command -v cygpath >/dev/null 2>&1; then
     export MSYS_NO_PATHCONV=1
 fi
 
-docker run --rm "${platform_args[@]}" \
+docker run --rm ${platform_args+"${platform_args[@]}"} \
     -v "$mount_src:/src:ro" \
-    "$tag" "${args[@]}"
+    "$tag" ${args+"${args[@]}"}
 
 echo "ok Linux container gate on $platform"

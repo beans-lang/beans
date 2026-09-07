@@ -23,6 +23,39 @@
 
 #include "beans_enc_common.h"
 
+// The escape scan reads 16 bytes at a time where the machine has a vector
+// unit — NEON on aarch64, SSE2 on x86-64, both baseline for the targets Beans
+// ships. These headers are compiler intrinsics with no runtime library behind
+// them, so encoding_symbols.sh still sees the bridge resolve against libc
+// alone. The 8-byte SWAR path stays as the fallback and for the tail.
+//
+// __aarch64__, not __ARM_NEON: clang defines __ARM_NEON for
+// armv7-unknown-linux-gnueabihf as well — it is a supported target and its
+// default FPU is NEON — but vmaxvq_u8 and the other across-vector reductions
+// the scan uses are AArch64 instructions arm32 does not have, so the vector
+// block does not compile there. Guarding on the feature macro alone made a
+// program whose only sin was importing std.encoding.json fail its arm32 build
+// with a C error naming this file. The byte-order test is here for the same
+// reason the SWAR block has one: the lane index comes from counting trailing
+// zeros of the flag vector read as two 64-bit words, which is the first
+// flagged byte only on a little-endian machine.
+//
+// One decision, named once: the include below and the scan itself both read
+// it, so the header and the code that needs it cannot drift apart.
+#if defined(__aarch64__) && defined(__ARM_NEON) && \
+    defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__ && \
+    !defined(BEANS_JSON_SCALAR_SCAN)
+#define BEANS_JSON_SCAN_NEON 1
+#elif defined(__SSE2__) && !defined(BEANS_JSON_SCALAR_SCAN)
+#define BEANS_JSON_SCAN_SSE2 1
+#endif
+
+#if defined(BEANS_JSON_SCAN_NEON)
+#include <arm_neon.h>
+#elif defined(BEANS_JSON_SCAN_SSE2)
+#include <emmintrin.h>
+#endif
+
 // Nothing here may reference a symbol outside libc — encoding_symbols.sh
 // holds that line, which is why the ABI passes callbacks instead of calling
 // runtime entry points directly. That rules out pthread and thread-locals,
@@ -183,7 +216,27 @@ enum {
     BEANS_JSON_WRITE_COMPACT = 0,
     BEANS_JSON_WRITE_PRETTY_FOUR = 1,
     BEANS_JSON_WRITE_PRETTY_TWO = 2,
+    // encode_into: same bytes as COMPACT, but appended straight into a
+    // caller-owned Bytes through the grow callback in req[6] instead of a
+    // fresh malloc. req[8] is the Bytes handle, req[9] the length it already
+    // holds, and req[4] returns the count of bytes appended.
+    BEANS_JSON_WRITE_APPEND = 3,
 };
+
+// Grows a caller-owned Bytes for the direct writer's append-into mode. See
+// beans_bytes_reserve_raw in runtime/beans_rt.c: sets the logical length to
+// `len`, ensures capacity for `min_cap`, returns the (possibly moved) base
+// pointer, and reports the new capacity through *cap_out. Passed as a
+// function pointer because this bridge is a separate translation unit and
+// must not reach into BList itself. The Bytes is a void* here and a void* in
+// that entry's own declaration: a call through a pointer whose type differs
+// from the callee's declared type is undefined behaviour, so the opacity this
+// bridge needs has to be spelled the same way on both sides rather than cast
+// away at the boundary.
+typedef unsigned char* (*BeansJsonBytesReserveFn)(void* handle,
+                                                  unsigned long long len,
+                                                  unsigned long long min_cap,
+                                                  unsigned long long* cap_out);
 
 static uint64_t beans_enc_json_map_read_code(yyjson_read_code code) {
     if (code == YYJSON_READ_ERROR_MEMORY_ALLOCATION) return BEANS_JSON_ERR_MEMORY;
@@ -518,8 +571,17 @@ static size_t beans_json_typed_list_stride(
 typedef struct {
     BeansJsonNewListFn new_list;
     BeansJsonAllocFn allocate;
+    // beans_alloc_bytes: like allocate, but does not zero the payload, for
+    // string buffers the decoder fills end to end. Falls back to allocate when
+    // the caller did not supply it (an older emitter, or the interpreter),
+    // which only costs the memset this exists to avoid.
+    BeansJsonAllocFn alloc_bytes;
     BeansJsonReleaseFn release;
     uint64_t* req;
+    // The document depth limit, folded into the walk instead of a separate
+    // pre-pass (issue #142): a value deeper than this is refused as it is
+    // reached, and a subtree the schema skips is measured against it too.
+    uint64_t max_depth;
 } BeansJsonDecodeContext;
 
 static void beans_json_typed_write_integer(unsigned char* target,
@@ -559,7 +621,8 @@ static int beans_json_typed_object_direct(
         const BeansJsonTypedSchema* schema,
         yyjson_val* object,
         unsigned char* record,
-        BeansJsonDecodeContext* context);
+        BeansJsonDecodeContext* context,
+        uint64_t depth);
 
 static int beans_json_typed_value_direct(
         uint64_t kind,
@@ -571,14 +634,18 @@ static int beans_json_typed_value_direct(
         uint64_t element_pointer_mask,
         yyjson_val* value,
         unsigned char* target,
-        BeansJsonDecodeContext* context);
+        BeansJsonDecodeContext* context,
+        uint64_t depth);
 
+// `depth` is the field value's own depth (the object's depth plus one), so the
+// limit is enforced inline as the walk descends instead of by a pre-pass.
 static int beans_json_typed_store_direct(
         const BeansJsonTypedSchema* schema,
         uint64_t field_index,
         yyjson_val* value,
         unsigned char* record,
-        BeansJsonDecodeContext* context) {
+        BeansJsonDecodeContext* context,
+        uint64_t depth) {
     const BeansJsonTypedField* field = &schema->fields[field_index];
     const BeansJsonTypedComplex* complex = schema->complex
         ? &schema->complex[field_index] : NULL;
@@ -603,7 +670,7 @@ static int beans_json_typed_store_direct(
         complex ? complex->element_schema : NULL,
         complex ? complex->element_size : 0,
         complex ? complex->element_pointer_mask : 0,
-        value, target, context);
+        value, target, context, depth);
     if (status) return status;
     if (field->presence_offset != UINT64_MAX)
         record[field->presence_offset] = 1;
@@ -617,7 +684,8 @@ static int beans_json_typed_list_direct(
         uint64_t element_pointer_mask,
         yyjson_val* value,
         unsigned char* target,
-        BeansJsonDecodeContext* context) {
+        BeansJsonDecodeContext* context,
+        uint64_t depth) {
     if (!yyjson_is_arr(value) || !context->new_list || element_size == 0)
         return BEANS_JSON_TYPED_ERR_TYPE;
     size_t count = yyjson_arr_size(value);
@@ -644,7 +712,7 @@ static int beans_json_typed_list_direct(
                 ? element_size * 8 << 8 : 0;
         int status = beans_json_typed_value_direct(
             element_kind, element_flags, element_schema, 0, NULL, 0, 0,
-            item, destination, context);
+            item, destination, context, depth + 1);
         if (status) return status;
     }
     return 0;
@@ -660,7 +728,11 @@ static int beans_json_typed_value_direct(
         uint64_t element_pointer_mask,
         yyjson_val* value,
         unsigned char* target,
-        BeansJsonDecodeContext* context) {
+        BeansJsonDecodeContext* context,
+        uint64_t depth) {
+    // The whole-document depth limit, checked as the walk reaches each value
+    // (issue #142). Counts the root as 1, exactly as the pre-pass did.
+    if (depth > context->max_depth) return BEANS_JSON_TYPED_ERR_DEPTH;
     switch (kind) {
         case BEANS_JSON_TYPED_BOOL:
             if (!yyjson_is_bool(value)) return BEANS_JSON_TYPED_ERR_TYPE;
@@ -694,9 +766,12 @@ static int beans_json_typed_value_direct(
         case BEANS_JSON_TYPED_STRING: {
             if (!yyjson_is_str(value)) return BEANS_JSON_TYPED_ERR_TYPE;
             size_t length = yyjson_get_len(value);
-            char* string = (char*)context->allocate(
+            char* string = (char*)context->alloc_bytes(
                 (long long)length + 1, (long long)length << 3);
             memcpy(string, yyjson_get_str(value), length);
+            // alloc_bytes does not zero the payload, so the NUL that makes this
+            // a C string is written here rather than left to the allocator.
+            string[length] = '\0';
             memcpy(target, &string, sizeof(string));
             break;
         }
@@ -705,24 +780,26 @@ static int beans_json_typed_value_direct(
             beans_json_typed_init_record(child_schema, target);
             {
                 int status = beans_json_typed_object_direct(
-                    child_schema, value, target, context);
+                    child_schema, value, target, context, depth);
                 return status == BEANS_ENC_OK ? 0 : -status;
             }
         case BEANS_JSON_TYPED_LIST:
             return beans_json_typed_list_direct(
                 element_kind, element_schema, element_size,
-                element_pointer_mask, value, target, context);
+                element_pointer_mask, value, target, context, depth);
         default:
             return BEANS_JSON_TYPED_ERR_TYPE;
     }
     return 0;
 }
 
+// `depth` is this object's own depth; its field values sit at depth + 1.
 static int beans_json_typed_object_direct(
         const BeansJsonTypedSchema* schema,
         yyjson_val* object,
         unsigned char* record,
-        BeansJsonDecodeContext* context) {
+        BeansJsonDecodeContext* context,
+        uint64_t depth) {
     uint64_t* req = context->req;
     if (!yyjson_is_obj(object)) {
         req[5] = BEANS_JSON_TYPED_ERR_ROOT;
@@ -763,7 +840,20 @@ static int beans_json_typed_object_direct(
             const BeansJsonTypedKey* key = beans_json_typed_find_key(
                 schema, name, name_len);
             if (!key) {
-                if (schema->flags & BEANS_JSON_TYPED_ALLOW_UNKNOWN) continue;
+                if (schema->flags & BEANS_JSON_TYPED_ALLOW_UNKNOWN) {
+                    // The depth limit is a whole-document policy: a value nested
+                    // past it under a skipped key must still be refused, so the
+                    // skipped subtree is measured here (issue #142). Its own
+                    // depth is depth + 1, like a field value's.
+                    if (!beans_json_typed_within_depth(
+                            yyjson_obj_iter_get_val(json_key),
+                            depth + 1, context->max_depth)) {
+                        req[5] = BEANS_JSON_TYPED_ERR_DEPTH;
+                        if (seen != local_seen) free(seen);
+                        return BEANS_ENC_ERR_INVALID;
+                    }
+                    continue;
+                }
                 req[5] = BEANS_JSON_TYPED_ERR_UNKNOWN;
                 if (seen != local_seen) free(seen);
                 return BEANS_ENC_ERR_INVALID;
@@ -780,7 +870,7 @@ static int beans_json_typed_object_direct(
         req[7] = index;
         int code = beans_json_typed_store_direct(
             schema, index, yyjson_obj_iter_get_val(json_key),
-            record, context);
+            record, context, depth + 1);
         if (code != 0) {
             if (code < 0) {
                 if (seen != local_seen) free(seen);
@@ -840,14 +930,27 @@ static void beans_json_typed_release_record(
     }
 }
 
-// Direct native path. It maps into the final Beans struct/list storage while
-// the yyjson tree is hot, avoiding the large field-slot table used by the
-// portable fallback.
-// req[0]=length, [1]=read flags, [2]=schema, [3]=scalar output/list output,
-// [5]=error, [6]=record count/error byte, [7]=field index,
-// [8]=new-list callback, [10]=Beans allocator callback,
-// [11]=release callback.
-BEANS_ENC_API long long beans_enc_json_typed_decode_direct(
+// The typed decode. It parses the whole document into a yyjson tree, then maps
+// that tree into the final Beans struct/list storage while it is hot, avoiding
+// the large field-slot table the portable fallback uses. The document depth
+// limit rides this walk instead of a pre-pass over the tree (issue #142).
+//
+// This is the only decode engine. A from-bytes scanner that stored into the
+// target structs with no tree in between was built and measured against it
+// (issue #144): on the benchmark's /echo body — a 101 KB document of about
+// 1,900 small records — it took ~285-334us a decode against this path's
+// ~186-238us, because yyjson's SIMD reader parses many small objects faster
+// than a schema-driven byte scanner and the tree it leaves is cheap to walk.
+// It was removed rather than kept as a second engine nobody runs. The gate
+// that used to diff the two now holds this one to the JSONTestSuite answer
+// sheet and to its own invariants: test/json_typed_decode.sh.
+//
+// req[0]=length, [1]=read flags | max depth << 8, [2]=schema,
+// [3]=scalar output/list output, [5]=error code, [6]=record count on success
+// and on a shape refusal / error byte offset on a syntax refusal,
+// [7]=field index, [8]=new-list callback, [9]=Beans bytes-allocator callback,
+// [10]=Beans allocator callback, [11]=release callback. Word 4 is unused.
+static long long beans_json_typed_decode_walk(
         unsigned char* src, uint64_t* req) {
     const BeansJsonTypedSchema* schema =
         (const BeansJsonTypedSchema*)(uintptr_t)req[2];
@@ -855,6 +958,9 @@ BEANS_ENC_API long long beans_enc_json_typed_decode_direct(
         (BeansJsonNewListFn)(uintptr_t)req[8];
     BeansJsonAllocFn allocate =
         (BeansJsonAllocFn)(uintptr_t)req[10];
+    BeansJsonAllocFn alloc_bytes =
+        (BeansJsonAllocFn)(uintptr_t)req[9];
+    if (!alloc_bytes) alloc_bytes = allocate;
     BeansJsonReleaseFn release =
         (BeansJsonReleaseFn)(uintptr_t)req[11];
     req[5] = 0;
@@ -888,7 +994,12 @@ BEANS_ENC_API long long beans_enc_json_typed_decode_direct(
     }
 
     yyjson_val* root = yyjson_doc_get_root(doc);
-    if (!beans_json_typed_check_depth(root, req[1], req)) {
+    // The depth limit is no longer a whole-document pre-pass; it is folded into
+    // the walk below (issue #142). A limit of 0 refuses everything — the root
+    // itself sits at depth 1 — which is the one case the walk cannot reach.
+    uint64_t max_depth = req[1] >> 8;
+    if (max_depth == 0) {
+        req[5] = BEANS_JSON_TYPED_ERR_DEPTH;
         yyjson_doc_free(doc);
         return BEANS_ENC_ERR_INVALID;
     }
@@ -901,7 +1012,8 @@ BEANS_ENC_API long long beans_enc_json_typed_decode_direct(
     }
     size_t count = root_array ? yyjson_arr_size(root) : 1;
     req[6] = (uint64_t)count;
-    BeansJsonDecodeContext context = {new_list, allocate, release, req};
+    BeansJsonDecodeContext context =
+        {new_list, allocate, alloc_bytes, release, req, max_depth};
 
     long long status = BEANS_ENC_OK;
     void* list = NULL;
@@ -909,6 +1021,11 @@ BEANS_ENC_API long long beans_enc_json_typed_decode_direct(
         if (!new_list || count > INT64_MAX) {
             status = BEANS_ENC_ERR_MEMORY;
             req[5] = BEANS_JSON_ERR_MEMORY;
+        } else if (count > 0 && 2 > max_depth) {
+            // The root array is depth 1; its records sit at depth 2. If that is
+            // already past the limit, no record can be decoded (issue #142).
+            req[5] = BEANS_JSON_TYPED_ERR_DEPTH;
+            status = BEANS_ENC_ERR_INVALID;
         } else {
             list = new_list(
                             beans_json_typed_storage_stride(
@@ -930,7 +1047,7 @@ BEANS_ENC_API long long beans_enc_json_typed_decode_direct(
                 beans_json_typed_init_record(schema, record);
                 output->len = (uint64_t)++index;
                 status = beans_json_typed_object_direct(
-                    schema, item, record, &context);
+                    schema, item, record, &context, 2);
                 if (status != BEANS_ENC_OK) break;
             }
         }
@@ -942,13 +1059,42 @@ BEANS_ENC_API long long beans_enc_json_typed_decode_direct(
         unsigned char* record = (unsigned char*)(uintptr_t)req[3];
         beans_json_typed_init_record(schema, record);
         status = beans_json_typed_object_direct(
-            schema, root, record, &context);
+            schema, root, record, &context, 1);
         if (status != BEANS_ENC_OK)
             beans_json_typed_release_record(schema, record, release);
     }
     yyjson_doc_free(doc);
     if (status == BEANS_ENC_OK) req[7] = UINT64_MAX;
     return status;
+}
+
+// Test observability. The last decode's outcome, stashed where a test can read
+// it: none of these numbers reach a Beans program, because typed decoding
+// collapses every failure to one error of kind "invalid" at the language
+// boundary, so without this the gate could pin only accept-or-refuse and never
+// WHY or WHERE. test/json_typed_decode.sh records the code and the byte offset
+// of every refusal — over the JSONTestSuite corpus and over every truncation
+// and byte flip of a valid document — in goldens, and this is how it reads
+// them. Written on every decode: four stores against the thousands of
+// operations a decode already runs. Not thread-safe on purpose; the gate that
+// reads it is one thread.
+static uint64_t beans_json_decode_probe_data[4];
+
+BEANS_ENC_API long long beans_enc_json_typed_decode_direct(
+        unsigned char* src, uint64_t* req) {
+    long long status = beans_json_typed_decode_walk(src, req);
+    beans_json_decode_probe_data[0] = (uint64_t)status;
+    beans_json_decode_probe_data[1] = req[5];
+    beans_json_decode_probe_data[2] = req[6];
+    beans_json_decode_probe_data[3] = req[7];
+    return status;
+}
+
+// out[0]=status, out[1]=error code, out[2]=byte offset for a syntax refusal or
+// the record count otherwise, out[3]=field index (UINT64_MAX if none).
+BEANS_ENC_API long long beans_enc_json_decode_probe(uint64_t* out) {
+    for (int i = 0; i < 4; i++) out[i] = beans_json_decode_probe_data[i];
+    return 0;
 }
 
 // req[0]=text length, req[1]=yyjson read flags, req[2]=schema pointer
@@ -1290,6 +1436,12 @@ typedef struct {
     size_t len;
     size_t cap;
     int oom;
+    // Append-into mode (encode_into): when `reserve` is non-NULL, `data`
+    // points into a caller-owned Bytes rather than a private malloc, and a
+    // grow goes through the callback so the writer writes straight into that
+    // backing. NULL leaves the malloc/realloc path untouched.
+    BeansJsonBytesReserveFn reserve;
+    void* handle;
 } BeansJsonDirect;
 
 typedef struct {
@@ -1310,6 +1462,19 @@ static int beans_json_direct_grow(BeansJsonDirect* out, size_t extra) {
         return 0;
     }
     if (need <= out->cap) return 1;
+    if (out->reserve) {
+        // Append-into mode: the caller's Bytes owns the store and its own
+        // doubling policy. Hand it the bytes already written (out->len) so it
+        // keeps them, and the total it now needs. It panics on real OOM, so a
+        // return is always a success with the base and capacity refreshed.
+        unsigned long long cap = 0;
+        unsigned char* base =
+            out->reserve(out->handle, (unsigned long long)out->len,
+                         (unsigned long long)need, &cap);
+        out->data = (char*)base;
+        out->cap = (size_t)cap;
+        return 1;
+    }
     size_t cap = out->cap ? out->cap : BEANS_JSON_DIRECT_FIRST;
     while (cap < need) {
         if (cap > (SIZE_MAX >> 1)) {
@@ -1400,8 +1565,69 @@ static int beans_json_direct_sint(BeansJsonDirect* out, int64_t value) {
 // Bytes that end a plain copy run: below 0x20, the quote, the backslash, or
 // anything non-ASCII. Eight at a time on little-endian hosts, the same trick
 // yyjson's writer uses; the classification is identical to the byte loop.
+// BEANS_JSON_SCALAR_SCAN forces the 8-byte SWAR path even where a vector unit
+// is present — the compile-time A/B lever the encode bench uses to prove the
+// 16-byte scan is doing the work, the way BEANS_JSON_NO_DIRECT is the runtime
+// lever for the direct writer. It never affects output, only which scan runs.
 static size_t beans_json_plain_span(const unsigned char* src, size_t len) {
     size_t at = 0;
+// BEANS_JSON_SCAN_NEON / _SSE2 are decided beside the intrinsic includes at
+// the top of this file; anything they leave out takes the SWAR path below,
+// then the scalar one.
+#if defined(BEANS_JSON_SCAN_NEON)
+    // Sixteen bytes at a time. A byte ends the run if it is below 0x20, has its
+    // high bit set (start or continuation of a multibyte sequence), or is a
+    // quote or a backslash — byte for byte the classification the scalar loop
+    // below uses. Strings shorter than sixteen bytes skip this entirely and
+    // take the 8-byte SWAR path, so the short fields a record schema is full
+    // of are no slower than before.
+    {
+        const uint8x16_t ctrl = vdupq_n_u8(0x20);
+        const uint8x16_t highbit = vdupq_n_u8(0x80);
+        const uint8x16_t quote = vdupq_n_u8('"');
+        const uint8x16_t backslash = vdupq_n_u8('\\');
+        while (at + 16 <= len) {
+            uint8x16_t v = vld1q_u8(src + at);
+            uint8x16_t breaks = vorrq_u8(
+                vorrq_u8(vcltq_u8(v, ctrl), vtstq_u8(v, highbit)),
+                vorrq_u8(vceqq_u8(v, quote), vceqq_u8(v, backslash)));
+            if (vmaxvq_u8(breaks) == 0) {
+                at += 16;
+                continue;
+            }
+            // Each flagged lane is 0xFF, so the first set bit of a half word is
+            // in the first flagged byte; ctz >> 3 turns it into that byte's
+            // index.
+            uint64_t low = vgetq_lane_u64(vreinterpretq_u64_u8(breaks), 0);
+            if (low) return at + (size_t)(__builtin_ctzll(low) >> 3);
+            uint64_t high = vgetq_lane_u64(vreinterpretq_u64_u8(breaks), 1);
+            return at + 8 + (size_t)(__builtin_ctzll(high) >> 3);
+        }
+    }
+#elif defined(BEANS_JSON_SCAN_SSE2)
+    {
+        const __m128i ctrl = _mm_set1_epi8(0x1F);   // c <= 0x1F  <=>  c < 0x20
+        const __m128i sign = _mm_set1_epi8((char)0x80);
+        const __m128i quote = _mm_set1_epi8('"');
+        const __m128i backslash = _mm_set1_epi8('\\');
+        while (at + 16 <= len) {
+            __m128i v = _mm_loadu_si128((const __m128i*)(src + at));
+            // max(c, 0x1F) == 0x1F  iff  c <= 0x1F; (c & 0x80) == 0x80 iff high.
+            __m128i is_ctrl = _mm_cmpeq_epi8(_mm_max_epu8(v, ctrl), ctrl);
+            __m128i is_high = _mm_cmpeq_epi8(_mm_and_si128(v, sign), sign);
+            __m128i is_quote = _mm_cmpeq_epi8(v, quote);
+            __m128i is_bs = _mm_cmpeq_epi8(v, backslash);
+            __m128i breaks = _mm_or_si128(_mm_or_si128(is_ctrl, is_high),
+                                          _mm_or_si128(is_quote, is_bs));
+            int mask = _mm_movemask_epi8(breaks);
+            if (mask == 0) {
+                at += 16;
+                continue;
+            }
+            return at + (size_t)__builtin_ctz((unsigned)mask);
+        }
+    }
+#endif
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
     while (at + 8 <= len) {
         uint64_t word;
@@ -1814,18 +2040,37 @@ static size_t beans_json_direct_first_cap(
     return want;
 }
 
+// `reserve` NULL means the original mode: the writer owns a private malloc,
+// req[3] returns it, req[4] its length. Non-NULL is encode_into: the writer
+// appends into the caller's Bytes after `start_len` bytes, req[4] returns the
+// count appended, and on error the Bytes is rolled back to `start_len`.
 static long long beans_json_direct_encode(unsigned char* root,
                                           const BeansJsonTypedSchema* schema,
                                           BeansJsonStringLenFn string_len,
-                                          uint64_t* req) {
+                                          uint64_t* req,
+                                          BeansJsonBytesReserveFn reserve,
+                                          void* handle,
+                                          uint64_t start_len) {
     BeansJsonDirectContext context;
     size_t first = beans_json_direct_first_cap(schema, root);
     context.string_len = string_len;
     context.req = req;
-    context.out.data = (char*)malloc(first);
-    context.out.len = 0;
-    context.out.cap = context.out.data ? first : 0;
     context.out.oom = 0;
+    context.out.reserve = reserve;
+    context.out.handle = handle;
+    if (reserve) {
+        unsigned long long cap = 0;
+        unsigned char* base = reserve(handle, start_len,
+                                      (unsigned long long)start_len + first,
+                                      &cap);
+        context.out.data = (char*)base;
+        context.out.len = (size_t)start_len;
+        context.out.cap = (size_t)cap;
+    } else {
+        context.out.data = (char*)malloc(first);
+        context.out.len = 0;
+        context.out.cap = context.out.data ? first : 0;
+    }
     int wrote;
     if (schema->flags & BEANS_JSON_TYPED_ROOT_ARRAY) {
         void* list = root;
@@ -1836,7 +2081,15 @@ static long long beans_json_direct_encode(unsigned char* root,
         wrote = beans_json_direct_object(schema, root, NULL, &context);
     }
     if (wrote != 1) {
-        free(context.out.data);
+        if (reserve) {
+            // Nothing to free — the store is the caller's. Roll the Bytes
+            // back to what it held before, so a failed encode_into leaves the
+            // target exactly as it was.
+            unsigned long long cap = 0;
+            reserve(handle, start_len, start_len, &cap);
+        } else {
+            free(context.out.data);
+        }
         // The DOM walk reports its refusals — null strings and lists, memory
         // trouble — as a memory error, and only bad string bytes as invalid;
         // this path keeps that exact mapping.
@@ -1847,8 +2100,18 @@ static long long beans_json_direct_encode(unsigned char* root,
         req[5] = BEANS_JSON_WERR_MEMORY;
         return BEANS_ENC_ERR_MEMORY;
     }
-    req[3] = (uint64_t)(uintptr_t)context.out.data;
-    req[4] = (uint64_t)context.out.len;
+    if (reserve) {
+        // Commit the final length: the tail written since the last grow lands
+        // now. min_cap == len, so this only sets the length.
+        unsigned long long cap = 0;
+        reserve(handle, (unsigned long long)context.out.len,
+                (unsigned long long)context.out.len, &cap);
+        req[3] = 0;
+        req[4] = (uint64_t)(context.out.len - (size_t)start_len);
+    } else {
+        req[3] = (uint64_t)(uintptr_t)context.out.data;
+        req[4] = (uint64_t)context.out.len;
+    }
     req[7] = UINT64_MAX;
     return BEANS_ENC_OK;
 }
@@ -1858,18 +2121,26 @@ static long long beans_json_direct_encode(unsigned char* root,
 // req[0]=schema, [1]=write mode, [2]=beans_str_len callback
 // out: req[3]=buffer handle, [4]=byte length, [5]=write error,
 //      [7]=field index on an invalid value.
+// encode_into (mode BEANS_JSON_WRITE_APPEND): req[6]=Bytes grow callback,
+// req[8]=Bytes handle, req[9]=length already held; the JSON is appended into
+// that Bytes and req[4] returns the count appended, not a fresh buffer.
 BEANS_ENC_API long long beans_enc_json_typed_encode(
         unsigned char* root, uint64_t* req) {
     const BeansJsonTypedSchema* schema =
         (const BeansJsonTypedSchema*)(uintptr_t)req[0];
     BeansJsonStringLenFn string_len =
         (BeansJsonStringLenFn)(uintptr_t)req[2];
+    int append = req[1] == BEANS_JSON_WRITE_APPEND;
+    BeansJsonBytesReserveFn reserve =
+        append ? (BeansJsonBytesReserveFn)(uintptr_t)req[6] : NULL;
+    void* handle = append ? (void*)(uintptr_t)req[8] : NULL;
+    uint64_t start_len = append ? req[9] : 0;
     req[3] = 0;
     req[4] = 0;
     req[5] = 0;
     req[7] = UINT64_MAX;
     if (!root || !schema || !schema->fields || !schema->complex ||
-        !string_len) {
+        !string_len || (append && !reserve)) {
         req[5] = BEANS_JSON_WERR_INVALID;
         return BEANS_ENC_ERR_INVALID;
     }
@@ -1878,10 +2149,13 @@ BEANS_ENC_API long long beans_enc_json_typed_encode(
     // A/B lever the byte-equality fuzz uses, and the escape hatch if the
     // direct writer is ever suspected in the field. Read once before main,
     // so the hot path neither rescans the environment nor races on a lazy
-    // first read.
-    if (!beans_json_direct_disabled && req[1] == BEANS_JSON_WRITE_COMPACT &&
+    // first read. Append mode writes the same compact bytes, so it takes the
+    // same direct path (and the same DOM fallback for float schemas).
+    int compact = req[1] == BEANS_JSON_WRITE_COMPACT || append;
+    if (!beans_json_direct_disabled && compact &&
         beans_json_direct_eligible(schema, 0))
-        return beans_json_direct_encode(root, schema, string_len, req);
+        return beans_json_direct_encode(root, schema, string_len, req,
+                                        reserve, handle, start_len);
 
     yyjson_mut_doc* doc = yyjson_mut_doc_new(NULL);
     if (!doc) {
@@ -1923,8 +2197,23 @@ BEANS_ENC_API long long beans_enc_json_typed_encode(
             req[5] = BEANS_JSON_WERR_INVALID;
         return BEANS_ENC_ERR_INVALID;
     }
-    req[3] = (uint64_t)(uintptr_t)text;
-    req[4] = (uint64_t)length;
+    if (append) {
+        // A float schema still routes here. yyjson wrote to its own buffer;
+        // append that once into the caller's Bytes and free it — the copy the
+        // direct path avoids, but this path is not the hot one.
+        unsigned long long cap = 0;
+        unsigned char* base =
+            reserve(handle, start_len, start_len + (uint64_t)length, &cap);
+        memcpy(base + start_len, text, length);
+        reserve(handle, start_len + (uint64_t)length,
+                start_len + (uint64_t)length, &cap);
+        free(text);
+        req[3] = 0;
+        req[4] = (uint64_t)length;
+    } else {
+        req[3] = (uint64_t)(uintptr_t)text;
+        req[4] = (uint64_t)length;
+    }
     req[7] = UINT64_MAX;
     return BEANS_ENC_OK;
 }

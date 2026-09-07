@@ -1,0 +1,12 @@
+empty-at-limit: 1
+empty-past-limit: invalid
+scalar-at-limit: 2
+scalar-past-limit: invalid
+nested-at-limit: 3
+nested-past-limit: invalid
+deep-at-limit: 4
+deep-past-limit: invalid
+object-at-limit: 5
+object-past-limit: invalid
+shallow-unknown: 6
+string-nested-past-limit: invalid

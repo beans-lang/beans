@@ -196,8 +196,8 @@ fn semantic_builtin_module_names(package_path: string) -> List<string> {
     }
     if package_path == "std.sock" {
         return ["listen", "connect", "udp_bind", "accept", "send", "recv",
-                "send_text", "recv_exact", "recv_to_end", "recv_from",
-                "send_to", "address", "shutdown",
+                "send_text", "send_pair_text", "recv_exact", "recv_to_end",
+                "recv_from", "send_to", "address", "shutdown",
                 "set_timeouts", "set_nonblocking", "close", "resolve"]
     }
     if package_path == "std.sig" {

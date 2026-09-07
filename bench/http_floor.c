@@ -30,14 +30,21 @@
 // Date) so the wire bytes are comparable; the Date is frozen because this
 // server does not keep time.
 //
-// kqueue, so macOS and the BSDs. That is deliberate rather than unfinished:
-// the benchmark this rules is a macOS one, and the multi-core Linux table it
-// would otherwise serve was dropped as untrustworthy on the hardware to hand.
-// Porting it means an epoll arm in flush_conn/on_read and the event loop —
-// about forty lines — and the day a Linux box is in the picture, that is the
-// change to make.
+// kqueue on macOS and the BSDs, epoll on Linux — the same one-thread,
+// one-readiness-event, one-writev-per-response loop behind a thin #if. The
+// benchmark this rules is a macOS one, but the ruler now exists on Linux too
+// (bench/espresso_ledger.sh grew a Linux arm), so the floor exists wherever the
+// servers under test do. The two backends differ only in the readiness
+// syscalls — poll_add_read / arm_write, the EAGAIN and drained branches of
+// flush_conn, and the event loop. Level-triggered on both (no EV_CLEAR, no
+// EPOLLET), so a leftover read re-fires.
+#define _GNU_SOURCE   // memmem is a GNU extension on glibc
 #include <sys/socket.h>
+#if defined(__linux__)
+#include <sys/epoll.h>
+#else
 #include <sys/event.h>
+#endif
 #include <sys/uio.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -47,6 +54,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <errno.h>
 #include <signal.h>
 
@@ -62,8 +70,37 @@ typedef struct {
 static Conn* conns[MAXFD];
 static const char* HEAD; static size_t HEADLEN;
 static const char* BODY; static size_t BODYLEN;
+#if defined(__linux__)
+static int ep;
+#else
 static int kq;
+#endif
 static int echo_mode;
+
+// Register fd for read readiness (the listen socket and every accepted
+// connection). Level-triggered on both backends.
+static void poll_add_read(int fd) {
+#if defined(__linux__)
+    struct epoll_event ev; ev.events = EPOLLIN; ev.data.fd = fd;
+    epoll_ctl(ep, EPOLL_CTL_ADD, fd, &ev);
+#else
+    struct kevent ev; EV_SET(&ev, fd, EVFILT_READ, EV_ADD, 0, 0, NULL);
+    kevent(kq, &ev, 1, NULL, 0, NULL);
+#endif
+}
+
+// Ask to be told when fd is writable again, after a short write. On kqueue a
+// one-shot write filter; on epoll the persistent EPOLLOUT bit added beside the
+// read interest (dropped again in flush_conn once nothing is owed).
+static void arm_write(int fd) {
+#if defined(__linux__)
+    struct epoll_event ev; ev.events = EPOLLIN | EPOLLOUT; ev.data.fd = fd;
+    epoll_ctl(ep, EPOLL_CTL_MOD, fd, &ev);
+#else
+    struct kevent ev; EV_SET(&ev, fd, EVFILT_WRITE, EV_ADD | EV_ONESHOT, 0, 0, NULL);
+    kevent(kq, &ev, 1, NULL, 0, NULL);
+#endif
+}
 
 // Content-Length out of a request head, or 0 when it has none. Case-insensitive
 // because the header name is, and bounded by the head we already framed.
@@ -116,12 +153,7 @@ static int flush_conn(int fd, Conn* c) {
         if (wrote < 0) {
             if (errno == EINTR) continue;
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                if (!c->wwatch) {
-                    struct kevent ev;
-                    EV_SET(&ev, fd, EVFILT_WRITE, EV_ADD | EV_ONESHOT, 0, 0, NULL);
-                    kevent(kq, &ev, 1, NULL, 0, NULL);
-                    c->wwatch = 1;
-                }
+                if (!c->wwatch) { arm_write(fd); c->wwatch = 1; }
                 return 0;
             }
             return -1;
@@ -129,6 +161,17 @@ static int flush_conn(int fd, Conn* c) {
         c->outoff += (size_t)wrote;
         if (c->outoff >= HEADLEN + BODYLEN) { c->outoff = 0; c->pending--; }
     }
+    // Fully drained, nothing owed. On epoll the write interest is persistent
+    // and level-triggered, so a still-writable socket would spin the loop —
+    // drop EPOLLOUT now. (kqueue's one-shot filter removed itself when it
+    // fired, and the event loop clears wwatch there, so nothing to undo.)
+#if defined(__linux__)
+    if (c->wwatch) {
+        struct epoll_event ev; ev.events = EPOLLIN; ev.data.fd = fd;
+        epoll_ctl(ep, EPOLL_CTL_MOD, fd, &ev);
+        c->wwatch = 0;
+    }
+#endif
     return 0;
 }
 
@@ -170,6 +213,22 @@ static int on_read(int fd, Conn* c) {
     // serve. A body never lands here: it is consumed above, not buffered.
     if (c->inlen == (int)sizeof(c->in)) return -1;
     return flush_conn(fd, c);
+}
+
+// Drain the listen socket's backlog: accept until EAGAIN, arming each new
+// connection for read. Shared by both event loops.
+static void accept_all(int ls, int sndbuf) {
+    int one = 1;
+    for (;;) {
+        int c = accept(ls, NULL, NULL);
+        if (c < 0) break;
+        if (c >= MAXFD) { close(c); continue; }
+        nonblock(c);
+        setsockopt(c, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+        if (sndbuf > 0) setsockopt(c, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof sndbuf);
+        conns[c] = calloc(1, sizeof(Conn));
+        poll_add_read(c);
+    }
 }
 
 int main(int argc, char** argv) {
@@ -237,10 +296,35 @@ int main(int argc, char** argv) {
     listen(ls, 512);
     nonblock(ls);
 
+#if defined(__linux__)
+    ep = epoll_create1(0);
+    poll_add_read(ls);
+    fprintf(stderr, "floor %s listening on %d sndbuf=%d\n", mode, port, sndbuf);
+
+    struct epoll_event evs[256];
+    for (;;) {
+        int n = epoll_wait(ep, evs, 256, -1);
+        for (int i = 0; i < n; i++) {
+            int fd = evs[i].data.fd;
+            if (fd == ls) { accept_all(ls, sndbuf); continue; }
+            Conn* c = conns[fd];
+            if (!c) continue;
+            // A single event can carry both readiness and a hangup. Flush what
+            // is owed first, then read; a hung-up or errored socket falls into
+            // on_read, whose read() returns 0 or -1 and closes it — so EPOLLHUP
+            // (which cannot be masked and would otherwise re-fire forever)
+            // always makes progress toward close.
+            uint32_t e = evs[i].events;
+            int rc = 0;
+            if (e & EPOLLOUT) rc = flush_conn(fd, c);
+            if (rc >= 0 && (e & (EPOLLIN | EPOLLHUP | EPOLLERR)))
+                rc = on_read(fd, c);
+            if (rc < 0) { close(fd); free(c); conns[fd] = NULL; }
+        }
+    }
+#else
     kq = kqueue();
-    struct kevent ev;
-    EV_SET(&ev, ls, EVFILT_READ, EV_ADD, 0, 0, NULL);
-    kevent(kq, &ev, 1, NULL, 0, NULL);
+    poll_add_read(ls);
     fprintf(stderr, "floor %s listening on %d sndbuf=%d\n", mode, port, sndbuf);
 
     struct kevent evs[256];
@@ -248,20 +332,7 @@ int main(int argc, char** argv) {
         int n = kevent(kq, NULL, 0, evs, 256, NULL);
         for (int i = 0; i < n; i++) {
             int fd = (int)evs[i].ident;
-            if (fd == ls) {
-                for (;;) {
-                    int c = accept(ls, NULL, NULL);
-                    if (c < 0) break;
-                    if (c >= MAXFD) { close(c); continue; }
-                    nonblock(c);
-                    setsockopt(c, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
-                    if (sndbuf > 0) setsockopt(c, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof sndbuf);
-                    conns[c] = calloc(1, sizeof(Conn));
-                    EV_SET(&ev, c, EVFILT_READ, EV_ADD, 0, 0, NULL);
-                    kevent(kq, &ev, 1, NULL, 0, NULL);
-                }
-                continue;
-            }
+            if (fd == ls) { accept_all(ls, sndbuf); continue; }
             Conn* c = conns[fd];
             if (!c) continue;
             int rc;
@@ -270,4 +341,5 @@ int main(int argc, char** argv) {
             if (rc < 0) { close(fd); free(c); conns[fd] = NULL; }
         }
     }
+#endif
 }

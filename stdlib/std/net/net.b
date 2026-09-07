@@ -307,6 +307,41 @@ pub unique class TcpStream implements ByteStream, Send {
         return sockx_error("send_vectored", status, os_error)
     }
 
+    /// Writes a `Bytes` head and a `string` body as one send, without joining
+    /// them or copying the string into a `Bytes` first.
+    ///
+    /// The string twin of `write_vectored`, with identical semantics: `offset`
+    /// counts into the head-and-body pair as though they were one buffer, a
+    /// short write is normal and resumes correctly whether it stopped inside
+    /// the head or inside the body, `offset` at the end of the pair is `ok(0)`,
+    /// and a send on a fiber parks on backpressure. It exists so a server that
+    /// holds its body as a `string` — the shape a handler hands back — sends it
+    /// where it already lives, instead of copying it into a `Bytes` only to
+    /// frame the response. Returns the bytes written by this call, which may be
+    /// fewer than the pair holds.
+    ///
+    /// A failure carries the same `Error.kind` the `Bytes` form gives it for
+    /// every condition a stream send reports: `timeout` when backpressure ran
+    /// out the write deadline, `reset` for a peer that has gone, `closed` for a
+    /// stream that is no longer open, and `invalid` for an offset outside the
+    /// pair. The two part only on the rare network-layer errno — an unreachable
+    /// route, a connection refused late on a stream — which this form names
+    /// (`unreachable`, `refused`) where the `Bytes` form reports `io`. That is
+    /// the socket API's own split and not this pair's: it is the same one
+    /// between `write` and `write_from`, and between `read` and `read_into`.
+    /// A call that goes straight to the runtime maps the errno; one that goes
+    /// through a request buffer maps the engine's status code, which folds
+    /// those errnos into `io`.
+    pub fn write_vectored_text(head: Bytes, body: string, offset: int) -> Result<int> {
+        if !self.live { return err("send: socket is closed", "closed") }
+        let total: int = head.len() + body.len()
+        if offset < 0 || offset > total {
+            return err("send: offset is outside the data", "invalid")
+        }
+        if offset == total { return ok(0) }
+        return sock.send_pair_text(self.fd, head, body, offset)
+    }
+
     /// Tries one write on a nonblocking stream. `ok(none)` means the socket
     /// would block; `ok(some(n))` reports the bytes written from `offset`.
     pub fn try_write_from(data: Bytes, offset: int) -> Result<Option<int>> {

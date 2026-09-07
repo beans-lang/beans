@@ -184,14 +184,14 @@ if [ -z "${BEANS_CC:-}" ]; then
 fi
 
 # beansc, as an <arch> binary.
-run_qemu() { QEMU_LD_PREFIX="$sysroot" "$qemu" "${qemu_args[@]}" "$@"; }
+run_qemu() { QEMU_LD_PREFIX="$sysroot" "$qemu" ${qemu_args+"${qemu_args[@]}"} "$@"; }
 run() { run_qemu "$tmp/beansc.$arch" "$@"; }
 
 echo "== $arch: cross-build beansc for the target =="
 # --release here and at stage 2 below: every beansc invocation in this script
 # runs under emulation, and an unoptimized compiler — what a plain `beansc
 # build` now produces — would compile the whole of src/ at emulated speed.
-if ! "$beansc" build --release --target "$triple" "${extra_build_args[@]}" \
+if ! "$beansc" build --release --target "$triple" ${extra_build_args+"${extra_build_args[@]}"} \
         --linker "$linker" src/main.b \
         -o "$tmp/beansc.$arch" >"$tmp/xbuild.log" 2>&1; then
     echo "  FAIL: could not cross-build beansc for $arch"; tail -6 "$tmp/xbuild.log"
@@ -207,7 +207,7 @@ echo "== $arch: self-rebuild fixed point (beansc.$arch compiles the compiler) ==
 # and stage2 emits the same IR. Equal IR is the fixed point — the hosted compiler
 # reproduces itself exactly. (Binaries differ by build metadata; IR does not.)
 if run llvm src/main.b >"$tmp/stage1.ll" 2>"$tmp/s1.err" \
-   && run build --release "${extra_build_args[@]}" --linker "$linker" \
+   && run build --release ${extra_build_args+"${extra_build_args[@]}"} --linker "$linker" \
         src/main.b -o "$tmp/beansc-stage2.$arch" >"$tmp/s2.err" 2>&1; then
     run_qemu "$tmp/beansc-stage2.$arch" llvm src/main.b \
         >"$tmp/stage2.ll" 2>"$tmp/s2i.err"
@@ -237,7 +237,7 @@ for src in "${examples[@]}"; do
         embedded|freestanding) continue ;;           # no hosted runtime
         cpu_dispatch|target_info) continue ;;         # print the running CPU/target
     esac
-    if ! run build "${extra_build_args[@]}" --linker "$linker" \
+    if ! run build ${extra_build_args+"${extra_build_args[@]}"} --linker "$linker" \
             "$src" -o "$tmp/$base.bin" >"$tmp/build.log" 2>&1; then
         # Tell a capability refusal apart from a real break the way linux_arch.sh
         # does: a refused capability (for example SIMD with no vector unit)

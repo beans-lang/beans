@@ -719,6 +719,222 @@ static void* rt_alloc(unsigned long long n) {
 static void* rt_alloc(unsigned long long n) { return beans_host_alloc(n, 16); }
 #endif
 
+// ---- large-block allocator: a freed big buffer must leave RSS --------------
+//
+// macOS keeps MADV_FREE pages resident until the whole machine is under
+// pressure, so a one-megabyte response body that has been freed still shows in
+// `ps`; only munmap hands the address space back at once. So a Bytes or List
+// backing whose byte size is past a threshold — the shape a large response
+// body has — is mapped, not malloc'd, and freeing it returns its pages then and
+// there.
+//
+// There is no per-block header and no size hidden anywhere: a mapped block is
+// exactly its page-rounded byte length, and the mmap/malloc choice is a pure
+// function of the byte size. So the caller, which always knows a backing's byte
+// size (its cap times its element stride), passes that size to the free and the
+// realloc — and rt_big_free's `byte_size >= threshold` test lands on exactly
+// the branch rt_big_alloc took, with no guessing and no per-allocation cost. A
+// below-threshold backing is a plain calloc/malloc/realloc/free, byte for byte
+// what it was, so the allocation-heavy self-build sees no new work on the small
+// blocks that are almost all of it.
+//
+// That purity is load-bearing, which is why a failed mapping is a refusal and
+// never a heap fallback: a block at or past the threshold that was not mapped
+// would be handed to munmap by its free.
+//
+// Only the full hosted profile on a real POSIX maps. Minimal and freestanding
+// are one thread with no mmap to assume; Windows keeps malloc, whose RSS is not
+// the MADV_FREE problem this solves. In those builds the four are a
+// pass-through to the plain rt_* allocators (the size arguments ignored), so
+// they stay byte-for-byte what they were.
+//
+// Under a sanitizer the map path is off too: ASan and its kin instrument
+// malloc/free but pass raw mmap through, so a mapped block would lose the
+// redzones and use-after-free tracking a plain one has. Falling back to the
+// plain allocators there keeps a big block as instrumented as a small one; the
+// map path's own arithmetic is covered by the non-sanitized RSS gate instead.
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+#define RT_BIG_SANITIZED 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer) || \
+    __has_feature(memory_sanitizer)
+#define RT_BIG_SANITIZED 1
+#endif
+#endif
+#ifndef RT_BIG_SANITIZED
+#define RT_BIG_SANITIZED 0
+#endif
+#if BEANS_RT_PROFILE >= BEANS_RT_FULL && !defined(_WIN32) && !defined(__wasm__) && !RT_BIG_SANITIZED
+// 256 KB. Below the threshold a block stays on malloc, whose free reuses a
+// warm, already-faulted region; at or above it a block is mapped, so freeing
+// one returns its pages.
+//
+// The threshold is a trade, not a free win, and the number is where the trade
+// is worth making. A mapped block is fresh address space every time, so each
+// allocation faults its pages in one by one where malloc handed back memory
+// that was already resident. Churning one — allocate, write, free, repeat, the
+// shape a server has with a per-request body — measured at 50k iterations:
+//
+//     buffer     write        malloc   mapped
+//     101 KB     all of it    0.216s   (stays on malloc at both thresholds)
+//     200 KB     all of it    0.392s   1.073s     2.7x
+//     247 KB     all of it    0.525s   1.286s     2.4x
+//     1 MiB      all of it    0.235s   0.563s     2.4x   (6k iterations)
+//     247 KB     ends only    0.070s   0.247s     3.5x
+//
+// The "ends only" row is the syscall pair alone; the rest of the "all of it"
+// gap is the page faults. So every size above the threshold pays roughly 2.4x
+// to be churned, and the threshold decides which sizes that is.
+//
+// 256 KB, not lower, because a buffer that grows by doubling lands on 131072
+// on its way to anything over 64 KB, and that step is everywhere — a 128 KB
+// threshold would map it and make every such buffer 2.7x more expensive to
+// churn. The first doubling step 256 KB captures is 262144, which is where a
+// 247 KB response body's backing actually ends up, so the /records-sized body
+// this exists for is mapped and returns its pages at this threshold anyway.
+// Below it, a 101 KB /echo body and the compiler's own allocations are
+// untouched: the self-build measures 7.29-7.41s with the map path and
+// 7.31-8.05s without it, which is the same number.
+//
+// An earlier revision of this file used 128 KB on the strength of the 101 KB
+// row alone — a size that stays on malloc at every candidate threshold, so the
+// measurement could not see the cost it was choosing.
+//
+// The churn cost is removable, and this does not remove it: a small bounded
+// cache of freed mappings would let a churning caller reuse one instead of
+// unmapping and re-faulting, at the price of holding that many blocks
+// resident. It needs a size-keyed free list and a lock on a path that has
+// neither today, and it must re-zero what it hands to rt_big_zalloc, so it is
+// a change with its own measurement to make, not a line to add here.
+#define RT_BIG_MMAP_MIN (256u * 1024u)
+
+static size_t rt_big_page(void) {
+    static size_t cached = 0;          // benign race: every writer stores the same value
+    size_t p = cached;
+    if (!p) { long s = sysconf(_SC_PAGESIZE); p = s > 0 ? (size_t)s : 4096u; cached = p; }
+    return p;
+}
+static size_t rt_big_maplen(unsigned long long n) {
+    size_t page = rt_big_page();
+    return ((size_t)n + page - 1) & ~(page - 1);
+}
+#ifdef BEANS_RT_ALLOC_FAILTEST
+// Test-only, and only alongside the allocation-failure injection: with
+// BEANS_RT_BIG_NOMMAP set, every large-block mapping fails, so the refusal
+// paths below are reachable without exhausting the machine's address space.
+// It is compiled out of a release build for the same reason the rest of the
+// injection is — an inherited environment variable must not be able to change
+// a shipped binary's allocator.
+static int rt_big_nomap(void) {
+    static int state = -1;            // benign race: every writer stores the same value
+    int s = state;
+    if (s < 0) {
+        const char* e = getenv("BEANS_RT_BIG_NOMMAP");
+        s = (e && *e && *e != '0') ? 1 : 0;
+        state = s;
+    }
+    return s;
+}
+#endif
+static void* rt_big_map(size_t maplen) {
+#ifdef BEANS_RT_ALLOC_FAILTEST
+    if (rt_big_nomap()) return MAP_FAILED;
+#endif
+    return mmap(NULL, maplen, PROT_READ | PROT_WRITE,
+                MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+}
+static void* rt_big_alloc_impl(unsigned long long n, int zero) {
+    if (n >= RT_BIG_MMAP_MIN) {
+        // mmap zeroes its pages, so `zero` is already satisfied.
+        void* p = rt_big_map(rt_big_maplen(n));
+        // No heap fallback here, on purpose. rt_big_free decides munmap-or-free
+        // from the byte size alone, so a block at or past the threshold has to
+        // BE a mapping: a malloc'd one reaching munmap unmaps live heap, and a
+        // large malloc is page-aligned often enough on macOS that the unmap
+        // would succeed and corrupt silently rather than fail with EINVAL. A
+        // mapping of this size failing means the address space is gone, where
+        // malloc's own large path — mmap on both glibc and macOS — would fail
+        // too, so the honest answer is the refusal every caller already turns
+        // into the documented "out of memory" panic.
+        return p == MAP_FAILED ? NULL : p;
+    }
+    return zero ? rt_zalloc(n) : rt_alloc(n);
+}
+static void* rt_big_zalloc(unsigned long long n) { return rt_big_alloc_impl(n, 1); }
+static void* rt_big_alloc(unsigned long long n)  { return rt_big_alloc_impl(n, 0); }
+// byte_size is the block's allocated byte length — cap times stride for a List,
+// cap for a Bytes — the same number rt_big_alloc was given for it.
+static void rt_big_free(void* p, unsigned long long byte_size) {
+    if (!p) return;
+    if (byte_size >= RT_BIG_MMAP_MIN) munmap(p, rt_big_maplen(byte_size));
+    else rt_free(p);
+}
+static void* rt_big_realloc(void* p, unsigned long long old_bytes,
+                            unsigned long long new_bytes) {
+    if (!p) return rt_big_alloc(new_bytes);
+    int old_mapped = old_bytes >= RT_BIG_MMAP_MIN;
+    int new_mapped = new_bytes >= RT_BIG_MMAP_MIN;
+    if (!old_mapped && !new_mapped)          // the common case: a plain realloc
+        return rt_realloc(p, new_bytes);
+    // A transition, or a grow of a mapped block: place fresh, copy the overlap,
+    // release the old mapping or block. realloc does not zero grown bytes, so
+    // neither does this; a caller that grows a list fills the new tail itself.
+    //
+    // The overlap is min(old, new), so this is also a correct shrink, including
+    // one that crosses back below the threshold onto the heap. No caller shrinks
+    // a backing — bytes_grow, beans_bytes_resize and beans_list_reserve all
+    // return early when the request fits, and push and insert only double — so
+    // the direction that runs is the grow, which test/cases/big_realloc.b drives
+    // through this arm from both sides of the threshold. Writing the general
+    // realloc rather than a grow-only one keeps that the caller's choice.
+    void* np = rt_big_alloc(new_bytes);
+    if (!np) return NULL;
+    unsigned long long copy = old_bytes < new_bytes ? old_bytes : new_bytes;
+    if (copy) memcpy(np, p, (size_t)copy);
+    if (old_mapped) munmap(p, rt_big_maplen(old_bytes));
+    else rt_free(p);
+    return np;
+}
+// beans_alloc's non-pooled objects carry no byte size the free path can read
+// back — meta holds the shape, not the length — so a large one is mapped behind
+// a 16-byte prefix that records the mapping's length; a malloc'd one records 0
+// there and is freed the plain way. The prefix keeps the object's 16-byte
+// alignment, and non-pooled objects are both large and rare (the pooled hot
+// path never reaches here), so it costs nothing that shows on the self-build.
+//
+// Because that prefix records the origin, this path CAN fall back to the heap
+// when a mapping fails and still free correctly — which is exactly what the
+// header-less backing allocator above cannot do, and the reason the two are
+// written differently rather than sharing one shape.
+static void* rt_obj_alloc(unsigned long long total) {
+    if (total >= RT_BIG_MMAP_MIN) {
+        size_t maplen = rt_big_maplen(16 + total);
+        void* base = rt_big_map(maplen);
+        if (base != MAP_FAILED) {      // zeroed pages; the object wants zeroed slots
+            *(size_t*)base = maplen;   // nonzero marks a mapping
+            return (char*)base + 16;
+        }
+    }
+    void* base = rt_zalloc(16 + total);
+    if (!base) return NULL;
+    *(size_t*)base = 0;                // 0 marks a malloc'd block
+    return (char*)base + 16;
+}
+static void rt_obj_free(void* obj) {
+    void* base = (char*)obj - 16;
+    size_t maplen = *(size_t*)base;
+    if (maplen) munmap(base, maplen);
+    else rt_free(base);
+}
+#else
+#define rt_big_zalloc(n)                 rt_zalloc(n)
+#define rt_big_alloc(n)                  rt_alloc(n)
+#define rt_big_realloc(p, ob, nb)        rt_realloc((p), (nb))
+#define rt_big_free(p, byte_size)        rt_free(p)
+#define rt_obj_alloc(total)              rt_zalloc(total)
+#define rt_obj_free(obj)                 rt_free(obj)
+#endif
+
 // ---- formatting without libc ------------------------------------------------
 //
 // The core builds messages — panic text, `show` output, error strings — and every
@@ -1408,7 +1624,84 @@ void* beans_alloc(long long size, long long meta) {
         }
         h->rc = 1 | (cls << RC_CLS_SHIFT);
     } else {
-        h = rt_zalloc(total);
+        // Non-pooled: big enough that a freed one should leave RSS. rt_obj_alloc
+        // maps it past its threshold behind a length prefix, and the cls==0 arm
+        // of the free path below hands it to rt_obj_free, which unmaps it.
+        h = rt_obj_alloc(total);
+        if (!h) beans_panic("out of memory", 0, 0);
+        h->rc = 1;
+    }
+    h->meta = meta;
+    return (char*)h + 16;
+}
+
+// Like beans_alloc, but the pooled recycled path does not zero the payload.
+//
+// Fill-completely contract: the caller MUST write every one of the returned
+// `size` payload bytes before anything reads them — a string's bytes and its
+// NUL terminator, a Bytes buffer's whole length. A caller that leaves any
+// payload byte unwritten reads a previous allocation's bytes; that is a bug in
+// the caller, not here. beans_alloc zeroes a recycled block because most
+// callers expect zeroed slots; the typed JSON decoder fills string payloads
+// end to end, so for those the zeroing is 404 samples of _platform_memset that
+// only writes bytes overwritten the same instant (issue #144).
+//
+// The block is otherwise identical to a beans_alloc block — same size class,
+// same 16-byte header, same shape to the collector, the freelist and every ARC
+// path — because the header is written in full by the rc and meta stores, so
+// no stale header survives, and only the recycled-block *payload* zeroing is
+// skipped. Virgin slab memory is already zero (so the fresh-carve arm needs no
+// memset, exactly as beans_alloc's does not), and the non-pooled arm still
+// zeroes, through the same rt_obj_alloc beans_alloc uses.
+void* beans_alloc_bytes(long long size, long long meta) {
+    BeansHotTls* _bhot = beans_hot_tls_ptr();
+    ARC_ADD(arc_allocations, 1);
+    ARC_ADD(arc_allocated_bytes, size);
+#if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
+    if (cc_worker_pending && !cc_worker_collecting)
+        cc_worker_collect();
+#endif
+    if (cc_pending && !cc_collecting && cc_threads == 0) cc_collect(0);
+    size_t total = (16 + (size_t)size + 15) & ~(size_t)15;
+    long long cls = (long long)(total >> 4);
+    BHead* h;
+    if (cls < POOL_CLASSES && !pool_off) {
+        if (pool_free[cls]) {
+            h = pool_free[cls];
+            pool_free[cls] = *(void**)h;
+            // No payload memset here: the caller fills every byte. The 16-byte
+            // header is set in full by the rc and meta stores below.
+        } else {
+            if (!pool_cur || pool_cur + total > pool_end) {
+                pool_cur = rt_zalloc(POOL_SLAB);
+                if (!pool_cur) beans_panic("out of memory", 0, 0);
+                pool_end = pool_cur + POOL_SLAB;
+                POOL_LOCK();
+                if (pool_slab_len == pool_slab_cap) {
+                    pool_slab_cap = pool_slab_cap ? pool_slab_cap * 2 : 64;
+                    pool_slabs = rt_realloc(pool_slabs,
+                                         (size_t)pool_slab_cap * sizeof(void*));
+                }
+                pool_slabs[pool_slab_len++] = pool_cur;
+                POOL_UNLOCK();
+            }
+            h = (BHead*)pool_cur; // virgin slab memory, already zero
+            pool_cur += total;
+        }
+        h->rc = 1 | (cls << RC_CLS_SHIFT);
+    } else {
+        // rt_obj_alloc, not rt_zalloc, and it is not a choice: the release
+        // path reads the size class out of the header and hands every cls == 0
+        // block to rt_obj_free, which frees the 16-byte origin prefix
+        // rt_obj_alloc writes in front of the object. A plain rt_zalloc block
+        // here is freed at ptr - 16 — a pointer no allocator returned — so a
+        // decoded string of 992 bytes or more (total >= 1024 leaves the pooled
+        // classes) either aborts in malloc or silently fails to munmap. The
+        // sanitizer lanes cannot see it: RT_BIG_SANITIZED replaces this whole
+        // allocator with plain malloc/free under ASan. rt_obj_alloc zeroes the
+        // block the way rt_zalloc did, so the large arm still hands back
+        // zeroed payload.
+        h = rt_obj_alloc(total);
         if (!h) beans_panic("out of memory", 0, 0);
         h->rc = 1;
     }
@@ -1650,8 +1943,15 @@ static void* cc_free_shell(void* p, long long meta, BeansHotTls* _bhot) {
     long long kind = meta & 7;
     long long extra = (meta & CC_SHAPE) >> 3;
     void* deferred_child = NULL;
-    if (kind == 2) rt_free(((BList*)p)->data);
-    else if (kind == 7) rt_free(((BArena*)p)->data);
+    if (kind == 2) {
+        // List and Bytes backings are rt_big; the byte size rt_big_free needs is
+        // cap times the element stride. A Bytes carries stride 0, meaning one
+        // byte per slot, where a List's stride is its real element size.
+        BList* bl = (BList*)p;
+        long long st = bl->stride < 0 ? -bl->stride : bl->stride;
+        rt_big_free(bl->data,
+                    (unsigned long long)bl->cap * (unsigned long long)(st ? st : 1));
+    } else if (kind == 7) rt_free(((BArena*)p)->data);
     else if (kind == 3) {
         rt_free(((BMap*)p)->data);
         rt_free(((BMap*)p)->wide_values);
@@ -1710,7 +2010,7 @@ static void* cc_free_shell(void* p, long long meta, BeansHotTls* _bhot) {
         *(void**)h = pool_free[cls];
         pool_free[cls] = h;
     } else {
-        rt_free(h);
+        rt_obj_free(h); // non-pooled objects come from rt_obj_alloc
     }
     return deferred_child;
 }
@@ -4513,7 +4813,7 @@ BList* beans_list_new_typed(long long stride, long long ptr_mask) {
     l->cap = 4;
     l->stride = stride;
     l->ptr_mask = ptr_mask;
-    l->data = rt_zalloc((unsigned long long)(4) * (size_t)stride);
+    l->data = rt_big_zalloc((unsigned long long)(4) * (size_t)stride);
     if (!l->data) beans_panic("out of memory", 0, 0);
     return l;
 }
@@ -4540,7 +4840,7 @@ static BList* list_new_capacity(long long stride, long long ptr_mask,
     l->cap = capacity > 4 ? capacity : 4;
     l->stride = stride;
     l->ptr_mask = ptr_mask;
-    l->data = rt_alloc((size_t)l->cap * (size_t)byte_stride);
+    l->data = rt_big_alloc((size_t)l->cap * (size_t)byte_stride);
     if (!l->data) beans_panic("out of memory", line, col);
     return l;
 }
@@ -4552,8 +4852,11 @@ BList* beans_list_new(long long elem_ptr) {
 void beans_list_push(BList* l, long long v) {
     if (l->ptr_mask) beans_cc_write(l, (void*)(uintptr_t)v);
     if (l->len == l->cap) {
+        long long st = list_stride(l);
+        unsigned long long ob = (unsigned long long)l->cap * (unsigned long long)st;
         l->cap *= 2;
-        l->data = rt_realloc(l->data, (size_t)l->cap * (size_t)list_stride(l));
+        l->data = rt_big_realloc(l->data, ob,
+                                 (unsigned long long)l->cap * (unsigned long long)st);
         if (!l->data) beans_panic("out of memory", 0, 0);
     }
     l->data[l->len++] = v;
@@ -4563,8 +4866,10 @@ void beans_list_push_typed(BList* l, const void* value) {
     beans_cc_write_typed(l, (void*)value, l->ptr_mask);
     long long stride = list_stride(l);
     if (l->len == l->cap) {
+        unsigned long long ob = (unsigned long long)l->cap * (unsigned long long)stride;
         l->cap *= 2;
-        l->data = rt_realloc(l->data, (size_t)l->cap * (size_t)stride);
+        l->data = rt_big_realloc(l->data, ob,
+                                 (unsigned long long)l->cap * (unsigned long long)stride);
         if (!l->data) beans_panic("out of memory", 0, 0);
     }
     memcpy((char*)l->data + l->len * stride, value, (size_t)stride);
@@ -4582,7 +4887,10 @@ void beans_list_reserve(BList* l, long long capacity, long long line, long long 
     long long cap = l->cap;
     while (cap < capacity && cap <= (1LL << 60)) cap *= 2;
     if (cap < capacity) cap = capacity;
-    l->data = rt_realloc(l->data, (size_t)cap * (size_t)list_stride(l));
+    long long rst = list_stride(l);
+    l->data = rt_big_realloc(l->data,
+                             (unsigned long long)l->cap * (unsigned long long)rst,
+                             (unsigned long long)cap * (unsigned long long)rst);
     if (!l->data) beans_panic("out of memory", line, col);
     l->cap = cap;
 }
@@ -6709,8 +7017,9 @@ void beans_list_insert(BList* l, long long i, long long v, long long line,
     }
     if (l->ptr_mask) beans_cc_write(l, (void*)(uintptr_t)v);
     if (l->len == l->cap) {
+        unsigned long long ob = (unsigned long long)l->cap * 8;
         l->cap *= 2;
-        l->data = rt_realloc(l->data, (size_t)l->cap * 8);
+        l->data = rt_big_realloc(l->data, ob, (unsigned long long)l->cap * 8);
         // The typed sibling below already panicked here; this one stored into a
         // NULL buffer on OOM. Match it: a refused grow is the documented panic.
         if (!l->data) beans_panic("out of memory", line, col);
@@ -6730,8 +7039,10 @@ void beans_list_insert_typed(BList* l, long long i, const void* value,
     beans_cc_write_typed(l, (void*)value, l->ptr_mask);
     long long stride = list_stride(l);
     if (l->len == l->cap) {
+        unsigned long long ob = (unsigned long long)l->cap * (unsigned long long)stride;
         l->cap *= 2;
-        l->data = rt_realloc(l->data, (size_t)l->cap * (size_t)stride);
+        l->data = rt_big_realloc(l->data, ob,
+                                 (unsigned long long)l->cap * (unsigned long long)stride);
         if (!l->data) beans_panic("out of memory", line, col);
     }
     char* at = (char*)l->data + i * stride;
@@ -8708,7 +9019,7 @@ BList* beans_str_lines(char* s) {
 static BList* bytes_mk(long long n) {
     BList* b = beans_alloc(sizeof(BList), 2);
     long long cap = n < 8 ? 8 : n;
-    b->data = rt_zalloc((unsigned long long)((size_t)cap) * (1));
+    b->data = rt_big_zalloc((unsigned long long)((size_t)cap) * (1));
     if (!b->data) beans_panic("out of memory", 0, 0);
     b->len = n;
     b->cap = cap;
@@ -8837,7 +9148,7 @@ static void bytes_grow(BList* b, long long need) {
     if (need <= b->cap) return;
     long long cap = b->cap;
     while (cap < need) cap *= 2;
-    b->data = rt_realloc(b->data, (size_t)cap);
+    b->data = rt_big_realloc(b->data, (unsigned long long)b->cap, (unsigned long long)cap);
     if (!b->data) beans_panic("out of memory", 0, 0);
     b->cap = cap;
 }
@@ -8868,6 +9179,34 @@ void beans_bytes_reserve(BList* b, long long n, long long line, long long col) {
     }
     if (n > (1LL << 58)) beans_panic("reserve capacity too large", line, col);
     bytes_grow(b, n);
+}
+// The append-into hook for the std.encoding.json direct writer. That writer
+// lives in a separate translation unit (runtime/encoding/beans_enc_json.c)
+// that may not touch BList, so it grows a caller-owned Bytes only through
+// this pointer, handed to it as req[6]. One call both sets the Bytes logical
+// length to `len` (bytes already written into the backing) and ensures the
+// backing can hold `min_cap` bytes; it returns the — possibly moved — base
+// pointer and reports the capacity through *cap_out, so the writer keeps
+// writing straight into the store without a second buffer. Growth failure
+// panics, exactly as every other Bytes append does.
+//
+// The Bytes arrives as an opaque handle for the same reason
+// beans_list_new_typed_capacity returns one: the bridge declares the pointer
+// type it calls through, and calling a BList*-taking function through a
+// void*-taking pointer is undefined behaviour even though both parameters use
+// the same machine representation. The declared type here and the typedef
+// there have to be the same type, so the handle is void* on both sides and
+// this side — which does know BList — is the one that casts.
+unsigned char* beans_bytes_reserve_raw(void* handle, unsigned long long len,
+                                       unsigned long long min_cap,
+                                       unsigned long long* cap_out) {
+    BList* b = (BList*)handle;
+    if (min_cap > (unsigned long long)(1LL << 58))
+        beans_panic("JSON output too large", 0, 0);
+    bytes_grow(b, (long long)min_cap);
+    b->len = (long long)len;
+    if (cap_out) *cap_out = (unsigned long long)b->cap;
+    return (unsigned char*)b->data;
 }
 void beans_bytes_fill(BList* b, long long v) {
     memset(b->data, (int)(v & 255), (size_t)b->len);
@@ -13374,6 +13713,49 @@ long long beans_net_send_pair_wait(long long fd,
     }
 }
 
+// The string form of send_pair: the body is a Beans string, sent where it
+// already lives. A server holds a response body as a string — that is the
+// shape a handler hands back — and framing it into a Bytes to send it is the
+// copy write_vectored exists to remove, so the string twin has to take the
+// string itself. Its byte length is read with beans_slen exactly as
+// beans_net_send_text reads its text's, so there is no separate length
+// argument that could disagree with the bytes on the wire.
+//
+// It carries no scratch of its own. write_vectored's caller owns a req buffer
+// because it caches the fiber-prepared flag across the short writes of one
+// response; a builtin has nowhere to keep that, so a local req drives the
+// shared engine and the fiber is prepared per call, exactly as beans_net_send
+// and beans_net_send_text prepare it. The engine — the one sendmsg loop that
+// carries MSG_NOSIGNAL and parks the fiber — is beans_net_send_pair_wait's,
+// reused, never a second copy of the loop.
+//
+// The offset counts into head+body; a short write returns the bytes this send
+// took, whether it stopped inside the head or inside the body, so a caller
+// resumes from the returned total the same way it does with write_vectored.
+BRes beans_net_send_pair_text(long long fd, BList* head, char* body,
+                              long long offset) {
+    net_init();
+    if (fd < 0) return (BRes){0, net_closed_err("send")};
+    long long head_len = head ? head->len : 0;
+    const void* head_ptr = (head_len > 0) ? (const void*)head->data : NULL;
+    long long body_len = body ? beans_slen(body) : 0;
+    long long total = head_len + body_len;
+    if (offset < 0 || offset > total)
+        return (BRes){0, mk_error("send: offset is outside the data", "invalid")};
+    if (offset == total) return (BRes){0, NULL}; // nothing to do, not an error
+    unsigned long long req[4];
+    req[0] = (unsigned long long)offset;
+    req[1] = 0;
+    req[2] = 0; // let the engine prepare the fiber, like send / send_text
+    req[3] = (unsigned long long)net_op_timeout_ms(fd, 1);
+    long long status = beans_net_send_pair_wait(fd, head_ptr, head_len,
+                                                body, body_len, req);
+    if (status == 0) return (BRes){(long long)req[0], NULL};
+    // req[1] carries the OS errno the engine stopped on; net_err_op turns it
+    // into the same Error.kind the Bytes form's sockx_error maps that errno to.
+    return (BRes){0, net_err_op("send", (int)req[1])};
+}
+long long beans_net_send_pair_text_out(long long fd, BList* head, char* body, long long offset, void** e_out) { BRes r = beans_net_send_pair_text(fd, head, body, offset); *e_out = r.err; return r.val; }
 
 BRes beans_net_send_text(long long fd, char* text, long long from) {
     net_init();
@@ -13556,31 +13938,168 @@ long long beans_term_restore(long long fd);
 // all. The runtime-side socket calls the stdlib declares are answered from
 // inside the process instead — the interpreter asks here before it builds
 // any loader shim.
-void* beans_rt_host_symbol(const char* name) {
-    if (!name) return (void*)0;
-    if (strcmp(name, "beans_net_recv_into_wait") == 0)
-        return (void*)&beans_net_recv_into_wait;
-    if (strcmp(name, "beans_net_send_from_wait") == 0)
-        return (void*)&beans_net_send_from_wait;
-    if (strcmp(name, "beans_net_send_pair_wait") == 0)
-        return (void*)&beans_net_send_pair_wait;
+//
+// The address alone was not enough. The interpreter can call an address
+// directly only for the argument shapes its own word ABI covers; anything
+// wider went to a C shim it wrote and compiled with Clang at run time. So
+// `TcpStream.write_from` (4 parameters) and `write_vectored` (6) needed a
+// working C toolchain and a matching sysroot on every host that merely ran
+// a program, which is precisely what a cross-hosted CI runner does not have:
+// the i686 and aarch64 Windows legs failed with "cannot find dllcrt2.o" from
+// a socket write. Every row here therefore carries the call as well as the
+// address. beans_rt_host_invoke casts the interpreter's 64-bit words back to
+// the types the entry really declares — pointers included, which is what makes
+// it correct on a host where a pointer is half a word — and calls it
+// in-process, with no compiler in the loop. A row is the only way into the
+// table, so an entry can never be reachable by address while being
+// uncallable by word: adding one means writing its call.
+typedef long long (*BHostCall)(const unsigned long long* words);
+
+// The two entries the mechanism itself is made of. An interpreter that is
+// being interpreted asks its host for these by name like any other extern, so
+// leaving them out would put a C toolchain back on the path one level up —
+// and on Linux they cannot be found by name at all, because the executable
+// exports nothing. Listing them makes the lookup and the call reach the same
+// place at every nesting depth.
+void* beans_rt_host_symbol(const char* name);
+long long beans_rt_host_invoke(const char* name,
+                               const unsigned long long* words,
+                               long long count, long long* result);
+
+typedef struct {
+    const char* name;
+    void* address;
+    int arity;
+    BHostCall call;
+} BHostEntry;
+
+static long long host_call_net_recv_into_wait(const unsigned long long* w) {
+    return beans_net_recv_into_wait((long long)w[0],
+                                    (void*)(uintptr_t)w[1],
+                                    (unsigned long long*)(uintptr_t)w[2]);
+}
+
+static long long host_call_net_send_from_wait(const unsigned long long* w) {
+    return beans_net_send_from_wait((long long)w[0],
+                                    (const void*)(uintptr_t)w[1],
+                                    (long long)w[2],
+                                    (unsigned long long*)(uintptr_t)w[3]);
+}
+
+static long long host_call_net_send_pair_wait(const unsigned long long* w) {
+    return beans_net_send_pair_wait((long long)w[0],
+                                    (const void*)(uintptr_t)w[1],
+                                    (long long)w[2],
+                                    (const void*)(uintptr_t)w[3],
+                                    (long long)w[4],
+                                    (unsigned long long*)(uintptr_t)w[5]);
+}
+
+static long long host_call_term_is_tty(const unsigned long long* w) {
+    return beans_term_is_tty((long long)w[0]);
+}
+
+static long long host_call_term_size(const unsigned long long* w) {
+    return beans_term_size((long long)w[0], (void*)(uintptr_t)w[1]);
+}
+
+static long long host_call_term_set_raw(const unsigned long long* w) {
+    return beans_term_set_raw((long long)w[0]);
+}
+
+static long long host_call_term_restore(const unsigned long long* w) {
+    return beans_term_restore((long long)w[0]);
+}
+
+static long long host_call_width_utf8(const unsigned long long* w) {
+    return beans_width_utf8((const char*)(uintptr_t)w[0], (long long)w[1]);
+}
+
+// An address is a word like any other here: the caller declares the result
+// RawPtr<u8> and reads it back as one.
+static long long host_call_rt_host_symbol(const unsigned long long* w) {
+    return (long long)(uintptr_t)beans_rt_host_symbol(
+        (const char*)(uintptr_t)w[0]);
+}
+
+static long long host_call_rt_host_invoke(const unsigned long long* w) {
+    return beans_rt_host_invoke((const char*)(uintptr_t)w[0],
+                                (const unsigned long long*)(uintptr_t)w[1],
+                                (long long)w[2],
+                                (long long*)(uintptr_t)w[3]);
+}
+
+static long long host_call_alloc_bytes(const unsigned long long* w) {
+    return (long long)(uintptr_t)beans_alloc_bytes((long long)w[0],
+                                                   (long long)w[1]);
+}
+
+static const BHostEntry rt_host_table[] = {
+    {"beans_net_recv_into_wait", (void*)&beans_net_recv_into_wait, 3,
+     host_call_net_recv_into_wait},
+    {"beans_net_send_from_wait", (void*)&beans_net_send_from_wait, 4,
+     host_call_net_send_from_wait},
+    {"beans_net_send_pair_wait", (void*)&beans_net_send_pair_wait, 6,
+     host_call_net_send_pair_wait},
     // std.term's bridge. The interpreter reaches these by name; answering here
     // gives the same address on every platform and keeps the linker from
     // dropping symbols the natively-compiled interpreter never calls itself.
-    if (strcmp(name, "beans_term_is_tty") == 0)
-        return (void*)&beans_term_is_tty;
-    if (strcmp(name, "beans_term_size") == 0)
-        return (void*)&beans_term_size;
-    if (strcmp(name, "beans_term_set_raw") == 0)
-        return (void*)&beans_term_set_raw;
-    if (strcmp(name, "beans_term_restore") == 0)
-        return (void*)&beans_term_restore;
+    {"beans_term_is_tty", (void*)&beans_term_is_tty, 1, host_call_term_is_tty},
+    {"beans_term_size", (void*)&beans_term_size, 2, host_call_term_size},
+    {"beans_term_set_raw", (void*)&beans_term_set_raw, 1,
+     host_call_term_set_raw},
+    {"beans_term_restore", (void*)&beans_term_restore, 1,
+     host_call_term_restore},
     // The tree interpreter measures display width with the very function the
     // native backend calls, so the two can never answer differently. It has
     // to reach it by name, and this executable exports nothing.
-    if (strcmp(name, "beans_width_utf8") == 0)
-        return (void*)&beans_width_utf8;
-    return (void*)0;
+    {"beans_width_utf8", (void*)&beans_width_utf8, 2, host_call_width_utf8},
+    // The non-zeroing allocator the typed JSON decoder hands its bridge as the
+    // string-payload callback. It is here for the same two reasons as the rest:
+    // the linker must not drop a symbol this executable only ever passes by
+    // address, and a natively-compiled interpreter reaches it by name.
+    {"beans_alloc_bytes", (void*)&beans_alloc_bytes, 2, host_call_alloc_bytes},
+    {"beans_rt_host_symbol", (void*)&beans_rt_host_symbol, 1,
+     host_call_rt_host_symbol},
+    {"beans_rt_host_invoke", (void*)&beans_rt_host_invoke, 4,
+     host_call_rt_host_invoke},
+};
+
+static const BHostEntry* rt_host_entry(const char* name) {
+    size_t index;
+    if (!name) return (const BHostEntry*)0;
+    for (index = 0; index < sizeof rt_host_table / sizeof rt_host_table[0];
+         index++) {
+        if (strcmp(rt_host_table[index].name, name) == 0)
+            return &rt_host_table[index];
+    }
+    return (const BHostEntry*)0;
+}
+
+void* beans_rt_host_symbol(const char* name) {
+    const BHostEntry* entry = rt_host_entry(name);
+    return entry ? entry->address : (void*)0;
+}
+
+// Calls a runtime-hosted entry with the words the interpreter packed for it.
+//   1  the name is hosted; it ran, and *result holds what it returned
+//   0  the name is not hosted; the caller resolves it the way it always did
+//  -1  the name is hosted but this call does not fit the entry — the
+//      `extern "C"` declaration in the program disagrees with the runtime's
+//      own signature. That is refused here rather than quietly re-routed to
+//      a compiled shim, which would call the same function with the wrong
+//      words on the hosts that still have a compiler and fail to build
+//      anywhere else.
+long long beans_rt_host_invoke(const char* name,
+                               const unsigned long long* words,
+                               long long count, long long* result) {
+    const BHostEntry* entry = rt_host_entry(name);
+    if (!entry) return 0;
+    if (!result) return -1;
+    if (count != (long long)entry->arity) return -1;
+    if (count > 0 && !words) return -1;
+    *result = entry->call(words);
+    return 1;
 }
 
 static BRes net_recv_many(long long fd, long long limit, int exact) {

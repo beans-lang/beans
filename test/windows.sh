@@ -22,6 +22,26 @@ TRIPLE=x86_64-pc-windows-gnu
 BEANSC=${BEANSC:-./build/beansc}
 WINE=${WINE:-}
 
+# Nothing this gate executes may wait forever. Its first line of output comes
+# after the whole example loop, so a program that hangs prints nothing at all
+# and says nothing about where: on 2026-09-06 one example deadlocked under wine
+# and the CI job sat silent for 88 minutes before its own timeout killed it
+# with no evidence in the log. Every run below is capped, and a run that hits
+# the cap is a named failure. `timeout` is required rather than optional — a
+# cap that quietly is not there is the same silence over again — and it comes
+# from coreutils, which this gate's container already has for everything else.
+if ! command -v timeout > /dev/null 2>&1; then
+    echo "skipping: coreutils timeout is required to cap each run here" >&2
+    exit 0
+fi
+# Generous: the slowest single run here is beansc.exe interpreting the largest
+# example, minutes under wine on an emulated host. This is the line between
+# slow and stopped, not a performance budget.
+RUN_CAP=${BEANS_WINDOWS_RUN_CAP:-600}
+# -k: a wine process that ignores the TERM would otherwise keep the cap
+# waiting, which is the thing being prevented.
+run() { timeout -k 10 "$RUN_CAP" "$@"; }
+
 # ---- preamble: do we have the pieces? ---------------------------------------
 
 if [[ -z "$WINE" ]]; then
@@ -41,7 +61,7 @@ if ! clang --target=$TRIPLE -fuse-ld=lld "$probe_dir/probe.c" -o "$probe_dir/pro
     sed 's/^/  /' "$probe_dir/probe.err" >&2
     exit 0
 fi
-"$WINE" "$probe_dir/probe.exe"
+run "$WINE" "$probe_dir/probe.exe"
 if [[ $? -ne 42 ]]; then
     echo "skipping: wine cannot execute a $TRIPLE binary here" >&2
     exit 0
@@ -55,6 +75,15 @@ fails=0
 fail() {
     echo "FAIL: $1" >&2
     fails=$((fails + 1))
+}
+# Call after a `run`, outside any redirection the run itself had, so the
+# message lands on the gate's stderr and not in a file being diffed.
+hung() { # <exit code> <what>
+    if [[ $1 -eq 124 ]]; then
+        fail "$2 gave no answer in ${RUN_CAP}s — hung, not slow"
+        return 0
+    fi
+    return 1
 }
 
 # ---- host-side checks: refusals and IR facts, no emulator needed ------------
@@ -116,7 +145,7 @@ if ! "$BEANSC" build --target $TRIPLE --runtime minimal --linker lld \
     fail "the minimal runtime profile does not build for $TRIPLE:"
     tail -20 build/windows_gate/minimal.log >&2
 else
-    got=$("$WINE" build/windows_gate/wants_minimal.exe 2>&1)
+    got=$(run "$WINE" build/windows_gate/wants_minimal.exe 2>&1)
     [[ "$got" == "minimal 4" ]] ||
         fail "the minimal-profile binary printed '$got', wanted 'minimal 4'"
 fi
@@ -227,10 +256,12 @@ run_diff() { # <source> <exe stem>  — build, wine-run, diff vs interpreter
     fi
     file -b "$exe" | grep -q 'PE32+' || fail "$exe is not a PE32+ binary"
 
-    "$BEANSC" run "$src" > build/windows_gate/$stem.interp.out 2>&1
+    run "$BEANSC" run "$src" > build/windows_gate/$stem.interp.out 2>&1
     local interp_code=$?
-    "$WINE" "$exe" > build/windows_gate/$stem.wine.out 2>&1
+    hung $interp_code "$src under the interpreter" && return
+    run "$WINE" "$exe" > build/windows_gate/$stem.wine.out 2>&1
     local wine_code=$?
+    hung $wine_code "$exe under wine" && return
 
     if [[ $interp_code -ne $wine_code ]]; then
         fail "$src: interpreter exit $interp_code, wine exit $wine_code"
@@ -311,13 +342,15 @@ proc_ok=1
     -o build/windows_gate/proc_parent.exe >> build/windows_gate/proc.buildlog 2>&1 || proc_ok=0
 if [[ $proc_ok -eq 1 ]]; then
     BEANS_GATE_CHILD=build/windows_gate/proc_child_host \
-        "$BEANSC" run build/windows_gate/proc_parent.b \
+        run "$BEANSC" run build/windows_gate/proc_parent.b \
         > build/windows_gate/proc.interp.out 2>&1
     proc_interp_code=$?
+    hung $proc_interp_code "the process differential under the interpreter"
     BEANS_GATE_CHILD=build/windows_gate/proc_child.exe \
-        "$WINE" build/windows_gate/proc_parent.exe \
+        run "$WINE" build/windows_gate/proc_parent.exe \
         > build/windows_gate/proc.wine.out 2>&1
     proc_wine_code=$?
+    hung $proc_wine_code "the process differential under wine"
     if [[ $proc_interp_code -ne $proc_wine_code ]]; then
         fail "process differential: interpreter exit $proc_interp_code, wine exit $proc_wine_code"
     fi
@@ -349,7 +382,8 @@ fn main() {
 EOF
 if "$BEANSC" build --target $TRIPLE --linker lld build/windows_gate/sig_probe.b \
         -o build/windows_gate/sig_probe.exe > build/windows_gate/sig_probe.buildlog 2>&1; then
-    "$WINE" build/windows_gate/sig_probe.exe > build/windows_gate/sig_probe.out 2>&1
+    run "$WINE" build/windows_gate/sig_probe.exe > build/windows_gate/sig_probe.out 2>&1
+    hung $? "the signal stub probe under wine"
     grep -q "watch refused: unsupported: signal watching is not available on Windows" \
         build/windows_gate/sig_probe.out ||
         fail "signal stub does not refuse with the pinned sentence: $(cat build/windows_gate/sig_probe.out)"
@@ -363,10 +397,12 @@ fi
 # so a change on either side reopens the question instead of hiding in the mask.
 if "$BEANSC" build --target $TRIPLE --linker lld examples/poller.b \
         -o build/windows_gate/poller.exe > build/windows_gate/poller.buildlog 2>&1; then
-    "$BEANSC" run examples/poller.b > build/windows_gate/poller.interp.out 2>&1
+    run "$BEANSC" run examples/poller.b > build/windows_gate/poller.interp.out 2>&1
     poller_interp_code=$?
-    "$WINE" build/windows_gate/poller.exe > build/windows_gate/poller.wine.out 2>&1
+    hung $poller_interp_code "examples/poller.b under the interpreter"
+    run "$WINE" build/windows_gate/poller.exe > build/windows_gate/poller.wine.out 2>&1
     poller_wine_code=$?
+    hung $poller_wine_code "examples/poller.b under wine"
     if [[ $poller_interp_code -ne $poller_wine_code ]]; then
         fail "examples/poller.b: interpreter exit $poller_interp_code, wine exit $poller_wine_code"
     fi
@@ -392,7 +428,8 @@ fi
 # and proof std.target facts survive into a running PE binary.
 if "$BEANSC" build --target $TRIPLE --linker lld examples/target_info.b \
         -o build/windows_gate/target_info.exe > /dev/null 2>&1; then
-    "$WINE" build/windows_gate/target_info.exe > build/windows_gate/target_info.out 2>&1
+    run "$WINE" build/windows_gate/target_info.exe > build/windows_gate/target_info.out 2>&1
+    hung $? "target_info.exe under wine"
     grep -q "windows" build/windows_gate/target_info.out ||
         fail "target_info.exe does not report os windows"
     grep -q "coff" build/windows_gate/target_info.out ||
@@ -407,12 +444,14 @@ fi
 # clang exists; here the interpreter half is the strongest executable claim.
 if "$BEANSC" build --target $TRIPLE --linker lld src/main.b \
         -o build/windows_gate/beansc.exe > build/windows_gate/beansc.buildlog 2>&1; then
-    "$WINE" build/windows_gate/beansc.exe run examples/hello.b \
+    run "$WINE" build/windows_gate/beansc.exe run examples/hello.b \
         > build/windows_gate/beansc.hello.out 2>&1
+    hung $? "beansc.exe interpreting hello.b under wine"
     grep -q "hello from beans" build/windows_gate/beansc.hello.out ||
         fail "beansc.exe under wine cannot interpret hello.b: $(cat build/windows_gate/beansc.hello.out | head -2)"
-    "$WINE" build/windows_gate/beansc.exe target $TRIPLE \
+    run "$WINE" build/windows_gate/beansc.exe target $TRIPLE \
         > build/windows_gate/beansc.target.out 2>&1
+    hung $? "beansc.exe reporting its target under wine"
     grep -q "^os windows$" build/windows_gate/beansc.target.out ||
         fail "beansc.exe under wine does not report its own target"
 
@@ -445,11 +484,13 @@ zero_copy_xml.b compress.b crypto.b http.b http2.b websocket.b logging.b"
         [[ " $interp_skip " == *" $name "* ]] && continue
         "$BEANSC" check --target $TRIPLE "$src" > /dev/null 2>&1 || continue
         stem=${name%.b}
-        "$BEANSC" run "$src" > "build/windows_gate/$stem.hostinterp" 2>&1
+        run "$BEANSC" run "$src" > "build/windows_gate/$stem.hostinterp" 2>&1
         host_code=$?
-        "$WINE" build/windows_gate/beansc.exe run "$src" \
+        hung $host_code "$name under the host interpreter" && continue
+        run "$WINE" build/windows_gate/beansc.exe run "$src" \
             > "build/windows_gate/$stem.wineinterp" 2>&1
         wine_code=$?
+        hung $wine_code "beansc.exe interpreting $name under wine" && continue
         hosted_ran=$((hosted_ran + 1))
         if [[ $host_code -ne $wine_code ]]; then
             fail "beansc.exe interpreting $name exits $wine_code, the host beansc exits $host_code"
@@ -492,8 +533,9 @@ if command -v python3 >/dev/null 2>&1; then
                 fail "differential corpus $cname does not build for $TRIPLE"
                 continue
             fi
-            "$WINE" "$corpus/$cname.exe" > "$corpus/$cname.out" 2> "$corpus/$cname.err"
+            run "$WINE" "$corpus/$cname.exe" > "$corpus/$cname.out" 2> "$corpus/$cname.err"
             corpus_code=$?
+            hung $corpus_code "$cname.exe under wine" && continue
             want_exit=$(cat "$corpus/$cname.exit")
             if [[ $corpus_code -ne $want_exit ]]; then
                 fail "differential corpus $cname: wine exit $corpus_code, oracle exit $want_exit"
@@ -534,8 +576,9 @@ if command -v python3 >/dev/null 2>&1; then
                 fail "classes corpus $cname does not build for $TRIPLE"
                 continue
             fi
-            "$WINE" "$corpus2/$cname.exe" > "$corpus2/$cname.out" 2> "$corpus2/$cname.err"
+            run "$WINE" "$corpus2/$cname.exe" > "$corpus2/$cname.out" 2> "$corpus2/$cname.err"
             corpus_code=$?
+            hung $corpus_code "$cname.exe under wine" && continue
             want_exit=$(cat "$cwant_exit_file")
             if [[ $corpus_code -ne $want_exit ]]; then
                 fail "classes corpus $cname: wine exit $corpus_code, oracle exit $want_exit"
