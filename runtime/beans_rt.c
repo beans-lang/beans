@@ -1329,6 +1329,12 @@ static unsigned long long arc_freed_shells;
 static unsigned long long arc_possible_roots;
 static unsigned long long arc_collections;
 static unsigned long long arc_cycle_objects;
+// Element buffers a List or a Bytes allocated in a block of their own, rather
+// than behind their own header. arc_allocations cannot see these — a backing
+// is not an object and never went through beans_alloc — so without this
+// counter a list that costs two blocks and a list that costs one report the
+// same number.
+static unsigned long long arc_list_backings;
 #define ARC_ADD(name, value) \
     __atomic_add_fetch(&(name), (unsigned long long)(value), __ATOMIC_RELAXED)
 static void arc_report(void) {
@@ -1338,7 +1344,8 @@ static void arc_report(void) {
     fprintf(stderr,
             "beans arc stats: allocations=%llu allocated_bytes=%llu "
             "retains=%llu releases=%llu release_nodes=%llu frees=%llu "
-            "possible_roots=%llu collections=%llu cycle_objects=%llu\n",
+            "possible_roots=%llu collections=%llu cycle_objects=%llu "
+            "list_backings=%llu\n",
             (unsigned long long)arc_allocations,
             (unsigned long long)arc_allocated_bytes,
             (unsigned long long)arc_retain_calls,
@@ -1347,7 +1354,8 @@ static void arc_report(void) {
             (unsigned long long)arc_freed_shells,
             (unsigned long long)arc_possible_roots,
             (unsigned long long)arc_collections,
-            (unsigned long long)arc_cycle_objects);
+            (unsigned long long)arc_cycle_objects,
+            (unsigned long long)arc_list_backings);
 #endif
 }
 long long beans_arc_cycle_objects(void) {
@@ -1663,10 +1671,52 @@ typedef struct {
     // operation -- a push-only run of that length wants 32 GiB of list, and
     // any shorter run has already stopped the loop.
     //
-    // Keep them last and keep the struct at 48 bytes: a list still fits the
-    // 64-byte allocation class it has always used.
+    // Keep them last and keep the struct at 48 bytes: generated code reads
+    // these offsets, and a list with no room for an inline backing still fits
+    // the 64-byte allocation class it has always used.
     unsigned int change_count, change_kind;
 } BList;
+
+// ---- a list's backing, behind its own header -------------------------------
+//
+// A list is two values: the 48-byte header and the element buffer it points
+// at. They were two allocations, so the three-element `tags` literal in a
+// record cost two blocks and two frees, and one 64-byte pooled block plus a
+// 32-byte malloc is more work and more bytes than one 96-byte pooled block.
+// So a backing small enough to fit is carved out of the *same* block, right
+// behind the header, and `data` points inside the object.
+//
+// That makes `data` an interior pointer no allocator ever returned, which the
+// free and the growth paths must not hand to free/munmap/realloc. Two things
+// mark it, and both must hold:
+//
+//   * kind-2 shape bit 1 says this object was allocated with room behind its
+//     header. It is written once, at allocation, and never cleared — nothing
+//     mutates `meta` on a hot path, and the collector owns the other bits.
+//     Bit 0 is "elements carry owned pointers" and is what beans_release's
+//     `cyclic` test reads for kind 2, so bit 1 is invisible to it.
+//   * `data` still points at that room. A list that outgrew it has a real
+//     heap backing, and the flag alone would be wrong.
+//
+// The pointer test cannot answer a false yes: for a flagged object the inline
+// address is inside its own live block, so no allocator can hand the same
+// address to anything else. For an unflagged object — every Bytes, and every
+// list whose backing was too big to fit — the flag is 0 and the address is
+// never compared.
+#define LIST_INLINE_SHAPE (1LL << 4)
+// How many bytes of backing are worth carrying behind the header. 128 puts a
+// 16-slot generic list, or a 4-element list of 32-byte inline values, in one
+// block: allocation total 16 + 48 + 128 = 192, size class 12, far inside the
+// pool's 1008-byte ceiling. Past this a backing gets its own block, because a
+// pooled block is memset in full when it is recycled and a list that is going
+// to grow anyway would pay that memset for room it abandons.
+#define LIST_INLINE_MAX 128
+static long long* list_inline_base(BList* l) {
+    return (long long*)((char*)l + sizeof(BList));
+}
+static int list_backing_is_inline(BList* l, long long meta) {
+    return (meta & LIST_INLINE_SHAPE) != 0 && l->data == list_inline_base(l);
+}
 typedef struct {
     long long* data;
     RT_LEN8 long long len, cap;
@@ -1859,10 +1909,16 @@ static void* cc_free_shell(void* p, long long meta) {
         // List and Bytes backings are rt_big; the byte size rt_big_free needs is
         // cap times the element stride. A Bytes carries stride 0, meaning one
         // byte per slot, where a List's stride is its real element size.
+        //
+        // Unless the backing lives inside this very block, in which case there
+        // is nothing to free: the shell free below hands the whole thing back
+        // in one piece, and `data` is an interior pointer no allocator owns.
         BList* bl = (BList*)p;
-        long long st = bl->stride < 0 ? -bl->stride : bl->stride;
-        rt_big_free(bl->data,
-                    (unsigned long long)bl->cap * (unsigned long long)(st ? st : 1));
+        if (!list_backing_is_inline(bl, meta)) {
+            long long st = bl->stride < 0 ? -bl->stride : bl->stride;
+            rt_big_free(bl->data,
+                        (unsigned long long)bl->cap * (unsigned long long)(st ? st : 1));
+        }
     } else if (kind == 7) rt_free(((BArena*)p)->data);
     else if (kind == 3) {
         rt_free(((BMap*)p)->data);
@@ -4649,7 +4705,15 @@ _Static_assert(offsetof(BList, change_count) == 40 &&
                "llvm_emit_collections.b loads the change word at offset 40 and "
                "writes the operation at offset 44");
 _Static_assert(sizeof(BList) == 48,
-               "a list must stay inside the 64-byte allocation class");
+               "list_inline_base places the inline backing at sizeof(BList), "
+               "and a backing-less list must stay in the 64-byte class");
+// An inline backing must not push the block out of the pool: the free path
+// reads the size class out of the header, and a pooled shell and a mapped one
+// are freed differently. 16 header + 48 struct + LIST_INLINE_MAX has to stay
+// under the pool's 1024-byte total.
+_Static_assert(((16 + sizeof(BList) + LIST_INLINE_MAX + 15) & ~(size_t)15) <
+                   POOL_CLASSES * 16,
+               "an inline list backing must keep the block pooled");
 #define LIST_CHANGE_PUSH 1u
 #define LIST_CHANGE_POP 2u
 #define LIST_CHANGE_INSERT 3u
@@ -4678,14 +4742,46 @@ static void list_release_element(BList* l, void* element) {
 static BList* list_new_capacity(long long stride, long long ptr_mask,
                                 long long capacity, long long line,
                                 long long col);
+// Growing a list's backing, whichever kind it has. An inline backing is
+// interior to a pooled block, so it cannot be reallocated: place a real one
+// and copy the live bytes across. A heap backing is the realloc it always was.
+// Neither zeroes the new tail — rt_big_realloc never did, and every caller
+// fills what it appends.
+static void list_backing_grow(BList* l, long long new_cap, long long stride,
+                              long long line, long long col) {
+    unsigned long long old_bytes =
+        (unsigned long long)l->cap * (unsigned long long)stride;
+    unsigned long long new_bytes =
+        (unsigned long long)new_cap * (unsigned long long)stride;
+    ARC_ADD(arc_list_backings, 1);
+    if (list_backing_is_inline(l, head_of(l)->meta)) {
+        void* fresh = rt_big_alloc(new_bytes);
+        if (!fresh) beans_panic("out of memory", line, col);
+        if (old_bytes) memcpy(fresh, l->data, (size_t)old_bytes);
+        l->data = fresh;
+    } else {
+        void* grown = rt_big_realloc(l->data, old_bytes, new_bytes);
+        if (!grown) beans_panic("out of memory", line, col);
+        l->data = grown;
+    }
+    l->cap = new_cap;
+}
 BList* beans_list_new_typed(long long stride, long long ptr_mask) {
     if (stride <= 0 || stride > (1LL << 30))
         beans_panic("invalid list element size", 0, 0);
-    BList* l = beans_alloc(sizeof(BList), 2 | ((ptr_mask != 0) << 3));
+    unsigned long long backing = (unsigned long long)4 * (unsigned long long)stride;
+    int inline_backing = backing <= LIST_INLINE_MAX;
+    BList* l = beans_alloc(
+        (long long)(sizeof(BList) + (inline_backing ? (size_t)backing : 0)),
+        2 | ((ptr_mask != 0) << 3) | (inline_backing ? LIST_INLINE_SHAPE : 0));
     l->cap = 4;
     l->stride = stride;
     l->ptr_mask = ptr_mask;
-    l->data = rt_big_zalloc((unsigned long long)(4) * (size_t)stride);
+    // beans_alloc zeroes what it hands back, so the inline arm is already the
+    // zeroed buffer rt_big_zalloc would have made.
+    if (!inline_backing) ARC_ADD(arc_list_backings, 1);
+    l->data = inline_backing ? list_inline_base(l)
+                             : rt_big_zalloc(backing);
     if (!l->data) beans_panic("out of memory", 0, 0);
     return l;
 }
@@ -4708,11 +4804,23 @@ static BList* list_new_capacity(long long stride, long long ptr_mask,
     long long byte_stride = stride < 0 ? -stride : stride;
     if (byte_stride <= 0 || byte_stride > (1LL << 30))
         beans_panic("invalid list element size", line, col);
-    BList* l = beans_alloc(sizeof(BList), 2 | ((ptr_mask != 0) << 3));
-    l->cap = capacity > 4 ? capacity : 4;
+    long long cap = capacity > 4 ? capacity : 4;
+    unsigned long long backing =
+        (unsigned long long)cap * (unsigned long long)byte_stride;
+    int inline_backing = backing <= LIST_INLINE_MAX;
+    BList* l = beans_alloc(
+        (long long)(sizeof(BList) + (inline_backing ? (size_t)backing : 0)),
+        2 | ((ptr_mask != 0) << 3) | (inline_backing ? LIST_INLINE_SHAPE : 0));
+    l->cap = cap;
     l->stride = stride;
     l->ptr_mask = ptr_mask;
-    l->data = rt_big_alloc((size_t)l->cap * (size_t)byte_stride);
+    // The inline arm comes back zeroed where rt_big_alloc would not have. That
+    // costs nothing this path was not already paying: the pooled block is
+    // memset in one piece when it is recycled, whether or not the backing
+    // rides in it. The fill-[0,len) contract above is unchanged either way.
+    if (!inline_backing) ARC_ADD(arc_list_backings, 1);
+    l->data = inline_backing ? list_inline_base(l)
+                             : rt_big_alloc((size_t)backing);
     if (!l->data) beans_panic("out of memory", line, col);
     return l;
 }
@@ -4723,27 +4831,14 @@ BList* beans_list_new(long long elem_ptr) {
 }
 void beans_list_push(BList* l, long long v) {
     if (l->ptr_mask) beans_cc_write(l, (void*)(uintptr_t)v);
-    if (l->len == l->cap) {
-        long long st = list_stride(l);
-        unsigned long long ob = (unsigned long long)l->cap * (unsigned long long)st;
-        l->cap *= 2;
-        l->data = rt_big_realloc(l->data, ob,
-                                 (unsigned long long)l->cap * (unsigned long long)st);
-        if (!l->data) beans_panic("out of memory", 0, 0);
-    }
+    if (l->len == l->cap) list_backing_grow(l, l->cap * 2, list_stride(l), 0, 0);
     l->data[l->len++] = v;
     list_changed(l, LIST_CHANGE_PUSH);
 }
 void beans_list_push_typed(BList* l, const void* value) {
     beans_cc_write_typed(l, (void*)value, l->ptr_mask);
     long long stride = list_stride(l);
-    if (l->len == l->cap) {
-        unsigned long long ob = (unsigned long long)l->cap * (unsigned long long)stride;
-        l->cap *= 2;
-        l->data = rt_big_realloc(l->data, ob,
-                                 (unsigned long long)l->cap * (unsigned long long)stride);
-        if (!l->data) beans_panic("out of memory", 0, 0);
-    }
+    if (l->len == l->cap) list_backing_grow(l, l->cap * 2, stride, 0, 0);
     memcpy((char*)l->data + l->len * stride, value, (size_t)stride);
     l->len += 1;
     list_changed(l, LIST_CHANGE_PUSH);
@@ -4759,12 +4854,7 @@ void beans_list_reserve(BList* l, long long capacity, long long line, long long 
     long long cap = l->cap;
     while (cap < capacity && cap <= (1LL << 60)) cap *= 2;
     if (cap < capacity) cap = capacity;
-    long long rst = list_stride(l);
-    l->data = rt_big_realloc(l->data,
-                             (unsigned long long)l->cap * (unsigned long long)rst,
-                             (unsigned long long)cap * (unsigned long long)rst);
-    if (!l->data) beans_panic("out of memory", line, col);
-    l->cap = cap;
+    list_backing_grow(l, cap, list_stride(l), line, col);
 }
 
 // ---- class hierarchy (table emitted by the compiler) ----
@@ -6888,14 +6978,9 @@ void beans_list_insert(BList* l, long long i, long long v, long long line,
         beans_panic(b, line, col);
     }
     if (l->ptr_mask) beans_cc_write(l, (void*)(uintptr_t)v);
-    if (l->len == l->cap) {
-        unsigned long long ob = (unsigned long long)l->cap * 8;
-        l->cap *= 2;
-        l->data = rt_big_realloc(l->data, ob, (unsigned long long)l->cap * 8);
-        // The typed sibling below already panicked here; this one stored into a
-        // NULL buffer on OOM. Match it: a refused grow is the documented panic.
-        if (!l->data) beans_panic("out of memory", line, col);
-    }
+    // The typed sibling below already panicked on a refused grow; this one
+    // stored into a NULL buffer. list_backing_grow panics for both.
+    if (l->len == l->cap) list_backing_grow(l, l->cap * 2, 8, line, col);
     memmove(l->data + i + 1, l->data + i, (size_t)(l->len - i) * 8);
     l->data[i] = v;
     l->len += 1;
@@ -6910,13 +6995,7 @@ void beans_list_insert_typed(BList* l, long long i, const void* value,
     }
     beans_cc_write_typed(l, (void*)value, l->ptr_mask);
     long long stride = list_stride(l);
-    if (l->len == l->cap) {
-        unsigned long long ob = (unsigned long long)l->cap * (unsigned long long)stride;
-        l->cap *= 2;
-        l->data = rt_big_realloc(l->data, ob,
-                                 (unsigned long long)l->cap * (unsigned long long)stride);
-        if (!l->data) beans_panic("out of memory", line, col);
-    }
+    if (l->len == l->cap) list_backing_grow(l, l->cap * 2, stride, line, col);
     char* at = (char*)l->data + i * stride;
     memmove(at + stride, at, (size_t)(l->len - i) * (size_t)stride);
     memcpy(at, value, (size_t)stride);
@@ -8891,6 +8970,7 @@ BList* beans_str_lines(char* s) {
 static BList* bytes_mk(long long n) {
     BList* b = beans_alloc(sizeof(BList), 2);
     long long cap = n < 8 ? 8 : n;
+    ARC_ADD(arc_list_backings, 1);
     b->data = rt_big_zalloc((unsigned long long)((size_t)cap) * (1));
     if (!b->data) beans_panic("out of memory", 0, 0);
     b->len = n;
@@ -9020,6 +9100,7 @@ static void bytes_grow(BList* b, long long need) {
     if (need <= b->cap) return;
     long long cap = b->cap;
     while (cap < need) cap *= 2;
+    ARC_ADD(arc_list_backings, 1);
     b->data = rt_big_realloc(b->data, (unsigned long long)b->cap, (unsigned long long)cap);
     if (!b->data) beans_panic("out of memory", 0, 0);
     b->cap = cap;
