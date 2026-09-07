@@ -156,18 +156,6 @@ pub struct Deflate {
     pub client_max_window_bits: int
 }
 
-/// permessage-deflate with nothing asked for: 32 KiB windows both ways and
-/// a context that carries across messages, which is what an offer naming no
-/// parameters means.
-pub fn plain_deflate() -> Deflate {
-    return Deflate {
-        server_no_context_takeover: false,
-        client_no_context_takeover: false,
-        server_max_window_bits: default_window_bits(),
-        client_max_window_bits: default_window_bits(),
-    }
-}
-
 fn deflate_window_bits_ok(bits: int) -> bool {
     return bits >= min_window_bits() && bits <= default_window_bits()
 }
