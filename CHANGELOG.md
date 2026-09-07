@@ -4,9 +4,46 @@ This file records user-facing changes in each Beans release.
 
 ## [Unreleased]
 
-The runtime ABI moves to 17.
+The runtime ABI moves to 19.
 
 ### Added
+
+- **`contained f(args)` — containing a panic no longer needs a fiber.**
+  Containment arrived with `brew`, so the only place a failure could stop was a
+  fiber's entry, and a server that wants a panicking handler to become a 500
+  paid a pool spawn, two context switches and a join on every request whether
+  or not anything ever panicked. The unwind was never the fiber's — it is the
+  platform's forced unwind, which came in with runtime ABI 12 — and it stops
+  wherever a landing pad declines to resume. So the boundary is now a call:
+
+  ```beans
+  match contained handle(request) {
+      ok(response) => { return response }
+      err(problem) => { return error_page(problem.msg) }
+  }
+  ```
+
+  `contained f(args)` runs the call on the current fiber, in the current frame,
+  under a catch frame, and answers `Result<T>`. A panic raised anywhere under
+  it unwinds the frames in between — defers newest-first, owned values dropped,
+  an unfinished construction released without its `deinit` — and arrives as
+  `err` of kind `panic` with the same message and position a brewed fiber's
+  `join` would have delivered. Nothing is spawned, nothing switches, nothing is
+  joined. Unlike `brew` it is an ordinary expression, legal wherever one is.
+
+  `contained` is contextual, like `brew`: a local named `contained` still
+  works. Three things it does not catch, all of them unchanged rules: a
+  cancel, which does not unwind; a panic raised while the fiber is already
+  unwinding, which is still the fatal double panic; and a panic while the
+  arguments are being evaluated, which happens before the frame is opened.
+  Refused at check time, about the program: a target without the controlled
+  unwind (Windows/COFF, wasm, 32-bit ARM), `--runtime freestanding`, a
+  unit-returning call (there is no `Result<unit>` — `ok` takes a value), and
+  the three walls `brew` already has on the call it packages.
+
+  The runtime ABI goes to 18 for `beans_contained_enter`,
+  `beans_contained_leave` and `beans_contained_caught`. See
+  `spec/CONCURRENCY.md` and `spec/SYNTAX.md`.
 
 - **`std.websocket` speaks permessage-deflate (RFC 7692).** `compress: true`
   on `Connection.accept`, `Connection.connect`, `upgrade` or their
@@ -34,7 +71,7 @@ The runtime ABI moves to 17.
   `too_large` and a close with 1009; a payload that is not a DEFLATE stream,
   or text that is only invalid UTF-8 once decompressed, is kind `protocol` and
   a close with 1007. Uncompressed connections are unchanged.
-- **Runtime ABI 16 -> 17.** `beans_ws_valid_utf8` is new: the framer cannot
+- **Runtime ABI 18 -> 19.** `beans_ws_valid_utf8` is new: the framer cannot
   run RFC 6455's text check on a message that is still compressed when it
   hands it over, so the same Table 3-7 walk is reachable for the bytes that
   come out of the inflater. Three request layouts widened with it —
@@ -42,6 +79,32 @@ The runtime ABI moves to 17.
   the frame's reserved bits, and `beans_zlib_stream_new` takes a window size —
   and the framer's message event grew the byte that carries those reserved
   bits out.
+
+### Fixed
+
+- **`beansc build --debug` could not build a program that can unwind.** The
+  cleanup pad wrote its `landingpad` across two lines, and the pass that
+  attaches debug locations appends `, !dbg !N` to every line it does not
+  recognise as a label — so the second line came out `cleanup, !dbg !26` and
+  clang stopped in the LLVM parser. That is every program that brews, since
+  the pads landed in 0.1.36, and every program that contains a panic now. The
+  pad is one line, and both goldens are built with `--debug` in the gate.
+
+- **`brew` and `contained` now take an interface-typed receiver.** The wall
+  was "a method through a class receiver — a value receiver would run on the
+  fiber's own copy", and it read `kind == "class"`, so `brew handler.serve(x)`
+  through an interface was refused. The reason does not apply: `extends` and
+  `implements` belong to classes, an interface value is an object whose first
+  word is its descriptor, and a struct, union or enum that names either is
+  refused at its declaration — so the hoisted binding holds the same object
+  the caller does and the dispatch reaches the same instance. A value receiver
+  is still refused, for the reason the message gives.
+
+- **A forced unwind that reaches the end of the root fiber's stack now says
+  so and exits, instead of finishing a fiber the scheduler cannot return
+  from.** Only a `contained` call makes the root fiber unwind at all, so this
+  is reachable only when a frame between the panic and the catch carries no
+  unwind table — a C frame built without one.
 
 ## [0.1.39] - 2026-09-06
 

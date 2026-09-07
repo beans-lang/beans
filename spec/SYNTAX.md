@@ -739,7 +739,18 @@ io.println(json.encode(user)?)
   come from `@json.name` or `@json.naming`; `@json.alias` is input-only;
   `@json.ignore` fields are omitted; and absent options write `null`. Use
   `io.println(json.encode(value)?)` to print a struct as JSON. NaN and infinity
-  are rejected.
+  are rejected, and so is a string whose bytes are not valid UTF-8. A value
+  that carries more than one such fault is reported by the first one the
+  writer reaches in document order — a field that is omitted from the document
+  cannot be the one reported.
+- `encode_into<T>(value, target)` appends that same compact encoding to the
+  caller's `Bytes` — after whatever it already holds — and returns
+  `Result<int>`, the number of bytes appended. `T` is validated exactly as for
+  `encode`, and the bytes it writes equal `encode(value)` byte for byte; it
+  exists so a body can be serialized straight into an output buffer without a
+  fresh string and its copy. A refused `T` refuses identically to `encode`, and
+  a refusal at run time leaves `target` exactly as it was — every byte it held
+  before the call, and nothing appended.
 - Typed JSON currently supports bool, integer, float, string, nested struct,
   list, and option fields. Struct and `List<struct>` are the only root shapes.
   Classes, enums, maps, fixed arrays, bytes, decimal, unit, generic structs,
@@ -1808,7 +1819,8 @@ can still read them. Deterministic, like C++/Swift: no GC pause, no "sometime la
 - `self` must not escape a `deinit`. The object is being destroyed; storing `self` anywhere
   is use-after-free by definition.
 - A panic inside `deinit` is the same rule as one inside a `defer`: uncontained it ends
-  the process, and contained by `brew`/`join` (spec/CONCURRENCY.md) the join reports it —
+  the process; contained by `brew`/`join` or by a `contained` call
+  (spec/CONCURRENCY.md) the boundary reports it —
   **without stopping the destruction that was running it**. The `deinit` is not run again,
   but the object's fields are still released and its memory still returned, and everything
   else the release was going to destroy is still destroyed: the remaining elements of a
@@ -2478,10 +2490,51 @@ fn handle(order: Order) -> Result<Receipt> {
 - **A panic ends only the fiber it happened on.** An outcome nobody joined
   escalates at the scope exit: the parent panics at the brew's position with
   the child's report. A cancelled child stays quiet.
-- Method calls brew through class receivers only — a value receiver would
-  run on the fiber's own copy. `inout` arguments cannot cross to a fiber.
+- Method calls brew through a **reference** receiver — a class or an
+  interface — only: a value receiver would run on the fiber's own copy.
+  `inout` arguments cannot cross to a fiber.
 - Fibers need the thread runtime: `--runtime freestanding` and wasm targets
   refuse `brew` at check time.
+
+### contained — a catch frame at a call (spec/CONCURRENCY.md)
+
+`contained f(args)` runs the call **on the current fiber, in place**, under a
+catch frame, and answers `Result<T>` where `T` is `f`'s declared result type.
+A panic raised anywhere under that call unwinds the frames between it and the
+boundary — defers newest-first, owned values dropped — and arrives here as an
+`err` of kind `panic` carrying the panic's message and position. No fiber is
+spawned, nothing switches, nothing is joined.
+
+```
+fn shielded(request: Request) -> Response {
+    match contained handle(request) {          // runs right here
+        ok(response) => { return response }
+        err(problem) => { return error_page(problem.msg) }
+    }
+}
+```
+
+- `contained` is contextual, like `brew`, `unique` and `packed`: it opens a
+  catch frame only before a call to a user function or method; a local named
+  `contained` stays an ordinary name.
+- Unlike `brew` it is an ordinary expression, legal wherever one is — inside a
+  loop, an `if`, a match arm, a `let` initializer, a match scrutinee.
+- The **arguments are evaluated outside** the frame, as a `brew`'s are: a
+  panic while evaluating one is not this call's to catch.
+- The **innermost** `contained` between a panic and the top of the stack is
+  the one that answers. The caller's own frame is not unwound.
+- A **cancel is not caught** — it does not unwind — and a panic raised while
+  the fiber is already unwinding is still the fatal double panic.
+- Method calls contain through a **reference** receiver — a class or an
+  interface — only, and `inout` arguments cannot ride through the hoist: the
+  same two walls `brew` has, for the same reason, since the call is packaged
+  as a fabricated closure over hoisted bindings. A value receiver would run on
+  the hoisted copy; an interface value is an object, so it is not one.
+- The call must return something: `contained` answers `Result<T>`, and there
+  is no `Result<unit>` in Beans because `ok` takes a value.
+- It needs the controlled unwind, so `--runtime freestanding` and every
+  target without it (Windows/COFF, wasm, 32-bit ARM) refuse `contained` at
+  check time. `brew` + `join` is the way to contain a panic there.
 
 ### async and await (removed)
 
@@ -3858,10 +3911,11 @@ beansc build --target riscv32imac-unknown-none-elf --runtime freestanding f.b --
   gone. Must sit at the top level of the function body (not inside `if`/`for`/blocks — it
   is a function-exit hook, and nested registration would need runtime capture the native
   backend does not do); the checker refuses a nested one. Each defer runs at most once. An *uncontained* panic exits the
-  process without running defers. A panic *contained* by `brew`/`join`
-  (spec/CONCURRENCY.md) does the opposite: it unwinds the fiber's frames on the way to the
-  fiber entry, running each function's defers newest-first and dropping what it owns — the
-  same cleanup a return runs, in the same order — and the join reports the failure. A defer
+  process without running defers. A panic *contained* by `brew`/`join`, or by a `contained`
+  call (spec/CONCURRENCY.md), does the opposite: it unwinds the frames on the way to that
+  boundary — the fiber entry, or the contained call itself — running each function's defers
+  newest-first and dropping what it owns, the same cleanup a return runs, in the same
+  order, and the boundary reports the failure. A defer
   that panics while the function is exiting normally is a contained panic like any other
   when the fiber is brewed: it is not run again, the older defers still run, and the locals
   still drop. A panic inside a defer *during* a contained unwind is fatal — it aborts the
@@ -3900,7 +3954,18 @@ beansc build --target riscv32imac-unknown-none-elf --runtime freestanding f.b --
   generated pointer-ABI wrapper, and the interpreter compiles and caches a tiny
   trampoline for each bridged signature. Sub-32-bit integers and `bool` also
   take that wrapper, because Clang gives them a sign/zero-extension contract
-  that a plain call cannot express. A parameter may be a C callback such
+  that a plain call cannot express.
+  **The runtime's own entries are the exception, and are never bridged.** A
+  `beans_*` name the Beans runtime hosts lives in the process already, so the
+  interpreter calls it there through the runtime's dispatcher whatever the
+  signature's width — `beansc run` never needs a C toolchain to reach one, which
+  is what lets a program write to a socket on a host whose Clang cannot link for
+  itself. A declaration naming one of those entries that does not fit its real
+  signature is refused where the call is made, with a message about the
+  declaration. Native builds cannot see that mistake — a linker does not compare
+  types — so, as everywhere else here, a wrong `extern "C"` signature is the
+  programmer's job; the interpreter simply cannot guess past it.
+  A parameter may be a C callback such
   as `fn(i32, i32) -> i32`; its arguments and return use the same C-safe type
   set and may include C-layout records. Beans closures and stored top-level
   functions both work. `as "native_name"` gives an import a different C symbol

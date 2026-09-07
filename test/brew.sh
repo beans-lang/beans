@@ -1015,4 +1015,233 @@ grep -q "brew needs fibers, which the freestanding runtime does not have" \
     exit 1
 }
 
-echo "ok brew fibers: differential, escalation, walls, contextual name, profiles"
+# ---- contained — a catch frame at a call (issue #145) ----------------------
+#
+# The same unwind, stopped one frame earlier. `contained f(args)` runs the call
+# on the CURRENT fiber under a landing pad that does not resume, so a panic
+# under it becomes err(kind panic) at the call site with no spawn, no context
+# switch and no join. Everything below is a differential: the tree walker and
+# the native pads must produce the same bytes, cleanup order included.
+
+echo "checking a contained panic unwinds to the call boundary on both backends"
+./build/beansc run test/cases/contained.b >"$tmp/contained.interp"
+./build/beansc build test/cases/contained.b -o "$tmp/contained.native" \
+    >"$tmp/contained.build" 2>&1
+"$tmp/contained.native" >"$tmp/contained.native.out"
+diff -u test/cases/contained.out "$tmp/contained.interp"
+diff -u test/cases/contained.out "$tmp/contained.native.out"
+
+echo "checking a program that can unwind builds with debug information"
+# A landing pad written across two lines took the debug pass's `, !dbg !N` in
+# the middle of itself — the pass appends one to every line it does not
+# recognise as a label — so `beansc build --debug` died in the LLVM parser at
+# "cleanup, !dbg" for EVERY program that could unwind. That is every brewing
+# program since the pads landed, and every containing one since. Both goldens
+# have to come back from a --debug build too.
+./build/beansc build --debug test/cases/brew_unwind.b \
+    -o "$tmp/unwind.debug" >"$tmp/unwind.debug.build" 2>&1
+"$tmp/unwind.debug" >"$tmp/unwind.debug.out"
+diff -u test/cases/brew_unwind.out "$tmp/unwind.debug.out"
+./build/beansc build --debug test/cases/contained.b \
+    -o "$tmp/contained.debug" >"$tmp/contained.debug.build" 2>&1
+"$tmp/contained.debug" >"$tmp/contained.debug.out"
+diff -u test/cases/contained.out "$tmp/contained.debug.out"
+
+echo "checking a catch frame belongs to one fiber, not to the thread"
+# The count of standing frames lives on the fiber record on both backends. A
+# per-thread count reads the wrong answer the moment the fiber holding the
+# frame parks: a sibling's uncontained panic finds a frame that is not on its
+# stack, two overlapping frames become one, and a fiber record reused after a
+# cancel starts life inside someone else's frame.
+./build/beansc run test/cases/contained_park.b >"$tmp/ccpark.interp"
+./build/beansc build test/cases/contained_park.b -o "$tmp/ccpark.native" \
+    >"$tmp/ccpark.build" 2>&1
+"$tmp/ccpark.native" >"$tmp/ccpark.native.out"
+diff -u test/cases/contained_park.out "$tmp/ccpark.interp"
+diff -u test/cases/contained_park.out "$tmp/ccpark.native.out"
+
+echo "checking a catch frame works off the main worker"
+# A spawned thread is not a fiber and containment has never reached one — a
+# panic at a thread's entry ends the process, because Thread<T>.join() answers
+# T and has nowhere to put a failure. A `contained` call needs no join to
+# deliver to, so it works where it stands; the first enter on a thread promotes
+# it to a worker, which is what gives the count a fiber to live on. The group
+# case is the same thing a fleet at a time.
+./build/beansc run test/cases/contained_threads.b >"$tmp/ccthreads.interp"
+./build/beansc build test/cases/contained_threads.b \
+    -o "$tmp/ccthreads.native" >"$tmp/ccthreads.build" 2>&1
+"$tmp/ccthreads.native" >"$tmp/ccthreads.native.out"
+diff -u test/cases/contained_threads.out "$tmp/ccthreads.interp"
+diff -u test/cases/contained_threads.out "$tmp/ccthreads.native.out"
+
+echo "checking a contained call costs no fiber"
+# The whole point of the issue: containment used to need a spawn, two context
+# switches and a join. A program that only contains must name none of the brew
+# or fiber entries, and must carry the catch pad instead — a landing pad with
+# no `resume` after it, which is what makes the unwind stop here.
+cat >"$tmp/nofiber.b" <<'BEANS'
+import std.io
+
+fn risky(n: int) -> int {
+    if n > 2 { panic("too big") }
+    return n
+}
+
+fn main() {
+    match contained risky(5) {
+        ok(v) => { io.println("ok {v}") }
+        err(p) => { io.println("err {p.kind}") }
+    }
+}
+BEANS
+./build/beansc build "$tmp/nofiber.b" -o "$tmp/nofiber" >"$tmp/nofiber.build" 2>&1
+"$tmp/nofiber" >"$tmp/nofiber.out"
+printf 'err panic\n' | diff -u - "$tmp/nofiber.out"
+grep -Eq '(call|invoke) void @beans_contained_enter\(\)' build/nofiber.ll
+grep -Eq '(call|invoke) void @beans_contained_leave\(\)' build/nofiber.ll
+grep -Eq '(call|invoke) ptr @beans_contained_caught\(\)' build/nofiber.ll
+grep -q 'personality ptr @__gcc_personality_v0' build/nofiber.ll
+# The catch pad itself: an exception edge naming a block of its own, whose
+# landing pad has no `resume` after it. `cc.eh` is that block, and the
+# `beans_contained_caught` above is what stands where a resume would.
+grep -Eq 'invoke .* unwind label %cc\.eh[0-9]+' build/nofiber.ll
+grep -Eq '^cc\.eh[0-9]+:' build/nofiber.ll
+awk '/^cc\.eh[0-9]+:/,/^cc\.done[0-9]+:/' build/nofiber.ll >"$tmp/nofiber.pad"
+grep -q 'landingpad { ptr, i32 } cleanup' "$tmp/nofiber.pad"
+if grep -q '  resume ' "$tmp/nofiber.pad"; then
+    echo "the contained catch pad resumes the unwind instead of stopping it" >&2
+    exit 1
+fi
+if grep -q '@beans_brew' build/nofiber.ll; then
+    echo "a contained call still reaches the brew entries" >&2
+    exit 1
+fi
+if grep -q '@beans_fiber_spawn' build/nofiber.ll; then
+    echo "a contained call still spawns a fiber" >&2
+    exit 1
+fi
+if grep -q '@beans_fiber_join' build/nofiber.ll; then
+    echo "a contained call still joins a fiber" >&2
+    exit 1
+fi
+
+echo "checking a panic outside the frame still ends the process"
+# The catch frame is the call. A panic before it, in an argument, or after it
+# has answered is not its failure: the process ends with the ordinary report
+# and exit 3, its frames abandoned — no defer, no deinit — exactly as a
+# program that never contained anything.
+run_ends() { # <case> <golden> <expected status> [env...]
+    local case_path=$1 golden=$2 want=$3
+    shift 3
+    local base
+    base=$(basename "$case_path" .b)
+    set +e
+    env "$@" ./build/beansc run "$case_path" >"$tmp/$base.ends.interp" 2>&1
+    local interp_status=$?
+    set -e
+    test "$interp_status" -eq "$want" || {
+        echo "$case_path: interpreter exited $interp_status, wanted $want" >&2
+        cat "$tmp/$base.ends.interp" >&2
+        exit 1
+    }
+    ./build/beansc build "$case_path" -o "$tmp/$base.ends.native" \
+        >"$tmp/$base.ends.build" 2>&1
+    set +e
+    env "$@" "$tmp/$base.ends.native" >"$tmp/$base.ends.native.out" 2>&1
+    local native_status=$?
+    set -e
+    test "$native_status" -eq "$want" || {
+        echo "$case_path: native exited $native_status, wanted $want" >&2
+        cat "$tmp/$base.ends.native.out" >&2
+        exit 1
+    }
+    diff -u "$golden" "$tmp/$base.ends.interp"
+    diff -u "$golden" "$tmp/$base.ends.native.out"
+}
+run_ends test/cases/contained_escapes.b \
+    test/cases/contained_escapes.out 3 BEANS_CONTAINED_CASE=after
+run_ends test/cases/contained_escapes.b \
+    test/cases/contained_escapes_argument.out 3 \
+    BEANS_CONTAINED_CASE=argument
+
+echo "checking the root fiber does not read a child's catch frame"
+# The count of standing frames decides whether a panic unwinds at all, and a
+# brewed fiber always unwinds anyway — so per-fiber and per-thread only differ
+# on the ROOT fiber. A child parks inside its frame and the root then fails
+# with none of its own: uncontained, frames abandoned, exit 3. Make the count
+# thread-wide and the tree runs the root's defers while the native build walks
+# its pads to the end of the stack; either way this golden moves.
+run_ends test/cases/contained_sibling_frame.b \
+    test/cases/contained_sibling_frame.out 3
+
+echo "checking a defer that panics during a contained unwind still aborts"
+# The one unrecoverable case (spec/CONCURRENCY.md) is unchanged by a catch
+# frame: the runtime asks "is this fiber already unwinding" before it asks
+# whether a frame is standing, and so does the walker. Both reports go out and
+# the process stops with 134.
+run_ends test/cases/contained_double.b \
+    test/cases/contained_double.out 134
+
+echo "checking the contained walls refuse at check time"
+if ./build/beansc check test/cases/contained_walls.b \
+       >"$tmp/ccwalls.log" 2>&1; then
+    echo "the contained walls accepted misuse" >&2
+    cat "$tmp/ccwalls.log" >&2
+    exit 1
+fi
+expect_contained_wall() { # <fragment>
+    grep -q "$1" "$tmp/ccwalls.log" || {
+        echo "missing contained wall: $1" >&2
+        cat "$tmp/ccwalls.log" >&2
+        exit 1
+    }
+}
+expect_contained_wall "there is no Result<unit>"
+expect_contained_wall "inout cannot ride through the hoist"
+expect_contained_wall "a value receiver would run on the hoisted copy"
+expect_contained_wall "contained runs a call under a catch frame"
+expect_contained_wall "this call cannot be contained"
+
+echo "checking a target without the unwind refuses contained, not the emitter"
+# A backend with no landing pad could not catch at all, so the refusal is about
+# the program at check time — never a build-time message about the emitter.
+if ./build/beansc check test/cases/contained.b \
+       --target x86_64-pc-windows-gnu >"$tmp/ccwin.log" 2>&1; then
+    echo "a target without the unwind accepted contained" >&2
+    cat "$tmp/ccwin.log" >&2
+    exit 1
+fi
+grep -q "contained needs the controlled unwind, which target x86_64-pc-windows-gnu does not have" \
+    "$tmp/ccwin.log" || {
+    echo "the target refusal never names the target" >&2
+    cat "$tmp/ccwin.log" >&2
+    exit 1
+}
+if ./build/beansc check test/cases/contained.b --runtime freestanding \
+       >"$tmp/ccfree.log" 2>&1; then
+    echo "freestanding accepted contained" >&2
+    cat "$tmp/ccfree.log" >&2
+    exit 1
+fi
+grep -q "contained needs the controlled unwind, which the freestanding runtime does not have" \
+    "$tmp/ccfree.log" || {
+    echo "the freestanding refusal never names the unwind" >&2
+    cat "$tmp/ccfree.log" >&2
+    exit 1
+}
+
+echo "checking contained stays an ordinary name without a callee"
+cat >"$tmp/ccname.b" <<'BEANS'
+import std.io
+
+fn main() {
+    var contained: int = 3
+    contained += 4
+    let doubled: int = contained * 2
+    io.println("contained {contained} doubled {doubled}")
+}
+BEANS
+./build/beansc run "$tmp/ccname.b" >"$tmp/ccname.out"
+printf 'contained 7 doubled 14\n' | diff -u - "$tmp/ccname.out"
+
+echo "ok brew fibers: differential, escalation, walls, contextual name, profiles, contained calls"

@@ -98,6 +98,6 @@ fi
 
 docker run --rm --platform "$platform" \
     -v "$mount_src:/src:ro" \
-    "$tag" "${args[@]}"
+    "$tag" ${args+"${args[@]}"}
 
 echo "ok Windows container gate (MinGW + Wine)"

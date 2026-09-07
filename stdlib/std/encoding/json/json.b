@@ -875,6 +875,9 @@ pub fn decode_with_options<T>(text: string,
 }
 
 /// Encodes a struct, or a List of structs, as compact RFC 8259 JSON.
+/// A NaN or infinite float, and a string whose bytes are not valid UTF-8,
+/// are refused; when a value carries more than one, the error names the
+/// first one reached in document order.
 /// The compiler validates the concrete type and replaces this body.
 pub fn encode<T>(value: T) -> Result<string> {
     return err("typed JSON encoding was not lowered", "unsupported")
@@ -883,6 +886,19 @@ pub fn encode<T>(value: T) -> Result<string> {
 /// Encodes a struct, or a List of structs, as pretty JSON. The indent must
 /// be either two or four spaces.
 pub fn encode_pretty<T>(value: T, indent: string) -> Result<string> {
+    return err("typed JSON encoding was not lowered", "unsupported")
+}
+
+/// Appends the compact RFC 8259 encoding of `value` to `target`, after
+/// whatever bytes it already holds, and returns the number of bytes
+/// appended. `target` keeps its existing contents; a caller building a
+/// response body encodes straight into the output buffer instead of taking a
+/// fresh string and copying it in. `T` is validated exactly as `encode`
+/// validates it, and the bytes written match `encode(value)` byte for byte.
+/// A refusal leaves `target` exactly as it was: nothing is appended, even
+/// when the writer had already written part of the document.
+/// The compiler validates the concrete type and replaces this body.
+pub fn encode_into<T>(value: T, target: Bytes) -> Result<int> {
     return err("typed JSON encoding was not lowered", "unsupported")
 }
 

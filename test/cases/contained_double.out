@@ -1,0 +1,3 @@
+before
+double panic during unwind: runtime panic at 10:10: the defer failed too
+  while unwinding: runtime panic at 15:10: the call failed

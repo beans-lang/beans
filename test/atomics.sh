@@ -38,7 +38,7 @@ for worker in 1 2 3 4 5 6 7 8; do
     race_pids+=("$!")
 done
 race_failed=0
-for pid in "${race_pids[@]}"; do
+for pid in ${race_pids+"${race_pids[@]}"}; do
     if ! wait "$pid"; then race_failed=1; fi
 done
 [[ "$race_failed" -eq 0 ]] || exit 1

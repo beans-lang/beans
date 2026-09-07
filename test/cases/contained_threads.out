@@ -1,0 +1,8 @@
+on spawned threads:
+  joined 103 and 106
+in a task group:
+  drop group-1
+  drop group-2
+  drop group-3
+  total 6
+done

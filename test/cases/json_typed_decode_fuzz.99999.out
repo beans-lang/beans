@@ -1,0 +1,1280 @@
+s0: OK {"b":true,"small":-106,"mid":13624,"wide":0,"un":812562730,"ratio":26.75,"exact":-576460752303423500.0,"name":"\u0001","maybe":"日本語","perhaps":-9223372036854775808}
+n0: OK {"title":"a","inner":{"label":"café","count":42},"boxed":{"label":"hello","count":-1},"ints":[],"strs":["café"],"rows":[{"label":"\"","count":-1},{"label":"ünïcødé","count":-9223372036854775808},{"label":"q\"uo\"te","count":-523895}],"flag":true}
+l0: OK [{"label":"\u0001","count":9223372036854775807},{"label":"line\nbreak","count":-9223372036854775808},{"label":"back\\slash","count":42}]
+s1: OK {"b":false,"small":74,"mid":16652,"wide":-9223372036854775808,"un":196756705,"ratio":42.25,"exact":0.0,"name":"ünïcødé","maybe":null,"perhaps":0}
+n1: OK {"title":"line\nbreak","inner":{"label":"hello","count":-1},"boxed":{"label":"\r","count":42},"ints":[],"strs":["ünïcødé","\r"],"rows":[{"label":"emoji😀pair","count":0}],"flag":true}
+s2: OK {"b":true,"small":86,"mid":14467,"wide":-1,"un":838748013,"ratio":95.875,"exact":0.0,"name":"control\u001F\u0000end","maybe":"\t","perhaps":null}
+n2: OK {"title":"mix🫘ed\ttext","inner":{"label":"","count":-1},"boxed":{"label":"hello","count":42},"ints":[-9223372036854775808,-9223372036854775808],"strs":["\r"],"rows":[{"label":"\t","count":-561798},{"label":"control\u001F\u0000end","count":576217},{"label":"\u0001","count":0}],"flag":false}
+s3: OK {"b":true,"small":54,"mid":26275,"wide":-1,"un":636401293,"ratio":94.0,"exact":0.0,"name":"/","maybe":"mix🫘ed\ttext","perhaps":null}
+n3: OK {"title":"\n","inner":{"label":"back\\slash","count":9223372036854775807},"boxed":null,"ints":[-9223372036854775808,-9223372036854775808],"strs":["q\"uo\"te"],"rows":[{"label":"/","count":9223372036854775807},{"label":"","count":-9223372036854775808},{"label":"emoji😀pair","count":42}],"flag":true}
+s4: OK {"b":false,"small":-27,"mid":5919,"wide":9223372036854775807,"un":388458345,"ratio":-113.625,"exact":1453.375,"name":"\u0001","maybe":null,"perhaps":42}
+n4: OK {"title":"q\"uo\"te","inner":{"label":"\t","count":0},"boxed":{"label":"🫘","count":688147},"ints":[90,-1,460660],"strs":["/","\""],"rows":[],"flag":true}
+s5: OK {"b":true,"small":-79,"mid":40880,"wide":241,"un":931443337,"ratio":-38.5,"exact":18944.5625,"name":"q\"uo\"te","maybe":"\u0001","perhaps":-9223372036854775808}
+n5: OK {"title":"日本語","inner":{"label":"\n","count":42},"boxed":{"label":"back\\slash","count":42},"ints":[3,-1],"strs":["hello","\t"," tail"],"rows":[{"label":"\u0001","count":-954649},{"label":"a","count":-9223372036854775808},{"label":"","count":-256791}],"flag":false}
+l5: OK []
+s6: OK {"b":true,"small":-125,"mid":12269,"wide":4,"un":622489365,"ratio":97.125,"exact":10559.25,"name":" tail","maybe":"\u0001","perhaps":-9223372036854775808}
+n6: OK {"title":"back\\slash","inner":{"label":"\\","count":-1},"boxed":{"label":"\"","count":-1},"ints":[0,0,-812281,-9223372036854775808],"strs":[],"rows":[{"label":"\r","count":0}],"flag":true}
+s7: OK {"b":true,"small":-74,"mid":16604,"wide":42,"un":670231794,"ratio":-90.125,"exact":0.0,"name":"ünïcødé","maybe":"\\","perhaps":null}
+n7: OK {"title":"\n","inner":{"label":"line\nbreak","count":-9223372036854775808},"boxed":null,"ints":[270059,-1,-898943,117],"strs":["\"","\t"],"rows":[{"label":" tail","count":0}],"flag":true}
+s8: OK {"b":true,"small":31,"mid":36886,"wide":941948,"un":328347926,"ratio":88.625,"exact":0.0,"name":"a","maybe":"日本語","perhaps":null}
+n8: OK {"title":"\n","inner":{"label":"\r","count":42},"boxed":{"label":"/","count":-1},"ints":[-1,-9223372036854775808],"strs":[],"rows":[{"label":"mix🫘ed\ttext","count":0}],"flag":false}
+s9: OK {"b":false,"small":60,"mid":55374,"wide":9223372036854775807,"un":762224591,"ratio":36.875,"exact":-39647.375,"name":"\"","maybe":"emoji😀pair","perhaps":-1}
+n9: OK {"title":"🫘","inner":{"label":"\"","count":-355560},"boxed":{"label":"\n","count":-9223372036854775808},"ints":[42],"strs":["emoji😀pair"],"rows":[{"label":"\t","count":42},{"label":"/","count":546590},{"label":"control\u001F\u0000end","count":61}],"flag":false}
+s10: OK {"b":true,"small":-111,"mid":41680,"wide":147,"un":536737321,"ratio":-92.5,"exact":-576460752303423500.0,"name":"/","maybe":"ünïcødé","perhaps":-9223372036854775808}
+n10: OK {"title":"\t","inner":{"label":"\n","count":0},"boxed":null,"ints":[40],"strs":["\n","\n"],"rows":[{"label":"a","count":9223372036854775807},{"label":"","count":192},{"label":"mix🫘ed\ttext","count":342572}],"flag":true}
+l10: OK [{"label":"\u0001","count":-9223372036854775808}]
+s11: OK {"b":true,"small":127,"mid":25782,"wide":208803,"un":678509065,"ratio":65.25,"exact":0.0,"name":"\"","maybe":"\"","perhaps":null}
+n11: OK {"title":"mix🫘ed\ttext","inner":{"label":"ünïcødé","count":42},"boxed":null,"ints":[42,-9223372036854775808],"strs":[],"rows":[{"label":"\\","count":0},{"label":"line\nbreak","count":9223372036854775807}],"flag":true}
+s12: OK {"b":true,"small":33,"mid":18619,"wide":-1,"un":897449573,"ratio":-45.125,"exact":0.0,"name":"q\"uo\"te","maybe":null,"perhaps":9223372036854775807}
+n12: OK {"title":"","inner":{"label":"日本語","count":203},"boxed":null,"ints":[],"strs":[],"rows":[],"flag":false}
+s13: OK {"b":false,"small":117,"mid":60463,"wide":-485382,"un":240704491,"ratio":-6.625,"exact":2.625,"name":"emoji😀pair","maybe":"\r","perhaps":null}
+n13: OK {"title":"\u0001","inner":{"label":"mix🫘ed\ttext","count":42},"boxed":{"label":"control\u001F\u0000end","count":0},"ints":[],"strs":["café","back\\slash","a"],"rows":[],"flag":true}
+s14: OK {"b":true,"small":71,"mid":58798,"wide":-9223372036854775808,"un":147003924,"ratio":-14.875,"exact":576460752303423500.0,"name":"q\"uo\"te","maybe":"\t","perhaps":0}
+n14: OK {"title":"mix🫘ed\ttext","inner":{"label":"mix🫘ed\ttext","count":-1},"boxed":{"label":"café","count":-1},"ints":[-874086,-9223372036854775808,-9223372036854775808,42],"strs":["\u0001"],"rows":[{"label":"\u0001","count":-1},{"label":"q\"uo\"te","count":-9223372036854775808},{"label":"mix🫘ed\ttext","count":-133520}],"flag":true}
+s15: OK {"b":false,"small":14,"mid":57355,"wide":-1,"un":705802805,"ratio":86.875,"exact":0.0,"name":"hello","maybe":"🫘","perhaps":null}
+n15: OK {"title":"hello","inner":{"label":"back\\slash","count":-1},"boxed":{"label":"emoji😀pair","count":-1},"ints":[],"strs":["café","back\\slash","\r"],"rows":[{"label":"🫘","count":-16385},{"label":"\"","count":-9223372036854775808},{"label":"back\\slash","count":-207119}],"flag":false}
+l15: OK []
+s16: OK {"b":true,"small":-18,"mid":52692,"wide":-1,"un":395968170,"ratio":-85.125,"exact":0.0,"name":"🫘","maybe":null,"perhaps":null}
+n16: OK {"title":" tail","inner":{"label":"ünïcødé","count":-9223372036854775808},"boxed":null,"ints":[903475,-1],"strs":["café"],"rows":[{"label":"\"","count":42},{"label":"\n","count":35665},{"label":"","count":213}],"flag":false}
+s17: OK {"b":true,"small":-86,"mid":7276,"wide":-9223372036854775808,"un":834321025,"ratio":32.25,"exact":0.0,"name":"ünïcødé","maybe":null,"perhaps":0}
+n17: OK {"title":"\\","inner":{"label":"hello","count":-9223372036854775808},"boxed":null,"ints":[42,-9223372036854775808],"strs":["\\","\n","ünïcødé"],"rows":[],"flag":false}
+s18: OK {"b":false,"small":-119,"mid":64611,"wide":42,"un":648227917,"ratio":48.0,"exact":13.1875,"name":"","maybe":"emoji😀pair","perhaps":9223372036854775807}
+n18: OK {"title":"日本語","inner":{"label":"café","count":-1},"boxed":null,"ints":[276510,9223372036854775807,0],"strs":[],"rows":[{"label":"\n","count":564659},{"label":"\n","count":9223372036854775807}],"flag":false}
+s19: OK {"b":false,"small":-91,"mid":28895,"wide":9223372036854775807,"un":339304233,"ratio":122.375,"exact":9378.5625,"name":"emoji😀pair","maybe":null,"perhaps":null}
+n19: OK {"title":"\t","inner":{"label":"emoji😀pair","count":0},"boxed":null,"ints":[119],"strs":["\\"],"rows":[],"flag":true}
+s20: OK {"b":false,"small":89,"mid":45256,"wide":0,"un":955648314,"ratio":-27.25,"exact":-576460752303423500.0,"name":"café","maybe":null,"perhaps":-9223372036854775808}
+n20: OK {"title":"\\","inner":{"label":"q\"uo\"te","count":42},"boxed":{"label":"emoji😀pair","count":0},"ints":[-652848,0,9223372036854775807,42],"strs":[],"rows":[],"flag":false}
+l20: OK [{"label":"\\","count":-418367},{"label":"back\\slash","count":-242406},{"label":"","count":608006}]
+s21: OK {"b":false,"small":-91,"mid":23964,"wide":-9223372036854775808,"un":910233646,"ratio":-53.75,"exact":0.0,"name":"\r","maybe":"\\","perhaps":null}
+n21: OK {"title":"","inner":{"label":"back\\slash","count":575340},"boxed":null,"ints":[-1,863676],"strs":["ünïcødé","back\\slash"],"rows":[{"label":"🫘","count":-1},{"label":"hello","count":-9223372036854775808},{"label":"\r","count":-615263}],"flag":false}
+s22: OK {"b":true,"small":55,"mid":10945,"wide":-9223372036854775808,"un":369145892,"ratio":-91.25,"exact":-588.9375,"name":"\"","maybe":null,"perhaps":null}
+n22: OK {"title":"q\"uo\"te","inner":{"label":"control\u001F\u0000end","count":470942},"boxed":null,"ints":[-1,-9223372036854775808,-9223372036854775808],"strs":["/","mix🫘ed\ttext"],"rows":[],"flag":true}
+s23: OK {"b":true,"small":52,"mid":10745,"wide":-354071,"un":617773864,"ratio":2.25,"exact":-0.0625,"name":"\"","maybe":"emoji😀pair","perhaps":-1}
+n23: OK {"title":"\t","inner":{"label":"ünïcødé","count":-9223372036854775808},"boxed":null,"ints":[42,-918319,0,9223372036854775807],"strs":["/"," tail"],"rows":[{"label":"","count":252}],"flag":false}
+s24: OK {"b":false,"small":-83,"mid":3156,"wide":444121,"un":697121922,"ratio":40.0,"exact":14.75,"name":"\t","maybe":null,"perhaps":0}
+n24: OK {"title":"hello","inner":{"label":"a","count":-56512},"boxed":null,"ints":[608753,-934832,0],"strs":["\\","a"],"rows":[{"label":"\r","count":9223372036854775807},{"label":"\r","count":0},{"label":"\"","count":42}],"flag":true}
+s25: OK {"b":true,"small":-30,"mid":39656,"wide":-368161,"un":743623708,"ratio":55.5,"exact":-0.0625,"name":"🫘","maybe":"mix🫘ed\ttext","perhaps":257017}
+n25: OK {"title":"/","inner":{"label":"q\"uo\"te","count":-1},"boxed":{"label":"emoji😀pair","count":-1},"ints":[0,9223372036854775807,-1,-9223372036854775808],"strs":[],"rows":[{"label":"🫘","count":0}],"flag":false}
+l25: OK []
+s26: OK {"b":true,"small":-103,"mid":54135,"wide":11,"un":94176065,"ratio":38.5,"exact":-576460752303423500.0,"name":" tail","maybe":"/","perhaps":711187}
+n26: OK {"title":"control\u001F\u0000end","inner":{"label":"control\u001F\u0000end","count":42},"boxed":{"label":"\\","count":0},"ints":[0,111,-1],"strs":[],"rows":[{"label":"\t","count":-744551},{"label":"ünïcødé","count":9223372036854775807},{"label":"back\\slash","count":115284}],"flag":true}
+s27: OK {"b":true,"small":40,"mid":54369,"wide":-9223372036854775808,"un":82069627,"ratio":-10.875,"exact":576460752303423500.0,"name":"emoji😀pair","maybe":"control\u001F\u0000end","perhaps":0}
+n27: OK {"title":"\u0001","inner":{"label":" tail","count":42},"boxed":{"label":"hello","count":-496888},"ints":[],"strs":["\r"],"rows":[],"flag":false}
+s28: OK {"b":false,"small":95,"mid":29357,"wide":42,"un":985905876,"ratio":-52.625,"exact":-0.0625,"name":"emoji😀pair","maybe":" tail","perhaps":null}
+n28: OK {"title":"日本語","inner":{"label":"🫘","count":-9223372036854775808},"boxed":null,"ints":[0,9223372036854775807,-1],"strs":["control\u001F\u0000end","ünïcødé","🫘"],"rows":[],"flag":true}
+s29: OK {"b":true,"small":7,"mid":8721,"wide":598571,"un":200706209,"ratio":-50.375,"exact":0.0,"name":"/","maybe":null,"perhaps":0}
+n29: OK {"title":"a","inner":{"label":"\t","count":-1},"boxed":null,"ints":[-1,-9223372036854775808],"strs":["mix🫘ed\ttext","ünïcødé",""],"rows":[{"label":"\n","count":-1},{"label":"control\u001F\u0000end","count":-9223372036854775808},{"label":"a","count":9223372036854775807}],"flag":false}
+s30: OK {"b":true,"small":-43,"mid":27628,"wide":59710,"un":408646645,"ratio":-7.0,"exact":0.0,"name":"hello","maybe":"q\"uo\"te","perhaps":185}
+n30: OK {"title":"/","inner":{"label":"\\","count":112},"boxed":{"label":"\"","count":-1},"ints":[-9223372036854775808,185766,-587831,160],"strs":["\""],"rows":[{"label":"emoji😀pair","count":9223372036854775807},{"label":"café","count":0},{"label":"\r","count":42}],"flag":true}
+l30: OK [{"label":"\r","count":42},{"label":"a","count":143},{"label":"\r","count":-1}]
+s31: OK {"b":true,"small":-35,"mid":47656,"wide":9223372036854775807,"un":801688862,"ratio":-38.625,"exact":17625.0625,"name":"🫘","maybe":null,"perhaps":-1}
+n31: OK {"title":"\\","inner":{"label":"hello","count":474046},"boxed":{"label":"\"","count":9223372036854775807},"ints":[],"strs":[],"rows":[{"label":" tail","count":862780},{"label":"hello","count":9223372036854775807}],"flag":false}
+s32: OK {"b":false,"small":70,"mid":14060,"wide":42,"un":468282242,"ratio":44.0,"exact":0.0,"name":"\\","maybe":null,"perhaps":9223372036854775807}
+n32: OK {"title":"emoji😀pair","inner":{"label":"\"","count":-9223372036854775808},"boxed":{"label":"/","count":254},"ints":[747227,-1,-245296,0],"strs":["/","back\\slash"],"rows":[{"label":"café","count":-690407},{"label":"control\u001F\u0000end","count":-76142},{"label":"\"","count":-9223372036854775808}],"flag":false}
+s33: OK {"b":true,"small":104,"mid":58145,"wide":156612,"un":792557137,"ratio":57.625,"exact":4.875,"name":"\\","maybe":"line\nbreak","perhaps":null}
+n33: OK {"title":"ünïcødé","inner":{"label":"hello","count":-9223372036854775808},"boxed":{"label":"\\","count":0},"ints":[906940],"strs":["🫘"],"rows":[{"label":"emoji😀pair","count":9223372036854775807},{"label":"\t","count":-9223372036854775808},{"label":"日本語","count":-1}],"flag":true}
+s34: OK {"b":false,"small":122,"mid":3139,"wide":-9223372036854775808,"un":33305422,"ratio":-41.75,"exact":12.6875,"name":"café","maybe":null,"perhaps":152}
+n34: OK {"title":"\t","inner":{"label":"\n","count":42},"boxed":{"label":"\"","count":-26777},"ints":[373923],"strs":["\r","mix🫘ed\ttext"],"rows":[{"label":"control\u001F\u0000end","count":-1},{"label":"control\u001F\u0000end","count":-9223372036854775808},{"label":"\u0001","count":9223372036854775807}],"flag":false}
+s35: OK {"b":true,"small":35,"mid":59118,"wide":-52207,"un":479640352,"ratio":-89.375,"exact":2.625,"name":"🫘","maybe":"🫘","perhaps":-1}
+n35: OK {"title":"emoji😀pair","inner":{"label":"line\nbreak","count":-1},"boxed":{"label":"ünïcødé","count":-1},"ints":[],"strs":["\u0001"],"rows":[],"flag":true}
+l35: OK [{"label":"\"","count":9223372036854775807},{"label":"\u0001","count":-9223372036854775808},{"label":"\t","count":-1}]
+s36: OK {"b":false,"small":-70,"mid":45308,"wide":357390,"un":244792762,"ratio":-13.0,"exact":0.0,"name":"back\\slash","maybe":"control\u001F\u0000end","perhaps":null}
+n36: OK {"title":"日本語","inner":{"label":" tail","count":205},"boxed":{"label":"line\nbreak","count":841862},"ints":[-9223372036854775808,101193,9223372036854775807],"strs":["ünïcødé","hello","/"],"rows":[{"label":"café","count":-1},{"label":"q\"uo\"te","count":0},{"label":"\\","count":9223372036854775807}],"flag":false}
+s37: OK {"b":true,"small":-112,"mid":9922,"wide":-1,"un":774031931,"ratio":-55.5,"exact":-0.0625,"name":"/","maybe":"back\\slash","perhaps":9223372036854775807}
+n37: OK {"title":"back\\slash","inner":{"label":"back\\slash","count":-1},"boxed":{"label":"日本語","count":-41480},"ints":[223],"strs":["line\nbreak"],"rows":[{"label":"line\nbreak","count":-872480},{"label":"emoji😀pair","count":9223372036854775807},{"label":"line\nbreak","count":-9223372036854775808}],"flag":true}
+s38: OK {"b":true,"small":-65,"mid":63625,"wide":-9223372036854775808,"un":87333148,"ratio":59.75,"exact":576460752303423500.0,"name":"a","maybe":"\n","perhaps":0}
+n38: OK {"title":"\n","inner":{"label":"q\"uo\"te","count":86},"boxed":{"label":"\n","count":319027},"ints":[9223372036854775807,42,950100,42],"strs":["control\u001F\u0000end"],"rows":[],"flag":true}
+s39: OK {"b":true,"small":-38,"mid":50015,"wide":-12630,"un":759549188,"ratio":26.5,"exact":2.625,"name":"q\"uo\"te","maybe":"\n","perhaps":-1}
+n39: OK {"title":"control\u001F\u0000end","inner":{"label":"\n","count":133},"boxed":null,"ints":[],"strs":["\t","\"","\""],"rows":[],"flag":false}
+s40: OK {"b":true,"small":-39,"mid":3400,"wide":214,"un":872383742,"ratio":-79.5,"exact":-576460752303423500.0,"name":"q\"uo\"te","maybe":null,"perhaps":null}
+n40: OK {"title":"日本語","inner":{"label":"line\nbreak","count":9223372036854775807},"boxed":{"label":"ünïcødé","count":-9223372036854775808},"ints":[],"strs":[],"rows":[],"flag":false}
+l40: OK []
+s41: OK {"b":true,"small":84,"mid":53333,"wide":22,"un":714845810,"ratio":108.125,"exact":-576460752303423500.0,"name":"mix🫘ed\ttext","maybe":null,"perhaps":-9223372036854775808}
+n41: OK {"title":"ünïcødé","inner":{"label":"","count":633212},"boxed":{"label":"mix🫘ed\ttext","count":73},"ints":[9223372036854775807,0],"strs":[],"rows":[{"label":"ünïcødé","count":267716}],"flag":false}
+s42: OK {"b":true,"small":49,"mid":1867,"wide":42,"un":259828597,"ratio":96.875,"exact":0.0,"name":"emoji😀pair","maybe":null,"perhaps":184}
+n42: OK {"title":"emoji😀pair","inner":{"label":"🫘","count":0},"boxed":null,"ints":[290835,-1,-797448,0],"strs":[" tail"],"rows":[],"flag":true}
+s43: OK {"b":true,"small":-55,"mid":19751,"wide":238,"un":1144273,"ratio":-84.625,"exact":-576460752303423500.0,"name":"hello","maybe":"café","perhaps":-9223372036854775808}
+n43: OK {"title":"","inner":{"label":"\\","count":-9223372036854775808},"boxed":null,"ints":[170,9223372036854775807,42],"strs":["\\","control\u001F\u0000end","日本語"],"rows":[],"flag":false}
+s44: OK {"b":true,"small":2,"mid":7556,"wide":-9223372036854775808,"un":737357910,"ratio":-116.75,"exact":0.0,"name":"emoji😀pair","maybe":"line\nbreak","perhaps":0}
+n44: OK {"title":"emoji😀pair","inner":{"label":"ünïcødé","count":164},"boxed":{"label":"a","count":-1},"ints":[42,-9223372036854775808],"strs":[],"rows":[{"label":"🫘","count":162},{"label":"日本語","count":-1}],"flag":false}
+s45: OK {"b":false,"small":127,"mid":16566,"wide":920028,"un":842247670,"ratio":-31.375,"exact":10.9375,"name":"\n","maybe":"emoji😀pair","perhaps":-792432}
+n45: OK {"title":"\"","inner":{"label":"emoji😀pair","count":-1},"boxed":null,"ints":[-9223372036854775808,-9223372036854775808],"strs":["a","q\"uo\"te"],"rows":[{"label":"mix🫘ed\ttext","count":-1},{"label":"🫘","count":-9223372036854775808},{"label":"control\u001F\u0000end","count":9223372036854775807}],"flag":false}
+l45: OK [{"label":"line\nbreak","count":-193839},{"label":"café","count":9223372036854775807},{"label":"\u0001","count":-9223372036854775808}]
+s46: OK {"b":false,"small":-40,"mid":61134,"wide":-9223372036854775808,"un":108291636,"ratio":98.75,"exact":-58781.9375,"name":" tail","maybe":"control\u001F\u0000end","perhaps":0}
+n46: OK {"title":"🫘","inner":{"label":"\t","count":9223372036854775807},"boxed":{"label":"a","count":-9223372036854775808},"ints":[42,-9223372036854775808],"strs":[],"rows":[{"label":"q\"uo\"te","count":139}],"flag":false}
+s47: OK {"b":false,"small":27,"mid":57654,"wide":-274791,"un":35401272,"ratio":63.625,"exact":-0.0625,"name":"line\nbreak","maybe":null,"perhaps":-1}
+n47: OK {"title":"control\u001F\u0000end","inner":{"label":"/","count":565049},"boxed":null,"ints":[-1],"strs":["\n"],"rows":[],"flag":false}
+s48: OK {"b":true,"small":-93,"mid":25198,"wide":-911824,"un":492847008,"ratio":49.25,"exact":-0.0625,"name":"🫘","maybe":"/","perhaps":42}
+n48: OK {"title":"line\nbreak","inner":{"label":"\u0001","count":42},"boxed":{"label":"a","count":42},"ints":[-1,-660280],"strs":[],"rows":[{"label":"🫘","count":187124},{"label":"q\"uo\"te","count":-695519}],"flag":false}
+s49: OK {"b":false,"small":-4,"mid":62961,"wide":-143344,"un":485284224,"ratio":-96.75,"exact":2.625,"name":"🫘","maybe":"emoji😀pair","perhaps":42}
+n49: OK {"title":"control\u001F\u0000end","inner":{"label":"日本語","count":0},"boxed":null,"ints":[42,-195608],"strs":[],"rows":[{"label":"ünïcødé","count":31700}],"flag":false}
+s50: OK {"b":true,"small":-30,"mid":38888,"wide":-12830,"un":918788892,"ratio":-44.5,"exact":2.625,"name":"日本語","maybe":"control\u001F\u0000end","perhaps":42}
+n50: OK {"title":"café","inner":{"label":"control\u001F\u0000end","count":-9223372036854775808},"boxed":{"label":"🫘","count":9223372036854775807},"ints":[251,42,-9223372036854775808,673705],"strs":["\""," tail"],"rows":[{"label":"control\u001F\u0000end","count":575988},{"label":"q\"uo\"te","count":9223372036854775807}],"flag":false}
+l50: OK [{"label":"mix🫘ed\ttext","count":24},{"label":"hello","count":-9223372036854775808}]
+s51: OK {"b":true,"small":-80,"mid":23522,"wide":42,"un":430663707,"ratio":-33.5,"exact":2.625,"name":"🫘","maybe":"café","perhaps":null}
+n51: OK {"title":"hello","inner":{"label":"/","count":-1},"boxed":{"label":"\n","count":0},"ints":[],"strs":[],"rows":[{"label":"mix🫘ed\ttext","count":198827}],"flag":false}
+s52: OK {"b":false,"small":-27,"mid":11171,"wide":-9223372036854775808,"un":338029806,"ratio":80.25,"exact":11.9375,"name":"line\nbreak","maybe":"ünïcødé","perhaps":138}
+n52: OK {"title":"a","inner":{"label":"emoji😀pair","count":728019},"boxed":null,"ints":[14019],"strs":["🫘","café"],"rows":[{"label":"\u0001","count":-1},{"label":"line\nbreak","count":-9223372036854775808},{"label":" tail","count":-480544}],"flag":false}
+s53: OK {"b":false,"small":124,"mid":14193,"wide":-751536,"un":284678911,"ratio":14.625,"exact":2.625,"name":"","maybe":"🫘","perhaps":-169985}
+n53: OK {"title":"mix🫘ed\ttext","inner":{"label":"","count":37},"boxed":null,"ints":[-1,9223372036854775807],"strs":["a","\t","日本語"],"rows":[],"flag":false}
+s54: OK {"b":false,"small":-71,"mid":44695,"wide":0,"un":919318234,"ratio":115.125,"exact":20492.25,"name":"\"","maybe":null,"perhaps":-9223372036854775808}
+n54: OK {"title":"q\"uo\"te","inner":{"label":"\r","count":0},"boxed":null,"ints":[0,19,-1],"strs":[],"rows":[],"flag":false}
+s55: OK {"b":false,"small":-118,"mid":53551,"wide":9223372036854775807,"un":242234361,"ratio":-77.625,"exact":4989.5625,"name":"/","maybe":"日本語","perhaps":42}
+n55: OK {"title":"control\u001F\u0000end","inner":{"label":"\n","count":118},"boxed":null,"ints":[],"strs":[],"rows":[{"label":"\n","count":38308}],"flag":false}
+l55: OK []
+s56: OK {"b":true,"small":53,"mid":9843,"wide":537374,"un":595522538,"ratio":90.875,"exact":10.6875,"name":"control\u001F\u0000end","maybe":"control\u001F\u0000end","perhaps":216}
+n56: OK {"title":"emoji😀pair","inner":{"label":"control\u001F\u0000end","count":-1},"boxed":{"label":"control\u001F\u0000end","count":42},"ints":[-9223372036854775808],"strs":["mix🫘ed\ttext"],"rows":[],"flag":true}
+s57: OK {"b":false,"small":123,"mid":59862,"wide":9223372036854775807,"un":560338183,"ratio":-66.125,"exact":576460752303423500.0,"name":" tail","maybe":"emoji😀pair","perhaps":42}
+n57: OK {"title":"\n","inner":{"label":"\u0001","count":0},"boxed":{"label":"control\u001F\u0000end","count":42},"ints":[],"strs":[],"rows":[{"label":"emoji😀pair","count":142},{"label":"ünïcødé","count":-1}],"flag":true}
+s58: OK {"b":false,"small":-101,"mid":53050,"wide":0,"un":100692863,"ratio":17.25,"exact":-0.0625,"name":"line\nbreak","maybe":null,"perhaps":null}
+n58: OK {"title":"ünïcødé","inner":{"label":"hello","count":-277017},"boxed":null,"ints":[42],"strs":["hello","back\\slash"],"rows":[{"label":"\n","count":-9223372036854775808},{"label":"hello","count":-1}],"flag":true}
+s59: OK {"b":false,"small":-105,"mid":40101,"wide":42,"un":939876323,"ratio":121.5,"exact":2.625,"name":"line\nbreak","maybe":"\r","perhaps":null}
+n59: OK {"title":"mix🫘ed\ttext","inner":{"label":"mix🫘ed\ttext","count":42},"boxed":{"label":"ünïcødé","count":0},"ints":[0,9223372036854775807,42],"strs":[],"rows":[{"label":"\n","count":-263751},{"label":"","count":-360654},{"label":"日本語","count":-9223372036854775808}],"flag":true}
+s60: OK {"b":false,"small":-73,"mid":64702,"wide":-9223372036854775808,"un":124514907,"ratio":42.75,"exact":-52932.9375,"name":"\r","maybe":"mix🫘ed\ttext","perhaps":0}
+n60: OK {"title":"\n","inner":{"label":"ünïcødé","count":0},"boxed":null,"ints":[-1,75427,42,9223372036854775807],"strs":["","ünïcødé","\r"],"rows":[],"flag":true}
+l60: OK [{"label":"\n","count":-9223372036854775808}]
+s61: OK {"b":false,"small":26,"mid":13987,"wide":-9223372036854775808,"un":923356654,"ratio":116.25,"exact":0.0,"name":"🫘","maybe":"","perhaps":237}
+n61: OK {"title":"mix🫘ed\ttext","inner":{"label":"back\\slash","count":188},"boxed":{"label":"\u0001","count":42},"ints":[-1,-9223372036854775808],"strs":[],"rows":[{"label":"mix🫘ed\ttext","count":0},{"label":"line\nbreak","count":-516814}],"flag":false}
+s62: OK {"b":true,"small":-126,"mid":44680,"wide":9223372036854775807,"un":721598337,"ratio":92.5,"exact":28792.875,"name":"café","maybe":"🫘","perhaps":null}
+n62: OK {"title":"\"","inner":{"label":"\u0001","count":-9223372036854775808},"boxed":{"label":"control\u001F\u0000end","count":9223372036854775807},"ints":[0,-803401,-9223372036854775808,263158],"strs":["\n"],"rows":[{"label":"🫘","count":42},{"label":"🫘","count":-9223372036854775808},{"label":"line\nbreak","count":9223372036854775807}],"flag":false}
+s63: OK {"b":true,"small":-34,"mid":44731,"wide":-1,"un":9103973,"ratio":10.875,"exact":0.0,"name":"/","maybe":"\n","perhaps":9223372036854775807}
+n63: OK {"title":"hello","inner":{"label":"ünïcødé","count":42},"boxed":{"label":"back\\slash","count":-1},"ints":[223228],"strs":["\u0001"],"rows":[],"flag":true}
+s64: OK {"b":false,"small":-108,"mid":7321,"wide":9223372036854775807,"un":982812407,"ratio":3.875,"exact":576460752303423500.0,"name":"\n","maybe":"🫘","perhaps":-1}
+n64: OK {"title":"\u0001","inner":{"label":"🫘","count":9223372036854775807},"boxed":null,"ints":[442446,9223372036854775807,0,198],"strs":["a"],"rows":[{"label":"ünïcødé","count":9223372036854775807},{"label":"back\\slash","count":0},{"label":"\r","count":42}],"flag":true}
+s65: OK {"b":true,"small":-122,"mid":32855,"wide":213,"un":863327006,"ratio":-34.625,"exact":54185.0625,"name":"\u0001","maybe":"🫘","perhaps":522060}
+n65: OK {"title":" tail","inner":{"label":"/","count":447755},"boxed":{"label":" tail","count":0},"ints":[],"strs":[],"rows":[{"label":"\r","count":-9223372036854775808},{"label":"emoji😀pair","count":42}],"flag":false}
+l65: OK [{"label":"","count":0}]
+s66: OK {"b":false,"small":-39,"mid":33719,"wide":203,"un":277771777,"ratio":-98.625,"exact":7316.875,"name":"\t","maybe":"\\","perhaps":-9223372036854775808}
+n66: OK {"title":"emoji😀pair","inner":{"label":"hello","count":9223372036854775807},"boxed":null,"ints":[],"strs":[" tail","a","\t"],"rows":[{"label":"\\","count":9223372036854775807},{"label":"control\u001F\u0000end","count":0},{"label":"\r","count":-1}],"flag":false}
+s67: OK {"b":true,"small":-77,"mid":29282,"wide":0,"un":979670551,"ratio":-86.375,"exact":2.625,"name":"mix🫘ed\ttext","maybe":"line\nbreak","perhaps":-9223372036854775808}
+n67: OK {"title":"café","inner":{"label":" tail","count":0},"boxed":null,"ints":[-1],"strs":["control\u001F\u0000end","\r"],"rows":[{"label":"café","count":-9223372036854775808}],"flag":false}
+s68: OK {"b":false,"small":1,"mid":15647,"wide":0,"un":672747282,"ratio":-6.25,"exact":-576460752303423500.0,"name":"🫘","maybe":"/","perhaps":-9223372036854775808}
+n68: OK {"title":"back\\slash","inner":{"label":"日本語","count":-1},"boxed":{"label":"line\nbreak","count":0},"ints":[9223372036854775807,0],"strs":[],"rows":[{"label":"\u0001","count":42724}],"flag":false}
+s69: OK {"b":false,"small":-51,"mid":23623,"wide":-99985,"un":86036236,"ratio":81.5,"exact":-0.0625,"name":"\u0001","maybe":null,"perhaps":null}
+n69: OK {"title":"","inner":{"label":"日本語","count":29828},"boxed":null,"ints":[0,9223372036854775807,42],"strs":["\r","\n","\u0001"],"rows":[],"flag":false}
+s70: OK {"b":false,"small":86,"mid":49283,"wide":-1,"un":595864941,"ratio":89.875,"exact":0.0,"name":"mix🫘ed\ttext","maybe":"mix🫘ed\ttext","perhaps":9223372036854775807}
+n70: OK {"title":"","inner":{"label":"\"","count":-9223372036854775808},"boxed":null,"ints":[-9223372036854775808,-9223372036854775808],"strs":["🫘","q\"uo\"te"],"rows":[],"flag":false}
+l70: OK [{"label":"日本語","count":95},{"label":"ünïcødé","count":-9223372036854775808}]
+s71: OK {"b":true,"small":15,"mid":59682,"wide":42,"un":450520795,"ratio":88.5,"exact":2.625,"name":"control\u001F\u0000end","maybe":"\n","perhaps":null}
+n71: OK {"title":"hello","inner":{"label":"hello","count":-9223372036854775808},"boxed":{"label":"control\u001F\u0000end","count":15},"ints":[0],"strs":["/","q\"uo\"te"],"rows":[],"flag":false}
+s72: OK {"b":true,"small":23,"mid":31649,"wide":520507,"un":678721582,"ratio":108.25,"exact":0.0,"name":"q\"uo\"te","maybe":"ünïcødé","perhaps":null}
+n72: OK {"title":"line\nbreak","inner":{"label":"mix🫘ed\ttext","count":114},"boxed":null,"ints":[-1,688387,-1,-631864],"strs":["\"","日本語","\r"],"rows":[{"label":"\\","count":-114207},{"label":"hello","count":9223372036854775807},{"label":"mix🫘ed\ttext","count":685932}],"flag":false}
+s73: OK {"b":true,"small":-6,"mid":5312,"wide":9223372036854775807,"un":873713801,"ratio":116.375,"exact":22771.375,"name":"emoji😀pair","maybe":null,"perhaps":42}
+n73: OK {"title":"/","inner":{"label":"\n","count":101},"boxed":null,"ints":[0],"strs":["🫘"],"rows":[],"flag":false}
+s74: OK {"b":true,"small":34,"mid":19159,"wide":9223372036854775807,"un":440394721,"ratio":-15.5,"exact":-576460752303423500.0,"name":"\t","maybe":"\"","perhaps":-1}
+n74: OK {"title":"\t","inner":{"label":"\\","count":0},"boxed":null,"ints":[0],"strs":["back\\slash","mix🫘ed\ttext","\\"],"rows":[],"flag":false}
+s75: OK {"b":true,"small":-75,"mid":19311,"wide":9223372036854775807,"un":587517382,"ratio":-104.5,"exact":-576460752303423500.0,"name":"\n","maybe":"hello","perhaps":-1}
+n75: OK {"title":"emoji😀pair","inner":{"label":"q\"uo\"te","count":-1},"boxed":null,"ints":[211,-917886,-9223372036854775808],"strs":["\"","\\","mix🫘ed\ttext"],"rows":[{"label":"\u0001","count":-1},{"label":"\r","count":-9223372036854775808},{"label":" tail","count":9223372036854775807}],"flag":false}
+l75: OK []
+s76: OK {"b":false,"small":-39,"mid":46131,"wide":42,"un":378229090,"ratio":78.0,"exact":8.25,"name":"\"","maybe":"🫘","perhaps":78}
+n76: OK {"title":" tail","inner":{"label":"mix🫘ed\ttext","count":615913},"boxed":null,"ints":[-9223372036854775808],"strs":["\r","🫘"],"rows":[],"flag":true}
+s77: OK {"b":true,"small":-86,"mid":28819,"wide":-9223372036854775808,"un":241290625,"ratio":-21.75,"exact":0.0,"name":"\u0001","maybe":null,"perhaps":null}
+n77: OK {"title":"\t","inner":{"label":"🫘","count":9223372036854775807},"boxed":null,"ints":[],"strs":["mix🫘ed\ttext","café"],"rows":[{"label":"\t","count":45},{"label":"\\","count":-1}],"flag":false}
+s78: OK {"b":true,"small":100,"mid":14665,"wide":-131160,"un":337828536,"ratio":4.25,"exact":-0.0625,"name":"control\u001F\u0000end","maybe":"hello","perhaps":null}
+n78: OK {"title":"control\u001F\u0000end","inner":{"label":"control\u001F\u0000end","count":42},"boxed":null,"ints":[],"strs":["\"","\""],"rows":[{"label":"café","count":42},{"label":"日本語","count":-9223372036854775808},{"label":"\\","count":9223372036854775807}],"flag":false}
+s79: OK {"b":false,"small":2,"mid":29060,"wide":930966,"un":241919378,"ratio":115.875,"exact":4.625,"name":"\\","maybe":"\n","perhaps":72}
+n79: OK {"title":"line\nbreak","inner":{"label":"\\","count":129},"boxed":{"label":"q\"uo\"te","count":751891},"ints":[],"strs":["hello","\t","café"],"rows":[],"flag":true}
+s80: OK {"b":false,"small":-59,"mid":33791,"wide":9223372036854775807,"un":382334281,"ratio":-28.5,"exact":14815.375,"name":"\u0001","maybe":"\r","perhaps":-1}
+n80: OK {"title":"ünïcødé","inner":{"label":"🫘","count":42},"boxed":{"label":"control\u001F\u0000end","count":-1},"ints":[182,-1],"strs":["control\u001F\u0000end","mix🫘ed\ttext","日本語"],"rows":[],"flag":false}
+l80: OK [{"label":"hello","count":9223372036854775807},{"label":"q\"uo\"te","count":157115},{"label":"line\nbreak","count":9223372036854775807}]
+s81: OK {"b":false,"small":-23,"mid":56771,"wide":-1,"un":933045933,"ratio":-62.0,"exact":0.0,"name":"\\","maybe":"control\u001F\u0000end","perhaps":null}
+n81: OK {"title":"\n","inner":{"label":"\\","count":9223372036854775807},"boxed":null,"ints":[438644,-1],"strs":["a","\n"],"rows":[{"label":"\u0001","count":-9223372036854775808},{"label":"q\"uo\"te","count":-1}],"flag":true}
+s82: OK {"b":true,"small":78,"mid":29519,"wide":0,"un":818772125,"ratio":-47.875,"exact":41293.75,"name":"back\\slash","maybe":null,"perhaps":null}
+n82: OK {"title":"ünïcødé","inner":{"label":"back\\slash","count":0},"boxed":null,"ints":[162],"strs":["\r","\r"],"rows":[],"flag":false}
+s83: OK {"b":false,"small":-35,"mid":19415,"wide":-470686,"un":389191715,"ratio":91.5,"exact":-0.0625,"name":"日本語","maybe":"\"","perhaps":-1}
+n83: OK {"title":"/","inner":{"label":"control\u001F\u0000end","count":9223372036854775807},"boxed":{"label":"a","count":-9223372036854775808},"ints":[6,-1,-9223372036854775808],"strs":["ünïcødé","q\"uo\"te","back\\slash"],"rows":[],"flag":true}
+s84: OK {"b":false,"small":43,"mid":29862,"wide":9223372036854775807,"un":935037367,"ratio":-26.125,"exact":-52775.875,"name":"line\nbreak","maybe":"line\nbreak","perhaps":null}
+n84: OK {"title":"","inner":{"label":"hello","count":-9223372036854775808},"boxed":null,"ints":[42],"strs":["café"],"rows":[{"label":"hello","count":-1},{"label":"日本語","count":539062},{"label":"\u0001","count":0}],"flag":false}
+s85: OK {"b":false,"small":-14,"mid":49652,"wide":449593,"un":666901405,"ratio":79.875,"exact":0.0,"name":"\n","maybe":"","perhaps":0}
+n85: OK {"title":"\t","inner":{"label":" tail","count":-1},"boxed":{"label":"café","count":-1},"ints":[643387],"strs":["\n"],"rows":[],"flag":false}
+l85: OK [{"label":"mix🫘ed\ttext","count":9223372036854775807},{"label":"hello","count":993547},{"label":"","count":-565023}]
+s86: OK {"b":false,"small":-45,"mid":12989,"wide":0,"un":64115767,"ratio":-114.375,"exact":2.625,"name":"/","maybe":"/","perhaps":-9223372036854775808}
+n86: OK {"title":"emoji😀pair","inner":{"label":"back\\slash","count":0},"boxed":{"label":"control\u001F\u0000end","count":-1},"ints":[-1,-280399,0],"strs":["a"],"rows":[{"label":"ünïcødé","count":-1},{"label":"\u0001","count":66},{"label":"/","count":-1}],"flag":true}
+s87: OK {"b":true,"small":-94,"mid":52311,"wide":-950753,"un":82035804,"ratio":6.375,"exact":-0.0625,"name":"\n","maybe":"","perhaps":-1}
+n87: OK {"title":"café","inner":{"label":"\n","count":-869535},"boxed":null,"ints":[66,42,-9223372036854775808],"strs":[],"rows":[{"label":"/","count":101},{"label":"日本語","count":42}],"flag":false}
+s88: OK {"b":false,"small":125,"mid":54391,"wide":9223372036854775807,"un":95720577,"ratio":-7.5,"exact":15871.0625,"name":"/","maybe":"emoji😀pair","perhaps":316057}
+n88: OK {"title":" tail","inner":{"label":" tail","count":0},"boxed":null,"ints":[],"strs":[],"rows":[{"label":"\"","count":-9223372036854775808}],"flag":true}
+s89: OK {"b":true,"small":43,"mid":63018,"wide":0,"un":696249584,"ratio":-23.375,"exact":2.625,"name":"mix🫘ed\ttext","maybe":null,"perhaps":-9223372036854775808}
+n89: OK {"title":"q\"uo\"te","inner":{"label":" tail","count":9223372036854775807},"boxed":null,"ints":[-1,-402839,0],"strs":[" tail"],"rows":[{"label":"back\\slash","count":-1},{"label":"日本語","count":114},{"label":"🫘","count":42}],"flag":true}
+s90: OK {"b":false,"small":78,"mid":15156,"wide":-1,"un":663361290,"ratio":38.875,"exact":0.0,"name":"\r","maybe":null,"perhaps":null}
+n90: OK {"title":"café","inner":{"label":" tail","count":42},"boxed":{"label":"q\"uo\"te","count":42},"ints":[-9223372036854775808,-9223372036854775808],"strs":["\u0001"],"rows":[],"flag":true}
+l90: OK []
+s91: OK {"b":false,"small":-74,"mid":56920,"wide":0,"un":41200821,"ratio":-29.25,"exact":-576460752303423500.0,"name":"back\\slash","maybe":"emoji😀pair","perhaps":640092}
+n91: OK {"title":"\r","inner":{"label":"line\nbreak","count":-1},"boxed":{"label":"🫘","count":-1},"ints":[],"strs":["q\"uo\"te"],"rows":[{"label":"ünïcødé","count":-1},{"label":"","count":451513},{"label":"a","count":0}],"flag":false}
+s92: OK {"b":false,"small":-42,"mid":50428,"wide":42,"un":706745325,"ratio":-38.0,"exact":0.0,"name":"🫘","maybe":"\u0001","perhaps":null}
+n92: OK {"title":"control\u001F\u0000end","inner":{"label":"line\nbreak","count":-1},"boxed":{"label":"🫘","count":-1},"ints":[-9223372036854775808],"strs":["/","\u0001","日本語"],"rows":[{"label":"emoji😀pair","count":42},{"label":"control\u001F\u0000end","count":-9223372036854775808},{"label":"mix🫘ed\ttext","count":-666568}],"flag":false}
+s93: OK {"b":true,"small":36,"mid":26249,"wide":9223372036854775807,"un":789954456,"ratio":-118.125,"exact":576460752303423500.0,"name":"🫘","maybe":"café","perhaps":-1}
+n93: OK {"title":"\r","inner":{"label":"q\"uo\"te","count":9223372036854775807},"boxed":null,"ints":[335265,-755968],"strs":["q\"uo\"te","/","emoji😀pair"],"rows":[{"label":"","count":-468375},{"label":"\\","count":-999649},{"label":"日本語","count":325038}],"flag":false}
+s94: OK {"b":true,"small":-106,"mid":62407,"wide":169,"un":368049486,"ratio":-53.5,"exact":-576460752303423500.0,"name":"","maybe":null,"perhaps":null}
+n94: OK {"title":"日本語","inner":{"label":"emoji😀pair","count":-1},"boxed":{"label":"\u0001","count":42},"ints":[],"strs":[],"rows":[{"label":"\r","count":42},{"label":"q\"uo\"te","count":-9223372036854775808},{"label":"\n","count":-647735}],"flag":true}
+s95: OK {"b":false,"small":98,"mid":12516,"wide":-9223372036854775808,"un":538133686,"ratio":70.625,"exact":0.0,"name":"\\","maybe":null,"perhaps":null}
+n95: OK {"title":"q\"uo\"te","inner":{"label":"café","count":543428},"boxed":null,"ints":[-1],"strs":["日本語","café","日本語"],"rows":[{"label":"🫘","count":-776537},{"label":"ünïcødé","count":-9223372036854775808},{"label":"\"","count":-278824}],"flag":false}
+l95: OK [{"label":"ünïcødé","count":0},{"label":"\n","count":-1}]
+s96: OK {"b":true,"small":-19,"mid":24423,"wide":-389582,"un":883757740,"ratio":-93.625,"exact":2.625,"name":"line\nbreak","maybe":null,"perhaps":-1}
+n96: OK {"title":"🫘","inner":{"label":"\t","count":840740},"boxed":null,"ints":[219,-1],"strs":["🫘","/","hello"],"rows":[],"flag":true}
+s97: OK {"b":false,"small":127,"mid":62793,"wide":-9223372036854775808,"un":280685660,"ratio":-99.875,"exact":-23329.5,"name":"🫘","maybe":null,"perhaps":null}
+n97: OK {"title":"\r","inner":{"label":"\"","count":-9223372036854775808},"boxed":null,"ints":[42,-9223372036854775808,-9223372036854775808,42],"strs":["\\"],"rows":[],"flag":true}
+s98: OK {"b":true,"small":-91,"mid":1379,"wide":59985,"un":296767589,"ratio":-63.125,"exact":0.0,"name":"café","maybe":"","perhaps":null}
+n98: OK {"title":"日本語","inner":{"label":"日本語","count":42},"boxed":{"label":"\n","count":-1},"ints":[-9223372036854775808,-9223372036854775808,42,9223372036854775807],"strs":[],"rows":[{"label":"\\","count":42},{"label":"/","count":472830},{"label":"emoji😀pair","count":0}],"flag":false}
+s99: OK {"b":false,"small":65,"mid":56539,"wide":-1,"un":182737285,"ratio":5.0,"exact":6.375,"name":"\t","maybe":"🫘","perhaps":null}
+n99: OK {"title":" tail","inner":{"label":"ünïcødé","count":0},"boxed":{"label":" tail","count":42},"ints":[-9223372036854775808,-1,-809176,0],"strs":["q\"uo\"te"],"rows":[{"label":"emoji😀pair","count":-1},{"label":"/","count":0},{"label":"\r","count":-207398}],"flag":false}
+s100: OK {"b":false,"small":37,"mid":43615,"wide":-161897,"un":209412,"ratio":-22.625,"exact":2.625,"name":"a","maybe":"\"","perhaps":42}
+n100: OK {"title":"\r","inner":{"label":"\t","count":42},"boxed":{"label":"mix🫘ed\ttext","count":-689798},"ints":[],"strs":[],"rows":[{"label":"","count":491019},{"label":"hello","count":9223372036854775807}],"flag":false}
+l100: OK [{"label":"🫘","count":9223372036854775807},{"label":"","count":-9223372036854775808},{"label":"café","count":42}]
+s101: OK {"b":true,"small":73,"mid":42460,"wide":-1,"un":816538125,"ratio":-88.0,"exact":0.0,"name":"🫘","maybe":"\\","perhaps":9223372036854775807}
+n101: OK {"title":"\n","inner":{"label":"\"","count":0},"boxed":null,"ints":[17195,-1],"strs":["café","ünïcødé"],"rows":[{"label":"/","count":482956}],"flag":false}
+s102: OK {"b":false,"small":-69,"mid":62693,"wide":238,"un":428845634,"ratio":57.75,"exact":-576460752303423500.0,"name":"ünïcødé","maybe":null,"perhaps":null}
+n102: OK {"title":"line\nbreak","inner":{"label":"q\"uo\"te","count":0},"boxed":{"label":"line\nbreak","count":834507},"ints":[],"strs":["control\u001F\u0000end"],"rows":[],"flag":true}
+s103: OK {"b":false,"small":-45,"mid":58557,"wide":0,"un":703553992,"ratio":-86.375,"exact":2.625,"name":"mix🫘ed\ttext","maybe":"🫘","perhaps":null}
+n103: OK {"title":"line\nbreak","inner":{"label":" tail","count":-257087},"boxed":null,"ints":[42,9223372036854775807,187],"strs":["emoji😀pair"],"rows":[{"label":"\u0001","count":-1},{"label":"\t","count":0},{"label":" tail","count":-964177}],"flag":true}
+s104: OK {"b":false,"small":-13,"mid":59357,"wide":0,"un":671218088,"ratio":100.25,"exact":-0.0625,"name":"café","maybe":null,"perhaps":-9223372036854775808}
+n104: OK {"title":"café","inner":{"label":"back\\slash","count":-1},"boxed":{"label":"hello","count":-424569},"ints":[-1,-172719,159,42],"strs":["mix🫘ed\ttext","\n","日本語"],"rows":[{"label":"hello","count":9223372036854775807},{"label":"\\","count":658251},{"label":"\r","count":9223372036854775807}],"flag":false}
+s105: OK {"b":false,"small":-125,"mid":18801,"wide":-279408,"un":79474431,"ratio":-115.375,"exact":2.625,"name":"","maybe":"\n","perhaps":-1}
+n105: OK {"title":"a","inner":{"label":" tail","count":891588},"boxed":{"label":"emoji😀pair","count":252},"ints":[42,9223372036854775807,0,0],"strs":["ünïcødé","\u0001"],"rows":[{"label":"","count":-315775},{"label":"control\u001F\u0000end","count":-918310},{"label":"mix🫘ed\ttext","count":-9223372036854775808}],"flag":true}
+l105: OK [{"label":"/","count":0}]
+s106: OK {"b":true,"small":-23,"mid":7239,"wide":0,"un":589646933,"ratio":85.125,"exact":-576460752303423500.0,"name":"\"","maybe":"\\","perhaps":-9223372036854775808}
+n106: OK {"title":"日本語","inner":{"label":"café","count":753486},"boxed":{"label":"\\","count":9223372036854775807},"ints":[9223372036854775807],"strs":[],"rows":[{"label":"line\nbreak","count":-1},{"label":"🫘","count":-9223372036854775808},{"label":"\t","count":9223372036854775807}],"flag":true}
+s107: OK {"b":true,"small":-10,"mid":48867,"wide":-1,"un":114244301,"ratio":-52.0,"exact":0.0,"name":"\n","maybe":"ünïcødé","perhaps":null}
+n107: OK {"title":"\\","inner":{"label":"\r","count":0},"boxed":null,"ints":[],"strs":[],"rows":[],"flag":true}
+s108: OK {"b":true,"small":-35,"mid":20183,"wide":9223372036854775807,"un":968056862,"ratio":-56.625,"exact":34018.875,"name":" tail","maybe":"q\"uo\"te","perhaps":42}
+n108: OK {"title":"\t","inner":{"label":"\r","count":0},"boxed":null,"ints":[0,9223372036854775807,-1],"strs":[],"rows":[{"label":"日本語","count":9223372036854775807},{"label":"\t","count":209},{"label":"🫘","count":804212}],"flag":false}
+s109: OK {"b":true,"small":2,"mid":38647,"wide":-976897,"un":344536956,"ratio":-91.625,"exact":2.625,"name":"back\\slash","maybe":"\u0001","perhaps":42}
+n109: OK {"title":"ünïcødé","inner":{"label":"🫘","count":47923},"boxed":null,"ints":[149,42,-9223372036854775808,745097],"strs":["q\"uo\"te"],"rows":[{"label":"\u0001","count":-1},{"label":"ünïcødé","count":-9223372036854775808},{"label":"\n","count":-373759}],"flag":true}
+s110: OK {"b":true,"small":-100,"mid":60590,"wide":-56208,"un":2305120,"ratio":-8.75,"exact":2.625,"name":"ünïcødé","maybe":"/","perhaps":-636446}
+n110: OK {"title":"ünïcødé","inner":{"label":"emoji😀pair","count":42},"boxed":{"label":"q\"uo\"te","count":42},"ints":[-1],"strs":["日本語"],"rows":[{"label":"mix🫘ed\ttext","count":-1},{"label":"control\u001F\u0000end","count":-9223372036854775808},{"label":"mix🫘ed\ttext","count":-657631}],"flag":true}
+l110: OK [{"label":"\"","count":-799937},{"label":"日本語","count":-9223372036854775808},{"label":"line\nbreak","count":9223372036854775807}]
+s111: OK {"b":true,"small":-101,"mid":50505,"wide":9223372036854775807,"un":792888103,"ratio":-66.0,"exact":576460752303423500.0,"name":"\n","maybe":"ünïcødé","perhaps":-1}
+n111: OK {"title":"\u0001","inner":{"label":"line\nbreak","count":9223372036854775807},"boxed":null,"ints":[-9223372036854775808,42,9223372036854775807,0],"strs":["\u0001","q\"uo\"te","🫘"],"rows":[{"label":"","count":9223372036854775807},{"label":" tail","count":0},{"label":"café","count":42}],"flag":true}
+s112: OK {"b":false,"small":4,"mid":26198,"wide":-627384,"un":999736167,"ratio":-114.375,"exact":2.625,"name":"\\","maybe":null,"perhaps":-1}
+n112: OK {"title":"\t","inner":{"label":"emoji😀pair","count":42},"boxed":{"label":" tail","count":-1},"ints":[],"strs":["\""],"rows":[{"label":"/","count":-820345},{"label":"🫘","count":-9223372036854775808},{"label":"","count":-569911}],"flag":false}
+s113: OK {"b":false,"small":-94,"mid":36,"wide":-9223372036854775808,"un":669138422,"ratio":111.25,"exact":9.625,"name":"\n","maybe":null,"perhaps":null}
+n113: OK {"title":"🫘","inner":{"label":"\t","count":172},"boxed":{"label":"\n","count":-9223372036854775808},"ints":[139883,42,-840064,0],"strs":["mix🫘ed\ttext"],"rows":[{"label":"a","count":-1},{"label":"","count":0},{"label":"\t","count":9223372036854775807}],"flag":true}
+s114: OK {"b":true,"small":-23,"mid":14151,"wide":239,"un":283998414,"ratio":86.5,"exact":-576460752303423500.0,"name":"\n","maybe":null,"perhaps":-9223372036854775808}
+n114: OK {"title":"back\\slash","inner":{"label":"a","count":230},"boxed":null,"ints":[0,0,9223372036854775807,42],"strs":[],"rows":[],"flag":true}
+s115: OK {"b":false,"small":-6,"mid":61376,"wide":-116553,"un":808199012,"ratio":-84.625,"exact":2.625,"name":"hello","maybe":null,"perhaps":42}
+n115: OK {"title":" tail","inner":{"label":"emoji😀pair","count":136},"boxed":{"label":"control\u001F\u0000end","count":-1},"ints":[90,42,-9223372036854775808],"strs":[],"rows":[{"label":"\n","count":14},{"label":"hello","count":42}],"flag":true}
+l115: OK [{"label":"q\"uo\"te","count":42},{"label":"\\","count":216},{"label":"\n","count":42}]
+s116: OK {"b":false,"small":-110,"mid":33255,"wide":-841742,"un":643945772,"ratio":39.5,"exact":2.625,"name":"q\"uo\"te","maybe":null,"perhaps":-1}
+n116: OK {"title":"\n","inner":{"label":"control\u001F\u0000end","count":-1},"boxed":{"label":"\u0001","count":42},"ints":[0,9223372036854775807,-1],"strs":["emoji😀pair","\r","q\"uo\"te"],"rows":[{"label":"back\\slash","count":9223372036854775807},{"label":"mix🫘ed\ttext","count":769188},{"label":"\\","count":-688496}],"flag":true}
+s117: OK {"b":true,"small":-77,"mid":31777,"wide":9223372036854775807,"un":622226496,"ratio":79.0,"exact":-16693.5625,"name":"/","maybe":"\n","perhaps":42}
+n117: OK {"title":"\\","inner":{"label":"hello","count":-9223372036854775808},"boxed":null,"ints":[-1],"strs":["\""],"rows":[],"flag":true}
+s118: OK {"b":true,"small":105,"mid":50620,"wide":-1,"un":406311122,"ratio":-80.0,"exact":0.3125,"name":"a","maybe":"\\","perhaps":9223372036854775807}
+n118: OK {"title":"\r","inner":{"label":"\n","count":101},"boxed":{"label":"\"","count":604012},"ints":[-9223372036854775808],"strs":["\u0001","ünïcødé"],"rows":[],"flag":false}
+s119: OK {"b":true,"small":-123,"mid":57535,"wide":-608457,"un":966996507,"ratio":-17.5,"exact":-0.0625,"name":"","maybe":"\"","perhaps":-1}
+n119: OK {"title":"ünïcødé","inner":{"label":"🫘","count":0},"boxed":{"label":"back\\slash","count":850931},"ints":[0,9223372036854775807,42,-9223372036854775808],"strs":[],"rows":[{"label":"a","count":115}],"flag":false}
+s120: OK {"b":true,"small":110,"mid":9168,"wide":0,"un":695352957,"ratio":-113.875,"exact":-576460752303423500.0,"name":"back\\slash","maybe":"mix🫘ed\ttext","perhaps":-9223372036854775808}
+n120: OK {"title":"🫘","inner":{"label":"\\","count":-9223372036854775808},"boxed":null,"ints":[-973703,108,-1,-9223372036854775808],"strs":["emoji😀pair","control\u001F\u0000end","\u0001"],"rows":[{"label":"\"","count":-1},{"label":"q\"uo\"te","count":561958},{"label":"日本語","count":0}],"flag":true}
+l120: OK [{"label":"🫘","count":165}]
+s121: OK {"b":false,"small":-36,"mid":23693,"wide":139,"un":982792181,"ratio":-97.25,"exact":-576460752303423500.0,"name":"ünïcødé","maybe":null,"perhaps":-9223372036854775808}
+n121: OK {"title":"control\u001F\u0000end","inner":{"label":"日本語","count":589382},"boxed":null,"ints":[9223372036854775807],"strs":[],"rows":[],"flag":false}
+s122: OK {"b":false,"small":90,"mid":9827,"wide":883409,"un":232929946,"ratio":-49.125,"exact":0.0,"name":"café","maybe":null,"perhaps":null}
+n122: OK {"title":"\u0001","inner":{"label":"hello","count":-1},"boxed":{"label":"\n","count":-1},"ints":[154755],"strs":["\\"],"rows":[],"flag":true}
+s123: OK {"b":true,"small":107,"mid":4505,"wide":-423752,"un":656481975,"ratio":-63.75,"exact":-0.0625,"name":" tail","maybe":"control\u001F\u0000end","perhaps":42}
+n123: OK {"title":"ünïcødé","inner":{"label":"","count":42},"boxed":{"label":"control\u001F\u0000end","count":0},"ints":[42,-407119,44],"strs":[""],"rows":[],"flag":false}
+s124: OK {"b":false,"small":77,"mid":35403,"wide":679750,"un":27484765,"ratio":-120.125,"exact":0.5625,"name":"ünïcødé","maybe":"hello","perhaps":146}
+n124: OK {"title":"emoji😀pair","inner":{"label":"back\\slash","count":42},"boxed":null,"ints":[708270],"strs":["\""],"rows":[{"label":"\u0001","count":-1},{"label":"a","count":-9223372036854775808},{"label":"café","count":9223372036854775807}],"flag":true}
+s125: OK {"b":false,"small":16,"mid":52793,"wide":385299,"un":26866086,"ratio":6.625,"exact":0.0,"name":"\n","maybe":"a","perhaps":0}
+n125: OK {"title":"hello","inner":{"label":"emoji😀pair","count":-136977},"boxed":null,"ints":[42,154715,42,-662768],"strs":[],"rows":[{"label":"🫘","count":-9223372036854775808},{"label":"ünïcødé","count":-1}],"flag":true}
+l125: OK [{"label":"ünïcødé","count":9223372036854775807},{"label":"/","count":36},{"label":"q\"uo\"te","count":-9223372036854775808}]
+s126: OK {"b":true,"small":-105,"mid":6622,"wide":-9223372036854775808,"un":328677316,"ratio":54.75,"exact":-16554.9375,"name":"🫘","maybe":"\"","perhaps":0}
+n126: OK {"title":"/","inner":{"label":"mix🫘ed\ttext","count":42},"boxed":{"label":"日本語","count":-1},"ints":[42,764988],"strs":["emoji😀pair"],"rows":[],"flag":true}
+s127: OK {"b":true,"small":-110,"mid":40340,"wide":-9223372036854775808,"un":511143654,"ratio":-0.75,"exact":10.5,"name":"\"","maybe":null,"perhaps":null}
+n127: OK {"title":"café","inner":{"label":"","count":252},"boxed":null,"ints":[-9223372036854775808,946673,9223372036854775807,0],"strs":[],"rows":[{"label":"\n","count":886492}],"flag":true}
+s128: OK {"b":true,"small":-22,"mid":41520,"wide":-128486,"un":337476660,"ratio":106.5,"exact":2.625,"name":"café","maybe":null,"perhaps":-1}
+n128: OK {"title":"\t","inner":{"label":"\"","count":134},"boxed":null,"ints":[0,9223372036854775807,-1],"strs":[],"rows":[],"flag":true}
+s129: OK {"b":false,"small":-42,"mid":34439,"wide":0,"un":608726890,"ratio":52.75,"exact":32571.25,"name":"/","maybe":null,"perhaps":null}
+n129: OK {"title":"q\"uo\"te","inner":{"label":"\\","count":9223372036854775807},"boxed":null,"ints":[145],"strs":["emoji😀pair","mix🫘ed\ttext"],"rows":[{"label":"emoji😀pair","count":-414280},{"label":"hello","count":-355134},{"label":"a","count":468494}],"flag":false}
+s130: OK {"b":false,"small":103,"mid":2314,"wide":-1,"un":289550003,"ratio":-5.625,"exact":-0.0625,"name":"q\"uo\"te","maybe":"hello","perhaps":9223372036854775807}
+n130: OK {"title":" tail","inner":{"label":"ünïcødé","count":-9223372036854775808},"boxed":null,"ints":[174],"strs":["\"","a"],"rows":[{"label":"line\nbreak","count":0}],"flag":false}
+l130: OK [{"label":"\t","count":226},{"label":"line\nbreak","count":42}]
+s131: OK {"b":false,"small":45,"mid":37799,"wide":-341070,"un":226169324,"ratio":117.5,"exact":2.625,"name":"","maybe":null,"perhaps":-1}
+n131: OK {"title":"emoji😀pair","inner":{"label":"back\\slash","count":-1},"boxed":{"label":"","count":42},"ints":[38,42,431084],"strs":["\t"],"rows":[{"label":"control\u001F\u0000end","count":9223372036854775807},{"label":"\u0001","count":212379},{"label":"\\","count":-367311}],"flag":true}
+s132: OK {"b":false,"small":46,"mid":35819,"wide":42,"un":658084586,"ratio":40.875,"exact":13.8125,"name":"emoji😀pair","maybe":null,"perhaps":9223372036854775807}
+n132: OK {"title":"ünïcødé","inner":{"label":"\t","count":974702},"boxed":null,"ints":[],"strs":["ünïcødé","\r","\\"],"rows":[],"flag":false}
+s133: OK {"b":true,"small":123,"mid":28374,"wide":-682936,"un":694574104,"ratio":-49.75,"exact":2.625,"name":"line\nbreak","maybe":" tail","perhaps":-1}
+n133: OK {"title":"hello","inner":{"label":"/","count":190},"boxed":null,"ints":[-1,-538400],"strs":["back\\slash","mix🫘ed\ttext","hello"],"rows":[{"label":" tail","count":9223372036854775807},{"label":"\u0001","count":27},{"label":"","count":31835}],"flag":true}
+s134: OK {"b":true,"small":-115,"mid":27640,"wide":-696942,"un":367909427,"ratio":-8.5,"exact":-0.0625,"name":"line\nbreak","maybe":null,"perhaps":-1}
+n134: OK {"title":"","inner":{"label":"\n","count":42},"boxed":{"label":"\r","count":0},"ints":[248,42],"strs":[],"rows":[],"flag":false}
+s135: OK {"b":false,"small":31,"mid":63209,"wide":722243,"un":36664297,"ratio":76.625,"exact":0.0,"name":"back\\slash","maybe":"ünïcødé","perhaps":0}
+n135: OK {"title":"日本語","inner":{"label":"\r","count":-1},"boxed":{"label":"café","count":0},"ints":[42],"strs":[],"rows":[{"label":"\u0001","count":-456864},{"label":"\\","count":-107334},{"label":"/","count":-9223372036854775808}],"flag":false}
+l135: OK []
+s136: OK {"b":false,"small":98,"mid":39396,"wide":-9223372036854775808,"un":782779830,"ratio":15.25,"exact":4.1875,"name":"emoji😀pair","maybe":"a","perhaps":0}
+n136: OK {"title":"\r","inner":{"label":"café","count":42},"boxed":{"label":"control\u001F\u0000end","count":-156830},"ints":[225108],"strs":["🫘","café"],"rows":[{"label":"line\nbreak","count":42},{"label":" tail","count":-9223372036854775808},{"label":"ünïcødé","count":9223372036854775807}],"flag":true}
+s137: OK {"b":true,"small":-5,"mid":49833,"wide":-294456,"un":740448359,"ratio":45.625,"exact":-0.0625,"name":"a","maybe":null,"perhaps":-301865}
+n137: OK {"title":"\"","inner":{"label":"line\nbreak","count":513305},"boxed":null,"ints":[-1],"strs":[" tail"],"rows":[],"flag":true}
+s138: OK {"b":true,"small":-125,"mid":21873,"wide":-217167,"un":440504063,"ratio":-38.75,"exact":-0.0625,"name":"\t","maybe":"café","perhaps":42}
+n138: OK {"title":"🫘","inner":{"label":"\"","count":-9223372036854775808},"boxed":null,"ints":[],"strs":[""],"rows":[],"flag":false}
+s139: OK {"b":false,"small":114,"mid":27252,"wide":84614,"un":636975586,"ratio":-0.125,"exact":14.4375,"name":"\n","maybe":"hello","perhaps":0}
+n139: OK {"title":"\n","inner":{"label":"line\nbreak","count":0},"boxed":null,"ints":[-9223372036854775808,42,-450735],"strs":["\r","\"","\n"],"rows":[],"flag":false}
+s140: OK {"b":false,"small":-118,"mid":25808,"wide":-437049,"un":232120596,"ratio":19.375,"exact":-0.0625,"name":"emoji😀pair","maybe":"🫘","perhaps":42}
+n140: OK {"title":" tail","inner":{"label":" tail","count":-9223372036854775808},"boxed":null,"ints":[229,-1,16603,-1],"strs":["\t"],"rows":[],"flag":false}
+l140: OK [{"label":"\n","count":114}]
+s141: OK {"b":true,"small":-107,"mid":53424,"wide":-181977,"un":446773684,"ratio":-12.625,"exact":2.625,"name":"\n","maybe":"mix🫘ed\ttext","perhaps":-1}
+n141: OK {"title":"ünïcødé","inner":{"label":"\"","count":0},"boxed":{"label":"\r","count":288259},"ints":[129,-1,-9223372036854775808],"strs":[],"rows":[{"label":"mix🫘ed\ttext","count":145}],"flag":true}
+s142: OK {"b":false,"small":65,"mid":28320,"wide":104,"un":513945145,"ratio":115.5,"exact":24158.375,"name":"\r","maybe":"café","perhaps":-9223372036854775808}
+n142: OK {"title":" tail","inner":{"label":"🫘","count":-9223372036854775808},"boxed":null,"ints":[0,-327486],"strs":["a","ünïcødé","/"],"rows":[],"flag":true}
+s143: OK {"b":false,"small":-18,"mid":36564,"wide":-1,"un":245962154,"ratio":85.0,"exact":0.0,"name":"🫘","maybe":"🫘","perhaps":72}
+n143: OK {"title":"ünïcødé","inner":{"label":"café","count":311420},"boxed":null,"ints":[-9223372036854775808,-9223372036854775808],"strs":["a"],"rows":[{"label":"a","count":-615838},{"label":"\"","count":-9223372036854775808},{"label":"mix🫘ed\ttext","count":-26640}],"flag":false}
+s144: OK {"b":false,"small":19,"mid":55934,"wide":-956576,"un":915876783,"ratio":38.625,"exact":-0.0625,"name":"\u0001","maybe":"日本語","perhaps":-969678}
+n144: OK {"title":"q\"uo\"te","inner":{"label":"café","count":842595},"boxed":null,"ints":[-1],"strs":["ünïcødé","café"],"rows":[{"label":"","count":869924},{"label":"emoji😀pair","count":-257904}],"flag":true}
+s145: OK {"b":true,"small":81,"mid":14996,"wide":42,"un":493381482,"ratio":67.0,"exact":12.0625,"name":"hello","maybe":null,"perhaps":111}
+n145: OK {"title":" tail","inner":{"label":"hello","count":9223372036854775807},"boxed":null,"ints":[-9223372036854775808,42,-300520,0],"strs":["\\"],"rows":[{"label":"\\","count":42},{"label":"\r","count":218},{"label":"\n","count":-1}],"flag":true}
+l145: OK [{"label":" tail","count":-1},{"label":"hello","count":-9223372036854775808},{"label":"🫘","count":9223372036854775807}]
+s146: OK {"b":true,"small":-85,"mid":4569,"wide":-941320,"un":393445239,"ratio":-67.75,"exact":-0.0625,"name":"日本語","maybe":"\n","perhaps":42}
+n146: OK {"title":"","inner":{"label":"back\\slash","count":0},"boxed":{"label":"back\\slash","count":42},"ints":[42,9223372036854775807,0,0],"strs":["\""],"rows":[{"label":"\u0001","count":42},{"label":"日本語","count":0},{"label":"emoji😀pair","count":-235089}],"flag":true}
+s147: OK {"b":true,"small":70,"mid":26728,"wide":0,"un":401680346,"ratio":-25.25,"exact":-576460752303423500.0,"name":"\r","maybe":null,"perhaps":-9223372036854775808}
+n147: OK {"title":"a","inner":{"label":"q\"uo\"te","count":51},"boxed":{"label":"\t","count":42},"ints":[-421999,116],"strs":["line\nbreak","control\u001F\u0000end"],"rows":[{"label":"/","count":173},{"label":"mix🫘ed\ttext","count":42}],"flag":false}
+s148: OK {"b":true,"small":-67,"mid":58440,"wide":9223372036854775807,"un":165930433,"ratio":-60.625,"exact":-576460752303423500.0,"name":"emoji😀pair","maybe":"","perhaps":null}
+n148: OK {"title":"a","inner":{"label":"q\"uo\"te","count":-1},"boxed":null,"ints":[0,25,-1],"strs":["q\"uo\"te","","\n"],"rows":[{"label":"back\\slash","count":9223372036854775807},{"label":"/","count":300052},{"label":"/","count":9223372036854775807}],"flag":false}
+s149: OK {"b":false,"small":-41,"mid":6373,"wide":-1,"un":429598684,"ratio":-56.5,"exact":2.625,"name":"日本語","maybe":"\n","perhaps":null}
+n149: OK {"title":" tail","inner":{"label":"/","count":-1},"boxed":{"label":"back\\slash","count":0},"ints":[0,-703510],"strs":[],"rows":[],"flag":true}
+s150: OK {"b":true,"small":-17,"mid":22214,"wide":-9223372036854775808,"un":495467756,"ratio":-89.875,"exact":576460752303423500.0,"name":"q\"uo\"te","maybe":"\r","perhaps":0}
+n150: OK {"title":"control\u001F\u0000end","inner":{"label":"café","count":345699},"boxed":null,"ints":[-87230],"strs":["\n","q\"uo\"te","emoji😀pair"],"rows":[],"flag":true}
+l150: OK [{"label":" tail","count":0},{"label":"q\"uo\"te","count":-1}]
+s151: OK {"b":true,"small":-43,"mid":6000,"wide":-246822,"un":667181579,"ratio":48.5,"exact":-0.0625,"name":"ünïcødé","maybe":null,"perhaps":-1}
+n151: OK {"title":"\t","inner":{"label":"\u0001","count":-1},"boxed":{"label":"ünïcødé","count":42},"ints":[26],"strs":["mix🫘ed\ttext","line\nbreak"],"rows":[{"label":"\t","count":0}],"flag":false}
+s152: OK {"b":false,"small":-20,"mid":59521,"wide":9223372036854775807,"un":277585695,"ratio":7.0,"exact":-13927.5625,"name":"日本語","maybe":"\t","perhaps":-1}
+n152: OK {"title":"","inner":{"label":"control\u001F\u0000end","count":0},"boxed":null,"ints":[42,-88375,67,-1],"strs":[],"rows":[],"flag":false}
+s153: OK {"b":true,"small":-55,"mid":11303,"wide":0,"un":429309749,"ratio":-15.25,"exact":60553.25,"name":"control\u001F\u0000end","maybe":"\\","perhaps":null}
+n153: OK {"title":"ünïcødé","inner":{"label":"\t","count":-9223372036854775808},"boxed":{"label":"café","count":9223372036854775807},"ints":[62,9223372036854775807,42,767219],"strs":["line\nbreak"],"rows":[{"label":"日本語","count":9223372036854775807},{"label":"line\nbreak","count":311236},{"label":"🫘","count":9223372036854775807}],"flag":false}
+s154: OK {"b":true,"small":113,"mid":39051,"wide":-1,"un":956429642,"ratio":81.0,"exact":0.0,"name":"emoji😀pair","maybe":"line\nbreak","perhaps":9223372036854775807}
+n154: OK {"title":"","inner":{"label":"emoji😀pair","count":199},"boxed":null,"ints":[],"strs":[],"rows":[],"flag":true}
+s155: OK {"b":true,"small":-59,"mid":54016,"wide":-288521,"un":697606948,"ratio":-40.625,"exact":2.625,"name":"control\u001F\u0000end","maybe":null,"perhaps":42}
+n155: OK {"title":"\r","inner":{"label":"mix🫘ed\ttext","count":-1},"boxed":{"label":"\u0001","count":-661032},"ints":[],"strs":["q\"uo\"te","control\u001F\u0000end","café"],"rows":[{"label":"/","count":9223372036854775807},{"label":"café","count":60},{"label":"mix🫘ed\ttext","count":-9223372036854775808}],"flag":false}
+l155: OK []
+s156: OK {"b":true,"small":66,"mid":3131,"wide":704150,"un":863039917,"ratio":-10.0,"exact":0.0,"name":"ünïcødé","maybe":" tail","perhaps":0}
+n156: OK {"title":"control\u001F\u0000end","inner":{"label":"mix🫘ed\ttext","count":42},"boxed":{"label":"日本語","count":-924855},"ints":[-9223372036854775808,253249,9223372036854775807,197],"strs":["\\"],"rows":[],"flag":true}
+s157: OK {"b":true,"small":-49,"mid":7778,"wide":-1,"un":991683995,"ratio":44.5,"exact":2.625,"name":"/","maybe":null,"perhaps":9223372036854775807}
+n157: OK {"title":"line\nbreak","inner":{"label":"/","count":33},"boxed":null,"ints":[206],"strs":["hello"],"rows":[],"flag":false}
+s158: OK {"b":true,"small":40,"mid":60389,"wide":-1,"un":317581532,"ratio":-16.5,"exact":-0.0625,"name":"\"","maybe":"line\nbreak","perhaps":9223372036854775807}
+n158: OK {"title":"\\","inner":{"label":" tail","count":9223372036854775807},"boxed":{"label":"café","count":9223372036854775807},"ints":[168,-1,516732,42],"strs":["line\nbreak","control\u001F\u0000end"],"rows":[{"label":"\t","count":-9223372036854775808}],"flag":true}
+s159: OK {"b":true,"small":2,"mid":25352,"wide":-564926,"un":6777724,"ratio":-14.5,"exact":2.625,"name":"a","maybe":"mix🫘ed\ttext","perhaps":null}
+n159: OK {"title":"control\u001F\u0000end","inner":{"label":"🫘","count":42},"boxed":{"label":"q\"uo\"te","count":-253350},"ints":[0,-965366],"strs":["q\"uo\"te","control\u001F\u0000end","back\\slash"],"rows":[{"label":"","count":-33966},{"label":"日本語","count":-9223372036854775808},{"label":"café","count":9223372036854775807}],"flag":false}
+s160: OK {"b":false,"small":94,"mid":29243,"wide":42,"un":266327013,"ratio":-105.0,"exact":0.0,"name":"q\"uo\"te","maybe":"back\\slash","perhaps":null}
+n160: OK {"title":"\t","inner":{"label":"","count":0},"boxed":null,"ints":[990588,-1,-865415],"strs":[],"rows":[{"label":" tail","count":93963}],"flag":false}
+l160: OK [{"label":"ünïcødé","count":973529}]
+s161: OK {"b":false,"small":-73,"mid":61249,"wide":851492,"un":575274929,"ratio":109.625,"exact":0.0,"name":"🫘","maybe":null,"perhaps":null}
+n161: OK {"title":"line\nbreak","inner":{"label":"\u0001","count":57},"boxed":null,"ints":[-1],"strs":[],"rows":[],"flag":false}
+s162: OK {"b":false,"small":21,"mid":7728,"wide":-193446,"un":758543412,"ratio":27.375,"exact":2.625,"name":"hello","maybe":null,"perhaps":-1}
+n162: OK {"title":"hello","inner":{"label":"line\nbreak","count":-237809},"boxed":null,"ints":[206,-1],"strs":["a","q\"uo\"te","mix🫘ed\ttext"],"rows":[{"label":"back\\slash","count":9223372036854775807},{"label":"\\","count":-9223372036854775808},{"label":" tail","count":-1}],"flag":false}
+s163: OK {"b":true,"small":111,"mid":26950,"wide":845420,"un":285668825,"ratio":101.25,"exact":0.0,"name":"emoji😀pair","maybe":null,"perhaps":-141919}
+n163: OK {"title":"emoji😀pair","inner":{"label":"\\","count":298900},"boxed":{"label":"hello","count":0},"ints":[42,-9223372036854775808,28750,-198671],"strs":[],"rows":[{"label":"a","count":-9223372036854775808},{"label":"emoji😀pair","count":42}],"flag":true}
+s164: OK {"b":true,"small":114,"mid":26996,"wide":-9223372036854775808,"un":433825337,"ratio":87.25,"exact":0.0,"name":"\r","maybe":"ünïcødé","perhaps":null}
+n164: OK {"title":" tail","inner":{"label":" tail","count":261955},"boxed":null,"ints":[-1],"strs":["hello","line\nbreak","/"],"rows":[],"flag":true}
+s165: OK {"b":true,"small":42,"mid":48108,"wide":491649,"un":715497461,"ratio":7.0,"exact":4.25,"name":"back\\slash","maybe":" tail","perhaps":null}
+n165: OK {"title":"\u0001","inner":{"label":"/","count":0},"boxed":null,"ints":[631142],"strs":["emoji😀pair","back\\slash"],"rows":[{"label":" tail","count":922852}],"flag":true}
+l165: OK [{"label":"日本語","count":-9223372036854775808},{"label":"/","count":-935527}]
+s166: OK {"b":true,"small":107,"mid":34538,"wide":0,"un":809626544,"ratio":80.625,"exact":2.625,"name":"日本語","maybe":"control\u001F\u0000end","perhaps":-9223372036854775808}
+n166: OK {"title":"a","inner":{"label":"日本語","count":231},"boxed":{"label":"日本語","count":-1},"ints":[-1,9223372036854775807],"strs":["ünïcødé","a","\""],"rows":[{"label":"\t","count":-1},{"label":"\r","count":237},{"label":"\n","count":42}],"flag":false}
+s167: OK {"b":false,"small":-33,"mid":25554,"wide":-1,"un":348684459,"ratio":21.375,"exact":-0.0625,"name":"🫘","maybe":"emoji😀pair","perhaps":9223372036854775807}
+n167: OK {"title":" tail","inner":{"label":"line\nbreak","count":0},"boxed":null,"ints":[236,42],"strs":[],"rows":[],"flag":true}
+s168: OK {"b":false,"small":9,"mid":39783,"wide":0,"un":2823285,"ratio":64.75,"exact":45230.6875,"name":"a","maybe":"mix🫘ed\ttext","perhaps":null}
+n168: OK {"title":" tail","inner":{"label":"mix🫘ed\ttext","count":114921},"boxed":{"label":"\"","count":9223372036854775807},"ints":[43,-167206,-9223372036854775808],"strs":["","\u0001","hello"],"rows":[{"label":"control\u001F\u0000end","count":-1},{"label":"\"","count":-9223372036854775808},{"label":"🫘","count":9223372036854775807}],"flag":false}
+s169: OK {"b":false,"small":-20,"mid":37246,"wide":-871199,"un":106023599,"ratio":-43.375,"exact":-0.0625,"name":"line\nbreak","maybe":null,"perhaps":-867150}
+n169: OK {"title":"ünïcødé","inner":{"label":"q\"uo\"te","count":989916},"boxed":null,"ints":[-1,-809608,0,-544190],"strs":[" tail","back\\slash","hello"],"rows":[],"flag":true}
+s170: OK {"b":true,"small":74,"mid":39667,"wide":-9223372036854775808,"un":420417310,"ratio":47.625,"exact":13.625,"name":" tail","maybe":"control\u001F\u0000end","perhaps":null}
+n170: OK {"title":"\u0001","inner":{"label":"control\u001F\u0000end","count":9223372036854775807},"boxed":null,"ints":[737075,42],"strs":["emoji😀pair","\\"],"rows":[{"label":"\t","count":-9223372036854775808},{"label":"a","count":-1}],"flag":true}
+l170: OK [{"label":"\\","count":42},{"label":"\\","count":0},{"label":"🫘","count":9223372036854775807}]
+s171: OK {"b":false,"small":53,"mid":22800,"wide":-543545,"un":812611115,"ratio":-97.5,"exact":-0.0625,"name":"日本語","maybe":"\"","perhaps":42}
+n171: OK {"title":"café","inner":{"label":"back\\slash","count":-1},"boxed":{"label":"日本語","count":42},"ints":[0,9223372036854775807,-1],"strs":["\r","","🫘"],"rows":[{"label":"🫘","count":9223372036854775807},{"label":"a","count":649052},{"label":"control\u001F\u0000end","count":-405848}],"flag":true}
+s172: OK {"b":true,"small":89,"mid":34739,"wide":-1,"un":802294242,"ratio":-20.125,"exact":0.0,"name":"","maybe":"ünïcødé","perhaps":null}
+n172: OK {"title":"","inner":{"label":" tail","count":95},"boxed":null,"ints":[947643,42,9223372036854775807,109],"strs":["control\u001F\u0000end","control\u001F\u0000end"],"rows":[{"label":"\n","count":-110791},{"label":"q\"uo\"te","count":-855310},{"label":"\r","count":-9223372036854775808}],"flag":true}
+s173: OK {"b":false,"small":-26,"mid":13320,"wide":29,"un":213909697,"ratio":5.375,"exact":-576460752303423500.0,"name":"\r","maybe":null,"perhaps":null}
+n173: OK {"title":"\n","inner":{"label":"mix🫘ed\ttext","count":9223372036854775807},"boxed":{"label":"mix🫘ed\ttext","count":9223372036854775807},"ints":[0],"strs":["🫘","\r"," tail"],"rows":[{"label":"mix🫘ed\ttext","count":-517735},{"label":"\n","count":9223372036854775807},{"label":"/","count":-9223372036854775808}],"flag":true}
+s174: OK {"b":false,"small":-41,"mid":28186,"wide":42,"un":633988387,"ratio":-87.625,"exact":-0.0625,"name":"/","maybe":"\n","perhaps":9223372036854775807}
+n174: OK {"title":"mix🫘ed\ttext","inner":{"label":"\\","count":-1},"boxed":null,"ints":[125,42,-9223372036854775808,142422],"strs":["\"","a"],"rows":[{"label":"control\u001F\u0000end","count":381940},{"label":"mix🫘ed\ttext","count":9223372036854775807}],"flag":false}
+s175: OK {"b":false,"small":-120,"mid":63742,"wide":-9223372036854775808,"un":312117732,"ratio":-105.25,"exact":-47100.9375,"name":"café","maybe":"日本語","perhaps":0}
+n175: OK {"title":"/","inner":{"label":"mix🫘ed\ttext","count":42},"boxed":{"label":"hello","count":-1},"ints":[42],"strs":["ünïcødé","\\","emoji😀pair"],"rows":[],"flag":false}
+l175: OK []
+s176: OK {"b":true,"small":57,"mid":43496,"wide":0,"un":61796698,"ratio":112.75,"exact":62240.25,"name":"line\nbreak","maybe":"hello","perhaps":103308}
+n176: OK {"title":"hello","inner":{"label":"\n","count":295166},"boxed":null,"ints":[34,9223372036854775807],"strs":["q\"uo\"te","ünïcødé"],"rows":[{"label":"/","count":6}],"flag":true}
+s177: OK {"b":true,"small":20,"mid":2790,"wide":-207543,"un":147466952,"ratio":95.625,"exact":2.625,"name":"","maybe":"hello","perhaps":42}
+n177: OK {"title":"q\"uo\"te","inner":{"label":"\"","count":42},"boxed":null,"ints":[],"strs":["","control\u001F\u0000end"],"rows":[{"label":"line\nbreak","count":42},{"label":"control\u001F\u0000end","count":-9223372036854775808},{"label":"emoji😀pair","count":9223372036854775807}],"flag":true}
+s178: OK {"b":false,"small":-80,"mid":39014,"wide":-9223372036854775808,"un":295688307,"ratio":-63.875,"exact":-2762.5,"name":"line\nbreak","maybe":"mix🫘ed\ttext","perhaps":0}
+n178: OK {"title":"","inner":{"label":"a","count":9223372036854775807},"boxed":null,"ints":[42,-9223372036854775808],"strs":[],"rows":[{"label":" tail","count":73},{"label":"\u0001","count":-1}],"flag":true}
+s179: OK {"b":true,"small":-45,"mid":577,"wide":9223372036854775807,"un":587772192,"ratio":-71.0,"exact":576460752303423500.0,"name":"\u0001","maybe":null,"perhaps":-1}
+n179: OK {"title":"mix🫘ed\ttext","inner":{"label":"control\u001F\u0000end","count":-1},"boxed":null,"ints":[870873],"strs":["café"],"rows":[{"label":"emoji😀pair","count":-1},{"label":"line\nbreak","count":-9223372036854775808},{"label":"\"","count":9223372036854775807}],"flag":false}
+s180: OK {"b":true,"small":-118,"mid":22707,"wide":748638,"un":340765994,"ratio":-71.125,"exact":0.0,"name":"\r","maybe":"mix🫘ed\ttext","perhaps":101}
+n180: OK {"title":"emoji😀pair","inner":{"label":"日本語","count":-9223372036854775808},"boxed":null,"ints":[113203,42,-967767,30],"strs":["hello","emoji😀pair"],"rows":[{"label":"\n","count":155}],"flag":false}
+l180: OK [{"label":"/","count":0},{"label":"\u0001","count":42}]
+s181: OK {"b":false,"small":80,"mid":56057,"wide":-9223372036854775808,"un":733709100,"ratio":75.75,"exact":-29696.5,"name":"a","maybe":"","perhaps":-287967}
+n181: OK {"title":"\n","inner":{"label":"\n","count":612150},"boxed":null,"ints":[42,796507,-1,9223372036854775807],"strs":[],"rows":[],"flag":true}
+s182: OK {"b":true,"small":46,"mid":29163,"wide":42,"un":466521365,"ratio":-99.125,"exact":0.0,"name":"\"","maybe":null,"perhaps":9223372036854775807}
+n182: OK {"title":"\t","inner":{"label":"\u0001","count":489425},"boxed":null,"ints":[-9223372036854775808,602694],"strs":["café"],"rows":[],"flag":false}
+s183: OK {"b":true,"small":-124,"mid":7382,"wide":-547783,"un":95155224,"ratio":115.625,"exact":2.625,"name":"\r","maybe":"back\\slash","perhaps":-1}
+n183: OK {"title":"\r","inner":{"label":"\\","count":950820},"boxed":{"label":"ünïcødé","count":0},"ints":[42],"strs":["hello","emoji😀pair"],"rows":[{"label":"\u0001","count":-9223372036854775808},{"label":"a","count":42}],"flag":true}
+s184: OK {"b":true,"small":-35,"mid":45732,"wide":419849,"un":103467021,"ratio":-64.0,"exact":0.75,"name":"\"","maybe":"line\nbreak","perhaps":null}
+n184: OK {"title":"\r","inner":{"label":"q\"uo\"te","count":0},"boxed":null,"ints":[-9223372036854775808,42,-620799],"strs":["emoji😀pair","","café"],"rows":[{"label":"日本語","count":-531816},{"label":" tail","count":-818270},{"label":"\\","count":-9223372036854775808}],"flag":true}
+s185: OK {"b":true,"small":105,"mid":58168,"wide":26,"un":327060046,"ratio":25.375,"exact":27815.875,"name":"a","maybe":"café","perhaps":null}
+n185: OK {"title":"🫘","inner":{"label":"line\nbreak","count":42},"boxed":{"label":"\\","count":-702664},"ints":[0],"strs":["ünïcødé"],"rows":[],"flag":false}
+l185: OK [{"label":"\\","count":-82767},{"label":"\\","count":9223372036854775807},{"label":"\t","count":-9223372036854775808}]
+s186: OK {"b":true,"small":88,"mid":59594,"wide":-1,"un":953501964,"ratio":117.5,"exact":2.625,"name":"/","maybe":"\u0001","perhaps":null}
+n186: OK {"title":"/","inner":{"label":"mix🫘ed\ttext","count":171},"boxed":null,"ints":[],"strs":[],"rows":[{"label":"emoji😀pair","count":-9223372036854775808}],"flag":true}
+s187: OK {"b":false,"small":90,"mid":1247,"wide":-35049,"un":334720891,"ratio":81.375,"exact":2.625,"name":"🫘","maybe":null,"perhaps":199825}
+n187: OK {"title":"mix🫘ed\ttext","inner":{"label":"mix🫘ed\ttext","count":212},"boxed":null,"ints":[39,42],"strs":[],"rows":[],"flag":false}
+s188: OK {"b":true,"small":-126,"mid":57463,"wide":-712126,"un":146681091,"ratio":-39.625,"exact":-0.0625,"name":" tail","maybe":"\\","perhaps":null}
+n188: OK {"title":"\t","inner":{"label":"a","count":0},"boxed":null,"ints":[2],"strs":[""],"rows":[],"flag":false}
+s189: OK {"b":false,"small":-34,"mid":8896,"wide":213,"un":854897881,"ratio":47.5,"exact":43884.375,"name":"\n","maybe":"\u0001","perhaps":null}
+n189: OK {"title":"control\u001F\u0000end","inner":{"label":"q\"uo\"te","count":111},"boxed":null,"ints":[0,-809566],"strs":[],"rows":[],"flag":true}
+s190: OK {"b":false,"small":39,"mid":13774,"wide":-9223372036854775808,"un":252666571,"ratio":-89.25,"exact":576460752303423500.0,"name":"hello","maybe":"\t","perhaps":-228615}
+n190: OK {"title":"emoji😀pair","inner":{"label":"ünïcødé","count":33},"boxed":{"label":"line\nbreak","count":523172},"ints":[9223372036854775807,-1,-9223372036854775808],"strs":["a","🫘","\""],"rows":[],"flag":true}
+l190: OK [{"label":"q\"uo\"te","count":-9223372036854775808}]
+s191: OK {"b":true,"small":-54,"mid":54899,"wide":-9223372036854775808,"un":152094622,"ratio":-120.375,"exact":15.875,"name":"café","maybe":"日本語","perhaps":0}
+n191: OK {"title":"café","inner":{"label":"back\\slash","count":0},"boxed":null,"ints":[],"strs":[],"rows":[{"label":"\n","count":9223372036854775807},{"label":"\"","count":33},{"label":"line\nbreak","count":-9223372036854775808}],"flag":false}
+s192: OK {"b":false,"small":-125,"mid":43538,"wide":194,"un":306629397,"ratio":101.125,"exact":30815.25,"name":"🫘","maybe":"emoji😀pair","perhaps":null}
+n192: OK {"title":"\n","inner":{"label":"ünïcødé","count":9223372036854775807},"boxed":{"label":"\\","count":-9223372036854775808},"ints":[0,98],"strs":["/","\r"],"rows":[{"label":"emoji😀pair","count":82}],"flag":true}
+s193: OK {"b":false,"small":-93,"mid":12557,"wide":107,"un":597456757,"ratio":-67.25,"exact":-576460752303423500.0,"name":"\"","maybe":"ünïcødé","perhaps":-9223372036854775808}
+n193: OK {"title":"ünïcødé","inner":{"label":"control\u001F\u0000end","count":42},"boxed":null,"ints":[],"strs":["back\\slash"],"rows":[{"label":"\\","count":-1},{"label":"\n","count":-9223372036854775808},{"label":"emoji😀pair","count":9223372036854775807}],"flag":true}
+s194: OK {"b":false,"small":16,"mid":35005,"wide":-1,"un":782535748,"ratio":5.375,"exact":-0.0625,"name":"\r","maybe":"\"","perhaps":null}
+n194: OK {"title":"back\\slash","inner":{"label":"\r","count":-9223372036854775808},"boxed":{"label":"café","count":155},"ints":[],"strs":["line\nbreak","hello","line\nbreak"],"rows":[],"flag":false}
+s195: OK {"b":false,"small":122,"mid":41660,"wide":-9223372036854775808,"un":287132750,"ratio":-13.75,"exact":11.0625,"name":"\u0001","maybe":null,"perhaps":131}
+n195: OK {"title":"\r","inner":{"label":" tail","count":826155},"boxed":null,"ints":[],"strs":["\"","control\u001F\u0000end"," tail"],"rows":[],"flag":true}
+l195: OK [{"label":"a","count":172},{"label":"emoji😀pair","count":316467}]
+s196: OK {"b":true,"small":26,"mid":6492,"wide":-9223372036854775808,"un":682373649,"ratio":3.625,"exact":11.1875,"name":"\"","maybe":"\u0001","perhaps":0}
+n196: OK {"title":"\"","inner":{"label":"line\nbreak","count":-874681},"boxed":{"label":"line\nbreak","count":9223372036854775807},"ints":[-9223372036854775808,-9223372036854775808,42,9223372036854775807],"strs":["line\nbreak","mix🫘ed\ttext","control\u001F\u0000end"],"rows":[],"flag":false}
+s197: OK {"b":true,"small":-126,"mid":40584,"wide":-735998,"un":843751420,"ratio":-24.5,"exact":-0.0625,"name":"line\nbreak","maybe":null,"perhaps":null}
+n197: OK {"title":"","inner":{"label":"control\u001F\u0000end","count":0},"boxed":null,"ints":[218,-1],"strs":[],"rows":[],"flag":true}
+s198: OK {"b":true,"small":-86,"mid":48655,"wide":-953177,"un":49135476,"ratio":-93.5,"exact":-0.0625,"name":"\u0001","maybe":"\r","perhaps":-1}
+n198: OK {"title":"mix🫘ed\ttext","inner":{"label":"\n","count":162518},"boxed":null,"ints":[0,9223372036854775807,-1,-9223372036854775808],"strs":[],"rows":[{"label":"\"","count":75}],"flag":true}
+s199: OK {"b":true,"small":78,"mid":57803,"wide":-1,"un":292485642,"ratio":114.875,"exact":6.375,"name":"\t","maybe":"\t","perhaps":null}
+n199: OK {"title":"/","inner":{"label":"control\u001F\u0000end","count":42},"boxed":{"label":"\"","count":42},"ints":[],"strs":[],"rows":[{"label":"café","count":0}],"flag":true}
+s200: OK {"b":false,"small":-28,"mid":5321,"wide":-232039,"un":581066808,"ratio":-28.375,"exact":2.625,"name":"\"","maybe":"🫘","perhaps":42}
+n200: OK {"title":" tail","inner":{"label":"emoji😀pair","count":-9223372036854775808},"boxed":null,"ints":[42],"strs":["\\"],"rows":[],"flag":false}
+l200: OK [{"label":" tail","count":0}]
+s201: OK {"b":true,"small":17,"mid":13136,"wide":0,"un":266093826,"ratio":50.125,"exact":-576460752303423500.0,"name":"\u0001","maybe":null,"perhaps":192580}
+n201: OK {"title":" tail","inner":{"label":"café","count":63},"boxed":{"label":"hello","count":42},"ints":[-336248,81,42,-9223372036854775808],"strs":[],"rows":[{"label":"q\"uo\"te","count":116},{"label":"\"","count":-1}],"flag":false}
+s202: OK {"b":false,"small":113,"mid":7183,"wide":0,"un":857650338,"ratio":37.75,"exact":33017.75,"name":"\\","maybe":null,"perhaps":null}
+n202: OK {"title":"\n","inner":{"label":"café","count":-657128},"boxed":null,"ints":[],"strs":["\\","ünïcødé","日本語"],"rows":[{"label":" tail","count":-1},{"label":"q\"uo\"te","count":170},{"label":"café","count":42}],"flag":false}
+s203: OK {"b":true,"small":46,"mid":25744,"wide":0,"un":551109565,"ratio":91.75,"exact":11151.75,"name":"🫘","maybe":"🫘","perhaps":-9223372036854775808}
+n203: OK {"title":"\r","inner":{"label":"\u0001","count":42},"boxed":{"label":"ünïcødé","count":-1},"ints":[246,9223372036854775807],"strs":["mix🫘ed\ttext","🫘"],"rows":[{"label":"café","count":0}],"flag":false}
+s204: OK {"b":false,"small":-63,"mid":3748,"wide":-1,"un":533325829,"ratio":94.875,"exact":0.0,"name":"emoji😀pair","maybe":" tail","perhaps":null}
+n204: OK {"title":"hello","inner":{"label":"","count":-9223372036854775808},"boxed":null,"ints":[],"strs":["/","line\nbreak","q\"uo\"te"],"rows":[{"label":"\r","count":-922897},{"label":"q\"uo\"te","count":-9223372036854775808},{"label":"","count":-185919}],"flag":false}
+s205: OK {"b":false,"small":26,"mid":3676,"wide":383342,"un":739341530,"ratio":107.0,"exact":0.0,"name":"🫘","maybe":"","perhaps":0}
+n205: OK {"title":"control\u001F\u0000end","inner":{"label":"café","count":4},"boxed":{"label":"line\nbreak","count":651659},"ints":[789948,42,9223372036854775807],"strs":[],"rows":[],"flag":false}
+l205: OK [{"label":"ünïcødé","count":17638},{"label":"line\nbreak","count":0}]
+s206: OK {"b":true,"small":-125,"mid":37518,"wide":9223372036854775807,"un":249965455,"ratio":86.875,"exact":576460752303423500.0,"name":"日本語","maybe":"\n","perhaps":null}
+n206: OK {"title":"ünïcødé","inner":{"label":"\u0001","count":-9223372036854775808},"boxed":{"label":"\\","count":206},"ints":[-9223372036854775808,42,-97112],"strs":[],"rows":[{"label":"mix🫘ed\ttext","count":90388}],"flag":false}
+s207: OK {"b":true,"small":-91,"mid":27548,"wide":-9223372036854775808,"un":916510766,"ratio":12.25,"exact":10.1875,"name":"/","maybe":"mix🫘ed\ttext","perhaps":0}
+n207: OK {"title":"mix🫘ed\ttext","inner":{"label":"🫘","count":9223372036854775807},"boxed":{"label":"","count":-9223372036854775808},"ints":[-9223372036854775808,-9223372036854775808],"strs":["q\"uo\"te"],"rows":[{"label":"a","count":-598129},{"label":"日本語","count":370302},{"label":"back\\slash","count":93}],"flag":true}
+s208: OK {"b":true,"small":67,"mid":44593,"wide":-689807,"un":261155135,"ratio":-48.75,"exact":2.625,"name":"\n","maybe":null,"perhaps":-1}
+n208: OK {"title":"ünïcødé","inner":{"label":"","count":847828},"boxed":null,"ints":[],"strs":["ünïcødé"],"rows":[],"flag":false}
+s209: OK {"b":false,"small":102,"mid":6156,"wide":42,"un":471335330,"ratio":105.875,"exact":0.0,"name":"café","maybe":"/","perhaps":9223372036854775807}
+n209: OK {"title":"back\\slash","inner":{"label":" tail","count":42},"boxed":{"label":"\u0001","count":42},"ints":[],"strs":["control\u001F\u0000end","café","hello"],"rows":[{"label":"back\\slash","count":9223372036854775807},{"label":"a","count":645315},{"label":"q\"uo\"te","count":-869639}],"flag":true}
+s210: OK {"b":true,"small":-44,"mid":26534,"wide":-391688,"un":658153736,"ratio":-31.75,"exact":2.625,"name":"🫘","maybe":"control\u001F\u0000end","perhaps":-1}
+n210: OK {"title":"\\","inner":{"label":"line\nbreak","count":0},"boxed":null,"ints":[42,-746895],"strs":["mix🫘ed\ttext","\r","/"],"rows":[{"label":"line\nbreak","count":9223372036854775807},{"label":"a","count":169},{"label":"hello","count":962155}],"flag":true}
+l210: OK [{"label":"emoji😀pair","count":488121},{"label":"emoji😀pair","count":237}]
+s211: OK {"b":true,"small":68,"mid":58906,"wide":0,"un":778845280,"ratio":51.25,"exact":-0.0625,"name":"line\nbreak","maybe":"\r","perhaps":null}
+n211: OK {"title":"hello","inner":{"label":"日本語","count":42},"boxed":{"label":"","count":0},"ints":[42,9223372036854775807,0,0],"strs":["control\u001F\u0000end","a"],"rows":[],"flag":true}
+s212: OK {"b":true,"small":-123,"mid":36028,"wide":-9223372036854775808,"un":75022769,"ratio":-82.375,"exact":0.0,"name":"control\u001F\u0000end","maybe":"a","perhaps":152}
+n212: OK {"title":"ünïcødé","inner":{"label":"café","count":-1},"boxed":{"label":"日本語","count":0},"ints":[],"strs":["control\u001F\u0000end"],"rows":[],"flag":false}
+s213: OK {"b":false,"small":-22,"mid":55344,"wide":9223372036854775807,"un":806706278,"ratio":-16.5,"exact":35112.375,"name":"\t","maybe":null,"perhaps":null}
+n213: OK {"title":"\\","inner":{"label":"control\u001F\u0000end","count":0},"boxed":{"label":"/","count":42},"ints":[0,-862305,-9223372036854775808],"strs":[],"rows":[{"label":" tail","count":187},{"label":"/","count":42}],"flag":false}
+s214: OK {"b":false,"small":-63,"mid":55584,"wide":152,"un":999087942,"ratio":116.375,"exact":20481.5625,"name":"ünïcødé","maybe":null,"perhaps":-9223372036854775808}
+n214: OK {"title":" tail","inner":{"label":"/","count":-9223372036854775808},"boxed":{"label":" tail","count":0},"ints":[236,42],"strs":["line\nbreak","\"","a"],"rows":[{"label":"","count":9223372036854775807},{"label":"q\"uo\"te","count":-9223372036854775808},{"label":"\r","count":42}],"flag":true}
+s215: OK {"b":true,"small":-90,"mid":49996,"wide":-1,"un":147585821,"ratio":-62.0,"exact":0.0,"name":"back\\slash","maybe":"\u0001","perhaps":5}
+n215: OK {"title":"hello","inner":{"label":"\n","count":9223372036854775807},"boxed":null,"ints":[551876,42,-317359],"strs":[],"rows":[{"label":"café","count":-9223372036854775808},{"label":"q\"uo\"te","count":42}],"flag":true}
+l215: OK [{"label":"\\","count":-1},{"label":"mix🫘ed\ttext","count":0},{"label":"back\\slash","count":9223372036854775807}]
+s216: OK {"b":false,"small":66,"mid":9143,"wide":9223372036854775807,"un":48711105,"ratio":-94.625,"exact":16275.0625,"name":"\"","maybe":"\"","perhaps":-1}
+n216: OK {"title":"/","inner":{"label":"back\\slash","count":17},"boxed":null,"ints":[94,-1,507804,42],"strs":["control\u001F\u0000end","\n"],"rows":[{"label":"\r","count":-9223372036854775808}],"flag":true}
+s217: OK {"b":false,"small":-122,"mid":58967,"wide":0,"un":367336165,"ratio":21.125,"exact":26495.6875,"name":"\n","maybe":"\u0001","perhaps":null}
+n217: OK {"title":"\t","inner":{"label":"emoji😀pair","count":0},"boxed":{"label":"hello","count":-1},"ints":[0,135],"strs":["a","日本語"],"rows":[{"label":"café","count":0},{"label":"back\\slash","count":-734193}],"flag":true}
+s218: OK {"b":false,"small":-3,"mid":9207,"wide":9223372036854775807,"un":866096126,"ratio":28.5,"exact":-576460752303423500.0,"name":"/","maybe":"","perhaps":42}
+n218: OK {"title":"ünïcødé","inner":{"label":"back\\slash","count":604628},"boxed":null,"ints":[202,-200374,867036],"strs":["日本語"],"rows":[],"flag":false}
+s219: OK {"b":true,"small":-39,"mid":46387,"wide":42,"un":477951586,"ratio":-102.125,"exact":0.0,"name":"/","maybe":null,"perhaps":180}
+n219: OK {"title":"\t","inner":{"label":"mix🫘ed\ttext","count":42},"boxed":{"label":"line\nbreak","count":-1},"ints":[974075,-1,-525999],"strs":[],"rows":[{"label":"\\","count":395388},{"label":"café","count":-172664}],"flag":false}
+s220: OK {"b":true,"small":-21,"mid":23526,"wide":-146376,"un":90881591,"ratio":-22.375,"exact":2.625,"name":"/","maybe":"ünïcødé","perhaps":42}
+n220: OK {"title":" tail","inner":{"label":"café","count":-192558},"boxed":{"label":"emoji😀pair","count":9223372036854775807},"ints":[-1],"strs":["q\"uo\"te","\""],"rows":[{"label":"hello","count":-9223372036854775808}],"flag":true}
+l220: OK [{"label":"café","count":-848703},{"label":"emoji😀pair","count":9223372036854775807},{"label":"/","count":124300}]
+s221: OK {"b":true,"small":-41,"mid":15518,"wide":257403,"un":330126574,"ratio":-50.375,"exact":5.5,"name":"\r","maybe":null,"perhaps":0}
+n221: OK {"title":"café","inner":{"label":"hello","count":425196},"boxed":{"label":"\\","count":0},"ints":[],"strs":["café","ünïcødé","mix🫘ed\ttext"],"rows":[{"label":"control\u001F\u0000end","count":9223372036854775807},{"label":"q\"uo\"te","count":-9223372036854775808},{"label":"hello","count":-1}],"flag":false}
+s222: OK {"b":true,"small":-70,"mid":48892,"wide":259377,"un":878995525,"ratio":89.0,"exact":0.0,"name":"🫘","maybe":"\u0001","perhaps":null}
+n222: OK {"title":"/","inner":{"label":"emoji😀pair","count":0},"boxed":{"label":"\t","count":415865},"ints":[680483,42,-209063,0],"strs":["a"],"rows":[{"label":"\n","count":-1},{"label":"mix🫘ed\ttext","count":0},{"label":"a","count":9223372036854775807}],"flag":true}
+s223: OK {"b":false,"small":26,"mid":36576,"wide":9223372036854775807,"un":911256937,"ratio":-81.625,"exact":39454.5625,"name":"日本語","maybe":"/","perhaps":42}
+n223: OK {"title":"café","inner":{"label":"café","count":37},"boxed":null,"ints":[0],"strs":["emoji😀pair","control\u001F\u0000end"],"rows":[],"flag":false}
+s224: OK {"b":false,"small":-67,"mid":23368,"wide":-548350,"un":347520572,"ratio":-66.5,"exact":-0.0625,"name":" tail","maybe":"/","perhaps":null}
+n224: OK {"title":"日本語","inner":{"label":" tail","count":986227},"boxed":{"label":"日本語","count":37},"ints":[],"strs":["mix🫘ed\ttext"," tail","line\nbreak"],"rows":[{"label":"control\u001F\u0000end","count":9223372036854775807},{"label":"\\","count":68},{"label":"\u0001","count":759339}],"flag":true}
+s225: OK {"b":true,"small":-102,"mid":3363,"wide":202734,"un":21513637,"ratio":93.0,"exact":0.0,"name":"mix🫘ed\ttext","maybe":"emoji😀pair","perhaps":null}
+n225: OK {"title":"q\"uo\"te","inner":{"label":"café","count":-123398},"boxed":null,"ints":[],"strs":["q\"uo\"te","\t","日本語"],"rows":[{"label":"\\","count":9223372036854775807},{"label":"ünïcødé","count":-9223372036854775808},{"label":" tail","count":-1}],"flag":true}
+l225: OK [{"label":"\\","count":-72823},{"label":"\"","count":9223372036854775807},{"label":"a","count":835803}]
+s226: OK {"b":false,"small":34,"mid":7076,"wide":-9223372036854775808,"un":479060617,"ratio":-21.375,"exact":11.3125,"name":"🫘","maybe":"\n","perhaps":0}
+n226: OK {"title":"\t","inner":{"label":"hello","count":0},"boxed":{"label":"日本語","count":186739},"ints":[295252],"strs":["emoji😀pair","\u0001"],"rows":[],"flag":false}
+s227: OK {"b":false,"small":99,"mid":49838,"wide":-770031,"un":907349919,"ratio":-16.75,"exact":2.625,"name":"\"","maybe":null,"perhaps":null}
+n227: OK {"title":"🫘","inner":{"label":"a","count":9223372036854775807},"boxed":null,"ints":[-1],"strs":["日本語","hello"],"rows":[{"label":"a","count":-9223372036854775808},{"label":"q\"uo\"te","count":42}],"flag":true}
+s228: OK {"b":false,"small":102,"mid":23415,"wide":0,"un":19878650,"ratio":26.75,"exact":-576460752303423500.0,"name":"control\u001F\u0000end","maybe":null,"perhaps":null}
+n228: OK {"title":"\u0001","inner":{"label":"hello","count":69},"boxed":null,"ints":[9223372036854775807,0],"strs":["control\u001F\u0000end","\"","café"],"rows":[],"flag":true}
+s229: OK {"b":true,"small":-98,"mid":42367,"wide":127,"un":768265830,"ratio":76.375,"exact":-576460752303423500.0,"name":"hello","maybe":null,"perhaps":null}
+n229: OK {"title":"\\","inner":{"label":"line\nbreak","count":68},"boxed":{"label":"line\nbreak","count":-1},"ints":[68,9223372036854775807,-1,-9223372036854775808],"strs":[],"rows":[{"label":"🫘","count":182},{"label":"","count":-1}],"flag":false}
+s230: OK {"b":true,"small":-112,"mid":8518,"wide":-9223372036854775808,"un":919374483,"ratio":2.125,"exact":-32700.5,"name":"a","maybe":"back\\slash","perhaps":-329632}
+n230: OK {"title":"日本語","inner":{"label":"hello","count":518110},"boxed":{"label":"emoji😀pair","count":9223372036854775807},"ints":[-1],"strs":["mix🫘ed\ttext","\u0001","mix🫘ed\ttext"],"rows":[{"label":"ünïcødé","count":9223372036854775807},{"label":" tail","count":318300},{"label":"line\nbreak","count":9223372036854775807}],"flag":true}
+l230: OK []
+s231: OK {"b":false,"small":89,"mid":7859,"wide":-1,"un":845339933,"ratio":8.0,"exact":4.3125,"name":"line\nbreak","maybe":null,"perhaps":null}
+n231: OK {"title":"a","inner":{"label":"line\nbreak","count":247},"boxed":{"label":"café","count":-1},"ints":[-9223372036854775808,-1,-870736,180],"strs":["a","emoji😀pair"],"rows":[{"label":"hello","count":179},{"label":"mix🫘ed\ttext","count":42}],"flag":true}
+s232: OK {"b":true,"small":-26,"mid":51447,"wide":0,"un":195660154,"ratio":-60.875,"exact":43314.25,"name":"\u0001","maybe":null,"perhaps":null}
+n232: OK {"title":"","inner":{"label":"mix🫘ed\ttext","count":42},"boxed":{"label":"line\nbreak","count":-657920},"ints":[0,0,9223372036854775807,42],"strs":[],"rows":[{"label":"a","count":-533144},{"label":"emoji😀pair","count":9223372036854775807},{"label":"q\"uo\"te","count":-9223372036854775808}],"flag":false}
+s233: OK {"b":false,"small":40,"mid":43290,"wide":42,"un":309397027,"ratio":-53.625,"exact":-0.0625,"name":" tail","maybe":"line\nbreak","perhaps":null}
+n233: OK {"title":"\\","inner":{"label":"🫘","count":-9223372036854775808},"boxed":null,"ints":[0,-229910,-9223372036854775808,324630],"strs":["line\nbreak"],"rows":[],"flag":true}
+s234: OK {"b":true,"small":16,"mid":31942,"wide":-9223372036854775808,"un":330302739,"ratio":61.75,"exact":-9183.4375,"name":"\\","maybe":null,"perhaps":null}
+n234: OK {"title":"hello","inner":{"label":"\r","count":793078},"boxed":null,"ints":[],"strs":["café"," tail"],"rows":[{"label":"control\u001F\u0000end","count":7}],"flag":true}
+s235: OK {"b":false,"small":17,"mid":37844,"wide":42,"un":755993941,"ratio":-83.0,"exact":0.0,"name":"mix🫘ed\ttext","maybe":"café","perhaps":null}
+n235: OK {"title":"control\u001F\u0000end","inner":{"label":"\r","count":9223372036854775807},"boxed":{"label":"日本語","count":-9223372036854775808},"ints":[349708],"strs":[" tail","back\\slash"],"rows":[],"flag":true}
+l235: OK []
+s236: OK {"b":false,"small":-61,"mid":6445,"wide":0,"un":99977255,"ratio":99.625,"exact":2.625,"name":"mix🫘ed\ttext","maybe":"back\\slash","perhaps":null}
+n236: OK {"title":"\n","inner":{"label":"back\\slash","count":211291},"boxed":null,"ints":[42,9223372036854775807],"strs":[],"rows":[{"label":"\r","count":42},{"label":" tail","count":334105},{"label":"control\u001F\u0000end","count":0}],"flag":true}
+s237: OK {"b":false,"small":-99,"mid":27163,"wide":150262,"un":430934093,"ratio":-14.0,"exact":0.0,"name":"hello","maybe":"mix🫘ed\ttext","perhaps":null}
+n237: OK {"title":"hello","inner":{"label":"\\","count":0},"boxed":null,"ints":[2324,-1,-16320,0],"strs":["control\u001F\u0000end","/"],"rows":[],"flag":false}
+s238: OK {"b":false,"small":90,"mid":51935,"wide":-810390,"un":266982020,"ratio":-121.5,"exact":2.625,"name":"control\u001F\u0000end","maybe":"a","perhaps":-1}
+n238: OK {"title":" tail","inner":{"label":"/","count":974308},"boxed":null,"ints":[0,9223372036854775807,-1,412747],"strs":["\n","日本語"],"rows":[{"label":"control\u001F\u0000end","count":-1},{"label":"café","count":-9223372036854775808},{"label":"\"","count":-4616}],"flag":true}
+s239: OK {"b":false,"small":54,"mid":15708,"wide":-1,"un":145817741,"ratio":39.875,"exact":13.4375,"name":"a","maybe":null,"perhaps":51}
+n239: OK {"title":" tail","inner":{"label":"🫘","count":9223372036854775807},"boxed":null,"ints":[93470,9223372036854775807,0],"strs":[],"rows":[{"label":"hello","count":-9223372036854775808},{"label":"\"","count":42}],"flag":false}
+s240: OK {"b":false,"small":-27,"mid":19680,"wide":9223372036854775807,"un":834070678,"ratio":-43.625,"exact":-576460752303423500.0,"name":"ünïcødé","maybe":"mix🫘ed\ttext","perhaps":null}
+n240: OK {"title":"\n","inner":{"label":"🫘","count":33},"boxed":null,"ints":[6,9223372036854775807,-1],"strs":[],"rows":[],"flag":true}
+l240: OK []
+s241: OK {"b":true,"small":-67,"mid":22856,"wide":-9601,"un":901298748,"ratio":96.375,"exact":2.625,"name":"\r","maybe":null,"perhaps":null}
+n241: OK {"title":"mix🫘ed\ttext","inner":{"label":"back\\slash","count":-9223372036854775808},"boxed":null,"ints":[242,42,346972],"strs":["a"],"rows":[{"label":"ünïcødé","count":9223372036854775807},{"label":" tail","count":602795},{"label":"back\\slash","count":-802304}],"flag":false}
+s242: OK {"b":true,"small":-98,"mid":34820,"wide":42,"un":241538469,"ratio":-13.125,"exact":0.0,"name":"\"","maybe":"q\"uo\"te","perhaps":117}
+n242: OK {"title":"line\nbreak","inner":{"label":"hello","count":9223372036854775807},"boxed":null,"ints":[],"strs":[],"rows":[{"label":"café","count":9223372036854775807},{"label":"ünïcødé","count":0},{"label":"café","count":42}],"flag":true}
+s243: OK {"b":true,"small":-44,"mid":9305,"wide":9223372036854775807,"un":503866039,"ratio":-74.0,"exact":-22947.875,"name":"control\u001F\u0000end","maybe":"q\"uo\"te","perhaps":null}
+n243: OK {"title":"ünïcødé","inner":{"label":"\u0001","count":248},"boxed":null,"ints":[42],"strs":["\"","emoji😀pair"],"rows":[{"label":"a","count":-9223372036854775808}],"flag":false}
+s244: OK {"b":true,"small":42,"mid":27760,"wide":-968665,"un":338018548,"ratio":-100.625,"exact":2.625,"name":"\r","maybe":"ünïcødé","perhaps":42}
+n244: OK {"title":"ünïcødé","inner":{"label":"café","count":-501233},"boxed":{"label":"hello","count":9223372036854775807},"ints":[165,-1,789627,42],"strs":["\\","back\\slash"],"rows":[{"label":"日本語","count":-9223372036854775808}],"flag":false}
+s245: OK {"b":false,"small":-110,"mid":17300,"wide":764262,"un":945733053,"ratio":-24.125,"exact":14.8125,"name":"mix🫘ed\ttext","maybe":"\r","perhaps":13}
+n245: OK {"title":"a","inner":{"label":"\r","count":213},"boxed":null,"ints":[117582],"strs":["line\nbreak","emoji😀pair"],"rows":[{"label":"\r","count":24291}],"flag":true}
+l245: OK []
+s246: OK {"b":true,"small":0,"mid":26034,"wide":42,"un":993177547,"ratio":-89.5,"exact":2.625,"name":"\u0001","maybe":"mix🫘ed\ttext","perhaps":null}
+n246: OK {"title":"control\u001F\u0000end","inner":{"label":"café","count":-9223372036854775808},"boxed":{"label":"\\","count":33},"ints":[134],"strs":["🫘"],"rows":[],"flag":false}
+s247: OK {"b":false,"small":-25,"mid":16654,"wide":-9223372036854775808,"un":588097140,"ratio":-113.25,"exact":-18734.0,"name":" tail","maybe":"ünïcødé","perhaps":null}
+n247: OK {"title":"a","inner":{"label":"mix🫘ed\ttext","count":683953},"boxed":null,"ints":[-1,647020,-1],"strs":["\""],"rows":[],"flag":false}
+s248: OK {"b":true,"small":-92,"mid":45558,"wide":-391704,"un":419210119,"ratio":-109.75,"exact":2.625,"name":"🫘","maybe":"\"","perhaps":42}
+n248: OK {"title":"\r","inner":{"label":"\\","count":-9223372036854775808},"boxed":null,"ints":[-1,9223372036854775807],"strs":[],"rows":[],"flag":false}
+s249: OK {"b":true,"small":90,"mid":13468,"wide":862801,"un":212190309,"ratio":-91.0,"exact":4.75,"name":"line\nbreak","maybe":null,"perhaps":0}
+n249: OK {"title":"q\"uo\"te","inner":{"label":"back\\slash","count":9223372036854775807},"boxed":null,"ints":[],"strs":[],"rows":[{"label":"🫘","count":0},{"label":"\"","count":-755726}],"flag":true}
+s250: OK {"b":false,"small":83,"mid":47677,"wide":103,"un":347341957,"ratio":84.75,"exact":-576460752303423500.0,"name":"\t","maybe":" tail","perhaps":-9223372036854775808}
+n250: OK {"title":"/","inner":{"label":"\n","count":-533183},"boxed":{"label":"\u0001","count":-9223372036854775808},"ints":[-572592,176,42,989091],"strs":["\r","\""],"rows":[],"flag":true}
+l250: OK [{"label":"a","count":854067}]
+s251: OK {"b":true,"small":-102,"mid":11811,"wide":-9223372036854775808,"un":608487022,"ratio":97.625,"exact":12.6875,"name":"q\"uo\"te","maybe":null,"perhaps":9}
+n251: OK {"title":"line\nbreak","inner":{"label":"\"","count":997286},"boxed":{"label":"🫘","count":9223372036854775807},"ints":[],"strs":[" tail","🫘","back\\slash"],"rows":[{"label":"control\u001F\u0000end","count":-979342},{"label":" tail","count":-9223372036854775808},{"label":"\\","count":9223372036854775807}],"flag":false}
+s252: OK {"b":false,"small":-4,"mid":15857,"wide":-217968,"un":922793344,"ratio":-38.75,"exact":-0.0625,"name":"\t","maybe":"back\\slash","perhaps":-1}
+n252: OK {"title":"\u0001","inner":{"label":"","count":-9223372036854775808},"boxed":null,"ints":[42],"strs":["\t"],"rows":[{"label":"ünïcødé","count":-1},{"label":"\r","count":532769},{"label":"\\","count":105}],"flag":false}
+s253: OK {"b":true,"small":-38,"mid":20707,"wide":-9223372036854775808,"un":916158033,"ratio":-17.75,"exact":0.0,"name":"\n","maybe":null,"perhaps":0}
+n253: OK {"title":"\u0001","inner":{"label":"\n","count":-9223372036854775808},"boxed":null,"ints":[42],"strs":[" tail","\u0001"," tail"],"rows":[],"flag":true}
+s254: OK {"b":true,"small":109,"mid":59243,"wide":464025,"un":219430210,"ratio":89.875,"exact":0.0,"name":"mix🫘ed\ttext","maybe":null,"perhaps":173}
+n254: OK {"title":"mix🫘ed\ttext","inner":{"label":"\\","count":42},"boxed":{"label":"\t","count":42},"ints":[],"strs":["line\nbreak","hello","\u0001"],"rows":[],"flag":false}
+s255: OK {"b":false,"small":115,"mid":58142,"wide":9223372036854775807,"un":873441919,"ratio":-71.125,"exact":576460752303423500.0,"name":"ünïcødé","maybe":" tail","perhaps":42}
+n255: OK {"title":"\r","inner":{"label":"\\","count":-1},"boxed":{"label":"emoji😀pair","count":-423952},"ints":[-9223372036854775808,42,9223372036854775807],"strs":["🫘","\n"," tail"],"rows":[],"flag":false}
+l255: OK [{"label":"line\nbreak","count":9223372036854775807},{"label":"日本語","count":0},{"label":"🫘","count":-1}]
+s256: OK {"b":false,"small":111,"mid":17990,"wide":350483,"un":562541350,"ratio":-28.75,"exact":3.875,"name":"\t","maybe":" tail","perhaps":-604512}
+n256: OK {"title":"back\\slash","inner":{"label":"hello","count":78},"boxed":{"label":"back\\slash","count":161372},"ints":[-9223372036854775808,824433],"strs":["日本語"],"rows":[],"flag":false}
+s257: OK {"b":true,"small":85,"mid":58639,"wide":9223372036854775807,"un":428323545,"ratio":46.375,"exact":-576460752303423500.0,"name":"café","maybe":"hello","perhaps":-1}
+n257: OK {"title":"line\nbreak","inner":{"label":"hello","count":885590},"boxed":null,"ints":[0,190],"strs":[" tail","/"],"rows":[{"label":"\t","count":6}],"flag":true}
+s258: OK {"b":false,"small":78,"mid":59188,"wide":-1,"un":704723701,"ratio":65.0,"exact":12.25,"name":"/","maybe":"/","perhaps":null}
+n258: OK {"title":"a","inner":{"label":"","count":9223372036854775807},"boxed":null,"ints":[],"strs":[],"rows":[{"label":"\n","count":0},{"label":"hello","count":-228993}],"flag":false}
+s259: OK {"b":false,"small":99,"mid":21197,"wide":115,"un":740826954,"ratio":23.125,"exact":51194.6875,"name":"\\","maybe":"","perhaps":-9223372036854775808}
+n259: OK {"title":"日本語","inner":{"label":"/","count":42},"boxed":{"label":"hello","count":0},"ints":[245,9223372036854775807,42],"strs":[],"rows":[{"label":"back\\slash","count":-7255},{"label":"café","count":-843489},{"label":"\u0001","count":-9223372036854775808}],"flag":true}
+s260: OK {"b":false,"small":103,"mid":31857,"wide":-9223372036854775808,"un":509060852,"ratio":32.75,"exact":576460752303423500.0,"name":"\n","maybe":"\n","perhaps":0}
+n260: OK {"title":"\n","inner":{"label":"🫘","count":0},"boxed":{"label":"back\\slash","count":699931},"ints":[9223372036854775807,42,62828],"strs":["\t","\n"],"rows":[],"flag":false}
+l260: OK [{"label":"control\u001F\u0000end","count":-9223372036854775808}]
+s261: OK {"b":true,"small":24,"mid":57994,"wide":42,"un":339909836,"ratio":-2.5,"exact":-0.0625,"name":"\u0001","maybe":"\\","perhaps":null}
+n261: OK {"title":"hello","inner":{"label":"","count":-9223372036854775808},"boxed":null,"ints":[0,-307865,-9223372036854775808],"strs":["control\u001F\u0000end","back\\slash","\""],"rows":[],"flag":false}
+s262: OK {"b":true,"small":61,"mid":50619,"wide":-9223372036854775808,"un":35374313,"ratio":-120.75,"exact":0.0,"name":"\u0001","maybe":"\t","perhaps":null}
+n262: OK {"title":"café","inner":{"label":"日本語","count":-9223372036854775808},"boxed":{"label":"café","count":173},"ints":[42,204747],"strs":[""],"rows":[{"label":"","count":9223372036854775807},{"label":"hello","count":-9223372036854775808},{"label":"\\","count":-1}],"flag":false}
+s263: OK {"b":true,"small":-99,"mid":11035,"wide":-9223372036854775808,"un":699289782,"ratio":-49.375,"exact":0.0,"name":"\n","maybe":"a","perhaps":null}
+n263: OK {"title":"control\u001F\u0000end","inner":{"label":"back\\slash","count":392588},"boxed":null,"ints":[42,-9223372036854775808,-9223372036854775808],"strs":["a"],"rows":[],"flag":true}
+s264: OK {"b":true,"small":-36,"mid":38382,"wide":9223372036854775807,"un":288924368,"ratio":-105.125,"exact":576460752303423500.0,"name":"🫘","maybe":"","perhaps":-594785}
+n264: OK {"title":" tail","inner":{"label":"\\","count":-1},"boxed":{"label":"\u0001","count":42},"ints":[-9223372036854775808,42],"strs":["\r"],"rows":[{"label":"back\\slash","count":-1},{"label":"emoji😀pair","count":745598},{"label":"hello","count":0}],"flag":true}
+s265: OK {"b":false,"small":-125,"mid":64910,"wide":9223372036854775807,"un":151074672,"ratio":14.875,"exact":576460752303423500.0,"name":"\\","maybe":"mix🫘ed\ttext","perhaps":-1}
+n265: OK {"title":"\t","inner":{"label":"hello","count":9223372036854775807},"boxed":{"label":"日本語","count":-9223372036854775808},"ints":[],"strs":[],"rows":[{"label":" tail","count":20}],"flag":true}
+l265: OK [{"label":"hello","count":42},{"label":"日本語","count":619334},{"label":"/","count":0}]
+s266: OK {"b":false,"small":28,"mid":19153,"wide":-734544,"un":903905311,"ratio":84.625,"exact":2.625,"name":"\"","maybe":null,"perhaps":-1}
+n266: OK {"title":"back\\slash","inner":{"label":"q\"uo\"te","count":152},"boxed":null,"ints":[-1,9223372036854775807],"strs":["ünïcødé","hello"," tail"],"rows":[],"flag":false}
+s267: OK {"b":true,"small":-67,"mid":10679,"wide":-90113,"un":447136451,"ratio":66.375,"exact":2.625,"name":"hello","maybe":"hello","perhaps":42}
+n267: OK {"title":"\r","inner":{"label":"café","count":-1},"boxed":{"label":"back\\slash","count":0},"ints":[0,9223372036854775807,-1],"strs":[],"rows":[{"label":"ünïcødé","count":-807655},{"label":"ünïcødé","count":9223372036854775807},{"label":"café","count":679659}],"flag":false}
+s268: OK {"b":true,"small":40,"mid":41701,"wide":42,"un":817857571,"ratio":105.5,"exact":-0.0625,"name":"hello","maybe":"\t","perhaps":null}
+n268: OK {"title":"hello","inner":{"label":"back\\slash","count":42},"boxed":{"label":"/","count":-1},"ints":[36,42,710332],"strs":["mix🫘ed\ttext"],"rows":[],"flag":true}
+s269: OK {"b":true,"small":70,"mid":9491,"wide":42,"un":24504957,"ratio":-42.125,"exact":0.0,"name":"🫘","maybe":"café","perhaps":null}
+n269: OK {"title":"\r","inner":{"label":"ünïcødé","count":-1},"boxed":{"label":"hello","count":42},"ints":[126619],"strs":["\t",""],"rows":[{"label":"control\u001F\u0000end","count":42},{"label":"\t","count":247414},{"label":"\\","count":0}],"flag":false}
+s270: OK {"b":true,"small":116,"mid":54854,"wide":-779112,"un":307453928,"ratio":-84.375,"exact":2.625,"name":"café","maybe":null,"perhaps":-779289}
+n270: OK {"title":"ünïcødé","inner":{"label":"🫘","count":225908},"boxed":{"label":"mix🫘ed\ttext","count":248},"ints":[-1,-448720,119,42],"strs":[],"rows":[],"flag":true}
+l270: OK [{"label":"mix🫘ed\ttext","count":180}]
+s271: OK {"b":true,"small":-62,"mid":27191,"wide":-500609,"un":404748220,"ratio":-14.5,"exact":-0.0625,"name":"","maybe":"a","perhaps":-1}
+n271: OK {"title":"line\nbreak","inner":{"label":"🫘","count":-9223372036854775808},"boxed":null,"ints":[142,42,-9223372036854775808,-9223372036854775808],"strs":["back\\slash","/"],"rows":[],"flag":false}
+s272: OK {"b":false,"small":-80,"mid":2713,"wide":969203,"un":554859129,"ratio":123.25,"exact":11.5,"name":"\r","maybe":null,"perhaps":null}
+n272: OK {"title":"\"","inner":{"label":"","count":42},"boxed":{"label":"\"","count":0},"ints":[],"strs":[],"rows":[],"flag":true}
+s273: OK {"b":true,"small":-8,"mid":44949,"wide":42,"un":998402476,"ratio":12.375,"exact":2.625,"name":"\"","maybe":"line\nbreak","perhaps":null}
+n273: OK {"title":"/","inner":{"label":"café","count":-9223372036854775808},"boxed":{"label":"\r","count":154},"ints":[],"strs":["line\nbreak","","\t"],"rows":[],"flag":false}
+s274: OK {"b":true,"small":-128,"mid":12873,"wide":230563,"un":294953737,"ratio":-119.375,"exact":0.0,"name":"\t","maybe":"back\\slash","perhaps":null}
+n274: OK {"title":"emoji😀pair","inner":{"label":"café","count":-1},"boxed":{"label":"\t","count":-1},"ints":[42],"strs":["\"","🫘","\t"],"rows":[],"flag":true}
+s275: OK {"b":false,"small":28,"mid":45614,"wide":9223372036854775807,"un":292669167,"ratio":-11.125,"exact":-62325.375,"name":"","maybe":null,"perhaps":-362782}
+n275: OK {"title":"\u0001","inner":{"label":"control\u001F\u0000end","count":-9223372036854775808},"boxed":null,"ints":[42,9223372036854775807,0,215],"strs":["control\u001F\u0000end","mix🫘ed\ttext"],"rows":[{"label":"café","count":0}],"flag":true}
+l275: OK [{"label":"control\u001F\u0000end","count":0}]
+s276: OK {"b":false,"small":-68,"mid":14798,"wide":9223372036854775807,"un":852736944,"ratio":-9.125,"exact":-25443.375,"name":"\u0001","maybe":"line\nbreak","perhaps":null}
+n276: OK {"title":"","inner":{"label":"hello","count":42},"boxed":null,"ints":[42],"strs":["back\\slash","\t"],"rows":[{"label":"emoji😀pair","count":331755},{"label":"a","count":9223372036854775807}],"flag":false}
+s277: OK {"b":false,"small":101,"mid":20259,"wide":491374,"un":402707034,"ratio":-79.0,"exact":0.0,"name":"\r","maybe":"a","perhaps":10}
+n277: OK {"title":"\r","inner":{"label":"control\u001F\u0000end","count":-1},"boxed":null,"ints":[],"strs":["back\\slash","\u0001","/"],"rows":[{"label":"\t","count":9223372036854775807},{"label":"emoji😀pair","count":691595},{"label":"/","count":9223372036854775807}],"flag":true}
+s278: OK {"b":true,"small":119,"mid":3326,"wide":328411,"un":558007025,"ratio":-88.375,"exact":0.0,"name":" tail","maybe":null,"perhaps":-945079}
+n278: OK {"title":"café","inner":{"label":"control\u001F\u0000end","count":9223372036854775807},"boxed":null,"ints":[],"strs":["/","control\u001F\u0000end"],"rows":[{"label":"\"","count":133},{"label":"🫘","count":42}],"flag":false}
+s279: OK {"b":true,"small":116,"mid":13126,"wide":-705384,"un":53082856,"ratio":95.625,"exact":-0.0625,"name":"ünïcødé","maybe":"q\"uo\"te","perhaps":null}
+n279: OK {"title":"\u0001","inner":{"label":"ünïcødé","count":-1},"boxed":{"label":"q\"uo\"te","count":-1},"ints":[42,9223372036854775807,16,-288617],"strs":["ünïcødé","\u0001"," tail"],"rows":[],"flag":false}
+s280: OK {"b":true,"small":-7,"mid":37459,"wide":-1,"un":799058498,"ratio":117.875,"exact":0.0,"name":"\t","maybe":null,"perhaps":9223372036854775807}
+n280: OK {"title":"\n","inner":{"label":"q\"uo\"te","count":894430},"boxed":{"label":"ünïcødé","count":9223372036854775807},"ints":[-9223372036854775808,-9223372036854775808,-1],"strs":[" tail","line\nbreak"],"rows":[{"label":"café","count":989603},{"label":"back\\slash","count":9223372036854775807}],"flag":true}
+l280: OK [{"label":"control\u001F\u0000end","count":9223372036854775807},{"label":"\u0001","count":435763},{"label":"back\\slash","count":-68008}]
+s281: OK {"b":true,"small":110,"mid":17104,"wide":0,"un":919405437,"ratio":103.75,"exact":20951.75,"name":"line\nbreak","maybe":"line\nbreak","perhaps":683195}
+n281: OK {"title":" tail","inner":{"label":"q\"uo\"te","count":271443},"boxed":{"label":"q\"uo\"te","count":139},"ints":[0],"strs":[],"rows":[{"label":"\u0001","count":321844}],"flag":false}
+s282: OK {"b":true,"small":-2,"mid":3739,"wide":42,"un":706398021,"ratio":43.0,"exact":0.0,"name":"\t","maybe":"control\u001F\u0000end","perhaps":9223372036854775807}
+n282: OK {"title":"control\u001F\u0000end","inner":{"label":"\\","count":-9223372036854775808},"boxed":null,"ints":[395356,42,-942247,65],"strs":["日本語","日本語"],"rows":[{"label":"q\"uo\"te","count":160}],"flag":true}
+s283: OK {"b":false,"small":-91,"mid":63331,"wide":759982,"un":159672421,"ratio":-85.0,"exact":2.0,"name":"\r","maybe":"/","perhaps":null}
+n283: OK {"title":"control\u001F\u0000end","inner":{"label":"a","count":-9223372036854775808},"boxed":{"label":"back\\slash","count":126},"ints":[250454,-691000,153],"strs":["\t"],"rows":[],"flag":true}
+s284: OK {"b":false,"small":-66,"mid":21211,"wide":-1,"un":723068026,"ratio":-121.0,"exact":0.0,"name":"\n","maybe":"a","perhaps":166}
+n284: OK {"title":"line\nbreak","inner":{"label":"control\u001F\u0000end","count":9223372036854775807},"boxed":{"label":"hello","count":9223372036854775807},"ints":[432476,42,9223372036854775807,64],"strs":["🫘","café"],"rows":[{"label":"ünïcødé","count":9223372036854775807},{"label":"control\u001F\u0000end","count":167},{"label":"ünïcødé","count":-9223372036854775808}],"flag":false}
+s285: OK {"b":false,"small":37,"mid":32672,"wide":-603158,"un":930188283,"ratio":-36.625,"exact":-0.0625,"name":"日本語","maybe":null,"perhaps":-1}
+n285: OK {"title":"日本語","inner":{"label":"日本語","count":-9223372036854775808},"boxed":{"label":"line\nbreak","count":0},"ints":[0,-629553,576756,42],"strs":["control\u001F\u0000end","\r"],"rows":[{"label":" tail","count":-9223372036854775808},{"label":"\n","count":-1}],"flag":false}
+l285: OK [{"label":"mix🫘ed\ttext","count":0}]
+s286: OK {"b":false,"small":-10,"mid":5479,"wide":135,"un":543082862,"ratio":102.5,"exact":49230.0625,"name":"\t","maybe":"ünïcødé","perhaps":250140}
+n286: OK {"title":"mix🫘ed\ttext","inner":{"label":"ünïcødé","count":0},"boxed":null,"ints":[0],"strs":["日本語"],"rows":[],"flag":true}
+s287: OK {"b":true,"small":-69,"mid":23269,"wide":0,"un":455159648,"ratio":25.25,"exact":2.625,"name":"🫘","maybe":"mix🫘ed\ttext","perhaps":null}
+n287: OK {"title":"🫘","inner":{"label":"control\u001F\u0000end","count":0},"boxed":{"label":"\r","count":344436},"ints":[],"strs":["mix🫘ed\ttext","/"],"rows":[],"flag":true}
+s288: OK {"b":false,"small":-103,"mid":42888,"wide":91,"un":696559038,"ratio":11.375,"exact":52003.0625,"name":"日本語","maybe":"q\"uo\"te","perhaps":-9223372036854775808}
+n288: OK {"title":"🫘","inner":{"label":"\\","count":-1},"boxed":{"label":"mix🫘ed\ttext","count":0},"ints":[],"strs":["control\u001F\u0000end","back\\slash","\""],"rows":[],"flag":false}
+s289: OK {"b":true,"small":50,"mid":61236,"wide":727302,"un":167451170,"ratio":-58.0,"exact":0.0,"name":"/","maybe":"emoji😀pair","perhaps":52}
+n289: OK {"title":"café","inner":{"label":"ünïcødé","count":-235847},"boxed":{"label":"\\","count":-9223372036854775808},"ints":[-9223372036854775808,-9223372036854775808],"strs":["control\u001F\u0000end","/"],"rows":[],"flag":true}
+s290: OK {"b":false,"small":53,"mid":2832,"wide":9223372036854775807,"un":447418438,"ratio":8.375,"exact":-576460752303423500.0,"name":"\"","maybe":"café","perhaps":453566}
+n290: OK {"title":"\t","inner":{"label":"\"","count":0},"boxed":null,"ints":[0,237],"strs":["/"],"rows":[{"label":"emoji😀pair","count":-794831},{"label":"q\"uo\"te","count":-603529},{"label":"/","count":-9223372036854775808}],"flag":false}
+l290: OK [{"label":"\u0001","count":558497}]
+s291: OK {"b":true,"small":112,"mid":11993,"wide":248780,"un":351570118,"ratio":31.25,"exact":1.0625,"name":"\u0001","maybe":null,"perhaps":null}
+n291: OK {"title":"q\"uo\"te","inner":{"label":"\\","count":-1},"boxed":{"label":"control\u001F\u0000end","count":42},"ints":[],"strs":["back\\slash"," tail","q\"uo\"te"],"rows":[],"flag":true}
+s292: OK {"b":true,"small":-109,"mid":34302,"wide":-945055,"un":227728592,"ratio":96.625,"exact":2.625,"name":"\\","maybe":"back\\slash","perhaps":-1}
+n292: OK {"title":"café","inner":{"label":"\u0001","count":-9223372036854775808},"boxed":null,"ints":[-1,9223372036854775807,92,9223372036854775807],"strs":["mix🫘ed\ttext","a"],"rows":[{"label":"control\u001F\u0000end","count":0}],"flag":false}
+s293: OK {"b":false,"small":-72,"mid":58193,"wide":291307,"un":368993694,"ratio":-1.75,"exact":1.0,"name":"emoji😀pair","maybe":"hello","perhaps":null}
+n293: OK {"title":"café","inner":{"label":"café","count":606422},"boxed":null,"ints":[5171,-1,-558504,145],"strs":[" tail",""],"rows":[{"label":" tail","count":42}],"flag":false}
+s294: OK {"b":true,"small":83,"mid":13630,"wide":9223372036854775807,"un":815526239,"ratio":80.875,"exact":-6739.5625,"name":"q\"uo\"te","maybe":null,"perhaps":-217393}
+n294: OK {"title":"back\\slash","inner":{"label":"emoji😀pair","count":134},"boxed":null,"ints":[42,-217591,160,-1],"strs":[],"rows":[],"flag":false}
+s295: OK {"b":true,"small":114,"mid":59143,"wide":-587822,"un":21301452,"ratio":-84.5,"exact":2.625,"name":"control\u001F\u0000end","maybe":null,"perhaps":42}
+n295: OK {"title":"\r","inner":{"label":"mix🫘ed\ttext","count":532156},"boxed":null,"ints":[0,-699942,444684],"strs":["/","🫘"],"rows":[{"label":"a","count":42},{"label":"/","count":175953},{"label":"日本語","count":0}],"flag":false}
+l295: OK [{"label":"\t","count":0},{"label":"café","count":42}]
+s296: OK {"b":true,"small":-48,"mid":19334,"wide":-9223372036854775808,"un":129136211,"ratio":-111.875,"exact":-37996.5,"name":"\"","maybe":" tail","perhaps":-44639}
+n296: OK {"title":"mix🫘ed\ttext","inner":{"label":"/","count":-1},"boxed":{"label":"hello","count":0},"ints":[42],"strs":[],"rows":[{"label":"mix🫘ed\ttext","count":9223372036854775807},{"label":"/","count":17},{"label":"q\"uo\"te","count":296035}],"flag":true}
+s297: OK {"b":false,"small":-1,"mid":19533,"wide":42,"un":78079435,"ratio":-78.625,"exact":-0.0625,"name":"a","maybe":"q\"uo\"te","perhaps":null}
+n297: OK {"title":"café","inner":{"label":"emoji😀pair","count":-1},"boxed":{"label":"a","count":0},"ints":[25,42],"strs":[],"rows":[{"label":"q\"uo\"te","count":-209711},{"label":"\t","count":-653910},{"label":"日本語","count":-9223372036854775808}],"flag":true}
+s298: OK {"b":true,"small":-96,"mid":11602,"wide":42,"un":597479124,"ratio":-36.625,"exact":-0.0625,"name":"hello","maybe":null,"perhaps":9223372036854775807}
+n298: OK {"title":"emoji😀pair","inner":{"label":"\n","count":-1},"boxed":{"label":"\r","count":-995535},"ints":[],"strs":[],"rows":[{"label":"hello","count":-9223372036854775808}],"flag":true}
+s299: OK {"b":true,"small":-118,"mid":29363,"wide":621534,"un":2374357,"ratio":-97.125,"exact":6.125,"name":"ünïcødé","maybe":"\"","perhaps":135}
+n299: OK {"title":"back\\slash","inner":{"label":"q\"uo\"te","count":-9223372036854775808},"boxed":{"label":"emoji😀pair","count":9223372036854775807},"ints":[],"strs":[" tail","a","a"],"rows":[{"label":"ünïcødé","count":42},{"label":"café","count":-9223372036854775808},{"label":"\\","count":9223372036854775807}],"flag":false}
+s300: OK {"b":true,"small":42,"mid":62483,"wide":848382,"un":510837258,"ratio":-115.125,"exact":11.125,"name":"q\"uo\"te","maybe":"\u0001","perhaps":null}
+n300: OK {"title":"café","inner":{"label":"日本語","count":42},"boxed":{"label":"control\u001F\u0000end","count":-1},"ints":[-9223372036854775808,42],"strs":["emoji😀pair","日本語"],"rows":[{"label":"q\"uo\"te","count":492443},{"label":"mix🫘ed\ttext","count":-342064}],"flag":true}
+l300: OK [{"label":"\r","count":-914257},{"label":"\r","count":-9223372036854775808},{"label":"\n","count":-241407}]
+s301: OK {"b":true,"small":52,"mid":54022,"wide":-420136,"un":598083031,"ratio":-24.375,"exact":-0.0625,"name":"\\","maybe":null,"perhaps":-1}
+n301: OK {"title":"line\nbreak","inner":{"label":"q\"uo\"te","count":0},"boxed":null,"ints":[-1,-225583,86],"strs":["line\nbreak"],"rows":[],"flag":false}
+s302: OK {"b":false,"small":-75,"mid":31120,"wide":-682745,"un":627374763,"ratio":23.375,"exact":-0.0625,"name":"","maybe":null,"perhaps":523649}
+n302: OK {"title":"\"","inner":{"label":"control\u001F\u0000end","count":0},"boxed":null,"ints":[],"strs":["café","control\u001F\u0000end","/"],"rows":[],"flag":false}
+s303: OK {"b":true,"small":9,"mid":46232,"wide":23,"un":958131857,"ratio":109.375,"exact":-576460752303423500.0,"name":"\n","maybe":" tail","perhaps":null}
+n303: OK {"title":"🫘","inner":{"label":"日本語","count":-1},"boxed":{"label":"line\nbreak","count":-612201},"ints":[0,0,-18585,284748],"strs":["🫘"],"rows":[{"label":"\u0001","count":9223372036854775807},{"label":"\r","count":134331},{"label":"\r","count":9223372036854775807}],"flag":false}
+s304: OK {"b":false,"small":-20,"mid":40577,"wide":9223372036854775807,"un":85314847,"ratio":95.0,"exact":576460752303423500.0,"name":"/","maybe":"日本語","perhaps":42}
+n304: OK {"title":"a","inner":{"label":"🫘","count":805852},"boxed":null,"ints":[],"strs":["ünïcødé","a","control\u001F\u0000end"],"rows":[{"label":"\u0001","count":42},{"label":"日本語","count":204686},{"label":"ünïcødé","count":0}],"flag":true}
+s305: OK {"b":false,"small":-75,"mid":19187,"wide":-9223372036854775808,"un":416234209,"ratio":73.625,"exact":0.0,"name":"q\"uo\"te","maybe":null,"perhaps":0}
+n305: OK {"title":"\n","inner":{"label":"\r","count":-9223372036854775808},"boxed":{"label":"line\nbreak","count":67},"ints":[],"strs":["ünïcødé"],"rows":[],"flag":true}
+l305: OK [{"label":"\u0001","count":81}]
+s306: OK {"b":false,"small":-19,"mid":18328,"wide":-264718,"un":839662508,"ratio":94.375,"exact":-0.0625,"name":"ünïcødé","maybe":"a","perhaps":313430}
+n306: OK {"title":"\u0001","inner":{"label":"\"","count":-9223372036854775808},"boxed":{"label":"\"","count":0},"ints":[],"strs":[],"rows":[{"label":"hello","count":-9223372036854775808},{"label":"ünïcødé","count":42}],"flag":true}
+s307: OK {"b":false,"small":93,"mid":58148,"wide":-9223372036854775808,"un":580560137,"ratio":-53.375,"exact":0.0,"name":"\u0001","maybe":"\t","perhaps":0}
+n307: OK {"title":"\n","inner":{"label":"control\u001F\u0000end","count":0},"boxed":null,"ints":[],"strs":["\\"],"rows":[{"label":"ünïcødé","count":9223372036854775807},{"label":"q\"uo\"te","count":36},{"label":"\t","count":-9223372036854775808}],"flag":false}
+s308: OK {"b":false,"small":-60,"mid":35173,"wide":133,"un":601318205,"ratio":-102.25,"exact":54851.75,"name":" tail","maybe":null,"perhaps":-9223372036854775808}
+n308: OK {"title":"café","inner":{"label":"café","count":-1},"boxed":{"label":"line\nbreak","count":-287361},"ints":[246,-924750,132043],"strs":["\u0001"],"rows":[{"label":"\u0001","count":-595705},{"label":"\\","count":-9223372036854775808},{"label":"line\nbreak","count":9223372036854775807}],"flag":false}
+s309: OK {"b":false,"small":9,"mid":43292,"wide":-1,"un":200211250,"ratio":27.875,"exact":0.625,"name":"\r","maybe":"q\"uo\"te","perhaps":null}
+n309: OK {"title":"\r","inner":{"label":"control\u001F\u0000end","count":42},"boxed":{"label":"café","count":-618192},"ints":[267745,-742463,0,9223372036854775807],"strs":["🫘"],"rows":[{"label":"","count":-409192},{"label":"🫘","count":9223372036854775807},{"label":"control\u001F\u0000end","count":-9223372036854775808}],"flag":false}
+s310: OK {"b":true,"small":-121,"mid":17685,"wide":-1,"un":800756268,"ratio":12.375,"exact":-0.0625,"name":"","maybe":"\t","perhaps":null}
+n310: OK {"title":"🫘","inner":{"label":"\"","count":-9223372036854775808},"boxed":null,"ints":[0,9223372036854775807,42,-9223372036854775808],"strs":["mix🫘ed\ttext","/","\t"],"rows":[],"flag":false}
+l310: OK [{"label":"🫘","count":0}]
+s311: OK {"b":false,"small":36,"mid":29833,"wide":9223372036854775807,"un":137862247,"ratio":114.0,"exact":-1805.0625,"name":"\r","maybe":null,"perhaps":null}
+n311: OK {"title":"/","inner":{"label":"back\\slash","count":113},"boxed":null,"ints":[42,9223372036854775807,0,175],"strs":["\t"],"rows":[],"flag":true}
+s312: OK {"b":false,"small":31,"mid":46057,"wide":814339,"un":976998166,"ratio":86.625,"exact":0.0,"name":"","maybe":"ünïcødé","perhaps":-405520}
+n312: OK {"title":"back\\slash","inner":{"label":"/","count":0},"boxed":{"label":"hello","count":42},"ints":[],"strs":["hello","a"],"rows":[{"label":"\n","count":107},{"label":"🫘","count":42}],"flag":true}
+s313: OK {"b":true,"small":-123,"mid":43072,"wide":-879305,"un":422823652,"ratio":-95.5,"exact":-0.0625,"name":"","maybe":"🫘","perhaps":-1}
+n313: OK {"title":"q\"uo\"te","inner":{"label":"ünïcødé","count":-9223372036854775808},"boxed":{"label":"café","count":191},"ints":[209,42],"strs":[],"rows":[],"flag":true}
+s314: OK {"b":false,"small":-41,"mid":14750,"wide":841531,"un":51207150,"ratio":-29.75,"exact":12.625,"name":"ünïcødé","maybe":"café","perhaps":null}
+n314: OK {"title":"\n","inner":{"label":" tail","count":-1},"boxed":{"label":"q\"uo\"te","count":-1},"ints":[],"strs":[" tail","\u0001","control\u001F\u0000end"],"rows":[],"flag":false}
+s315: OK {"b":false,"small":84,"mid":12838,"wide":-999432,"un":109780343,"ratio":-101.75,"exact":2.625,"name":"\t","maybe":"/","perhaps":-1}
+n315: OK {"title":"ünïcødé","inner":{"label":" tail","count":0},"boxed":{"label":"🫘","count":753059},"ints":[],"strs":["q\"uo\"te","hello"],"rows":[],"flag":true}
+l315: OK [{"label":"back\\slash","count":502548}]
+s316: OK {"b":true,"small":-115,"mid":40075,"wide":835270,"un":265330402,"ratio":-116.125,"exact":0.0,"name":"control\u001F\u0000end","maybe":"日本語","perhaps":0}
+n316: OK {"title":"\u0001","inner":{"label":"q\"uo\"te","count":-9223372036854775808},"boxed":{"label":"mix🫘ed\ttext","count":126},"ints":[-9223372036854775808,23342,-507920],"strs":[],"rows":[{"label":"line\nbreak","count":-9223372036854775808},{"label":"a","count":42}],"flag":false}
+s317: OK {"b":true,"small":18,"mid":10731,"wide":982950,"un":466574909,"ratio":-22.0,"exact":0.0,"name":"\t","maybe":"emoji😀pair","perhaps":null}
+n317: OK {"title":"emoji😀pair","inner":{"label":"line\nbreak","count":42},"boxed":null,"ints":[844580,42],"strs":["back\\slash","emoji😀pair"],"rows":[{"label":"ünïcødé","count":766371},{"label":"hello","count":9223372036854775807}],"flag":true}
+s318: OK {"b":true,"small":77,"mid":59211,"wide":415417,"un":203243170,"ratio":-20.0,"exact":0.0,"name":"emoji😀pair","maybe":"emoji😀pair","perhaps":77}
+n318: OK {"title":"ünïcødé","inner":{"label":"\u0001","count":-1},"boxed":{"label":"日本語","count":42},"ints":[128644],"strs":["\u0001"],"rows":[],"flag":false}
+s319: OK {"b":false,"small":83,"mid":5057,"wide":-982879,"un":344117359,"ratio":64.625,"exact":2.625,"name":"q\"uo\"te","maybe":"/","perhaps":-1}
+n319: OK {"title":"control\u001F\u0000end","inner":{"label":"日本語","count":950961},"boxed":null,"ints":[42],"strs":["🫘"],"rows":[],"flag":false}
+s320: OK {"b":false,"small":-74,"mid":43996,"wide":42,"un":522859021,"ratio":123.875,"exact":7.9375,"name":"\\","maybe":null,"perhaps":9223372036854775807}
+n320: OK {"title":"\"","inner":{"label":" tail","count":0},"boxed":null,"ints":[-9223372036854775808,-1,9223372036854775807,0],"strs":["\"","\n","/"],"rows":[{"label":"\n","count":-278952},{"label":" tail","count":9223372036854775807},{"label":"\n","count":-9223372036854775808}],"flag":true}
+l320: OK [{"label":"\u0001","count":519292},{"label":"\\","count":-65400}]
+s321: OK {"b":true,"small":52,"mid":39029,"wide":0,"un":519950160,"ratio":-113.375,"exact":-0.0625,"name":"日本語","maybe":"line\nbreak","perhaps":-9223372036854775808}
+n321: OK {"title":"emoji😀pair","inner":{"label":"hello","count":-9223372036854775808},"boxed":null,"ints":[42,-804488,230],"strs":["\u0001","ünïcødé"],"rows":[{"label":"\"","count":189}],"flag":true}
+s322: OK {"b":false,"small":-75,"mid":7948,"wide":-9223372036854775808,"un":895815905,"ratio":-89.75,"exact":0.0,"name":"\r","maybe":"a","perhaps":null}
+n322: OK {"title":"日本語","inner":{"label":"q\"uo\"te","count":13329},"boxed":null,"ints":[-1,450764,42],"strs":["\t"],"rows":[],"flag":false}
+s323: OK {"b":false,"small":4,"mid":47958,"wide":-445688,"un":250398823,"ratio":34.25,"exact":2.625,"name":"line\nbreak","maybe":" tail","perhaps":42}
+n323: OK {"title":"ünïcødé","inner":{"label":"emoji😀pair","count":-9223372036854775808},"boxed":null,"ints":[],"strs":["\\","café"],"rows":[{"label":"","count":-1},{"label":"/","count":-9223372036854775808},{"label":"hello","count":-871368}],"flag":true}
+s324: OK {"b":true,"small":127,"mid":38838,"wide":-9223372036854775808,"un":970272931,"ratio":96.125,"exact":576460752303423500.0,"name":"a","maybe":null,"perhaps":0}
+n324: OK {"title":"ünïcødé","inner":{"label":"\"","count":670003},"boxed":null,"ints":[-976785,146644],"strs":["control\u001F\u0000end"],"rows":[],"flag":false}
+s325: OK {"b":true,"small":33,"mid":48571,"wide":-1,"un":840377189,"ratio":-87.0,"exact":0.0,"name":"mix🫘ed\ttext","maybe":null,"perhaps":135}
+n325: OK {"title":"🫘","inner":{"label":"/","count":481619},"boxed":null,"ints":[995587,-1,9223372036854775807],"strs":[],"rows":[{"label":"\t","count":42},{"label":"🫘","count":-9223372036854775808},{"label":"\r","count":-972576}],"flag":true}
+l325: OK [{"label":"🫘","count":242}]
+s326: OK {"b":true,"small":5,"mid":14016,"wide":-710006,"un":746561947,"ratio":30.5,"exact":2.625,"name":"🫘","maybe":"\\","perhaps":-1}
+n326: OK {"title":"café","inner":{"label":"café","count":42},"boxed":{"label":"a","count":-181823},"ints":[0],"strs":[" tail"],"rows":[],"flag":true}
+s327: OK {"b":true,"small":40,"mid":38938,"wide":-1,"un":131075292,"ratio":-50.5,"exact":-0.0625,"name":"café","maybe":"control\u001F\u0000end","perhaps":null}
+n327: OK {"title":"\r","inner":{"label":"日本語","count":210},"boxed":{"label":"\\","count":-1},"ints":[],"strs":["日本語","hello","mix🫘ed\ttext"],"rows":[{"label":"q\"uo\"te","count":9223372036854775807},{"label":"🫘","count":0},{"label":" tail","count":42}],"flag":false}
+s328: OK {"b":true,"small":-3,"mid":20232,"wide":-584318,"un":698519683,"ratio":5.5,"exact":-0.0625,"name":"emoji😀pair","maybe":null,"perhaps":-1}
+n328: OK {"title":"a","inner":{"label":"\u0001","count":42},"boxed":{"label":"\"","count":42},"ints":[205,-1,42787],"strs":["emoji😀pair"],"rows":[],"flag":false}
+s329: OK {"b":true,"small":-39,"mid":62003,"wide":-1,"un":41289885,"ratio":-78.125,"exact":0.0,"name":"line\nbreak","maybe":null,"perhaps":9223372036854775807}
+n329: OK {"title":"\\","inner":{"label":"café","count":42},"boxed":{"label":"control\u001F\u0000end","count":0},"ints":[988859,42,-65744,0],"strs":["control\u001F\u0000end","\t"],"rows":[],"flag":true}
+s330: OK {"b":false,"small":-48,"mid":10118,"wide":-9223372036854775808,"un":880391251,"ratio":-19.875,"exact":-40600.5,"name":"\u0001","maybe":"\u0001","perhaps":0}
+n330: OK {"title":"","inner":{"label":"mix🫘ed\ttext","count":-9223372036854775808},"boxed":{"label":"🫘","count":9223372036854775807},"ints":[-1],"strs":["café","\\","\u0001"],"rows":[{"label":"a","count":-179126},{"label":"control\u001F\u0000end","count":-9223372036854775808},{"label":"\n","count":9223372036854775807}],"flag":true}
+l330: OK [{"label":"\\","count":144},{"label":"\"","count":-9223372036854775808}]
+s331: OK {"b":true,"small":87,"mid":44698,"wide":42,"un":867277660,"ratio":-20.5,"exact":2.625,"name":"back\\slash","maybe":"q\"uo\"te","perhaps":null}
+n331: OK {"title":"ünïcødé","inner":{"label":"\n","count":0},"boxed":null,"ints":[0,-168598,-9223372036854775808,88854],"strs":["line\nbreak","line\nbreak"],"rows":[{"label":"","count":-9223372036854775808}],"flag":false}
+s332: OK {"b":false,"small":-126,"mid":36488,"wide":9223372036854775807,"un":103407742,"ratio":27.375,"exact":47419.0625,"name":"back\\slash","maybe":"ünïcødé","perhaps":67174}
+n332: OK {"title":"back\\slash","inner":{"label":"emoji😀pair","count":0},"boxed":null,"ints":[],"strs":[],"rows":[{"label":" tail","count":693091}],"flag":false}
+s333: OK {"b":true,"small":85,"mid":52751,"wide":-757081,"un":459580555,"ratio":-91.5,"exact":2.625,"name":"emoji😀pair","maybe":"control\u001F\u0000end","perhaps":-1}
+n333: OK {"title":"hello","inner":{"label":"ünïcødé","count":87228},"boxed":{"label":"","count":0},"ints":[],"strs":[],"rows":[{"label":"\r","count":-9223372036854775808},{"label":"🫘","count":42}],"flag":true}
+s334: OK {"b":false,"small":-40,"mid":31950,"wide":194443,"un":190483713,"ratio":-31.75,"exact":4.625,"name":"emoji😀pair","maybe":null,"perhaps":null}
+n334: OK {"title":"café","inner":{"label":"ünïcødé","count":750876},"boxed":{"label":"back\\slash","count":69},"ints":[-9223372036854775808,932441,9223372036854775807,0],"strs":["hello","café","🫘"],"rows":[],"flag":true}
+s335: OK {"b":false,"small":-72,"mid":12369,"wide":-9223372036854775808,"un":400982548,"ratio":-98.875,"exact":-21924.0,"name":"q\"uo\"te","maybe":null,"perhaps":null}
+n335: OK {"title":"line\nbreak","inner":{"label":"","count":889795},"boxed":null,"ints":[42,-9223372036854775808],"strs":["line\nbreak","\"","mix🫘ed\ttext"],"rows":[{"label":"control\u001F\u0000end","count":42},{"label":"ünïcødé","count":-9223372036854775808},{"label":"\u0001","count":-270928}],"flag":true}
+l335: OK [{"label":"q\"uo\"te","count":0},{"label":"q\"uo\"te","count":42}]
+s336: OK {"b":false,"small":32,"mid":26578,"wide":-1,"un":111682388,"ratio":120.5,"exact":2.625,"name":"\r","maybe":"\"","perhaps":9223372036854775807}
+n336: OK {"title":"café","inner":{"label":"ünïcødé","count":0},"boxed":{"label":"back\\slash","count":-9223372036854775808},"ints":[93,-1,-9223372036854775808],"strs":[],"rows":[{"label":"🫘","count":0},{"label":"ünïcødé","count":9223372036854775807}],"flag":true}
+s337: OK {"b":true,"small":-43,"mid":49520,"wide":-954918,"un":833459188,"ratio":13.375,"exact":2.625,"name":"\n","maybe":"mix🫘ed\ttext","perhaps":697633}
+n337: OK {"title":"hello","inner":{"label":"control\u001F\u0000end","count":0},"boxed":null,"ints":[140],"strs":["\t"],"rows":[],"flag":true}
+s338: OK {"b":true,"small":82,"mid":13272,"wide":9223372036854775807,"un":549422001,"ratio":-56.625,"exact":19212.0625,"name":"日本語","maybe":"\"","perhaps":42}
+n338: OK {"title":"q\"uo\"te","inner":{"label":"\u0001","count":7},"boxed":null,"ints":[0,-755462,581395,42],"strs":["\t","café"],"rows":[{"label":"mix🫘ed\ttext","count":834212}],"flag":true}
+s339: OK {"b":false,"small":56,"mid":34001,"wide":124628,"un":667616030,"ratio":-83.75,"exact":0.0,"name":"\t","maybe":"\r","perhaps":-770264}
+n339: OK {"title":"\t","inner":{"label":"\r","count":-1},"boxed":{"label":"/","count":-1},"ints":[42],"strs":["\r","café","🫘"],"rows":[],"flag":false}
+s340: OK {"b":false,"small":4,"mid":62806,"wide":9223372036854775807,"un":987149944,"ratio":-34.0,"exact":576460752303423500.0,"name":"back\\slash","maybe":"\r","perhaps":-1}
+n340: OK {"title":"a","inner":{"label":"control\u001F\u0000end","count":102},"boxed":{"label":"q\"uo\"te","count":42},"ints":[724609,9223372036854775807,59],"strs":["emoji😀pair"],"rows":[{"label":"hello","count":42},{"label":"/","count":0},{"label":"emoji😀pair","count":-789246}],"flag":true}
+l340: OK []
+s341: OK {"b":true,"small":-118,"mid":5708,"wide":-9223372036854775808,"un":745706401,"ratio":86.25,"exact":6.6875,"name":"a","maybe":"café","perhaps":48}
+n341: OK {"title":"q\"uo\"te","inner":{"label":" tail","count":0},"boxed":null,"ints":[32563,42,9223372036854775807,0],"strs":[],"rows":[{"label":"\\","count":124548}],"flag":false}
+s342: OK {"b":true,"small":-23,"mid":61368,"wide":18,"un":945655246,"ratio":3.375,"exact":10292.0625,"name":"","maybe":null,"perhaps":-9223372036854775808}
+n342: OK {"title":"café","inner":{"label":"line\nbreak","count":0},"boxed":null,"ints":[0],"strs":["🫘","control\u001F\u0000end"],"rows":[],"flag":true}
+s343: OK {"b":false,"small":-79,"mid":26544,"wide":0,"un":747517538,"ratio":89.75,"exact":8610.1875,"name":"line\nbreak","maybe":"hello","perhaps":null}
+n343: OK {"title":"café","inner":{"label":" tail","count":0},"boxed":{"label":"back\\slash","count":167508},"ints":[],"strs":[],"rows":[],"flag":true}
+s344: OK {"b":false,"small":-122,"mid":15191,"wide":208,"un":541432862,"ratio":-121.5,"exact":50329.0625,"name":"hello","maybe":" tail","perhaps":-9223372036854775808}
+n344: OK {"title":"back\\slash","inner":{"label":"q\"uo\"te","count":-1},"boxed":{"label":"mix🫘ed\ttext","count":-627143},"ints":[],"strs":[],"rows":[{"label":"🫘","count":-9223372036854775808}],"flag":true}
+s345: OK {"b":false,"small":16,"mid":51142,"wide":-9223372036854775808,"un":552225811,"ratio":23.75,"exact":-13996.5,"name":"emoji😀pair","maybe":"\\","perhaps":0}
+n345: OK {"title":"/","inner":{"label":"mix🫘ed\ttext","count":635830},"boxed":null,"ints":[],"strs":["café",""],"rows":[{"label":"ünïcødé","count":58}],"flag":true}
+l345: OK []
+s346: OK {"b":true,"small":-77,"mid":29406,"wide":-748479,"un":526648944,"ratio":10.625,"exact":2.625,"name":" tail","maybe":"ünïcødé","perhaps":null}
+n346: OK {"title":"mix🫘ed\ttext","inner":{"label":"line\nbreak","count":476348},"boxed":{"label":"ünïcødé","count":0},"ints":[42,9223372036854775807,0],"strs":[],"rows":[{"label":"\u0001","count":-9223372036854775808},{"label":"\"","count":-1}],"flag":true}
+s347: OK {"b":false,"small":-86,"mid":12140,"wide":-9223372036854775808,"un":219273854,"ratio":-20.375,"exact":0.0,"name":"\u0001","maybe":"hello","perhaps":null}
+n347: OK {"title":"/","inner":{"label":"\u0001","count":-1},"boxed":{"label":"\u0001","count":-1},"ints":[42,-9223372036854775808,-9223372036854775808],"strs":["\r"],"rows":[{"label":"control\u001F\u0000end","count":-305278},{"label":"back\\slash","count":591054},{"label":"/","count":0}],"flag":false}
+s348: OK {"b":false,"small":-82,"mid":41620,"wide":-1,"un":483942762,"ratio":67.0,"exact":7.125,"name":"mix🫘ed\ttext","maybe":"","perhaps":null}
+n348: OK {"title":"mix🫘ed\ttext","inner":{"label":"line\nbreak","count":42},"boxed":{"label":"\u0001","count":42},"ints":[],"strs":["q\"uo\"te","\t",""],"rows":[{"label":"mix🫘ed\ttext","count":-1},{"label":"\n","count":-9223372036854775808},{"label":"\u0001","count":-509935}],"flag":false}
+s349: OK {"b":true,"small":113,"mid":8308,"wide":-1,"un":845033034,"ratio":-63.125,"exact":9.875,"name":"🫘","maybe":null,"perhaps":9223372036854775807}
+n349: OK {"title":"a","inner":{"label":"\n","count":42},"boxed":{"label":"\u0001","count":0},"ints":[-9223372036854775808,42,9223372036854775807,142],"strs":["/","a"],"rows":[],"flag":true}
+s350: OK {"b":false,"small":-14,"mid":19847,"wide":9223372036854775807,"un":994153489,"ratio":3.375,"exact":-576460752303423500.0,"name":"/","maybe":null,"perhaps":null}
+n350: OK {"title":"\t","inner":{"label":"\u0001","count":-9223372036854775808},"boxed":null,"ints":[],"strs":[],"rows":[{"label":"\\","count":42},{"label":"日本語","count":-9223372036854775808},{"label":"a","count":-59240}],"flag":false}
+l350: OK [{"label":"\"","count":0}]
+s351: OK {"b":false,"small":22,"mid":54456,"wide":0,"un":669331114,"ratio":101.125,"exact":-576460752303423500.0,"name":"\u0001","maybe":"\"","perhaps":166076}
+n351: OK {"title":"\u0001","inner":{"label":"\u0001","count":9223372036854775807},"boxed":null,"ints":[9223372036854775807,0,0,9223372036854775807],"strs":["\"","hello"],"rows":[{"label":"a","count":64},{"label":"","count":-1}],"flag":true}
+s352: OK {"b":true,"small":73,"mid":59047,"wide":0,"un":104250293,"ratio":-112.875,"exact":48858.6875,"name":" tail","maybe":"back\\slash","perhaps":526108}
+n352: OK {"title":"","inner":{"label":"a","count":661574},"boxed":null,"ints":[],"strs":[],"rows":[],"flag":false}
+s353: OK {"b":false,"small":-98,"mid":21755,"wide":-1,"un":904049498,"ratio":-13.125,"exact":0.0,"name":"🫘","maybe":"mix🫘ed\ttext","perhaps":null}
+n353: OK {"title":"\u0001","inner":{"label":"ünïcødé","count":-1},"boxed":{"label":"back\\slash","count":-366944},"ints":[-9223372036854775808,-9223372036854775808,42],"strs":["emoji😀pair","emoji😀pair"],"rows":[{"label":"emoji😀pair","count":-9223372036854775808}],"flag":true}
+s354: OK {"b":true,"small":-56,"mid":54085,"wide":42,"un":360255363,"ratio":99.5,"exact":-0.0625,"name":"\n","maybe":null,"perhaps":9223372036854775807}
+n354: OK {"title":"🫘","inner":{"label":"emoji😀pair","count":0},"boxed":{"label":"","count":546324},"ints":[153],"strs":["control\u001F\u0000end","/"],"rows":[{"label":"q\"uo\"te","count":132}],"flag":true}
+s355: OK {"b":true,"small":-30,"mid":35863,"wide":-693473,"un":925700892,"ratio":-124.5,"exact":-0.0625,"name":"\n","maybe":"\"","perhaps":147385}
+n355: OK {"title":"\\","inner":{"label":" tail","count":-9223372036854775808},"boxed":null,"ints":[0,-29929,510979],"strs":["emoji😀pair"," tail"],"rows":[{"label":"","count":42},{"label":"/","count":240254},{"label":"\n","count":0}],"flag":true}
+l355: OK [{"label":"ünïcødé","count":0}]
+s356: OK {"b":false,"small":-61,"mid":56654,"wide":-742512,"un":510229695,"ratio":105.25,"exact":-0.0625,"name":"\r","maybe":null,"perhaps":42}
+n356: OK {"title":"emoji😀pair","inner":{"label":"\u0001","count":42},"boxed":{"label":"\\","count":42},"ints":[],"strs":["\u0001"],"rows":[],"flag":false}
+s357: OK {"b":true,"small":-26,"mid":7820,"wide":42,"un":712320477,"ratio":-108.0,"exact":15.8125,"name":"\t","maybe":"q\"uo\"te","perhaps":null}
+n357: OK {"title":"q\"uo\"te","inner":{"label":" tail","count":-735374},"boxed":{"label":"emoji😀pair","count":9223372036854775807},"ints":[721297,9223372036854775807,0,0],"strs":["hello"],"rows":[],"flag":true}
+s358: OK {"b":false,"small":111,"mid":55878,"wide":-9223372036854775808,"un":396722579,"ratio":-11.875,"exact":576460752303423500.0,"name":"line\nbreak","maybe":null,"perhaps":-917215}
+n358: OK {"title":"日本語","inner":{"label":"café","count":42},"boxed":null,"ints":[-372353,584548,42,9223372036854775807],"strs":["line\nbreak","back\\slash","\n"],"rows":[{"label":"\"","count":42},{"label":"control\u001F\u0000end","count":0},{"label":"\r","count":9223372036854775807}],"flag":false}
+s359: OK {"b":true,"small":-12,"mid":55609,"wide":-196055,"un":272789143,"ratio":-38.375,"exact":-0.0625,"name":"hello","maybe":"\\","perhaps":-1}
+n359: OK {"title":"\t","inner":{"label":"\u0001","count":42},"boxed":null,"ints":[],"strs":["line\nbreak","café"],"rows":[{"label":"\t","count":-1},{"label":"café","count":-9223372036854775808},{"label":"","count":9223372036854775807}],"flag":false}
+s360: OK {"b":true,"small":31,"mid":27538,"wide":-1,"un":873094891,"ratio":-83.5,"exact":2.625,"name":"\"","maybe":"ünïcødé","perhaps":null}
+n360: OK {"title":"café","inner":{"label":"a","count":42},"boxed":{"label":"/","count":-1},"ints":[0,-728702],"strs":["","\r","q\"uo\"te"],"rows":[],"flag":false}
+l360: OK []
+s361: OK {"b":true,"small":107,"mid":38933,"wide":80,"un":84999885,"ratio":-0.25,"exact":-576460752303423500.0,"name":" tail","maybe":" tail","perhaps":-9223372036854775808}
+n361: OK {"title":"\t","inner":{"label":"line\nbreak","count":-1},"boxed":{"label":"line\nbreak","count":-1},"ints":[-464680,143,-1],"strs":["mix🫘ed\ttext","q\"uo\"te","\\"],"rows":[],"flag":false}
+s362: OK {"b":false,"small":14,"mid":55563,"wide":42,"un":306165045,"ratio":30.875,"exact":0.0,"name":"\\","maybe":null,"perhaps":9223372036854775807}
+n362: OK {"title":"emoji😀pair","inner":{"label":"mix🫘ed\ttext","count":9223372036854775807},"boxed":{"label":"emoji😀pair","count":-9223372036854775808},"ints":[624659],"strs":["back\\slash","a"],"rows":[],"flag":true}
+s363: OK {"b":false,"small":92,"mid":56050,"wide":29,"un":989498506,"ratio":64.75,"exact":-576460752303423500.0,"name":"control\u001F\u0000end","maybe":"\n","perhaps":-9223372036854775808}
+n363: OK {"title":"line\nbreak","inner":{"label":"line\nbreak","count":845371},"boxed":null,"ints":[9223372036854775807,217,9223372036854775807,42],"strs":["\t"," tail","日本語"],"rows":[],"flag":false}
+s364: OK {"b":true,"small":59,"mid":50454,"wide":-792007,"un":218883800,"ratio":-76.375,"exact":2.625,"name":"","maybe":"mix🫘ed\ttext","perhaps":-813654}
+n364: OK {"title":"\t","inner":{"label":"back\\slash","count":9223372036854775807},"boxed":null,"ints":[-1,9223372036854775807,0,0],"strs":["\""],"rows":[{"label":"emoji😀pair","count":42},{"label":"\u0001","count":48},{"label":"\r","count":-1}],"flag":true}
+s365: OK {"b":true,"small":100,"mid":24393,"wide":-731431,"un":580771143,"ratio":11.625,"exact":-0.0625,"name":"\u0001","maybe":"café","perhaps":null}
+n365: OK {"title":"a","inner":{"label":"🫘","count":42},"boxed":null,"ints":[42,-866943,0],"strs":["\t"],"rows":[{"label":"\t","count":42},{"label":"/","count":0},{"label":"/","count":9223372036854775807}],"flag":true}
+l365: OK [{"label":"\u0001","count":-904534},{"label":"hello","count":613353},{"label":"","count":204}]
+s366: OK {"b":true,"small":-12,"mid":17333,"wide":48,"un":392322898,"ratio":3.75,"exact":-576460752303423500.0,"name":"🫘","maybe":null,"perhaps":-9223372036854775808}
+n366: OK {"title":"ünïcødé","inner":{"label":"emoji😀pair","count":137},"boxed":{"label":"\r","count":-1},"ints":[9223372036854775807],"strs":["/","back\\slash","\""],"rows":[{"label":"control\u001F\u0000end","count":-1},{"label":"control\u001F\u0000end","count":8},{"label":"\r","count":42}],"flag":false}
+s367: OK {"b":false,"small":85,"mid":21007,"wide":9223372036854775807,"un":708489177,"ratio":7.5,"exact":50939.5625,"name":"mix🫘ed\ttext","maybe":null,"perhaps":-1}
+n367: OK {"title":"🫘","inner":{"label":"\n","count":42},"boxed":{"label":"control\u001F\u0000end","count":42},"ints":[130,42,896836,42],"strs":["\n"],"rows":[{"label":"\t","count":42},{"label":"a","count":674006},{"label":"control\u001F\u0000end","count":0}],"flag":false}
+s368: OK {"b":true,"small":-108,"mid":63334,"wide":9223372036854775807,"un":704959223,"ratio":99.875,"exact":576460752303423500.0,"name":"emoji😀pair","maybe":"ünïcødé","perhaps":42}
+n368: OK {"title":"café","inner":{"label":"ünïcødé","count":288649},"boxed":null,"ints":[710065],"strs":["\u0001"],"rows":[],"flag":false}
+s369: OK {"b":false,"small":12,"mid":42337,"wide":9223372036854775807,"un":869602559,"ratio":-21.0,"exact":-39701.5625,"name":"","maybe":"emoji😀pair","perhaps":42}
+n369: OK {"title":"mix🫘ed\ttext","inner":{"label":" tail","count":-9223372036854775808},"boxed":null,"ints":[-1],"strs":["\""],"rows":[],"flag":true}
+s370: OK {"b":false,"small":125,"mid":1540,"wide":296553,"un":602312978,"ratio":-6.125,"exact":10.5,"name":"line\nbreak","maybe":"\"","perhaps":null}
+n370: OK {"title":"","inner":{"label":"/","count":9223372036854775807},"boxed":null,"ints":[-9223372036854775808,-1],"strs":["","a"],"rows":[{"label":"emoji😀pair","count":-9223372036854775808},{"label":"\u0001","count":42}],"flag":true}
+l370: OK [{"label":"\"","count":-1},{"label":"mix🫘ed\ttext","count":215},{"label":"mix🫘ed\ttext","count":-1}]
+s371: OK {"b":true,"small":-115,"mid":45063,"wide":9223372036854775807,"un":195113617,"ratio":-99.5,"exact":37705.875,"name":"q\"uo\"te","maybe":null,"perhaps":-1}
+n371: OK {"title":" tail","inner":{"label":"a","count":0},"boxed":{"label":" tail","count":-1},"ints":[78],"strs":["control\u001F\u0000end","日本語"],"rows":[{"label":"","count":0},{"label":"\\","count":-184225}],"flag":false}
+s372: OK {"b":true,"small":60,"mid":43309,"wide":0,"un":185368024,"ratio":53.625,"exact":2.625,"name":"mix🫘ed\ttext","maybe":null,"perhaps":null}
+n372: OK {"title":"\u0001","inner":{"label":"\\","count":251302},"boxed":null,"ints":[-1],"strs":[""],"rows":[],"flag":true}
+s373: OK {"b":false,"small":-63,"mid":47780,"wide":42,"un":364248570,"ratio":-57.125,"exact":2.0,"name":"\"","maybe":"back\\slash","perhaps":null}
+n373: OK {"title":"hello","inner":{"label":"a","count":0},"boxed":{"label":" tail","count":103700},"ints":[],"strs":["line\nbreak","\r","a"],"rows":[],"flag":true}
+s374: OK {"b":true,"small":6,"mid":31191,"wide":12,"un":310381726,"ratio":-114.625,"exact":57005.0625,"name":"","maybe":"hello","perhaps":-9223372036854775808}
+n374: OK {"title":"/","inner":{"label":"q\"uo\"te","count":-9223372036854775808},"boxed":null,"ints":[0,9223372036854775807,-1,845443],"strs":["mix🫘ed\ttext","\""],"rows":[{"label":"hello","count":42},{"label":"\n","count":-9223372036854775808},{"label":"","count":-693791}],"flag":true}
+s375: OK {"b":true,"small":-2,"mid":46692,"wide":42,"un":902138437,"ratio":-91.125,"exact":0.0,"name":"back\\slash","maybe":"\n","perhaps":110}
+n375: OK {"title":"a","inner":{"label":"/","count":54},"boxed":null,"ints":[],"strs":[],"rows":[{"label":"\r","count":9223372036854775807},{"label":"\u0001","count":221},{"label":"a","count":730580}],"flag":false}
+l375: OK [{"label":"café","count":42},{"label":"\r","count":224},{"label":"","count":-1}]
+s376: OK {"b":false,"small":-112,"mid":11970,"wide":-1,"un":323970107,"ratio":-17.5,"exact":-0.0625,"name":"back\\slash","maybe":"\u0001","perhaps":9223372036854775807}
+n376: OK {"title":"q\"uo\"te","inner":{"label":"/","count":125},"boxed":null,"ints":[0],"strs":["\\"],"rows":[],"flag":true}
+s377: OK {"b":true,"small":25,"mid":44040,"wide":0,"un":300902277,"ratio":7.125,"exact":18990.25,"name":"control\u001F\u0000end","maybe":"line\nbreak","perhaps":null}
+n377: OK {"title":"\r","inner":{"label":"","count":9223372036854775807},"boxed":null,"ints":[180,-480073],"strs":[],"rows":[{"label":"","count":-36839},{"label":"line\nbreak","count":-675089},{"label":"café","count":610017}],"flag":true}
+s378: OK {"b":false,"small":34,"mid":28375,"wide":9223372036854775807,"un":708928481,"ratio":103.375,"exact":38053.0625,"name":" tail","maybe":"\t","perhaps":null}
+n378: OK {"title":"\r","inner":{"label":"\"","count":0},"boxed":null,"ints":[31,-1],"strs":[],"rows":[{"label":"/","count":-677816},{"label":"q\"uo\"te","count":9223372036854775807},{"label":"café","count":-9223372036854775808}],"flag":false}
+s379: OK {"b":true,"small":38,"mid":54600,"wide":184,"un":894405377,"ratio":102.5,"exact":45151.0625,"name":"mix🫘ed\ttext","maybe":"","perhaps":-9223372036854775808}
+n379: OK {"title":"café","inner":{"label":"hello","count":614484},"boxed":{"label":"ünïcødé","count":0},"ints":[],"strs":[],"rows":[{"label":"\u0001","count":-9223372036854775808},{"label":"","count":42}],"flag":true}
+s380: OK {"b":false,"small":-39,"mid":38963,"wide":-1,"un":493036189,"ratio":12.0,"exact":5.625,"name":"\\","maybe":null,"perhaps":142}
+n380: OK {"title":"café","inner":{"label":"/","count":59083},"boxed":null,"ints":[],"strs":["🫘","\r","control\u001F\u0000end"],"rows":[{"label":"q\"uo\"te","count":-1},{"label":"\"","count":74857},{"label":"hello","count":0}],"flag":false}
+l380: OK [{"label":"/","count":0}]
+s381: OK {"b":false,"small":-45,"mid":8770,"wide":147,"un":297310469,"ratio":108.75,"exact":30282.25,"name":"q\"uo\"te","maybe":"café","perhaps":null}
+n381: OK {"title":"\n","inner":{"label":"日本語","count":0},"boxed":null,"ints":[0,112,42],"strs":[],"rows":[],"flag":false}
+s382: OK {"b":false,"small":97,"mid":19327,"wide":0,"un":365824589,"ratio":-41.875,"exact":-576460752303423500.0,"name":"back\\slash","maybe":"","perhaps":null}
+n382: OK {"title":"\n","inner":{"label":"🫘","count":0},"boxed":null,"ints":[9223372036854775807,225],"strs":["hello","a"],"rows":[],"flag":true}
+s383: OK {"b":true,"small":-42,"mid":45191,"wide":0,"un":756386453,"ratio":63.125,"exact":50288.6875,"name":"back\\slash","maybe":"hello","perhaps":null}
+n383: OK {"title":"\"","inner":{"label":"\r","count":-1},"boxed":{"label":"q\"uo\"te","count":0},"ints":[214,-305081,452524,42],"strs":["hello","\\"],"rows":[{"label":"line\nbreak","count":583844}],"flag":false}
+s384: OK {"b":false,"small":117,"mid":40780,"wide":-9223372036854775808,"un":951986849,"ratio":-8.375,"exact":0.0,"name":"q\"uo\"te","maybe":"\\","perhaps":57}
+n384: OK {"title":"\n","inner":{"label":"back\\slash","count":487483},"boxed":{"label":"ünïcødé","count":219},"ints":[42],"strs":[],"rows":[],"flag":true}
+s385: OK {"b":false,"small":-23,"mid":49603,"wide":42,"un":403342674,"ratio":76.0,"exact":0.0,"name":"q\"uo\"te","maybe":"\r","perhaps":9223372036854775807}
+n385: OK {"title":"emoji😀pair","inner":{"label":"ünïcødé","count":-1},"boxed":{"label":"emoji😀pair","count":-547966},"ints":[809419,-1],"strs":["\\"," tail"],"rows":[{"label":"control\u001F\u0000end","count":326636},{"label":"café","count":9223372036854775807}],"flag":true}
+l385: OK [{"label":"emoji😀pair","count":9223372036854775807},{"label":"a","count":888675},{"label":"emoji😀pair","count":-6488}]
+s386: OK {"b":false,"small":-13,"mid":11105,"wide":9223372036854775807,"un":518692607,"ratio":-27.0,"exact":-58645.5625,"name":"q\"uo\"te","maybe":null,"perhaps":42}
+n386: OK {"title":"café","inner":{"label":"q\"uo\"te","count":-1},"boxed":{"label":"control\u001F\u0000end","count":0},"ints":[42,9223372036854775807,0],"strs":["emoji😀pair","\"","\\"],"rows":[],"flag":false}
+s387: OK {"b":false,"small":-104,"mid":7310,"wide":-9223372036854775808,"un":745443828,"ratio":54.75,"exact":-49414.0,"name":"/","maybe":"\"","perhaps":0}
+n387: OK {"title":"a","inner":{"label":"emoji😀pair","count":-9223372036854775808},"boxed":null,"ints":[],"strs":["control\u001F\u0000end","ünïcødé"],"rows":[{"label":"mix🫘ed\ttext","count":0}],"flag":false}
+s388: OK {"b":false,"small":34,"mid":43684,"wide":-9223372036854775808,"un":354058121,"ratio":76.625,"exact":0.0,"name":"back\\slash","maybe":"mix🫘ed\ttext","perhaps":0}
+n388: OK {"title":"control\u001F\u0000end","inner":{"label":"line\nbreak","count":0},"boxed":null,"ints":[42,-9223372036854775808,-9223372036854775808,42],"strs":["🫘","hello"],"rows":[{"label":"日本語","count":-9223372036854775808}],"flag":true}
+s389: OK {"b":false,"small":68,"mid":1765,"wide":0,"un":154159263,"ratio":-21.375,"exact":-0.0625,"name":"hello","maybe":"\u0001","perhaps":null}
+n389: OK {"title":"ünïcødé","inner":{"label":"back\\slash","count":-9223372036854775808},"boxed":{"label":"control\u001F\u0000end","count":220},"ints":[42,9223372036854775807,26],"strs":["café","\""],"rows":[],"flag":true}
+s390: OK {"b":true,"small":8,"mid":60410,"wide":42,"un":32767043,"ratio":82.375,"exact":2.625,"name":"","maybe":null,"perhaps":null}
+n390: OK {"title":"日本語","inner":{"label":"mix🫘ed\ttext","count":-384831},"boxed":{"label":"q\"uo\"te","count":-9223372036854775808},"ints":[0,9223372036854775807],"strs":["control\u001F\u0000end","\t"],"rows":[{"label":"\"","count":17}],"flag":true}
+l390: OK [{"label":"\n","count":70732}]
+s391: OK {"b":false,"small":40,"mid":63329,"wide":-9223372036854775808,"un":811943291,"ratio":60.75,"exact":576460752303423500.0,"name":"\t","maybe":"a","perhaps":null}
+n391: OK {"title":"\r","inner":{"label":"ünïcødé","count":9223372036854775807},"boxed":{"label":"\\","count":9223372036854775807},"ints":[],"strs":["\\"],"rows":[],"flag":true}
+s392: OK {"b":false,"small":62,"mid":15839,"wide":128,"un":715451833,"ratio":122.375,"exact":29113.5625,"name":"emoji😀pair","maybe":null,"perhaps":null}
+n392: OK {"title":"\\","inner":{"label":"","count":42},"boxed":{"label":"q\"uo\"te","count":0},"ints":[],"strs":["mix🫘ed\ttext","back\\slash","back\\slash"],"rows":[],"flag":false}
+s393: OK {"b":true,"small":7,"mid":34065,"wide":814484,"un":663886430,"ratio":75.625,"exact":0.0,"name":"café","maybe":null,"perhaps":-331288}
+n393: OK {"title":"\\","inner":{"label":"ünïcødé","count":-9223372036854775808},"boxed":{"label":" tail","count":187},"ints":[42],"strs":[],"rows":[],"flag":false}
+s394: OK {"b":false,"small":-112,"mid":14141,"wide":42,"un":537666500,"ratio":-1.5,"exact":-0.0625,"name":"q\"uo\"te","maybe":null,"perhaps":null}
+n394: OK {"title":"\n","inner":{"label":"emoji😀pair","count":-535799},"boxed":null,"ints":[249],"strs":["emoji😀pair",""],"rows":[{"label":"control\u001F\u0000end","count":230},{"label":"q\"uo\"te","count":42}],"flag":false}
+s395: OK {"b":false,"small":-6,"mid":11968,"wide":-868598,"un":133081700,"ratio":-94.625,"exact":2.625,"name":"hello","maybe":"control\u001F\u0000end","perhaps":300878}
+n395: OK {"title":" tail","inner":{"label":"q\"uo\"te","count":-9223372036854775808},"boxed":{"label":"q\"uo\"te","count":56},"ints":[0,9223372036854775807],"strs":["café"],"rows":[{"label":"emoji😀pair","count":-844607},{"label":"\\","count":9223372036854775807},{"label":"/","count":807475}],"flag":false}
+l395: OK [{"label":"q\"uo\"te","count":0}]
+s396: OK {"b":true,"small":-87,"mid":42744,"wide":32,"un":659270542,"ratio":14.5,"exact":-576460752303423500.0,"name":"café","maybe":"control\u001F\u0000end","perhaps":888892}
+n396: OK {"title":"hello","inner":{"label":"hello","count":0},"boxed":null,"ints":[231,-92281],"strs":[],"rows":[{"label":"line\nbreak","count":9223372036854775807},{"label":"\t","count":10},{"label":"back\\slash","count":769115}],"flag":false}
+s397: OK {"b":true,"small":-115,"mid":62215,"wide":-23441,"un":287627980,"ratio":-57.625,"exact":2.625,"name":"hello","maybe":"/","perhaps":-1}
+n397: OK {"title":"control\u001F\u0000end","inner":{"label":"café","count":42},"boxed":{"label":"q\"uo\"te","count":-1},"ints":[0,9223372036854775807,-1,304435],"strs":[""],"rows":[],"flag":true}
+s398: OK {"b":false,"small":-106,"mid":35651,"wide":-1,"un":560802770,"ratio":-116.125,"exact":3.5,"name":"\\","maybe":"line\nbreak","perhaps":null}
+n398: OK {"title":"hello","inner":{"label":"control\u001F\u0000end","count":42},"boxed":{"label":"\"","count":-354824},"ints":[888193,9223372036854775807,163],"strs":["q\"uo\"te"],"rows":[],"flag":true}
+s399: OK {"b":true,"small":122,"mid":24128,"wide":9223372036854775807,"un":847686921,"ratio":-104.5,"exact":21419.375,"name":"control\u001F\u0000end","maybe":null,"perhaps":null}
+n399: OK {"title":"emoji😀pair","inner":{"label":"\r","count":-9223372036854775808},"boxed":{"label":"/","count":0},"ints":[0],"strs":["\n","\n"],"rows":[{"label":"ünïcødé","count":-935552},{"label":"q\"uo\"te","count":-369894},{"label":"line\nbreak","count":801529}],"flag":false}
+e0: OK {"b":true,"small":-1,"mid":7,"wide":9,"un":3,"ratio":1.5,"exact":2.0,"name":"x","maybe":null,"perhaps":null}
+e1: OK {"b":true,"small":0,"mid":0,"wide":0,"un":0,"ratio":0.0,"exact":0.0,"name":"","maybe":null,"perhaps":null}
+e2: OK {"b":false,"small":1,"mid":2,"wide":3,"un":4,"ratio":-0.5,"exact":0.0,"name":"aAb\n\"","maybe":null,"perhaps":null}
+e3: OK {"b":true,"small":-128,"mid":65535,"wide":9223372036854775807,"un":18446744073709551615,"ratio":1000.0,"exact":0.0015,"name":"n","maybe":null,"perhaps":null}
+e4: OK {"b":true,"small":0,"mid":0,"wide":0,"un":0,"ratio":-0.0,"exact":25000000000.0,"name":"z","maybe":null,"perhaps":null}
+e5: OK {"b":true,"small":0,"mid":0,"wide":0,"un":0,"ratio":0.0,"exact":1.2345678901234568e29,"name":"日本語","maybe":null,"perhaps":null}
+e6: ERR invalid code=104 records=1 field=0
+e7: ERR invalid code=104 records=1 field=1
+e8: ERR invalid code=105 records=1 field=1
+e9: ERR invalid code=105 records=1 field=2
+e10: ERR invalid code=103 records=1 field=7
+e11: ERR invalid code=106 records=1 field=7
+e12: OK {"b":true,"small":0,"mid":0,"wide":0,"un":0,"ratio":0.0,"exact":0.0,"name":"n","maybe":null,"perhaps":null}
+e13: ERR invalid code=107 records=1 field=0
+e14: ERR invalid code=1 pos=20 field=-1
+e15: ERR invalid code=1 pos=10 field=-1
+e16: ERR invalid code=101 records=0 field=-1
+e17: ERR invalid code=7 pos=0 field=-1
+e18: ERR invalid code=10 pos=0 field=-1
+e19: ERR invalid code=10 pos=0 field=-1
+e20: ERR invalid code=4 pos=76 field=-1
+e21: ERR invalid code=6 pos=72 field=-1
+e22: ERR invalid code=6 pos=72 field=-1
+e23: OK {"b":true,"small":0,"mid":0,"wide":0,"un":0,"ratio":0.0,"exact":0.0,"name":"go😀odA","maybe":null,"perhaps":null}
+e24: OK {"b":true,"small":0,"mid":0,"wide":0,"un":0,"ratio":0.0,"exact":0.0,"name":"\"\\/\b\f\n\r\t","maybe":null,"perhaps":null}
+opt.strict: ERR invalid code=1 pos=0 field=-1
+opt.lenient: OK {"b":true,"small":0,"mid":0,"wide":0,"un":0,"ratio":0.0,"exact":0.0,"name":"n","maybe":null,"perhaps":null}
+opt.depth-unknown: ERR invalid code=108 records=1 field=7
+depth.u0.1: ERR invalid code=108 records=1 field=0
+depth.u0.2: OK {"b":true,"small":0,"mid":0,"wide":0,"un":0,"ratio":0.0,"exact":0.0,"name":"n","maybe":null,"perhaps":null}
+depth.u0.3: OK {"b":true,"small":0,"mid":0,"wide":0,"un":0,"ratio":0.0,"exact":0.0,"name":"n","maybe":null,"perhaps":null}
+depth.u0.4: OK {"b":true,"small":0,"mid":0,"wide":0,"un":0,"ratio":0.0,"exact":0.0,"name":"n","maybe":null,"perhaps":null}
+depth.u0.5: OK {"b":true,"small":0,"mid":0,"wide":0,"un":0,"ratio":0.0,"exact":0.0,"name":"n","maybe":null,"perhaps":null}
+depth.u0.6: OK {"b":true,"small":0,"mid":0,"wide":0,"un":0,"ratio":0.0,"exact":0.0,"name":"n","maybe":null,"perhaps":null}
+depth.u0.7: OK {"b":true,"small":0,"mid":0,"wide":0,"un":0,"ratio":0.0,"exact":0.0,"name":"n","maybe":null,"perhaps":null}
+depth.u1.1: ERR invalid code=108 records=1 field=0
+depth.u1.2: ERR invalid code=108 records=1 field=7
+depth.u1.3: OK {"b":true,"small":0,"mid":0,"wide":0,"un":0,"ratio":0.0,"exact":0.0,"name":"n","maybe":null,"perhaps":null}
+depth.u1.4: OK {"b":true,"small":0,"mid":0,"wide":0,"un":0,"ratio":0.0,"exact":0.0,"name":"n","maybe":null,"perhaps":null}
+depth.u1.5: OK {"b":true,"small":0,"mid":0,"wide":0,"un":0,"ratio":0.0,"exact":0.0,"name":"n","maybe":null,"perhaps":null}
+depth.u1.6: OK {"b":true,"small":0,"mid":0,"wide":0,"un":0,"ratio":0.0,"exact":0.0,"name":"n","maybe":null,"perhaps":null}
+depth.u1.7: OK {"b":true,"small":0,"mid":0,"wide":0,"un":0,"ratio":0.0,"exact":0.0,"name":"n","maybe":null,"perhaps":null}
+depth.u2.1: ERR invalid code=108 records=1 field=0
+depth.u2.2: ERR invalid code=108 records=1 field=7
+depth.u2.3: ERR invalid code=108 records=1 field=7
+depth.u2.4: OK {"b":true,"small":0,"mid":0,"wide":0,"un":0,"ratio":0.0,"exact":0.0,"name":"n","maybe":null,"perhaps":null}
+depth.u2.5: OK {"b":true,"small":0,"mid":0,"wide":0,"un":0,"ratio":0.0,"exact":0.0,"name":"n","maybe":null,"perhaps":null}
+depth.u2.6: OK {"b":true,"small":0,"mid":0,"wide":0,"un":0,"ratio":0.0,"exact":0.0,"name":"n","maybe":null,"perhaps":null}
+depth.u2.7: OK {"b":true,"small":0,"mid":0,"wide":0,"un":0,"ratio":0.0,"exact":0.0,"name":"n","maybe":null,"perhaps":null}
+depth.u3.1: ERR invalid code=108 records=1 field=0
+depth.u3.2: ERR invalid code=108 records=1 field=7
+depth.u3.3: ERR invalid code=108 records=1 field=7
+depth.u3.4: ERR invalid code=108 records=1 field=7
+depth.u3.5: ERR invalid code=108 records=1 field=7
+depth.u3.6: ERR invalid code=108 records=1 field=7
+depth.u3.7: OK {"b":true,"small":0,"mid":0,"wide":0,"un":0,"ratio":0.0,"exact":0.0,"name":"n","maybe":null,"perhaps":null}
+depth.u4.1: ERR invalid code=108 records=1 field=0
+depth.u4.2: OK {"b":true,"small":0,"mid":0,"wide":0,"un":0,"ratio":0.0,"exact":0.0,"name":"n","maybe":null,"perhaps":null}
+depth.u4.3: OK {"b":true,"small":0,"mid":0,"wide":0,"un":0,"ratio":0.0,"exact":0.0,"name":"n","maybe":null,"perhaps":null}
+depth.u4.4: OK {"b":true,"small":0,"mid":0,"wide":0,"un":0,"ratio":0.0,"exact":0.0,"name":"n","maybe":null,"perhaps":null}
+depth.u4.5: OK {"b":true,"small":0,"mid":0,"wide":0,"un":0,"ratio":0.0,"exact":0.0,"name":"n","maybe":null,"perhaps":null}
+depth.u4.6: OK {"b":true,"small":0,"mid":0,"wide":0,"un":0,"ratio":0.0,"exact":0.0,"name":"n","maybe":null,"perhaps":null}
+depth.u4.7: OK {"b":true,"small":0,"mid":0,"wide":0,"un":0,"ratio":0.0,"exact":0.0,"name":"n","maybe":null,"perhaps":null}
+depth.u5.1: ERR invalid code=108 records=1 field=0
+depth.u5.2: ERR invalid code=108 records=1 field=7
+depth.u5.3: ERR invalid code=108 records=1 field=7
+depth.u5.4: OK {"b":true,"small":0,"mid":0,"wide":0,"un":0,"ratio":0.0,"exact":0.0,"name":"n","maybe":null,"perhaps":null}
+depth.u5.5: OK {"b":true,"small":0,"mid":0,"wide":0,"un":0,"ratio":0.0,"exact":0.0,"name":"n","maybe":null,"perhaps":null}
+depth.u5.6: OK {"b":true,"small":0,"mid":0,"wide":0,"un":0,"ratio":0.0,"exact":0.0,"name":"n","maybe":null,"perhaps":null}
+depth.u5.7: OK {"b":true,"small":0,"mid":0,"wide":0,"un":0,"ratio":0.0,"exact":0.0,"name":"n","maybe":null,"perhaps":null}
+depth.u6.1: ERR invalid code=108 records=1 field=0
+depth.u6.2: OK {"b":true,"small":0,"mid":0,"wide":0,"un":0,"ratio":0.0,"exact":0.0,"name":"n","maybe":null,"perhaps":null}
+depth.u6.3: OK {"b":true,"small":0,"mid":0,"wide":0,"un":0,"ratio":0.0,"exact":0.0,"name":"n","maybe":null,"perhaps":null}
+depth.u6.4: OK {"b":true,"small":0,"mid":0,"wide":0,"un":0,"ratio":0.0,"exact":0.0,"name":"n","maybe":null,"perhaps":null}
+depth.u6.5: OK {"b":true,"small":0,"mid":0,"wide":0,"un":0,"ratio":0.0,"exact":0.0,"name":"n","maybe":null,"perhaps":null}
+depth.u6.6: OK {"b":true,"small":0,"mid":0,"wide":0,"un":0,"ratio":0.0,"exact":0.0,"name":"n","maybe":null,"perhaps":null}
+depth.u6.7: OK {"b":true,"small":0,"mid":0,"wide":0,"un":0,"ratio":0.0,"exact":0.0,"name":"n","maybe":null,"perhaps":null}
+depth.u7.1: ERR invalid code=108 records=1 field=0
+depth.u7.2: ERR invalid code=108 records=1 field=7
+depth.u7.3: ERR invalid code=108 records=1 field=7
+depth.u7.4: OK {"b":true,"small":0,"mid":0,"wide":0,"un":0,"ratio":0.0,"exact":0.0,"name":"n","maybe":null,"perhaps":null}
+depth.u7.5: OK {"b":true,"small":0,"mid":0,"wide":0,"un":0,"ratio":0.0,"exact":0.0,"name":"n","maybe":null,"perhaps":null}
+depth.u7.6: OK {"b":true,"small":0,"mid":0,"wide":0,"un":0,"ratio":0.0,"exact":0.0,"name":"n","maybe":null,"perhaps":null}
+depth.u7.7: OK {"b":true,"small":0,"mid":0,"wide":0,"un":0,"ratio":0.0,"exact":0.0,"name":"n","maybe":null,"perhaps":null}
+depth.k0.1: ERR invalid code=108 records=1 field=0
+depth.k0.2: ERR invalid code=108 records=1 field=0
+depth.k0.3: OK {"title":"t","inner":{"label":"l","count":1},"boxed":null,"ints":[],"strs":[],"rows":[],"flag":true}
+depth.k0.4: OK {"title":"t","inner":{"label":"l","count":1},"boxed":null,"ints":[],"strs":[],"rows":[],"flag":true}
+depth.k0.5: OK {"title":"t","inner":{"label":"l","count":1},"boxed":null,"ints":[],"strs":[],"rows":[],"flag":true}
+depth.k1.1: ERR invalid code=108 records=1 field=0
+depth.k1.2: ERR invalid code=108 records=1 field=0
+depth.k1.3: OK {"title":"t","inner":{"label":"l","count":1},"boxed":null,"ints":[1,2],"strs":["a"],"rows":[],"flag":true}
+depth.k1.4: OK {"title":"t","inner":{"label":"l","count":1},"boxed":null,"ints":[1,2],"strs":["a"],"rows":[],"flag":true}
+depth.k1.5: OK {"title":"t","inner":{"label":"l","count":1},"boxed":null,"ints":[1,2],"strs":["a"],"rows":[],"flag":true}
+depth.k2.1: ERR invalid code=108 records=1 field=0
+depth.k2.2: ERR invalid code=108 records=1 field=0
+depth.k2.3: ERR invalid code=108 records=1 field=0
+depth.k2.4: OK {"title":"t","inner":{"label":"l","count":1},"boxed":null,"ints":[],"strs":[],"rows":[{"label":"r","count":2}],"flag":true}
+depth.k2.5: OK {"title":"t","inner":{"label":"l","count":1},"boxed":null,"ints":[],"strs":[],"rows":[{"label":"r","count":2}],"flag":true}
+depth.k3.1: ERR invalid code=108 records=1 field=0
+depth.k3.2: ERR invalid code=108 records=1 field=0
+depth.k3.3: OK {"title":"t","inner":{"label":"l","count":1},"boxed":{"label":"b","count":3},"ints":[],"strs":[],"rows":[],"flag":false}
+depth.k3.4: OK {"title":"t","inner":{"label":"l","count":1},"boxed":{"label":"b","count":3},"ints":[],"strs":[],"rows":[],"flag":false}
+depth.k3.5: OK {"title":"t","inner":{"label":"l","count":1},"boxed":{"label":"b","count":3},"ints":[],"strs":[],"rows":[],"flag":false}
+bs.t0: ERR invalid code=10 pos=0 field=-1
+bs.t1: ERR invalid code=2 pos=1 field=-1
+bs.t2: ERR invalid code=2 pos=2 field=-1
+bs.t3: ERR invalid code=2 pos=3 field=-1
+bs.t4: ERR invalid code=2 pos=4 field=-1
+bs.t5: ERR invalid code=2 pos=5 field=-1
+bs.t6: ERR invalid code=2 pos=6 field=-1
+bs.t7: ERR invalid code=2 pos=7 field=-1
+bs.t8: ERR invalid code=2 pos=8 field=-1
+bs.t9: ERR invalid code=2 pos=9 field=-1
+bs.t10: ERR invalid code=2 pos=10 field=-1
+bs.t11: ERR invalid code=2 pos=11 field=-1
+bs.t12: ERR invalid code=2 pos=12 field=-1
+bs.t13: ERR invalid code=2 pos=13 field=-1
+bs.t14: ERR invalid code=2 pos=14 field=-1
+bs.t15: ERR invalid code=2 pos=15 field=-1
+bs.t16: ERR invalid code=2 pos=16 field=-1
+bs.t17: ERR invalid code=2 pos=17 field=-1
+bs.t18: ERR invalid code=2 pos=18 field=-1
+bs.t19: ERR invalid code=2 pos=19 field=-1
+bs.t20: ERR invalid code=2 pos=20 field=-1
+bs.t21: ERR invalid code=2 pos=21 field=-1
+bs.t22: ERR invalid code=2 pos=22 field=-1
+bs.t23: ERR invalid code=2 pos=23 field=-1
+bs.t24: ERR invalid code=2 pos=24 field=-1
+bs.t25: ERR invalid code=2 pos=25 field=-1
+bs.t26: ERR invalid code=2 pos=26 field=-1
+bs.t27: ERR invalid code=2 pos=27 field=-1
+bs.t28: ERR invalid code=2 pos=28 field=-1
+bs.t29: ERR invalid code=2 pos=29 field=-1
+bs.t30: ERR invalid code=2 pos=30 field=-1
+bs.t31: ERR invalid code=2 pos=31 field=-1
+bs.t32: ERR invalid code=2 pos=32 field=-1
+bs.t33: ERR invalid code=2 pos=33 field=-1
+bs.t34: ERR invalid code=2 pos=34 field=-1
+bs.t35: ERR invalid code=2 pos=35 field=-1
+bs.t36: ERR invalid code=2 pos=36 field=-1
+bs.t37: ERR invalid code=2 pos=37 field=-1
+bs.t38: ERR invalid code=2 pos=38 field=-1
+bs.t39: ERR invalid code=2 pos=39 field=-1
+bs.t40: ERR invalid code=2 pos=40 field=-1
+bs.t41: ERR invalid code=2 pos=41 field=-1
+bs.t42: ERR invalid code=2 pos=42 field=-1
+bs.t43: ERR invalid code=2 pos=43 field=-1
+bs.t44: ERR invalid code=2 pos=44 field=-1
+bs.t45: ERR invalid code=2 pos=45 field=-1
+bs.t46: ERR invalid code=2 pos=46 field=-1
+bs.t47: ERR invalid code=2 pos=47 field=-1
+bs.t48: ERR invalid code=2 pos=48 field=-1
+bs.t49: ERR invalid code=2 pos=49 field=-1
+bs.t50: ERR invalid code=2 pos=50 field=-1
+bs.t51: ERR invalid code=2 pos=51 field=-1
+bs.t52: ERR invalid code=2 pos=52 field=-1
+bs.t53: ERR invalid code=2 pos=53 field=-1
+bs.t54: ERR invalid code=2 pos=54 field=-1
+bs.t55: ERR invalid code=2 pos=55 field=-1
+bs.t56: ERR invalid code=2 pos=56 field=-1
+bs.t57: ERR invalid code=2 pos=57 field=-1
+bs.t58: ERR invalid code=2 pos=58 field=-1
+bs.t59: ERR invalid code=2 pos=59 field=-1
+bs.t60: ERR invalid code=2 pos=60 field=-1
+bs.t61: ERR invalid code=2 pos=61 field=-1
+bs.t62: ERR invalid code=2 pos=62 field=-1
+bs.t63: ERR invalid code=2 pos=63 field=-1
+bs.t64: ERR invalid code=2 pos=64 field=-1
+bs.t65: ERR invalid code=2 pos=65 field=-1
+bs.t66: ERR invalid code=2 pos=66 field=-1
+bs.t67: ERR invalid code=2 pos=67 field=-1
+bs.t68: ERR invalid code=2 pos=68 field=-1
+bs.t69: ERR invalid code=2 pos=69 field=-1
+bs.t70: ERR invalid code=2 pos=70 field=-1
+bs.t71: ERR invalid code=2 pos=71 field=-1
+bs.t72: ERR invalid code=2 pos=72 field=-1
+bs.t73: ERR invalid code=2 pos=73 field=-1
+bs.t74: ERR invalid code=2 pos=74 field=-1
+bs.t75: ERR invalid code=2 pos=75 field=-1
+bs.t76: ERR invalid code=2 pos=76 field=-1
+bs.t77: ERR invalid code=2 pos=77 field=-1
+bs.f0: ERR invalid code=1 pos=0 field=-1
+bs.f3: ERR invalid code=1 pos=11 field=-1
+bs.f6: ERR invalid code=7 pos=5 field=-1
+bs.f9: ERR invalid code=1 pos=9 field=-1
+bs.f12: ERR invalid code=106 records=1 field=1
+bs.f15: ERR invalid code=106 records=1 field=1
+bs.f18: ERR invalid code=5 pos=18 field=-1
+bs.f21: ERR invalid code=1 pos=21 field=-1
+bs.f24: ERR invalid code=106 records=1 field=2
+bs.f27: OK {"b":true,"small":-1,"mid":8,"wide":9,"un":3,"ratio":1.5,"exact":2.0,"name":"x","maybe":null,"perhaps":null}
+bs.f30: ERR invalid code=106 records=1 field=3
+bs.f33: ERR invalid code=106 records=1 field=3
+bs.f36: ERR invalid code=1 pos=36 field=-1
+bs.f39: ERR invalid code=106 records=1 field=4
+bs.f42: ERR invalid code=1 pos=42 field=-1
+bs.f45: ERR invalid code=1 pos=45 field=-1
+bs.f48: ERR invalid code=106 records=1 field=5
+bs.f51: ERR invalid code=1 pos=58 field=-1
+bs.f54: ERR invalid code=1 pos=54 field=-1
+bs.f57: ERR invalid code=1 pos=57 field=-1
+bs.f60: ERR invalid code=106 records=1 field=6
+bs.f63: ERR invalid code=1 pos=68 field=-1
+bs.f66: ERR invalid code=1 pos=66 field=-1
+bs.f69: ERR invalid code=106 records=1 field=7
+bs.f72: ERR invalid code=1 pos=75 field=-1
+bs.f75: OK {"b":true,"small":-1,"mid":7,"wide":9,"un":3,"ratio":1.5,"exact":2.0,"name":"y","maybe":null,"perhaps":null}
+bn.t0: ERR invalid code=10 pos=0 field=-1
+bn.t1: ERR invalid code=2 pos=1 field=-1
+bn.t2: ERR invalid code=2 pos=2 field=-1
+bn.t3: ERR invalid code=2 pos=3 field=-1
+bn.t4: ERR invalid code=2 pos=4 field=-1
+bn.t5: ERR invalid code=2 pos=5 field=-1
+bn.t6: ERR invalid code=2 pos=6 field=-1
+bn.t7: ERR invalid code=2 pos=7 field=-1
+bn.t8: ERR invalid code=2 pos=8 field=-1
+bn.t9: ERR invalid code=2 pos=9 field=-1
+bn.t10: ERR invalid code=2 pos=10 field=-1
+bn.t11: ERR invalid code=2 pos=11 field=-1
+bn.t12: ERR invalid code=2 pos=12 field=-1
+bn.t13: ERR invalid code=2 pos=13 field=-1
+bn.t14: ERR invalid code=2 pos=14 field=-1
+bn.t15: ERR invalid code=2 pos=15 field=-1
+bn.t16: ERR invalid code=2 pos=16 field=-1
+bn.t17: ERR invalid code=2 pos=17 field=-1
+bn.t18: ERR invalid code=2 pos=18 field=-1
+bn.t19: ERR invalid code=2 pos=19 field=-1
+bn.t20: ERR invalid code=2 pos=20 field=-1
+bn.t21: ERR invalid code=2 pos=21 field=-1
+bn.t22: ERR invalid code=2 pos=22 field=-1
+bn.t23: ERR invalid code=2 pos=23 field=-1
+bn.t24: ERR invalid code=2 pos=24 field=-1
+bn.t25: ERR invalid code=2 pos=25 field=-1
+bn.t26: ERR invalid code=2 pos=26 field=-1
+bn.t27: ERR invalid code=2 pos=27 field=-1
+bn.t28: ERR invalid code=2 pos=28 field=-1
+bn.t29: ERR invalid code=2 pos=29 field=-1
+bn.t30: ERR invalid code=2 pos=30 field=-1
+bn.t31: ERR invalid code=2 pos=31 field=-1
+bn.t32: ERR invalid code=2 pos=32 field=-1
+bn.t33: ERR invalid code=2 pos=33 field=-1
+bn.t34: ERR invalid code=2 pos=34 field=-1
+bn.t35: ERR invalid code=2 pos=35 field=-1
+bn.t36: ERR invalid code=2 pos=36 field=-1
+bn.t37: ERR invalid code=2 pos=37 field=-1
+bn.t38: ERR invalid code=2 pos=38 field=-1
+bn.t39: ERR invalid code=2 pos=39 field=-1
+bn.t40: ERR invalid code=2 pos=40 field=-1
+bn.t41: ERR invalid code=2 pos=41 field=-1
+bn.t42: ERR invalid code=2 pos=42 field=-1
+bn.t43: ERR invalid code=2 pos=43 field=-1
+bn.t44: ERR invalid code=2 pos=44 field=-1
+bn.t45: ERR invalid code=2 pos=45 field=-1
+bn.t46: ERR invalid code=2 pos=46 field=-1
+bn.t47: ERR invalid code=2 pos=47 field=-1
+bn.t48: ERR invalid code=2 pos=48 field=-1
+bn.t49: ERR invalid code=2 pos=49 field=-1
+bn.t50: ERR invalid code=2 pos=50 field=-1
+bn.t51: ERR invalid code=2 pos=51 field=-1
+bn.t52: ERR invalid code=2 pos=52 field=-1
+bn.t53: ERR invalid code=2 pos=53 field=-1
+bn.t54: ERR invalid code=2 pos=54 field=-1
+bn.t55: ERR invalid code=2 pos=55 field=-1
+bn.t56: ERR invalid code=2 pos=56 field=-1
+bn.t57: ERR invalid code=2 pos=57 field=-1
+bn.t58: ERR invalid code=2 pos=58 field=-1
+bn.t59: ERR invalid code=2 pos=59 field=-1
+bn.t60: ERR invalid code=2 pos=60 field=-1
+bn.t61: ERR invalid code=2 pos=61 field=-1
+bn.t62: ERR invalid code=2 pos=62 field=-1
+bn.t63: ERR invalid code=2 pos=63 field=-1
+bn.t64: ERR invalid code=2 pos=64 field=-1
+bn.t65: ERR invalid code=2 pos=65 field=-1
+bn.t66: ERR invalid code=2 pos=66 field=-1
+bn.t67: ERR invalid code=2 pos=67 field=-1
+bn.t68: ERR invalid code=2 pos=68 field=-1
+bn.t69: ERR invalid code=2 pos=69 field=-1
+bn.t70: ERR invalid code=2 pos=70 field=-1
+bn.t71: ERR invalid code=2 pos=71 field=-1
+bn.t72: ERR invalid code=2 pos=72 field=-1
+bn.t73: ERR invalid code=2 pos=73 field=-1
+bn.t74: ERR invalid code=2 pos=74 field=-1
+bn.t75: ERR invalid code=2 pos=75 field=-1
+bn.t76: ERR invalid code=2 pos=76 field=-1
+bn.t77: ERR invalid code=2 pos=77 field=-1
+bn.t78: ERR invalid code=2 pos=78 field=-1
+bn.t79: ERR invalid code=2 pos=79 field=-1
+bn.t80: ERR invalid code=2 pos=80 field=-1
+bn.t81: ERR invalid code=2 pos=81 field=-1
+bn.t82: ERR invalid code=2 pos=82 field=-1
+bn.t83: ERR invalid code=2 pos=83 field=-1
+bn.t84: ERR invalid code=2 pos=84 field=-1
+bn.t85: ERR invalid code=2 pos=85 field=-1
+bn.t86: ERR invalid code=2 pos=86 field=-1
+bn.t87: ERR invalid code=2 pos=87 field=-1
+bn.t88: ERR invalid code=2 pos=88 field=-1
+bn.t89: ERR invalid code=2 pos=89 field=-1
+bn.t90: ERR invalid code=2 pos=90 field=-1
+bn.t91: ERR invalid code=2 pos=91 field=-1
+bn.t92: ERR invalid code=2 pos=92 field=-1
+bn.t93: ERR invalid code=2 pos=93 field=-1
+bn.t94: ERR invalid code=2 pos=94 field=-1
+bn.t95: ERR invalid code=2 pos=95 field=-1
+bn.t96: ERR invalid code=2 pos=96 field=-1
+bn.t97: ERR invalid code=2 pos=97 field=-1
+bn.t98: ERR invalid code=2 pos=98 field=-1
+bn.t99: ERR invalid code=2 pos=99 field=-1
+bn.t100: ERR invalid code=2 pos=100 field=-1
+bn.t101: ERR invalid code=2 pos=101 field=-1
+bn.t102: ERR invalid code=2 pos=102 field=-1
+bn.t103: ERR invalid code=2 pos=103 field=-1
+bn.t104: ERR invalid code=2 pos=104 field=-1
+bn.t105: ERR invalid code=2 pos=105 field=-1
+bn.t106: ERR invalid code=2 pos=106 field=-1
+bn.t107: ERR invalid code=2 pos=107 field=-1
+bn.t108: ERR invalid code=2 pos=108 field=-1
+bn.t109: ERR invalid code=2 pos=109 field=-1
+bn.t110: ERR invalid code=2 pos=110 field=-1
+bn.t111: ERR invalid code=2 pos=111 field=-1
+bn.t112: ERR invalid code=2 pos=112 field=-1
+bn.t113: ERR invalid code=2 pos=113 field=-1
+bn.t114: ERR invalid code=2 pos=114 field=-1
+bn.t115: ERR invalid code=2 pos=115 field=-1
+bn.t116: ERR invalid code=2 pos=116 field=-1
+bn.t117: ERR invalid code=2 pos=117 field=-1
+bn.t118: ERR invalid code=2 pos=118 field=-1
+bn.t119: ERR invalid code=2 pos=119 field=-1
+bn.t120: ERR invalid code=2 pos=120 field=-1
+bn.t121: ERR invalid code=2 pos=121 field=-1
+bn.t122: ERR invalid code=2 pos=122 field=-1
+bn.t123: ERR invalid code=2 pos=123 field=-1
+bn.t124: ERR invalid code=2 pos=124 field=-1
+bn.t125: ERR invalid code=2 pos=125 field=-1
+bn.t126: ERR invalid code=2 pos=126 field=-1
+bn.t127: ERR invalid code=2 pos=127 field=-1
+bn.t128: ERR invalid code=2 pos=128 field=-1
+bn.t129: ERR invalid code=2 pos=129 field=-1
+bn.t130: ERR invalid code=2 pos=130 field=-1
+bn.t131: ERR invalid code=2 pos=131 field=-1
+bn.t132: ERR invalid code=2 pos=132 field=-1
+bn.t133: ERR invalid code=2 pos=133 field=-1
+bn.t134: ERR invalid code=2 pos=134 field=-1
+bn.t135: ERR invalid code=2 pos=135 field=-1
+bn.t136: ERR invalid code=2 pos=136 field=-1
+bn.t137: ERR invalid code=2 pos=137 field=-1
+bn.t138: ERR invalid code=2 pos=138 field=-1
+bn.t139: ERR invalid code=2 pos=139 field=-1
+bn.t140: ERR invalid code=2 pos=140 field=-1
+bn.t141: ERR invalid code=2 pos=141 field=-1
+bn.t142: ERR invalid code=2 pos=142 field=-1
+bn.t143: ERR invalid code=2 pos=143 field=-1
+bn.t144: ERR invalid code=2 pos=144 field=-1
+bn.t145: ERR invalid code=2 pos=145 field=-1
+bn.t146: ERR invalid code=2 pos=146 field=-1
+bn.t147: ERR invalid code=2 pos=147 field=-1
+bn.t148: ERR invalid code=2 pos=148 field=-1
+bn.t149: ERR invalid code=2 pos=149 field=-1
+bn.t150: ERR invalid code=2 pos=150 field=-1
+bn.t151: ERR invalid code=2 pos=151 field=-1
+bn.t152: ERR invalid code=2 pos=152 field=-1
+bn.t153: ERR invalid code=2 pos=153 field=-1
+bn.t154: ERR invalid code=2 pos=154 field=-1
+bn.t155: ERR invalid code=2 pos=155 field=-1
+bn.t156: ERR invalid code=2 pos=156 field=-1
+bn.t157: ERR invalid code=2 pos=157 field=-1
+bn.t158: ERR invalid code=2 pos=158 field=-1
+bn.t159: ERR invalid code=2 pos=159 field=-1
+bn.t160: ERR invalid code=2 pos=160 field=-1
+bn.t161: ERR invalid code=2 pos=161 field=-1
+bn.t162: ERR invalid code=2 pos=162 field=-1
+bn.t163: ERR invalid code=2 pos=163 field=-1
+bn.t164: ERR invalid code=2 pos=164 field=-1
+bn.t165: ERR invalid code=2 pos=165 field=-1
+bn.t166: ERR invalid code=2 pos=166 field=-1
+bn.f0: ERR invalid code=1 pos=0 field=-1
+bn.f7: ERR invalid code=1 pos=10 field=-1
+bn.f14: OK {"title":"hellp","inner":{"label":"control\u001F\u0000end","count":42},"boxed":{"label":"","count":42},"ints":[-745529,606444],"strs":["café"],"rows":[],"flag":false}
+bn.f21: ERR invalid code=102 records=1 field=0
+bn.f28: ERR invalid code=102 records=1 field=1
+bn.f35: OK {"title":"hello","inner":{"label":"dontrol\u001F\u0000end","count":42},"boxed":{"label":"","count":42},"ints":[-745529,606444],"strs":["café"],"rows":[],"flag":false}
+bn.f42: OK {"title":"hello","inner":{"label":"control]u001F\u0000end","count":42},"boxed":{"label":"","count":42},"ints":[-745529,606444],"strs":["café"],"rows":[],"flag":false}
+bn.f49: ERR invalid code=6 pos=48 field=-1
+bn.f56: OK {"title":"hello","inner":{"label":"control\u001F\u0000ene","count":42},"boxed":{"label":"","count":42},"ints":[-745529,606444],"strs":["café"],"rows":[],"flag":false}
+bn.f63: ERR invalid code=102 records=1 field=0
+bn.f70: ERR invalid code=1 pos=70 field=-1
+bn.f77: ERR invalid code=1 pos=81 field=-1
+bn.f84: ERR invalid code=102 records=1 field=2
+bn.f91: ERR invalid code=1 pos=91 field=-1
+bn.f98: ERR invalid code=1 pos=98 field=-1
+bn.f105: ERR invalid code=102 records=1 field=1
+bn.f112: OK {"title":"hello","inner":{"label":"control\u001F\u0000end","count":42},"boxed":{"label":"","count":42},"ints":[-845529,606444],"strs":["café"],"rows":[],"flag":false}
+bn.f119: OK {"title":"hello","inner":{"label":"control\u001F\u0000end","count":42},"boxed":{"label":"","count":42},"ints":[-745529,706444],"strs":["café"],"rows":[],"flag":false}
+bn.f126: ERR invalid code=1 pos=126 field=-1
+bn.f133: ERR invalid code=1 pos=133 field=-1
+bn.f140: OK {"title":"hello","inner":{"label":"control\u001F\u0000end","count":42},"boxed":{"label":"","count":42},"ints":[-745529,606444],"strs":["cafê"],"rows":[],"flag":false}
+bn.f147: ERR invalid code=102 records=1 field=4
+bn.f154: ERR invalid code=1 pos=154 field=-1
+bn.f161: ERR invalid code=1 pos=161 field=-1
+INVARIANTS roundtrips=880 fixed_points=898 truncations=245 violations=0

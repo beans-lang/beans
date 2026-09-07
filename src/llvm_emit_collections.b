@@ -217,6 +217,34 @@ partial class LlvmTextEmitter {
         return self.to_slot(type, value, tag)
     }
 
+    // The constructor call for a list literal of `count` elements.
+    //
+    // A fresh list starts with room for four, so a literal of four or fewer is
+    // the plain constructor it has always been. A longer one asks for exactly
+    // what it is about to hold: without that it doubles its way up from four
+    // while the count was on the page the whole time — a six-element literal
+    // allocated a buffer, filled four slots, allocated a second, and freed the
+    // first. Asking once also lets a literal up to the inline threshold keep
+    // its elements behind its own header, which the doubling path cannot do
+    // because the grow leaves that room behind.
+    //
+    // A negative stride selects the generic i64-slot family, whose plain
+    // constructor takes only the element's reference bit; the capacity
+    // constructor takes the stride as given and so needs no separate entry.
+    fn list_literal_new(stride: int, mask: int,
+                        count: int) -> string {
+        if count <= 4 {
+            if stride < 0 {
+                return "call ptr @beans_list_new(i64 {mask})"
+            }
+            return "call ptr @beans_list_new_typed(i64 {stride}, i64 {mask})"
+        }
+        self.require_declare(
+            "beans_list_new_typed_capacity",
+            "ptr @beans_list_new_typed_capacity(i64, i64, i64)")
+        return "call ptr @beans_list_new_typed_capacity(i64 {stride}, i64 {mask}, i64 {count})"
+    }
+
     fn emit_list(function: MirFunction,
                  instruction: MirInstruction,
                  values: Map<int, string>) -> string {
@@ -289,7 +317,7 @@ partial class LlvmTextEmitter {
             }
             let llvm: string = self.type_text(element)
             var output: string =
-                "  {result} = call ptr @beans_list_new_typed(i64 {self.type_size(element)}, i64 {mask})\n"
+                "  {result} = {self.list_literal_new(self.type_size(element), mask, instruction.operands.len())}\n"
             for index: int in
                 0..instruction.operands.len() {
                 let operand: string =
@@ -321,8 +349,14 @@ partial class LlvmTextEmitter {
                 "LLVM emitter does not support list element '{render_hir_type(element)}' yet")
             return ""
         }
+        // A generic slot list is the typed one with a negative stride: the
+        // magnitude is the byte stride and the sign is what marks the i64-slot
+        // representation to the object-ABI walker. beans_list_new writes that
+        // sign after building an 8-byte typed list; the capacity constructor
+        // takes the stride as given, so -8 is the same list with the room the
+        // literal actually needs.
         var output: string =
-            "  {result} = call ptr @beans_list_new(i64 {if self.type_is_reference(element) { 1 } else { 0 }})\n"
+            "  {result} = {self.list_literal_new(0 - 8, if self.type_is_reference(element) { 1 } else { 0 }, instruction.operands.len())}\n"
         for operand_id: int in instruction.operands {
             let operand: string =
                 self.value(

@@ -236,7 +236,7 @@ while ! grep -q "^listening" "$tmp/echo.log" 2>/dev/null; do
 done
 
 (cd "$tmp/autobahn" && docker run --rm \
-    --user "$(id -u):$(id -g)" "${docker_network_args[@]}" \
+    --user "$(id -u):$(id -g)" ${docker_network_args+"${docker_network_args[@]}"} \
     -v "$PWD/config:/config" -v "$PWD/reports:/reports" \
     crossbario/autobahn-testsuite \
     wstest -m fuzzingclient -s /config/fuzzingclient.json) >"$tmp/autobahn.log" 2>&1 || {
