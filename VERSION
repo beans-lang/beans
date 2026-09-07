@@ -65,9 +65,14 @@ language=1.0
 # caller-owned Bytes instead of a private malloc it then copies out. One call
 # sets the Bytes length and ensures capacity, returning the backing base and
 # capacity; the bridge, a separate translation unit that must not touch BList,
-# reaches it only through this pointer (req[6]). Emitted only into programs
-# that call json.encode_into; not reached by name from the interpreter, which
-# runs its own append.
+# reaches it only through this pointer (req[6]). The Bytes is therefore an
+# opaque void* in the entry's own declaration, not a BList*: a call through a
+# function pointer whose type differs from the callee's declared type is
+# undefined behaviour, so the entry declares the same handle type the bridge's
+# typedef does and casts on this side, the way beans_list_new_typed_capacity
+# already returns void* rather than BList*. Emitted only into programs that
+# call json.encode_into; not reached by name from the interpreter, which runs
+# its own append.
 # 17 (also): beans_alloc_bytes — the pooled allocator without the recycled-block
 # memset, for callers that fill the whole payload the same instant (a decoded
 # string's bytes and its NUL terminator, a Bytes buffer's length). The typed

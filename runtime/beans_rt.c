@@ -1568,9 +1568,8 @@ void* beans_alloc(long long size, long long meta) {
 // path — because the header is written in full by the rc and meta stores, so
 // no stale header survives, and only the recycled-block *payload* zeroing is
 // skipped. Virgin slab memory is already zero (so the fresh-carve arm needs no
-// memset, exactly as beans_alloc's does not), and the non-pooled arm for large
-// blocks still zeroes through rt_zalloc. That large arm is Lane A's to change;
-// this stays confined to the pooled recycled path.
+// memset, exactly as beans_alloc's does not), and the non-pooled arm still
+// zeroes, through the same rt_obj_alloc beans_alloc uses.
 void* beans_alloc_bytes(long long size, long long meta) {
     ARC_ADD(arc_allocations, 1);
     ARC_ADD(arc_allocated_bytes, size);
@@ -1607,7 +1606,18 @@ void* beans_alloc_bytes(long long size, long long meta) {
         }
         h->rc = 1 | (cls << RC_CLS_SHIFT);
     } else {
-        h = rt_zalloc(total);
+        // rt_obj_alloc, not rt_zalloc, and it is not a choice: the release
+        // path reads the size class out of the header and hands every cls == 0
+        // block to rt_obj_free, which frees the 16-byte origin prefix
+        // rt_obj_alloc writes in front of the object. A plain rt_zalloc block
+        // here is freed at ptr - 16 — a pointer no allocator returned — so a
+        // decoded string of 992 bytes or more (total >= 1024 leaves the pooled
+        // classes) either aborts in malloc or silently fails to munmap. The
+        // sanitizer lanes cannot see it: RT_BIG_SANITIZED replaces this whole
+        // allocator with plain malloc/free under ASan. rt_obj_alloc zeroes the
+        // block the way rt_zalloc did, so the large arm still hands back
+        // zeroed payload.
+        h = rt_obj_alloc(total);
         if (!h) beans_panic("out of memory", 0, 0);
         h->rc = 1;
     }
@@ -9051,9 +9061,18 @@ void beans_bytes_reserve(BList* b, long long n, long long line, long long col) {
 // pointer and reports the capacity through *cap_out, so the writer keeps
 // writing straight into the store without a second buffer. Growth failure
 // panics, exactly as every other Bytes append does.
-unsigned char* beans_bytes_reserve_raw(BList* b, unsigned long long len,
+//
+// The Bytes arrives as an opaque handle for the same reason
+// beans_list_new_typed_capacity returns one: the bridge declares the pointer
+// type it calls through, and calling a BList*-taking function through a
+// void*-taking pointer is undefined behaviour even though both parameters use
+// the same machine representation. The declared type here and the typedef
+// there have to be the same type, so the handle is void* on both sides and
+// this side — which does know BList — is the one that casts.
+unsigned char* beans_bytes_reserve_raw(void* handle, unsigned long long len,
                                        unsigned long long min_cap,
                                        unsigned long long* cap_out) {
+    BList* b = (BList*)handle;
     if (min_cap > (unsigned long long)(1LL << 58))
         beans_panic("JSON output too large", 0, 0);
     bytes_grow(b, (long long)min_cap);

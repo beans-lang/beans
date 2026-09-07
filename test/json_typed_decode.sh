@@ -168,6 +168,31 @@ if [[ "$classes" -lt 3 ]]; then
 fi
 rm -rf "$probe_dir"
 
+# 4b. The allocator arm a decoded string takes, and the free that has to match
+#     it. beans_alloc_bytes pools blocks under 1024 bytes total and takes a
+#     non-pooled arm above that, but one release path frees both — through
+#     rt_obj_free, which frees the 16-byte origin prefix rt_obj_alloc writes.
+#     An arm that allocated without the prefix freed a pointer no allocator
+#     returned; a decoded string of 992 bytes is enough to reach it. Run in
+#     both allocator modes, because BEANS_NO_POOL=1 sends *every* size down the
+#     non-pooled arm, and never under a sanitizer: RT_BIG_SANITIZED replaces
+#     this whole allocator with plain malloc/free under ASan, so the sanitized
+#     lanes in section 5 are structurally blind to it.
+echo "checking decoded strings across the allocator's size boundaries"
+"$beansc" build test/cases/json_typed_large_strings.b \
+    -o "$tmp/large_strings" >/dev/null
+for pool in pooled nopool; do
+    pool_env=()
+    [[ "$pool" == "nopool" ]] && pool_env=(BEANS_NO_POOL=1)
+    if ! env "${pool_env[@]}" "$tmp/large_strings" \
+            >"$tmp/large_strings.$pool" 2>"$tmp/large_strings.$pool.err"; then
+        sed -n '1,40p' "$tmp/large_strings.$pool.err" >&2
+        echo "the large-string decode died ($pool)" >&2
+        exit 1
+    fi
+    diff -u test/cases/json_typed_large_strings.out "$tmp/large_strings.$pool"
+done
+
 # 5. ASan/UBSan over both, in both allocator modes. The emitted IR, the runtime
 #    and the same bridge source the driver compiles are instrumented together,
 #    exactly as encoding.sh does it.

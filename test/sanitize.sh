@@ -219,6 +219,163 @@ run_bridge_asan test/cases/crypto_vectors.b hash 'sha256 abc true'
 run_bridge_asan test/cases/json_direct_fuzz.b json_direct 'ok json_direct_fuzz'
 run_bridge_asan test/cases/log_basic.b log 'beans-test|hello beans'
 
+# ---- callback types across the bridge boundary ------------------------------
+#
+# A runtime entry handed to a native bridge as a callback is reached through a
+# typedef the bridge declares, and a call through a function pointer whose type
+# differs from the callee's own declared type is undefined behaviour. The two
+# spellings have the same machine representation, so nothing else in the build
+# notices: beans_bytes_reserve_raw was declared over BList* and called through
+# a void*-handle typedef, and everything worked.
+#
+# -fsanitize=function is the check for exactly that, and clang folds it into
+# -fsanitize=undefined -- so on a host whose clang implements it, every lane
+# above already carries the check. Apple's clang accepts -fsanitize=function
+# and emits nothing for it. That asymmetry is why the Linux CI leg found the
+# call above and a full macOS `make test-sanitize` reported EXIT=0 with no skip
+# line to read: passing the flag is not evidence the check ran.
+#
+# So probe a compiler for the behaviour rather than trusting the flag, prefer
+# one that has it, and name the missing check out loud when the host has none.
+fnsan="$out/fnsan"
+mkdir -p "$fnsan"
+cat >"$fnsan/probe.c" <<'PROBE'
+/* The shape of every runtime-to-bridge callback: an entry declared over a
+   concrete store, reached through a pointer that spells the handle void*. */
+struct BeansProbeStore { int value; };
+int beans_probe_entry(struct BeansProbeStore* store) { return store->value; }
+typedef int (*BeansProbeFn)(void*);
+int main(void) {
+    struct BeansProbeStore store;
+    BeansProbeFn through = (BeansProbeFn)(void*)&beans_probe_entry;
+    store.value = 0;
+    return through(&store);
+}
+PROBE
+# BEANS_UBSAN_FUNCTION_CC names a compiler exclusively: it is both how a host
+# with LLVM somewhere unusual points this lane at it, and how the skip path
+# below can be exercised on a machine that does have a capable compiler
+# (BEANS_UBSAN_FUNCTION_CC=/usr/bin/clang on a Mac prints the skip).
+function_candidates=("${CC:-clang}" /opt/homebrew/opt/llvm/bin/clang
+                     /usr/local/opt/llvm/bin/clang)
+if [[ -n "${BEANS_UBSAN_FUNCTION_CC:-}" ]]; then
+    function_candidates=("$BEANS_UBSAN_FUNCTION_CC")
+fi
+function_cc=""
+for candidate in "${function_candidates[@]}"; do
+    [[ -n "$candidate" ]] || continue
+    command -v "$candidate" >/dev/null 2>&1 || continue
+    "$candidate" -O1 -fsanitize=function "$fnsan/probe.c" -o "$fnsan/probe" \
+        >"$fnsan/probe.build" 2>&1 || continue
+    "$fnsan/probe" >"$fnsan/probe.stdout" 2>"$fnsan/probe.stderr" || true
+    if grep -q 'beans_probe_entry through pointer to incorrect function type' \
+        "$fnsan/probe.stderr"; then
+        function_cc=$candidate
+        break
+    fi
+done
+
+# Which bridge sources take a callback from the runtime? Every one that
+# declares a function-pointer typedef. Listing them by hand would rot; this
+# reads them out of the sources, so a bridge that grows a callback either lands
+# in the lane below or fails here rather than arriving uncovered.
+fn_bridge_sources=()
+while IFS= read -r bridge; do
+    fn_bridge_sources+=("$bridge")
+done < <(grep -lE '^ *typedef .*\(\*[A-Za-z_]+\) *\(' \
+    runtime/encoding/beans_enc_json.c runtime/encoding/beans_enc_xml.cpp \
+    runtime/encoding/beans_enc_base64.cpp runtime/encoding/beans_enc_common.h \
+    runtime/net/beans_net_h1.c runtime/net/beans_net_h2.c \
+    runtime/net/beans_net_sockx.c runtime/net/beans_net_ws.cpp \
+    runtime/net/beans_net_zlib.c runtime/net/beans_net_common.h \
+    runtime/log/beans_log.cpp runtime/log/beans_log.h | sort)
+# beans_net_hash.c and beans_net_tls.c are deliberately not in that scan. Their
+# function-pointer typedefs describe OpenSSL entry points found with dlsym, in
+# a library nothing in this tree compiles: the callee carries no signature to
+# compare against, so -fsanitize=function cannot see those calls whatever it is
+# told. They are not the shape this lane checks -- a Beans runtime entry
+# reached through a bridge's own typedef -- and listing them would only make
+# the guard below demand a lane that could never fire.
+expected_fn_bridges="runtime/encoding/beans_enc_json.c runtime/encoding/beans_enc_xml.cpp"
+if [[ "${fn_bridge_sources[*]}" != "$expected_fn_bridges" ]]; then
+    echo "the set of bridges that take a runtime callback changed:" >&2
+    echo "  found:    ${fn_bridge_sources[*]}" >&2
+    echo "  expected: $expected_fn_bridges" >&2
+    echo "add the new bridge to the -fsanitize=function lane below (and to this" \
+         "expectation), or its callbacks go unchecked the way" \
+         "beans_bytes_reserve_raw did" >&2
+    exit 1
+fi
+
+if [[ -n "$function_cc" ]]; then
+    echo "checking bridge callback types with $function_cc -fsanitize=function"
+    fn_flags=(-O1 -g -fsanitize=function -fno-sanitize-recover=function
+              -Wno-override-module)
+    fn_cxx=(-x c++ -std=c++17 -fno-exceptions -fno-rtti)
+    "$function_cc" "${fn_flags[@]}" -c runtime/encoding/beans_enc_json.c \
+        -o "$fnsan/json.o"
+    "$function_cc" "${fn_flags[@]}" "${fn_cxx[@]}" \
+        -c runtime/encoding/beans_enc_xml.cpp -o "$fnsan/xml.o"
+    # Between them these three reach every callback the two bridges take:
+    # str_len and the encode_into grow hook (req[2], req[6]); the typed
+    # decoder's list constructor, both allocators and the release entry
+    # (req[8]..req[11]); and the XML decoder's own three.
+    run_function_case() {   # <file> <bridge.o> <golden|marker:TEXT> [env...]
+        local file=$1 bridge=$2 expect=$3
+        shift 3
+        # `beansc build` names its IR and its FFI sidecar after the source, so
+        # the link below has to read the same name rather than a label.
+        local name
+        name=$(basename "$file" .b)
+        echo "  -fsanitize=function: $file"
+        rm -f "build/${name}_ffi.c"
+        ./build/beansc build "$file" -o "$fnsan/${name}_plain" >/dev/null
+        local sidecar=()
+        [[ -f "build/${name}_ffi.c" ]] && sidecar=("build/${name}_ffi.c")
+        "$function_cc" "${fn_flags[@]}" "build/$name.ll" "${sidecar[@]}" \
+            build/beans_rt.c "$bridge" -lm -o "$fnsan/$name"
+        local status=0
+        env "$@" BEANS_NO_POOL=1 "$fnsan/$name" \
+            >"$fnsan/${name}.stdout" 2>"$fnsan/${name}.stderr" || status=$?
+        if [[ "$status" -ne 0 ]]; then
+            sed -n '1,60p' "$fnsan/${name}.stderr" >&2
+            echo "$file exited $status under -fsanitize=function" >&2
+            exit 1
+        fi
+        # The check recovers by default in other builds, so read the report as
+        # well as the status.
+        if grep -Eq 'UndefinedBehaviorSanitizer|runtime error:' \
+            "$fnsan/${name}.stderr"; then
+            sed -n '1,60p' "$fnsan/${name}.stderr" >&2
+            echo "$file called through a mismatched function pointer" >&2
+            exit 1
+        fi
+        if [[ "$expect" == marker:* ]]; then
+            grep -q "${expect#marker:}" "$fnsan/${name}.stdout"
+        else
+            diff -u "$expect" "$fnsan/${name}.stdout"
+        fi
+    }
+    run_function_case test/cases/json_direct_fuzz.b \
+        "$fnsan/json.o" marker:'ok json_direct_fuzz'
+    run_function_case test/cases/json_typed_decode_fuzz.b \
+        "$fnsan/json.o" test/cases/json_typed_decode_fuzz.20260906.out \
+        FUZZ_SEED=20260906 FUZZ_ROUNDS=400
+    run_function_case test/cases/encoding_xml_typed_nested.b \
+        "$fnsan/xml.o" test/cases/encoding_xml_typed_nested.out
+    echo "ok bridge callback types: every runtime entry a bridge calls back" \
+         "into is declared the way the bridge calls it"
+else
+    # No skip line is worse than a red build: this is the check that a call
+    # through a function pointer matches the callee's declared type, and
+    # nothing on this host runs it.
+    echo "SKIP: no C compiler here implements -fsanitize=function, so the" \
+         "bridge callback type check did not run. Apple's clang accepts the" \
+         "flag and emits nothing for it; a mainline LLVM clang has it (on" \
+         "macOS: brew install llvm). Set BEANS_UBSAN_FUNCTION_CC to one, or" \
+         "rely on the Linux CI leg, where -fsanitize=undefined carries it." >&2
+fi
+
 # The public Beans case covers the generated-code boundary. This direct case
 # adds every native sink, both drop modes, a full blocking queue, rotation and
 # four concurrent producers under the same sanitizers.
@@ -395,6 +552,13 @@ BEANS_SANITIZE_CALLBACKS=1 bash ./test/stored_callbacks.sh
 # every sanitizer here while that leaked in the native ARC codegen (#60);
 # #60 has landed, so it is checked like everything else.
 #
+# json_typed_large_strings.b is here for the arm no sanitizer above can reach:
+# RT_BIG_SANITIZED swaps the pooled allocator for plain malloc/free whenever
+# ASan is on, so a non-pooled block freed through the wrong path is invisible to
+# every lane in this file. `leaks` runs the real allocator, and a decoded string
+# past the pooled classes that is freed wrongly either aborts here or is left
+# behind for the sweep to find.
+#
 # init_unwind.b is here because #120's rule is "release it, just do not run its
 # deinit body": not running a body is exactly how a release gets dropped
 # instead, and the object a failed construction leaves is only reclaimed by the
@@ -418,6 +582,7 @@ if [[ "$(uname -s)" == Darwin ]] && command -v leaks >/dev/null 2>&1; then
                 examples/stdlib_beans.b examples/packed.b examples/atomics.b \
                 examples/simd_families.b examples/resources.b \
                 test/cases/map_models.b \
+                test/cases/json_typed_large_strings.b \
                 test/cases/collections_leakcheck.b test/cases/calendar_basics.b \
                 test/cases/collections_models.b \
                 test/cases/decimal_precision.b \
