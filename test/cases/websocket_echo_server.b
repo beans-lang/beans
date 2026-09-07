@@ -3,9 +3,10 @@
 // It is deliberately the dumbest correct server there is: accept, upgrade,
 // echo every message back with the same opcode, mirror the close. Every
 // interesting decision — fragmentation, masking, control-frame rules,
-// UTF-8 validity, close-code validity, length boundaries — belongs to
-// std.websocket underneath, which is the whole point of pointing a
-// conformance suite at it.
+// UTF-8 validity, close-code validity, length boundaries, and the
+// permessage-deflate negotiation and transform — belongs to std.websocket
+// underneath, which is the whole point of pointing a conformance suite
+// at it.
 //
 // Usage: websocket_echo_server <port> [max-connections]
 // Prints "listening <port>" to stderr once bound, so a harness can wait on
@@ -54,8 +55,14 @@ fn upgrade(listener: net.TcpListener) -> Result<websocket.Connection> {
     let request: http.Request = read_upgrade(stream)?
     // A conformance run sends messages far larger than a server would
     // normally accept; the limit is policy, and this harness picks one that
-    // lets the suite exercise the framing rather than the policy.
-    return websocket.Connection.accept(move stream, request, 20971520)
+    // lets the suite exercise the framing rather than the policy. With
+    // permessage-deflate on, that same limit is what the message may reach
+    // after it decompresses.
+    //
+    // Compression is offered here because the suite's sections 12 and 13
+    // are nothing but compression; a client that offers nothing still gets
+    // an uncompressed connection, which is what sections 1 to 10 use.
+    return websocket.Connection.accept(move stream, request, 20971520, true)
 }
 
 fn echo(connection: websocket.Connection) {

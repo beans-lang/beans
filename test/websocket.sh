@@ -9,6 +9,14 @@
 # bar: zero FAILED behaviors and zero failed close behaviors across every
 # case it runs. NON-STRICT is a pass (the suite's own vocabulary for "legal
 # but not the strictest choice"); FAILED is not.
+#
+# The `cases` array below is the fuzzing client's allowlist and the only
+# thing that decides what runs: the server negotiating permessage-deflate
+# cannot make the client open a case it was not told to. Sections 12 and 13
+# are the compression sections, and they run only because they are named
+# there. The checker at the bottom counts whatever the report contains, so a
+# section left out of that array is not a skip anyone sees — it is a green
+# run that measured nothing.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/beans-websocket.XXXXXX")
@@ -34,6 +42,9 @@ run_both() {
 
 echo "checking the RFC 6455 vectors and a loopback exchange"
 run_both websocket_roundtrip
+
+echo "checking permessage-deflate: negotiation, wire shape, and the bound"
+run_both websocket_deflate
 
 echo "checking both sides reject incomplete HTTP upgrades"
 run_both websocket_handshake
@@ -190,7 +201,7 @@ cat >"$tmp/autobahn/config/fuzzingclient.json" <<EOF
 {
    "outdir": "./reports/servers",
    "servers": [{"agent": "beans-std-websocket", "url": "ws://${server_host}:${port}"}],
-   "cases": ["1.*", "2.*", "3.*", "4.*", "5.*", "6.*", "7.*", "9.1.*", "9.7.*", "10.*"],
+   "cases": ["1.*", "2.*", "3.*", "4.*", "5.*", "6.*", "7.*", "9.1.*", "9.7.*", "10.*", "12.*", "13.*"],
    "exclude-cases": [],
    "exclude-agent-cases": {}
 }
