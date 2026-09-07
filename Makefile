@@ -237,6 +237,7 @@ test-runtime: $(BIN)
 	bash ./test/json_direct.sh
 	bash ./test/json_typed_decode.sh
 	bash ./test/list_iteration.sh
+	bash ./test/list_backing.sh
 	bash ./test/oom.sh
 	bash ./test/rss_release.sh
 	bash ./test/fiber_stacks.sh
@@ -305,6 +306,7 @@ test-core: $(BIN)
 	./test/moves.sh
 	bash ./test/borrowed_iteration.sh
 	bash ./test/list_iteration.sh
+	bash ./test/list_backing.sh
 	bash ./test/downcast_borrow.sh
 	bash ./test/math.sh
 	bash ./test/slice_fusion.sh
