@@ -92,4 +92,74 @@ clang -O1 -g -pthread -fsanitize=address,undefined -fno-sanitize-recover=undefin
 echo "sweeping again under the sanitizers"
 sweep "$tmp/oom.asan" 250 "asan"
 
+# --- a refused large-block mapping ------------------------------------------
+#
+# The sweep above cannot reach the large-block allocator: a block at or past the
+# map threshold is served by mmap, which BEANS_OOM_AFTER's countdown does not
+# sit in front of. That path has its own refusal rule and it is not the same for
+# both of its allocators, so it needs its own probe.
+#
+# A Bytes or List backing carries no header. Its free is handed the byte size
+# the allocation was given and decides munmap-or-free from that size alone, so a
+# block at or past the threshold has to BE a mapping. Falling back to the heap
+# when the mapping fails would put a malloc'd pointer into munmap — and a large
+# malloc is page-aligned often enough (macOS serves them from vm_allocate) that
+# the unmap would succeed and quietly take live heap away rather than fail with
+# EINVAL. So a refused mapping is a refused allocation, and every call site turns
+# that into the runtime's documented "out of memory" panic.
+#
+# A non-pooled beans_alloc object — a large string — records in its 16-byte
+# prefix whether it was mapped, so its free can tell either way. That one falls
+# back to the heap and keeps working, which is why the two are written
+# differently instead of sharing one shape.
+#
+# BEANS_RT_BIG_NOMMAP makes every large mapping fail. Like BEANS_OOM_AFTER it
+# lives only under -DBEANS_RT_ALLOC_FAILTEST, so no shipped binary can have its
+# allocator changed by an inherited environment variable.
+echo "emitting the large-block probe's IR"
+./build/beansc build test/cases/oom_big_map.b -o "$tmp/bigprobe" >"$tmp/bigbuild"
+llbig=build/oom_big_map.ll
+test -f "$llbig" || { echo "expected $llbig from the build step" >&2; exit 1; }
+
+echo "compiling the large-block probe with mapping-failure injection"
+clang -O1 -g -pthread -Wno-override-module "$llbig" runtime/beans_rt.c -lm \
+    -DBEANS_RT_ALLOC_FAILTEST -o "$tmp/bigmap"
+
+echo "checking every phase runs when mapping works"
+"$tmp/bigmap" >"$tmp/bigmap.out"
+diff -u - "$tmp/bigmap.out" <<'EXPECTED'
+small 1024
+string 262144
+bytes 262144
+EXPECTED
+
+echo "checking a refused mapping refuses the backing and falls back for the object"
+set +e
+nomap=$(BEANS_RT_BIG_NOMMAP=1 "$tmp/bigmap" 2>&1); nomap_code=$?
+set -e
+if [ "$nomap_code" -ne 3 ]; then
+    echo "a refused large mapping exited $nomap_code, not the documented OOM panic (3):" >&2
+    printf '%s\n' "$nomap" | head -6 >&2
+    exit 1
+fi
+printf '%s' "$nomap" | grep -q "out of memory" || {
+    echo "a refused large mapping did not panic with 'out of memory':" >&2
+    printf '%s\n' "$nomap" | head -6 >&2
+    exit 1
+}
+printf '%s' "$nomap" | grep -q '^small 1024$' || {
+    echo "a sub-threshold buffer must still allocate when mapping is refused" >&2
+    exit 1
+}
+printf '%s' "$nomap" | grep -q '^string 262144$' || {
+    echo "a large string must fall back to the heap: its prefix records the origin" >&2
+    printf '%s\n' "$nomap" | head -6 >&2
+    exit 1
+}
+if printf '%s' "$nomap" | grep -q '^bytes '; then
+    echo "a large Bytes backing was served from the heap after its mapping failed;" >&2
+    echo "its free would hand that pointer to munmap" >&2
+    exit 1
+fi
+
 echo "ok every container-grow allocation refuses OOM with the documented panic, sanitizer-clean"

@@ -1,0 +1,18 @@
+sibling panics while a frame stands:
+  parent parks inside its catch frame
+  sibling parks
+  drop sibling-held
+  contained ok: parent returned
+  sibling panic
+two overlapping catch frames:
+  B caught panic
+  A caught panic
+a cancel is not caught:
+  cancellable work starts
+  join cancelled
+record reused after a cancel:
+  drop after-reuse
+  join panic: runtime panic at 138:10: after reuse
+  drop after-reuse
+  contained caught panic
+done

@@ -42,7 +42,7 @@ mkdir -p build/windows_hosted
 echo 'int main(void){return 42;}' > build/windows_hosted/probe.c
 probe_sys=()
 [[ -n "$SYSROOT" ]] && probe_sys=(--sysroot="$SYSROOT")
-if ! clang --target="$CLANG_TRIPLE" "${probe_sys[@]}" -fuse-ld=lld \
+if ! clang --target="$CLANG_TRIPLE" ${probe_sys+"${probe_sys[@]}"} -fuse-ld=lld \
         build/windows_hosted/probe.c -o build/windows_hosted/probe.exe 2> build/windows_hosted/probe.err; then
     echo "skipping: clang cannot link $TRIPLE here (set BEANS_WIN_SYSROOT?)" >&2
     sed 's/^/  /' build/windows_hosted/probe.err >&2
@@ -117,7 +117,7 @@ for words in ffi_words ffi_rotate; do
         echo "FAIL: interpreted $words output differs on this host" >&2
         exit 1
     fi
-    if ! "$BEANSC" build --linker lld "${sysroot_args[@]}" "test/cases/$words.b" \
+    if ! "$BEANSC" build --linker lld ${sysroot_args+"${sysroot_args[@]}"} "test/cases/$words.b" \
             -o "build/windows_hosted/$words.exe" > "build/windows_hosted/$words.buildlog" 2>&1; then
         echo "FAIL: test/cases/$words.b does not build natively:" >&2
         sed 's/^/  /' "build/windows_hosted/$words.buildlog" >&2
@@ -208,7 +208,7 @@ for src in examples/*.b; do
         fails=$((fails + 1))
         continue
     fi
-    if ! "$BEANSC" build --linker lld "${sysroot_args[@]}" "$src" \
+    if ! "$BEANSC" build --linker lld ${sysroot_args+"${sysroot_args[@]}"} "$src" \
             -o "build/windows_hosted/$name.exe" > "build/windows_hosted/$name.buildlog" 2>&1; then
         echo "FAIL: $src does not build natively:" >&2
         sed 's/^/  /' "build/windows_hosted/$name.buildlog" >&2
@@ -233,7 +233,7 @@ for src in examples/*.b; do
 done
 
 # The multi-package program, same treatment.
-if "$BEANSC" build --linker lld "${sysroot_args[@]}" examples/shop/main.b \
+if "$BEANSC" build --linker lld ${sysroot_args+"${sysroot_args[@]}"} examples/shop/main.b \
         -o build/windows_hosted/shop.exe > build/windows_hosted/shop.buildlog 2>&1; then
     "$BEANSC" run examples/shop/main.b > build/windows_hosted/shop.interp.out 2>&1
     shop_i=$?

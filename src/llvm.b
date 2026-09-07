@@ -151,6 +151,12 @@ partial class LlvmTextEmitter {
     // a phi can still name the predecessor it really has.
     unwind_pad: string
     unwind_used: bool
+    // Whether this function carries a `contained` catch pad. That pad is not
+    // the cleanup pad — it stops the unwind instead of resuming it — so it
+    // needs the personality named on the definition without also asking for
+    // a cleanup pad the function may have nothing to put in
+    // (src/llvm_emit_concurrency.b).
+    contained_used: bool
     unwind_block: string
     unwind_alias_from: List<string>
     unwind_alias_to: List<string>
@@ -199,6 +205,7 @@ partial class LlvmTextEmitter {
         self.debug_scope_line = 0
         self.unwind_pad = ""
         self.unwind_used = false
+        self.contained_used = false
         self.unwind_block = ""
         self.unwind_alias_from = []
         self.unwind_alias_to = []
@@ -745,6 +752,10 @@ partial class LlvmTextEmitter {
         } else if instruction.op == "brew" {
             output =
                 self.emit_brew(
+                    function, instruction, values)
+        } else if instruction.op == "contained" {
+            output =
+                self.emit_contained(
                     function, instruction, values)
         } else if instruction.op == "group_brew" {
             output =

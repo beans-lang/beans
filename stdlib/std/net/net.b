@@ -35,6 +35,7 @@ extern "C" fn beans_sockx_multicast(fd: int, group: RawPtr<u8>, req: RawPtr<u64>
 extern "C" fn beans_sockx_recv_into(fd: int, destination: RawPtr<u8>, req: RawPtr<u64>) -> int
 extern "C" fn beans_net_recv_into_wait(fd: int, destination: RawPtr<u8>, req: RawPtr<u64>) -> int
 extern "C" fn beans_net_send_from_wait(fd: int, bytes: RawPtr<u8>, len: int, req: RawPtr<u64>) -> int
+extern "C" fn beans_net_send_pair_wait(fd: int, head: RawPtr<u8>, head_len: int, body: RawPtr<u8>, body_len: int, req: RawPtr<u64>) -> int
 extern "C" fn beans_sockx_listen_reuse_port(host: RawPtr<u8>, req: RawPtr<u64>) -> int
 extern "C" fn beans_sockx_try_accept(fd: int, req: RawPtr<u64>) -> int
 extern "C" fn beans_sockx_set_nodelay(fd: int, on: int, req: RawPtr<u64>) -> int
@@ -260,6 +261,85 @@ pub unique class TcpStream implements ByteStream, Send {
         }
         if status == 0 { return ok(count) }
         return sockx_error("send_from", status, os_error)
+    }
+
+    /// Writes two buffers as one send, without joining them first.
+    ///
+    /// `offset` counts into the pair as though `head` and `body` were one
+    /// buffer, so a short write resumes correctly whether it stopped inside
+    /// the head or inside the body and the caller never has to know which.
+    /// Returns the bytes written by this call, which may be fewer than the
+    /// two buffers hold; a short write is normal.
+    ///
+    /// This is what a server wants for a response: it has framed a head and
+    /// it already holds a body, and joining them costs a copy of the body.
+    /// On a one-megabyte response that copy is more expensive than everything
+    /// else the process does for that request put together.
+    pub fn write_vectored(head: Bytes, body: Bytes, offset: int) -> Result<int> {
+        if !self.live { return err("send: socket is closed", "closed") }
+        let total: int = head.len() + body.len()
+        if offset < 0 || offset > total {
+            return err("send: offset is outside the data", "invalid")
+        }
+        if offset == total { return ok(0) }
+        var status: int = 0
+        var count: int = 0
+        var os_error: int = 0
+        unsafe {
+            self.scratch.write(offset as u64)
+            self.scratch.offset(1).write(0)
+            self.scratch.offset(2).write(
+                (if self.fiber_prepared { 1 } else { 0 }) as u64)
+            self.scratch.offset(3).write(
+                (if self.write_timeout_ms > 0 {
+                    self.write_timeout_ms
+                } else { -1 }) as u64)
+            status = beans_net_send_pair_wait(
+                self.fd, head.as_ptr(), head.len(),
+                body.as_ptr(), body.len(), self.scratch)
+            count = self.scratch.read() as int
+            os_error = self.scratch.offset(1).read() as int
+            if self.scratch.offset(2).read() != 0 {
+                self.fiber_prepared = true
+            }
+        }
+        if status == 0 { return ok(count) }
+        return sockx_error("send_vectored", status, os_error)
+    }
+
+    /// Writes a `Bytes` head and a `string` body as one send, without joining
+    /// them or copying the string into a `Bytes` first.
+    ///
+    /// The string twin of `write_vectored`, with identical semantics: `offset`
+    /// counts into the head-and-body pair as though they were one buffer, a
+    /// short write is normal and resumes correctly whether it stopped inside
+    /// the head or inside the body, `offset` at the end of the pair is `ok(0)`,
+    /// and a send on a fiber parks on backpressure. It exists so a server that
+    /// holds its body as a `string` — the shape a handler hands back — sends it
+    /// where it already lives, instead of copying it into a `Bytes` only to
+    /// frame the response. Returns the bytes written by this call, which may be
+    /// fewer than the pair holds.
+    ///
+    /// A failure carries the same `Error.kind` the `Bytes` form gives it for
+    /// every condition a stream send reports: `timeout` when backpressure ran
+    /// out the write deadline, `reset` for a peer that has gone, `closed` for a
+    /// stream that is no longer open, and `invalid` for an offset outside the
+    /// pair. The two part only on the rare network-layer errno — an unreachable
+    /// route, a connection refused late on a stream — which this form names
+    /// (`unreachable`, `refused`) where the `Bytes` form reports `io`. That is
+    /// the socket API's own split and not this pair's: it is the same one
+    /// between `write` and `write_from`, and between `read` and `read_into`.
+    /// A call that goes straight to the runtime maps the errno; one that goes
+    /// through a request buffer maps the engine's status code, which folds
+    /// those errnos into `io`.
+    pub fn write_vectored_text(head: Bytes, body: string, offset: int) -> Result<int> {
+        if !self.live { return err("send: socket is closed", "closed") }
+        let total: int = head.len() + body.len()
+        if offset < 0 || offset > total {
+            return err("send: offset is outside the data", "invalid")
+        }
+        if offset == total { return ok(0) }
+        return sock.send_pair_text(self.fd, head, body, offset)
     }
 
     /// Tries one write on a nonblocking stream. `ok(none)` means the socket

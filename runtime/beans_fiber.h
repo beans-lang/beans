@@ -147,6 +147,32 @@ int beans_fiber_unwinding(BeansFiber* fiber);
 // report, which has to name the failure that was already being unwound.
 const char* beans_fiber_message(BeansFiber* fiber);
 
+// ---- contained calls -------------------------------------------------------
+//
+// A `contained` call (spec/CONCURRENCY.md) puts a catch frame on THIS fiber's
+// stack: the compiler emits the call as an `invoke` whose exception edge is a
+// landing pad that does not resume, so the same controlled unwind that ends a
+// brewed fiber stops at the call boundary instead. The runtime's only part is
+// knowing whether such a frame is standing, because that is what decides
+// whether a panic unwinds at all — the root fiber of a plain program still
+// ends the process.
+//
+// The count is per fiber, not per thread: fibers of one worker share thread
+// storage but not stacks, and a catch frame on one fiber's stack is not one
+// the unwinder will reach while another fiber is failing.
+
+// How many contained catch frames stand on this fiber's stack.
+int beans_fiber_contained_depth(BeansFiber* fiber);
+
+// A catch frame opened / closed on the non-failing path.
+void beans_fiber_contained_enter(BeansFiber* fiber);
+void beans_fiber_contained_leave(BeansFiber* fiber);
+
+// The unwind reached a catch frame: the fiber stops unwinding, keeps
+// running, and that frame is gone. The failure report stays readable until
+// this is called (beans_fiber_message), which is how the pad gets it.
+void beans_fiber_contained_caught(BeansFiber* fiber);
+
 // Parks until `fiber` finishes and delivers how it ended: BEANS_FIBER_OK,
 // _PANICKED, or _CANCELLED. The panic message (or "") is copied into
 // message_out (message_cap bytes) when it is non-NULL. Exactly one join per

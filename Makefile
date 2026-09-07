@@ -230,12 +230,17 @@ test-runtime: $(BIN)
 	./test/websocket.sh
 	./test/signals.sh
 	./test/term.sh
+	bash ./test/hosted_calls.sh
 	./test/dylib.sh
 	./test/child.sh
 	bash ./test/encoding.sh
 	bash ./test/json_direct.sh
+	bash ./test/json_typed_decode.sh
 	bash ./test/list_iteration.sh
+	bash ./test/list_backing.sh
 	bash ./test/oom.sh
+	bash ./test/rss_release.sh
+	bash ./test/fiber_stacks.sh
 	bash ./test/sanitizer_gates.sh
 
 test-ffi: $(BIN)
@@ -301,6 +306,7 @@ test-core: $(BIN)
 	./test/moves.sh
 	bash ./test/borrowed_iteration.sh
 	bash ./test/list_iteration.sh
+	bash ./test/list_backing.sh
 	bash ./test/downcast_borrow.sh
 	bash ./test/math.sh
 	bash ./test/slice_fusion.sh
@@ -308,6 +314,8 @@ test-core: $(BIN)
 	./test/maps.sh
 	bash ./test/map_inline.sh
 	bash ./test/oom.sh
+	bash ./test/rss_release.sh
+	bash ./test/fiber_stacks.sh
 	bash ./test/sanitizer_gates.sh
 	bash ./test/float_total_order.sh
 	./test/traits.sh
@@ -372,6 +380,7 @@ test-core: $(BIN)
 	bash ./test/api_names.sh
 	bash ./test/encoding.sh
 	bash ./test/json_direct.sh
+	bash ./test/json_typed_decode.sh
 	bash ./test/encoding_symbols.sh
 	bash ./test/encoding_outputs.sh
 	bash ./test/encoding_cache.sh
@@ -432,6 +441,7 @@ test-core: $(BIN)
 	./test/websocket.sh
 	./test/signals.sh
 	./test/term.sh
+	bash ./test/hosted_calls.sh
 	./test/dylib.sh
 	./test/child.sh
 

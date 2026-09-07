@@ -59,6 +59,40 @@ for script in test/*.sh; do
     exit 1
 done
 
+echo "checking the shell gates run on the oldest bash they are given"
+# macOS ships bash 3.2, and CI's macOS runners use it. Under `set -u` that bash
+# treats "${arr[@]}" on an EMPTY array as an unbound variable and dies, where
+# bash 4.4 and later expand it to nothing. A developer with Homebrew bash 5 on
+# their PATH cannot see the difference, so this lands green locally and fails
+# only on the runner -- which is exactly how test/json_typed_decode.sh reached
+# main's CI and killed the macOS differential gate mid-run.
+#
+# The safe spelling is ${arr+"${arr[@]}"}: identical when the array has
+# elements, empty when it does not, on every bash. This refuses the unsafe one
+# wherever an array is emptied with `=()` in a script that sets -u, because
+# such an array can always reach the expansion empty.
+unsafe=0
+for script in test/*.sh bench/*.sh; do
+    [[ -f "$script" ]] || continue
+    grep -qE '^set .*u' "$script" || continue
+    while IFS=: read -r line name; do
+        [[ -n "$name" ]] || continue
+        echo "$script:$line expands \"\${$name[@]}\" but $name is emptied with" \
+             "=() in this file; on bash 3.2 under set -u that is fatal." >&2
+        echo "  write \${$name+\"\${$name[@]}\"} instead" >&2
+        unsafe=1
+    done < <(awk '
+        /^[ \t]*[A-Za-z_][A-Za-z0-9_]*=\(\)[ \t]*$/ {
+            n = $0; sub(/=\(\).*/, "", n); gsub(/[ \t]/, "", n); empt[n] = 1
+        }
+        {
+            for (n in empt)
+                if ($0 ~ ("\"\\$\\{" n "\\[@\\]\\}\"") && $0 !~ ("\\$\\{" n "\\+"))
+                    print NR ":" n
+        }' "$script")
+done
+[[ "$unsafe" -eq 0 ]] || exit 1
+
 echo "checking the scorecard's tests all exist and are the ones claimed"
 # access_score.sh already refuses an implemented row with no test and runs each one.
 # What it does not check is the reverse: a row naming a file that does not exist would

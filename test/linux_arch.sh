@@ -138,7 +138,7 @@ trap 'rm -rf "$tmp"' EXIT
 qemu_timeout="${BEANS_QEMU_TIMEOUT:-180}"
 run_qemu() {
     QEMU_LD_PREFIX="$sysroot" timeout -k 5 "$qemu_timeout" \
-        "$qemu" "${qemu_args[@]}" "$@"
+        "$qemu" ${qemu_args+"${qemu_args[@]}"} "$@"
 }
 
 cross_build() {

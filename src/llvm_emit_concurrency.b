@@ -465,7 +465,9 @@ partial class LlvmTextEmitter {
         self.require_declare(
             "beans_fiber_unwind_finish",
             "void @beans_fiber_unwind_finish()")
-        return "spawn.eh:\n  %spawn.lp = landingpad \{ ptr, i32 \}\n          cleanup\n  call void @beans_fiber_unwind_finish()\n  unreachable\n"
+        // One line, for the reason unwind_pad_block gives: a wrapped
+        // `landingpad` takes a `!dbg` in the middle of itself.
+        return "spawn.eh:\n  %spawn.lp = landingpad \{ ptr, i32 \} cleanup\n  call void @beans_fiber_unwind_finish()\n  unreachable\n"
     }
 
     // brew — start the fabricated closure on a child fiber of this worker
@@ -616,6 +618,152 @@ partial class LlvmTextEmitter {
             "{output}  %brew.errslot{id} = getelementptr i8, ptr %brew.errr{id}, i64 8\n  %brew.erri{id} = ptrtoint ptr %brew.errobj{id} to i64\n  store i64 %brew.erri{id}, ptr %brew.errslot{id}\n  br label %brew.done{id}\nbrew.done{id}:\n  %brew.res{id} = phi ptr [ %brew.okr{id}, %brew.ok{id} ], [ %brew.errr{id}, %brew.err{id} ]\n"
         values[instruction.result] = "%brew.res{id}"
         return output
+    }
+
+    // contained — the catch frame (spec/CONCURRENCY.md).
+    //
+    // The call runs on this fiber, in this frame, as an `invoke` whose
+    // exception edge is a landing pad that does NOT resume. That single
+    // omission is the whole mechanism: a panic starts the same forced unwind
+    // a brewed fiber's does, every frame between the failure and here runs
+    // its defers and drops what it owned, and the walk stops at this pad
+    // instead of at a fiber entry. No spawn, no pair of context switches, no
+    // join.
+    //
+    // The operand is the closure `brew` fabricates, called the way the spawn
+    // thunk calls it — the first word of the box is the function and the box
+    // is the environment — so this needs to know nothing about the call that
+    // was written. It is deliberately not consumed here: the plan releases
+    // it, which puts the release on the ok path and the caught path alike,
+    // and puts it in the cleanup pad for a panic that escapes past the
+    // boundary (a deinit inside that very release, say).
+    //
+    // beans_contained_enter is what makes a panic on THIS fiber unwind at
+    // all, including on the root fiber of a program that never brews; the
+    // pad's beans_contained_caught takes the fiber back out of the unwind
+    // and hands over the report, which is byte for byte the message a brewed
+    // fiber's join delivers for the same panic.
+    fn emit_contained(
+        function: MirFunction,
+        instruction: MirInstruction,
+        values: Map<int, string>) -> string {
+        if instruction.operands.len() != 1 ||
+           instruction.type.args.len() < 1 {
+            self.fail(
+                instruction,
+                "LLVM emitter needs one contained closure")
+            return ""
+        }
+        // The checker refuses `contained` on a target with no unwinder
+        // (require_contained), so reaching here without one is the emitter
+        // and the checker disagreeing, not a program to diagnose.
+        if !self.unwind_enabled() {
+            self.fail(
+                instruction,
+                "LLVM emitter has no controlled unwind for target {self.program.target.triple}, so this contained call cannot catch")
+            return ""
+        }
+        let result_type: HirType = instruction.type
+        let payload: HirType = result_type.args[0]
+        // There is no Result<unit> in Beans — `ok` takes a value — and the
+        // checker refuses a unit-returning contained call for exactly that
+        // reason, so seeing one here is the checker and the emitter
+        // disagreeing rather than a program to diagnose.
+        if canonical_hir_name(payload.name) == "unit" {
+            self.fail(
+                instruction,
+                "LLVM emitter has no Result<unit> to answer a contained call with")
+            return ""
+        }
+        if !self.handle_inner_supported(
+               instruction, payload, false) {
+            return ""
+        }
+        let closure: string =
+            self.value(
+                function, values,
+                instruction.operands[0], instruction)
+        let id: int = self.fresh()
+        self.contained_used = true
+        self.require_declare(
+            "beans_contained_enter",
+            "void @beans_contained_enter()")
+        self.require_declare(
+            "beans_contained_leave",
+            "void @beans_contained_leave()")
+        self.require_declare(
+            "beans_contained_caught",
+            "ptr @beans_contained_caught()")
+        let llvm: string = self.type_text(payload)
+        // One line per instruction, never a continuation: the debug pass
+        // appends `!dbg` to every line it does not recognise as a label, and
+        // a wrapped `invoke` or `landingpad` would take one in the middle of
+        // itself.
+        var output: string =
+            "  call void @beans_contained_enter()\n  %cc.fn{id} = load ptr, ptr {closure}\n  %cc.v{id} = invoke {llvm} %cc.fn{id}(ptr {closure}) to label %cc.ok{id} unwind label %cc.eh{id}\ncc.ok{id}:\n  call void @beans_contained_leave()\n"
+        let rtype: string =
+            self.type_text(result_type)
+        if self.result_is_inline(result_type) {
+            // wide payload: Result is the inline {i1, T, Error} struct
+            output =
+                "{output}  %cc.oktag{id} = insertvalue {rtype} zeroinitializer, i1 false, 0\n  %cc.okr{id} = insertvalue {rtype} %cc.oktag{id}, {llvm} %cc.v{id}, 1\n"
+            output =
+                "{output}  br label %cc.done{id}\ncc.eh{id}:\n  %cc.lp{id} = landingpad \{ ptr, i32 \} cleanup\n  %cc.msg{id} = call ptr @beans_contained_caught()\n"
+            output =
+                "{output}{self.contained_error_build(instruction, id, "%cc.errobj{id}")}"
+            output =
+                "{output}  %cc.errtag{id} = insertvalue {rtype} zeroinitializer, i1 true, 0\n  %cc.errr{id} = insertvalue {rtype} %cc.errtag{id}, ptr %cc.errobj{id}, 2\n  br label %cc.done{id}\ncc.done{id}:\n  %cc.res{id} = phi {rtype} [ %cc.okr{id}, %cc.ok{id} ], [ %cc.errr{id}, %cc.eh{id} ]\n"
+            values[instruction.result] = "%cc.res{id}"
+            return output
+        }
+        // A Result that is not inline is a boxed reference, so this is the
+        // two layouts being exhaustive rather than a shape left out: the
+        // payloads a Result cannot carry were already refused by
+        // handle_inner_supported above, about the program. Reaching here
+        // means result_is_inline and type_text disagree.
+        if rtype != "ptr" {
+            self.fail(
+                instruction,
+                "LLVM emitter has neither Result layout for '{render_hir_type(result_type)}'")
+            return ""
+        }
+        // boxed Result: {i64 tag, i64 slot} with the arm's own meta
+        let mask: int =
+            if self.type_is_reference(payload) ||
+               canonical_hir_name(payload.name) ==
+                   "decimal" {
+                self.result_slot_mask()
+            } else {
+                0
+            }
+        let conversion: LlvmSlotConversion =
+            self.to_slot(
+                payload, "%cc.v{id}", "cc")
+        output =
+            "{output}{conversion.setup}  %cc.okr{id} = call ptr @beans_alloc(i64 16, i64 {1 | (mask << 3)})\n  store i64 0, ptr %cc.okr{id}\n  %cc.okslot{id} = getelementptr i8, ptr %cc.okr{id}, i64 8\n  store i64 {conversion.value}, ptr %cc.okslot{id}\n"
+        output =
+            "{output}  br label %cc.done{id}\ncc.eh{id}:\n  %cc.lp{id} = landingpad \{ ptr, i32 \} cleanup\n  %cc.msg{id} = call ptr @beans_contained_caught()\n  %cc.errr{id} = call ptr @beans_alloc(i64 16, i64 {self.result_ref_meta()})\n  store i64 1, ptr %cc.errr{id}\n"
+        output =
+            "{output}{self.contained_error_build(instruction, id, "%cc.errobj{id}")}"
+        output =
+            "{output}  %cc.errslot{id} = getelementptr i8, ptr %cc.errr{id}, i64 8\n  %cc.erri{id} = ptrtoint ptr %cc.errobj{id} to i64\n  store i64 %cc.erri{id}, ptr %cc.errslot{id}\n  br label %cc.done{id}\ncc.done{id}:\n  %cc.res{id} = phi ptr [ %cc.okr{id}, %cc.ok{id} ], [ %cc.errr{id}, %cc.eh{id} ]\n"
+        values[instruction.result] = "%cc.res{id}"
+        return output
+    }
+
+    // The caught arm's Error: the report the unwind was carrying moves into a
+    // fresh Error of kind `panic`. There is only one kind here — a cancel
+    // does not unwind (beans_fiber_exit_cancelled) and so never reaches a
+    // catch frame, and there is no handle to close twice — which is the
+    // whole difference from brew_error_build's three-way select.
+    fn contained_error_build(
+        instruction: MirInstruction,
+        id: int,
+        target: string) -> string {
+        return self.emit_make_error(
+            instruction, "%cc.msg{id}", true,
+            self.string_pointer("panic"), false,
+            target)
     }
 
     fn emit_brew_cancel(

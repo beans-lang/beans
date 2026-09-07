@@ -114,9 +114,201 @@ diff -u test/cases/encoding_json_typed_encode.out \
     "$tmp/encoding_json_typed_encode.interp"
 diff -u test/cases/encoding_json_typed_encode.out \
     "$tmp/encoding_json_typed_encode.native"
+# The same golden through the DOM writer. encode_into has two append paths —
+# the direct writer writes into the caller's Bytes as it goes, the DOM path
+# serializes into yyjson's buffer and appends once — and the schemas here pick
+# between them by whether they carry a float. BEANS_JSON_NO_DIRECT forces
+# every one of them onto the DOM path, so the bytes, the counts, the refusal
+# messages and the rollbacks have to be the same document either way.
+BEANS_JSON_NO_DIRECT=1 "$tmp/encoding_json_typed_encode" \
+    >"$tmp/encoding_json_typed_encode.dom" 2>&1
+diff -u test/cases/encoding_json_typed_encode.out \
+    "$tmp/encoding_json_typed_encode.dom"
 grep -q "call i64 @beans_enc_json_typed_encode" \
     build/encoding_json_typed_encode.ll
+# encode_into lowers to the same encoder entry with the append-into grow
+# callback threaded through the request. Lock that callback in the emitted IR
+# so the append path cannot silently fall back to a copy.
+grep -q "@beans_bytes_reserve_raw" \
+    build/encoding_json_typed_encode.ll
 echo "ok typed JSON struct output in interpreter and native code"
+
+# The escape scan must actually have a 16-byte vector path, not just the SWAR
+# fallback. Compiling the bridge with and without BEANS_JSON_SCALAR_SCAN must
+# differ: forcing the scalar path only changes the object if a vector path is
+# there to force off. x86-64 (SSE2) and arm64 (NEON) — the shipped targets and
+# where CI runs — both have one; reverting the vector block collapses the two.
+clang -O2 -S -Wno-override-module runtime/encoding/beans_enc_json.c \
+    -o "$tmp/bridge_vector.s"
+clang -O2 -S -DBEANS_JSON_SCALAR_SCAN -Wno-override-module \
+    runtime/encoding/beans_enc_json.c -o "$tmp/bridge_scalar.s"
+if cmp -s "$tmp/bridge_vector.s" "$tmp/bridge_scalar.s"; then
+    echo "the JSON escape scan has no vector path (the scalar switch changed nothing)" >&2
+    exit 1
+fi
+echo "ok JSON escape scan compiles a 16-byte vector path"
+
+# ...and the vector path must be the one the host actually took, not a block
+# the optimiser folded away. The across-lane reduction is one instruction and
+# it is there only when the scan compiled: umaxv on AArch64, pmovmskb on
+# x86-64. The scalar build has neither.
+case "$(uname -m)" in
+    arm64|aarch64) reduction="umaxv" ;;
+    x86_64|amd64)  reduction="pmovmskb" ;;
+    *)             reduction="" ;;
+esac
+if [[ -n "$reduction" ]]; then
+    grep -q "$reduction" "$tmp/bridge_vector.s"
+    if grep -q "$reduction" "$tmp/bridge_scalar.s"; then
+        echo "$reduction survives BEANS_JSON_SCALAR_SCAN — the lever is broken" >&2
+        exit 1
+    fi
+    echo "ok JSON escape scan emits $reduction on $(uname -m)"
+else
+    echo "  skip the reduction-instruction check: no mapping for $(uname -m)"
+fi
+
+# ...and it must be selected only where its instructions exist. arm32 is a
+# supported target (armv7-unknown-linux-gnueabihf, and the two ARMv6 triples).
+# __ARM_NEON says the target has a NEON unit, not that it is AArch64, and the
+# across-vector reduction the scan uses — vmaxvq_u8 — is an AArch64 instruction
+# arm32 does not have. A scan guarded on the feature macro alone opens a block
+# arm32 cannot translate, and the build of any program that imports
+# std.encoding.json fails with a C error naming this bridge.
+#
+# Which clang defines __ARM_NEON for a bare armv7 triple has moved: Apple clang
+# 21 defines it with no flags at all, Ubuntu clang 18 and Debian clang 14 do
+# not. So the bare triple is reported here and never asserted — a host whose
+# clang would not have selected NEON anyway is not a failure. What is stable on
+# every one of them is -mcpu=cortex-a8, which is exactly what
+# `beansc build --target armv7-unknown-linux-gnueabihf --cpu cortex-a8` hands
+# the bridge (driver.b's target_flag_list is the encoding bridge's flag set),
+# and what --cpu native resolves to on a real armv7 machine. The reproduction
+# therefore does not depend on the host clang's defaults, and neither does this
+# check.
+#
+# Three checks, so no one of them can rot into a tautology. Ground truth first:
+# the bridge itself, put through a compiler aimed at each arm32 triple the
+# release ships, plain and with the CPU flag that turns NEON on. That needs a
+# set of C headers the cross target can parse — the macOS SDK's do, an
+# installed armhf sysroot does, a plain x86-64 glibc /usr/include does not —
+# and the probe below is what decides, rather than a guess about the host. When
+# no header root parses, this leg says so out loud instead of vanishing. Then
+# the two checks that keep it from rotting: the intrinsic really has to still
+# be absent on arm32 while __ARM_NEON is set there, and the guard in the source
+# has to name the architecture.
+neon_flags=(-mcpu=cortex-a8)
+if printf '' | clang --target=armv7-unknown-linux-gnueabihf -dM -E - 2>/dev/null |
+        grep -q '^#define __ARM_NEON 1$'; then
+    echo "  note: this clang defines __ARM_NEON for a bare armv7 triple"
+else
+    echo "  note: this clang needs ${neon_flags[*]} before it defines __ARM_NEON on armv7"
+fi
+
+# The bridge itself, put through a compiler aimed at each arm32 triple the
+# release ships — plain, and with the CPU flag that turns NEON on. -c, not
+# -fsyntax-only: the object is what the driver actually needs.
+#
+# Cross-compiling C needs headers the target can parse, and which ones work is
+# a property of the host, not something to assume: the macOS SDK's serve every
+# arm32 triple, Debian's libc6-dev-arm*-cross packages serve the ABI they were
+# built for and refuse the other, and a plain x86-64 glibc /usr/include serves
+# none. Each configuration therefore probes for its own root, using the exact
+# include prefix the bridge opens with — stddef, stdint, string, stdlib. A
+# thinner probe passes on the wrong-ABI sysroot and then the real compile dies
+# in gnu/stubs.h, which would read as a code failure and is not one. A
+# configuration with no usable root says so by name; it does not disappear.
+{
+    printf '#include <stddef.h>\n#include <stdint.h>\n#include <string.h>\n'
+    printf '#include <stdlib.h>\n#include <stdio.h>\n#include <math.h>\n'
+    printf 'int probe(void) { return 0; }\n'
+} >"$tmp/arm_headers.c"
+sdk_include=""
+if command -v xcrun >/dev/null 2>&1; then
+    sdk_path=$(xcrun --show-sdk-path 2>/dev/null || true)
+    [[ -n "$sdk_path" ]] && sdk_include="$sdk_path/usr/include"
+fi
+arm_built=0
+arm_skipped=()
+for spec in "armv7-unknown-linux-gnueabihf:" \
+            "armv7-unknown-linux-gnueabihf:-mcpu=cortex-a8" \
+            "arm-unknown-linux-gnueabi:" \
+            "arm-unknown-linux-gnueabihf:"; do
+    triple=${spec%%:*}
+    cpu_flag=${spec#*:}
+    root=""
+    for candidate in "$sdk_include" /usr/arm-linux-gnueabihf/include \
+                     /usr/arm-linux-gnueabi/include /usr/include; do
+        [[ -n "$candidate" && -d "$candidate" ]] || continue
+        if clang --target="$triple" ${cpu_flag:+"$cpu_flag"} -fsyntax-only \
+                -isystem "$candidate" "$tmp/arm_headers.c" 2>/dev/null; then
+            root="$candidate"
+            break
+        fi
+    done
+    if [[ -z "$root" ]]; then
+        arm_skipped+=("$triple${cpu_flag:+ $cpu_flag}")
+        continue
+    fi
+    # An implicit declaration is the shape this bug takes. Clang has made that
+    # an error for years; say so anyway, so a laxer front end cannot turn the
+    # failure into a warning here and a link error later.
+    clang --target="$triple" ${cpu_flag:+"$cpu_flag"} -O2 -c \
+        -Werror=implicit-function-declaration \
+        -Wno-tautological-constant-out-of-range-compare \
+        -isystem "$root" runtime/encoding/beans_enc_json.c \
+        -o "$tmp/bridge.arm32.$arm_built.o"
+    arm_built=$((arm_built + 1))
+done
+if [[ "$arm_built" -gt 0 ]]; then
+    echo "ok JSON bridge builds an arm32 object ($arm_built configurations," \
+         "plain and with NEON turned on)"
+fi
+for missing in ${arm_skipped+"${arm_skipped[@]}"}; do
+    echo "  skip the arm32 bridge compile for $missing:" \
+         "no C headers on this host parse for it"
+done
+
+cat >"$tmp/neon_reduce.c" <<'NEONPROBE'
+#include <arm_neon.h>
+unsigned probe(uint8x16_t v) { return vmaxvq_u8(v); }
+NEONPROBE
+if ! clang --target=aarch64-unknown-linux-gnu -ffreestanding -O2 -c \
+        "$tmp/neon_reduce.c" -o "$tmp/neon_reduce.a64.o" 2>/dev/null; then
+    echo "vmaxvq_u8 does not compile for aarch64 — the scan probe is broken" >&2
+    exit 1
+fi
+armv7_neon=$(printf '' | clang --target=armv7-unknown-linux-gnueabihf \
+    "${neon_flags[@]}" -dM -E - 2>/dev/null |
+    grep -c '^#define __ARM_NEON 1$' || true)
+if [[ "$armv7_neon" != 1 ]]; then
+    echo "clang no longer defines __ARM_NEON for armv7 with ${neon_flags[*]} —" \
+         "revisit the scan guard" >&2
+    exit 1
+fi
+if clang --target=armv7-unknown-linux-gnueabihf "${neon_flags[@]}" \
+        -ffreestanding -O2 -c \
+        "$tmp/neon_reduce.c" -o "$tmp/neon_reduce.arm32.o" 2>/dev/null; then
+    echo "vmaxvq_u8 now compiles for arm32 — the scan guard can be widened" >&2
+    exit 1
+fi
+
+python3 - "$PWD/runtime/encoding/beans_enc_json.c" <<'SCANGUARD'
+import sys
+text = open(sys.argv[1], encoding="utf-8").read()
+mark = "#define BEANS_JSON_SCAN_NEON"
+if mark not in text:
+    sys.exit("the bridge no longer defines BEANS_JSON_SCAN_NEON: the NEON "
+             "scan has to stay behind one named, architecture-guarded macro "
+             "so this check can read the guard")
+at = text.index(mark)
+guard = text[text.rindex("#if", 0, at):at]
+if "__aarch64__" not in guard:
+    sys.exit("BEANS_JSON_SCAN_NEON is not guarded on __aarch64__: " + guard)
+if "BEANS_JSON_SCAN_NEON" not in text[text.index("beans_json_plain_span"):]:
+    sys.exit("the escape scan no longer reads BEANS_JSON_SCAN_NEON")
+SCANGUARD
+echo "ok JSON escape scan takes its vector path only on AArch64"
 
 ./build/beansc build test/cases/encoding_json_typed_options.b \
     -o "$tmp/encoding_json_typed_options" >/dev/null

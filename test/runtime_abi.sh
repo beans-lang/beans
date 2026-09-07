@@ -55,7 +55,7 @@ targets=(
 
 fail=0
 checked=0
-for compiler in "${compilers[@]}"; do
+for compiler in ${compilers+"${compilers[@]}"}; do
     for target in "${targets[@]}"; do
         label="${target:-host}"
         ll="$tmp/$(basename "$compiler").${label}.ll"

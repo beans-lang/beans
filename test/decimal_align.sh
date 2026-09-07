@@ -56,7 +56,7 @@ dec_alloca='alloca \{ ?i128, i64, i64 ?\}'
 
 fail=0
 checked=0
-for compiler in "${compilers[@]}"; do
+for compiler in ${compilers+"${compilers[@]}"}; do
     for target in "${targets[@]}"; do
         label="${target:-host}"
         ll="$tmp/$(basename "$compiler").${label}.ll"

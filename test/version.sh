@@ -36,7 +36,7 @@ for source in src/*.b; do
         selfhosted+=("$source")
     fi
 done
-if grep -nE 'beansc [0-9]+[.][0-9]+' "${selfhosted[@]}" \
+if grep -nE 'beansc [0-9]+[.][0-9]+' ${selfhosted+"${selfhosted[@]}"} \
     >build/test-version-selfhosted.txt; then
     echo "the self-hosted compiler hard-codes a version outside version.b" >&2
     cat build/test-version-selfhosted.txt >&2
