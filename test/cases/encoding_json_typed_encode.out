@@ -65,3 +65,22 @@ pretty_float_then_string: err invalid: cannot write NaN or infinity as JSON
 pretty_after_refusal: {
   "code": 7
 }
+neg_nan: err invalid: cannot write NaN or infinity as JSON
+neg_nan_into: err invalid: cannot write NaN or infinity as JSON :: B
+pos_nan: err invalid: cannot write NaN or infinity as JSON
+pos_nan_into: err invalid: cannot write NaN or infinity as JSON :: B
+neg_inf: err invalid: cannot write NaN or infinity as JSON
+neg_inf_into: err invalid: cannot write NaN or infinity as JSON :: B
+pos_inf: err invalid: cannot write NaN or infinity as JSON
+pos_inf_into: err invalid: cannot write NaN or infinity as JSON :: B
+bits_float_then_string: err invalid: cannot write NaN or infinity as JSON
+bits_option_float: err invalid: cannot write NaN or infinity as JSON
+bits_float_list: err invalid: cannot write NaN or infinity as JSON
+finite0: {"score":1.5}
+finite1: {"score":-2.25}
+finite2: {"score":0.5}
+finite3: {"score":0.1}
+finite4: {"score":0.0001}
+finite5: {"score":1e-300}
+finite6: {"score":2.2250738585072014e-308}
+finite7: {"score":5e-324}

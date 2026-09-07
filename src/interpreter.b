@@ -1069,16 +1069,29 @@ class TreeInterpreter {
             })
         }
         if value.kind == "float" {
-            let shown: string = "{value.float_data}"
-            if shown == "nan" || shown == "inf" || shown == "-inf" ||
-               shown == "NaN" || shown == "Infinity" ||
-               shown == "-Infinity" {
+            // Whether a float can be written is a fact about the value, and
+            // the spelling a host's printf reaches for is a different
+            // question with a different answer on every platform: glibc
+            // writes -nan for the NaN an x86-64 divide leaves behind, since
+            // that machine's default NaN carries the sign bit, while Apple's
+            // libc writes nan for either sign and a Windows CRT writes
+            // -nan(ind). Matching a list of spellings therefore accepted a
+            // NaN on Linux/x86-64 and wrote it into the document, where the
+            // native writers — which read the value — refused it.
+            //
+            // `v - v` is zero for every finite value and NaN for an infinity
+            // or a NaN, and NaN compares false against everything, so one
+            // subtraction answers both. It is the rule std.math.is_finite
+            // states, spelled here because the compiler's sources do not
+            // depend on std.math.
+            let number: float = value.float_data
+            if (number - number) != 0.0 {
                 // The reason for THIS refusal. The walk unwinds from here
                 // without visiting anything else, so nothing overwrites it.
                 self.json_write_nan = true
                 return none
             }
-            return some(shown)
+            return some("{number}")
         }
         if value.kind == "string" {
             return self.tree_json_string(value.text)

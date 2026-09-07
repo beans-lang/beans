@@ -1,4 +1,5 @@
 import std.io
+import std.encoding.binary
 import std.encoding.json
 
 struct Address {
@@ -126,6 +127,21 @@ fn surrogate_string() -> string {
     b.push(128)
     b.push(107)   // k
     return b.to_string()
+}
+
+// A float built from the exact bits it is meant to have, so a case does not
+// depend on which NaN a machine's divide happens to produce: x86-64 answers
+// 0.0 / 0.0 with the sign bit set and AArch64 answers it with the sign bit
+// clear, and a host's printf spells those two differently (glibc: -nan and
+// nan; Apple's libc: nan for both). Whether a float is writable is a fact
+// about the value, so every one of these has to refuse either way.
+fn float_from_high(first: int, second: int) -> float {
+    let raw: Bytes = new Bytes(0)
+    raw.push(first)
+    raw.push(second)
+    for _rest: int in 0..6 { raw.push(0) }
+    return binary.read_f64(raw, 0, binary.ByteOrder.big)
+        .expect("read_f64")
 }
 
 fn fold(data: Bytes) -> u64 {
@@ -532,5 +548,76 @@ fn main() {
         ok(text) => io.println("pretty_after_refusal: {text}"),
         err(error) =>
             io.println("pretty_after_refusal: err {error.kind}: {error.msg}"),
+    }
+
+    // ---- every non-finite float, whatever a printf calls it ----
+    // The four bit patterns below are the whole non-finite surface, and no
+    // machine's arithmetic decides which of them a case gets. A writer that
+    // asks the value refuses all four on every platform; one that matches
+    // the text a host spells accepts whichever spellings its list forgot,
+    // and glibc's -nan for a sign-set NaN is the one that got through.
+    let neg_nan: float = float_from_high(255, 248)
+    let pos_nan: float = float_from_high(127, 248)
+    let neg_inf: float = float_from_high(255, 240)
+    let pos_inf: float = float_from_high(127, 240)
+    let names: List<string> = ["neg_nan", "pos_nan", "neg_inf", "pos_inf"]
+    let bad_floats: List<float> = [neg_nan, pos_nan, neg_inf, pos_inf]
+    for index: int in 0..bad_floats.len() {
+        let one: ScoreOnly = ScoreOnly { score: bad_floats[index] }
+        let held: Bytes = Bytes.from("B")
+        match json.encode(one) {
+            ok(text) =>
+                io.println("{names[index]}: unexpected ok {text}"),
+            err(error) =>
+                io.println("{names[index]}: err {error.kind}: {error.msg}"),
+        }
+        match json.encode_into(one, held) {
+            ok(count) =>
+                io.println("{names[index]}_into: unexpected ok {count}"),
+            err(error) =>
+                io.println(
+                    "{names[index]}_into: err {error.kind}: {error.msg} :: {held.to_string()}"),
+        }
+    }
+
+    // The same NaN one level down, and ahead of a string the writer also
+    // cannot write: the refusal still travels out from the float, so the
+    // message names the float and not the string.
+    let bits_then_string: FloatThenString =
+        FloatThenString { score: neg_nan, label: surrogate_string() }
+    match json.encode(bits_then_string) {
+        ok(_) => io.println("bits_float_then_string: unexpected ok"),
+        err(error) =>
+            io.println("bits_float_then_string: err {error.kind}: {error.msg}"),
+    }
+    let bits_option: OptionalFloat =
+        OptionalFloat { score: some(neg_inf), label: surrogate_string() }
+    match json.encode(bits_option) {
+        ok(_) => io.println("bits_option_float: unexpected ok"),
+        err(error) =>
+            io.println("bits_option_float: err {error.kind}: {error.msg}"),
+    }
+    let bits_list: FloatList =
+        FloatList { scores: [1.5, neg_nan], label: surrogate_string() }
+    match json.encode(bits_list) {
+        ok(_) => io.println("bits_float_list: unexpected ok"),
+        err(error) =>
+            io.println("bits_float_list: err {error.kind}: {error.msg}"),
+    }
+
+    // ...and the other half of the rule: a finite float still writes. A
+    // check that refused everything would satisfy every line above, and the
+    // subnormal and the smallest normal are the values nearest to the edge
+    // the check draws.
+    let finite: List<float> = [
+        1.5, -2.25, 0.5, 0.1, 0.0001, 1e-300,
+        2.2250738585072014e-308, 5e-324,
+    ]
+    for index: int in 0..finite.len() {
+        match json.encode(ScoreOnly { score: finite[index] }) {
+            ok(text) => io.println("finite{index}: {text}"),
+            err(error) =>
+                io.println("finite{index}: unexpected err {error.kind}: {error.msg}"),
+        }
     }
 }
