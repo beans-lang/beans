@@ -2490,8 +2490,9 @@ fn handle(order: Order) -> Result<Receipt> {
 - **A panic ends only the fiber it happened on.** An outcome nobody joined
   escalates at the scope exit: the parent panics at the brew's position with
   the child's report. A cancelled child stays quiet.
-- Method calls brew through class receivers only — a value receiver would
-  run on the fiber's own copy. `inout` arguments cannot cross to a fiber.
+- Method calls brew through a **reference** receiver — a class or an
+  interface — only: a value receiver would run on the fiber's own copy.
+  `inout` arguments cannot cross to a fiber.
 - Fibers need the thread runtime: `--runtime freestanding` and wasm targets
   refuse `brew` at check time.
 
@@ -2524,9 +2525,11 @@ fn shielded(request: Request) -> Response {
   the one that answers. The caller's own frame is not unwound.
 - A **cancel is not caught** — it does not unwind — and a panic raised while
   the fiber is already unwinding is still the fatal double panic.
-- Method calls contain through class receivers only, and `inout` arguments
-  cannot ride through the hoist — the same two walls `brew` has, for the same
-  reason: the call is packaged as a fabricated closure over hoisted bindings.
+- Method calls contain through a **reference** receiver — a class or an
+  interface — only, and `inout` arguments cannot ride through the hoist: the
+  same two walls `brew` has, for the same reason, since the call is packaged
+  as a fabricated closure over hoisted bindings. A value receiver would run on
+  the hoisted copy; an interface value is an object, so it is not one.
 - The call must return something: `contained` answers `Result<T>`, and there
   is no `Result<unit>` in Beans because `ok` takes a value.
 - It needs the controlled unwind, so `--runtime freestanding` and every

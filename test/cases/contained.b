@@ -472,6 +472,24 @@ fn generic_pick<T>(a: T, b: T, first: bool) -> T {
     return a
 }
 
+// An interface-typed receiver. The wall the hoist imposes is about copying,
+// and an interface value is an object whose first word is its descriptor —
+// only classes implement one — so the hoisted binding holds the same object
+// the caller does and the dispatch reaches the same instance. Both verbs take
+// it; the brew line is here because both read the same rule.
+interface Worker {
+    fn work(n: int) -> int
+}
+
+class Grinder implements Worker {
+    pub seen: int = 0
+    pub fn work(n: int) -> int {
+        self.seen += n
+        if n > 2 { panic("grinder refused {n}") }
+        return self.seen
+    }
+}
+
 // A value moved into the call rides in the hoisted binding, so its death is
 // the enclosing scope's, exactly as a brew's argument is.
 fn takes_move(move t: Token, fail: bool) -> int {
@@ -524,6 +542,22 @@ fn call_shapes() {
     io.println("  four hundred frames deep: {value_or(contained recurse(400), -3)}")
 }
 
+// The interface receiver, on both verbs, and the mutation proving the call
+// reached the caller's own object rather than a copy of it: `seen` must carry
+// all three calls, the one that panicked included.
+fn interface_receiver() {
+    io.println("interface receiver:")
+    let w: Worker = new Grinder()
+    io.println("  contained ok: {value_or(contained w.work(1), -1)}")
+    io.println("  contained caught: {value_or(contained w.work(9), -1)}")
+    let child: Brew<int> = brew w.work(2)
+    io.println("  brewed: {value_or(child.join(), -1)}")
+    match w as? Grinder {
+        some(g) => { io.println("  one object saw 1+9+2: {g.seen}") }
+        none => { io.println("  not a Grinder") }
+    }
+}
+
 fn main() {
     ok_path()
     nested_frames()
@@ -539,5 +573,6 @@ fn main() {
     repeated()
     as_expression()
     call_shapes()
+    interface_receiver()
     io.println("done")
 }

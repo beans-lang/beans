@@ -1100,8 +1100,18 @@ printf 'err panic\n' | diff -u - "$tmp/nofiber.out"
 grep -Eq '(call|invoke) void @beans_contained_enter\(\)' build/nofiber.ll
 grep -Eq '(call|invoke) void @beans_contained_leave\(\)' build/nofiber.ll
 grep -Eq '(call|invoke) ptr @beans_contained_caught\(\)' build/nofiber.ll
-grep -q 'landingpad { ptr, i32 } cleanup' build/nofiber.ll
 grep -q 'personality ptr @__gcc_personality_v0' build/nofiber.ll
+# The catch pad itself: an exception edge naming a block of its own, whose
+# landing pad has no `resume` after it. `cc.eh` is that block, and the
+# `beans_contained_caught` above is what stands where a resume would.
+grep -Eq 'invoke .* unwind label %cc\.eh[0-9]+' build/nofiber.ll
+grep -Eq '^cc\.eh[0-9]+:' build/nofiber.ll
+awk '/^cc\.eh[0-9]+:/,/^cc\.done[0-9]+:/' build/nofiber.ll >"$tmp/nofiber.pad"
+grep -q 'landingpad { ptr, i32 } cleanup' "$tmp/nofiber.pad"
+if grep -q '  resume ' "$tmp/nofiber.pad"; then
+    echo "the contained catch pad resumes the unwind instead of stopping it" >&2
+    exit 1
+fi
 if grep -q '@beans_brew' build/nofiber.ll; then
     echo "a contained call still reaches the brew entries" >&2
     exit 1

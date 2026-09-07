@@ -348,7 +348,8 @@ is no `Result<unit>` in Beans — `ok` takes a value.
 - a unit-returning call (no `Result<unit>` to answer with).
 - the walls the fabricated closure imposes, shared with `brew`: the operand
   must be a call to a user function or method, a method's receiver must be a
-  class, and no argument may be `inout`.
+  reference (a class or an interface — a value receiver would run on the
+  hoisted copy), and no argument may be `inout`.
 
 ### The lock question, answered: poison
 

@@ -55,6 +55,16 @@ The runtime ABI goes to 18.
   the pads landed in 0.1.36, and every program that contains a panic now. The
   pad is one line, and both goldens are built with `--debug` in the gate.
 
+- **`brew` and `contained` now take an interface-typed receiver.** The wall
+  was "a method through a class receiver — a value receiver would run on the
+  fiber's own copy", and it read `kind == "class"`, so `brew handler.serve(x)`
+  through an interface was refused. The reason does not apply: `extends` and
+  `implements` belong to classes, an interface value is an object whose first
+  word is its descriptor, and a struct, union or enum that names either is
+  refused at its declaration — so the hoisted binding holds the same object
+  the caller does and the dispatch reaches the same instance. A value receiver
+  is still refused, for the reason the message gives.
+
 - **A forced unwind that reaches the end of the root fiber's stack now says
   so and exits, instead of finishing a fiber the scheduler cannot return
   from.** Only a `contained` call makes the root fiber unwind at all, so this

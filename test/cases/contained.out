@@ -92,4 +92,9 @@ call shapes:
   four hundred frames deep: -3
   drop token 22
   drop token 21
+interface receiver:
+  contained ok: 1
+  contained caught: -1
+  brewed: 12
+  one object saw 1+9+2: 12
 done

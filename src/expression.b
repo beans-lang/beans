@@ -13713,14 +13713,24 @@ class ExpressionChecker {
             return false
         }
         if call.kind == "method_call" && call.children.len() >= 1 {
-            var class_receiver: bool = false
+            // The wall is about copying, so it is about value types. An
+            // interface-typed receiver is not one: `extends` and `implements`
+            // belong to classes, an interface value is an object whose first
+            // word is its descriptor (spec/SYNTAX.md), and a struct, union or
+            // enum that names either is refused at its declaration. So the
+            // hoisted binding holds the same object the caller does and the
+            // dispatch reaches the same instance — exactly as a class
+            // receiver does.
+            var reference_receiver: bool = false
             match self.declaration_for(call.children[0].type) {
                 some(declaration) => {
-                    class_receiver = declaration.kind == "class"
+                    reference_receiver =
+                        declaration.kind == "class" ||
+                        declaration.kind == "interface"
                 }
                 none => {}
             }
-            if !class_receiver {
+            if !reference_receiver {
                 if on_a_fiber {
                     self.fail(
                         node,
