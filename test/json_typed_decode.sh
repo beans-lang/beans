@@ -25,6 +25,10 @@
 # allocator blocks that are deliberately not pre-zeroed (beans_alloc_bytes) and
 # rewrites the caller's buffer in place for decode_bytes_in_place.
 #
+# Those blocks come from the pool of whichever thread is decoding, so one leg
+# decodes from four threads at once; single-threaded coverage cannot tell a
+# per-thread pool from a shared one.
+#
 # Typed decoding is native only: the tree interpreter has no typed-decode entry
 # (json.decode<T> returns kind "unsupported" there), so this gate, like the
 # typed cases in encoding.sh, runs the native build. That gap is pre-existing
@@ -193,6 +197,48 @@ for pool in pooled nopool; do
     diff -u test/cases/json_typed_large_strings.out "$tmp/large_strings.$pool"
 done
 
+# 4c. The thread a decoded payload is allocated on.
+#
+#     beans_alloc_bytes carves a string payload out of the *calling thread's*
+#     pool -- an unlocked freelist, a bump pointer and its end, all three in the
+#     runtime's hot per-thread struct. Every case above runs on the entry thread
+#     alone, where one struct cannot be told from a struct shared by all of
+#     them; 4b's boundary sweep and the concurrent case in sanitize.sh's TSan
+#     list (json_threads.b, which only encodes) both pass against a runtime
+#     deliberately rewritten to hand every thread one struct. This decodes from
+#     four workers at once, each filling its strings with a letter no other
+#     worker uses, and that same rewrite segfaults it on every run.
+#
+#     Both allocator modes, for 4b's reason: BEANS_NO_POOL=1 sends every size
+#     down the non-pooled arm, so only the pooled run exercises the per-thread
+#     freelist and only the unpooled one exercises the other arm's entry.
+#
+#     Not in sanitize.sh's TSan list, and the reason is not the decoder. The
+#     bridge keeps beans_json_decode_probe_data, a deliberate single-threaded
+#     global this gate reads the last decode's error code and byte offset out
+#     of, and two threads decoding at once write it -- TSan reports that race
+#     before it reports anything else. Making it thread-local is what the
+#     bridge cannot do: _Thread_local puts __tlv_bootstrap in the object on
+#     Darwin, and test/encoding_symbols.sh holds these bridges to libc alone.
+#     So the probe has to move off a global (into the caller's req buffer, the
+#     way every other output of this ABI travels) before a concurrent decode
+#     can be TSan-clean. Until then this leg is the functional check above,
+#     which is what actually catches a shared struct: a runtime rewritten to
+#     hand every thread one struct segfaults it on every run.
+echo "checking decoded payloads are allocated on the thread that decodes them"
+"$beansc" build test/cases/json_typed_threads.b -o "$tmp/typed_threads" >/dev/null
+for pool in pooled nopool; do
+    pool_env=()
+    [[ "$pool" == "nopool" ]] && pool_env=(BEANS_NO_POOL=1)
+    if ! env ${pool_env+"${pool_env[@]}"} "$tmp/typed_threads" \
+            >"$tmp/typed_threads.$pool" 2>"$tmp/typed_threads.$pool.err"; then
+        sed -n '1,40p' "$tmp/typed_threads.$pool.err" >&2
+        echo "the threaded decode died ($pool)" >&2
+        exit 1
+    fi
+    diff -u test/cases/json_typed_threads.out "$tmp/typed_threads.$pool"
+done
+
 # 5. ASan/UBSan over both, in both allocator modes. The emitted IR, the runtime
 #    and the same bridge source the driver compiles are instrumented together,
 #    exactly as encoding.sh does it.
@@ -250,4 +296,4 @@ for pool in pooled nopool; do
     diff -u test/cases/json_typed_corpus.out "$tmp/corpus.san.$pool"
 done
 
-echo "ok json typed decode: depth policy, invariant fuzz (${#fuzz_seeds[@]} seeds), JSONTestSuite ($corpus_files files), C-string terminator across $classes size classes, ASan/UBSan in both pool modes"
+echo "ok json typed decode: depth policy, invariant fuzz (${#fuzz_seeds[@]} seeds), JSONTestSuite ($corpus_files files), C-string terminator across $classes size classes, four-thread payload allocation, ASan/UBSan in both pool modes"

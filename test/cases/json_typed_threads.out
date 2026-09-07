@@ -1,0 +1,2 @@
+workers 4 rounds 2000 sizes 4
+decodes 32000 wrong 0
