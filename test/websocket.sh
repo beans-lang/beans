@@ -10,13 +10,14 @@
 # case it runs. NON-STRICT is a pass (the suite's own vocabulary for "legal
 # but not the strictest choice"); FAILED is not.
 #
-# The `cases` array below is the fuzzing client's allowlist and the only
+# `autobahn_sections` below is the fuzzing client's allowlist and the only
 # thing that decides what runs: the server negotiating permessage-deflate
 # cannot make the client open a case it was not told to. Sections 12 and 13
 # are the compression sections, and they run only because they are named
-# there. The checker at the bottom counts whatever the report contains, so a
-# section left out of that array is not a skip anyone sees — it is a green
-# run that measured nothing.
+# there. The checker at the bottom counts whatever the report contains, so
+# it is also handed that list and fails when any section in it produced no
+# cases at all — otherwise a section left out, or a run cut short, is not a
+# skip anyone sees but a green run that measured nothing.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/beans-websocket.XXXXXX")
@@ -188,7 +189,11 @@ fi
 
 "$beansc" build test/cases/websocket_echo_server.b -o "$tmp/echo" >/dev/null 2>&1
 mkdir -p "$tmp/autobahn/config" "$tmp/autobahn/reports"
-port=${BEANS_AUTOBAHN_PORT:-19001}
+# A fixed port is a landmine the moment two checkouts run this at once: the
+# second echo server cannot bind, or the fuzzing client reaches the wrong
+# one, and the report that comes back is a partial run nobody reads as a
+# failure. Pick a port per run, the way the TLS leg above already does.
+port=${BEANS_AUTOBAHN_PORT:-$(( 19000 + RANDOM % 900 ))}
 server_host=host.docker.internal
 docker_network_args=()
 if [[ $(uname -s) == Linux ]]; then
@@ -197,11 +202,16 @@ if [[ $(uname -s) == Linux ]]; then
     server_host=127.0.0.1
     docker_network_args=(--network host)
 fi
+# The sections to run, named once. 12 and 13 are the compression sections;
+# 8 and 11 do not exist, and 9.2 through 9.6 are throughput measurements
+# rather than conformance.
+autobahn_sections=(1 2 3 4 5 6 7 9.1 9.7 10 12 13)
+case_list=$(printf '"%s.*", ' "${autobahn_sections[@]}")
 cat >"$tmp/autobahn/config/fuzzingclient.json" <<EOF
 {
    "outdir": "./reports/servers",
    "servers": [{"agent": "beans-std-websocket", "url": "ws://${server_host}:${port}"}],
-   "cases": ["1.*", "2.*", "3.*", "4.*", "5.*", "6.*", "7.*", "9.1.*", "9.7.*", "10.*", "12.*", "13.*"],
+   "cases": [${case_list%, }],
    "exclude-cases": [],
    "exclude-agent-cases": {}
 }
@@ -235,9 +245,11 @@ done
     exit 1
 }
 
-if ! python3 - "$tmp/autobahn/reports/servers/index.json" <<'PYEOF'
+if ! python3 - "$tmp/autobahn/reports/servers/index.json" \
+        "${autobahn_sections[@]}" <<'PYEOF'
 import json, sys, collections
 report = json.load(open(sys.argv[1]))
+sections = sys.argv[2:]
 if not report:
     print("Autobahn produced no server results", file=sys.stderr)
     sys.exit(1)
@@ -246,6 +258,17 @@ cases = report[agent]
 if not cases:
     print(f"Autobahn produced no cases for {agent}", file=sys.stderr)
     sys.exit(1)
+# A section that was asked for and produced nothing is the failure this
+# gate is worst at noticing: the counters below only speak for the cases the
+# report happens to contain, so a run cut short — a server that died, a
+# fuzzing client that reached somebody else's — reads as a clean pass over a
+# smaller suite. Name every section, and require each one to have run.
+missing = [s for s in sections
+           if not any(name == s or name.startswith(s + ".") for name in cases)]
+if missing:
+    print(f"  Autobahn ran {len(cases)} cases but sections "
+          f"{', '.join(missing)} produced none", file=sys.stderr)
+    sys.exit(1)
 behavior = collections.Counter(v["behavior"] for v in cases.values())
 closing = collections.Counter(v["behaviorClose"] for v in cases.values())
 def key(name): return [int(part) for part in name.split(".")]
@@ -253,7 +276,8 @@ bad = sorted([k for k, v in cases.items()
               if v["behavior"] not in ("OK", "NON-STRICT", "INFORMATIONAL")], key=key)
 bad_close = sorted([k for k, v in cases.items()
                     if v["behaviorClose"] not in ("OK", "INFORMATIONAL")], key=key)
-print(f"  {len(cases)} cases | behavior {dict(behavior)} | close {dict(closing)}")
+print(f"  {len(cases)} cases over sections {' '.join(sections)}"
+      f" | behavior {dict(behavior)} | close {dict(closing)}")
 if bad or bad_close:
     if bad:
         print("  failed behavior:", ", ".join(bad))
