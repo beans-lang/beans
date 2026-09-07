@@ -104,10 +104,10 @@ if [[ "${#sidecars[@]}" -lt 4 ]]; then
     printf '  %s\n' "${sidecars[@]:-none}" >&2
     exit 1
 fi
-for sidecar in "${sidecars[@]}"; do
+for sidecar in ${sidecars+"${sidecars[@]}"}; do
     test -f "$sidecar" || { echo "missing sidecar $sidecar" >&2; exit 1; }
 done
-"$cc" "$tmp/consumer.c" "$tmp/trio.o" "${sidecars[@]}" build/beans_rt.c \
+"$cc" "$tmp/consumer.c" "$tmp/trio.o" ${sidecars+"${sidecars[@]}"} build/beans_rt.c \
     -lm -o "$tmp/consumer_obj"
 got=$("$tmp/consumer_obj")
 [[ "$got" == "$expected" ]] || {

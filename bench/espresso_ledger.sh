@@ -361,7 +361,7 @@ start_server() { # <server> <route> <logfile> <statsfile>
   local s=$1 r=$2 log=$3 stats=$4 port; port=$(port_of "$s")
   local -a argv=(); while IFS= read -r line; do argv+=("$line"); done < <(server_cmd "$s" "$r")
   rm -f "$stats"
-  "${TASKSET_SRV[@]+"${TASKSET_SRV[@]}"}" "$RUSAGE_WRAP" "$stats" "${argv[@]}" > "$log" 2>&1 &
+  "${TASKSET_SRV[@]+${TASKSET_SRV+"${TASKSET_SRV[@]}"}}" "$RUSAGE_WRAP" "$stats" "${argv[@]}" > "$log" 2>&1 &
   SPID=$!
   local probe="http://127.0.0.1:$port$(route_path "$r")"
   local i
@@ -423,10 +423,10 @@ run_one() { # <server> <route> <round> -> appends a row to ledger.tsv
   local url="http://127.0.0.1:$port$(route_path "$r")"
   if [ "$r" = "echo" ]; then
     BENCH_ECHO_BODY="$BENCH3/echo_body.json" \
-      "${TASKSET_WRK[@]+"${TASKSET_WRK[@]}"}" \
+      "${TASKSET_WRK[@]+${TASKSET_WRK+"${TASKSET_WRK[@]}"}}" \
       wrk -t4 -c"$(wrk_conns "$r")" -d"$DUR" --latency -s "$BENCH3/echo.lua" "$url" > "$wlog" 2>&1
   else
-    "${TASKSET_WRK[@]+"${TASKSET_WRK[@]}"}" \
+    "${TASKSET_WRK[@]+${TASKSET_WRK+"${TASKSET_WRK[@]}"}}" \
       wrk -t4 -c"$(wrk_conns "$r")" -d"$DUR" --latency "$url" > "$wlog" 2>&1
   fi
   stop_server

@@ -184,7 +184,7 @@ echo "checking decoded strings across the allocator's size boundaries"
 for pool in pooled nopool; do
     pool_env=()
     [[ "$pool" == "nopool" ]] && pool_env=(BEANS_NO_POOL=1)
-    if ! env "${pool_env[@]}" "$tmp/large_strings" \
+    if ! env ${pool_env+"${pool_env[@]}"} "$tmp/large_strings" \
             >"$tmp/large_strings.$pool" 2>"$tmp/large_strings.$pool.err"; then
         sed -n '1,40p' "$tmp/large_strings.$pool.err" >&2
         echo "the large-string decode died ($pool)" >&2
@@ -214,14 +214,14 @@ for pool in pooled nopool; do
     env_args=()
     [[ "$pool" == "nopool" ]] && env_args=(BEANS_NO_POOL=1)
     seed=${fuzz_seeds[0]}
-    if ! env "${env_args[@]}" FUZZ_SEED=$seed FUZZ_ROUNDS=$fuzz_rounds \
+    if ! env ${env_args+"${env_args[@]}"} FUZZ_SEED=$seed FUZZ_ROUNDS=$fuzz_rounds \
             "$tmp/json_typed_decode_fuzz.san" \
             >"$tmp/fuzz.san.$pool" 2>"$tmp/fuzz.san.$pool.err"; then
         cat "$tmp/fuzz.san.$pool.err" >&2
         echo "the fuzz failed under ASan/UBSan ($pool)" >&2
         exit 1
     fi
-    if ! env "${env_args[@]}" "$tmp/json_typed_corpus_runner.san" "$corpus_dir" \
+    if ! env ${env_args+"${env_args[@]}"} "$tmp/json_typed_corpus_runner.san" "$corpus_dir" \
             >"$tmp/corpus.san.$pool" 2>"$tmp/corpus.san.$pool.err"; then
         cat "$tmp/corpus.san.$pool.err" >&2
         echo "the corpus runner failed under ASan/UBSan ($pool)" >&2

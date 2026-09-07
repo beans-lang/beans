@@ -468,7 +468,7 @@ for file in examples/threads.b examples/shared_weak.b examples/wide_sync.b \
     fi
     tsan_extra+=($(net_bridge_sources "$name"))
     if clang -O1 -g -pthread -fsanitize=thread -Wno-override-module \
-        "build/$name.ll" build/beans_rt.c "${tsan_extra[@]}" \
+        "build/$name.ll" build/beans_rt.c ${tsan_extra+"${tsan_extra[@]}"} \
         -lm -o "$out/${name}_tsan"; then
         # Not under `set -e`: a TSan binary can exit non-zero for reasons worth
         # reporting rather than aborting the whole sweep on, and the real signal
