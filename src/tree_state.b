@@ -222,8 +222,10 @@ class TreeBrewState {
         // native's spawn gives a reused record's unwind_status — or an
         // ordinary catchable panic here becomes a bogus process-wide
         // double panic naming the dead fiber's message. The catch-frame
-        // count of a `contained` call is left behind by the same death for
-        // the same reason, and is dropped here for the same reason.
+        // count of a `contained` call is left behind by the same death, and
+        // is dropped here beside it — see contained_reset for why no program
+        // can currently see the difference and why the two are reset
+        // together anyway.
         self.owner.end_unwind()
         self.owner.contained_reset()
         let value: TreeValue =

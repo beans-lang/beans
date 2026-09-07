@@ -1124,6 +1124,16 @@ run_ends test/cases/contained_escapes.b \
     test/cases/contained_escapes_argument.out 3 \
     BEANS_CONTAINED_CASE=argument
 
+echo "checking the root fiber does not read a child's catch frame"
+# The count of standing frames decides whether a panic unwinds at all, and a
+# brewed fiber always unwinds anyway — so per-fiber and per-thread only differ
+# on the ROOT fiber. A child parks inside its frame and the root then fails
+# with none of its own: uncontained, frames abandoned, exit 3. Make the count
+# thread-wide and the tree runs the root's defers while the native build walks
+# its pads to the end of the stack; either way this golden moves.
+run_ends test/cases/contained_sibling_frame.b \
+    test/cases/contained_sibling_frame.out 3
+
 echo "checking a defer that panics during a contained unwind still aborts"
 # The one unrecoverable case (spec/CONCURRENCY.md) is unchanged by a catch
 # frame: the runtime asks "is this fiber already unwinding" before it asks

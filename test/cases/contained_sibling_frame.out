@@ -1,0 +1,2 @@
+child is parked inside its catch frame
+runtime panic at 41:10: the root fails while a child's frame stands

@@ -275,7 +275,11 @@ match contained handle(request) {
   as they were.
 - **Arguments are evaluated outside.** `contained f(g())` where `g` panics is
   not this call's failure to catch, the same way `brew f(g())` evaluates `g`
-  on the parent fiber. Only the call is contained.
+  on the parent fiber. Only the call is contained. They are also *hoisted*
+  outside, into invisible locals of the enclosing scope, so a value moved into
+  a contained call dies when that scope exits rather than when the callee
+  returns — again exactly as a `brew`'s arguments do. Inside a loop body that
+  is the iteration; at a function's own scope it is the function.
 - **Cancellation is not contained.** A cancel is delivered inside a park
   primitive and does not unwind on either backend (see `beans_fiber_exit_
   cancelled`), so it never reaches a catch frame: the fiber ends and its join

@@ -718,7 +718,17 @@ class TreeInterpreter {
     // reused, and a fiber cancelled at a park inside a contained call leaves
     // through the runtime without ever reaching its leave — so the count
     // under that address outlives the fiber it described. Native gets this
-    // free: beans_fiber_spawn zeroes a reused record. The tree has to say it.
+    // free: beans_fiber_spawn zeroes a reused record. The tree says it here,
+    // beside the unwind entry that is cleared for the same reason.
+    //
+    // No program can see the difference today, and the reason is worth
+    // writing down rather than discovering later: the count is read in one
+    // place, panic_is_contained, and every address a pool can hand back
+    // belongs to a brewed fiber, which already answers yes there. The root
+    // fiber — the only one where the count decides anything — is allocated
+    // once at bootstrap and never pooled, so it cannot inherit an entry. The
+    // line is here because the two per-fiber facts must be reset together;
+    // the moment either is read anywhere else, a stale one is a wrong answer.
     fn contained_reset() {
         self.contained_depths.remove(
             self.current_fiber_address())
