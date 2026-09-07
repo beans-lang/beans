@@ -6,7 +6,8 @@ parse, check, both lowerings, `Brew<T>` with join/cancel, the synthesized
 scope join, panic containment and escalation — are in the tree; see the
 "where the implementation stands" section at the end for what deliberately
 remains (the cancelled-park unwind, may-park inference, std park sites) — the
-contained-panic unwind now lands on both backends. The async v2
+contained-panic unwind now lands on both backends, and `contained f(args)`
+puts its boundary at a call instead of at a fiber. The async v2
 state-machine branch is archived, unmerged, at the tag
 `archive/async-v2-statemachine`; its measured failure is the reason this
 document exists.
@@ -705,6 +706,15 @@ Landed since:
    legs with no panic in sight. Only what a pass does once it starts is
    settled here.
 
+0. **Containment at a call boundary** (#145). `contained f(args)` runs the
+   call on the current fiber under a catch frame and answers `Result<T>`, so
+   containing a panic no longer costs a fiber spawn, two context switches and
+   a join. The mechanism is the same unwind as above, stopped one frame
+   earlier: the call is emitted as an `invoke` whose exception edge is a
+   landing pad that does not resume. The rule is stated in full under "Panic
+   containment" above; `test/cases/contained*.b` are the differentials, and
+   the count of standing frames lives on the fiber, never on the thread.
+
 Deliberately not yet here, in dependency order:
 
 0. **Native unwinding off elf/macho x86_64/arm64.** The native pads ride the
@@ -714,7 +724,10 @@ Deliberately not yet here, in dependency order:
    the fiber's frames in a native build while the interpreter unwinds, so
    defer/deinit output under a contained panic differs between the legs on
    those targets. Differential tests that run there must not pin
-   defer-under-panic output until the pads land per target.
+   defer-under-panic output until the pads land per target. `contained` is
+   refused outright on those targets rather than allowed to differ: there the
+   native backend has no pad at all, so a panic would end the process where
+   the interpreter caught it. Widening it needs SEH funclets for COFF.
 
 1. **The cancelled-park unwind.** A cancelled park still abandons the fiber's
    frames on *both* backends: unlike a panic, a cancel is delivered from inside
