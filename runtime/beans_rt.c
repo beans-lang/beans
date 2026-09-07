@@ -9051,9 +9051,18 @@ void beans_bytes_reserve(BList* b, long long n, long long line, long long col) {
 // pointer and reports the capacity through *cap_out, so the writer keeps
 // writing straight into the store without a second buffer. Growth failure
 // panics, exactly as every other Bytes append does.
-unsigned char* beans_bytes_reserve_raw(BList* b, unsigned long long len,
+//
+// The Bytes arrives as an opaque handle for the same reason
+// beans_list_new_typed_capacity returns one: the bridge declares the pointer
+// type it calls through, and calling a BList*-taking function through a
+// void*-taking pointer is undefined behaviour even though both parameters use
+// the same machine representation. The declared type here and the typedef
+// there have to be the same type, so the handle is void* on both sides and
+// this side — which does know BList — is the one that casts.
+unsigned char* beans_bytes_reserve_raw(void* handle, unsigned long long len,
                                        unsigned long long min_cap,
                                        unsigned long long* cap_out) {
+    BList* b = (BList*)handle;
     if (min_cap > (unsigned long long)(1LL << 58))
         beans_panic("JSON output too large", 0, 0);
     bytes_grow(b, (long long)min_cap);

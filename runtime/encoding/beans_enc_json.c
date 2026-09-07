@@ -228,7 +228,11 @@ enum {
 // `len`, ensures capacity for `min_cap`, returns the (possibly moved) base
 // pointer, and reports the new capacity through *cap_out. Passed as a
 // function pointer because this bridge is a separate translation unit and
-// must not reach into BList itself.
+// must not reach into BList itself. The Bytes is a void* here and a void* in
+// that entry's own declaration: a call through a pointer whose type differs
+// from the callee's declared type is undefined behaviour, so the opacity this
+// bridge needs has to be spelled the same way on both sides rather than cast
+// away at the boundary.
 typedef unsigned char* (*BeansJsonBytesReserveFn)(void* handle,
                                                   unsigned long long len,
                                                   unsigned long long min_cap,
