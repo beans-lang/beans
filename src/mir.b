@@ -817,6 +817,35 @@ class MirLowerer {
         return result
     }
 
+    // contained — the same hoisted bindings and fabricated closure a brew
+    // carries, run on this fiber instead of a child one
+    // (spec/CONCURRENCY.md). The closure is NOT consumed here: brew hands it
+    // to the runtime, which releases it when the child is done, while a
+    // contained call returns to this frame with the closure still standing.
+    // Leaving it to the plan is what puts its release on both the ok and the
+    // caught path, and what puts it in the cleanup pad's list for a panic
+    // that escapes the boundary — the emitter cannot reach either from
+    // inside one instruction's text.
+    fn lower_contained(node: HirNode) -> int {
+        var closure: int = -1
+        for child: HirNode in node.children {
+            if child.kind == "closure" {
+                closure = self.lower_expression(child)
+            } else {
+                self.lower_statement(child)
+            }
+        }
+        if closure < 0 {
+            self.fail(
+                node.file, node.line, node.col,
+                "contained has no closure to run")
+            return -1
+        }
+        return self.emit(
+            node, "contained", node.type, node.value,
+            [closure])
+    }
+
     // group.brew — the fleet flavor: the group reference rides as a first
     // operand ahead of the closure, and the hoisted temps lower as
     // ordinary lets exactly as a lone brew's do. The group operand is a
@@ -1181,6 +1210,9 @@ class MirLowerer {
         }
         if node.kind == "brew" {
             return self.lower_brew(node)
+        }
+        if node.kind == "contained" {
+            return self.lower_contained(node)
         }
         if node.kind == "group_brew" {
             return self.lower_group_brew(node)
@@ -5985,11 +6017,12 @@ class MirLowerer {
         }
     }
 
-    // Does anything in this program start a fiber? Only a brewed fiber can
-    // contain a panic — every other failure ends the process — so this is
-    // the question "can a frame ever have to unwind", and the answer decides
-    // whether the backend emits cleanup pads at all. A program that never
-    // brews is compiled exactly as it was before the unwind existed.
+    // Does anything in this program need the controlled unwind? Two things
+    // do: a brewed fiber, whose panic is delivered at its join, and a
+    // `contained` call, whose panic stops at a catch frame on the calling
+    // fiber. Both mean "a frame can have to unwind", and the answer decides
+    // whether the backend emits cleanup pads at all. A program with neither
+    // is compiled exactly as it was before the unwind existed.
     fn detect_fiber_use() -> bool {
         for function: MirFunction in self.mir.functions {
             for block: MirBlock in function.blocks {
@@ -5997,7 +6030,8 @@ class MirLowerer {
                     block.instructions {
                     if instruction.removed { continue }
                     if instruction.op == "brew" ||
-                       instruction.op == "group_brew" {
+                       instruction.op == "group_brew" ||
+                       instruction.op == "contained" {
                         return true
                     }
                 }

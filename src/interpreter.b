@@ -145,6 +145,16 @@ class TreeInterpreter {
     // double-panic case (a defer or deinit the unwind itself is running has
     // panicked): unrecoverable, reported and aborted.
     unwinds: Map<u64, string>
+    // How many `contained` catch frames stand on each fiber's walk
+    // (spec/CONCURRENCY.md). A panic raised on a fiber with one is contained
+    // whether or not that fiber is a brewed one — the boundary is the call,
+    // not the fiber — so this is the second half of panic_is_contained, and
+    // the tree mirror of the native runtime's per-fiber contained_depth. Kept
+    // per fiber for the same reason the unwind entry is: a catch frame on a
+    // sibling's stack is not one this failure can reach, and a fiber parked
+    // inside a contained call must not have its count moved by whoever runs
+    // meanwhile.
+    contained_depths: Map<u64, int>
     // The object id of a construction that did not finish, or -1. An
     // initializer (or a field initializer) that panics leaves a half-built
     // object behind, and the release the unwind then performs must not hand
@@ -248,6 +258,7 @@ class TreeInterpreter {
         self.panic_text = ""
         self.entry_returned = false
         self.unwinds = {}
+        self.contained_depths = {}
         self.unbuilt_object = -1
         self.next_object_id = 0
         self.weak_track = false
@@ -675,16 +686,71 @@ class TreeInterpreter {
         self.unbuilt_object = -1
     }
 
-    // Is a panic raised right now contained, i.e. will a `join` catch it?
-    // True exactly when the walker runs on a brewed, non-root fiber. The
-    // native backend's beans_panic asks the identical question of the same
-    // fiber core, so the two backends contain and abandon the same panics.
+    // Is a panic raised right now contained — will something catch it and
+    // turn it into a value? Two things do, and both are asked of the fiber
+    // running the walker. A brewed, non-root fiber always is: its failure is
+    // delivered at its join. Any fiber is while a `contained` call stands on
+    // its walk, the root fiber of a plain program included, because the
+    // boundary there is the call and not the fiber. The native backend's
+    // beans_panic asks these same two questions of the same fiber core, so
+    // the two backends contain and abandon the same panics.
     fn panic_is_contained() -> bool {
+        if self.contained_depth() > 0 { return true }
         unsafe {
             let current: RawPtr<u8> =
                 beans_fiber_current()
             if current.address() == 0 { return false }
             return beans_fiber_is_root(current) == 0
+        }
+    }
+
+    // Catch frames standing on the walk of the fiber running right now.
+    fn contained_depth() -> int {
+        match self.contained_depths.get(
+                  self.current_fiber_address()) {
+            some(depth) => { return depth }
+            none => { return 0 }
+        }
+    }
+
+    // A fresh fiber has no catch frames, whatever the record at this address
+    // was doing before it. Fiber records are pooled and their addresses
+    // reused, and a fiber cancelled at a park inside a contained call leaves
+    // through the runtime without ever reaching its leave — so the count
+    // under that address outlives the fiber it described. Native gets this
+    // free: beans_fiber_spawn zeroes a reused record. The tree says it here,
+    // beside the unwind entry that is cleared for the same reason.
+    //
+    // No program can see the difference today, and the reason is worth
+    // writing down rather than discovering later: the count is read in one
+    // place, panic_is_contained, and every address a pool can hand back
+    // belongs to a brewed fiber, which already answers yes there. The root
+    // fiber — the only one where the count decides anything — is allocated
+    // once at bootstrap and never pooled, so it cannot inherit an entry. The
+    // line is here because the two per-fiber facts must be reset together;
+    // the moment either is read anywhere else, a stale one is a wrong answer.
+    fn contained_reset() {
+        self.contained_depths.remove(
+            self.current_fiber_address())
+    }
+
+    fn contained_enter() {
+        let key: u64 = self.current_fiber_address()
+        self.contained_depths[key] =
+            self.contained_depth() + 1
+    }
+
+    // Fiber records are pooled and their addresses reused, so an entry must
+    // not outlive the fiber it describes: the count comes out of the map
+    // entirely when the last frame leaves, the way end_unwind removes the
+    // unwind entry.
+    fn contained_leave() {
+        let key: u64 = self.current_fiber_address()
+        let depth: int = self.contained_depth() - 1
+        if depth <= 0 {
+            self.contained_depths.remove(key)
+        } else {
+            self.contained_depths[key] = depth
         }
     }
 
@@ -10478,6 +10544,75 @@ class TreeInterpreter {
         return result
     }
 
+    // contained — evaluate the hoisted argument bindings, then run the
+    // fabricated closure right here, on the walker's own fiber, with a catch
+    // frame standing (spec/CONCURRENCY.md). No fiber is spawned and nothing
+    // parks: what makes the panic catchable is the frame, not a child.
+    //
+    // The three moments mirror the native emission exactly. The hoists run
+    // OUTSIDE the frame, so a panic while evaluating an argument is not
+    // contained — natively the enter call sits after the operands for the
+    // same reason. The frame stands across the call, which is what makes
+    // panic_is_contained true for every panic raised under it and so arms
+    // the tree-level unwind that runs the frames' defers and drops their
+    // owned locals on the way back here. And the failure the walk carried is
+    // taken off the interpreter here, exactly as the native pad takes it off
+    // the fiber: the same message text, the same kind, the same walker put
+    // back into a running state.
+    fn tree_contained(node: HirNode,
+                      frame: TreeFrame) -> TreeValue {
+        var closure_value: TreeValue = TreeValue.unit()
+        var seen_closure: bool = false
+        for child: HirNode in node.children {
+            if child.kind == "closure" {
+                closure_value =
+                    self.expression(child, frame)
+                seen_closure = true
+            } else {
+                // a hoisted argument let; `?` in an argument propagates
+                // from the enclosing function, so the value bubbles out
+                let value: TreeValue =
+                    if child.children.len() == 0 {
+                        TreeValue.unit()
+                    } else {
+                        self.expression(
+                            child.children[0], frame)
+                    }
+                if value.kind == "propagate" {
+                    return value
+                }
+                frame.set(
+                    child.binding_id,
+                    tree_value_copy(value))
+            }
+        }
+        if self.failed { return TreeValue.unit() }
+        if !seen_closure {
+            return self.fail(
+                node, "contained has no closure to run")
+        }
+        // The count is keyed by the fiber running the walk, so there has to
+        // be one before the frame is recorded: without this a program that
+        // only contains would key the root frame under address 0 and then
+        // find a real address the moment anything brewed underneath it.
+        // Native's beans_contained_enter bootstraps for the same reason.
+        unsafe { beans_worker_bootstrap() }
+        self.contained_enter()
+        let value: TreeValue =
+            self.invoke_closure(
+                node, closure_value, [])
+        self.contained_leave()
+        if self.failed {
+            let message: string = self.panic_text
+            self.failed = false
+            self.panic_text = ""
+            self.end_unwind()
+            return TreeValue.result_err(
+                TreeValue.error(message, "panic"))
+        }
+        return TreeValue.result_ok(value)
+    }
+
     // Parks until the fiber finishes, then retires the C record and closes
     // the entry callback — exactly once.
     fn tree_brew_reap(work: TreeBrewState) {
@@ -12047,6 +12182,9 @@ class TreeInterpreter {
         }
         if node.kind == "brew" {
             return self.tree_brew(node, frame)
+        }
+        if node.kind == "contained" {
+            return self.tree_contained(node, frame)
         }
         if node.kind == "group_brew" {
             return self.tree_group_brew(node, frame)

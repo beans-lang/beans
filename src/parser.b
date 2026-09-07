@@ -1321,6 +1321,21 @@ class Parser {
                 return result
             }
         }
+        // `contained` is contextual on exactly the same terms as `brew`: it
+        // opens a catch frame only when a callee follows it. Before any other
+        // token it is an ordinary name, so a local called `contained` — the
+        // fiber soak cases count with one — keeps working.
+        if self.check("ident") &&
+           self.current().text == "contained" {
+            let after: Token = self.tokens[self.pos + 1]
+            if after.kind == "ident" || after.kind == "self" {
+                let start: Token = self.advance()
+                let result: AstNode =
+                    self.node("contained", "", start)
+                result.add(self.parse_postfix(self.parse_primary()))
+                return result
+            }
+        }
         return self.parse_postfix(self.parse_primary())
     }
 

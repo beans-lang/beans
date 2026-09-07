@@ -82,4 +82,32 @@ test "$native_status" -eq 3
 diff -u test/cases/c_callback_panic.out "$tmp/panic.interp"
 diff -u test/cases/c_callback_panic.out "$tmp/panic.native.out"
 
-echo "ok closures, function references, void calls, floats, and C records"
+echo "checking a contained call catches a panic raised across a C frame"
+# issue #145: `contained f(args)` stops the unwind at a landing pad in the
+# calling frame. When the panic is raised inside a Beans closure that a C
+# function called, the walk has to cross that C frame to reach the pad — which
+# works only because every frame on the path carries an unwind table. The
+# failure must arrive as err(kind panic) with the callee's defers run and its
+# locals dropped, identically on both backends; without the pad it is exit 3.
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    DYLD_INSERT_LIBRARIES="$tmp/callbacks.dylib" \
+        "$beansc" run test/cases/contained_ffi.b >"$tmp/ccffi.interp" 2>&1
+else
+    LD_PRELOAD="$tmp/callbacks.so" \
+        "$beansc" run test/cases/contained_ffi.b >"$tmp/ccffi.interp" 2>&1
+fi
+
+"$beansc" build test/cases/contained_ffi.b -o "$tmp/ccffi.unlinked" \
+    >"$tmp/ccffi.generate" 2>&1 || true
+# The same flags the driver passes for a build that can unwind
+# (src/driver.b): the pads are useless without a runtime that starts the
+# unwind and unwind tables on every C frame between the panic and the pad.
+clang -O2 -pthread -funwind-tables -fexceptions -DBEANS_FIBER_UNWIND=1 \
+    -Wno-override-module build/contained_ffi.ll \
+    build/beans_rt.c build/contained_ffi_ffi.c \
+    test/fixtures/c_callback_helper.c -lm -o "$tmp/ccffi.native"
+"$tmp/ccffi.native" >"$tmp/ccffi.native.out" 2>&1
+diff -u test/cases/contained_ffi.out "$tmp/ccffi.interp"
+diff -u test/cases/contained_ffi.out "$tmp/ccffi.native.out"
+
+echo "ok closures, function references, void calls, floats, C records, contained across C"

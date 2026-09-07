@@ -16,6 +16,29 @@
 compiler=0.1.39
 language=1.0
 
+# 18: beans_contained_enter, beans_contained_leave, beans_contained_caught —
+# the runtime half of a `contained` call (spec/CONCURRENCY.md). Containing a
+# panic used to need a fiber: the only boundary a failure could stop at was a
+# brewed fiber's entry, so a server that wanted a panicking handler to become
+# a 500 paid a spawn, two context switches and a join on every request whether
+# or not anything ever panicked (issue #145). The unwind that walks the frames
+# was never the fiber's — it is the platform's forced unwind, brought in with
+# runtime ABI 12 — and it stops wherever a landing pad declines to resume. So
+# the boundary moves to a call: the emitter issues the call as an `invoke`
+# whose exception edge is a pad that does not resume, and the failure becomes
+# a Result at the call site.
+#
+# The three entries are the count of catch frames standing on one fiber's
+# stack, and the pad's read of the report. enter/leave bracket the
+# non-failing path; caught hands over the message and takes the fiber back
+# out of the unwind. The count is per fiber, not per thread, because a catch
+# frame is a frame and one fiber's frames are not on another's stack; enter
+# promotes the calling thread to a worker so the count always has a fiber to
+# live on, which is what lets a program that never brews contain a panic on
+# its main fiber. beans_panic reads the count: a failure unwinds when the
+# fiber is a brewed one OR a catch frame stands on it, and the root fiber of
+# a plain program with no catch frame keeps today's report and exit 3.
+#
 # 17: beans_net_send_pair_wait — one write of two buffers, so a response can
 # be sent without first being assembled. A server frames a head and already
 # holds a body; joining them copies the body, and on a one-megabyte response
@@ -149,4 +172,4 @@ language=1.0
 # caller-owned event buffer instead of returning a fresh one.
 # Version 7 added Bytes.filled, Bytes.append_int_text, and Thread.detach.
 # Version 6 added per-thread runtime-hook guard entry points.
-runtime_abi=17
+runtime_abi=18

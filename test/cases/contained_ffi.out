@@ -1,0 +1,9 @@
+across a C frame, no failure:
+  across-c defer
+  drop across-c
+  ok 42
+across a C frame, panicking:
+  across-c defer
+  drop across-c
+  caught panic: runtime panic at 30:36: callback refused
+done

@@ -4048,7 +4048,16 @@ void beans_panic(const char* msg, long long line, long long col) {
             rt_write(2, "\n", (unsigned long long)1);
             abort();
         }
-        if (fiber && !beans_fiber_is_root(fiber)) {
+        // Two things make a panic unwind rather than end the process, and
+        // they are asked of the same fiber. A brewed fiber always unwinds:
+        // its failure is delivered at its join. Any fiber — the root of a
+        // plain program included — unwinds when a `contained` catch frame
+        // stands on its stack, because that frame's landing pad is where
+        // the unwind stops and the failure becomes a value
+        // (spec/CONCURRENCY.md). Depth is read per fiber: a catch frame on
+        // a sibling's stack is not one this unwind can reach.
+        if (fiber && (!beans_fiber_is_root(fiber) ||
+                      beans_fiber_contained_depth(fiber) > 0)) {
             text[n - 1] = '\0'; // the stored message carries no newline
             beans_fiber_panic(text);
         }
@@ -18341,6 +18350,52 @@ void beans_brew_scope_join(BBrew* h, long long line, long long col) {
         beans_panic(text, line, col);
     }
     brew_drop_result(h);
+}
+
+// ---------------------------------------------------------------------------
+// contained — a catch frame on the CURRENT fiber (spec/CONCURRENCY.md).
+//
+// `contained f(x)` runs f right here, under a landing pad the emitter puts on
+// the call, and answers Result<T>. There is no child fiber, so there is no
+// spawn, no pair of context switches and no join: the same controlled unwind
+// a brewed fiber's panic starts simply stops one frame earlier.
+//
+// The runtime's whole part is the count of catch frames standing on a fiber's
+// stack. beans_panic reads it to decide whether a failure unwinds; the pad
+// calls the third entry to say the unwind ended here.
+//
+// The first enter promotes this thread to a worker if it is not one already,
+// so the count always has a fiber to live on. It is idempotent and the second
+// call is a thread-local load and a branch — a program that brews has paid it
+// already, and one that only contains pays it once per thread.
+void beans_contained_enter(void) {
+    beans_worker_bootstrap();
+    beans_fiber_contained_enter(beans_fiber_current());
+}
+
+void beans_contained_leave(void) {
+    beans_fiber_contained_leave(beans_fiber_current());
+}
+
+// The landing pad's one call: a fresh Beans string with the report the unwind
+// was carrying, and the fiber put back into a running state. The message is
+// exactly what a brewed fiber's join delivers for the same panic — the whole
+// "runtime panic at <line>:<col>: <text>" line — so a failure reads the same
+// whichever boundary caught it.
+// The report is copied to the stack and the fiber taken out of the unwind
+// BEFORE the Beans string is minted. Minting it allocates, an allocation can
+// run a cycle-collector pass, and a deinit that pass runs can panic — with the
+// fiber still marked unwinding that ordinary panic would be reported as the
+// fatal double panic. The walk is over by the time this pad runs, so the flag
+// has no business outliving it. 512 is the fiber record's own message size.
+char* beans_contained_caught(void) {
+    BeansFiber* fiber = beans_fiber_current();
+    char text[512];
+    const char* carried = beans_fiber_message(fiber);
+    strncpy(text, carried ? carried : "", sizeof text - 1);
+    text[sizeof text - 1] = '\0';
+    beans_fiber_contained_caught(fiber);
+    return str_make(text, (long long)strlen(text));
 }
 
 // ---------------------------------------------------------------------------
