@@ -4,7 +4,7 @@ This file records user-facing changes in each Beans release.
 
 ## [Unreleased]
 
-The runtime ABI goes to 18.
+The runtime ABI moves to 19.
 
 ### Added
 
@@ -44,6 +44,41 @@ The runtime ABI goes to 18.
   The runtime ABI goes to 18 for `beans_contained_enter`,
   `beans_contained_leave` and `beans_contained_caught`. See
   `spec/CONCURRENCY.md` and `spec/SYNTAX.md`.
+
+- **`std.websocket` speaks permessage-deflate (RFC 7692).** `compress: true`
+  on `Connection.accept`, `Connection.connect`, `upgrade` or their
+  `std.websocket_tls` twins offers the extension; all of them default to off,
+  because a DEFLATE context costs about a third of a megabyte per direction
+  and a server holding many connections should choose to spend that rather
+  than discover it. A server takes the first offer in
+  `Sec-WebSocket-Extensions` it can honour and echoes exactly what it agreed
+  to, declining — never failing on — an offer naming a parameter or a value it
+  cannot honour. A client reads the answer strictly, because an answer it
+  cannot honour would mean compressing into a stream the server cannot read.
+  `deflate()` reports the agreed `Deflate` parameters. Autobahn's compression
+  sections 12 and 13 run in `test/websocket.sh` alongside sections 1 to 10.
+- **The smallest window either end agrees to is 9, not RFC 7692's 8.** zlib
+  silently promotes a deflate request for 8 to 9 while its inflate honours 8
+  exactly, so agreeing to 8 would put a stream on the wire that a peer reading
+  it at 8 rejects. An offer or a response naming 8 is declined.
+
+### Changed
+
+- **`max_message` bounds the decompressed message.** On a connection carrying
+  permessage-deflate it is what the message may reach *after* it inflates, not
+  what arrived in the frame — the only bound that means anything once a
+  kilobyte on the wire can name a gigabyte in memory. Crossing it is kind
+  `too_large` and a close with 1009; a payload that is not a DEFLATE stream,
+  or text that is only invalid UTF-8 once decompressed, is kind `protocol` and
+  a close with 1007. Uncompressed connections are unchanged.
+- **Runtime ABI 18 -> 19.** `beans_ws_valid_utf8` is new: the framer cannot
+  run RFC 6455's text check on a message that is still compressed when it
+  hands it over, so the same Table 3-7 walk is reachable for the bytes that
+  come out of the inflater. Three request layouts widened with it —
+  `beans_ws_new` takes "permessage-deflate negotiated", `beans_ws_queue` takes
+  the frame's reserved bits, and `beans_zlib_stream_new` takes a window size —
+  and the framer's message event grew the byte that carries those reserved
+  bits out.
 
 ### Fixed
 

@@ -16,6 +16,22 @@
 compiler=0.1.39
 language=1.0
 
+# 19: permessage-deflate (RFC 7692) reached std.websocket, and the framing
+# bridge grew the one entry the Beans half cannot do for itself.
+# beans_ws_valid_utf8 answers the RFC 6455 text check for bytes wslay never
+# saw: a compressed message is still compressed when the framer hands it
+# over, so its UTF-8 validity can only be decided after the Beans side
+# inflates it, and running the bridge's own Table 3-7 walk keeps one
+# implementation of that table. Three request layouts widened with it, each
+# a compiler-to-runtime contract like ABI 16's order kind rather than a new
+# symbol: beans_ws_new takes [2] "permessage-deflate negotiated", which is
+# what turns wslay's allowed RSV bits on; beans_ws_queue takes [2] reserved
+# bits, so a compressed message can carry RSV1 through
+# wslay_event_queue_msg_ex; and beans_zlib_stream_new takes [3] window bits
+# (0, or 9..15) for the negotiated LZ77 window. The message event record
+# grew the byte that carries those reserved bits out — [u8 opcode][u8 rsv]
+# [u64 len][payload], a 10-byte header where it was 9.
+#
 # 18: beans_contained_enter, beans_contained_leave, beans_contained_caught —
 # the runtime half of a `contained` call (spec/CONCURRENCY.md). Containing a
 # panic used to need a fiber: the only boundary a failure could stop at was a
@@ -172,4 +188,4 @@ language=1.0
 # caller-owned event buffer instead of returning a fresh one.
 # Version 7 added Bytes.filled, Bytes.append_int_text, and Thread.detach.
 # Version 6 added per-thread runtime-hook guard entry points.
-runtime_abi=18
+runtime_abi=19

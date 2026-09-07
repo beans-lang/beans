@@ -18,11 +18,24 @@
 // every base64 user carry UTF-8 tables. Autobahn's section 6 is the gate
 // either way, and it is a far harder examiner than provenance.
 //
+// permessage-deflate (RFC 7692) is negotiated in Beans and compressed in
+// Beans, because the DEFLATE codec lives in the zlib bridge and two bridges
+// cannot share a translation unit. What belongs here is the framing half:
+// telling wslay that RSV1 is a legal bit, setting it on a message this side
+// sends, and reporting the bit a received message carried. wslay already
+// polices where RSV1 may appear — never on a control frame, never on a
+// continuation — and skips its own UTF-8 validation for a message that
+// carries it, since the text is still compressed at that point. The Beans
+// side inflates and then calls beans_ws_valid_utf8 here, so one table
+// answers for both.
+//
 // Message event encoding, little-endian, one per completed message:
-//   [u8 opcode][u64 len][payload]
-// opcodes: 1 text, 2 binary, 8 close, 9 ping, 10 pong. A close event's
-// payload is the two-byte code (big-endian, RFC 6455 order) followed by the
-// reason text, or empty when the peer sent no body.
+//   [u8 opcode][u8 rsv][u64 len][payload]
+// opcodes: 1 text, 2 binary, 8 close, 9 ping, 10 pong. rsv is wslay's
+// three-bit field, ((RSV1 << 2) | (RSV2 << 1) | RSV3); only RSV1 (4) can be
+// set, and only when permessage-deflate is on. A close event's payload is
+// the two-byte code (big-endian, RFC 6455 order) followed by the reason
+// text, or empty when the peer sent no body.
 
 // rand_s exists only under _CRT_RAND_S, and the knob has to precede every
 // include -- beans_net_common.h already pulls in <stdlib.h>.
@@ -144,6 +157,7 @@ struct WsSession {
     WsBuf events;     // completed messages, for the Beans side
     uint64_t max_message;
     int is_server;
+    int deflate;      // permessage-deflate negotiated: RSV1 is legal
     int failure;      // sticky status once something goes wrong
     uint64_t magic;
 };
@@ -238,16 +252,20 @@ static void ws_on_msg_cb(wslay_event_context_ptr ctx,
         s->failure = BEANS_WS_TOO_LARGE;
         return;
     }
-    // The assembled-message UTF-8 check RFC 6455 requires.
-    if (arg->opcode == WSLAY_TEXT_FRAME && arg->msg_length > 0) {
+    // The assembled-message UTF-8 check RFC 6455 requires — but a
+    // compressed message is not text yet, so the Beans side runs the same
+    // check on what comes out of the inflater instead.
+    if (arg->opcode == WSLAY_TEXT_FRAME && arg->msg_length > 0 &&
+        !wslay_get_rsv1(arg->rsv)) {
         if (!ws_valid_utf8(arg->msg, (size_t)arg->msg_length)) {
             s->failure = BEANS_WS_UTF8;
             return;
         }
     }
-    uint8_t header[1 + 8];
+    uint8_t header[1 + 1 + 8];
     header[0] = (uint8_t)arg->opcode;
-    ws_put_u64(header + 1, (uint64_t)arg->msg_length);
+    header[1] = (uint8_t)arg->rsv;
+    ws_put_u64(header + 2, (uint64_t)arg->msg_length);
     if (!s->events.push(header, sizeof header) ||
         (arg->msg_length &&
          !s->events.push(arg->msg, (size_t)arg->msg_length))) {
@@ -257,13 +275,17 @@ static void ws_on_msg_cb(wslay_event_context_ptr ctx,
 
 // ---- entry points -------------------------------------------------------------
 
-// req: [0] is_server, [1] max message bytes (0 keeps the default).
+// req: [0] is_server, [1] max message bytes (0 keeps the default),
+// [2] permessage-deflate negotiated (0 or 1).
 BEANS_NET_API long long beans_ws_new(const uint64_t* req) {
     if (!req) return 0;
+    uint64_t deflate = beans_net_word(req, 2);
+    if (deflate > 1) return 0;
     WsSession* s = (WsSession*)calloc(1, sizeof(WsSession));
     if (!s) return 0;
     s->max_message = 8 * 1024 * 1024;
     s->is_server = (int)beans_net_word(req, 0);
+    s->deflate = (int)deflate;
     uint64_t limit = beans_net_word(req, 1);
     if (limit > 0) s->max_message = limit;
 
@@ -282,6 +304,11 @@ BEANS_NET_API long long beans_ws_new(const uint64_t* req) {
         return 0;
     }
     wslay_event_config_set_max_recv_msg_length(s->ctx, s->max_message);
+    // Without this, wslay answers any reserved bit with a protocol close,
+    // which is exactly right for a connection that negotiated no extension.
+    if (s->deflate) {
+        wslay_event_config_set_allowed_rsv_bits(s->ctx, WSLAY_RSV1_BIT);
+    }
     s->magic = BEANS_WS_MAGIC;
     return (long long)(intptr_t)s;
 }
@@ -322,20 +349,31 @@ BEANS_NET_API long long beans_ws_feed(long long handle, const uint8_t* data,
 }
 
 // Queues one message. opcode: 1 text, 2 binary, 9 ping, 10 pong.
-// req: [0] opcode, [1] payload length.
+// req: [0] opcode, [1] payload length, [2] reserved bits (0, or 4 for RSV1
+// on a permessage-deflate message).
 BEANS_NET_API long long beans_ws_queue(long long handle, const uint8_t* data,
                                        const uint64_t* req) {
     WsSession* s = ws_of(handle);
     if (!s || !req) return BEANS_NET_ERR_INVALID;
     uint64_t opcode = beans_net_word(req, 0);
     uint64_t len = beans_net_word(req, 1);
+    uint64_t rsv = beans_net_word(req, 2);
     if (len > SIZE_MAX) return BEANS_NET_ERR_RANGE;
     if (len > 0 && !data) return BEANS_NET_ERR_INVALID;
+    // RSV1 is the only bit any extension here claims, it is meaningless
+    // without the negotiation that gave it meaning, and RFC 7692 forbids it
+    // on a control frame. Refusing all three here keeps a caller's mistake
+    // from reaching the wire as a frame the peer must close on.
+    if (rsv != 0 && rsv != WSLAY_RSV1_BIT) return BEANS_NET_ERR_INVALID;
+    if (rsv != 0 && !s->deflate) return BEANS_NET_ERR_INVALID;
+    if (rsv != 0 && wslay_is_ctrl_frame((uint8_t)opcode))
+        return BEANS_NET_ERR_INVALID;
     struct wslay_event_msg msg;
     msg.opcode = (uint8_t)opcode;
     msg.msg = data;
     msg.msg_length = (size_t)len;
-    if (wslay_event_queue_msg(s->ctx, &msg) != 0) return BEANS_WS_PROTOCOL;
+    if (wslay_event_queue_msg_ex(s->ctx, &msg, (uint8_t)rsv) != 0)
+        return BEANS_WS_PROTOCOL;
     if (wslay_event_send(s->ctx) != 0) return BEANS_WS_PROTOCOL;
     return BEANS_NET_OK;
 }
@@ -417,6 +455,21 @@ BEANS_NET_API long long beans_ws_peer_close_code(long long handle) {
     WsSession* s = ws_of(handle);
     if (!s) return 0;
     return (long long)wslay_event_get_status_code_received(s->ctx);
+}
+
+// The RFC 6455 text check, reachable for bytes the framer never saw: a
+// permessage-deflate message is still compressed when wslay hands it over,
+// so its UTF-8 validity can only be decided after the Beans side inflates
+// it. Same table, same answer, one implementation.
+// req: [0] byte count. Returns 1 for well-formed UTF-8, 0 otherwise.
+BEANS_NET_API long long beans_ws_valid_utf8(const uint8_t* data,
+                                            const uint64_t* req) {
+    if (!req) return 0;
+    uint64_t len = beans_net_word(req, 0);
+    if (len > SIZE_MAX) return 0;
+    if (len == 0) return 1;
+    if (!data) return 0;
+    return ws_valid_utf8(data, (size_t)len) ? 1 : 0;
 }
 
 BEANS_NET_API long long beans_ws_available(void) { return 1; }

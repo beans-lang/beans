@@ -1,0 +1,97 @@
+== negotiation ==
+client offer: permessage-deflate; client_max_window_bits
+offer [permessage-deflate; client_no_context_takeover; client_max_window_bits] -> permessage-deflate; client_no_context_takeover
+offer [permessage-deflate; client_no_context_takeover; client_max_window_bits; server_no_context_takeover] -> permessage-deflate; server_no_context_takeover; client_no_context_takeover
+offer [permessage-deflate; client_no_context_takeover; client_max_window_bits; server_max_window_bits=9] -> permessage-deflate; client_no_context_takeover; server_max_window_bits=9
+offer [permessage-deflate; client_no_context_takeover; client_max_window_bits; server_max_window_bits=15] -> permessage-deflate; client_no_context_takeover
+offer [permessage-deflate; client_no_context_takeover; client_max_window_bits; server_no_context_takeover; server_max_window_bits=9] -> permessage-deflate; server_no_context_takeover; client_no_context_takeover; server_max_window_bits=9
+offer [permessage-deflate; client_no_context_takeover; client_max_window_bits; server_no_context_takeover; server_max_window_bits=15] -> permessage-deflate; server_no_context_takeover; client_no_context_takeover
+offer [permessage-deflate; client_no_context_takeover; client_max_window_bits; server_no_context_takeover; server_max_window_bits=9, permessage-deflate; client_no_context_takeover; client_max_window_bits; server_no_context_takeover, permessage-deflate; client_no_context_takeover; client_max_window_bits] -> permessage-deflate; server_no_context_takeover; client_no_context_takeover; server_max_window_bits=9
+offer [permessage-deflate; client_max_window_bits] -> permessage-deflate
+offer [permessage-deflate] -> permessage-deflate
+offer [permessage-deflate; client_max_window_bits=10] -> permessage-deflate; client_max_window_bits=10
+offer [permessage-deflate; server_max_window_bits=10; client_max_window_bits=12] -> permessage-deflate; server_max_window_bits=10; client_max_window_bits=12
+offer [permessage-deflate; server_max_window_bits=8] -> (declined)
+offer [permessage-deflate; client_max_window_bits=8] -> (declined)
+offer [permessage-deflate; server_max_window_bits=16] -> (declined)
+offer [permessage-deflate; server_max_window_bits=08] -> (declined)
+offer [permessage-deflate; server_max_window_bits=+9] -> (declined)
+offer [permessage-deflate; server_max_window_bits] -> (declined)
+offer [permessage-deflate; server_max_window_bits=9; server_max_window_bits=9] -> (declined)
+offer [permessage-deflate; client_no_context_takeover; client_no_context_takeover] -> (declined)
+offer [permessage-deflate; client_no_context_takeover=1] -> (declined)
+offer [permessage-deflate; server_no_context_takeover=] -> (declined)
+offer [permessage-deflate; unknown_parameter] -> (declined)
+offer [permessage-deflate;] -> (declined)
+offer [permessage-deflate; ; client_max_window_bits] -> (declined)
+offer [] -> (declined)
+offer [x-webkit-deflate-frame] -> (declined)
+offer [x-webkit-deflate-frame, permessage-deflate; server_max_window_bits=9] -> permessage-deflate; server_max_window_bits=9
+offer [permessage-deflate; server_max_window_bits=8, permessage-deflate; server_no_context_takeover] -> permessage-deflate; server_no_context_takeover
+offer [permessage-deflate; bogus, permessage-deflate] -> permessage-deflate
+offer [PERMESSAGE-DEFLATE;  SERVER_MAX_WINDOW_BITS = 11 ] -> permessage-deflate; server_max_window_bits=11
+offer [permessage-deflate; server_max_window_bits="11"] -> permessage-deflate; server_max_window_bits=11
+offer [permessage-deflate; server_max_window_bits=8][permessage-deflate; server_max_window_bits=13] -> permessage-deflate; server_max_window_bits=13
+offer [x-nothing][permessage-deflate] -> permessage-deflate
+answer [permessage-deflate] -> permessage-deflate
+answer [permessage-deflate; server_no_context_takeover] -> permessage-deflate; server_no_context_takeover
+answer [permessage-deflate; client_no_context_takeover] -> permessage-deflate; client_no_context_takeover
+answer [permessage-deflate; server_max_window_bits=9; client_max_window_bits=12] -> permessage-deflate; server_max_window_bits=9; client_max_window_bits=12
+answer [permessage-deflate; client_max_window_bits] -> handshake
+answer [permessage-deflate; server_max_window_bits] -> handshake
+answer [permessage-deflate; client_max_window_bits=8] -> handshake
+answer [permessage-deflate; server_max_window_bits=8] -> handshake
+answer [permessage-deflate; server_no_context_takeover=1] -> handshake
+answer [permessage-deflate; server_no_context_takeover; server_no_context_takeover] -> handshake
+answer [permessage-deflate; unknown_parameter=3] -> handshake
+answer [permessage-deflate, permessage-deflate] -> handshake
+answer [x-webkit-deflate-frame] -> handshake
+answer [] -> handshake
+== what goes on the wire ==
+compressed frame sets RSV1 true
+compressed frame is a binary frame true
+compressed frame is final true
+64 KiB of repetition leaves under a kilobyte true
+the payload does not end in the sync marker true
+context takeover makes the repeat smaller true
+an empty message is one 0x00 byte true
+a second empty message is one 0x00 byte true
+a ping is uncompressed true
+a pong is uncompressed true
+a close frame is uncompressed true
+no context takeover repeats the same bytes true
+no context takeover is worse than takeover true
+a 32 KiB window crushes 4 KiB-apart repeats true
+a 512-byte window cannot reach them true
+without the extension nothing is compressed true
+an 8-bit window is refused at the API true
+== what a server accepts ==
+one compressed text frame: got [text:hello compressed world,closed:1000] error=0 close=1000 answered_extension=true
+a compressed message across two frames: got [text:hello compressed world,closed:1000] error=0 close=1000 answered_extension=true
+a compressed message across three frames: got [text:hello compressed world,closed:1000] error=0 close=1000 answered_extension=true
+RSV1 on a continuation frame: got [] error=1 close=1002 answered_extension=true
+RSV1 on a ping: got [] error=1 close=1002 answered_extension=true
+RSV1 with no extension: got [] error=1 close=1002 answered_extension=false
+an uncompressed message on a compressed connection: got [text:plain,closed:1000] error=0 close=1000 answered_extension=true
+compressed, plain, compressed: got [text:hello compressed world,text:plain,text:hello compressed world,closed:1000] error=0 close=1000 answered_extension=true
+a payload that is not DEFLATE: got [] error=1 close=1007 answered_extension=true
+a compressed empty message: got [text:,closed:1000] error=0 close=1000 answered_extension=true
+compressed text that is not UTF-8: got [] error=1 close=1007 answered_extension=true
+compressed text with multi-byte UTF-8: got [text:héllo — wörld ✓,closed:1000] error=0 close=1000 answered_extension=true
+an empty compressed payload, then a real one: got [text:,text:hello compressed world,closed:1000] error=0 close=1000 answered_extension=true
+two messages that each end their DEFLATE stream: got [text:a message in a final block,text:a message in a final block,closed:1000] error=0 close=1000 answered_extension=true
+a megabyte of zeros fits in a small frame true
+a megabyte claimed by a kilobyte: got [] error=2 close=1009 answered_extension=true
+the same bomb under a limit that allows it: got [binary:1048576,closed:1000] error=0 close=1000 answered_extension=true
+== both ends are the library ==
+permessage-deflate -> clean true
+permessage-deflate; server_no_context_takeover -> clean true
+permessage-deflate; client_no_context_takeover -> clean true
+permessage-deflate; server_no_context_takeover; client_no_context_takeover -> clean true
+permessage-deflate; server_max_window_bits=9 -> clean true
+permessage-deflate; client_max_window_bits=9 -> clean true
+permessage-deflate; server_no_context_takeover; server_max_window_bits=9 -> clean true
+permessage-deflate; server_no_context_takeover; client_no_context_takeover; server_max_window_bits=9; client_max_window_bits=9 -> clean true
+== the handshake, end to end ==
+with compression: agreed=permessage-deflate refused=too_large clean=true
+without compression: agreed=(none) refused=too_large clean=true

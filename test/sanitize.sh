@@ -223,6 +223,14 @@ run_bridge_asan test/cases/sock_fuzz.b sockx 'ok sock_fuzz' 1 120
 run_bridge_asan test/cases/http_fuzz.b h1 'ok http_fuzz' 1 80
 run_bridge_asan test/cases/http2_fuzz.b h2 'ok http2_fuzz' 1 8
 run_bridge_asan test/cases/websocket_fuzz.b ws 'ok websocket_fuzz' 1 20
+
+# permessage-deflate is the one connection that crosses two bridges: wslay's
+# framing and a zlib stream per direction, each a handle the connection owns
+# and has to give back. The ws fuzzer above negotiates no extension, so a
+# missed free there is invisible; this case opens and drops dozens of
+# compressed connections, several of them mid-failure.
+run_bridge_asan test/cases/websocket_deflate.b websocket_deflate \
+    'both ends are the library'
 run_bridge_asan test/cases/compress_fuzz.b zlib 'ok compress_fuzz' 1 80
 run_bridge_asan test/cases/crypto_vectors.b hash 'sha256 abc true'
 run_bridge_asan test/cases/json_direct_fuzz.b json_direct 'ok json_direct_fuzz'
@@ -587,6 +595,7 @@ if [[ "$(uname -s)" == Darwin ]] && command -v leaks >/dev/null 2>&1; then
                 test/cases/contained_unwind_leak.b \
                 test/cases/contained.b \
                 test/cases/sort_unwind_leak.b \
+                test/cases/websocket_deflate.b \
                 test/cases/deinit_panic_cascade.b \
                 test/cases/unlink_leak.b \
                 test/cases/init_unwind.b \

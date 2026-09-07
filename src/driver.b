@@ -315,7 +315,11 @@ fn net_bridge_features(packages: List<LoadedPackage>) -> List<string> {
         } else if loaded.import_path == "std.http" {
             wanted = ["h1", "h2"]
         } else if loaded.import_path == "std.websocket" {
-            wanted = ["ws"]
+            // permessage-deflate (RFC 7692) is part of std.websocket, and
+            // its DEFLATE codec is the zlib bridge — the two bridges cannot
+            // share one translation unit, so the package pulls both, the
+            // same way std.http pulls h1 and h2.
+            wanted = ["ws", "zlib"]
         } else if loaded.import_path == "std.compress" {
             wanted = ["zlib"]
         } else if loaded.import_path == "std.crypto" {
