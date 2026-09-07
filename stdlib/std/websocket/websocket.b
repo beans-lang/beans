@@ -20,6 +20,14 @@
 //   **Close is a handshake, not a hangup.** `close` sends the close frame
 //   and waits, bounded, for the peer's — then closes the socket. A peer
 //   that never answers costs a timeout, never a hang.
+//
+//   **Compression is asked for, never assumed.** permessage-deflate
+//   (RFC 7692) is off unless a caller turns it on, because a DEFLATE
+//   context is a third of a megabyte per direction and a server holding a
+//   hundred thousand connections should not pay that by accident. When it
+//   is on, `max_message` bounds the message *after* it decompresses — the
+//   only bound that means anything once a small frame can claim a large
+//   one.
 package websocket
 
 import std.crypto
@@ -43,7 +51,20 @@ extern "C" fn beans_ws_want_read(handle: int) -> int
 extern "C" fn beans_ws_want_write(handle: int) -> int
 extern "C" fn beans_ws_peer_close_code(handle: int) -> int
 extern "C" fn beans_ws_close_code_sent(handle: int) -> int
+extern "C" fn beans_ws_valid_utf8(data: RawPtr<u8>, req: RawPtr<u64>) -> int
 extern "C" fn beans_ws_available() -> int
+
+// The zlib bridge (runtime/net/beans_net_zlib.c), reached directly rather
+// than through `std.compress`. RFC 7692 asks a DEFLATE stream for three
+// things that package deliberately does not offer: a sync flush at every
+// message boundary, an output bound that resets per message rather than
+// per stream, and a context thrown away between messages. Bolting those
+// onto `Deflater`/`Inflater` would widen a surface whose whole value is
+// that it is small, so the framing layer drives the stream itself.
+extern "C" fn beans_zlib_stream_new(req: RawPtr<u64>) -> int
+extern "C" fn beans_zlib_stream_run(src: RawPtr<u8>, dst: RawPtr<u8>,
+                                    req: RawPtr<u64>) -> int
+extern "C" fn beans_zlib_stream_free(handle: int) -> int
 
 /// True when the native WebSocket framing bridge is available.
 pub fn available() -> bool {
@@ -106,6 +127,346 @@ fn headers_have_token(headers: http.Headers, name: string,
     return false
 }
 
+// ---- permessage-deflate, RFC 7692 ----------------------------------------------
+
+// The window sizes this end deals in. 15 is DEFLATE's 32 KiB default and
+// what a peer means when it names no window at all.
+//
+// 9 is the floor, not RFC 7692's 8. zlib's deflateInit2 documents that it
+// silently promotes a request for 8 to 9 — its encoder cannot emit a
+// 256-byte window — while inflateInit2 honours 8 exactly. Agreeing to 8
+// would therefore put a stream on the wire that a peer reading it at 8
+// rejects, so an offer or a response naming 8 is refused. RFC 7692 makes
+// declining an offer the correct answer for a parameter an endpoint cannot
+// honour, and no browser or conformance suite asks for 8.
+fn default_window_bits() -> int { return 15 }
+fn min_window_bits() -> int { return 9 }
+
+/// The permessage-deflate parameters in force on a connection (RFC 7692).
+///
+/// `server` always names the server-to-client direction and `client` the
+/// client-to-server one, whichever end you are: the names come from the
+/// wire, not from your role. A `no_context_takeover` flag means that
+/// direction starts a fresh DEFLATE context for every message; a
+/// `max_window_bits` is that direction's LZ77 window, always 9..15 here.
+pub struct Deflate {
+    pub server_no_context_takeover: bool
+    pub client_no_context_takeover: bool
+    pub server_max_window_bits: int
+    pub client_max_window_bits: int
+}
+
+/// permessage-deflate with nothing asked for: 32 KiB windows both ways and
+/// a context that carries across messages, which is what an offer naming no
+/// parameters means.
+pub fn plain_deflate() -> Deflate {
+    return Deflate {
+        server_no_context_takeover: false,
+        client_no_context_takeover: false,
+        server_max_window_bits: default_window_bits(),
+        client_max_window_bits: default_window_bits(),
+    }
+}
+
+fn deflate_window_bits_ok(bits: int) -> bool {
+    return bits >= min_window_bits() && bits <= default_window_bits()
+}
+
+fn deflate_is_usable(agreed: Deflate) -> bool {
+    return deflate_window_bits_ok(agreed.server_max_window_bits) &&
+           deflate_window_bits_ok(agreed.client_max_window_bits)
+}
+
+// Splits a header field value on one delimiter byte, ignoring delimiters
+// inside a quoted-string. RFC 6455 spells an extension parameter value as a
+// token *or* a quoted-string, and a quoted-string may hold a comma or a
+// semicolon — splitting on the raw byte would tear such a value in half and
+// then reject the halves.
+fn split_field(value: string, delimiter: int) -> List<string> {
+    var parts: List<string> = []
+    let raw: Bytes = Bytes.from(value)
+    var start: int = 0
+    var index: int = 0
+    var quoted: bool = false
+    for index < raw.len() {
+        let byte: int = raw.get(index)
+        if quoted {
+            if byte == 92 && index + 1 < raw.len() {
+                index += 1
+            } else if byte == 34 {
+                quoted = false
+            }
+        } else if byte == 34 {
+            quoted = true
+        } else if byte == delimiter {
+            parts.push(raw.slice(start, index).to_string())
+            start = index + 1
+        }
+        index += 1
+    }
+    parts.push(raw.slice(start, raw.len()).to_string())
+    return move parts
+}
+
+// Strips one layer of quoted-string, with its backslash escapes. A value
+// that is not quoted comes back untouched.
+fn unquote(value: string) -> string {
+    let raw: Bytes = Bytes.from(value)
+    if raw.len() < 2 { return value }
+    if raw.get(0) != 34 || raw.get(raw.len() - 1) != 34 { return value }
+    var out: Bytes = new Bytes(0)
+    var index: int = 1
+    for index < raw.len() - 1 {
+        var byte: int = raw.get(index)
+        if byte == 92 && index + 1 < raw.len() - 1 {
+            index += 1
+            byte = raw.get(index)
+        }
+        out.push(byte)
+        index += 1
+    }
+    return out.to_string()
+}
+
+// RFC 7692 spells a window size as "a decimal integer without leading
+// zeroes between 8 to 15, inclusive". Anything else is a value this end
+// cannot read, reported as 0 so the caller declines rather than guesses.
+fn parse_window_bits(text: string) -> int {
+    let raw: Bytes = Bytes.from(text)
+    if raw.len() == 0 || raw.len() > 2 { return 0 }
+    if raw.get(0) == 48 { return 0 }
+    var value: int = 0
+    for index: int in 0..raw.len() {
+        let byte: int = raw.get(index)
+        if byte < 48 || byte > 57 { return 0 }
+        value = value * 10 + (byte - 48)
+    }
+    if value < 8 || value > 15 { return 0 }
+    return value
+}
+
+// One parsed extension parameter: its lowercased name, and its value if it
+// carried one. `ok` is false when the piece is not a parameter at all.
+struct ExtensionParam {
+    ok: bool
+    name: string
+    has_value: bool
+    value: string
+}
+
+fn read_extension_param(piece: string) -> ExtensionParam {
+    let trimmed: string = piece.trim()
+    if trimmed.len() == 0 {
+        return ExtensionParam { ok: false, name: "", has_value: false, value: "" }
+    }
+    let halves: List<string> = split_field(trimmed, 61)
+    if halves.len() > 2 {
+        return ExtensionParam { ok: false, name: "", has_value: false, value: "" }
+    }
+    let name: string = halves[0].trim().to_lower()
+    if name.len() == 0 {
+        return ExtensionParam { ok: false, name: "", has_value: false, value: "" }
+    }
+    if halves.len() == 1 {
+        return ExtensionParam { ok: true, name: name, has_value: false, value: "" }
+    }
+    return ExtensionParam {
+        ok: true,
+        name: name,
+        has_value: true,
+        value: unquote(halves[1].trim()),
+    }
+}
+
+// Reads one extension from a `Sec-WebSocket-Extensions` list as a
+// permessage-deflate offer. `none` means this end declines it: the
+// extension is a different one, a parameter is unknown, a parameter repeats,
+// or a value names a window this end cannot compress to. RFC 7692 makes all
+// of those a decline — the next offer in the list gets its turn, and a
+// client whose offers are all declined simply gets no compression.
+fn read_deflate_offer(offer: string) -> Option<Deflate> {
+    let parts: List<string> = split_field(offer, 59)
+    if !ascii_equals(parts[0].trim(), "permessage-deflate") { return none }
+    var server_no_takeover: bool = false
+    var client_no_takeover: bool = false
+    var server_bits: int = default_window_bits()
+    var client_bits: int = default_window_bits()
+    var seen_server_takeover: bool = false
+    var seen_client_takeover: bool = false
+    var seen_server_bits: bool = false
+    var seen_client_bits: bool = false
+    for index: int in 1..parts.len() {
+        let param: ExtensionParam = read_extension_param(parts[index])
+        if !param.ok { return none }
+        if param.name == "server_no_context_takeover" {
+            if param.has_value || seen_server_takeover { return none }
+            seen_server_takeover = true
+            server_no_takeover = true
+        } else if param.name == "client_no_context_takeover" {
+            if param.has_value || seen_client_takeover { return none }
+            seen_client_takeover = true
+            client_no_takeover = true
+        } else if param.name == "server_max_window_bits" {
+            // A server that answers this offer commits its own encoder to
+            // the value, so a window it cannot produce is a decline.
+            if !param.has_value || seen_server_bits { return none }
+            seen_server_bits = true
+            server_bits = parse_window_bits(param.value)
+            if !deflate_window_bits_ok(server_bits) { return none }
+        } else if param.name == "client_max_window_bits" {
+            // In an offer this parameter may stand alone: it says the
+            // client understands being told a window, and a value narrows
+            // what it will use itself.
+            if seen_client_bits { return none }
+            seen_client_bits = true
+            if param.has_value {
+                client_bits = parse_window_bits(param.value)
+                if !deflate_window_bits_ok(client_bits) { return none }
+            }
+        } else {
+            return none
+        }
+    }
+    return some(Deflate {
+        server_no_context_takeover: server_no_takeover,
+        client_no_context_takeover: client_no_takeover,
+        server_max_window_bits: server_bits,
+        client_max_window_bits: client_bits,
+    })
+}
+
+/// Chooses a permessage-deflate configuration from the
+/// `Sec-WebSocket-Extensions` a client offered, or `none` when there is
+/// nothing this end can agree to.
+///
+/// A client may stack several offers, most-wanted first, across one header
+/// or several; a server takes the first it can honour and declines the rest,
+/// which is what RFC 7692 asks for and why an offer it cannot read is never
+/// a handshake failure.
+pub fn negotiate_deflate(headers: http.Headers) -> Option<Deflate> {
+    for value: string in headers.all("Sec-WebSocket-Extensions") {
+        for offer: string in split_field(value, 44) {
+            let trimmed: string = offer.trim()
+            if trimmed.len() > 0 {
+                match read_deflate_offer(trimmed) {
+                    some(agreed) => { return some(agreed) }
+                    none => {}
+                }
+            }
+        }
+    }
+    return none
+}
+
+/// The `Sec-WebSocket-Extensions` value a server answers an accepted offer
+/// with.
+///
+/// Only what this end committed to appears. A window parameter is named
+/// only when it is smaller than the 32 KiB default, because saying nothing
+/// already means 15 and RFC 7692 forbids answering with a window larger
+/// than the offer asked for — so the shorter answer is the safe one as well
+/// as the smaller.
+pub fn deflate_agreement(agreed: Deflate) -> string {
+    var out: string = "permessage-deflate"
+    if agreed.server_no_context_takeover {
+        out = "{out}; server_no_context_takeover"
+    }
+    if agreed.client_no_context_takeover {
+        out = "{out}; client_no_context_takeover"
+    }
+    if agreed.server_max_window_bits != default_window_bits() {
+        out = "{out}; server_max_window_bits={agreed.server_max_window_bits}"
+    }
+    if agreed.client_max_window_bits != default_window_bits() {
+        out = "{out}; client_max_window_bits={agreed.client_max_window_bits}"
+    }
+    return out
+}
+
+/// The `Sec-WebSocket-Extensions` value a client offers.
+///
+/// It names `client_max_window_bits` with no value, which is RFC 7692's way
+/// of saying "I understand this parameter — narrow my window if you want
+/// to". Without it a server may not answer with a client window at all.
+pub fn deflate_offer() -> string {
+    return "permessage-deflate; client_max_window_bits"
+}
+
+/// Reads a server's `Sec-WebSocket-Extensions` answer to `deflate_offer`.
+///
+/// Unlike an offer, a response is a commitment, so anything unreadable is a
+/// handshake failure rather than a decline: a client that guessed at a
+/// response would compress into a stream the server cannot read, and would
+/// find out one message later with no way to say why.
+pub fn accept_deflate_response(value: string) -> Result<Deflate> {
+    var chosen: List<string> = []
+    for piece: string in split_field(value, 44) {
+        if piece.trim().len() > 0 { chosen.push(piece.trim()) }
+    }
+    if chosen.len() != 1 {
+        return err("the server answered with {chosen.len()} extensions, not one", "handshake")
+    }
+    let parts: List<string> = split_field(chosen[0], 59)
+    if !ascii_equals(parts[0].trim(), "permessage-deflate") {
+        return err("the server selected an extension the client did not offer", "handshake")
+    }
+    var server_no_takeover: bool = false
+    var client_no_takeover: bool = false
+    var server_bits: int = default_window_bits()
+    var client_bits: int = default_window_bits()
+    var seen_server_takeover: bool = false
+    var seen_client_takeover: bool = false
+    var seen_server_bits: bool = false
+    var seen_client_bits: bool = false
+    for index: int in 1..parts.len() {
+        let param: ExtensionParam = read_extension_param(parts[index])
+        if !param.ok {
+            return err("the server's permessage-deflate answer is malformed", "handshake")
+        }
+        if param.name == "server_no_context_takeover" {
+            if param.has_value || seen_server_takeover {
+                return err("the server's permessage-deflate answer repeats or misuses server_no_context_takeover", "handshake")
+            }
+            seen_server_takeover = true
+            server_no_takeover = true
+        } else if param.name == "client_no_context_takeover" {
+            if param.has_value || seen_client_takeover {
+                return err("the server's permessage-deflate answer repeats or misuses client_no_context_takeover", "handshake")
+            }
+            seen_client_takeover = true
+            client_no_takeover = true
+        } else if param.name == "server_max_window_bits" {
+            // In a response both window parameters must carry a value:
+            // a response states a size, it does not ask about one.
+            if !param.has_value || seen_server_bits {
+                return err("the server's permessage-deflate answer repeats or misuses server_max_window_bits", "handshake")
+            }
+            seen_server_bits = true
+            server_bits = parse_window_bits(param.value)
+            if !deflate_window_bits_ok(server_bits) {
+                return err("the server named a window size this end will not agree to", "handshake")
+            }
+        } else if param.name == "client_max_window_bits" {
+            if !param.has_value || seen_client_bits {
+                return err("the server's permessage-deflate answer repeats or misuses client_max_window_bits", "handshake")
+            }
+            seen_client_bits = true
+            client_bits = parse_window_bits(param.value)
+            if !deflate_window_bits_ok(client_bits) {
+                return err("the server named a window size this end will not agree to", "handshake")
+            }
+        } else {
+            return err("the server's permessage-deflate answer names '{param.name}', which this client did not offer", "handshake")
+        }
+    }
+    return ok(Deflate {
+        server_no_context_takeover: server_no_takeover,
+        client_no_context_takeover: client_no_takeover,
+        server_max_window_bits: server_bits,
+        client_max_window_bits: client_bits,
+    })
+}
+
 fn target_is_safe(target: string) -> bool {
     if target.len() == 0 { return false }
     let raw: Bytes = Bytes.from(target)
@@ -116,11 +477,16 @@ fn target_is_safe(target: string) -> bool {
     return true
 }
 
+// ---- transport -----------------------------------------------------------------
+
 /// A WebSocket connection over an established TCP stream.
 ///
 /// `max_message` bounds an assembled message; crossing it is kind
 /// `too_large` and closes the connection, so a peer cannot make a server
-/// allocate without limit by fragmenting forever.
+/// allocate without limit by fragmenting forever. With permessage-deflate
+/// negotiated it bounds the message *after* it decompresses, which is the
+/// only bound worth having once a kilobyte on the wire can name a gigabyte
+/// in memory.
 ///
 /// Move-only: it owns the socket and closes it. Created by `connect` for a
 /// client, or by `accept` on a server that has already read the upgrade
@@ -134,11 +500,43 @@ pub unique class WebSocketTransport<T implements net.ByteStream> implements Send
     socket_closed: bool = false
     pending: List<Message>
     pending_head: int = 0
+    limit: int = 8388608
+    // permessage-deflate. `send_*` names the direction this end compresses
+    // and `recv_*` the one it inflates, resolved from the wire's
+    // server/client names once, here, so nothing below has to remember
+    // which end it is. The two zlib handles are created on first use and
+    // dropped again whenever no-context-takeover says the context ends with
+    // the message.
+    deflate_on: bool = false
+    deflate_agreed: Option<Deflate> = none
+    send_window_bits: int = 15
+    send_resets: bool = false
+    recv_resets: bool = false
+    deflater: int = 0
+    inflater: int = 0
 
-    fn init(handle: int, move stream: T) {
+    fn init(handle: int, move stream: T, limit: int, server: bool,
+            agreed: Option<Deflate>) {
         self.handle = handle
         self.stream = move stream
         self.pending = []
+        self.limit = limit
+        self.deflate_agreed = agreed
+        match agreed {
+            some(params) => {
+                self.deflate_on = true
+                if server {
+                    self.send_window_bits = params.server_max_window_bits
+                    self.send_resets = params.server_no_context_takeover
+                    self.recv_resets = params.client_no_context_takeover
+                } else {
+                    self.send_window_bits = params.client_max_window_bits
+                    self.send_resets = params.client_no_context_takeover
+                    self.recv_resets = params.server_no_context_takeover
+                }
+            }
+            none => {}
+        }
     }
 
     fn deinit() {
@@ -149,11 +547,44 @@ pub unique class WebSocketTransport<T implements net.ByteStream> implements Send
             }
             self.handle = 0
         }
+        self.drop_deflater()
+        self.drop_inflater()
     }
 
+    fn drop_deflater() {
+        if self.deflater != 0 {
+            var ignored: int = 0
+            unsafe {
+                ignored = beans_zlib_stream_free(self.deflater)
+            }
+            self.deflater = 0
+        }
+    }
+
+    fn drop_inflater() {
+        if self.inflater != 0 {
+            var ignored: int = 0
+            unsafe {
+                ignored = beans_zlib_stream_free(self.inflater)
+            }
+            self.inflater = 0
+        }
+    }
+
+    /// The permessage-deflate parameters this connection negotiated, or
+    /// `none` when it carries no extension.
+    pub fn deflate() -> Option<Deflate> { return self.deflate_agreed }
+
     /// Runs the client HTTP upgrade over an already connected byte stream.
+    ///
+    /// `compress` offers permessage-deflate. A server may answer with fewer
+    /// parameters than were offered, or with none of the extension at all;
+    /// an answer this end cannot honour fails the handshake rather than
+    /// quietly compressing into a stream the server cannot read.
     pub static fn upgrade(move socket: T, host: string, port: int,
-                          target: string) -> Result<WebSocketTransport<T>> {
+                          target: string,
+                          compress: bool = false
+    ) -> Result<WebSocketTransport<T>> {
         if !target_is_safe(target) {
             return err("the WebSocket request target carries whitespace or a control byte", "invalid")
         }
@@ -171,6 +602,10 @@ pub unique class WebSocketTransport<T implements net.ByteStream> implements Send
         request.append_string("Connection: Upgrade\r\n")
         request.append_string("Sec-WebSocket-Key: {key}\r\n")
         request.append_string("Sec-WebSocket-Version: 13\r\n")
+        if compress {
+            request.append_string(
+                "Sec-WebSocket-Extensions: {deflate_offer()}\r\n")
+        }
         request.append_string("\r\n")
         socket.write_all(request)?
 
@@ -219,9 +654,24 @@ pub unique class WebSocketTransport<T implements net.ByteStream> implements Send
         if !headers_have_token(response.headers, "Connection", "upgrade") {
             return err("the server's response has no Connection: Upgrade token", "handshake")
         }
-        if response.headers.has("Sec-WebSocket-Protocol") ||
-           response.headers.has("Sec-WebSocket-Extensions") {
+        if response.headers.has("Sec-WebSocket-Protocol") {
             return err("the server selected a WebSocket option the client did not offer", "handshake")
+        }
+        let extensions: List<string> =
+            response.headers.all("Sec-WebSocket-Extensions")
+        var agreed: Option<Deflate> = none
+        if extensions.len() > 0 {
+            if !compress {
+                return err("the server selected a WebSocket option the client did not offer", "handshake")
+            }
+            // RFC 6455 lets the field repeat, but a server answering an
+            // extension offer names one configuration; more than one header
+            // is an answer this client cannot act on.
+            if extensions.len() != 1 {
+                return err("the server sent more than one Sec-WebSocket-Extensions header", "handshake")
+            }
+            let settled: Deflate = accept_deflate_response(extensions[0])?
+            agreed = some(settled)
         }
         let expected: string = accept_for_key(key)?
         let accepts: List<string> = response.headers.all("Sec-WebSocket-Accept")
@@ -233,7 +683,7 @@ pub unique class WebSocketTransport<T implements net.ByteStream> implements Send
             return err("the server's Sec-WebSocket-Accept does not match the key", "handshake")
         }
         var connection: WebSocketTransport<T> =
-            WebSocketTransport.wrap(move socket, false)?
+            WebSocketTransport.wrap(move socket, false, 8388608, agreed)?
         if leftover.len() > 0 {
             connection.absorb(leftover)?
         }
@@ -242,10 +692,12 @@ pub unique class WebSocketTransport<T implements net.ByteStream> implements Send
 
     /// Wraps an already-upgraded socket. `server` selects the framing rules:
     /// a server unmasks what it receives and sends unmasked, a client the
-    /// reverse. Used by `accept`, and by a caller who ran the handshake
-    /// themselves.
+    /// reverse. `agreed` carries the permessage-deflate parameters the
+    /// handshake settled on, or `none` for a connection with no extension.
+    /// Used by `accept`, and by a caller who ran the handshake themselves.
     pub static fn wrap(move stream: T, server: bool,
-                       max_message: int = 8388608
+                       max_message: int = 8388608,
+                       agreed: Option<Deflate> = none
     ) -> Result<WebSocketTransport<T>> {
         if !available() {
             return err("WebSocket is not available on this target", "unsupported")
@@ -255,26 +707,49 @@ pub unique class WebSocketTransport<T implements net.ByteStream> implements Send
         if max_message <= 0 {
             return err("the message limit must be positive", "invalid")
         }
+        // A caller can build a `Deflate` by hand, and a window this end
+        // cannot compress to has to be refused where the program can still
+        // be told what it asked for — not two messages later inside zlib.
+        var compressing: bool = false
+        match agreed {
+            some(params) => {
+                if !deflate_is_usable(params) {
+                    return err("permessage-deflate window sizes must be between 9 and 15", "invalid")
+                }
+                compressing = true
+            }
+            none => {}
+        }
         var handle: int = 0
         unsafe {
-            let req: RawPtr<u64> = RawPtr.alloc(2)
+            let req: RawPtr<u64> = RawPtr.alloc(3)
             req.write(if server { 1 as u64 } else { 0 as u64 })
             req.offset(1).write(max_message as u64)
+            req.offset(2).write(if compressing { 1 as u64 } else { 0 as u64 })
             handle = beans_ws_new(req)
             req.free()
         }
         if handle == 0 {
             return err("could not create a WebSocket session", "unsupported")
         }
-        return ok(new WebSocketTransport<T>(handle, move stream))
+        return ok(new WebSocketTransport<T>(
+            handle, move stream, max_message, server, agreed))
     }
 
     /// Completes a server-side upgrade for a request `std.http` already
     /// parsed, then takes over the socket. The response is written here, so
     /// the caller hands over a socket that has not been answered yet.
+    ///
+    /// `compress` offers permessage-deflate: with it on, an offer this end
+    /// can honour is agreed and echoed, and an offer it cannot is declined
+    /// so the connection proceeds uncompressed. It is off by default because
+    /// a DEFLATE context costs a third of a megabyte per direction, which a
+    /// server with many connections should choose to spend rather than
+    /// discover.
     pub static fn accept(move stream: T,
                          request: http.Request,
-                         max_message: int = 8388608
+                         max_message: int = 8388608,
+                         compress: bool = false
     ) -> Result<WebSocketTransport<T>> {
         if request.method != "GET" {
             return err("a WebSocket upgrade must use GET", "protocol")
@@ -317,14 +792,283 @@ pub unique class WebSocketTransport<T implements net.ByteStream> implements Send
             return err("a WebSocket upgrade request cannot carry a body", "protocol")
         }
         let accept: string = accept_for_key(key)?
+        var agreed: Option<Deflate> = none
+        if compress { agreed = negotiate_deflate(request.headers) }
         var response: Bytes = new Bytes(0)
         response.append_string("HTTP/1.1 101 Switching Protocols\r\n")
         response.append_string("Upgrade: websocket\r\n")
         response.append_string("Connection: Upgrade\r\n")
         response.append_string("Sec-WebSocket-Accept: {accept}\r\n")
+        // A server echoes exactly what it agreed to and nothing else: a
+        // parameter in this line is a promise about the frames that follow.
+        match agreed {
+            some(params) => {
+                response.append_string(
+                    "Sec-WebSocket-Extensions: {deflate_agreement(params)}\r\n")
+            }
+            none => {}
+        }
         response.append_string("\r\n")
         stream.write_all(response)?
-        return WebSocketTransport.wrap(move stream, true, max_message)
+        return WebSocketTransport.wrap(move stream, true, max_message, agreed)
+    }
+
+    // ---- permessage-deflate, per message ---------------------------------
+
+    // One message through the DEFLATE stream, RFC 7692 §7.2.1: compress it,
+    // sync-flush, then drop the four bytes 00 00 FF FF the flush ends with.
+    // Those four bytes ARE the message boundary — the receiver puts them
+    // back — which is why the payload of a compressed message is never a
+    // complete DEFLATE stream on its own.
+    fn compress_message(body: Bytes) -> Result<Bytes> {
+        if self.deflater == 0 {
+            var opened: int = 0
+            unsafe {
+                let req: RawPtr<u64> = RawPtr.alloc(4)
+                req.write(0 as u64)
+                req.offset(1).write(1 as u64)
+                req.offset(2).write(6 as u64)
+                req.offset(3).write(self.send_window_bits as u64)
+                opened = beans_zlib_stream_new(req)
+                req.free()
+            }
+            if opened == 0 {
+                return err("the message compressor could not be created", "memory")
+            }
+            self.deflater = opened
+        }
+        var out: Bytes = new Bytes(0)
+        var consumed_total: int = 0
+        var rounds: int = 0
+        var flushed: bool = false
+        for rounds < 1000000 {
+            rounds += 1
+            let chunk: int = 16384
+            let start: int = out.len()
+            out.resize(start + chunk)
+            var status: int = 0
+            var consumed: int = 0
+            var produced: int = 0
+            unsafe {
+                let req: RawPtr<u64> = RawPtr.alloc(7)
+                req.write(self.deflater as u64)
+                req.offset(1).write((body.len() - consumed_total) as u64)
+                req.offset(2).write(chunk as u64)
+                // Z_SYNC_FLUSH: everything buffered comes out now, and the
+                // stream stays open for the next message.
+                req.offset(3).write(1 as u64)
+                let src: RawPtr<u8> = if body.len() == consumed_total {
+                    RawPtr.null()
+                } else {
+                    body.as_ptr().offset(consumed_total)
+                }
+                status = beans_zlib_stream_run(
+                    src, out.as_ptr().offset(start), req)
+                consumed = req.offset(4).read() as int
+                produced = req.offset(5).read() as int
+                req.free()
+            }
+            out.resize(start + produced)
+            if status != 0 {
+                return err("the message could not be compressed (status {status})", "protocol")
+            }
+            consumed_total += consumed
+            // zlib's rule for a flush: it is complete once a call comes back
+            // with output room to spare. The input check rides with it
+            // because "room left over" is only the end of the flush when
+            // there was nothing more to feed — anything else means going
+            // round again rather than shipping a truncated message.
+            if produced < chunk && consumed_total >= body.len() {
+                flushed = true
+                break
+            }
+        }
+        if !flushed {
+            return err("the message compressor made no progress", "protocol")
+        }
+        // RFC 7692 §7.2.3.6: a message whose compressed form comes out
+        // empty goes on the wire as the single byte 0x00 — an empty
+        // uncompressed block whose length fields are the four bytes the
+        // receiver appends. A zero-length payload is not a shorter way of
+        // saying the same thing: four bytes on their own are half a block
+        // header, so the peer's stream would sit mid-block for every
+        // message after it.
+        //
+        // There are two ways to arrive here with nothing. An empty message
+        // on a fresh context flushes the five bytes 00 00 00 FF FF, and
+        // stripping four leaves the 0x00. An empty message straight after
+        // another one flushes nothing at all: zlib refuses a sync flush
+        // that would make no progress, which leaves no boundary to strip.
+        if out.len() == 0 {
+            out.push(0)
+            if self.send_resets { self.drop_deflater() }
+            return ok(move out)
+        }
+        if out.len() < 4 || out.get(out.len() - 4) != 0 ||
+           out.get(out.len() - 3) != 0 || out.get(out.len() - 2) != 255 ||
+           out.get(out.len() - 1) != 255 {
+            return err("the message compressor produced no sync boundary", "protocol")
+        }
+        out.resize(out.len() - 4)
+        if out.len() == 0 { out.push(0) }
+        if self.send_resets { self.drop_deflater() }
+        return ok(move out)
+    }
+
+    // The other half, RFC 7692 §7.2.2: put the four bytes back, then
+    // inflate — bounded, because a compressed frame is exactly the shape
+    // where a small thing on the wire names a large one in memory. The
+    // output buffer never grows past `limit + 1`, and reaching that extra
+    // byte is how crossing the limit is detected without ever allocating
+    // what the limit forbids.
+    fn decompress_message(payload: Bytes, limit: int) -> Result<Bytes> {
+        // A payload with no bytes carries no DEFLATE data: the sender's
+        // flush produced nothing but the four-byte marker it then removed,
+        // which means it emitted no block and its context did not move.
+        // Appending those four bytes back and inflating them is NOT the same
+        // thing — on their own they are half of an uncompressed block
+        // header, so the inflater would stop mid-block and mis-read every
+        // message after this one. The message is empty and the context is
+        // left exactly where the sender left its own.
+        if payload.len() == 0 {
+            if self.recv_resets { self.drop_inflater() }
+            return ok(new Bytes(0))
+        }
+        if self.inflater == 0 {
+            var opened: int = 0
+            unsafe {
+                let req: RawPtr<u64> = RawPtr.alloc(4)
+                req.write(1 as u64)
+                req.offset(1).write(1 as u64)
+                req.offset(2).write(0 as u64)
+                // The receiving window is always the full 32 KiB. A window
+                // parameter constrains the *encoder*; reading with a larger
+                // one is always safe, and reading with a smaller one is the
+                // only way to get it wrong.
+                req.offset(3).write(0 as u64)
+                opened = beans_zlib_stream_new(req)
+                req.free()
+            }
+            if opened == 0 {
+                return err("the message decompressor could not be created", "memory")
+            }
+            self.inflater = opened
+        }
+        var input: Bytes = payload.slice(0, payload.len())
+        input.push(0)
+        input.push(0)
+        input.push(255)
+        input.push(255)
+        var out: Bytes = new Bytes(0)
+        var consumed_total: int = 0
+        var rounds: int = 0
+        var settled: bool = false
+        var ended: bool = false
+        for rounds < 1000000 {
+            rounds += 1
+            var chunk: int = 16384
+            let room: int = limit + 1 - out.len()
+            if room < chunk { chunk = room }
+            if chunk <= 0 {
+                return err("a compressed message exceeds the size limit", "too_large")
+            }
+            let start: int = out.len()
+            out.resize(start + chunk)
+            var status: int = 0
+            var consumed: int = 0
+            var produced: int = 0
+            var finished: int = 0
+            unsafe {
+                let req: RawPtr<u64> = RawPtr.alloc(7)
+                req.write(self.inflater as u64)
+                req.offset(1).write((input.len() - consumed_total) as u64)
+                req.offset(2).write(chunk as u64)
+                req.offset(3).write(0 as u64)
+                let src: RawPtr<u8> = if input.len() == consumed_total {
+                    RawPtr.null()
+                } else {
+                    input.as_ptr().offset(consumed_total)
+                }
+                status = beans_zlib_stream_run(
+                    src, out.as_ptr().offset(start), req)
+                consumed = req.offset(4).read() as int
+                produced = req.offset(5).read() as int
+                finished = req.offset(6).read() as int
+                req.free()
+            }
+            out.resize(start + produced)
+            if status == 100 {
+                return err("a compressed message is not a valid DEFLATE stream", "protocol")
+            }
+            if status != 0 {
+                return err("the message could not be decompressed (status {status})", "protocol")
+            }
+            if out.len() > limit {
+                return err("a compressed message exceeds the size limit", "too_large")
+            }
+            consumed_total += consumed
+            if finished == 1 {
+                ended = true
+                settled = true
+                break
+            }
+            if produced < chunk {
+                settled = true
+                break
+            }
+        }
+        if !settled {
+            return err("the message decompressor made no progress", "protocol")
+        }
+        if !ended && consumed_total != input.len() {
+            return err("a compressed message is not a valid DEFLATE stream", "protocol")
+        }
+        // A sender that ended its DEFLATE stream with a final block has said
+        // all it will ever say through this context; the next message has to
+        // start a new one, whatever the negotiation said about takeover.
+        if ended || self.recv_resets { self.drop_inflater() }
+        return ok(move out)
+    }
+
+    // The RFC 6455 text rule, applied where it can finally be applied. The
+    // framer skips its own check for a compressed message because the bytes
+    // are not text yet; this asks the framer's table about the bytes that
+    // came out of the inflater.
+    fn text_is_well_formed(body: Bytes) -> bool {
+        var answer: int = 0
+        unsafe {
+            let req: RawPtr<u64> = RawPtr.alloc(1)
+            req.write(body.len() as u64)
+            let source: RawPtr<u8> = if body.len() == 0 {
+                RawPtr.null()
+            } else {
+                body.as_ptr()
+            }
+            answer = beans_ws_valid_utf8(source, req)
+            req.free()
+        }
+        return answer == 1
+    }
+
+    // A violation this end found after the framer had already accepted the
+    // frame — a payload that will not inflate, one that inflates past the
+    // limit, text that is not UTF-8 once decompressed. wslay queues the
+    // close frame itself for the violations it can see; for these it cannot,
+    // so this queues it, flushes it, and closes behind it, which is the same
+    // sequence `absorb` runs for the ones wslay does catch.
+    fn fail_connection(code: int, message: string, kind: string) -> Result<bool> {
+        var status: int = 0
+        unsafe {
+            let req: RawPtr<u64> = RawPtr.alloc(2)
+            req.write(code as u64)
+            req.offset(1).write(0 as u64)
+            status = beans_ws_close(self.handle, RawPtr.null(), req)
+            req.free()
+        }
+        let told: Result<bool> = self.flush()
+        self.live = false
+        let closed: Result<bool> = self.shut()
+        return err(message, kind)
     }
 
     // Closing the socket happens on several paths — a protocol error, the
@@ -430,6 +1174,32 @@ pub unique class WebSocketTransport<T implements net.ByteStream> implements Send
         return ok(true)
     }
 
+    // `decompress_message` with the close frame each failure owes the peer:
+    // 1009 for a message that outgrows the limit, 1007 for one that is not a
+    // DEFLATE stream at all.
+    fn decompressed(payload: Bytes) -> Result<Bytes> {
+        let attempt: Result<Bytes> = self.decompress_message(payload, self.limit)
+        if !attempt.is_ok() {
+            var kind: string = "protocol"
+            var message: string = "a compressed message could not be read"
+            match attempt {
+                ok(_) => {}
+                err(problem) => {
+                    kind = problem.kind
+                    message = problem.msg
+                }
+            }
+            // 1009 is "message too big" and 1007 is "invalid frame payload
+            // data"; RFC 6455 gives the peer both, and which one it gets is
+            // the difference between "you sent too much" and "that was not
+            // a DEFLATE stream".
+            let code: int = if kind == "too_large" { 1009 } else { 1007 }
+            let told: Result<bool> = self.fail_connection(code, message, kind)
+            return err(message, kind)
+        }
+        return move attempt
+    }
+
     fn drain_events() -> Result<bool> {
         var size: int = 0
         unsafe {
@@ -446,21 +1216,46 @@ pub unique class WebSocketTransport<T implements net.ByteStream> implements Send
         }
         if taken <= 0 { return ok(true) }
         var pos: int = 0
-        for pos + 9 <= taken {
+        for pos + 10 <= taken {
             let opcode: int = buffer.get_u8(pos)
-            let length: int = buffer.get_u64(pos + 1)
-            pos += 9
+            // wslay's three-bit reserved field, ((RSV1 << 2) | (RSV2 << 1) |
+            // RSV3). Only RSV1 can be set, and only on a data message of a
+            // connection that negotiated permessage-deflate: the framer
+            // answers every other reserved bit, and RSV1 on a control or
+            // continuation frame, with a protocol close of its own.
+            let reserved: int = buffer.get_u8(pos + 1)
+            let compressed: bool = (reserved & 4) != 0
+            let length: int = buffer.get_u64(pos + 2)
+            pos += 10
             if length < 0 || pos + length < pos || pos + length > taken {
                 self.live = false
                 let closed: Result<bool> = self.shut()
                 return err("the WebSocket framer produced a malformed event", "protocol")
             }
+            if compressed && !self.deflate_on {
+                return self.fail_connection(
+                    1002, "a message set RSV1 without permessage-deflate", "protocol")
+            }
             if opcode == opcode_text() {
-                self.pending.push(Message.text(
-                    buffer.slice(pos, pos + length).to_string()))
+                var text_body: Bytes = buffer.slice(pos, pos + length)
+                if compressed {
+                    text_body = self.decompressed(text_body)?
+                    // The framer could not run its UTF-8 check on a payload
+                    // that was still compressed, so it runs here instead —
+                    // on the assembled, decompressed message, which is what
+                    // RFC 6455 says the rule is about.
+                    if !self.text_is_well_formed(text_body) {
+                        return self.fail_connection(
+                            1007, "a text message was not valid UTF-8", "protocol")
+                    }
+                }
+                self.pending.push(Message.text(text_body.to_string()))
             } else if opcode == opcode_binary() {
-                self.pending.push(Message.binary(
-                    buffer.slice(pos, pos + length)))
+                var binary_body: Bytes = buffer.slice(pos, pos + length)
+                if compressed {
+                    binary_body = self.decompressed(binary_body)?
+                }
+                self.pending.push(Message.binary(move binary_body))
             } else if opcode == opcode_ping() {
                 self.pending.push(Message.ping(
                     buffer.slice(pos, pos + length)))
@@ -543,11 +1338,24 @@ pub unique class WebSocketTransport<T implements net.ByteStream> implements Send
     fn send_frame(opcode: int, body: Bytes) -> Result<bool> {
         if !self.live { return err("send: the connection is closed", "closed") }
         if self.closing { return err("send: the close handshake has started", "closed") }
+        // RFC 7692 compresses data messages and only data messages: a ping,
+        // a pong or a close carries its payload as it is, and RSV1 on one of
+        // them is a protocol error the peer must close on.
+        if self.deflate_on &&
+           (opcode == opcode_text() || opcode == opcode_binary()) {
+            let squeezed: Bytes = self.compress_message(body)?
+            return self.queue_frame(opcode, squeezed, 4)
+        }
+        return self.queue_frame(opcode, body, 0)
+    }
+
+    fn queue_frame(opcode: int, body: Bytes, reserved: int) -> Result<bool> {
         var status: int = 0
         unsafe {
-            let req: RawPtr<u64> = RawPtr.alloc(2)
+            let req: RawPtr<u64> = RawPtr.alloc(3)
             req.write(opcode as u64)
             req.offset(1).write(body.len() as u64)
+            req.offset(2).write(reserved as u64)
             let source: RawPtr<u8> = if body.len() == 0 {
                 RawPtr.null()
             } else {
@@ -639,24 +1447,28 @@ pub unique class WebSocketTransport<T implements net.ByteStream> implements Send
 
 /// Runs the WebSocket client upgrade over any connected byte stream.
 pub fn upgrade_websocket<T implements net.ByteStream>(
-    move stream: T, host: string, port: int, target: string
+    move stream: T, host: string, port: int, target: string,
+    compress: bool = false
 ) -> Result<WebSocketTransport<T>> {
-    return WebSocketTransport.upgrade(move stream, host, port, target)
+    return WebSocketTransport.upgrade(
+        move stream, host, port, target, compress)
 }
 
 /// Wraps a stream after a caller-managed HTTP upgrade.
 pub fn wrap_websocket<T implements net.ByteStream>(
-    move stream: T, server: bool, max_message: int = 8388608
+    move stream: T, server: bool, max_message: int = 8388608,
+    agreed: Option<Deflate> = none
 ) -> Result<WebSocketTransport<T>> {
-    return WebSocketTransport.wrap(move stream, server, max_message)
+    return WebSocketTransport.wrap(move stream, server, max_message, agreed)
 }
 
 /// Validates and answers a server upgrade over any byte stream.
 pub fn accept_websocket<T implements net.ByteStream>(
     move stream: T, request: http.Request,
-    max_message: int = 8388608
+    max_message: int = 8388608, compress: bool = false
 ) -> Result<WebSocketTransport<T>> {
-    return WebSocketTransport.accept(move stream, request, max_message)
+    return WebSocketTransport.accept(
+        move stream, request, max_message, compress)
 }
 
 /// A WebSocket over raw TCP. Secure WebSockets use
@@ -668,13 +1480,14 @@ pub unique class Connection implements Send {
         self.core = move core
     }
 
-    pub static fn connect(host: string, port: int,
-                          target: string) -> Result<Connection> {
-        return Connection.connect_timeout(host, port, target, 30000)
+    pub static fn connect(host: string, port: int, target: string,
+                          compress: bool = false) -> Result<Connection> {
+        return Connection.connect_timeout(host, port, target, 30000, compress)
     }
 
     pub static fn connect_timeout(host: string, port: int, target: string,
-                                  ms: int) -> Result<Connection> {
+                                  ms: int,
+                                  compress: bool = false) -> Result<Connection> {
         if !target_is_safe(target) {
             return err("the WebSocket request target carries whitespace or a control byte", "invalid")
         }
@@ -685,22 +1498,24 @@ pub unique class Connection implements Send {
             net.TcpStream.connect_timeout(host, port, ms)?
         socket.set_timeouts(ms, ms)?
         let core: WebSocketTransport<net.TcpStream> =
-            upgrade_websocket(move socket, host, port, target)?
+            upgrade_websocket(move socket, host, port, target, compress)?
         return ok(new Connection(move core))
     }
 
     pub static fn wrap(move stream: net.TcpStream, server: bool,
-                       max_message: int = 8388608) -> Result<Connection> {
+                       max_message: int = 8388608,
+                       agreed: Option<Deflate> = none) -> Result<Connection> {
         let core: WebSocketTransport<net.TcpStream> =
-            wrap_websocket(move stream, server, max_message)?
+            wrap_websocket(move stream, server, max_message, agreed)?
         return ok(new Connection(move core))
     }
 
     pub static fn accept(move stream: net.TcpStream,
                          request: http.Request,
-                         max_message: int = 8388608) -> Result<Connection> {
+                         max_message: int = 8388608,
+                         compress: bool = false) -> Result<Connection> {
         let core: WebSocketTransport<net.TcpStream> =
-            accept_websocket(move stream, request, max_message)?
+            accept_websocket(move stream, request, max_message, compress)?
         return ok(new Connection(move core))
     }
 
@@ -719,4 +1534,8 @@ pub unique class Connection implements Send {
     pub fn peer_close_code() -> int { return self.core.peer_close_code() }
     pub fn is_open() -> bool { return self.core.is_open() }
     pub fn poll_handle() -> int { return self.core.poll_handle() }
+
+    /// The permessage-deflate parameters this connection negotiated, or
+    /// `none` when it carries no extension.
+    pub fn deflate() -> Option<Deflate> { return self.core.deflate() }
 }

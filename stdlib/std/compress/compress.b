@@ -251,10 +251,13 @@ pub unique class Deflater implements Send {
         }
         var handle: int = 0
         unsafe {
-            let req: RawPtr<u64> = RawPtr.alloc(3)
+            let req: RawPtr<u64> = RawPtr.alloc(4)
             req.write(0 as u64)
             req.offset(1).write(format_code(format) as u64)
             req.offset(2).write(level as u64)
+            // Window bits: 0 asks the bridge for the format's 32 KiB
+            // default. Only a negotiated protocol names a smaller window.
+            req.offset(3).write(0 as u64)
             handle = beans_zlib_stream_new(req)
             req.free()
         }
@@ -308,10 +311,11 @@ pub unique class Inflater implements Send {
         }
         var handle: int = 0
         unsafe {
-            let req: RawPtr<u64> = RawPtr.alloc(3)
+            let req: RawPtr<u64> = RawPtr.alloc(4)
             req.write(1 as u64)
             req.offset(1).write(format_code(format) as u64)
             req.offset(2).write(0 as u64)
+            req.offset(3).write(0 as u64)
             handle = beans_zlib_stream_new(req)
             req.free()
         }

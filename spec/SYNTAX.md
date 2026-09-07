@@ -3431,6 +3431,16 @@ socket.close(1000, "done")?
 let live: websocket.Connection =
     websocket.Connection.accept(move stream, request)?
 
+// permessage-deflate (RFC 7692), off unless asked for, on both ends.
+let squeezed: websocket.Connection =
+    websocket.Connection.connect("127.0.0.1", port, "/chat", true)?
+let served: websocket.Connection =
+    websocket.Connection.accept(move stream, request, 8388608, true)?
+match served.deflate() {
+    some(agreed) => { io.println("{agreed.server_max_window_bits}") }
+    none => {}                   // the peer offered nothing this end took
+}
+
 // WSS keeps the same framing and upgrade rules over a TLS byte stream.
 import std.websocket_tls
 let secure = websocket_tls.connect("example.test", 443, "/chat")?
@@ -3447,7 +3457,32 @@ let secure = websocket_tls.connect("example.test", 443, "/chat")?
   for the peer's. A protocol violation sends the close frame the RFC requires
   and then closes the TCP connection immediately, as 7.1.1 demands.
 - `max_message` bounds an assembled message; crossing it is kind `too_large`.
-  A peer cannot make a server allocate by fragmenting forever.
+  A peer cannot make a server allocate by fragmenting forever. With
+  permessage-deflate negotiated it bounds the message **after** it
+  decompresses, which is the only bound worth having once a kilobyte on the
+  wire can name a gigabyte in memory.
+- **Compression is asked for, never assumed.** `compress: true` on `accept`,
+  `connect` or `upgrade` offers permessage-deflate; every one of them defaults
+  to off, because a DEFLATE context costs about a third of a megabyte per
+  direction and a server holding many connections should choose to spend that
+  rather than discover it. `deflate()` reports the agreed `Deflate`
+  parameters, or `none` for a connection carrying no extension.
+- A server takes the first offer it can honour out of `Sec-WebSocket-Extensions`
+  and echoes exactly what it agreed to. An offer naming an extension, a
+  parameter or a value it cannot honour is *declined* — the next offer gets its
+  turn, and a client whose offers are all declined simply gets an uncompressed
+  connection. A client reads the server's answer strictly instead: an answer it
+  cannot honour fails the handshake, because a client that guessed would be
+  compressing into a stream the server cannot read.
+- The smallest LZ77 window either end will agree to is 9, not RFC 7692's 8.
+  zlib silently promotes a deflate request for 8 to 9 while its inflate honours
+  8 exactly, so a peer told "8" would reject the 512-byte matches the encoder
+  actually produced. Declining is the only answer that does not lie about what
+  went on the wire.
+- Compressed-message failures carry the close code that says which: a payload
+  that is not a DEFLATE stream, or text that is only invalid UTF-8 once it
+  decompresses, is kind `protocol` and close 1007; a message that outgrows
+  `max_message` while inflating is kind `too_large` and close 1009.
 - The framing is wslay, vendored under `runtime/net`. The Autobahn TestSuite is
   the gate, run against both an echo server and an echo client.
 

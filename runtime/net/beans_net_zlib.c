@@ -37,10 +37,25 @@ static int beans_zlib_fits(uint64_t n) {
 }
 
 // format: 0 = zlib wrapper, 1 = raw deflate, 2 = gzip wrapper.
-static int beans_zlib_window_bits(uint64_t format, int inflating) {
-    if (format == 1) return -15;
-    if (format == 2) return inflating ? 15 + 16 : 15 + 16;
-    return 15;
+// `bits` is the caller's window size in bits, or 0 for the 32 KiB default.
+// It exists for RFC 7692's server_max_window_bits / client_max_window_bits,
+// where the size is negotiated on the wire and both peers must agree.
+static int beans_zlib_window_bits(uint64_t format, int inflating,
+                                  uint64_t bits) {
+    int window = bits == 0 ? 15 : (int)bits;
+    if (format == 1) return -window;
+    if (format == 2) return inflating ? window + 16 : window + 16;
+    return window;
+}
+
+// 9 is the smallest window this bridge will agree to, not 8. zlib's
+// deflateInit2 documents that it silently promotes a request for 8 to 9
+// (its deflate cannot emit a 256-byte window), while inflateInit2 honours 8
+// exactly -- so a peer told "8" and reading with a 256-byte window would
+// reject the 512-byte matches the encoder actually produced. Refusing 8 is
+// the only answer that cannot lie about what went on the wire.
+static int beans_zlib_bits_ok(uint64_t bits) {
+    return bits == 0 || (bits >= 9 && bits <= 15);
 }
 
 // A conservative output bound for one-shot deflate of `len` bytes.
@@ -68,7 +83,7 @@ BEANS_NET_API long long beans_zlib_deflate(const uint8_t* src,
     if (req[2] > 9 || req[3] > 2) return BEANS_NET_ERR_INVALID;
     int level = (int)req[2];
     if (deflateInit2(&stream, level, Z_DEFLATED,
-                     beans_zlib_window_bits(req[3], 0), 8,
+                     beans_zlib_window_bits(req[3], 0, 0), 8,
                      Z_DEFAULT_STRATEGY) != Z_OK)
         return BEANS_NET_ERR_MEMORY;
     stream.next_in = (z_const Bytef*)src;
@@ -98,7 +113,7 @@ BEANS_NET_API long long beans_zlib_inflate(const uint8_t* src,
     if (req[2] > 2) return BEANS_NET_ERR_INVALID;
     z_stream stream;
     memset(&stream, 0, sizeof stream);
-    if (inflateInit2(&stream, beans_zlib_window_bits(req[2], 1)) != Z_OK)
+    if (inflateInit2(&stream, beans_zlib_window_bits(req[2], 1, 0)) != Z_OK)
         return BEANS_NET_ERR_MEMORY;
     stream.next_in = (z_const Bytef*)src;
     stream.avail_in = (uInt)req[0];
@@ -158,21 +173,23 @@ static beans_zlib_session* beans_zlib_of(long long handle) {
     return s;
 }
 
-// req: [0] kind (0 deflate, 1 inflate), [1] format, [2] level.
+// req: [0] kind (0 deflate, 1 inflate), [1] format, [2] level,
+// [3] window bits (0 for the 32 KiB default, else 9..15).
 BEANS_NET_API long long beans_zlib_stream_new(const uint64_t* req) {
     if (!req) return 0;
     if (req[0] > 1 || req[1] > 2 || (!req[0] && req[2] > 9)) return 0;
+    if (!beans_zlib_bits_ok(req[3])) return 0;
     beans_zlib_session* s =
         (beans_zlib_session*)calloc(1, sizeof(beans_zlib_session));
     if (!s) return 0;
     s->inflating = req[0] == 1;
     int rc;
     if (s->inflating) {
-        rc = inflateInit2(&s->stream, beans_zlib_window_bits(req[1], 1));
+        rc = inflateInit2(&s->stream, beans_zlib_window_bits(req[1], 1, req[3]));
     } else {
         int level = (int)req[2];
         rc = deflateInit2(&s->stream, level, Z_DEFLATED,
-                          beans_zlib_window_bits(req[1], 0), 8,
+                          beans_zlib_window_bits(req[1], 0, req[3]), 8,
                           Z_DEFAULT_STRATEGY);
     }
     if (rc != Z_OK) {
