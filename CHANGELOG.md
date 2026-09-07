@@ -2,9 +2,20 @@
 
 This file records user-facing changes in each Beans release.
 
-## [Unreleased]
+## [0.1.40] - 2026-09-07
 
-The runtime ABI moves to 19.
+A way to contain a panic without spawning a fiber, and a WebSocket that can
+compress. The runtime ABI moves from 16 to 19 — three releases' worth of
+entries in one, so a program built against 0.1.39's runtime must be rebuilt
+rather than relinked.
+
+Nothing here breaks an existing program at the language level. `contained` is
+contextual the way `brew` is, so a local named `contained` still works, and
+permessage-deflate is off on every connection that does not ask for it. The
+one rule that changes under an existing program is `max_message`, and only
+where compression was negotiated: it now bounds what a message may reach
+after it inflates, because a bound measured on the wire means nothing when a
+kilobyte can name a gigabyte.
 
 ### Added
 
