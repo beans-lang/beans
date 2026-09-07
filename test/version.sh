@@ -43,7 +43,20 @@ if grep -nE 'beansc [0-9]+[.][0-9]+' ${selfhosted+"${selfhosted[@]}"} \
     exit 1
 fi
 
-test "$(./build/beansc --version)" = \
-    "beansc $version (language $language, runtime ABI $abi)"
+# Reported with its two sides, for the same reason the stale-version.b check
+# above says what to do: a bare `test` under `set -e` exits 1 and prints
+# nothing, so a bump that has not reached the binary looks like the gate
+# itself is broken. The usual cause is simply that build/beansc predates the
+# bump, and the fix is to rebuild — which is worth saying rather than leaving
+# someone to read this file to find out.
+built=$(./build/beansc --version)
+want="beansc $version (language $language, runtime ABI $abi)"
+if [[ "$built" != "$want" ]]; then
+    echo "the built compiler does not report the version the tree declares" >&2
+    echo "  build/beansc: $built" >&2
+    echo "  VERSION:      $want" >&2
+    echo "rebuild it with: make" >&2
+    exit 1
+fi
 
 echo "ok one compiler, language, LSP, and runtime ABI version source"
