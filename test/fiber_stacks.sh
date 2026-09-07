@@ -18,8 +18,11 @@ set -euo pipefail
 # put resident, and the join giving the stacks back means about that much
 # leaves again. That is the only platform fact in this gate, and it is read
 # from the platform (getconf PAGE_SIZE) rather than guessed: 4 KiB pages make
-# it 40 MB for a 10k storm, 16 KiB pages make it 160 MB, and measured runs sit
-# at 99% of it on macOS/arm64 (both backends) and on Linux/x86-64.
+# it 40 MB for a 10k storm, 16 KiB pages make it 160 MB. Measured, the native
+# leg returns 99% of exactly that figure and no more — 158992K of 160000K on
+# macOS/arm64, 39740K of 40000K on Linux — which is what says the number is
+# the right one. The interpreter returns far more (5.5 GB on Linux), because
+# it also hands back what it allocated per fiber; the floor is a floor.
 #
 # The gate previously asserted `grew > 80000` KiB and `after-join < 70% of
 # high-water`. The first was 16 KiB pages × 10k fibers ÷ 2 — a macOS number,
