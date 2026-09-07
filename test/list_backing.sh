@@ -47,6 +47,11 @@ clang -O1 -pthread -DBEANS_ARC_STATS -Wno-override-module \
 #          report three here
 #   wide   three 40-byte structs: 4 x 40 = 160 bytes is more than a block
 #          carries, so the buffer is separate from the first push
+#   six    a six-element literal: past the four a fresh list starts with,
+#          so the literal has to ask for six — doubling its way there
+#          would leave the inline room behind and cost a buffer
+#   twenty a twenty-element literal: 160 bytes of slots is past the
+#          threshold, so one buffer, where doubling from four costs four
 expect_backings() {
     local mode="$1" per_round="$2" low high
     low=$(MODE="$mode" ROUNDS=1000 "$tmp/counts.stats" 2>&1 >/dev/null \
@@ -65,9 +70,15 @@ expect_backings() {
     fi
     echo "  $mode: $per_round separate element buffer(s) per round"
 }
-expect_backings small 0
-expect_backings grow  2
-expect_backings wide  1
+expect_backings small  0
+expect_backings grow   2
+expect_backings wide   1
+expect_backings six    0
+expect_backings twenty 1
+
+# A literal longer than the default four has to reach the capacity constructor;
+# nothing else in the emitter would ask for an exact size.
+grep -q 'call ptr @beans_list_new_typed_capacity' build/list_inline_counts.ll
 
 # The header count must not have moved to pay for it: one list object per round
 # in every mode, inline backing or not.
@@ -86,6 +97,8 @@ expect_headers() {
 expect_headers small
 expect_headers grow
 expect_headers wide
+expect_headers six
+expect_headers twenty
 
 echo "checking the inline backing under ASan, UBSan and LeakSanitizer"
 clang -O1 -g -pthread -fsanitize=address,undefined -fno-sanitize-recover=undefined \

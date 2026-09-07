@@ -14,6 +14,12 @@
 //   grow   nine ints: 4 -> 8 -> 16, two grows          2 backings per round
 //   wide   three 40-byte structs: 4 x 40 = 160 bytes,  1 backing  per round
 //          too much to carry behind a header
+//   six    a six-element literal: more than the four a       0 backings
+//          fresh list starts with, so the literal has to
+//          ask for six or double its way there
+//   twenty a twenty-element literal: 160 bytes of slots      1 backing
+//          is past the threshold, but asking once still
+//          costs one buffer where doubling costs four
 //
 // `wide` is the half that proves the threshold is a threshold. Without it a
 // runtime that put every buffer inline, at any size, would pass.
@@ -50,6 +56,29 @@ fn grow_round(index: int) -> int {
     return total
 }
 
+fn six_round(index: int) -> int {
+    var values: List<int> = [index, index + 1, index + 2, index + 3,
+                             index + 4, index + 5]
+    var total: int = 0
+    for slot: int in 0..values.len() {
+        total = total + values[slot]
+    }
+    return total
+}
+
+fn twenty_round(index: int) -> int {
+    var values: List<int> = [
+        index, index + 1, index + 2, index + 3, index + 4,
+        index + 5, index + 6, index + 7, index + 8, index + 9,
+        index + 10, index + 11, index + 12, index + 13, index + 14,
+        index + 15, index + 16, index + 17, index + 18, index + 19]
+    var total: int = 0
+    for slot: int in 0..values.len() {
+        total = total + values[slot]
+    }
+    return total
+}
+
 fn wide_round(index: int) -> int {
     var rows: List<Five> = []
     for step: int in 0..3 {
@@ -71,6 +100,10 @@ fn main() {
             total = total + small_round(index)
         } else if mode == "grow" {
             total = total + grow_round(index)
+        } else if mode == "six" {
+            total = total + six_round(index)
+        } else if mode == "twenty" {
+            total = total + twenty_round(index)
         } else {
             total = total + wide_round(index)
         }
