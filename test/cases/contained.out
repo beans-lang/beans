@@ -8,7 +8,7 @@ nested frames:
   drop middle-held
   outer defer
   drop outer-carried
-  caught panic: runtime panic at 58:17: list index 7 out of range (len 0)
+  caught panic: runtime panic at 59:17: list index 7 out of range (len 0)
   counter back to 0
 move-only:
   moveonly defer
@@ -33,7 +33,7 @@ nested then own failure:
   first caught panic
   inner-then-own defer
   drop second-guard
-  outer caught panic: runtime panic at 156:10: and then this frame
+  outer caught panic: runtime panic at 157:10: and then this frame
 contained inside a defer:
   drop in-defer
   defer caught panic
@@ -47,7 +47,7 @@ brew under a contained call:
   ok: child panic
 escalated scope join:
   drop unjoined
-  caught panic: runtime panic at 229:5: a brewed fiber panicked with no join to catch it: runtime panic at 134:10: unjoined refused
+  caught panic: runtime panic at 230:5: a brewed fiber panicked with no join to catch it: runtime panic at 135:10: unjoined refused
 payload shapes:
   string ok a string
   string err panic
@@ -77,4 +77,19 @@ repeated: 200 caught, still running
   drop bound
 bound results: true false
 bound value: 8
+call shapes:
+  self receiver: 7 -1
+  qualified: 4
+  generic: 1 -1
+  move argument returning: 21
+  move argument panicking: -1
+  drop L
+  two frames in one expression: 109
+  drop propagated
+  propagated: -7
+  drop in-closure
+  closure in a method: -1
+  four hundred frames deep: -3
+  drop token 22
+  drop token 21
 done

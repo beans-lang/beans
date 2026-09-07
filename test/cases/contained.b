@@ -10,6 +10,7 @@
 // Revert either half and the cleanup stops running, so the golden no longer
 // matches.
 import std.io
+import std.math
 
 class Res {
     pub tag: string
@@ -444,6 +445,85 @@ fn as_expression() {
     }
 }
 
+// ---- 14. every call shape the boundary accepts ---------------------------
+
+fn value_or(r: Result<int>, fallback: int) -> int {
+    match r {
+        ok(v) => { return v }
+        err(_) => { return fallback }
+    }
+}
+
+class Dispatcher {
+    pub base: int = 0
+    pub fn risky(by: int) -> int {
+        if by == 0 { panic("dispatcher refused") }
+        return self.base + by
+    }
+    // `contained self.m(...)` — the receiver is `self`, which the contextual
+    // keyword has to accept the same way `brew` does.
+    pub fn through_self(by: int) -> Result<int> {
+        return contained self.risky(by)
+    }
+}
+
+fn generic_pick<T>(a: T, b: T, first: bool) -> T {
+    if !first { panic("generic refused") }
+    return a
+}
+
+// A value moved into the call rides in the hoisted binding, so its death is
+// the enclosing scope's, exactly as a brew's argument is.
+fn takes_move(move t: Token, fail: bool) -> int {
+    if fail { panic("move refused") }
+    return t.id
+}
+
+fn adds(a: int, b: int) -> int { return a + b }
+
+// `?` on a contained result: the Error the boundary built propagates like any
+// other.
+fn propagates() -> Result<int> {
+    let v: int = (contained always_fails("propagated"))?
+    return ok(v)
+}
+
+// A contained call inside a closure inside a method.
+class Wrapper {
+    pub fn run() -> int {
+        let f: fn() -> Result<int> = fn() -> Result<int> {
+            return contained always_fails("in-closure")
+        }
+        return value_or(f(), -1)
+    }
+}
+
+// Four hundred frames between the panic and the boundary.
+fn recurse(n: int) -> int {
+    if n == 0 { panic("bottom") }
+    return recurse(n - 1)
+}
+
+fn call_shapes() {
+    io.println("call shapes:")
+    let d: Dispatcher = new Dispatcher()
+    d.base = 5
+    io.println("  self receiver: {value_or(d.through_self(2), -1)} {value_or(d.through_self(0), -1)}")
+    io.println("  qualified: {value_or(contained math.clamp(9, 1, 4), -1)}")
+    io.println("  generic: {value_or(contained generic_pick<int>(1, 2, true), -1)} {value_or(contained generic_pick<int>(1, 2, false), -1)}")
+    let kept: Token = new Token(21)
+    let lost: Token = new Token(22)
+    io.println("  move argument returning: {value_or(contained takes_move(move kept, false), -1)}")
+    io.println("  move argument panicking: {value_or(contained takes_move(move lost, true), -1)}")
+    // Two catch frames inside one enclosing call: each phi has to name the
+    // predecessor the other one's block split left behind.
+    io.println("  two frames in one expression: {adds(value_or(contained always_fails("L"), 100), value_or(contained adds(4, 5), 200))}")
+    io.println("  propagated: {value_or(propagates(), -7)}")
+    let w: Wrapper = new Wrapper()
+    io.println("  closure in a method: {w.run()}")
+    io.println("  four hundred frames deep: {value_or(contained recurse(400), -3)}")
+}
+
 fn main() {
     ok_path()
     nested_frames()
@@ -458,5 +538,6 @@ fn main() {
     in_nested_blocks()
     repeated()
     as_expression()
+    call_shapes()
     io.println("done")
 }
