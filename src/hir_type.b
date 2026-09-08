@@ -258,11 +258,21 @@ fn hir_unit_misplacement(type: HirType,
         }
         return none
     }
-    // A fixed array's element is already held to inline scalars, RawPtr,
-    // fixed arrays and structs, so `[unit; 3]` is refused with that rule's
-    // own sentence wherever an array type is validated. Walking into it here
-    // would answer one mistake twice.
-    if name == "array" { return none }
+    // Four builtins already state what their element may be — a fixed array
+    // and a Slice want inline scalars, RawPtr, fixed arrays or extern "C"
+    // records, a RawPtr the same, an Atomic integers and bool — and each says
+    // so with its own sentence, naming `unit` outright, wherever such a type
+    // is validated. Walking into them here would answer one mistake twice.
+    // The three callback holders say the same thing about their argument —
+    // it has to be a C callback function type — so they are skipped for the
+    // same reason.
+    if name == "array" || name == "RawPtr" ||
+       name == "Slice" || name == "Atomic" ||
+       name == "StoredCallback" ||
+       name == "LocalStoredCallback" ||
+       name == "CFunctionPtr" {
+        return none
+    }
     if (name == "Thread" || name == "Brew" ||
         name == "TaskGroup") && type.args.len() == 1 {
         match hir_unit_misplacement(type.args[0], true) {
