@@ -109,8 +109,18 @@ agree() {
         exit 1
     fi
     check_effects "$tmp/$name.interp" "$source" "$want"
+    # Everything above compares the two backends against each other, so a
+    # change that moves BOTH of them together passes all of it. A case that
+    # keeps a `.out` beside it pins the answers themselves as well; the file
+    # is optional because for most cases the claim really is only agreement.
+    local golden="${source%.b}.out"
+    if [ -f "$golden" ] && ! diff -u "$golden" "$tmp/$name.interp"; then
+        echo "$source: both backends agree, on the wrong answers" >&2
+        exit 1
+    fi
     local note=""
     [ -n "$want" ] && note=", $want built and released"
+    [ -f "$golden" ] && note="$note, pinned"
     echo "  agree: $source ($(wc -l <"$tmp/$name.interp" | tr -d ' ') lines$note)"
 }
 

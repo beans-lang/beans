@@ -1,0 +1,67 @@
+-- the closed generic itself, at two argument lists
+  main.Grid<int>.title declared by = main.Grid<int>
+  main.Grid<int>.title declarer is generic = true
+  main.Grid<int>.items declared by = main.Grid<int>
+  main.Grid<int>.items declarer is generic = true
+  main.Grid<int>.label declared by = main.Node
+  main.Grid<int>.label declarer is generic = false
+  main.Grid<int>.touch() declared by = main.Grid<int>
+  main.Grid<int>.touch() declarer is generic = true
+  main.Grid<string>.title declared by = main.Grid<string>
+  main.Grid<string>.title declarer is generic = true
+  main.Grid<string>.touch() declared by = main.Grid<string>
+  main.Grid<string>.touch() declarer is generic = true
+-- inherited by a non-generic subclass of each instantiation
+  main.OrderGrid.title declared by = main.Grid<int>
+  main.OrderGrid.title declarer is generic = true
+  main.OrderGrid.items declared by = main.Grid<int>
+  main.OrderGrid.items declarer is generic = true
+  main.OrderGrid.label declared by = main.Node
+  main.OrderGrid.label declarer is generic = false
+  main.OrderGrid.touch() declared by = main.Grid<int>
+  main.OrderGrid.touch() declarer is generic = true
+  main.TextGrid.title declared by = main.Grid<string>
+  main.TextGrid.title declarer is generic = true
+  main.TextGrid.touch() declared by = main.TextGrid
+  main.TextGrid.touch() declarer is generic = false
+-- two links above the generic base
+  main.DeepGrid.title declared by = main.Grid<int>
+  main.DeepGrid.title declarer is generic = true
+  main.DeepGrid.label declared by = main.Node
+  main.DeepGrid.label declarer is generic = false
+  main.DeepGrid.touch() declared by = main.Grid<int>
+  main.DeepGrid.touch() declarer is generic = true
+-- a generic base of a generic subclass stays as written
+  main.Sub<int>.title declared by = main.Grid<T>
+  main.Sub<int>.title declarer is generic = true
+  main.Sub<int>.touch() declared by = main.Grid<T>
+  main.Sub<int>.touch() declarer is generic = true
+-- controls: nothing generic anywhere
+  main.Hint.title declared by = main.Hint
+  main.Hint.title declarer is generic = false
+  main.Hint.label declared by = main.Node
+  main.Hint.label declarer is generic = false
+  main.Hint.touch() declared by = main.Hint
+  main.Hint.touch() declarer is generic = false
+  main.Plain.title declared by = main.Plain
+  main.Plain.title declarer is generic = false
+  main.Plain.touch() declared by = main.Plain
+  main.Plain.touch() declarer is generic = false
+  main.Node.label declared by = main.Node
+  main.Node.label declarer is generic = false
+  main.Node.touch() declared by = main.Node
+  main.Node.touch() declarer is generic = false
+-- the base chain each of them reports
+Grid<int> base = main.Node
+OrderGrid base = main.Grid<int>
+TextGrid base = main.Grid<string>
+Hint base = main.Node
+Plain has a base = false
+-- a closed generic has no reflective initializer
+Grid<int> initializer = false
+Grid<string> initializer = false
+Sub<int> initializer = false
+OrderGrid initializer = true
+Hint initializer = true
+Plain initializer = true
+all rows answered as declared

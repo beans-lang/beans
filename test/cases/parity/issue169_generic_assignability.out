@@ -1,0 +1,46 @@
+Grid       <- Grid<int> = true
+Grid       <- Grid<string> = true
+Grid       <- IntGrid = true
+Grid       <- DeepGrid = true
+Grid       <- StrGrid = true
+Grid<int>  <- Grid<int> = true
+Grid<int>  <- IntGrid = true
+Grid<int>  <- DeepGrid = true
+Grid<str>  <- StrGrid = true
+Grid<str>  <- IntGrid = false
+Grid<str>  <- DeepGrid = false
+Grid<int>  <- StrGrid = false
+Grid<int>  <- Grid<string> = false
+Grid<str>  <- Grid<int> = false
+Node       <- Grid<int> = true
+Node       <- DeepGrid = true
+Node       <- Hint = true
+Hint       <- Grid<int> = false
+Grid<int>  <- Hint = false
+Plain      <- Grid<int> = false
+Pair       <- Pair<int,string> = true
+Pair       <- Pair<string,int> = true
+Pair<i,s>  <- Pair<int,string> = true
+Pair<i,s>  <- Pair<string,int> = false
+Shape      <- Tile = true
+Shape<int> <- Tile = true
+Shape<str> <- Tile = false
+Shape      <- SubTile = true
+Shape<int> <- SubTile = true
+Shape<str> <- SubTile = false
+arc+one
+value(Grid<int>) is Grid<int> = true
+value(Grid<int>) is Grid<string> = false
+value(Grid<int>) is Grid = true
+value(Grid<int>) is Node = true
+arc+two
+value(DeepGrid) is Grid<int> = true
+value(DeepGrid) is Grid<string> = false
+value(DeepGrid) is Grid = true
+arc+three
+value(StrGrid) is Grid<string> = true
+value(StrGrid) is Grid<int> = false
+arc-three
+arc-two
+arc-one
+all rows answered as declared
