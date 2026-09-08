@@ -236,11 +236,11 @@ agree test/cases/parity/inherited_field_slots.b 4
 # `fn(T) -> unit` are one type, and only the spelled form carries the result
 # in the type's argument list — while an instance method with the identical
 # signature emitted and the interpreter ran all three, so this shape could
-# not be compared across the backends at all. Sixteen values built and
+# not be compared across the backends at all. Twenty-two values built and
 # released: what a closure handed to a generic does is build and release, so
 # a body invoked the wrong number of times shows up as a marker imbalance
 # rather than as an answer that happens to match.
-agree test/cases/parity/issue161_generic_fn_parameter.b 16
+agree test/cases/parity/issue161_generic_fn_parameter.b 22
 
 # Every case in the directory has to be listed above with its own expected
 # count; a file added and forgotten would otherwise be silently unchecked.

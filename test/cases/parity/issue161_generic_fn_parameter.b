@@ -57,6 +57,24 @@ fn fold<T>(value: T, step: fn(T) -> T, rounds: int) -> T {
     return carried
 }
 
+// T reachable ONLY through function types: nothing else in either signature
+// mentions it, so binding it is the function type's job alone. This is the
+// half an explicit type argument cannot cover.
+fn count_with<T>(rounds: int, make: fn() -> T) -> int {
+    var index: int = 0
+    for index < rounds {
+        let made: T = make()
+        index += 1
+    }
+    return rounds
+}
+
+fn feed<T>(make: fn() -> T, setup: fn(T)) -> int {
+    let value: T = make()
+    setup(value)
+    return 1
+}
+
 class Host {
     fn init() {}
     // the receiver form that already emitted
@@ -122,6 +140,12 @@ fn main() {
     io.println("D {Host.stat_apply<Cell>(2, seed, fn(x: Cell) { let t: Cell = new Cell("g") })}")
     let holder: Holder<int> = new Holder<int>(9)
     io.println("D {Holder.stat_apply<Cell>(seed, fn(x: Cell) { let t: Cell = new Cell("h") })} {holder.held}")
+
+    // E — T bound through the function type and nowhere else, with the
+    // value the callback builds released each round
+    io.println("E {count_with<Cell>(2, fn() -> Cell { return new Cell("i") })}")
+    io.println("E {count_with(2, fn() -> Cell { return new Cell("j") })}")
+    io.println("E {feed(fn() -> Cell { return new Cell("k") }, fn(x: Cell) { let t: Cell = new Cell("l") })}")
 
     io.println("done")
 }
