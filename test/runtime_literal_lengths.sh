@@ -239,6 +239,12 @@ KEYWORDS = {"if", "for", "while", "switch", "return", "sizeof", "defined",
             "do", "else", "case"}
 
 failures, checked, exempted, seen_names = [], 0, 0, set()
+# How many argument lists holding a string literal the scan actually walked.
+# `checked` is allowed to reach zero — every remaining count could legitimately
+# be converted to BEANS_LIT one day — so it cannot stand in for "the scan
+# worked". This can: it stays in the thousands whatever the call sites do, and
+# a parser that stopped understanding the sources drops it to nothing.
+walked = 0
 
 for path in SOURCES:
     raw = open(path, encoding="utf-8", errors="replace").read()
@@ -271,6 +277,7 @@ for path in SOURCES:
     for name, base, inner in groups:
         if '"' not in inner:
             continue
+        walked += 1
         if name in NOT_A_LENGTH:
             seen_names.add(name)
             continue
@@ -308,8 +315,15 @@ for name in sorted(set(NOT_A_LENGTH) - seen_names):
         "call to it pairs a literal with an argument any more — drop the row"
         % name)
 
-print("literal+count pairs checked: %d across %d runtime sources "
-      "(%d exempted)" % (checked, len(SOURCES), exempted))
+if walked < 1000:
+    failures.append(
+        "the scan walked only %d argument lists holding a literal across %d "
+        "sources — it is no longer reading these files, not passing them"
+        % (walked, len(SOURCES)))
+
+print("literal+count pairs checked: %d, in %d argument lists holding a "
+      "literal across %d runtime sources (%d exempted)"
+      % (checked, walked, len(SOURCES), exempted))
 if failures:
     print()
     for f in failures:
