@@ -26,6 +26,13 @@ main call: inside=widget outside=widget agree
 main enum path: inside=loud outside=loud agree
 main static call: inside=7 outside=7 agree
 main dot path: inside=2 outside=2 agree
+main Self: inside=interp164.Local outside=interp164.Local agree
+main new Self: inside=local outside=local agree
+main enclosing class type parameter: inside=interp164.kit.Widget outside=interp164.kit.Widget agree
+main enclosing fn type parameter: inside=interp164.kit.Point outside=interp164.kit.Point agree
+main builtin type_of: inside=int outside=int agree
+main builtin type_of string: inside=string outside=string agree
+main builtin widths: inside=13 outside=13 agree
 probe control local: inside=interp164.probe.Local outside=interp164.probe.Local agree
 probe type_of: inside=interp164.kit.Widget outside=interp164.kit.Widget agree
 probe assignable: inside=true outside=true agree
@@ -51,3 +58,7 @@ probe call: inside=widget outside=widget agree
 probe enum path: inside=loud outside=loud agree
 probe static call: inside=7 outside=7 agree
 probe dot path: inside=2 outside=2 agree
+probe Self: inside=interp164.probe.Local outside=interp164.probe.Local agree
+probe new Self: inside=local outside=local agree
+probe enclosing class type parameter: inside=interp164.kit.Fancy outside=interp164.kit.Fancy agree
+probe builtin type_of: inside=int outside=int agree

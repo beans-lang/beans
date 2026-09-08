@@ -11,11 +11,28 @@ import {Widget, Fancy, Point, SIZE, Tone, Shop, make, fancy, takes,
 pub class Local {
     pub fn init() {}
     pub fn label() -> string { return "local" }
+    pub fn self_inside() -> string {
+        return "{type_of(Self).qualified_name()}"
+    }
+    pub fn self_outside() -> string {
+        return type_of(Self).qualified_name()
+    }
+    pub fn self_new() -> string { return "{new Self().label()}" }
 }
 
 pub class LocalChild extends Local {
     pub fn init() { super.init() }
     pub override fn label() -> string { return "localchild" }
+}
+
+// `Self` and a type parameter are file-local names, so the second asker
+// answers them from its own package — and must say `interp164.probe.Local`
+// where the module root says `interp164.Local`.
+pub class Crate<T> {
+    item: T
+    pub fn init(item: T) { self.item = item }
+    pub fn inside() -> string { return "{type_of(T).qualified_name()}" }
+    pub fn outside() -> string { return type_of(T).qualified_name() }
 }
 
 fn described(text: string = "default={new Widget().label()}") -> string {
@@ -160,5 +177,17 @@ pub fn ask() -> List<string> {
         row("probe dot path",
             "{(fn() -> int { let b: fmt.StringBuilder = new fmt.StringBuilder() ; b.push("xy") ; return b.to_string().len() })()}",
             "2"))
+    let local: Local = new Local()
+    report.push(
+        row("probe Self", local.self_inside(), local.self_outside()))
+    report.push(row("probe new Self", local.self_new(), "local"))
+    let crate: Crate<Fancy> = new Crate<Fancy>(fancy())
+    report.push(
+        row("probe enclosing class type parameter",
+            crate.inside(), crate.outside()))
+    let int_outside: string = type_of(int).qualified_name()
+    report.push(
+        row("probe builtin type_of",
+            "{type_of(int).qualified_name()}", int_outside))
     return move report
 }

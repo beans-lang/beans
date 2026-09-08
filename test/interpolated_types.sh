@@ -46,15 +46,15 @@ diff -u "$golden" "$tmp/release.out"
 # regenerated golden full of `inside=interp164.Widget agree` would mean the
 # fabricated name had won on both sides.
 rows=$(grep -c ': inside=' "$tmp/interp" || true)
-[ "$rows" -ge 50 ] || fail "only $rows rows compared; the battery shrank"
+[ "$rows" -ge 60 ] || fail "only $rows rows compared; the battery shrank"
 if grep -q 'DIFFER' "$tmp/interp"; then
     echo "--- rows that disagree ---" >&2
     grep 'DIFFER' "$tmp/interp" >&2
     fail "a type inside a string answered differently from the same type outside it"
 fi
-[ "$(grep -c '^main ' "$tmp/interp")" -ge 25 ] ||
+[ "$(grep -c '^main ' "$tmp/interp")" -ge 32 ] ||
     fail "the module root stopped asking"
-[ "$(grep -c '^probe ' "$tmp/interp")" -ge 23 ] ||
+[ "$(grep -c '^probe ' "$tmp/interp")" -ge 26 ] ||
     fail "the second named package stopped asking"
 grep -Fq 'main type_of: inside=interp164.kit.Widget outside=interp164.kit.Widget' \
     "$tmp/interp" ||
@@ -64,6 +64,26 @@ grep -Fq 'probe type_of: inside=interp164.kit.Widget outside=interp164.kit.Widge
     fail "the second package's type_of no longer answers the real package"
 grep -Fq 'main roundtrip: inside=true outside=true' "$tmp/interp" ||
     fail "find_type(type_of(T).qualified_name()) no longer finds the type"
+
+# The three things the checker hands the resolver that no cross-package name
+# can expose, because none of them is qualified by a package: the enclosing
+# owner, the enclosing type parameters, and a builtin name. `Self` is the
+# one that proves the scope is per-file rather than global -- the two askers
+# must answer their own package and not each other's.
+grep -Fq 'main Self: inside=interp164.Local outside=interp164.Local' \
+    "$tmp/interp" ||
+    fail "Self inside a string stopped meaning the module root's own class"
+grep -Fq 'probe Self: inside=interp164.probe.Local outside=interp164.probe.Local' \
+    "$tmp/interp" ||
+    fail "Self inside a string stopped meaning the second package's own class"
+grep -Fq 'main enclosing class type parameter: inside=interp164.kit.Widget' \
+    "$tmp/interp" ||
+    fail "a class type parameter named inside a string lost its binding"
+grep -Fq 'main enclosing fn type parameter: inside=interp164.kit.Point' \
+    "$tmp/interp" ||
+    fail "a function type parameter named inside a string lost its binding"
+grep -Fq 'main builtin widths: inside=13 outside=13' "$tmp/interp" ||
+    fail "builtin type names inside a string stopped resolving"
 if grep -Eq 'inside=interp164\.(Widget|Fancy|Point)' "$tmp/interp"; then
     echo "--- composed names ---" >&2
     grep -E 'inside=interp164\.(Widget|Fancy|Point)' "$tmp/interp" >&2

@@ -17,11 +17,38 @@ import {ask} from interp164.probe
 pub class Local {
     pub fn init() {}
     pub fn label() -> string { return "local" }
+    // `Self` is a type name a piece can write, and the checker answers it
+    // by handing the enclosing owner to the resolver rather than filling
+    // it in itself.
+    pub fn self_inside() -> string {
+        return "{type_of(Self).qualified_name()}"
+    }
+    pub fn self_outside() -> string {
+        return type_of(Self).qualified_name()
+    }
+    pub fn self_new() -> string { return "{new Self().label()}" }
 }
 
 pub class LocalChild extends Local {
     pub fn init() { super.init() }
     pub override fn label() -> string { return "localchild" }
+}
+
+// The enclosing type parameters are the third thing the checker hands the
+// resolver. Nothing in the cross-package battery reaches them, because a
+// type parameter is not qualified by a package and so cannot be composed
+// into a wrong name — which is exactly why it needs pinning here.
+pub class Crate<T> {
+    item: T
+    pub fn init(item: T) { self.item = item }
+    pub fn inside() -> string { return "{type_of(T).qualified_name()}" }
+    pub fn outside() -> string { return type_of(T).qualified_name() }
+}
+
+fn enclosing_fn_parameter<U>(value: U) -> string {
+    return row("main enclosing fn type parameter",
+               "{type_of(U).qualified_name()}",
+               type_of(U).qualified_name())
 }
 
 fn described(text: string = "default={new Widget().label()}") -> string {
@@ -179,6 +206,37 @@ fn main() {
         row("main dot path",
             "{(fn() -> int { let b: fmt.StringBuilder = new fmt.StringBuilder() ; b.push("xy") ; return b.to_string().len() })()}",
             "2"))
+
+    // The three arguments `bind_interpolated_type` hands the resolver that
+    // the cross-package battery above never reaches: the enclosing owner
+    // (`Self`), the enclosing type parameters, and a builtin name — which
+    // the old rule skipped outright and the new one resolves like any
+    // other. None of them can be composed into a wrong package name, so
+    // none of them fails on the old code; they are here so that dropping
+    // one from the call cannot stay green.
+    let local: Local = new Local()
+    io.println(
+        row("main Self", local.self_inside(), local.self_outside()))
+    io.println(row("main new Self", local.self_new(), "local"))
+    let crate: Crate<Widget> = new Crate<Widget>(make())
+    io.println(
+        row("main enclosing class type parameter",
+            crate.inside(), crate.outside()))
+    io.println(enclosing_fn_parameter<Point>(Point { x: 1, y: 2 }))
+    let int_outside: string = type_of(int).qualified_name()
+    let string_outside: string = type_of(string).qualified_name()
+    io.println(
+        row("main builtin type_of",
+            "{type_of(int).qualified_name()}", int_outside))
+    io.println(
+        row("main builtin type_of string",
+            "{type_of(string).qualified_name()}", string_outside))
+    let widths_outside: int =
+        size_of(i64) + size_of(u8) + align_of(i32)
+    io.println(
+        row("main builtin widths",
+            "{size_of(i64) + size_of(u8) + align_of(i32)}",
+            "{widths_outside}"))
 
     for line: string in ask() { io.println(line) }
 }
