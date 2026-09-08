@@ -1,3 +1,6 @@
 fs bytes 6 3 true 9
 fs text 5 6 hello world
 fs direct 11 true 3 0
+fs life 7 7 14 28 0
+fs dirs true false
+fs temp true true false 5 true false

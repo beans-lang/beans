@@ -498,10 +498,20 @@ Class-first, like everything builtin. Errors are `Result<T>`; `Error.kind` carri
 - **File statics/intrinsics**: `exists`, `size`, `remove`, `rename`, and
   `open(path, mode)` → `Result<File>` with modes `"r"`, `"rw"`,
   `"create"`, `"append"`.
-- **std.fs**: Beans-written `read`, `read_bytes`, `write`/`append`, `write_bytes`/
-  `append_bytes`, and `copy`. These compose `File.open`, positional/cursor I/O,
-  truncate, close, and exact byte-to-string conversion; only that low-level layer
-  stays native. The old native `File.read(path)` helper is gone.
+- **std.fs**: the whole life of a file named by its path. Beans-written `read`,
+  `read_bytes`, `write`/`append`, `write_bytes`/`append_bytes`, and `copy` —
+  these compose `File.open`, positional/cursor I/O, truncate, close, and exact
+  byte-to-string conversion; only that low-level layer stays native. The old
+  native `File.read(path)` helper is gone. Beside them, `exists(path)`,
+  `size(path)`, `rename(from, to)`, `remove(path)` and `temp_dir()`: every
+  path-taking `File` static has an `fs` spelling, because a package that can
+  create a file it cannot release is worse than one that cannot create it.
+  `remove` answers `ok(true)` when the entry was there and is gone and
+  `ok(false)` when nothing was there — a `deinit` releasing a spooled temp file
+  cannot propagate a result, and "already gone" is the state it wanted; every
+  other failure is still `err` with its kind. It never asks `exists` first, so
+  there is no check-then-act window. Directories keep their own surface on
+  `Dir`.
 - **File methods**: positional I/O first — `read_at(pos, n)` → `Result<Bytes>` (short read at
   EOF returns what's there), `write_at(pos, b)`; cursor `read(n)`/`write(b)`; `seek`/`seek_from_end`
   (return the new position, panic on a closed file), `tell`, `size`, `truncate`, `sync` (fsync —
@@ -517,6 +527,10 @@ Class-first, like everything builtin. Errors are `Result<T>`; `Error.kind` carri
   (empty only), `remove_all` (recursive), `exists`, `temp_path`, `sync` — fsync a directory, the
   rename-commit pattern's second half; `walk(path)` → `Result<List<string>>` — recursive,
   files and symlinks only (never follows a link), paths relative to the argument, sorted.
+  `temp_path` (`fs.temp_dir()` is the same answer) reads `TMPDIR`, then `TMP`
+  and `TEMP` on Windows, then the platform default — `GetTempPath` there,
+  `/tmp` elsewhere. It never answers `/tmp` on Windows, where that names
+  nothing. No trailing separator, either kind.
 - **std.path** (pure Beans string math, no fs access): `join(a, b)` (absolute `b` wins),
   `parent`, `base`, `ext` (with the dot; a leading dot is a dotfile, not an extension),
   and `stem`. Import it with `import std.path`; the old native `Path.*` copy is gone.

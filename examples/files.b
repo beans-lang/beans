@@ -52,6 +52,33 @@ fn main() {
     File.remove("{base}/moved.txt").expect("remove")
     io.println("{File.exists("{base}/moved.txt")}")
 
+    // std.fs names a file by its path for the whole of its life, not only for
+    // its bytes: where to put it, whether it is there, how big it is, moving
+    // it, and ending it. Before issue #167 the package stopped at the bytes,
+    // so a program could create a temp file it could never release.
+    let temp: string = fs.temp_dir()
+    io.println("{temp == Dir.temp_path()} {Dir.exists(temp)} {temp.ends_with("/") || temp.ends_with("\\")}")
+
+    // The spool: write under a working name, commit by rename, release after.
+    let spool: string = "{base}/part-0.spool"
+    let committed: string = "{base}/part-0.done"
+    io.println("{fs.remove(spool).expect("absent")} {fs.exists(spool)}")
+    fs.write(spool, "spooled bytes").expect("spool")
+    io.println("{fs.exists(spool)} {fs.size(spool).expect("spool size")}")
+    fs.rename(spool, committed).expect("commit")
+    io.println("{fs.exists(spool)} {fs.exists(committed)}")
+    // Removing what is there, then removing what is not: both are ok.
+    io.println("{fs.remove(committed).expect("release")} {fs.remove(committed).expect("again")}")
+
+    // remove is the POSIX verb, the same one File.remove is: a file, a symlink,
+    // or an *empty* directory. A directory with anything in it stays.
+    Dir.create("{base}/leaving").expect("leaving")
+    io.println("{fs.remove("{base}/leaving").expect("empty dir")} {Dir.exists("{base}/leaving")}")
+    match fs.remove("{base}/sub") {
+        ok(v) => io.println("removed a full directory? {v}"),
+        err(e) => io.println("full dir {e.kind}"),
+    }
+
     // an open handle: positional writes, seek family, truncate, sync, close
     let db: string = "{base}/store.dat"
     let f: File = File.open(db, "create").expect("open")
