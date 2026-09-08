@@ -204,6 +204,7 @@ test-semantics: $(BIN)
 	./test/fixpoint.sh
 
 test-runtime: $(BIN)
+	bash ./test/runtime_literal_lengths.sh
 	bash ./test/fiber_core.sh
 	bash ./test/thread_cleanup.sh
 	./test/resources.sh
@@ -273,7 +274,6 @@ test-ffi: $(BIN)
 	bash ./test/decimal_align.sh
 	./test/object_abi.sh
 	bash ./test/encoding_symbols.sh
-	bash ./test/runtime_literal_lengths.sh
 	bash ./test/encoding_outputs.sh
 	bash ./test/encoding_cache.sh
 
