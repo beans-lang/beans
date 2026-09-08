@@ -3377,6 +3377,27 @@ match conn.read_request()? {
     none => {}   // the client finished cleanly
 }
 
+// A response whose length is not known when the head must go out is framed
+// chunked instead. std.http owns that framing too: a zero-length chunk is
+// refused (it is the terminator), a chunk before the head or after the
+// terminator is refused, and 1xx/204/304 are refused because they cannot
+// carry a body at all.
+conn.begin_chunked(200, "OK", new http.Headers(), request.keep_alive)?
+conn.write_chunk(Bytes.from("first"))?
+conn.write_chunk(Bytes.from("second"))?
+conn.finish_chunked()?
+
+// The same framing into caller-owned storage, for a server with its own
+// output queue. `chunk_prefix_append` frames a chunk whose payload never
+// enters the buffer, so head and payload go out as one vectored send.
+let writer: http.ChunkedResponseWriter = new http.ChunkedResponseWriter()
+writer.head_append(out, 200, "OK", new http.Headers(), true)?
+writer.chunk_append(out, piece)?
+writer.finish_trailers_append(out, trailers)?   // trailers may be empty
+
+// The head alone, for a relay that already holds framed chunk bytes.
+http.encode_chunked_head_append(out, 200, "OK", new http.Headers(), true)?
+
 // Or move each accepted connection to a worker. Plain capture is refused.
 let worker: Thread<Result<bool>> = thread.spawn(
     fn() move(conn) -> Result<bool> {
