@@ -107,6 +107,26 @@ fn runtime_error() -> ReflectError {
     return new ReflectError(kind, rt.error_message())
 }
 
+/// The same failure, told about the member it was asked for.
+///
+/// Every reflective refusal used to read as one sentence about nothing in
+/// particular — "reflected operation is unsupported" — which is no help at
+/// all in a program that reflects over many members, and least of all for the
+/// refusals a generic declaration produces, where the whole answer is *which*
+/// member is out of reach.
+///
+/// The kind is untouched: callers branch on `kind()` and never on text. The
+/// runtime's own fixed string stays the head of the sentence, and this only
+/// appends what the caller already knew it was asking for, so there is no
+/// second wording here to drift out of step with the runtime's.
+fn runtime_error_about(subject: string) -> ReflectError {
+    let failure: ReflectError = runtime_error()
+    if subject == "" { return failure }
+    return new ReflectError(
+        failure.kind(),
+        "{failure.message()} ({subject})")
+}
+
 /// One checked constant stored in a runtime annotation.
 pub class AnnotationValue {
     id: int
@@ -596,7 +616,10 @@ pub class Field {
     pub fn get(receiver: Value) -> Result<Value, ReflectError> {
         let handle: int = rt.field_get(
             self.owner.qualified, self.name(), receiver.handle)
-        if handle == 0 { return err(runtime_error()) }
+        if handle == 0 {
+            return err(runtime_error_about(
+                "reading {self.owner.qualified}.{self.name()}"))
+        }
         return ok(new Value(handle))
     }
 
@@ -605,7 +628,8 @@ pub class Field {
         if !rt.field_set(
                self.owner.qualified, self.name(),
                receiver.handle, value.handle) {
-            return err(runtime_error())
+            return err(runtime_error_about(
+                "writing {self.owner.qualified}.{self.name()}"))
         }
         return ok(true)
     }
@@ -760,7 +784,10 @@ pub class Method {
         let handle: int = rt.method_call_handle(
             self.handle, receiver.handle,
             packed.raw, packed.count, false)
-        if handle == 0 { return err(runtime_error()) }
+        if handle == 0 {
+            return err(runtime_error_about(
+                "calling {self.receiver.qualified}.{self.method_name}"))
+        }
         return ok(new Value(handle))
     }
 
@@ -770,7 +797,10 @@ pub class Method {
             new PackedArguments(arguments)
         let handle: int = rt.method_call_handle(
             self.handle, 0, packed.raw, packed.count, true)
-        if handle == 0 { return err(runtime_error()) }
+        if handle == 0 {
+            return err(runtime_error_about(
+                "calling {self.receiver.qualified}.{self.method_name}"))
+        }
         return ok(new Value(handle))
     }
 
@@ -826,7 +856,10 @@ pub class Initializer {
         let packed: PackedArguments = new PackedArguments(arguments)
         let handle: int = rt.initializer_call_handle(
             self.handle, packed.raw, packed.count)
-        if handle == 0 { return err(runtime_error()) }
+        if handle == 0 {
+            return err(runtime_error_about(
+                "constructing {self.owner.qualified}"))
+        }
         return ok(new Value(handle))
     }
 }
@@ -866,7 +899,10 @@ pub class Variant {
         let handle: int = rt.variant_make(
             self.owner.qualified, self.variant_name,
             packed.raw, packed.count)
-        if handle == 0 { return err(runtime_error()) }
+        if handle == 0 {
+            return err(runtime_error_about(
+                "making {self.owner.qualified}.{self.variant_name}"))
+        }
         return ok(new Value(handle))
     }
 }
@@ -909,7 +945,10 @@ pub class Function {
             new PackedArguments(arguments)
         let handle: int = rt.function_call_handle(
             self.handle, packed.raw, packed.count)
-        if handle == 0 { return err(runtime_error()) }
+        if handle == 0 {
+            return err(runtime_error_about(
+                "calling {self.qualified}"))
+        }
         return ok(new Value(handle))
     }
 

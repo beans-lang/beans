@@ -334,6 +334,14 @@ fn generic_name_listed(generics: List<string>,
 // the member undescribable rather than merely unimplemented. The tree
 // interpreter and the native emitter ask this one question so that neither can
 // answer it differently.
+//
+// This walks INTO a `fn` type, and must: a parameter declared `fn() -> T` is
+// registered under that spelling, and no value carries it, so the callable is
+// as unreachable as one declared `T` outright. ExpressionChecker.
+// type_mentions_generic looks like this function and deliberately answers
+// `false` for `fn`, because a function value that returns T owns the recipe
+// rather than a T and may still be moved. Same shape, different questions —
+// do not unify them.
 fn hir_type_mentions_generic(
     type: HirType, generics: List<string>) -> bool {
     if generics.len() == 0 { return false }
