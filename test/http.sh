@@ -60,10 +60,14 @@ echo "checking every response head goes through the one framing gate"
 # suite green.
 framing_shape() { # <count> <fixed string> <why it is that number>
     local want=$1 needle=$2 why=$3 got
-    got=$(grep -rF -- "$needle" stdlib/std/http/ | wc -l | tr -d '[:space:]')
+    # `|| true`: a needle that vanished makes grep exit 1, and under
+    # `set -e -o pipefail` this whole gate would die with no message about
+    # which rule broke. A count of zero is exactly the failure to report.
+    got=$({ grep -rF -- "$needle" stdlib/std/http/ || true; } | wc -l |
+        tr -d '[:space:]')
     if [ "$got" != "$want" ]; then
         echo "std.http framing shape changed: '$needle' appears $got times, expected $want ($why)" >&2
-        grep -rnF -- "$needle" stdlib/std/http/ >&2
+        grep -rnF -- "$needle" stdlib/std/http/ >&2 || true
         exit 1
     fi
 }
