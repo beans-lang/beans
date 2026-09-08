@@ -92,7 +92,10 @@ awk '/^pub fn runtime_builtin_static/ { on = 1; next }
      /^pub fn / { on = 0 }
      on' src/runtime_abi.b |
     grep -oE '"File\.[a-z_]+"' | tr -d '"' | sed 's/^File\.//' |
-    sort -u >"$tmp/file_statics"
+    sort -u >"$tmp/file_statics" || true   # `pipefail` + a grep that matches
+                                           # nothing would kill the script here
+                                           # with no message, which is the very
+                                           # failure the count below reports
 count=$(wc -l <"$tmp/file_statics" | tr -d ' ')
 if [ "$count" -lt 5 ]; then
     echo "read only $count File statics out of src/runtime_abi.b" >&2
