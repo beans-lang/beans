@@ -231,10 +231,18 @@ agree test/cases/parity/settled_dispatch.b 10
 # name gave the interpreter one slot and the native backend two, which this
 # case would expose as a marker imbalance the moment the layouts diverged.
 agree test/cases/parity/inherited_field_slots.b 4
+# #162: a static factory on a generic class, with the class's own type
+# parameter bound at the call. No call could bind it before, so the two
+# backends never got the chance to disagree; now a static is monomorphized per
+# instantiation natively and interpreted from one body with a type frame, which
+# is where they would. Five owned values build once and release once through
+# `wrap`, a static reaching another static, a `List<T>` result, a move-only
+# parameter, and a generic struct's factory.
+agree test/cases/parity/issue162_static_factory.b 5
 
 # Every case in the directory has to be listed above with its own expected
 # count; a file added and forgotten would otherwise be silently unchecked.
-listed=42
+listed=43
 present=$(find test/cases/parity -name '*.b' | wc -l | tr -d ' ')
 if [ "$present" != "$listed" ]; then
     echo "test/cases/parity holds $present cases but $listed are run" >&2

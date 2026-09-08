@@ -81,6 +81,53 @@ check_bad test/cases/generic_calls_pkg_bad/main.b \
 run_all_ways test/cases/generic_method_inherit.b \
     test/cases/generic_method_inherit.out
 
+# #162: a static method has no receiver, so nothing at the call site used to
+# bind its owner's type parameters — the declaration was accepted and every
+# call that needed `T` was refused, which left the member reachable from
+# nowhere. The owner parameters a static's own signature names are its own type
+# parameters now: inferred from the arguments, inferred from the expected
+# result, and written out with `Holder.wrap<int>(3)`, which used to answer
+# "this call does not take explicit type arguments". The golden covers a class,
+# a struct and an enum, T nested in List and Option, the class's parameter
+# beside the method's own, a static reaching another static, recursion, an
+# instance method calling its own class's static, reflection on a promoted
+# parameter, and a static that names no parameter at all and must keep needing
+# none.
+run_all_ways test/cases/issue162_static_generics_ok.b \
+    test/cases/issue162_static_generics_ok.out
+
+# The other half. An owner parameter only the *body* names cannot be bound by
+# anything, so it is refused where it is written — that shape checked clean,
+# ran in the interpreter (printing the literal "T" for `type_of(T)`) and died
+# in a native build with "cannot form class layout 'main.Holder<T>'". The rest
+# are what a promoted parameter inherits from the generic machinery it now goes
+# through.
+check_bad test/cases/issue162_static_generics_bad.b \
+    "static method 'count' uses 'T' from Holder in its body, but its own signature never names it — a static has no receiver, so nothing at a call site can bind 'T'; name it in a parameter or in the result, or give 'count' a type parameter of its own"
+check_bad test/cases/issue162_static_generics_bad.b \
+    "static method 'size' uses 'T' from Holder in its body"
+check_bad test/cases/issue162_static_generics_bad.b \
+    "static method 'describe' uses 'T' from Holder in its body"
+check_bad test/cases/issue162_static_generics_bad.b \
+    "can't infer generic type 'T' for 'empty'"
+check_bad test/cases/issue162_static_generics_bad.b \
+    "'between' needs K implements Order, got main.Bare"
+check_bad test/cases/issue162_static_generics_bad.b \
+    "'Holder.empty' takes 1 type argument(s), got 2"
+check_bad test/cases/issue162_static_generics_bad.b \
+    "generic T was string, then int"
+# three statics name T only in their bodies, three refusals: the declaration is
+# refused once each and nothing cascades onto the calls
+./build/beansc check test/cases/issue162_static_generics_bad.b \
+    >"$tmp/static_generics" 2>&1 || true
+test "$(grep -c "in its body, but its own signature never names it" \
+    "$tmp/static_generics")" -eq 3
+if ./build/beansc build test/cases/issue162_static_generics_bad.b \
+       -o "$tmp/static_generics_bin" >/dev/null 2>&1; then
+    echo "a static naming an unbindable owner parameter still built" >&2
+    exit 1
+fi
+
 # And every form that exists only to be reached through a row is refused at
 # the declaration. Each of these checked clean before: the interface and
 # abstract ones jumped through a null row natively while the interpreter
