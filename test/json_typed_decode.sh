@@ -207,7 +207,11 @@ done
 #     list (json_threads.b, which only encodes) both pass against a runtime
 #     deliberately rewritten to hand every thread one struct. This decodes from
 #     four workers at once, each filling its strings with a letter no other
-#     worker uses, and that same rewrite segfaults it on every run.
+#     worker uses, and that same rewrite segfaults it on every run. It rotates
+#     the entry it decodes through as it goes -- json.decode, decode_bytes,
+#     decode_bytes_in_place and decode_with_options -- because all four lower
+#     to the same bridge call and all four allocate their payloads the same
+#     way, so covering one of them covers none of the others by accident.
 #
 #     Both allocator modes, for 4b's reason: BEANS_NO_POOL=1 sends every size
 #     down the non-pooled arm, so only the pooled run exercises the per-thread
