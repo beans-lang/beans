@@ -1423,7 +1423,8 @@ class SignatureChecker {
                       owner_is_public_interface: bool,
                       owner_is_interface: bool,
                       owner_kind: string,
-                      owner_generics: List<string>) {
+                      owner_generics: List<string>,
+                      owner_constraints: List<HirGeneric>) {
         let name: string = declaration_name(node.value)
         let qualified: string =
             if owner == "" { node.resolved } else { "{owner}.{name}" }
@@ -1640,8 +1641,77 @@ class SignatureChecker {
         function.is_c_export =
             function.is_extern_c && function.has_body &&
             function.is_public
+        self.promote_owner_generics(
+            function, owner_generics, owner_constraints)
         function.body_result = function.result
         self.hir.functions.push(function)
+    }
+
+    // A static method has no receiver, so nothing at the call site binds its
+    // owner's type parameters: `Holder.wrap(3)` has no `Holder<int>` value for
+    // `T` to be read off, and there is no receiver position to write one in.
+    // The owner parameters the static's own signature names are therefore type
+    // parameters *of the static* — a static is a free function that happens to
+    // be filed under a type, and `T` in its signature is a free type variable
+    // like any other. Promoting them here is what makes them bind: the call
+    // site infers them from the arguments and the expected result through the
+    // same path a method's own parameters take, `Holder.wrap<int>(3)` binds
+    // them explicitly, the interpreter recovers them in `call_type_bindings`,
+    // and the native backend unifies them in `emit_generic_call`. Before this,
+    // the declaration was accepted and every call that needed `T` was refused,
+    // so the member could not be reached at all.
+    //
+    // They are prepended, so the explicit spelling reads in source order — the
+    // class's parameters, then the method's own. Only the ones the signature
+    // names are promoted: `static fn tag() -> string` on a generic class works
+    // today with `T` irrelevant, and must not start demanding one. An owner
+    // parameter the method's own list already shadows stays the method's.
+    fn promote_owner_generics(
+        function: HirFunction,
+        owner_generics: List<string>,
+        owner_constraints: List<HirGeneric>) {
+        if !function.is_static ||
+           owner_generics.len() == 0 {
+            return
+        }
+        var promoted: List<string> = []
+        for generic: string in owner_generics {
+            if generic_name_listed(
+                   function.generics, generic) {
+                continue
+            }
+            var named: bool =
+                hir_type_names_generic(
+                    function.result, generic)
+            for parameter: HirParameter in
+                function.parameters {
+                if hir_type_names_generic(
+                       parameter.type, generic) {
+                    named = true
+                }
+            }
+            if named { promoted.push(generic) }
+        }
+        if promoted.len() == 0 { return }
+        var combined: List<string> = []
+        for generic: string in promoted {
+            combined.push(generic)
+        }
+        for generic: string in function.generics {
+            combined.push(generic)
+        }
+        function.generics = move combined
+        // The owner's bounds travel with the parameters they constrain, or a
+        // call could bind `K` in `class Keyed<K implements Hash>` to a type
+        // with no `hash`, which the body was checked against the promise of
+        // and no backend could then run.
+        for constraint: HirGeneric in owner_constraints {
+            if generic_name_listed(
+                   promoted, constraint.name) {
+                function.generic_constraints.push(
+                    constraint)
+            }
+        }
     }
 
     fn lower_c_global(node: AstNode,
@@ -2020,7 +2090,8 @@ class SignatureChecker {
                     node.kind == "interface" &&
                     declaration.is_public,
                     node.kind == "interface",
-                    node.kind, declaration.generics)
+                    node.kind, declaration.generics,
+                    declaration.generic_constraints)
             }
         }
     }
@@ -2641,7 +2712,8 @@ class SignatureChecker {
                 for declaration: AstNode in file.ast.children {
                     if declaration.kind == "fn" {
                         self.lower_function(
-                            declaration, file, "", false, false, "", [])
+                            declaration, file, "", false, false, "",
+                            [], [])
                     } else if declaration.kind == "c_global" {
                         self.lower_c_global(
                             declaration, file)

@@ -1615,6 +1615,43 @@ let u: User = new("jul")
   it, as `User.guest()`, and `u.guest()` on a value is refused. See
   *Inheritance and interfaces* for the rule that follows from it — one name in
   a class family is a static or an instance method, never both.
+- A static on a **generic** type carries its owner's type parameters. Because a
+  static has no receiver, nothing at the call site holds the owner's arguments —
+  there is no `self` to read them off and no receiver position to write them in
+  — so the owner parameters a static's own signature names are type parameters
+  *of the static*, listed before the ones it declares itself. They are inferred
+  at the call from the arguments and from the expected result, exactly as a
+  method's own are, and may be written out in the same place:
+
+  ```beans
+  class Holder<T> {
+      value: Option<T> = none
+      fn init() {}
+
+      static fn wrap(value: T) -> Holder<T> {          // T from the argument
+          let held: Holder<T> = new Holder<T>()
+          held.value = some(value)
+          return held
+      }
+      static fn empty() -> Holder<T> { return new Holder<T>() }
+      static fn both<U>(value: T, note: U) -> Holder<T> { return Holder.wrap(value) }
+  }
+
+  let a: Holder<int> = Holder.wrap(3)          // T = int, from the argument
+  let b: Holder<string> = Holder.empty()       // T = string, from the binding
+  let c: Holder<int> = Holder.wrap<int>(4)     // T written out
+  let d: Holder<int> = Holder.both<int, string>(5, "note")   // T, then U
+  ```
+
+  Only the owner parameters the signature names are carried: a static that
+  names none — `static fn tag() -> string` on `Holder<T>` — needs none, and
+  asks for none. The owner's bounds travel with the parameters they constrain,
+  so `class Sorted<K implements Order>` refuses `Sorted.between(a, b)` for a
+  `K` with no order. An owner parameter that only the *body* names is refused
+  at the declaration: nothing can bind it, so every instantiation would still
+  hold an open type. Write it into a parameter or the result, or give the
+  method a type parameter of its own. The receiver-spelled form
+  `Holder<int>.wrap(3)` is not a call syntax; type arguments go on the call.
 - An unmarked method is package-visible, `pub fn` is visible from other
   packages, and `priv fn` is visible only inside its exact declaring class or
   struct. The same rule applies to `priv static fn`, `priv inout fn`, and
@@ -2366,6 +2403,11 @@ struct Pair<T> {
 fn largest<T implements Order>(xs: List<T>) -> Option<T> { ... }
 fn index<K implements Eq & Hash, V>(key: K, value: V) -> Map<K, V> { ... }
 ```
+
+A `static fn` on a generic type has no receiver to read the owner's arguments
+off, so the owner parameters its signature names become type parameters of the
+static itself and are inferred — or written — at the call. See *Classes* for
+the rule and its refusals.
 
 The compiler-known interfaces are `Clone`, `Eq`, `Hash`, `Order`, `Send`, and `Sync`.
 Bounds are checked when a generic function or type is used, and generic bodies
