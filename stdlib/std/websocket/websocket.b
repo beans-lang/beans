@@ -149,6 +149,13 @@ fn min_window_bits() -> int { return 9 }
 /// wire, not from your role. A `no_context_takeover` flag means that
 /// direction starts a fresh DEFLATE context for every message; a
 /// `max_window_bits` is that direction's LZ77 window, always 9..15 here.
+///
+/// The same struct also spells a server's *preference* — what `accept` and
+/// `negotiate_deflate` take as `prefer`. Read that way a `true` flag asks
+/// for a parameter and a `false` one has no opinion, while a
+/// `max_window_bits` is a ceiling and 15 is no opinion, because a
+/// preference may only ever narrow an offer. `deflate_narrow` states the
+/// rule for each of the four.
 pub struct Deflate {
     pub server_no_context_takeover: bool
     pub client_no_context_takeover: bool
@@ -163,6 +170,19 @@ fn deflate_window_bits_ok(bits: int) -> bool {
 fn deflate_is_usable(agreed: Deflate) -> bool {
     return deflate_window_bits_ok(agreed.server_max_window_bits) &&
            deflate_window_bits_ok(agreed.client_max_window_bits)
+}
+
+// A preference is this end's own configuration rather than something a peer
+// sent, so its windows are held to the same 9..15 the bridge enforces:
+// `beans_zlib_stream_new` takes 0 or 9..15 and answers 0 for anything else,
+// which would surface as "the message compressor could not be created" one
+// message after the handshake promised it.
+fn deflate_preference_ok(prefer: Option<Deflate>) -> bool {
+    match prefer {
+        some(want) => { return deflate_is_usable(want) }
+        none => {}
+    }
+    return true
 }
 
 // Splits a header field value on one delimiter byte, ignoring delimiters
@@ -266,13 +286,88 @@ fn read_extension_param(piece: string) -> ExtensionParam {
     }
 }
 
+/// Narrows an offer this end has read by what this end is willing to answer
+/// with. RFC 7692 §7.1 lets a server respond with *fewer* parameters than
+/// the offer asked for; this is that rule, one knob at a time, and it can
+/// only ever narrow. Each knob:
+///
+///   `server_no_context_takeover` — §7.1.1.1: "A server MAY include the
+///   server_no_context_takeover extension parameter in an extension
+///   negotiation response even if the extension negotiation offer being
+///   accepted by the extension negotiation response didn't include" it. So
+///   a preference may turn it on. It may never turn it off: an offer naming
+///   it is the peer's condition on the agreement, and answering an accepted
+///   offer without it would be widening.
+///
+///   `client_no_context_takeover` — §7.1.1.2: the same permission to set it
+///   unasked, and the response is binding the other way too — "A client
+///   that received an extension negotiation response including the
+///   client_no_context_takeover extension parameter MUST NOT use context
+///   takeover" — so this is the one knob a server can spend the peer's
+///   memory budget with rather than its own. Again on-only.
+///
+///   `server_max_window_bits` — §7.1.2.1: the response value "MUST be not
+///   greater than the value, if any, received in the corresponding
+///   extension negotiation offer". The "if any" is what lets a server name
+///   a window an offer never mentioned, and "not greater" is what forbids
+///   widening one it did, so the answer is the smaller of the two, always.
+///
+///   `client_max_window_bits` — §7.1.2.2: "If the extension negotiation
+///   offer being accepted by the response didn't include the
+///   client_max_window_bits extension parameter, the server MUST NOT
+///   include it in the response." A preference for the client's window is
+///   therefore only reachable when the client named the parameter — bare,
+///   which is a browser saying "narrow me if you like", or with a value,
+///   which also caps how far it may be narrowed. When the offer named it
+///   not at all the preference is ignored and the client keeps its 32 KiB
+///   window; that is not a decline, because the offer is still one this end
+///   can honour.
+///
+/// `client_named_window` carries the one fact the parsed `Deflate` cannot:
+/// whether the offer's text mentioned `client_max_window_bits`. A bare
+/// mention and no mention at all both leave the window at 15, and §7.1.2.2
+/// turns entirely on telling them apart.
+fn deflate_narrow(agreed: Deflate, prefer: Option<Deflate>,
+                  client_named_window: bool) -> Deflate {
+    var server_reset: bool = agreed.server_no_context_takeover
+    var client_reset: bool = agreed.client_no_context_takeover
+    var server_bits: int = agreed.server_max_window_bits
+    var client_bits: int = agreed.client_max_window_bits
+    match prefer {
+        some(want) => {
+            if want.server_no_context_takeover { server_reset = true }
+            if want.client_no_context_takeover { client_reset = true }
+            if want.server_max_window_bits < server_bits {
+                server_bits = want.server_max_window_bits
+            }
+            if client_named_window &&
+               want.client_max_window_bits < client_bits {
+                client_bits = want.client_max_window_bits
+            }
+        }
+        none => {}
+    }
+    return Deflate {
+        server_no_context_takeover: server_reset,
+        client_no_context_takeover: client_reset,
+        server_max_window_bits: server_bits,
+        client_max_window_bits: client_bits,
+    }
+}
+
 // Reads one extension from a `Sec-WebSocket-Extensions` list as a
-// permessage-deflate offer. `none` means this end declines it: the
-// extension is a different one, a parameter is unknown, a parameter repeats,
-// or a value names a window this end cannot compress to. RFC 7692 makes all
-// of those a decline — the next offer in the list gets its turn, and a
-// client whose offers are all declined simply gets no compression.
-fn read_deflate_offer(offer: string) -> Option<Deflate> {
+// permessage-deflate offer, narrowed by `prefer`. `none` means this end
+// declines it: the extension is a different one, a parameter is unknown, a
+// parameter repeats, or a value names a window this end cannot compress to.
+// RFC 7692 makes all of those a decline — the next offer in the list gets
+// its turn, and a client whose offers are all declined simply gets no
+// compression.
+//
+// The narrowing happens here rather than to the returned struct, because
+// `seen_client_bits` — whether the offer's text named
+// `client_max_window_bits` — is the condition RFC 7692 §7.1.2.2 puts on
+// answering with a client window, and it does not survive the return.
+fn read_deflate_offer(offer: string, prefer: Option<Deflate>) -> Option<Deflate> {
     let parts: List<string> = split_field(offer, 59)
     if !ascii_equals(parts[0].trim(), "permessage-deflate") { return none }
     var server_no_takeover: bool = false
@@ -315,12 +410,12 @@ fn read_deflate_offer(offer: string) -> Option<Deflate> {
             return none
         }
     }
-    return some(Deflate {
+    return some(deflate_narrow(Deflate {
         server_no_context_takeover: server_no_takeover,
         client_no_context_takeover: client_no_takeover,
         server_max_window_bits: server_bits,
         client_max_window_bits: client_bits,
-    })
+    }, prefer, seen_client_bits))
 }
 
 /// Chooses a permessage-deflate configuration from the
@@ -331,12 +426,29 @@ fn read_deflate_offer(offer: string) -> Option<Deflate> {
 /// or several; a server takes the first it can honour and declines the rest,
 /// which is what RFC 7692 asks for and why an offer it cannot read is never
 /// a handshake failure.
-pub fn negotiate_deflate(headers: http.Headers) -> Option<Deflate> {
+///
+/// `prefer` narrows what this end will agree to, and can only narrow:
+/// `deflate_narrow` states the RFC 7692 rule for each of the four
+/// parameters. `none` — the default — agrees to whatever the first readable
+/// offer asked for, which is what a server did before there was anything
+/// else to ask for.
+///
+/// A preference this end cannot itself honour — a window outside 9..15 —
+/// declines every offer and answers `none`. It is a mistake in the program,
+/// and agreeing to nothing is the only answer that cannot become a wrong
+/// line on the wire: `accept` refuses such a preference outright, because it
+/// has a `Result` to say so in and a socket it has not written to yet, so
+/// this path is only reached by a caller running its own handshake, who gets
+/// a connection with no compression rather than one whose header promises a
+/// window zlib will not produce.
+pub fn negotiate_deflate(headers: http.Headers,
+                         prefer: Option<Deflate> = none) -> Option<Deflate> {
+    if !deflate_preference_ok(prefer) { return none }
     for value: string in headers.all("Sec-WebSocket-Extensions") {
         for offer: string in split_field(value, 44) {
             let trimmed: string = offer.trim()
             if trimmed.len() > 0 {
-                match read_deflate_offer(trimmed) {
+                match read_deflate_offer(trimmed, prefer) {
                     some(agreed) => { return some(agreed) }
                     none => {}
                 }
@@ -734,11 +846,45 @@ pub unique class WebSocketTransport<T implements net.ByteStream> implements Send
     /// a DEFLATE context costs a third of a megabyte per direction, which a
     /// server with many connections should choose to spend rather than
     /// discover.
+    ///
+    /// `prefer` is how a server spends less than that without giving
+    /// compression up. RFC 7692 §7.1 lets a server answer an offer with
+    /// *fewer* parameters than it asked for, so a preference narrows the
+    /// agreement and can never widen it: a `true` flag asks for a
+    /// no-context-takeover the offer may not have, a `max_window_bits` is a
+    /// ceiling, and the neutral values are `false` and 15. The per-parameter
+    /// rule, with the section of RFC 7692 each one comes from, is on
+    /// `deflate_narrow`. What a preference cannot do is turn compression on:
+    /// an offer with no permessage-deflate in it is still answered with no
+    /// extension.
+    ///
+    /// A preference is this end's own configuration, so it is checked before
+    /// the peer's request is looked at and long before the 101 goes out. A
+    /// window outside 9..15 — zlib's `deflateInit2` silently promotes a
+    /// request for 8 to 9, so agreeing to 8 would put a stream on the wire
+    /// no peer reading at 8 can decode — and a preference passed with
+    /// `compress` off are both refused as `invalid`, where the caller is
+    /// told what it asked for and no response has been written yet.
     pub static fn accept(move stream: T,
                          request: http.Request,
                          max_message: int = 8388608,
-                         compress: bool = false
+                         compress: bool = false,
+                         prefer: Option<Deflate> = none
     ) -> Result<WebSocketTransport<T>> {
+        match prefer {
+            some(want) => {
+                // Silently ignoring a preference here would hand back the
+                // uncompressed connection the caller was trying to avoid,
+                // which is the opposite of what it asked for.
+                if !compress {
+                    return err("permessage-deflate parameters were preferred but compression is off", "invalid")
+                }
+                if !deflate_is_usable(want) {
+                    return err("permessage-deflate window sizes must be between 9 and 15", "invalid")
+                }
+            }
+            none => {}
+        }
         if request.method != "GET" {
             return err("a WebSocket upgrade must use GET", "protocol")
         }
@@ -781,7 +927,7 @@ pub unique class WebSocketTransport<T implements net.ByteStream> implements Send
         }
         let accept: string = accept_for_key(key)?
         var agreed: Option<Deflate> = none
-        if compress { agreed = negotiate_deflate(request.headers) }
+        if compress { agreed = negotiate_deflate(request.headers, prefer) }
         var response: Bytes = new Bytes(0)
         response.append_string("HTTP/1.1 101 Switching Protocols\r\n")
         response.append_string("Upgrade: websocket\r\n")
@@ -1450,13 +1596,16 @@ pub fn wrap_websocket<T implements net.ByteStream>(
     return WebSocketTransport.wrap(move stream, server, max_message, agreed)
 }
 
-/// Validates and answers a server upgrade over any byte stream.
+/// Validates and answers a server upgrade over any byte stream. `prefer`
+/// narrows the permessage-deflate agreement, exactly as on
+/// `WebSocketTransport.accept`.
 pub fn accept_websocket<T implements net.ByteStream>(
     move stream: T, request: http.Request,
-    max_message: int = 8388608, compress: bool = false
+    max_message: int = 8388608, compress: bool = false,
+    prefer: Option<Deflate> = none
 ) -> Result<WebSocketTransport<T>> {
     return WebSocketTransport.accept(
-        move stream, request, max_message, compress)
+        move stream, request, max_message, compress, prefer)
 }
 
 /// A WebSocket over raw TCP. Secure WebSockets use
@@ -1498,12 +1647,16 @@ pub unique class Connection implements Send {
         return ok(new Connection(move core))
     }
 
+    /// `prefer` narrows the permessage-deflate agreement, exactly as on
+    /// `WebSocketTransport.accept`.
     pub static fn accept(move stream: net.TcpStream,
                          request: http.Request,
                          max_message: int = 8388608,
-                         compress: bool = false) -> Result<Connection> {
+                         compress: bool = false,
+                         prefer: Option<Deflate> = none) -> Result<Connection> {
         let core: WebSocketTransport<net.TcpStream> =
-            accept_websocket(move stream, request, max_message, compress)?
+            accept_websocket(move stream, request, max_message, compress,
+                             prefer)?
         return ok(new Connection(move core))
     }
 

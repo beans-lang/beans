@@ -45,9 +45,12 @@ pub fn wrap(move stream: tls.TlsStream, server: bool,
 }
 
 /// Validates and answers a server upgrade over an accepted TLS stream.
+/// `prefer` narrows the permessage-deflate agreement, exactly as on
+/// `websocket.WebSocketTransport.accept`.
 pub fn accept(move stream: tls.TlsStream, request: http.Request,
-              max_message: int = 8388608, compress: bool = false
+              max_message: int = 8388608, compress: bool = false,
+              prefer: Option<websocket.Deflate> = none
 ) -> Result<websocket.WebSocketTransport<tls.TlsStream>> {
     return websocket.accept_websocket(
-        move stream, request, max_message, compress)
+        move stream, request, max_message, compress, prefer)
 }
