@@ -842,8 +842,35 @@ class ExpressionChecker {
             }
             return
         }
-        if pattern.name != actual.name ||
-           pattern.args.len() != actual.args.len() {
+        if pattern.name != actual.name {
+            return
+        }
+        // A function type is its parameters and its result. An unwritten
+        // result is `unit` and takes no slot in `args`, so `fn(T)` written
+        // as a parameter and the `fn(main.Hint) -> unit` a closure literal
+        // carries have different arg counts for the same shape: reading the
+        // raw list would infer nothing from either against the other, and
+        // the same closure would bind T through a variable but not written
+        // out at the call.
+        if pattern.name == "fn" {
+            if pattern.fn_parameter_count !=
+                   actual.fn_parameter_count {
+                return
+            }
+            for index: int in
+                0..pattern.fn_parameter_count {
+                self.infer_generic_type(
+                    pattern.args[index],
+                    actual.args[index],
+                    generics, inout inference, at)
+            }
+            self.infer_generic_type(
+                hir_fn_result(pattern),
+                hir_fn_result(actual),
+                generics, inout inference, at)
+            return
+        }
+        if pattern.args.len() != actual.args.len() {
             return
         }
         for index: int in 0..pattern.args.len() {
