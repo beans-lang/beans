@@ -84,6 +84,13 @@ fn shadow_apply<Cell>(value: Cell, setup: fn(Cell)) -> int {
     return 1
 }
 
+// A `move` parameter beside a function-typed one: the generic owns the value
+// it is handed, so exactly one release has to happen inside the instance.
+fn consume<T>(move value: T, setup: fn(T)) -> int {
+    setup(value)
+    return 1
+}
+
 class Host {
     fn init() {}
     // the receiver form that already emitted
@@ -160,6 +167,10 @@ fn main() {
     // the shadowed name inside the function type as well
     io.println("F {shadow_apply(seed, fn(x: Cell) { let t: Cell = new Cell("m") })}")
     io.println("F {shadow_apply<int>(3, fn(v: int) { total += v })} {total}")
+
+    // G — an owned value moved into a generic, released inside it
+    io.println("G {consume(new Cell("n"), fn(x: Cell) { let t: Cell = new Cell("o") })}")
+    io.println("G {consume<Cell>(new Cell("p"), fn(x: Cell) {})}")
 
     io.println("done")
 }

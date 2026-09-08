@@ -132,6 +132,25 @@ pub fn shadow_apply<Hint>(value: Hint, setup: fn(Hint)) -> int {
     return 1
 }
 
+// N — the argument list's own shapes beside a function-typed parameter: an
+// `inout` operand, and a defaulted parameter the call may or may not write.
+pub fn bump<T>(inout counter: int, value: T,
+               setup: fn(T)) -> int {
+    counter += 1
+    setup(value)
+    return counter
+}
+
+pub fn defaulted<T>(value: T, setup: fn(T),
+                    rounds: int = 2) -> int {
+    var index: int = 0
+    for index < rounds {
+        setup(value)
+        index += 1
+    }
+    return rounds
+}
+
 pub class Shadow {
     pub fn init() {}
     pub static fn stat<Hint>(value: Hint,
@@ -271,4 +290,11 @@ fn main() {
     io.println("M {shadow_apply(4, fn(v: int) { count += v })} {count}")
     io.println("M {shadow_apply<string>("z", fn(v: string) {})}")
     io.println("M {Shadow.stat("y", fn(v: string) {})} {Shadow.stat<int>(1, fn(v: int) { count += v })} {count}")
+
+    // N — an inout operand and a defaulted parameter beside the function type
+    var counter: int = 0
+    io.println("N {bump<Hint>(inout counter, h, fn(x: Hint) { x.label = "{x.label}x" })} {counter}")
+    io.println("N {bump<int>(inout counter, 2, fn(v: int) { count += v })} {counter} {count}")
+    io.println("N {defaulted<Hint>(h, fn(x: Hint) { x.label = "{x.label}y" })}")
+    io.println("N {defaulted<Hint>(h, fn(x: Hint) { x.label = "{x.label}z" }, 1)} {h.label}")
 }
