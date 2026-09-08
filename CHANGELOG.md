@@ -26,10 +26,11 @@ This file records user-facing changes in each Beans release.
       }))?
   ```
 
-  A preference only ever narrows, per RFC 7692 §7.1: a `true` flag asks for a
-  no-context-takeover the offer need not have named and can never clear one it
-  did, a window answers the smaller of the two, and `false` and 15 are the
-  neutral values. `client_max_window_bits` carries §7.1.2.2's extra condition —
+  A preference only ever narrows, inside the envelope RFC 7692 §7.1 gives a
+  response: a `true` flag asks for a no-context-takeover the offer need not
+  have named and can never clear one it did, a window answers the smaller of
+  the two, and `false` and 15 are the neutral values.
+  `client_max_window_bits` carries §7.1.2.2's extra condition —
   a server must not name it in a response unless the offer named it — so a
   preference for the client's window applies to an offer that mentioned the
   parameter and is ignored by one that did not. A preference never turns

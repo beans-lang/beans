@@ -3551,13 +3551,20 @@ let secure = websocket_tls.connect("example.test", 443, "/chat")?
   one rule per knob:
   - `server_no_context_takeover` and `client_no_context_takeover` may be set by
     a server the offer never asked them of (§7.1.1.1, §7.1.1.2), and the second
-    binds the client — a client that receives it "MUST NOT use context
-    takeover". Neither can be turned *off* by a preference: an offer naming one
-    is the peer's condition on the agreement.
+    binds the client — "By including the `client_no_context_takeover` extension
+    parameter in an extension negotiation response, a server prevents the peer
+    client from using context takeover." Neither can be turned *off* by a
+    preference. For `server_no_context_takeover` that is §7.1.1.1's rule, which
+    defines accepting such an offer *as* including the parameter in the
+    response; for `client_no_context_takeover` §7.1.1.2 would permit it, and
+    this library still refuses, so that adding a preference can never take away
+    a parameter the offer alone already agreed to.
   - `server_max_window_bits` answers the smaller of the preference and the
-    offer, and may be named even when the offer named no window: §7.1.2.1 makes
-    the response value "not greater than the value, **if any**, received in the
-    corresponding extension negotiation offer".
+    offer, and may be named even when the offer named no window: §7.1.2.1 has
+    the server accept such an offer "with the same or smaller value as the
+    offer", and separately "MAY include" the parameter in a response "even if
+    the extension negotiation offer being accepted by the response didn't
+    include" it.
   - `client_max_window_bits` is the same, with one condition: §7.1.2.2 forbids
     naming it in a response when the offer did not name it, so a preference for
     the client's window applies only to an offer that mentioned the parameter —

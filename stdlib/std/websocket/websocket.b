@@ -292,36 +292,56 @@ fn read_extension_param(piece: string) -> ExtensionParam {
 /// only ever narrow. Each knob:
 ///
 ///   `server_no_context_takeover` — §7.1.1.1: "A server MAY include the
-///   server_no_context_takeover extension parameter in an extension
+///   "server_no_context_takeover" extension parameter in an extension
 ///   negotiation response even if the extension negotiation offer being
-///   accepted by the extension negotiation response didn't include" it. So
-///   a preference may turn it on. It may never turn it off: an offer naming
-///   it is the peer's condition on the agreement, and answering an accepted
-///   offer without it would be widening.
+///   accepted by the extension negotiation response didn't include the
+///   "server_no_context_takeover" extension parameter." So a preference may
+///   turn it on. It may never turn it off, and here that is the RFC's rule
+///   rather than a choice: the same section defines acceptance itself as
+///   including the parameter — "A server accepts an extension negotiation
+///   offer that includes the "server_no_context_takeover" extension
+///   parameter by including the "server_no_context_takeover" extension
+///   parameter in the corresponding extension negotiation response" — so an
+///   accepted offer answered without it is not an acceptance.
 ///
-///   `client_no_context_takeover` — §7.1.1.2: the same permission to set it
-///   unasked, and the response is binding the other way too — "A client
-///   that received an extension negotiation response including the
-///   client_no_context_takeover extension parameter MUST NOT use context
-///   takeover" — so this is the one knob a server can spend the peer's
-///   memory budget with rather than its own. Again on-only.
+///   `client_no_context_takeover` — §7.1.1.2: "A server MAY include the
+///   "client_no_context_takeover" extension parameter in an extension
+///   negotiation response", unconditionally, and "By including [it] in an
+///   extension negotiation response, a server prevents the peer client from
+///   using context takeover." So this is the one knob a server can spend
+///   the peer's memory budget with rather than its own, and a preference
+///   may turn it on. This section also permits the reverse — "the server
+///   may either ignore the parameter or use the parameter" — so clearing an
+///   offered `client_no_context_takeover` would be legal here where it is
+///   not in §7.1.1.1. It is still not done, for a reason that is this
+///   library's and not the RFC's: a preference is defined as narrowing
+///   only, so that adding one can never take away a parameter an existing
+///   caller already gets from the offer alone.
 ///
-///   `server_max_window_bits` — §7.1.2.1: the response value "MUST be not
-///   greater than the value, if any, received in the corresponding
-///   extension negotiation offer". The "if any" is what lets a server name
-///   a window an offer never mentioned, and "not greater" is what forbids
-///   widening one it did, so the answer is the smaller of the two, always.
+///   `server_max_window_bits` — §7.1.2.1: a server "accepts an extension
+///   negotiation offer with this parameter by including the
+///   "server_max_window_bits" extension parameter in the extension
+///   negotiation response to send back to the client with the same or
+///   smaller value as the offer", and it "MAY include [it] in an extension
+///   negotiation response even if the extension negotiation offer being
+///   accepted by the response didn't include" it. Those two together are
+///   the smaller of the preference and the offer, always — and reachable
+///   even against an offer that named no window at all.
 ///
-///   `client_max_window_bits` — §7.1.2.2: "If the extension negotiation
-///   offer being accepted by the response didn't include the
-///   client_max_window_bits extension parameter, the server MUST NOT
-///   include it in the response." A preference for the client's window is
-///   therefore only reachable when the client named the parameter — bare,
-///   which is a browser saying "narrow me if you like", or with a value,
-///   which also caps how far it may be narrowed. When the offer named it
-///   not at all the preference is ignored and the client keeps its 32 KiB
-///   window; that is not a decline, because the offer is still one this end
-///   can honour.
+///   `client_max_window_bits` — §7.1.2.2: "If a received extension
+///   negotiation offer doesn't have the "client_max_window_bits" extension
+///   parameter, the corresponding extension negotiation response to the
+///   offer MUST NOT include the "client_max_window_bits" extension
+///   parameter." When the offer does name it the server "may either ignore
+///   this value or use this value to avoid allocating an unnecessarily big
+///   LZ77 sliding window by including [it] ... with a value equal to or
+///   smaller than the received value" — the smaller of the two again. So a
+///   preference for the client's window is only reachable when the client
+///   named the parameter — bare, which is a browser saying "narrow me if
+///   you like", or with a value, which also caps how far it may be
+///   narrowed. When the offer named it not at all the preference is ignored
+///   and the client keeps its 32 KiB window; that is not a decline, because
+///   the offer is still one this end can honour.
 ///
 /// `client_named_window` carries the one fact the parsed `Deflate` cannot:
 /// whether the offer's text mentioned `client_max_window_bits`. A bare
