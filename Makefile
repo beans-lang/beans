@@ -121,6 +121,7 @@ test-frontend: $(BIN)
 	bash ./test/string_literals.sh
 	bash ./test/generic_calls.sh
 	bash ./test/named_imports.sh
+	bash ./test/interpolated_types.sh
 	bash ./test/private_fields.sh
 	bash ./test/private_methods.sh
 	bash ./test/abstract_classes.sh
@@ -331,6 +332,7 @@ test-core: $(BIN)
 	bash ./test/string_literals.sh
 	bash ./test/generic_calls.sh
 	bash ./test/named_imports.sh
+	bash ./test/interpolated_types.sh
 	bash ./test/private_fields.sh
 	bash ./test/private_methods.sh
 	bash ./test/abstract_classes.sh

@@ -1,0 +1,53 @@
+main control local: inside=interp164.Local outside=interp164.Local agree
+main control assignable: inside=true outside=true agree
+main type_of: inside=interp164.kit.Widget outside=interp164.kit.Widget agree
+main type_of subclass: inside=interp164.kit.Fancy outside=interp164.kit.Fancy agree
+main assignable: inside=true outside=true agree
+main roundtrip: inside=true outside=true agree
+main reflection still answers: inside=true outside=true agree
+main new: inside=widget outside=widget agree
+main as: inside=fancy outside=fancy agree
+main as?: inside=true outside=true agree
+main type argument: inside=2 outside=2 agree
+main closure parameter: inside=1 outside=1 agree
+main closure result: inside=widget outside=widget agree
+main local annotation: inside=6 outside=6 agree
+main nested type argument: inside=2 outside=2 agree
+main pattern binding: inside=widget outside=widget agree
+main fn type parameter: inside=4 outside=4 agree
+main size_of: inside=16 outside=16 agree
+main align_of: inside=8 outside=8 agree
+main offset_of: inside=8 outside=8 agree
+main array element: inside=6 outside=6 agree
+main nested interpolation: inside=outer inner widget outside=outer inner widget agree
+main interpolation in a lambda in an interpolation: inside=deep widget outside=deep widget agree
+main default parameter value: inside=default=widget outside=default=widget agree
+main call: inside=widget outside=widget agree
+main enum path: inside=loud outside=loud agree
+main static call: inside=7 outside=7 agree
+main dot path: inside=2 outside=2 agree
+probe control local: inside=interp164.probe.Local outside=interp164.probe.Local agree
+probe type_of: inside=interp164.kit.Widget outside=interp164.kit.Widget agree
+probe assignable: inside=true outside=true agree
+probe roundtrip: inside=true outside=true agree
+probe new: inside=widget outside=widget agree
+probe as: inside=fancy outside=fancy agree
+probe as?: inside=true outside=true agree
+probe type argument: inside=2 outside=2 agree
+probe closure parameter: inside=1 outside=1 agree
+probe closure result: inside=widget outside=widget agree
+probe local annotation: inside=6 outside=6 agree
+probe nested type argument: inside=2 outside=2 agree
+probe pattern binding: inside=widget outside=widget agree
+probe fn type parameter: inside=4 outside=4 agree
+probe size_of: inside=16 outside=16 agree
+probe align_of: inside=8 outside=8 agree
+probe offset_of: inside=8 outside=8 agree
+probe array element: inside=6 outside=6 agree
+probe nested interpolation: inside=outer inner widget outside=outer inner widget agree
+probe interpolation in a lambda in an interpolation: inside=deep widget outside=deep widget agree
+probe default parameter value: inside=default=widget outside=default=widget agree
+probe call: inside=widget outside=widget agree
+probe enum path: inside=loud outside=loud agree
+probe static call: inside=7 outside=7 agree
+probe dot path: inside=2 outside=2 agree
