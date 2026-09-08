@@ -716,12 +716,76 @@ partial class LlvmTextEmitter {
         return symbol
     }
 
+    // Whether a member of this owner can be reached reflectively at all.
+    //
+    // Reflection files one row per declaration and substitutes nothing, so a
+    // declared type that reaches one of the owner's type parameters is
+    // reported as written: the row for `Slot<T>.item` says `T`. No value
+    // carries `T` as its type, so such a member cannot be checked against a
+    // value in either direction, and answering for it would mean handing
+    // `Slot<int>`'s bits to a caller under a name that admits `Slot<string>`'s.
+    // Both backends refuse it, and this is the one place the question is asked
+    // on this side.
+    fn reflection_erases_type(
+        declaration: HirDeclaration,
+        type: HirType) -> bool {
+        return hir_type_mentions_generic(
+            type, declaration.generics)
+    }
+
+    // Every class in the program whose objects carry this field, flattened as
+    // class id, offset, class id, offset. Beans has no pair and the list is
+    // read once.
+    //
+    // A generic class answers once per instantiation and the answers need not
+    // agree: `class Slot<T> { item: T; tail: int }` puts `tail` at 16 in
+    // `Slot<int>` and at 32 in `Slot<Wide>`, because the field before it is as
+    // wide as the argument. A subclass of one instantiation answers with the
+    // same offset its base does — base fields are laid out first, so a
+    // subclass pointer is usable wherever the base is — but it still needs its
+    // own row here, because the switch matches the receiver's own class id.
+    fn reflection_field_classes(
+        declaration: HirDeclaration,
+        field: HirField) -> List<int> {
+        var arms: List<int> = []
+        for layout: LlvmClassLayout in
+            self.ordered_class_layouts {
+            var reaches: bool = false
+            for link: HirDeclaration in
+                self.class_chain(layout.declaration) {
+                if link.qualified == declaration.qualified {
+                    reaches = true
+                }
+            }
+            if !reaches { continue }
+            match layout.field_offsets.get(field.name) {
+                some(offset) => {
+                    arms.push(layout.id)
+                    arms.push(offset)
+                }
+                none => {}
+            }
+        }
+        return move arms
+    }
+
     fn reflection_field_action(
         declaration: HirDeclaration,
         field: HirField,
         setter: bool) -> string {
-        if declaration.generics.len() != 0 ||
-           declaration.kind == "union" {
+        // A union's slots overlap: a reflected write to one leaves the others
+        // reading bytes they never stored.
+        if declaration.kind == "union" { return "null" }
+        // A struct or union receiver is bare bytes with no descriptor, so
+        // `Point<int>` and `Point<Wide>` arrive at the thunk identical while
+        // their fields sit at different offsets. Only a class receiver names
+        // the instantiation it came from.
+        if declaration.kind != "class" &&
+           declaration.generics.len() != 0 {
+            return "null"
+        }
+        if self.reflection_erases_type(
+               declaration, field.type) {
             return "null"
         }
         let prefix: string = if setter { "set:" } else { "get:" }
@@ -731,32 +795,86 @@ partial class LlvmTextEmitter {
             some(symbol) => { return symbol }
             none => {}
         }
-        let owner: HirType =
-            new HirType(declaration.qualified)
-        var offset: int = -1
-        if declaration.kind == "class" {
-            match self.class_layout(owner) {
-                some(layout) => {
-                    offset = layout.field_offsets.get(field.name).or(-1)
-                }
-                none => {}
-            }
-        } else {
-            match self.record_layout(owner) {
-                some(layout) => {
-                    offset = layout.field_offsets.get(field.name).or(-1)
-                }
-                none => {}
-            }
-        }
         let llvm: string = self.type_text(field.type)
         let size: int = self.type_size(field.type)
-        if offset < 0 || llvm == "" || llvm == "void" || size < 0 {
+        if llvm == "" || llvm == "void" || size < 0 {
             return "null"
         }
+        if declaration.generics.len() == 0 {
+            let owner: HirType =
+                new HirType(declaration.qualified)
+            var offset: int = -1
+            if declaration.kind == "class" {
+                match self.class_layout(owner) {
+                    some(layout) => {
+                        offset = layout.field_offsets.get(field.name).or(-1)
+                    }
+                    none => {}
+                }
+            } else {
+                match self.record_layout(owner) {
+                    some(layout) => {
+                        offset = layout.field_offsets.get(field.name).or(-1)
+                    }
+                    none => {}
+                }
+            }
+            if offset < 0 { return "null" }
+            let symbol: string =
+                "@.next.reflect.field.action{self.reflection_field_actions.len()}"
+            self.reflection_field_actions[key] = symbol
+            self.value_eq_functions.push(
+                self.reflection_field_body(
+                    symbol, declaration, field, setter,
+                    [], offset))
+            return symbol
+        }
+        // A generic class: the offset is a question about the receiver, and
+        // which classes exist is not settled until every instance body has
+        // been raised. Name the symbol now, write the body then.
         let symbol: string =
             "@.next.reflect.field.action{self.reflection_field_actions.len()}"
         self.reflection_field_actions[key] = symbol
+        self.deferred_field_actions.push(
+            new LlvmReflectFieldAction(
+                symbol, declaration, field, setter))
+        return symbol
+    }
+
+    // The bodies held back until the layout set was complete. A generic class
+    // with no laid-out instance and no subclass answers with no arms at all,
+    // which is a thunk that refuses — and nothing can reach it, because a
+    // receiver of a class the program never lays out cannot exist.
+    fn emit_deferred_field_actions() {
+        for pending: LlvmReflectFieldAction in
+            self.deferred_field_actions {
+            let arms: List<int> =
+                self.reflection_field_classes(
+                    pending.declaration, pending.field)
+            self.value_eq_functions.push(
+                self.reflection_field_body(
+                    pending.symbol, pending.declaration,
+                    pending.field, pending.setter,
+                    arms, -1))
+        }
+        self.deferred_field_actions = []
+    }
+
+    // One thunk body. `arms` is empty and `fixed` is the offset for a
+    // declaration whose field is at one place in every object that carries it;
+    // otherwise `arms` holds class id / offset pairs and `fixed` is -1. With
+    // one distinct offset among the arms the emitted body is the same shape as
+    // the fixed one, so a program that has no generic reflected field emits
+    // exactly what it always did.
+    fn reflection_field_body(
+        symbol: string,
+        declaration: HirDeclaration,
+        field: HirField,
+        setter: bool,
+        arms: List<int>,
+        fixed: int) -> string {
+        let llvm: string = self.type_text(field.type)
+        let size: int = self.type_size(field.type)
         let id: int = self.fresh()
         var setup: string = ""
         var base: string = "%receiver"
@@ -766,6 +884,54 @@ partial class LlvmTextEmitter {
                 "  {base} = load ptr, ptr %receiver\n"
         }
         let address: string = "%reflect.field.address{id}"
+        // The block a receiver whose class carries no offset for this field
+        // lands in. Returning zero is the same answer to the runtime as a
+        // thunk that was never registered: the caller reads `unsupported`.
+        var refusal: string = ""
+        var offset: string = "{fixed}"
+        if fixed < 0 {
+            var offsets: List<int> = []
+            var cases: List<string> = []
+            var incoming: List<string> = []
+            var index: int = 0
+            for index < arms.len() {
+                let class_id: int = arms[index]
+                let at: int = arms[index + 1]
+                index += 2
+                var slot: int = offsets.len()
+                for probe: int in 0..offsets.len() {
+                    if offsets[probe] == at { slot = probe }
+                }
+                if slot == offsets.len() {
+                    offsets.push(at)
+                    incoming.push(
+                        "[ {at}, %reflect.field.at{id}.{slot} ]")
+                }
+                cases.push(
+                    "i64 {class_id}, label %reflect.field.at{id}.{slot}")
+            }
+            if offsets.len() == 0 {
+                let parameters: string =
+                    if setter {
+                        "ptr %receiver, ptr %incoming"
+                    } else { "ptr %receiver" }
+                return "define internal i64 {symbol}({parameters}) \{\nentry:\n  ret i64 0\n\}\n"
+            }
+            if offsets.len() == 1 {
+                offset = "{offsets[0]}"
+            } else {
+                offset = "%reflect.field.offset{id}"
+                var blocks: string = ""
+                for slot: int in 0..offsets.len() {
+                    blocks =
+                        "{blocks}reflect.field.at{id}.{slot}:\n  br label %reflect.field.read{id}\n"
+                }
+                setup =
+                    "{setup}  %reflect.field.class{id} = load ptr, ptr {base}\n  %reflect.field.id{id} = load i64, ptr %reflect.field.class{id}\n  switch i64 %reflect.field.id{id}, label %reflect.field.absent{id} [{cases.join(" ")}]\n{blocks}reflect.field.read{id}:\n  {offset} = phi i64 {incoming.join(", ")}\n"
+                refusal =
+                    "reflect.field.absent{id}:\n  ret i64 0\n"
+            }
+        }
         setup =
             "{setup}  {address} = getelementptr i8, ptr {base}, i64 {offset}\n"
         let retain: string =
@@ -820,13 +986,12 @@ partial class LlvmTextEmitter {
                 body =
                     "{body}  %reflect.field.old.slot{id} = alloca {llvm}\n  store {llvm} %reflect.field.old{id}, ptr %reflect.field.old.slot{id}\n  call void {drop}(ptr %reflect.field.old.slot{id})\n"
             }
-            body = "{body}  ret i64 1\n\}\n"
+            body = "{body}  ret i64 1\n{refusal}\}\n"
         } else {
             body =
-                "define internal i64 {symbol}(ptr %receiver) \{\nentry:\n{setup}  %reflect.field.value{id} = load {llvm}, ptr {address}{access}\n  %reflect.field.slot{id} = alloca {llvm}\n  store {llvm} %reflect.field.value{id}, ptr %reflect.field.slot{id}\n  %reflect.field.box{id} = call i64 @beans_reflect_value_new_copy(ptr {self.string_pointer(render_hir_type(field.type))}, ptr %reflect.field.slot{id}, i64 {size}, ptr {retain}, ptr {drop})\n  ret i64 %reflect.field.box{id}\n\}\n"
+                "define internal i64 {symbol}(ptr %receiver) \{\nentry:\n{setup}  %reflect.field.value{id} = load {llvm}, ptr {address}{access}\n  %reflect.field.slot{id} = alloca {llvm}\n  store {llvm} %reflect.field.value{id}, ptr %reflect.field.slot{id}\n  %reflect.field.box{id} = call i64 @beans_reflect_value_new_copy(ptr {self.string_pointer(render_hir_type(field.type))}, ptr %reflect.field.slot{id}, i64 {size}, ptr {retain}, ptr {drop})\n  ret i64 %reflect.field.box{id}\n{refusal}\}\n"
         }
-        self.value_eq_functions.push(body)
-        return symbol
+        return body
     }
 
     fn reflection_callable_action(
