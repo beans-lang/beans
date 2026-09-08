@@ -520,17 +520,18 @@ partial class LlvmTextEmitter {
         if parameters.len() ==
                instruction.operands.len() {
             for index: int in 0..parameters.len() {
-                self.unify_open(
+                self.unify_named_open(
                     template.locals[
                         parameters[index]].type,
                     self.value_type(
                         function,
                         instruction.operands[index]),
-                    bindings)
+                    bindings, template.generics)
             }
         }
-        self.unify_open(
-            template.result, instruction.type, bindings)
+        self.unify_named_open(
+            template.result, instruction.type,
+            bindings, template.generics)
         for generic: string in template.generics {
             if !bindings.contains_key(generic) {
                 return generic
@@ -544,8 +545,28 @@ partial class LlvmTextEmitter {
     fn unify_open(
         open: HirType, concrete: HirType,
         bindings: Map<string, HirType>) -> bool {
+        var none_declared: List<string> = []
+        return self.unify_named_open(
+            open, concrete, bindings, none_declared)
+    }
+
+    // Which names are type variables is the template's own business. Asking
+    // whether the type system can resolve the name instead answers wrongly
+    // the moment a type parameter shadows a class: `fn wrap<Label>(v: Label)`
+    // beside a `class Label` resolves `Label` to the class, so the parameter
+    // reads as a concrete type, matches nothing, and the call is refused at
+    // build time on a program the checker took — the checker decides openness
+    // from the declared list (ExpressionChecker.generic_name_in) and never
+    // sees the shadow. `declared` is that list; a name the template never
+    // declared still falls back to type_is_open, which is how a class's own
+    // parameters stay open in a method template.
+    fn unify_named_open(
+        open: HirType, concrete: HirType,
+        bindings: Map<string, HirType>,
+        declared: List<string>) -> bool {
         if open.args.len() == 0 &&
-           self.type_is_open(open) {
+           (self.name_is_declared(open.name, declared) ||
+            self.type_is_open(open)) {
             match bindings.get(open.name) {
                 some(existing) => {
                     return render_hir_type(existing) ==
@@ -573,27 +594,38 @@ partial class LlvmTextEmitter {
             }
             for index: int in
                 0..open.fn_parameter_count {
-                if !self.unify_open(
+                if !self.unify_named_open(
                        open.args[index],
-                       concrete.args[index], bindings) {
+                       concrete.args[index], bindings,
+                       declared) {
                     return false
                 }
             }
-            return self.unify_open(
+            return self.unify_named_open(
                 hir_fn_result(open),
-                hir_fn_result(concrete), bindings)
+                hir_fn_result(concrete), bindings,
+                declared)
         }
         if open.args.len() != concrete.args.len() {
             return false
         }
         for index: int in 0..open.args.len() {
-            if !self.unify_open(
+            if !self.unify_named_open(
                    open.args[index],
-                   concrete.args[index], bindings) {
+                   concrete.args[index], bindings,
+                   declared) {
                 return false
             }
         }
         return true
+    }
+
+    fn name_is_declared(name: string,
+                        declared: List<string>) -> bool {
+        for candidate: string in declared {
+            if candidate == name { return true }
+        }
+        return false
     }
 
     // an interface may extend interfaces, and any of them may carry

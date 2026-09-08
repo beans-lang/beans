@@ -75,6 +75,15 @@ fn feed<T>(make: fn() -> T, setup: fn(T)) -> int {
     return 1
 }
 
+// A type parameter that shadows a class name. Which names are type variables
+// is the template's own business: resolving the name instead finds the class,
+// so the parameter read as a concrete type and the call was refused at build
+// time while the interpreter ran it.
+fn shadow_apply<Cell>(value: Cell, setup: fn(Cell)) -> int {
+    setup(value)
+    return 1
+}
+
 class Host {
     fn init() {}
     // the receiver form that already emitted
@@ -146,6 +155,11 @@ fn main() {
     io.println("E {count_with<Cell>(2, fn() -> Cell { return new Cell("i") })}")
     io.println("E {count_with(2, fn() -> Cell { return new Cell("j") })}")
     io.println("E {feed(fn() -> Cell { return new Cell("k") }, fn(x: Cell) { let t: Cell = new Cell("l") })}")
+
+    // F — a type parameter shadowing a class name, at two arguments, with
+    // the shadowed name inside the function type as well
+    io.println("F {shadow_apply(seed, fn(x: Cell) { let t: Cell = new Cell("m") })}")
+    io.println("F {shadow_apply<int>(3, fn(v: int) { total += v })} {total}")
 
     io.println("done")
 }

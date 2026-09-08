@@ -119,6 +119,28 @@ pub fn labelled<T>(value: T, at: Base) -> string {
     return "{at.tag}"
 }
 
+// M — a type parameter that shadows a class name. Which names are type
+// variables is the template's own business: resolving the name instead finds
+// the class, so the parameter read as a concrete type, matched nothing, and
+// the call was refused at build time on a program the checker took.
+pub fn shadow_wrap<Hint>(value: Hint) -> List<Hint> {
+    return [value]
+}
+
+pub fn shadow_apply<Hint>(value: Hint, setup: fn(Hint)) -> int {
+    setup(value)
+    return 1
+}
+
+pub class Shadow {
+    pub fn init() {}
+    pub static fn stat<Hint>(value: Hint,
+                             setup: fn(Hint)) -> int {
+        setup(value)
+        return 2
+    }
+}
+
 pub class Host {
     pub fn init() {}
     // an instance method: the route that already emitted
@@ -240,4 +262,13 @@ fn main() {
     io.println("L {holder.apply<Hint>(1, h, fn(x: Hint) { x.label = "{x.label}u" })} {holder.held}")
     io.println("L {Holder.stat_apply<Hint>(h, fn(x: Hint) { x.label = "{x.label}w" })}")
     io.println("L {h.label}")
+
+    // M — a type parameter shadowing a class name, on every route, and one
+    // of them with the shadowed name inside a function type as well
+    let ws: List<int> = shadow_wrap(3)
+    let wt: List<string> = shadow_wrap("t")
+    io.println("M {ws.len()} {ws[0]} {wt[0]}")
+    io.println("M {shadow_apply(4, fn(v: int) { count += v })} {count}")
+    io.println("M {shadow_apply<string>("z", fn(v: string) {})}")
+    io.println("M {Shadow.stat("y", fn(v: string) {})} {Shadow.stat<int>(1, fn(v: int) { count += v })} {count}")
 }
