@@ -243,7 +243,14 @@ if [[ "${BEANS_SANITIZE_CALLBACKS:-0}" == "1" ]]; then
     # The null-call negative build above leaves its IR in build/main.ll.
     # Regenerate the positive callback program before compiling that IR with
     # sanitizers.
-    "$beansc" build "$tmp/main.b" -o "$tmp/sanitize.native" \
+    #
+    # BEANS_SANITIZE on the BUILD, not only -fsanitize= on the link: the
+    # attribute that lets an LLVM sanitizer pass look inside a function is
+    # written by the emitter, so IR built without it is IR the flag below
+    # cannot reach. This lane used to instrument beans_rt.c and the fixture
+    # and none of the Beans code whose callback it exists to check (#168).
+    BEANS_SANITIZE=address,undefined \
+        "$beansc" build "$tmp/main.b" -o "$tmp/sanitize.native" \
         >"$tmp/sanitize.build" 2>&1
     clang -O1 -g -pthread -fsanitize=address,undefined \
         -fno-sanitize-recover=undefined -Wno-override-module \
@@ -265,6 +272,12 @@ if [[ "${BEANS_SANITIZE_CALLBACKS:-0}" == "1" ]]; then
         exit 1
     fi
 
+    # `sanitize_thread` is a different attribute, so the module is emitted
+    # again asking for that one. Reusing the ASan module here would hand TSan
+    # an unmarked program.
+    BEANS_SANITIZE=thread \
+        "$beansc" build "$tmp/main.b" -o "$tmp/sanitize_tsan.native" \
+        >"$tmp/sanitize_tsan.build" 2>&1
     if clang -O1 -g -pthread -fsanitize=thread \
         -Wno-override-module build/main.ll build/main_ffi.c \
         build/beans_rt.c "$tmp/stored_fixture.c" -lm \
