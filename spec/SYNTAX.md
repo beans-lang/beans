@@ -1040,6 +1040,24 @@ local from a loop is also rejected because the next iteration would see an
 empty binding. For now `move` names a whole local; field and index moves need
 consuming accessors such as List `remove`.
 
+**A move hands the value over where it is written, not where the spent binding's
+scope ends.** From the `move` on, the value belongs to whatever took it — a
+`let` or `var`, a `move` parameter, a field, an element of a literal, a map
+entry — and it is released when *that* owner is released, wherever that is. The
+spent binding is not a second owner and adds nothing to the lifetime: it holds
+nothing at all until it is reinitialized. So the packet below is released where
+`taken` goes out of scope — the end of the `if` — and not at the end of the
+function where `held` was declared:
+
+```
+let held: Packet = open()
+if ready {
+    let taken: Packet = move held      // `taken` owns it from here
+    send(taken)
+}                                      // Packet's deinit runs here
+io.println("after")                    // ...so this prints after it
+```
+
 Parameters borrow by default. A `move` parameter owns its argument and drops it
 at function exit unless the body moves it onward:
 
@@ -1054,6 +1072,29 @@ A fresh result can be passed directly; an existing move-only local needs
 `move`. Move modes must match across interface methods and overrides. Function
 values and closures do not carry ownership modes yet, so a function with move
 or inout parameters cannot be stored as a closure value.
+
+Ownership arrives at the call, so how the caller produced the argument makes no
+difference to when the value dies: `enqueue(make_batch())` and
+`enqueue(move batch)` both release the batch when `enqueue` returns, and if
+`enqueue` hands it to a further call it dies with *that* callee instead. A
+borrowed parameter is the other half of the same rule — it owns nothing, so its
+argument outlives the call under whatever the caller's own scope says.
+
+A function's parameters are bound before its first local, and a frame releases
+what it owns in reverse order of binding, so the `move` parameters go last.
+Leaving a function releases, in this order:
+
+1. the locals of the nested blocks it is leaving, innermost first;
+2. the function's defers, newest first;
+3. the function's own locals, newest first;
+4. its `move` parameters, last-declared first.
+
+A plain return, an early `return`, a `?`, and a contained panic's unwind
+(spec/CONCURRENCY.md) all leave by that one order, on both backends. The single
+place a moved-in argument does not die with the callee is a `brew` or
+`contained` call: their arguments are hoisted into invisible locals of the
+enclosing scope before the call, so they die when that scope exits
+(spec/CONCURRENCY.md).
 
 An `inout` parameter aliases one mutable caller local for the duration of the
 call. It is not copy-in/copy-out:
@@ -3906,9 +3947,10 @@ beansc build --target riscv32imac-unknown-none-elf --runtime freestanding f.b --
 - `defer f.close()` — runs when the function exits normally, including through
   `return` and `?`, newest first. A return leaves every scope it sits in, innermost
   first: the locals of the nested blocks (`if`, loop bodies, match arms) drop as their
-  blocks exit, *then* the function's defers run, *then* the function's own locals drop —
-  so a defer sees the function-level locals still alive and the block-level ones already
-  gone. Must sit at the top level of the function body (not inside `if`/`for`/blocks — it
+  blocks exit, *then* the function's defers run, *then* the function's own locals drop,
+  *then* its `move` parameters drop, last-declared first (Variables, above) —
+  so a defer sees the function-level locals and the moved-in arguments still alive and
+  the block-level ones already gone. Must sit at the top level of the function body (not inside `if`/`for`/blocks — it
   is a function-exit hook, and nested registration would need runtime capture the native
   backend does not do); the checker refuses a nested one. Each defer runs at most once. An *uncontained* panic exits the
   process without running defers. A panic *contained* by `brew`/`join`, or by a `contained`

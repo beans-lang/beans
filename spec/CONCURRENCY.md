@@ -557,9 +557,15 @@ Landed since:
       first, the way expression frames and block scopes pop;
    2. the function's defers, newest first;
    3. the function's own locals, newest first;
-   4. the value a `return` was carrying, if a defer or a deinit on the way out
+   4. the function's `move` parameters, last-declared first — they are bound
+      before the first local, and a frame releases what it owns in reverse
+      order of binding, so a moved-in argument dies with the callee on the
+      panic path exactly as it does on a return (spec/SYNTAX.md). Its own
+      arguments, hoisted outside by a `brew` or a `contained`, are the
+      enclosing scope's and are not this frame's to drop;
+   5. the value a `return` was carrying, if a defer or a deinit on the way out
       panicked;
-   5. and, for the frame that was running `new`, the half-built object: it is
+   6. and, for the frame that was running `new`, the half-built object: it is
       released as a whole, so its `deinit` runs — seeing each field's default
       or whatever init had assigned — and then its fields drop.
 

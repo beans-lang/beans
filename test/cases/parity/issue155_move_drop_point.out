@@ -1,0 +1,164 @@
+-- one moved-in parameter, plain class
+arc+a
+  untouched body
+arc-a
+after untouched
+arc+b
+  reads body b
+arc-b
+after reads
+-- one moved-in parameter, unique class
+arc+u
+  unique body
+arc-u
+after unique
+-- control: a temporary is the same parameter
+arc+temp-call
+  untouched body
+arc-temp-call
+after temp from a call
+arc+temp-new
+  untouched body
+arc-temp-new
+after temp from new
+-- control: a borrowed parameter owns nothing
+arc+lent
+  borrows body lent
+after borrows
+-- moved to a local of the callee
+arc+c
+  to_local body c
+arc-c
+after to_local
+-- forwarded to a further call
+arc+d
+  forwards before
+  inner body d
+arc-d
+  forwards after
+after forwards
+-- moved onward: into a field, and out through return
+arc+e
+  stores body
+after stores
+arc+f
+  returns body
+after returns f
+-- early return and the full path
+arc+g
+  early return
+arc-g
+after early
+arc+h
+  full path h
+arc-h
+after full
+-- three moved-in parameters
+arc+x1
+arc+x2
+arc+x3
+  three body x1 x2 x3
+arc-x3
+arc-x2
+arc-x1
+after three
+arc+y1
+arc+y2
+arc+y3
+  handoff before
+  inner body y2
+arc-y2
+  handoff after
+arc-y3
+arc-y1
+after handoff
+-- two discards and a name in one parameter list
+arc+z1
+arc+z2
+arc+z3
+  discards body z2
+arc-z3
+arc-z2
+arc-z1
+after discards
+-- the whole exit order
+arc+order-param-1
+arc+order-lent
+arc+order-param-2
+arc+order-local-1
+arc+order-local-2
+arc+order-block
+  order body order-param-1 order-lent order-param-2 order-local-1 order-local-2 order-block
+arc-order-block
+  order tail
+  defer 2
+  defer 1
+arc-order-local-2
+arc-order-local-1
+arc-order-param-2
+arc-order-param-1
+after order
+-- a method, a static, and an interface implementation
+arc+m1
+  method body m1
+arc-m1
+after method
+arc+m2
+  static body m2
+arc-m2
+after static
+arc+m3
+  iface body m3
+arc-m3
+after interface
+-- a move with no call in it at all
+arc+n1
+  nested block holds n1
+arc-n1
+after nested block
+-- every composite a move can land in
+arc+s1
+  crate holds s1 2
+arc-s1
+after struct literal
+arc+s2
+  list holds 1
+arc-s2
+after list literal
+arc+s3
+  option holds true
+arc-s3
+after option
+arc+s4
+  map holds 1
+arc-s4
+after map store
+-- a var reinitialised after it was spent
+arc+r-first
+  untouched body
+arc-r-first
+after the first move
+arc+r-second
+after the reinit
+  untouched body
+arc-r-second
+after the second move
+-- a loop body, so the drop point repeats
+arc+loop-0
+  untouched body
+arc-loop-0
+  iteration 0 tail
+arc+loop-1
+  untouched body
+arc-loop-1
+  iteration 1 tail
+arc+loop-2
+  untouched body
+arc-loop-2
+  iteration 2 tail
+after loop
+-- what main still owns
+arc-order-lent
+arc-f
+arc-e
+arc-lent

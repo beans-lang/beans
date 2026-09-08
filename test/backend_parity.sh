@@ -231,10 +231,23 @@ agree test/cases/parity/settled_dispatch.b 10
 # name gave the interpreter one slot and the native backend two, which this
 # case would expose as a marker imbalance the moment the layouts diverged.
 agree test/cases/parity/inherited_field_slots.b 4
+# #155: a `move` hands the value over where it is written, so a moved-in
+# parameter dies at the callee's frame exit. The interpreter left the spent
+# binding pointing at the value and released it at the caller's scope exit
+# instead. The markers balanced on both sides, so the count below saw nothing
+# — only the ordered diff catches it, which is why the case prints a line
+# between every call and what follows. Forty values: a plain class and a
+# `unique` one, the temporary and borrowed controls, forwarding, storing,
+# returning, an early return, three moved-in parameters (reverse declaration
+# order is invisible at n=1), two discards in one list, a full frame teardown
+# with block locals and two defers, a method, a static, an interface, a move
+# with no call in it, four composite landing places, a reinitialised `var`,
+# and a loop.
+agree test/cases/parity/issue155_move_drop_point.b 40
 
 # Every case in the directory has to be listed above with its own expected
 # count; a file added and forgotten would otherwise be silently unchecked.
-listed=42
+listed=43
 present=$(find test/cases/parity -name '*.b' | wc -l | tr -d ' ')
 if [ "$present" != "$listed" ]; then
     echo "test/cases/parity holds $present cases but $listed are run" >&2
