@@ -76,6 +76,23 @@ pub class Holder<T> {
     // a static that names no type parameter at all still needs none
     pub static fn tag() -> string { return "holder" }
 
+    // the method's own <T> shadows the class's, so the class's is NOT
+    // promoted and this still takes exactly one type argument — two would be
+    // the failure if the shadow check went away
+    pub static fn echo<T>(value: T) -> T { return value }
+
+    // visibility does not change the rule: a priv static binds its owner's
+    // parameter the same way, reached from a pub one of the same class
+    priv static fn hidden(value: T) -> Holder<T> {
+        let held: Holder<T> = new Holder<T>()
+        held.value = some(value)
+        return held
+    }
+
+    pub static fn via_hidden(value: T) -> Holder<T> {
+        return Holder.hidden(value)
+    }
+
     // an instance method calling its own class's static: T here is the
     // receiver's T, still open, and the call must bind it to that
     pub fn twin() -> Holder<T> {
@@ -95,6 +112,14 @@ pub class Cell<K, V> {
         cell.item = some(value)
         return cell
     }
+
+    // the method shadows the owner's first parameter and names its second, so
+    // only V is promoted and the written order is <V, K> — the promoted ones
+    // in the owner's order, then the method's own. Promoting a shadowed name
+    // as well would make this `<K, V, K>`, a list with one name twice, and
+    // `Cell.odd<int, string>` would then answer "generic V was string, then
+    // int".
+    pub static fn odd<K>(key: K, value: V) -> V { return value }
 }
 
 // a bound on the owner's parameter travels with it to the call
@@ -123,6 +148,21 @@ pub enum Maybe<T> {
 
     pub static fn empty_of() -> Maybe<T> { return Maybe.nothing }
     pub static fn full_of() -> Maybe<T> { return Maybe.something }
+}
+
+// a `partial class` — the declaration form the compiler's own sources are
+// written in, and the only one whose members are lowered from more than one
+// AST node
+pub partial class Boxed<T> {
+    pub value: Option<T> = none
+
+    pub fn init() {}
+
+    pub static fn of(value: T) -> Boxed<T> {
+        let boxed: Boxed<T> = new Boxed<T>()
+        boxed.value = some(value)
+        return boxed
+    }
 }
 
 pub class Label {
@@ -216,6 +256,12 @@ fn main() {
     let cv: string = cell.item.expect("cell")
     io.println("{cv}")
 
+    // one owner parameter promoted past a shadowed one: <V, K>, written and
+    // inferred
+    let odd_written: int = Cell.odd<int, string>("k", 7)
+    let odd_inferred: string = Cell.odd(1, "v")
+    io.println("{odd_written} {odd_inferred}")
+
     // the owner's bound is measured against what the call bound
     let numbers_rise: bool = Sorted.between(2, 9)
     let words_rise: bool = Sorted.between("y", "b")
@@ -230,6 +276,18 @@ fn main() {
     let maybe_int: Maybe<int> = Maybe.empty_of()
     let maybe_word: Maybe<string> = Maybe.full_of()
     io.println("{maybe_int == Maybe.nothing} {maybe_word == Maybe.nothing}")
+
+    // the method's own <T> shadows the class's: one type argument, not two
+    io.println("{Holder.echo<int>(41)} {Holder.echo("ec")}")
+
+    // a priv static naming the class's T, reached from a pub one
+    let hidden: Holder<int> = Holder.via_hidden(42)
+    io.println("{hidden.value.expect("hidden")}")
+
+    // a partial class's static
+    let boxed_int: Boxed<int> = Boxed.of(31)
+    let boxed_word: Boxed<string> = Boxed.of("bx")
+    io.println("{boxed_int.value.expect("bi")} {boxed_word.value.expect("bw")}")
 
     // T bound to a class reference, and to a generic instantiation
     let labelled: Holder<Label> = Holder.wrap(new Label("lab"))

@@ -49,6 +49,21 @@ pub class Holder<T> {
     pub static fn describe() -> string {
         return type_of(T).qualified_name()
     }
+
+    // T only in the body, on a loop binding's annotation rather than a let
+    pub static fn walk() -> int {
+        var seen: int = 0
+        let holders: List<Holder<T>> = []
+        for held: Holder<T> in holders { seen = seen + 1 }
+        return seen
+    }
+
+    // T only in the body, as an explicit type argument handed to another
+    // static — the one route that reaches the type through a call's argument
+    // list and not through any binding's declared type
+    pub static fn arity<U>() -> int { return 1 }
+
+    pub static fn width() -> int { return Holder.arity<T>() }
 }
 
 pub class Bare {
