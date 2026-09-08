@@ -1010,6 +1010,25 @@ class SignatureChecker {
         return result
     }
 
+    // Refuse a written signature or field type that would have to hold a
+    // unit value (hir_unit_misplacement, #154). It is asked once per
+    // declared type rather than inside lower_type, so a nested mistake is
+    // reported once, at the type the program wrote, and names the innermost
+    // type at fault. `result_slot` is true only for a function's declared
+    // result, which is the one place `unit` belongs.
+    fn refuse_misplaced_unit(node: AstNode, type: HirType,
+                             file: string,
+                             result_slot: bool) {
+        match hir_unit_misplacement(type, result_slot) {
+            some(offender) => {
+                self.fail(
+                    file, node,
+                    unit_misplacement_message(offender))
+            }
+            none => {}
+        }
+    }
+
     fn collect_generics(node: AstNode) -> List<string> {
         var names: List<string> = []
         for child: AstNode in node.children {
@@ -1518,6 +1537,9 @@ class SignatureChecker {
                                     self.lower_type(type_node, file.path),
                                     file.path, parameter.line,
                                     parameter.col)
+                            self.refuse_misplaced_unit(
+                                type_node, lowered.type,
+                                file.path, false)
                             lowered.annotations =
                                 self.lower_annotations(
                                     parameter.annotations,
@@ -1605,6 +1627,9 @@ class SignatureChecker {
                         } else {
                             function.result =
                                 self.lower_type(type_node, file.path)
+                            self.refuse_misplaced_unit(
+                                type_node, function.result,
+                                file.path, true)
                         }
                     }
                     none => {
@@ -1654,6 +1679,8 @@ class SignatureChecker {
             some(type_node) => {
                 type = self.lower_type(
                     type_node, file.path)
+                self.refuse_misplaced_unit(
+                    type_node, type, file.path, false)
             }
             none => {
                 self.fail(
@@ -1932,6 +1959,9 @@ class SignatureChecker {
                             layout_modifier_align(child.value),
                             has_default,
                             file.path, child.line, child.col)
+                        self.refuse_misplaced_unit(
+                            type_node, field.type,
+                            file.path, false)
                         field.is_weak =
                             is_weak && node.kind == "class" &&
                             !is_static
@@ -1970,8 +2000,12 @@ class SignatureChecker {
                     if item.kind != "payload" { continue }
                     match type_child(item) {
                         some(type_node) => {
-                            payload.args.push(
-                                self.lower_type(type_node, file.path))
+                            let carried: HirType =
+                                self.lower_type(type_node, file.path)
+                            self.refuse_misplaced_unit(
+                                type_node, carried,
+                                file.path, false)
+                            payload.args.push(carried)
                         }
                         none => {}
                     }
