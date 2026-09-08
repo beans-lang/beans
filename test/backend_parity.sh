@@ -231,10 +231,19 @@ agree test/cases/parity/settled_dispatch.b 10
 # name gave the interpreter one slot and the native backend two, which this
 # case would expose as a marker imbalance the moment the layouts diverged.
 agree test/cases/parity/inherited_field_slots.b 4
+# #160: the two backends cannot share a reflection error message — the
+# interpreter stores a literal at each failure site, a native build asks the
+# runtime's code-to-text table — and one entry of that table was built a byte
+# short, so the same failure printed 27 bytes natively and 28 under the
+# interpreter. Every reflection error a program can reach is provoked here,
+# through every shape that reaches it, and each one prints its kind, its
+# message and the message's byte length. Thirteen receivers are boxed into
+# reflect values, so the refusing paths are held to the lifetime rule too.
+agree test/cases/parity/issue160_reflect_error_messages.b 13
 
 # Every case in the directory has to be listed above with its own expected
 # count; a file added and forgotten would otherwise be silently unchecked.
-listed=42
+listed=43
 present=$(find test/cases/parity -name '*.b' | wc -l | tr -d ' ')
 if [ "$present" != "$listed" ]; then
     echo "test/cases/parity holds $present cases but $listed are run" >&2

@@ -104,6 +104,7 @@ test-quick: $(BIN)
 	./test/differential.sh
 	bash ./test/ownership_fuzz.sh smoke
 	bash ./test/ci_coverage.sh
+	bash ./test/runtime_literal_lengths.sh
 	bash ./test/sanitizer_gates.sh
 	$(MAKE) fuzz-differential-smoke
 
@@ -272,6 +273,7 @@ test-ffi: $(BIN)
 	bash ./test/decimal_align.sh
 	./test/object_abi.sh
 	bash ./test/encoding_symbols.sh
+	bash ./test/runtime_literal_lengths.sh
 	bash ./test/encoding_outputs.sh
 	bash ./test/encoding_cache.sh
 
@@ -382,6 +384,7 @@ test-core: $(BIN)
 	bash ./test/json_direct.sh
 	bash ./test/json_typed_decode.sh
 	bash ./test/encoding_symbols.sh
+	bash ./test/runtime_literal_lengths.sh
 	bash ./test/encoding_outputs.sh
 	bash ./test/encoding_cache.sh
 	./test/parse_recovery.sh
