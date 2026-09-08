@@ -31,14 +31,14 @@
 // The markers cover ownership: `reflect.value` takes the payload, `as?`
 // copies it back out, and a Value releases what it holds when it dies.
 //
-// Every Value here is bound to a name on purpose, and must stay that way.
-// `reflect.value(move local)` is a named local moved into a moved-in
-// parameter, which is #155: the native backend drops it at the callee's
-// return and the interpreter defers it to scope exit. The markers still
-// balance in that case — nothing leaks and nothing is released twice — so
-// check_effects passes and only the answer diff catches it. Simplifying a
-// binding here into an unbound temporary would fail this case for #155's
-// reason rather than this one's.
+// Every Value here is bound to a name on purpose. `reflect.value(move local)`
+// is a named local moved into a moved-in parameter, and that shape is #155,
+// where the two backends released the payload at different points. Binding
+// gives the value an owner that outlives the statement on both backends, so
+// this case measures its own rule and nothing else. Keep the bindings: they
+// are what makes an ownership disagreement elsewhere unable to fail this
+// case, and #155's markers balanced either way, so check_effects would not
+// have caught it — only the answer diff would.
 package main
 
 import std.io
