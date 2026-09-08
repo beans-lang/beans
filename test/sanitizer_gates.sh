@@ -296,6 +296,37 @@ if grep -q ' sanitize_address' "$ir/threads.tsan.ll"; then
     exit 1
 fi
 
+# A name the compiler does not know, and the one pair it cannot carry, are
+# both refused rather than dropped. This matters more here than for an
+# ordinary flag: the failure mode of this whole variable is a sanitizer that
+# quietly does nothing, so a misspelt `BEANS_SANITIZE=adress` that built a
+# clean binary and printed "ok" would be #168 again with a new spelling.
+# `address,thread` is refused here rather than by clang ("invalid argument
+# '-fsanitize=address' not allowed with '-fsanitize=thread'") so the complaint
+# names what was asked for instead of a flag the caller never wrote.
+refuses() {   # <BEANS_SANITIZE value> <text the refusal must contain>
+    local value=$1 want=$2 status=0
+    BEANS_SANITIZE="$value" ./build/beansc llvm examples/threads.b \
+        >"$tmp/refuse.out" 2>"$tmp/refuse.err" || status=$?
+    if [[ "$status" -eq 0 ]]; then
+        echo "BEANS_SANITIZE='$value' was accepted; a sanitizer name this" \
+             "compiler cannot honour has to be refused, because the way this" \
+             "variable fails is by instrumenting nothing and saying nothing" >&2
+        exit 1
+    fi
+    if ! grep -q "$want" "$tmp/refuse.err"; then
+        echo "BEANS_SANITIZE='$value' was refused without saying '$want':" >&2
+        sed -n '1,10p' "$tmp/refuse.err" >&2
+        exit 1
+    fi
+}
+refuses "adress" "not a sanitizer this compiler knows"
+refuses "address,leak" "not a sanitizer this compiler knows"
+refuses "address,thread" "one of those two at a time"
+refuses "thread,address" "one of those two at a time"
+echo "ok BEANS_SANITIZE refuses a name it cannot honour and the one pair no" \
+     "single binary can carry"
+
 # And a build that asked for nothing must be exactly what it always was. The
 # compiler has to rebuild a byte-identical compiler (test/fixpoint.sh), so the
 # ordinary path cannot move: an unsanitized module carries no attribute at all,

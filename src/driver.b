@@ -720,6 +720,17 @@ fn sanitizers_requested() -> List<string> {
             asked.push(name)
         }
     }
+    // AddressSanitizer and ThreadSanitizer cannot both be on: they each
+    // replace the allocator and the same shadow mapping, and clang refuses
+    // the pair outright ("invalid argument '-fsanitize=address' not allowed
+    // with '-fsanitize=thread'"). Saying so here rather than letting the
+    // clang driver say it keeps the complaint about what was asked for
+    // instead of about a flag the caller never wrote.
+    if asked.contains("address") && asked.contains("thread") {
+        io.eprintln(
+            "error: BEANS_SANITIZE asks for both address and thread; a program can carry one of those two at a time, so run the address lane and the thread lane as separate builds")
+        os.exit(1)
+    }
     // One fixed order, so what a build carries does not depend on how the
     // variable happened to be spelled.
     var ordered: List<string> = []
