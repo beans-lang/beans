@@ -213,18 +213,15 @@ done
 #     down the non-pooled arm, so only the pooled run exercises the per-thread
 #     freelist and only the unpooled one exercises the other arm's entry.
 #
-#     Not in sanitize.sh's TSan list, and the reason is not the decoder. The
-#     bridge keeps beans_json_decode_probe_data, a deliberate single-threaded
-#     global this gate reads the last decode's error code and byte offset out
-#     of, and two threads decoding at once write it -- TSan reports that race
-#     before it reports anything else. Making it thread-local is what the
-#     bridge cannot do: _Thread_local puts __tlv_bootstrap in the object on
-#     Darwin, and test/encoding_symbols.sh holds these bridges to libc alone.
-#     So the probe has to move off a global (into the caller's req buffer, the
-#     way every other output of this ABI travels) before a concurrent decode
-#     can be TSan-clean. Until then this leg is the functional check above,
-#     which is what actually catches a shared struct: a runtime rewritten to
-#     hand every thread one struct segfaults it on every run.
+#     The same case is in sanitize.sh's TSan list, and the two legs answer
+#     different questions. This one is the functional check: it is what catches
+#     a pool shared between threads, because a runtime rewritten to hand every
+#     thread one struct segfaults it on every run, and TSan would not
+#     necessarily see that at all. The TSan leg is the memory-model check --
+#     it is what caught the decoder's diagnostic probe living in a file-scope
+#     global that every public decode entry wrote (issue #152), a race no
+#     functional check could see because the words are diagnostics and a torn
+#     read of them cannot change a decoded document.
 echo "checking decoded payloads are allocated on the thread that decodes them"
 "$beansc" build test/cases/json_typed_threads.b -o "$tmp/typed_threads" >/dev/null
 for pool in pooled nopool; do

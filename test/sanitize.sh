@@ -474,7 +474,8 @@ for file in examples/threads.b examples/shared_weak.b examples/wide_sync.b \
             examples/unsafe_raw.b examples/atomics.b \
             test/cases/runtime_hooks_threads.b \
             test/cases/shared_publication.b \
-            test/cases/json_threads.b; do
+            test/cases/json_threads.b \
+            test/cases/json_typed_threads.b; do
     echo "TSan checking $file"
     name=$(basename "$file" .b)
     rm -f "build/${name}_ffi.c"

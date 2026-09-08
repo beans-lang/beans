@@ -4949,6 +4949,65 @@ void* beans_list_new_typed_capacity(long long stride, long long ptr_mask,
                                     long long capacity) {
     return list_new_capacity(stride, ptr_mask, capacity, 0, 0);
 }
+// The typed JSON decoder's diagnostic probe, and the other half of the same
+// contract: a callback the compiler hands the bridge, called once per decode.
+//
+// Typed decoding collapses every failure to one error of kind "invalid" at the
+// language boundary, so a gate can otherwise pin only accept-or-refuse and
+// never WHY or WHERE. These four words are the why: the bridge's status, its
+// error code, the byte offset of a syntax refusal (the record count reached
+// otherwise) and the field index. test/json_typed_decode.sh records them for
+// every file of the JSONTestSuite corpus and every fuzz refusal in goldens,
+// and beans_json_decode_probe is how it reads them.
+//
+// They live here, per thread, and not in the bridge that produces them.
+// Per thread because "the last decode" is not one thing once two threads
+// decode at once: the bridge used to keep these words in a file-scope array
+// and wrote all four on every call to the entry every public decode lowers to,
+// so any program decoding typed JSON on two threads was a data race by the
+// language's own memory model, and TSan reported it before it reported
+// anything the program did (issue #152). Here rather than there because the
+// encoding bridges must resolve against libc alone (test/encoding_symbols.sh)
+// and _Thread_local puts __tlv_bootstrap in the object on Darwin, so the
+// storage has to sit on this side of the boundary — where thread-local state
+// is already how the runtime keeps a per-thread last error, as
+// reflect_error_code does. The bridge reaches it the only way it is allowed to
+// reach the runtime at all: through a pointer handed to it in the request
+// buffer, req[4], exactly as beans_alloc_bytes rides req[9] and
+// beans_bytes_reserve_raw rides the encoder's req[6].
+//
+// Freestanding has one thread by contract and must not pull in a TLS runtime
+// service — the same trade reflect_error_code makes.
+#if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
+static _Thread_local unsigned long long json_decode_probe_words[4];
+#else
+static unsigned long long json_decode_probe_words[4];
+#endif
+
+// Spelled `unsigned long long` on both sides rather than uint64_t, for the
+// reason beans_bytes_reserve_raw is: calling through a function pointer whose
+// type differs from the callee's declared type is undefined behaviour, and
+// uint64_t is `unsigned long` on LP64 — a different type from the same-width
+// `unsigned long long` the bridge would otherwise name.
+void beans_json_decode_probe_publish(unsigned long long status,
+                                     unsigned long long code,
+                                     unsigned long long detail,
+                                     unsigned long long field) {
+    json_decode_probe_words[0] = status;
+    json_decode_probe_words[1] = code;
+    json_decode_probe_words[2] = detail;
+    json_decode_probe_words[3] = field;
+}
+
+// out[0]=status, out[1]=error code, out[2]=byte offset for a syntax refusal or
+// the record count otherwise, out[3]=field index (all ones if none). Answers
+// this thread's last typed decode; a thread that has not decoded reads zeros.
+long long beans_json_decode_probe(unsigned long long* out) {
+    int index;
+    if (!out) return 0;
+    for (index = 0; index < 4; index++) out[index] = json_decode_probe_words[index];
+    return 0;
+}
 // Exact-capacity construction for results whose whole live range is written
 // right after. The plain constructor always callocs four slots, so slice and
 // clone used to allocate, free, and allocate again for every result — 400k
@@ -14142,6 +14201,10 @@ static long long host_call_alloc_bytes(const unsigned long long* w) {
                                                    (long long)w[1]);
 }
 
+static long long host_call_json_decode_probe(const unsigned long long* w) {
+    return beans_json_decode_probe((unsigned long long*)(uintptr_t)w[0]);
+}
+
 static const BHostEntry rt_host_table[] = {
     {"beans_net_recv_into_wait", (void*)&beans_net_recv_into_wait, 3,
      host_call_net_recv_into_wait},
@@ -14167,6 +14230,15 @@ static const BHostEntry rt_host_table[] = {
     // the linker must not drop a symbol this executable only ever passes by
     // address, and a natively-compiled interpreter reaches it by name.
     {"beans_alloc_bytes", (void*)&beans_alloc_bytes, 2, host_call_alloc_bytes},
+    // The typed JSON decoder's diagnostic probe. A Beans program reads it by
+    // name — the corpus and fuzz gates do — and it moved into this runtime
+    // when its storage became per-thread, so the interpreter has to be able to
+    // reach it the way it reaches every other runtime entry: in-process,
+    // on a host whose executable exports no names and where no C toolchain
+    // need exist. Under `beansc run` it answers zeros, because typed decoding
+    // is not lowered there and no decode has filed anything.
+    {"beans_json_decode_probe", (void*)&beans_json_decode_probe, 1,
+     host_call_json_decode_probe},
     {"beans_rt_host_symbol", (void*)&beans_rt_host_symbol, 1,
      host_call_rt_host_symbol},
     {"beans_rt_host_invoke", (void*)&beans_rt_host_invoke, 4,
