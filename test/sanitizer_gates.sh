@@ -174,6 +174,177 @@ if fail:
     sys.exit(1)
 PY
 
+# ---- 3. the attribute that lets a sanitizer see generated code --------------
+#
+# `BEANS_SANITIZE` used to reach the clang command line and nothing else
+# (src/driver.b, sanitizer_flags). An LLVM sanitizer pass instruments a
+# function only when that function carries its attribute; clang writes those
+# attributes for the C it compiles, and IR handed to clang as text carries only
+# what the emitter wrote. So the whole sweep in test/sanitize.sh checked
+# beans_rt.c, beans_fiber.c and the bridges and walked past every line beansc
+# generated -- an out-of-bounds read in emitted code was silent and the gate
+# still printed "ok". Issue #168.
+#
+# src/llvm.b now stamps every `define` in the finished module, as one pass over
+# the assembled text rather than an interpolation at each of the two dozen
+# places a definition is written, so a definition added later is marked without
+# anyone remembering the rule exists. This is the ratchet on that claim: IR is
+# emitted for programs chosen to produce every shape of definition header the
+# emitter writes, and one unmarked `define` fails the build.
+#
+# UndefinedBehaviorSanitizer is deliberately absent from all of it. UBSan is
+# Clang front-end instrumentation -- it writes its checks into the IR the front
+# end generates -- and LLVM has no `sanitize_undefined` function attribute for
+# an emitter of textual IR to ask for it with; clang rejects the spelling
+# outright. Every `-fsanitize=undefined` in this tree therefore covers the C
+# and cannot cover generated code, whatever the emitter does.
+ir="$tmp/ir"
+mkdir -p "$ir"
+
+# Named by hand, and every one must exist: a corpus found with a glob shrinks
+# to nothing the day the layout moves, and this gate would then pass on it.
+# Each program is here for the definition header it produces, not for what it
+# computes.
+#
+#   reflect_calls      reflection thunks; derived show/showstep bodies
+#   stdlib_beans       derived eq/hash bodies, their wide variants, generics
+#   threads            spawn thunks
+#   containers         sort key and comparator thunks
+#   singleton_ok       a singleton accessor and the statics initializer
+#   cpu_dispatch       a definition carrying a "target-features" string
+#   brew_unwind_leak   definitions carrying uwtable and a personality routine
+ir_cases=(test/cases/reflect_calls.b examples/stdlib_beans.b
+          examples/threads.b examples/containers.b
+          test/cases/singleton_ok.b examples/cpu_dispatch.b
+          test/cases/brew_unwind_leak.b)
+
+ir_defines=0
+for ir_case in "${ir_cases[@]}"; do
+    if [[ ! -f "$ir_case" ]]; then
+        echo "$ir_case is gone; this gate names its corpus so that a missing" \
+             "program is a failure rather than a silent skip" >&2
+        exit 1
+    fi
+    ir_name=$(basename "$ir_case" .b)
+    BEANS_SANITIZE=address,undefined ./build/beansc llvm "$ir_case" \
+        >"$ir/$ir_name.asan.ll"
+    ir_unmarked=$(grep '^define ' "$ir/$ir_name.asan.ll" |
+                  grep -cv ' sanitize_address' || true)
+    if [[ "$ir_unmarked" -ne 0 ]]; then
+        echo "$ir_case: $ir_unmarked function definitions carry no" \
+             "sanitize_address, so AddressSanitizer looks inside none of" \
+             "them:" >&2
+        grep '^define ' "$ir/$ir_name.asan.ll" |
+            grep -v ' sanitize_address' | head -5 >&2
+        exit 1
+    fi
+    ir_count=$(grep -c '^define ' "$ir/$ir_name.asan.ll" || true)
+    ir_defines=$((ir_defines + ir_count))
+done
+
+# A definition header can carry a target-features string, `uwtable` and a
+# personality routine, debug metadata, or none of them. The attribute has to
+# land after the plain attributes and before the personality and the `!dbg`,
+# because that is the order LLVM's grammar puts them in -- llvm_declaration_for
+# cuts a chunk's re-declaration at exactly those two markers for the same
+# reason. Each shape is asserted rather than assumed: putting the attribute in
+# the wrong place produces either IR clang refuses or, worse, IR it accepts
+# with the attribute somewhere that means nothing.
+want_shape() {   # <label> <file> <extended regex>
+    if ! grep -Eq "$3" "$2"; then
+        echo "no definition in $2 has the $1 header shape; either the corpus" \
+             "stopped producing that shape or the attribute is being spliced" \
+             "into the wrong place" >&2
+        grep '^define ' "$2" | head -3 >&2
+        exit 1
+    fi
+}
+want_shape "plain" "$ir/reflect_calls.asan.ll" \
+    '^define .*\) sanitize_address \{$'
+want_shape "unwinding" "$ir/brew_unwind_leak.asan.ll" \
+    '^define .* uwtable sanitize_address personality '
+want_shape "feature-gated" "$ir/cpu_dispatch.asan.ll" \
+    '^define .*"target-features"="[^"]*" sanitize_address \{$'
+
+BEANS_SANITIZE=address,undefined ./build/beansc llvm --debug \
+    test/cases/brew_unwind_leak.b >"$ir/brew_debug.asan.ll"
+ir_unmarked=$(grep '^define ' "$ir/brew_debug.asan.ll" |
+              grep -cv ' sanitize_address' || true)
+if [[ "$ir_unmarked" -ne 0 ]]; then
+    echo "a --debug build leaves $ir_unmarked definitions unmarked" >&2
+    grep '^define ' "$ir/brew_debug.asan.ll" |
+        grep -v ' sanitize_address' | head -5 >&2
+    exit 1
+fi
+want_shape "debug" "$ir/brew_debug.asan.ll" \
+    '^define .* sanitize_address .*!dbg !'
+
+# Three sanitizers, asked for separately. `thread` must mark for TSan and for
+# nothing else: they are different attributes and a build that asked for one
+# and got both would be instrumenting code it was never told to.
+BEANS_SANITIZE=thread ./build/beansc llvm examples/threads.b \
+    >"$ir/threads.tsan.ll"
+ir_unmarked=$(grep '^define ' "$ir/threads.tsan.ll" |
+              grep -cv ' sanitize_thread' || true)
+if [[ "$ir_unmarked" -ne 0 ]]; then
+    echo "BEANS_SANITIZE=thread leaves $ir_unmarked definitions with no" \
+         "sanitize_thread, so ThreadSanitizer sees none of them" >&2
+    exit 1
+fi
+if grep -q ' sanitize_address' "$ir/threads.tsan.ll"; then
+    echo "BEANS_SANITIZE=thread also asked for AddressSanitizer" >&2
+    exit 1
+fi
+
+# And a build that asked for nothing must be exactly what it always was. The
+# compiler has to rebuild a byte-identical compiler (test/fixpoint.sh), so the
+# ordinary path cannot move: an unsanitized module carries no attribute at all,
+# and a sanitized one differs from it by that attribute and nothing else.
+./build/beansc llvm examples/threads.b >"$ir/threads.plain.ll"
+if grep -q 'sanitize_address\|sanitize_thread' "$ir/threads.plain.ll"; then
+    echo "a build that asked for no sanitizer emitted an attribute anyway" >&2
+    grep -n 'sanitize_address\|sanitize_thread' "$ir/threads.plain.ll" |
+        head -3 >&2
+    exit 1
+fi
+sed 's/^\(define .*\) sanitize_address/\1/' "$ir/threads.asan.ll" \
+    >"$ir/threads.stripped.ll"
+if ! cmp -s "$ir/threads.plain.ll" "$ir/threads.stripped.ll"; then
+    echo "a sanitized module differs from the ordinary one by more than the" \
+         "attribute; the ordinary compile has moved and test/fixpoint.sh is" \
+         "about to say so" >&2
+    diff -u "$ir/threads.plain.ll" "$ir/threads.stripped.ll" | head -20 >&2
+    exit 1
+fi
+
+# The attribute has to be in a place clang reads, not merely in the text.
+if command -v clang >/dev/null 2>&1; then
+    if ! clang -x ir -c -Wno-override-module "$ir/reflect_calls.asan.ll" \
+            -o "$tmp/reflect_calls.o" >"$tmp/ir-parse.log" 2>&1; then
+        echo "clang refuses the sanitized module" >&2
+        sed -n '1,30p' "$tmp/ir-parse.log" >&2
+        exit 1
+    fi
+else
+    echo "SKIP: no clang here, so nothing checked that the sanitized module" \
+         "still parses; the attribute placement above was checked as text" \
+         "only" >&2
+fi
+
+# A check that matched nothing is a check that died quietly.
+ir_families=$(cat "$ir"/*.asan.ll | grep '^define ' | grep -o '@[^(]*' |
+              sed 's/[0-9][0-9]*//g' | sort -u | wc -l | tr -d ' ')
+if [[ "$ir_defines" -lt 400 || "$ir_families" -lt 14 ]]; then
+    echo "this check saw only $ir_defines definitions over $ir_families" \
+         "symbol families; the corpus above has stopped reaching the emitter's" \
+         "definition paths and would now pass on almost anything" >&2
+    exit 1
+fi
+echo "ok every function beansc defines carries the sanitizer attribute:" \
+     "$ir_defines definitions over $ir_families families, four header shapes," \
+     "thread asked for on its own, and a sanitized module that differs from an" \
+     "ordinary one by the attribute alone"
+
 # ---- 2. the same shape, run against real sanitizer failures -----------------
 # The static half proves every script uses the shape. This half proves the
 # shape works here, on programs that really do leak and really do overflow.
