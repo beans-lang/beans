@@ -34,8 +34,11 @@ This file records user-facing changes in each Beans release.
   `chunk_prefix_append` frames a chunk whose payload never enters the buffer,
   so a head and a megabyte of caller-owned bytes go out as one vectored send;
   `ServerConn.write_chunk` uses it, and copies nothing. Trailer fields are held
-  to the head's CR/LF/NUL rule by the same check, and a field RFC 9110 §6.5.1
-  forbids after the body is refused by name. Statuses that cannot carry a body
+  to the head's CR/LF/NUL rule by the same check, and the field names whose
+  meaning is load-bearing after the body are refused by name. That denylist is
+  this package's policy, and the weaker of the two rules: RFC 9110 §6.5.1 states
+  the requirement as an allowlist and names no fields, so passing the check is
+  not a proof of conformance. Statuses that cannot carry a body
   (`1xx`, `204`, `304`) are refused outright, since there is no zero-length
   streamed response to fall back to, and `respond` is refused while a stream is
   open, because a second response written into a chunked body is read by the

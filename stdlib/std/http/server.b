@@ -122,9 +122,14 @@ fn write_chunked_head(target: Bytes,
     write_header_block(target, headers, keep_alive)
 }
 
-// A chunk-size line is hex with no leading zeros (RFC 9112 section 7.1). Lower
-// case: the grammar admits either, every server writes lower, and a fixed
-// spelling keeps the bytes this package emits reproducible.
+// RFC 9112 section 7.1 defines the chunk-size as `1*HEXDIG` — "a string of hex
+// digits indicating the size of the chunk-data in octets". That is the whole of
+// the requirement. The grammar admits leading zeros, and ABNF makes its letters
+// case-insensitive, so it admits either case as well.
+//
+// Lower case and no leading zeros are therefore this package's policy, not the
+// RFC's rule. Both exist so the bytes emitted for a given message are
+// reproducible, which is what lets the goldens compare them byte for byte.
 fn append_chunk_size(target: Bytes, value: int) {
     if value == 0 {
         target.push(48)
@@ -144,15 +149,31 @@ fn append_chunk_size(target: Bytes, value: int) {
     }
 }
 
-// Fields a sender must not put in the trailer section (RFC 9110 section 6.5.1).
-// A recipient is allowed to drop the trailer section entirely, so a message
-// whose framing, routing, caching, authentication or content handling depends
-// on a trailer means two different things to two recipients — which is the
-// same disagreement response splitting exploits, arriving after the head.
+// Field names this package refuses in a trailer section.
 //
-// The enumeration is the RFC's own: framing, routing, request control data,
-// conditionals, authentication, response control data, and the fields that
-// decide how to process the content.
+// This list is this package's policy, and the relation to the standard is worth
+// stating exactly, because the two have opposite shapes. What RFC 9110 section
+// 6.5.1 requires is an allowlist: "A sender MUST NOT generate a trailer field
+// unless the sender knows the corresponding header field name's definition
+// permits the field to be sent in trailers." It names no fields at all. It
+// offers categories, and only as examples — fields "that describe message
+// framing, routing, authentication, request modifiers, response controls, or
+// content format".
+//
+// A denylist of well-known names is the weaker of the two rules: a field absent
+// from this list passes here, where the RFC would still refuse it unless its
+// definition permits trailers. Passing this check is therefore not a proof of
+// conformance. It is what std.http can actually enforce — the package cannot
+// know the definition of every field a caller might invent — and it catches the
+// names whose meaning is load-bearing, which are the ones that corrupt a
+// message. The group labels below are this package's, mapped onto the RFC's
+// example categories; which names sit in each group is this package's choice.
+//
+// Why it matters at all: the RFC says that in most cases trailers are "simply
+// discarded", so a message whose framing, routing, caching, authentication or
+// content handling depends on a trailer means two different things to two
+// recipients — the same disagreement response splitting exploits, arriving
+// after the head.
 fn trailer_field_is_forbidden(name: string) -> bool {
     let forbidden: bool =
         // framing
@@ -417,10 +438,12 @@ pub class ChunkedResponseWriter {
     ///
     /// Trailer values are held to the same CR/LF/NUL rule as the head, by the
     /// same check — a trailer section is a header block, and splitting it
-    /// splits the message just as well. On top of that, a field the RFC
-    /// forbids in a trailer section is refused by name: a recipient may drop
-    /// the section, so a message that carries meaning there means two
-    /// different things to two readers.
+    /// splits the message just as well. On top of that, the field names this
+    /// package refuses in a trailer section are refused here by name: a
+    /// recipient may drop the section, so a message that carries meaning there
+    /// means two different things to two readers. That denylist is this
+    /// package's policy — RFC 9110 section 6.5.1 states the rule as an
+    /// allowlist and names no fields.
     pub fn finish_trailers_append(target: Bytes,
                                   trailers: Headers) -> Result<bool> {
         if !self.started {
@@ -752,8 +775,8 @@ pub unique class ServerConn implements Send {
     }
 
     /// The trailer-carrying form of `finish_chunked`. Trailer fields are held
-    /// to the head's CR/LF/NUL rule and to the RFC's list of fields that must
-    /// not appear after the body.
+    /// to the head's CR/LF/NUL rule and to this package's list of field names
+    /// that must not appear after the body.
     pub fn finish_chunked_trailers(trailers: Headers) -> Result<bool> {
         if !self.alive {
             return err("the connection is closed", "closed")
