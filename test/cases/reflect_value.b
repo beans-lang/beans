@@ -45,6 +45,23 @@ class Panel {
     pub fn first() -> Widget { return self.child }
 }
 
+// #163: two more branches of the same rule. An interface-typed member names
+// no class at all in its declaration, and a free generic function's parameter
+// type is whatever T was bound to after monomorphisation — both reach the same
+// box sites as a plain class binding.
+class Easel {
+    pub art: Paints
+
+    pub fn init(art: Paints) { self.art = art }
+
+    pub fn shown() -> Paints { return self.art }
+}
+
+fn boxed_name<T>(item: T) -> string {
+    let held: reflect.Value = reflect.value(item)
+    return held.type().qualified_name()
+}
+
 class Cell<T> {
     pub title: string
     pub held: T
@@ -152,4 +169,32 @@ fn main() {
     io.println(reflect.value(letters).type().qualified_name())
     io.println(reflect.value(leaf_cell).type().qualified_name())
     io.println(reflect.value(leaf_at_base).type().qualified_name())
+
+    // an interface-typed field and an interface-returning method: the declared
+    // type is an interface, which no object ever is, so the box has to come
+    // from the object
+    let easel: Easel = new Easel(as_paints)
+    let boxed_easel: reflect.Value = reflect.value(easel)
+    let art: reflect.Field = type_of(Easel).field("art").expect("art")
+    io.println(art.get(boxed_easel).expect("read art").type().qualified_name())
+    let shown: reflect.Method =
+        type_of(Easel).method("shown").expect("shown")
+    io.println(shown.call(boxed_easel, []).expect("call shown")
+        .type().qualified_name())
+
+    // a free generic function boxing its own parameter, so the payload's
+    // static type is a type parameter until monomorphisation binds it
+    io.println(boxed_name(icon))
+    io.println(boxed_name(as_widget))
+    io.println(boxed_name(as_paints))
+    io.println(boxed_name(plain_button as Widget))
+    io.println(boxed_name(numbers))
+    io.println(boxed_name(7))
+    io.println(boxed_name("seven"))
+
+    // a Value inside a Value is a Value: reflect.Value is itself a class, so
+    // asking it what it is must answer with itself and not with what it holds
+    let inner: reflect.Value = reflect.value(as_widget)
+    let outer: reflect.Value = reflect.value(move inner)
+    io.println(outer.type().qualified_name())
 }

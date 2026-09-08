@@ -28,3 +28,13 @@ main.Cell<int>
 main.Cell<string>
 main.IntCell
 main.IntCell
+main.IconButton
+main.IconButton
+main.IconButton
+main.IconButton
+main.IconButton
+main.Button
+main.Cell<int>
+int
+string
+std.reflect.Value
