@@ -19,6 +19,25 @@ fi
 # AddressSanitizer and UndefinedBehaviorSanitizer, so the generated code,
 # the reference counting and the cycle collector are all checked for real
 # memory errors rather than only for the right answer.
+#
+# That was half true until issue #168. An LLVM sanitizer pass instruments a
+# function only when the function carries its attribute, and the emitter wrote
+# none, so ASan and TSan checked beans_rt.c, beans_fiber.c and the bridges and
+# walked past every line beansc generated. Two things were needed and both are
+# here: the emitter marks what it defines (src/llvm.b), and every build below
+# asks for the sanitizer with BEANS_SANITIZE so that the IR it hands the link
+# carries the mark. A build that does not ask gets an unmarked module, and
+# then the hand link's -fsanitize= flag instruments the C beside it and
+# nothing else -- which is exactly how this file read for eight releases.
+#
+# UndefinedBehaviorSanitizer is the exception and stays one. UBSan is Clang
+# front-end instrumentation: it writes its checks into the IR the front end
+# generates, and LLVM has no `sanitize_undefined` function attribute for an
+# emitter of textual IR to ask for it with (clang rejects the spelling). So
+# every -fsanitize=undefined in this file covers beans_rt.c, beans_fiber.c and
+# the bridges, and cannot cover generated code. Closing that would mean this
+# emitter writing the UBSan checks itself -- a different piece of work from
+# marking a definition, and not one this gate can stand in for.
 
 # A program that imports std.net references the sockx networking bridge; a
 # hand link compiles the bridge source beside the runtime, the same road the
@@ -37,7 +56,11 @@ run_asan() {
     local file=$1 name=$2 expected=${3:-0}
     echo "ASan checking $file"
     rm -f "build/${name}_ffi.c"
-    ./build/beansc build "$file" -o "$out/${name}_source" >/dev/null
+    # Asked for on the build, not only on the link below: the attribute that
+    # lets ASan look inside a function is written by the emitter, so an IR
+    # module built without this is one the -fsanitize= flag cannot reach.
+    BEANS_SANITIZE=address,undefined \
+        ./build/beansc build "$file" -o "$out/${name}_source" >/dev/null
     local ffi_sources=()
     if [[ -f "build/${name}_ffi.c" ]]; then
         ffi_sources+=("build/${name}_ffi.c")
@@ -478,7 +501,11 @@ for file in examples/threads.b examples/shared_weak.b examples/wide_sync.b \
     echo "TSan checking $file"
     name=$(basename "$file" .b)
     rm -f "build/${name}_ffi.c"
-    ./build/beansc build "$file" -o "$out/${name}_source" >/dev/null
+    # `sanitize_thread` is a separate attribute from `sanitize_address` and is
+    # asked for separately; without it the module linked below is invisible to
+    # the race detector.
+    BEANS_SANITIZE=thread \
+        ./build/beansc build "$file" -o "$out/${name}_source" >/dev/null
     tsan_extra=()
     if [[ -f "build/${name}_ffi.c" ]]; then
         tsan_extra+=("build/${name}_ffi.c")
@@ -523,8 +550,8 @@ done
 # workers are live, which is exactly the code plain rc arithmetic runs in.
 echo "TSan checking test/cases/thread_live_cycles.b"
 rm -f build/thread_live_cycles_ffi.c
-./build/beansc build --emit ir test/cases/thread_live_cycles.b \
-    >"$out/live-cycles-tsan.ir"
+BEANS_SANITIZE=thread ./build/beansc build --emit ir \
+    test/cases/thread_live_cycles.b >"$out/live-cycles-tsan.ir"
 if clang -O1 -g -pthread -fsanitize=thread -DBEANS_ARC_STATS \
     -Wno-override-module build/thread_live_cycles.ll \
     build/thread_live_cycles_ffi.c build/beans_rt.c \
