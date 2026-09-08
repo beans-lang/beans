@@ -242,6 +242,26 @@ fn hir_callable_mentions_generic(
         function.result, generics)
 }
 
+// Whether a callable an owner declares is out of reflection's reach because
+// the owner is generic. Two ways, and both backends read this one answer:
+//
+//   - its signature reaches a type parameter, so no value can be checked
+//     against the declared type in either direction; or
+//   - it takes no receiver, and a receiver is the only thing in a reflective
+//     call that names an instantiation. One row is reached by
+//     `type_of(Grid<int>)` and `type_of(Grid<string>)` alike, and the bodies
+//     are raised one per instantiation, so a `static fn` has no body the row
+//     can name. Choosing one because the program happens to hold a single
+//     instantiation would make the answer depend on unrelated code.
+fn hir_callable_reflection_erased(
+    function: HirFunction,
+    owner_generics: List<string>) -> bool {
+    if owner_generics.len() == 0 { return false }
+    if function.is_static { return true }
+    return hir_callable_mentions_generic(
+        function, owner_generics)
+}
+
 // A type's own string form: a `to_string(self) -> string` with a body and no
 // argument beyond the receiver. When present, `{obj}` renders through it
 // rather than through the derived Name { field: value } form, so a class that
