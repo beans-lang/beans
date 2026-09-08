@@ -7780,7 +7780,6 @@ class ExpressionChecker {
             none => {}
         }
         var inout_names: Map<string, bool> = {}
-        var unit_refused: bool = false
         for result.argument_passing.len() <
             result.children.len() {
             result.argument_passing.push("")
