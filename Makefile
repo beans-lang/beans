@@ -133,6 +133,7 @@ test-frontend: $(BIN)
 	bash ./test/static_fields.sh
 	bash ./test/struct_methods.sh
 	bash ./test/oop_fuzz.sh smoke
+	bash ./test/reflection.sh
 	bash ./test/reflection_fuzz.sh
 	bash ./test/differential_fuzz.sh smoke
 	./test/parse_recovery.sh
@@ -343,6 +344,7 @@ test-core: $(BIN)
 	bash ./test/static_fields.sh
 	bash ./test/struct_methods.sh
 	bash ./test/oop_fuzz.sh smoke
+	bash ./test/reflection.sh
 	bash ./test/reflection_fuzz.sh
 	bash ./test/differential_fuzz.sh smoke
 	bash ./test/ownership_fuzz.sh smoke
