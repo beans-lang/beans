@@ -6244,7 +6244,7 @@ char* beans_reflect_error_message(void) {
     switch (reflect_error_code) {
         case 1: return str_make("missing reflected member", 24);
         case 2: return str_make("reflected member is not public", 30);
-        case 3: return str_make("receiver type does not match", 27);
+        case 3: return str_make("receiver type does not match", 28);
         case 4: return str_make("reflected value type does not match", 35);
         case 5: return str_make("reflected operation is unsupported", 34);
         case 6: return str_make("wrong reflected argument count", 30);

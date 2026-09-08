@@ -2,6 +2,14 @@
 
 This file records user-facing changes in each Beans release.
 
+## [Unreleased]
+
+### Fixed
+
+- **Native reflection preserves the complete receiver mismatch message.** A
+  `receiver_type` error now reports `receiver type does not match` without
+  truncating its final byte, matching the interpreter (#160).
+
 ## [0.1.40] - 2026-09-07
 
 A way to contain a panic without spawning a fiber, and a WebSocket that can
