@@ -1563,9 +1563,15 @@ class ExpressionChecker {
                 }
             }
             none => {
+                // No file of the loaded program is the one being checked.
+                // Every body reached here belongs to a parsed file — a
+                // function, a field default, a C global's annotations — so
+                // this cannot happen for a program the loader accepted. It
+                // refuses rather than composing a name anyway, which is the
+                // whole point of the rule above.
                 self.fail(
                     node,
-                    "can't resolve the type '{node.value}' written inside this string: '{self.current.file}' is not a file of this program")
+                    "can't look up the type '{node.value}' written inside this string: '{self.current.file}' is not a source file of this program")
                 node.resolved = "poison"
             }
         }
@@ -1590,28 +1596,18 @@ class ExpressionChecker {
         }
     }
 
+    // The declaration a type names, by its canonical symbol and nothing
+    // else. It used to re-qualify a name that missed — a bare name against
+    // this file's package, a dotted one against an import binding — because
+    // a re-parsed string piece really did arrive here spelled the way source
+    // wrote it. It no longer does: every type node, inside a string or out,
+    // is bound by the resolver before any of this reads it. So a miss is a
+    // miss, which is what it has to be: composing a key out of the asking
+    // package is how `type_of` inside a string came to name a type that does
+    // not exist, and `poison` — the checker's word for a type it already
+    // refused — is a legal class name a package could really declare.
     fn declaration_for(type: HirType) -> Option<HirDeclaration> {
-        match self.declarations.get(type.name) {
-            some(declaration) => { return some(declaration) }
-            none => {}
-        }
-        // a re-parsed interpolation segment never went through the
-        // resolver, so a bare package-local name or an import alias can
-        // survive here; qualify it the way resolved code would be
-        if !type.name.contains(".") {
-            return self.declarations.get(
-                self.current_qualified(type.name))
-        }
-        let parts: List<string> = type.name.split(".")
-        if parts.len() == 2 {
-            let import_path: string =
-                self.imported_path(parts[0])
-            if import_path != "" {
-                return self.declarations.get(
-                    package_symbol(import_path, parts[1]))
-            }
-        }
-        return none
+        return self.declarations.get(type.name)
     }
 
     fn json_annotation(
