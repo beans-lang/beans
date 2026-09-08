@@ -231,10 +231,20 @@ agree test/cases/parity/settled_dispatch.b 10
 # name gave the interpreter one slot and the native backend two, which this
 # case would expose as a marker imbalance the moment the layouts diverged.
 agree test/cases/parity/inherited_field_slots.b 4
+# #163: a reflective box records the type the value IS, not the type of the
+# binding it came from. The two backends get there by different routes — the
+# native one reads the class descriptor at the object's first word, the
+# interpreter reads the class name the object records for itself — so only a
+# parity case checks they agree. Four boxing routes (reflect.value, a field
+# read, a call result, a construction), a three-link chain plus an interface
+# binding, a middle instance that must refuse the leaf, closed generics that
+# must keep their arguments, and eleven non-class payloads that must not
+# change. Four marked objects, built and released once.
+agree test/cases/parity/issue163_reflect_runtime_type.b 4
 
 # Every case in the directory has to be listed above with its own expected
 # count; a file added and forgotten would otherwise be silently unchecked.
-listed=42
+listed=43
 present=$(find test/cases/parity -name '*.b' | wc -l | tr -d ' ')
 if [ "$present" != "$listed" ]; then
     echo "test/cases/parity holds $present cases but $listed are run" >&2
