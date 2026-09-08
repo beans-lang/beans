@@ -21,8 +21,9 @@
 //
 // The receivers carry arc markers, so this also holds the failing paths to
 // the lifetime rule: a reflective call that refuses still owns the receiver
-// it was handed, and must release it exactly once. Thirteen objects are
-// boxed into reflect values across the run.
+// it was handed, and must release it exactly once — including the wrong
+// receiver in a receiver_type refusal, which is the shape the issue reported.
+// Sixteen objects are boxed into reflect values across the run.
 package main
 
 import std.io
@@ -59,7 +60,11 @@ pub class Alpha {
 
 pub class Beta {
     pub label: int
-    pub fn init() { self.label = 1 }
+    pub witness: Option<Loud> = none
+    pub fn init(tag: string) {
+        self.label = 1
+        self.witness = some(new Loud(tag))
+    }
     pub fn name() -> string { return "beta" }
 }
 
@@ -110,7 +115,9 @@ fn alpha_value(tag: string) -> reflect.Value {
     return reflect.value(move a)
 }
 
-fn beta_value() -> reflect.Value { return reflect.value(new Beta()) }
+fn beta_value(tag: string) -> reflect.Value {
+    return reflect.value(new Beta(tag))
+}
 
 fn method(owner: reflect.Type, name: string) -> reflect.Method {
     return owner.method(name).expect(name)
@@ -149,11 +156,11 @@ fn main() {
 
     // receiver_type: five ways to hand an operation the wrong receiver.
     value_result("field get wrong receiver",
-        alpha.field("label").expect("label").get(beta_value()))
+        alpha.field("label").expect("label").get(beta_value("wrong-recv-get")))
     bool_result("field set wrong receiver",
-        alpha.field("label").expect("label").set(beta_value(), reflect.value(5)))
+        alpha.field("label").expect("label").set(beta_value("wrong-recv-set"), reflect.value(5)))
     value_result("method wrong receiver",
-        method(alpha, "name").call(beta_value(), []))
+        method(alpha, "name").call(beta_value("wrong-recv-call"), []))
     value_result("static called on an instance",
         method(alpha, "origin").call(alpha_value("static-inst"), []))
     value_result("instance called statically",
@@ -186,5 +193,6 @@ fn main() {
     value_result("initializer, too few",
         pair.initializer().expect("init").call([reflect.value(1)]))
     value_result("initializer, too many",
-        beta.initializer().expect("init").call([reflect.value(1)]))
+        beta.initializer().expect("init")
+            .call([reflect.value("x"), reflect.value(2)]))
 }

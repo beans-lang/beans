@@ -237,9 +237,9 @@ agree test/cases/parity/inherited_field_slots.b 4
 # short, so the same failure printed 27 bytes natively and 28 under the
 # interpreter. Every reflection error a program can reach is provoked here,
 # through every shape that reaches it, and each one prints its kind, its
-# message and the message's byte length. Thirteen receivers are boxed into
+# message and the message's byte length. Sixteen receivers are boxed into
 # reflect values, so the refusing paths are held to the lifetime rule too.
-agree test/cases/parity/issue160_reflect_error_messages.b 13
+agree test/cases/parity/issue160_reflect_error_messages.b 16
 
 # Every case in the directory has to be listed above with its own expected
 # count; a file added and forgotten would otherwise be silently unchecked.
