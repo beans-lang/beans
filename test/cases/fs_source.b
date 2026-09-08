@@ -81,4 +81,41 @@ fn main() {
     let probe_size: int = fs.size(probe).expect("probe size")
     let probe_gone: bool = fs.remove(probe).expect("probe remove")
     io.println("fs temp {temp == Dir.temp_path()} {Dir.exists(temp)} {temp.ends_with("/")} {probe_size} {probe_gone} {fs.exists(probe)}")
+
+    // Symlinks, seeded by the harness because Beans cannot make one. `exists`
+    // follows the link and `remove` does not, and the gap between them is the
+    // whole reason `remove` asks the filesystem instead of asking `exists`
+    // first: a dangling link answers false to `exists` and is still removed.
+    // A link to a directory goes the same way — the link, never the directory.
+    let live: string = "{root}/links/live.link"
+    let dead: string = "{root}/links/dead.link"
+    let to_dir: string = "{root}/links/dir.link"
+    let target: string = "{root}/links/target.txt"
+    let pointed_at: string = "{root}/links/adir"
+    io.println("fs links {fs.exists(live)} {fs.exists(dead)} {fs.exists(to_dir)} {Dir.exists(to_dir)}")
+    let live_gone: bool = fs.remove(live).expect("remove live link")
+    let dead_gone: bool = fs.remove(dead).expect("remove dangling link")
+    let dir_gone: bool = fs.remove(to_dir).expect("remove link to a directory")
+    io.println("fs unlink {live_gone} {dead_gone} {dir_gone} {fs.exists(target)} {Dir.exists(pointed_at)}")
+
+    // The same link, before and after its target goes: `exists` said true a
+    // moment ago and says false now, and the link is still there to remove.
+    // This is the window a check-then-act remove would answer wrongly — it is
+    // not a hypothetical race, it is one call apart in a single thread.
+    let breaks: string = "{root}/links/breaks.link"
+    let doomed: string = "{root}/links/broken_target.txt"
+    let before_break: bool = fs.exists(breaks)
+    fs.remove(doomed).expect("remove the target")
+    let after_break: bool = fs.exists(breaks)
+    let broken_gone: bool = fs.remove(breaks).expect("remove the broken link")
+    io.println("fs broken {before_break} {after_break} {broken_gone} {fs.exists(breaks)}")
+
+    // A symlink loop resolves to nothing, so `exists` is false; `remove` never
+    // resolves it and takes the link itself, one side at a time.
+    let loop_a: string = "{root}/links/loop_a.link"
+    let loop_b: string = "{root}/links/loop_b.link"
+    let loop_seen: bool = fs.exists(loop_a)
+    let loop_gone: bool = fs.remove(loop_a).expect("remove one side of a loop")
+    let loop_rest: bool = fs.remove(loop_b).expect("remove the other side")
+    io.println("fs loop {loop_seen} {loop_gone} {loop_rest} {fs.exists(loop_b)}")
 }

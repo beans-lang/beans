@@ -4,3 +4,7 @@ fs direct 11 true 3 0
 fs life 7 7 14 28 0
 fs dirs true false
 fs temp true true false 5 true false
+fs links true false false true
+fs unlink true true true true true
+fs broken true false true false
+fs loop false true true false

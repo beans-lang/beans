@@ -13,6 +13,36 @@ mkdir "$tmp/interp" "$tmp/native" "$tmp/asan"
 # a second copy of this suite in another worktree. mktemp already made the name
 # unique, so the tag rides along rather than being invented again.
 tag=$(basename "$tmp")
+
+# Beans cannot create a symlink, and the case needs three: `exists` follows a
+# link while `remove` does not, so a dangling link answers false to one and is
+# still removed by the other. That gap is why `remove` asks the filesystem
+# instead of asking `exists` first, and it is the shape a "simplification" of
+# remove into check-then-act would break. Each leg gets its own set, because
+# each leg removes them.
+#
+# This does not skip when symlinks are unavailable. A quiet skip here would
+# leave the case reading paths that are not there and reporting it as a
+# behaviour, which is worse than a machine that cannot run this suite saying so.
+seed_links() { # <root>
+    mkdir -p "$1/links/adir"
+    printf 'target\n' >"$1/links/target.txt"
+    printf 'doomed\n' >"$1/links/broken_target.txt"
+    ln -s "$1/links/target.txt" "$1/links/live.link"      # a link to a file
+    ln -s "$1/links/nothing.txt" "$1/links/dead.link"     # born dangling
+    ln -s "$1/links/adir" "$1/links/dir.link"             # a link to a directory
+    ln -s "$1/links/broken_target.txt" "$1/links/breaks.link"  # goes dangling
+    ln -s "$1/links/loop_b.link" "$1/links/loop_a.link"   # a loop, both ways
+    ln -s "$1/links/loop_a.link" "$1/links/loop_b.link"
+    [ -L "$1/links/dead.link" ] && [ -L "$1/links/loop_a.link" ] || {
+        echo "this machine did not create a symlink; fs_source cannot run here" >&2
+        exit 1
+    }
+}
+seed_links "$tmp/interp"
+seed_links "$tmp/native"
+seed_links "$tmp/asan"
+
 ./build/beansc run test/cases/fs_source.b -- "$tmp/interp" "$tag-interp" >"$tmp/interp.out"
 ./build/beansc build test/cases/fs_source.b -o "$tmp/fs-native" >"$tmp/build"
 "$tmp/fs-native" "$tmp/native" "$tag-native" >"$tmp/native.out"
