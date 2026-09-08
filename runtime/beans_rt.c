@@ -108,6 +108,21 @@
 // wasm/ARM/RISC-V 32-bit, whose ABIs align it to 8).
 #define RT_LEN8 __attribute__((aligned(8)))
 
+// A source literal and its own byte count, as the two arguments every
+// (bytes, length) runtime API takes. Beans strings carry an explicit length
+// and may hold NUL, so those APIs cannot fall back on strlen — the count has
+// to come from the call site, and for years it came from a human counting
+// characters. One of those counts was wrong (`beans_reflect_error_message`
+// case 3 said 27 for a 28-byte message), and the native runtime then printed
+// a different string from the tree interpreter for the same error. Deriving
+// the count from the literal removes the whole class: there is no number left
+// to get wrong. The `"" s` concatenation is the guard — it fails to compile on
+// anything that is not a string literal, so `sizeof` can only ever be the
+// literal's own array size. Embedded NULs are counted, which is the point.
+#define BEANS_LIT(s) ("" s), (long long)(sizeof(s) - 1)
+// The same rule for the common case: a string built straight from a literal.
+#define str_lit(s) str_make(BEANS_LIT(s))
+
 // Ask glibc for POSIX 2008 before anything is included. Without it, compiling with
 // `-std=c11` rather than `-std=gnu11` sets __STRICT_ANSI__, and glibc then declares only
 // ISO C — `strdup` and `lstat` disappear and the filesystem section stops compiling.
@@ -4039,13 +4054,12 @@ void beans_panic(const char* msg, long long line, long long col) {
             // is no second unwind to give it (spec/CONCURRENCY.md calls this
             // the one unrecoverable case), so both reports go out and the
             // process stops.
-            rt_write(2, "double panic during unwind: ",
-                     (unsigned long long)28);
+            rt_write(2, BEANS_LIT("double panic during unwind: "));
             rt_write(2, text, (unsigned long long)n);
-            rt_write(2, "  while unwinding: ", (unsigned long long)19);
+            rt_write(2, BEANS_LIT("  while unwinding: "));
             const char* first = beans_fiber_message(fiber);
             rt_write(2, first, (unsigned long long)strlen(first));
-            rt_write(2, "\n", (unsigned long long)1);
+            rt_write(2, BEANS_LIT("\n"));
             abort();
         }
         // Two things make a panic unwind rather than end the process, and
@@ -4426,12 +4440,12 @@ char* beans_interpolate(long long n, ...) {
 static char* str_make(const char* p, long long n);
 void beans_println(char* s) {
     rt_write(1, s, (size_t)beans_slen(s));
-    rt_write(1, "\n", 1);
+    rt_write(1, BEANS_LIT("\n"));
 }
 void beans_print(char* s) { rt_write(1, s, (size_t)beans_slen(s)); }
 void beans_eprintln(char* s) {
     rt_write(2, s, (size_t)beans_slen(s));
-    rt_write(2, "\n", 1);
+    rt_write(2, BEANS_LIT("\n"));
 }
 void beans_eprint(char* s) { rt_write(2, s, (size_t)beans_slen(s)); }
 // std::string semantics: bytes compare unsigned over the shorter length,
@@ -5744,7 +5758,7 @@ long long beans_reflect_register_annotation_value(
         reflect_annotation_value_len, sizeof(BReflectAnnotationValue));
     long long id = reflect_annotation_value_len++;
     reflect_annotation_values[id] =
-        (BReflectAnnotationValue){-1, parent, str_make("", 0),
+        (BReflectAnnotationValue){-1, parent, str_lit(""),
                                   type_name, kind, text};
     return id;
 }
@@ -5757,7 +5771,7 @@ long long beans_reflect_register_annotation_default(
         reflect_annotation_value_len, sizeof(BReflectAnnotationValue));
     long long id = reflect_annotation_value_len++;
     reflect_annotation_values[id] =
-        (BReflectAnnotationValue){-1, -1, str_make("", 0),
+        (BReflectAnnotationValue){-1, -1, str_lit(""),
                                   type_name, kind, text};
     reflect_annotation_fields[field].default_value = id;
     return id;
@@ -5769,7 +5783,7 @@ long long beans_reflect_annotation_type_count(void) {
 
 char* beans_reflect_annotation_type_at(long long index) {
     return index >= 0 && index < reflect_annotation_type_len
-               ? reflect_annotation_types[index].name : str_make("", 0);
+               ? reflect_annotation_types[index].name : str_lit("");
 }
 
 static long long reflect_annotation_type_id(char* name) {
@@ -5785,7 +5799,7 @@ long long beans_reflect_annotation_type_flags(char* name) {
 
 char* beans_reflect_annotation_type_retention(char* name) {
     long long id = reflect_annotation_type_id(name);
-    return id >= 0 ? reflect_annotation_types[id].retention : str_make("", 0);
+    return id >= 0 ? reflect_annotation_types[id].retention : str_lit("");
 }
 
 long long beans_reflect_annotation_type_target_count(char* owner) {
@@ -5801,7 +5815,7 @@ char* beans_reflect_annotation_type_target_at(char* owner, long long wanted) {
         if (!beans_str_eq(reflect_annotation_targets[i].owner, owner)) continue;
         if (current++ == wanted) return reflect_annotation_targets[i].target;
     }
-    return str_make("", 0);
+    return str_lit("");
 }
 
 static long long reflect_annotation_field_id(char* owner, long long wanted,
@@ -5826,12 +5840,12 @@ long long beans_reflect_annotation_type_field_count(char* owner) {
 
 char* beans_reflect_annotation_type_field_name(char* owner, long long index) {
     long long id = reflect_annotation_field_id(owner, index, 0);
-    return id >= 0 ? reflect_annotation_fields[id].name : str_make("", 0);
+    return id >= 0 ? reflect_annotation_fields[id].name : str_lit("");
 }
 
 char* beans_reflect_annotation_type_field_type(char* owner, long long index) {
     long long id = reflect_annotation_field_id(owner, index, 0);
-    return id >= 0 ? reflect_annotation_fields[id].type_name : str_make("", 0);
+    return id >= 0 ? reflect_annotation_fields[id].type_name : str_lit("");
 }
 
 long long beans_reflect_annotation_type_field_flags(char* owner,
@@ -5877,7 +5891,7 @@ long long beans_reflect_annotation_at(long long target_kind,
 
 char* beans_reflect_annotation_name(long long id) {
     return id >= 0 && id < reflect_annotation_len
-               ? reflect_annotations[id].name : str_make("", 0);
+               ? reflect_annotations[id].name : str_lit("");
 }
 
 long long beans_reflect_annotation_argument_count(long long annotation) {
@@ -5899,7 +5913,7 @@ long long beans_reflect_annotation_argument_at(long long annotation,
 
 char* beans_reflect_annotation_argument_name(long long id) {
     return id >= 0 && id < reflect_annotation_value_len
-               ? reflect_annotation_values[id].name : str_make("", 0);
+               ? reflect_annotation_values[id].name : str_lit("");
 }
 
 long long beans_reflect_annotation_value_kind(long long id) {
@@ -5909,12 +5923,12 @@ long long beans_reflect_annotation_value_kind(long long id) {
 
 char* beans_reflect_annotation_value_type(long long id) {
     return id >= 0 && id < reflect_annotation_value_len
-               ? reflect_annotation_values[id].type_name : str_make("", 0);
+               ? reflect_annotation_values[id].type_name : str_lit("");
 }
 
 char* beans_reflect_annotation_value_text(long long id) {
     return id >= 0 && id < reflect_annotation_value_len
-               ? reflect_annotation_values[id].text : str_make("", 0);
+               ? reflect_annotation_values[id].text : str_lit("");
 }
 
 long long beans_reflect_annotation_value_bool(long long id) {
@@ -5980,7 +5994,7 @@ char* beans_reflect_type_argument_at(char* name, long long wanted) {
     for (long long i = 0; i < length; ++i)
         if (name[i] == '<') { start = i + 1; break; }
     if (start < 0 || wanted < 0 || length == 0 || name[length - 1] != '>')
-        return str_make("", 0);
+        return str_lit("");
     long long depth = 0;
     long long current = 0;
     long long from = start;
@@ -6000,7 +6014,7 @@ char* beans_reflect_type_argument_at(char* name, long long wanted) {
             from = i + 1;
         }
     }
-    return str_make("", 0);
+    return str_lit("");
 }
 
 long long beans_reflect_type_kind(char* name) {
@@ -6033,7 +6047,7 @@ char* beans_reflect_base_type(char* name) {
     long long found = reflect_find_type(name);
     return found >= 0 && reflect_types[found].base
                ? reflect_types[found].base
-               : str_make("", 0);
+               : str_lit("");
 }
 
 long long beans_reflect_interface_count(char* name) {
@@ -6049,7 +6063,7 @@ char* beans_reflect_interface_at(char* name, long long wanted) {
         if (!reflect_base_equal(reflect_interfaces[i].owner, name)) continue;
         if (current++ == wanted) return reflect_interfaces[i].interface_name;
     }
-    return str_make("", 0);
+    return str_lit("");
 }
 
 long long beans_reflect_is_assignable_from(char* wanted, char* actual) {
@@ -6141,7 +6155,7 @@ void beans_reflect_value_drop(long long raw) {
 
 char* beans_reflect_value_type(long long raw) {
     BReflectValue* value = (BReflectValue*)(intptr_t)raw;
-    return value ? value->type_name : str_make("", 0);
+    return value ? value->type_name : str_lit("");
 }
 
 long long beans_reflect_value_matches(long long raw, char* wanted) {
@@ -6206,17 +6220,17 @@ long long beans_reflect_field_count(char* name, long long inherited) {
 
 char* beans_reflect_field_name(char* owner, long long inherited, long long index) {
     long long id = reflect_field_id(owner, inherited, index, 0);
-    return id >= 0 ? reflect_fields[id].name : str_make("", 0);
+    return id >= 0 ? reflect_fields[id].name : str_lit("");
 }
 
 char* beans_reflect_field_type(char* owner, long long inherited, long long index) {
     long long id = reflect_field_id(owner, inherited, index, 0);
-    return id >= 0 ? reflect_fields[id].type_name : str_make("", 0);
+    return id >= 0 ? reflect_fields[id].type_name : str_lit("");
 }
 
 char* beans_reflect_field_owner(char* owner, long long inherited, long long index) {
     long long id = reflect_field_id(owner, inherited, index, 0);
-    return id >= 0 ? reflect_fields[id].owner : str_make("", 0);
+    return id >= 0 ? reflect_fields[id].owner : str_lit("");
 }
 
 long long beans_reflect_field_flags(char* owner, long long inherited,
@@ -6242,13 +6256,13 @@ long long beans_reflect_error_code(void) { return reflect_error_code; }
 
 char* beans_reflect_error_message(void) {
     switch (reflect_error_code) {
-        case 1: return str_make("missing reflected member", 24);
-        case 2: return str_make("reflected member is not public", 30);
-        case 3: return str_make("receiver type does not match", 27);
-        case 4: return str_make("reflected value type does not match", 35);
-        case 5: return str_make("reflected operation is unsupported", 34);
-        case 6: return str_make("wrong reflected argument count", 30);
-        default: return str_make("reflection operation failed", 27);
+        case 1: return str_lit("missing reflected member");
+        case 2: return str_lit("reflected member is not public");
+        case 3: return str_lit("receiver type does not match");
+        case 4: return str_lit("reflected value type does not match");
+        case 5: return str_lit("reflected operation is unsupported");
+        case 6: return str_lit("wrong reflected argument count");
+        default: return str_lit("reflection operation failed");
     }
 }
 
@@ -6378,7 +6392,7 @@ long long beans_reflect_method_count(char* owner, long long inherited) {
 char* beans_reflect_method_name(char* owner, long long inherited,
                                 long long index) {
     long long id = reflect_method_list_id(owner, inherited, index, 0);
-    return id >= 0 ? reflect_methods[id].name : str_make("", 0);
+    return id >= 0 ? reflect_methods[id].name : str_lit("");
 }
 
 long long beans_reflect_method_flags(char* owner, char* name) {
@@ -6388,12 +6402,12 @@ long long beans_reflect_method_flags(char* owner, char* name) {
 
 char* beans_reflect_method_owner(char* owner, char* name) {
     long long id = reflect_method_id(owner, name);
-    return id >= 0 ? reflect_methods[id].owner : str_make("", 0);
+    return id >= 0 ? reflect_methods[id].owner : str_lit("");
 }
 
 char* beans_reflect_method_result(char* owner, char* name) {
     long long id = reflect_method_id(owner, name);
-    return id >= 0 ? reflect_methods[id].result_type : str_make("", 0);
+    return id >= 0 ? reflect_methods[id].result_type : str_lit("");
 }
 
 static long long reflect_method_parameter_id(char* owner, char* callable,
@@ -6432,13 +6446,13 @@ long long beans_reflect_method_parameter_count(char* owner, char* name) {
 char* beans_reflect_method_parameter_name(char* owner, char* name,
                                           long long index) {
     long long id = reflect_method_parameter_id(owner, name, index, 0);
-    return id >= 0 ? reflect_method_parameters[id].name : str_make("", 0);
+    return id >= 0 ? reflect_method_parameters[id].name : str_lit("");
 }
 
 char* beans_reflect_method_parameter_type(char* owner, char* name,
                                           long long index) {
     long long id = reflect_method_parameter_id(owner, name, index, 0);
-    return id >= 0 ? reflect_method_parameters[id].type_name : str_make("", 0);
+    return id >= 0 ? reflect_method_parameters[id].type_name : str_lit("");
 }
 
 long long beans_reflect_method_parameter_passing(char* owner, char* name,
@@ -6503,12 +6517,12 @@ long long beans_reflect_initializer_parameter_count(char* owner) {
 
 char* beans_reflect_initializer_parameter_name(char* owner, long long index) {
     long long id = reflect_initializer_parameter_id(owner, index, 0);
-    return id >= 0 ? reflect_method_parameters[id].name : str_make("", 0);
+    return id >= 0 ? reflect_method_parameters[id].name : str_lit("");
 }
 
 char* beans_reflect_initializer_parameter_type(char* owner, long long index) {
     long long id = reflect_initializer_parameter_id(owner, index, 0);
-    return id >= 0 ? reflect_method_parameters[id].type_name : str_make("", 0);
+    return id >= 0 ? reflect_method_parameters[id].type_name : str_lit("");
 }
 
 long long beans_reflect_initializer_parameter_passing(char* owner,
@@ -6537,7 +6551,7 @@ char* beans_reflect_variant_name(char* owner, long long wanted) {
         if (!reflect_base_equal(reflect_variants[i].owner, owner)) continue;
         if (current++ == wanted) return reflect_variants[i].name;
     }
-    return str_make("", 0);
+    return str_lit("");
 }
 
 static long long reflect_variant_parameter_id(char* owner, char* variant,
@@ -6570,13 +6584,13 @@ long long beans_reflect_variant_parameter_count(char* owner, char* variant) {
 char* beans_reflect_variant_parameter_name(char* owner, char* variant,
                                            long long index) {
     long long id = reflect_variant_parameter_id(owner, variant, index, 0);
-    return id >= 0 ? reflect_variant_parameters[id].name : str_make("", 0);
+    return id >= 0 ? reflect_variant_parameters[id].name : str_lit("");
 }
 
 char* beans_reflect_variant_parameter_type(char* owner, char* variant,
                                            long long index) {
     long long id = reflect_variant_parameter_id(owner, variant, index, 0);
-    return id >= 0 ? reflect_variant_parameters[id].type_name : str_make("", 0);
+    return id >= 0 ? reflect_variant_parameters[id].type_name : str_lit("");
 }
 
 static long long reflect_find_function(char* qualified) {
@@ -6586,22 +6600,22 @@ static long long reflect_find_function(char* qualified) {
 long long beans_reflect_registry_type_count(void) { return reflect_type_len; }
 char* beans_reflect_registry_type_at(long long index) {
     return index >= 0 && index < reflect_type_len
-               ? reflect_types[index].name : str_make("", 0);
+               ? reflect_types[index].name : str_lit("");
 }
 long long beans_reflect_registry_function_count(void) {
     return reflect_function_len;
 }
 char* beans_reflect_registry_function_at(long long index) {
     return index >= 0 && index < reflect_function_len
-               ? reflect_functions[index].qualified : str_make("", 0);
+               ? reflect_functions[index].qualified : str_lit("");
 }
 char* beans_reflect_function_name(char* qualified) {
     long long id = reflect_find_function(qualified);
-    return id >= 0 ? reflect_functions[id].name : str_make("", 0);
+    return id >= 0 ? reflect_functions[id].name : str_lit("");
 }
 char* beans_reflect_function_result(char* qualified) {
     long long id = reflect_find_function(qualified);
-    return id >= 0 ? reflect_functions[id].result_type : str_make("", 0);
+    return id >= 0 ? reflect_functions[id].result_type : str_lit("");
 }
 long long beans_reflect_function_flags(char* qualified) {
     long long id = reflect_find_function(qualified);
@@ -6643,11 +6657,11 @@ long long beans_reflect_function_parameter_count(char* qualified) {
 }
 char* beans_reflect_function_parameter_name(char* qualified, long long index) {
     long long id = reflect_function_parameter_id(qualified, index, 0);
-    return id >= 0 ? reflect_function_parameters[id].name : str_make("", 0);
+    return id >= 0 ? reflect_function_parameters[id].name : str_lit("");
 }
 char* beans_reflect_function_parameter_type(char* qualified, long long index) {
     long long id = reflect_function_parameter_id(qualified, index, 0);
-    return id >= 0 ? reflect_function_parameters[id].type_name : str_make("", 0);
+    return id >= 0 ? reflect_function_parameters[id].type_name : str_lit("");
 }
 long long beans_reflect_function_parameter_passing(char* qualified,
                                                    long long index) {
@@ -6898,7 +6912,7 @@ static long long reflect_initializer_invoke(long long type,
         long long row = reflect_initializer_parameter_id(
             reflected->name, i, 0);
         types[i] = row >= 0
-            ? reflect_method_parameters[row].type_name : str_make("", 0);
+            ? reflect_method_parameters[row].type_name : str_lit("");
         passing[i] = row >= 0 ? reflect_method_parameters[row].passing : -1;
     }
     long long result = reflect_invoke(
@@ -9018,8 +9032,8 @@ static long long map_show_value(BMap* m, long long i, long long wide) {
 // inline value reaches a show step.
 void beans_show_map_iter(BShowCtx* c, BMap* m, void* key_step, void* val_step,
                          long long wide) {
-    show_out(c, "{", 1);
-    show_push(c, NULL, 0, "}", 1);
+    show_out(c, BEANS_LIT("{"));
+    show_push(c, NULL, 0, BEANS_LIT("}"));
     long long first = -1;
     for (long long i = 0; i < m->used; i++) {
         if (!MAP_DEAD(m, i)) {
@@ -9031,20 +9045,20 @@ void beans_show_map_iter(BShowCtx* c, BMap* m, void* key_step, void* val_step,
     for (long long i = m->used; i-- > first + 1;) {
         if (MAP_DEAD(m, i)) continue;
         show_push(c, val_step, map_show_value(m, i, wide), NULL, 0);
-        show_push(c, NULL, 0, ": ", 2);
+        show_push(c, NULL, 0, BEANS_LIT(": "));
         show_push(c, key_step, m->data[i * 2], NULL, 0);
-        show_push(c, NULL, 0, ", ", 2);
+        show_push(c, NULL, 0, BEANS_LIT(", "));
     }
     show_push(c, val_step, map_show_value(m, first, wide), NULL, 0);
-    show_push(c, NULL, 0, ": ", 2);
+    show_push(c, NULL, 0, BEANS_LIT(": "));
     show_push(c, key_step, m->data[first * 2], NULL, 0);
 }
 void beans_show_list_iter(BShowCtx* c, BList* l, void* elem_step) {
-    show_out(c, "[", 1);
-    show_push(c, NULL, 0, "]", 1);
+    show_out(c, BEANS_LIT("["));
+    show_push(c, NULL, 0, BEANS_LIT("]"));
     for (long long i = l->len; i-- > 1;) {
         show_push(c, elem_step, list_slot_at(l, i), NULL, 0);
-        show_push(c, NULL, 0, ", ", 2);
+        show_push(c, NULL, 0, BEANS_LIT(", "));
     }
     if (l->len > 0) show_push(c, elem_step, list_slot_at(l, 0), NULL, 0);
 }
@@ -9084,7 +9098,7 @@ char* beans_list_join_wide(BList* l, char* sep, void* elem_step) {
 }
 
 char* beans_show_list(BList* l, char* (*show)(long long)) {
-    return show_join(l, ", ", 2, show, 1);
+    return show_join(l, BEANS_LIT(", "), show, 1);
 }
 char* beans_list_join_show(BList* l, char* sep, char* (*show)(long long)) {
     return show_join(l, sep, beans_slen(sep), show, 0);
@@ -12182,7 +12196,7 @@ char* beans_dir_current(void) {
     // Keep this total like Dir.temp_path: callers can still use filesystem
     // operations relative to the process even when the absolute spelling is
     // no longer available.
-    return str_make(".", 1);
+    return str_lit(".");
 }
 char* beans_dir_temp(void) {
 #if BEANS_RT_WASI
