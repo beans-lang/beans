@@ -60,6 +60,38 @@ extern, variadic, and `inout` calls are not reflective call targets.
 There is no `setAccessible`, proxy generation, stack inspection, class loader,
 or raw-memory escape.
 
+A name that carries type arguments and the same name without them denote one
+declaration. Descriptor rows are filed under the declaration, so
+`type_of(Grid<int>)` and `type_of(Grid<string>)` reach the same rows, and a
+name with no type arguments is assignable from every instantiation of it; two
+different argument lists are two different types and neither is assignable from
+the other.
+
+Reflection describes a closed generic without substituting its arguments. Every
+type such a descriptor reports is the one the source declared:
+`Grid<int>.field("items").type()` is `List<T>`, a method returning `T` reports
+`T`, and a generic base is reported as written, so `Sub<int>`'s base type is
+`Grid<T>`. Only `qualified_name()` and `type_arguments()` carry the arguments.
+`declaring_type()` names the link the queried type reaches the member through,
+so a member declared by a generic type reports one that carries type arguments
+and a member inherited from a plain base does not — which is how a program
+tests for the erasure from the descriptor alone.
+
+A reflective operation on a closed generic is a target when its signature
+mentions no type parameter of the declaring type **and** the call carries a
+receiver that names the instantiation. A class receiver names it — the object
+carries its class — while a struct or union receiver is bare bytes and names
+nothing, so a field of a generic struct is refused on the same ground as a
+receiver-less operation. A member whose declared type mentions a type parameter
+cannot be checked against a value, and a receiver-less operation on a generic
+declaration — an initializer, a `static fn`, an enum variant — cannot name
+which instantiation to run, because the row records none. All of these are
+refused. Lifting the limits means recording the declaration's type-parameter
+names in the registry, so arguments can be substituted, and carrying the
+caller's closed owner name into the call, so a receiver-less or bare-bytes
+body can be selected; both are runtime ABI changes and are deliberately not
+taken here.
+
 Reflection supplies the metadata and checked operations a serializer needs.
 JSON and XML naming, unknown-field, default, versioning, and numeric conversion
 policies remain in `std.encoding`. The complete API and limits are specified in
