@@ -243,23 +243,68 @@ fn hir_callable_mentions_generic(
 }
 
 // Whether a callable an owner declares is out of reflection's reach because
-// the owner is generic. Two ways, and both backends read this one answer:
+// the owner is generic. Three ways, and both backends read this one answer:
 //
 //   - its signature reaches a type parameter, so no value can be checked
-//     against the declared type in either direction; or
+//     against the declared type in either direction;
 //   - it takes no receiver, and a receiver is the only thing in a reflective
 //     call that names an instantiation. One row is reached by
 //     `type_of(Grid<int>)` and `type_of(Grid<string>)` alike, and the bodies
 //     are raised one per instantiation, so a `static fn` has no body the row
 //     can name. Choosing one because the program happens to hold a single
-//     instantiation would make the answer depend on unrelated code.
+//     instantiation would make the answer depend on unrelated code;
+//   - its receiver carries no class descriptor. Only `class` and `interface`
+//     receivers do — a struct, union or enum arrives as bare bytes, so
+//     `Point<int>` and `Point<Wide>` are indistinguishable there and nothing
+//     says which instantiation's body to run.
+//
+// A free function has no owner and no owner's parameters to reach, so it is
+// never erased by this rule; its own type parameters are flag 8's business.
 fn hir_callable_reflection_erased(
     function: HirFunction,
-    owner_generics: List<string>) -> bool {
-    if owner_generics.len() == 0 { return false }
-    if function.is_static { return true }
-    return hir_callable_mentions_generic(
-        function, owner_generics)
+    owner: Option<HirDeclaration>) -> bool {
+    match owner {
+        some(declaration) => {
+            if declaration.generics.len() == 0 {
+                return false
+            }
+            if declaration.kind != "class" &&
+               declaration.kind != "interface" {
+                return true
+            }
+            if function.is_static { return true }
+            return hir_callable_mentions_generic(
+                function, declaration.generics)
+        }
+        none => {}
+    }
+    return false
+}
+
+// Whether a field a generic owner declares is out of reflection's reach. The
+// same two questions, asked of a slot instead of a callable:
+//
+//   - a struct or union slot has no receiver that names an instantiation. A
+//     record arrives at a reflective read as bare bytes with no descriptor, so
+//     `Point<int>` and `Point<Wide>` are indistinguishable there while their
+//     slots sit at different offsets; only a class receiver carries the class
+//     id that says which instantiation it came from.
+//   - a declared type that reaches a type parameter is reported as written, so
+//     the row for `Slot<T>.item` says `T`. No value carries `T` as its type,
+//     which makes the slot undescribable rather than merely unimplemented —
+//     and reading it anyway would hand `Slot<int>`'s bits to a caller under a
+//     name that admits `Slot<string>`'s.
+//
+// A class slot whose declared type reaches no parameter stays reachable even
+// though its offset differs per instantiation: the receiver's class id names
+// the offset. That is what the emitted thunk switches on.
+fn hir_field_reflection_erased(
+    declaration: HirDeclaration,
+    field: HirField) -> bool {
+    if declaration.generics.len() == 0 { return false }
+    if declaration.kind != "class" { return true }
+    return hir_type_mentions_generic(
+        field.type, declaration.generics)
 }
 
 // A type's own string form: a `to_string(self) -> string` with a body and no

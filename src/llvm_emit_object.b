@@ -460,6 +460,70 @@ partial class LlvmTextEmitter {
         return true
     }
 
+    // The symbol for the initializer a `new` of this class resolved to,
+    // raising a generic base's `init` on demand.
+    //
+    // `instantiate_base_methods` skips `init` on purpose: a subclass that
+    // writes its own chains through `super.init`, and that chain raises the
+    // base's instantiation on the way past. A subclass that writes no `init`
+    // never chains — the checker resolves `new Leaf()` straight to the base's
+    // template — so nothing raised it and the emitter failed the BUILD asking
+    // for a symbol named after the open template. Raise it here instead,
+    // under the leaf's own instance name and with the arguments the `extends`
+    // pinned, which is the same thing the chain would have raised.
+    //
+    // Returns "" when there is nothing to raise, so the caller can report a
+    // missing initializer in its own words rather than this one failing the
+    // build from inside a lookup.
+    fn class_initializer_symbol(
+        instruction: MirInstruction,
+        layout: LlvmClassLayout,
+        resolved: string) -> string {
+        match self.function_symbols.get(resolved) {
+            some(symbol) => { return symbol }
+            none => {}
+        }
+        let chain: List<HirDeclaration> =
+            self.class_chain(layout.declaration)
+        let chain_types: List<HirType> =
+            self.class_chain_types(
+                layout.declaration,
+                layout.instance_type)
+        if chain.len() != chain_types.len() { return "" }
+        var index: int = chain.len()
+        for index > 0 {
+            index -= 1
+            let link: HirDeclaration = chain[index]
+            if link.generics.len() == 0 { continue }
+            if resolved != "{link.qualified}.init" {
+                continue
+            }
+            let link_type: HirType = chain_types[index]
+            if link.generics.len() !=
+                   link_type.args.len() {
+                return ""
+            }
+            if !self.generic_templates.contains_key(
+                   resolved) {
+                return ""
+            }
+            var bindings: Map<string, HirType> = {}
+            for slot: int in 0..link.generics.len() {
+                bindings[link.generics[slot]] =
+                    link_type.args[slot]
+            }
+            // `self` inside the raised body is the leaf being built, not the
+            // base: one object is constructed and its fields are the leaf's.
+            bindings[link.qualified] =
+                layout.instance_type
+            bindings[link.name] = layout.instance_type
+            return self.instantiate_generic(
+                instruction, resolved,
+                "{layout.instance}.init", bindings)
+        }
+        return ""
+    }
+
     // Whether a class strictly nearer the leaf than chain[index] declares its
     // own deinit in source. `class_has_deinit` reads program.functions, which
     // holds only source-declared bodies — raised base instances live on the
@@ -1723,6 +1787,55 @@ partial class LlvmTextEmitter {
         return ""
     }
 
+    // The symbol that computes one field's declared default for objects of
+    // this layout, raising a generic owner's template on demand.
+    //
+    // A default written on a generic class is a template like any other body,
+    // so it has no symbol until an instantiation asks for one — and a
+    // subclass of a closed generic inherits that template as its own field's
+    // default. Both the written `new` path and the reflective constructor ask
+    // this one question, so a class cannot be constructible one way and
+    // refused the other. Returns "" when nothing answers.
+    fn class_default_symbol(
+        instruction: MirInstruction,
+        layout: LlvmClassLayout,
+        field: HirField,
+        field_type: HirType) -> string {
+        let default_name: string =
+            self.class_default_function(layout, field)
+        if self.function_symbols.contains_key(
+               default_name) {
+            return self.function_symbols[default_name]
+        }
+        if !self.generic_templates.contains_key(
+               default_name) {
+            return ""
+        }
+        var bindings: Map<string, HirType> = {}
+        let template: MirFunction =
+            self.generic_templates[default_name]
+        self.unify_open(
+            template.result, field_type, bindings)
+        // A generic leaf binds its own parameters from the type it is being
+        // laid out as. A non-generic leaf over a closed generic base has none
+        // of its own; `unify_open` above already bound whatever the field
+        // type names, and the chain walk in class_default_function found the
+        // template on the base.
+        if layout.declaration.generics.len() ==
+               layout.instance_type.args.len() {
+            for index: int in
+                0..layout.declaration.generics.len() {
+                bindings[
+                    layout.declaration.generics[index]] =
+                    layout.instance_type.args[index]
+            }
+        }
+        return self.instantiate_generic(
+            instruction, default_name,
+            "{default_name}$default({render_hir_type(layout.instance_type)})",
+            bindings)
+    }
+
     fn emit_class_defaults(
         instruction: MirInstruction,
         layout: LlvmClassLayout,
@@ -1739,42 +1852,10 @@ partial class LlvmTextEmitter {
                     let offset: int =
                         layout.field_offsets[field.name]
                     let id: int = self.fresh()
-                    let default_name: string =
-                        self.class_default_function(
-                            layout, field)
-                    var symbol: string = ""
-                    if self.function_symbols.contains_key(
-                           default_name) {
-                        symbol =
-                            self.function_symbols[
-                                default_name]
-                    } else if self.generic_templates.contains_key(
-                                  default_name) {
-                        var bindings:
-                            Map<string, HirType> = {}
-                        let template: MirFunction =
-                            self.generic_templates[
-                                default_name]
-                        self.unify_open(
-                            template.result,
-                            field_type, bindings)
-                        if layout.declaration.generics.len() ==
-                               instruction.type.args.len() {
-                            for index: int in
-                                0..layout.declaration.generics.len() {
-                                bindings[
-                                    layout.declaration.generics[
-                                        index]] =
-                                    instruction.type.args[index]
-                            }
-                        }
-                        symbol =
-                            self.instantiate_generic(
-                                instruction,
-                                default_name,
-                                "{default_name}$default({render_hir_type(instruction.type)})",
-                                bindings)
-                    }
+                    let symbol: string =
+                        self.class_default_symbol(
+                            instruction, layout, field,
+                            field_type)
                     if symbol == "" {
                         self.fail(
                             instruction,
@@ -2474,16 +2555,17 @@ partial class LlvmTextEmitter {
                         if initializer == "" {
                             return output
                         }
-                    } else if self.function_symbols.contains_key(
-                                  instruction.resolved) {
-                        initializer =
-                            self.function_symbols[
-                                instruction.resolved]
                     } else {
-                        self.fail(
-                            instruction,
-                            "LLVM emitter cannot find initializer '{instruction.resolved}'")
-                        return output
+                        initializer =
+                            self.class_initializer_symbol(
+                                instruction, layout,
+                                instruction.resolved)
+                        if initializer == "" {
+                            self.fail(
+                                instruction,
+                                "LLVM emitter cannot find initializer '{instruction.resolved}'")
+                            return output
+                        }
                     }
                     var arguments: List<string> =
                         ["ptr {result}"]
