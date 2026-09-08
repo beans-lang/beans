@@ -131,9 +131,9 @@ no client window offered: line=[Sec-WebSocket-Extensions: permessage-deflate; se
 a preference cannot widen: line=[Sec-WebSocket-Extensions: permessage-deflate; server_max_window_bits=9] agreed=[permessage-deflate; server_max_window_bits=9] rsv1=true reaches_1k=false repeat_identical=false
 no deflate offered: line=[(none)] agreed=[(declined)] rsv1=false reaches_1k=false repeat_identical=true
 no preference, compression off: line=[(none)] agreed=[(declined)] rsv1=false reaches_1k=false repeat_identical=true
-a preference with compression off: refused invalid
-an 8-bit window preferred: refused invalid
-a 16-bit window preferred: refused invalid
+a preference with compression off: refused invalid, peer saw nothing
+an 8-bit window preferred: refused invalid, peer saw nothing
+a 16-bit window preferred: refused invalid, peer saw nothing
 round trip default: server=[permessage-deflate] client=[permessage-deflate] up=2 down=2
 round trip server takeover off: server=[permessage-deflate; server_no_context_takeover] client=[permessage-deflate; server_no_context_takeover] up=2 down=2
 round trip client takeover off: server=[permessage-deflate; client_no_context_takeover] client=[permessage-deflate; client_no_context_takeover] up=2 down=2

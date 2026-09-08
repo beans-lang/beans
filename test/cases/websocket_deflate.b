@@ -1253,7 +1253,20 @@ fn narrow_wire_probe(label: string, offer: string, compress: bool,
             io.println("{label}: line=[{line}] agreed=[{agreement_text(server.deflate())}] rsv1={compressed} reaches_1k={reaches} repeat_identical={identical}")
         }
         err(problem) => {
-            io.println("{label}: refused {problem.kind}")
+            // A refusal is only worth anything if it happened *before* the
+            // 101 went out — a preference is this end's own configuration, so
+            // `accept` checks it before it looks at the peer's request and
+            // long before it writes. The kind alone cannot see that: a check
+            // moved below `write_all` would still answer `invalid` here while
+            // a promise sat on the wire. So look from the peer's side. The
+            // server's stream was moved into `accept` and dropped on the error
+            // path, and the whole request head has already been read, so the
+            // close is a clean FIN and anything written would still arrive.
+            // `nothing` is the only right answer.
+            let leftover: Bytes = client.read(4096).or(new Bytes(0))
+            var saw: string = "nothing"
+            if leftover.len() > 0 { saw = "{leftover.len()} bytes" }
+            io.println("{label}: refused {problem.kind}, peer saw {saw}")
         }
     }
     return ok(true)
