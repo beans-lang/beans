@@ -766,10 +766,7 @@ class ExpressionChecker {
 
     fn generic_name_in(name: string,
                        generics: List<string>) -> bool {
-        for generic: string in generics {
-            if generic == name { return true }
-        }
-        return false
+        return generic_name_listed(generics, name)
     }
 
     fn substitute_generic_type(

@@ -73,6 +73,25 @@ pub class Holder<T> {
         return move rest
     }
 
+    // T named only inside a function type. This is the one place the walk
+    // that decides what to promote has to differ from
+    // ExpressionChecker.type_mentions_generic, which answers false for `fn`
+    // on purpose — a function value that returns T owns the recipe and not a
+    // T, which is a move rule and not a "can a call bind this" rule. A call
+    // binds T here by unifying the argument's own function type.
+    pub static fn produced(make: fn() -> T) -> T { return make() }
+
+    pub static fn taken(use: fn(T) -> int, value: T) -> int {
+        return use(value)
+    }
+
+    // T reachable ONLY through a function type, and not through this static's
+    // own result either
+    pub static fn count_of(make: fn() -> T) -> int {
+        let made: T = make()
+        return 1
+    }
+
     // a static that names no type parameter at all still needs none
     pub static fn tag() -> string { return "holder" }
 
@@ -171,6 +190,10 @@ pub class Label {
     pub fn init(text: string) { self.text = text }
 }
 
+fn one() -> int { return 1 }
+fn twice(value: int) -> int { return value * 2 }
+fn word() -> string { return "wd" }
+
 fn make_int_holder() -> Holder<int> { return Holder.empty() }
 
 fn count_strings(held: Holder<string>) -> int {
@@ -242,6 +265,9 @@ fn main() {
     // recursion through the promoted parameter
     let repeated: List<string> = Holder.repeat("t", 3)
     io.println("{repeated.len()} {repeated[2]}")
+
+    // T named only inside a function type, bound from the argument's own
+    io.println("{Holder.produced(one)} {Holder.taken(twice, 21)} {Holder.count_of(word)}")
 
     // a static that names no parameter is unaffected
     io.println(Holder.tag())
