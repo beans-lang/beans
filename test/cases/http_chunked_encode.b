@@ -497,6 +497,15 @@ fn loopback() {
                     fields.add("Content-Type", "application/octet-stream")
                     report("begin 204", connection.begin_chunked(
                         204, "No Content", new http.Headers(), true))
+                    var framed: http.Headers = new http.Headers()
+                    framed.add("Transfer-Encoding", "chunked")
+                    report("begin with caller framing", connection.begin_chunked(
+                        200, "OK", framed, true))
+                    var injected: http.Headers = new http.Headers()
+                    injected.add("Location", "/ok\r\nX-Injected: yes")
+                    report("begin with CRLF in a value",
+                           connection.begin_chunked(200, "OK", injected, true))
+                    io.println("still not streaming after a refused begin: {!connection.is_streaming()}")
                     must("begin", connection.begin_chunked(200, "OK", fields,
                                                            true))
                     io.println("streaming after begin: {connection.is_streaming()}")
@@ -531,6 +540,11 @@ fn loopback() {
                                                              true))
                     must("chunk 2a", connection.write_chunk(Bytes.from("re")))
                     must("chunk 2b", connection.write_chunk(Bytes.from("used")))
+                    var bad_trailers: http.Headers = new http.Headers()
+                    bad_trailers.add("Content-Length", "6")
+                    report("finish 2 with a forbidden trailer",
+                           connection.finish_chunked_trailers(bad_trailers))
+                    io.println("still streaming after a refused finish: {connection.is_streaming()}")
                     var trailers: http.Headers = new http.Headers()
                     trailers.add("X-Checksum", "77")
                     must("finish 2",

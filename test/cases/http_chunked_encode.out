@@ -57,6 +57,9 @@ streaming before begin: false
 write_chunk before begin: err[invalid] begin a streamed response before writing a chunk
 finish before begin: err[invalid] begin a streamed response before finishing it
 begin 204: err[invalid] status 204 cannot carry a response body, so it cannot be streamed
+begin with caller framing: err[invalid] respond owns HTTP framing; do not supply Content-Length or Transfer-Encoding
+begin with CRLF in a value: err[invalid] the value of Location carries CR, LF or NUL
+still not streaming after a refused begin: true
 streaming after begin: true
 begin twice: err[invalid] this connection is already streaming a response; finish it before beginning another
 respond while streaming: err[invalid] this connection is streaming a response; finish it before writing another
@@ -64,6 +67,8 @@ server body equals the shared shape: true
 empty chunk on the wire: err[invalid] a streamed chunk cannot be empty: a zero-length chunk is the terminator, so writing one would end the response here
 streaming after finish: false alive=true
 chunk after finish: err[invalid] begin a streamed response before writing a chunk
+finish 2 with a forbidden trailer: err[invalid] Content-Length cannot be sent as a trailer field; a recipient may drop the trailer section
+still streaming after a refused finish: true
 closed after a non-keep-alive stream: true
 streamed body sent: 4639 bytes
 client saw: first=200:4639:identical=true:alive=true | second=200:reused | third=200:bye:keep_alive=false

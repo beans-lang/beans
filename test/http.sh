@@ -43,6 +43,49 @@ grep -q "^ok http_fuzz" "$tmp/fuzz2.out"
 "$beansc" run test/cases/http_fuzz.b -- 3 60 >"$tmp/fuzz3.out" || { cat "$tmp/fuzz3.out" >&2; exit 1; }
 grep -q "^ok http_fuzz" "$tmp/fuzz3.out"
 
+echo "checking every response head goes through the one framing gate"
+# The rule this pins is a *shape*, not a case: there is exactly one place in
+# std.http that writes a response status line, exactly one that writes the
+# chunked framing header, and the only way to reach either is through
+# `check_response_head`. That is what makes response splitting and framing
+# confusion one bug to fix rather than one per encoder — the reason
+# http_write_rules.b and http_chunked_encode.b can prove the whole write side
+# from a handful of entry points.
+#
+# A future encoder therefore cannot ship without meeting this gate. If it
+# reuses the head writers, one of these counts moves; if it hand-rolls a
+# status line instead, the first count moves. Either way the author lands
+# here and has to say which gate the new path runs. Update a number only
+# after checking the new call site validates first — never to make the
+# suite green.
+framing_shape() { # <count> <fixed string> <why it is that number>
+    local want=$1 needle=$2 why=$3 got
+    got=$(grep -rF -- "$needle" stdlib/std/http/ | wc -l | tr -d '[:space:]')
+    if [ "$got" != "$want" ]; then
+        echo "std.http framing shape changed: '$needle' appears $got times, expected $want ($why)" >&2
+        grep -rnF -- "$needle" stdlib/std/http/ >&2
+        exit 1
+    fi
+}
+framing_shape 1 'append_string("HTTP/1.1 ")' \
+    'one response status-line writer, write_status_line'
+framing_shape 1 'append_string("Transfer-Encoding: chunked\r\n")' \
+    'one chunked-framing writer, write_chunked_head'
+framing_shape 3 'write_status_line(' \
+    'defined once, called by write_response_head and write_chunked_head'
+framing_shape 3 'write_response_head(' \
+    'defined once, called by write_response_frame and encode_response_head_append'
+framing_shape 2 'write_chunked_head(' \
+    'defined once, called by encode_chunked_head_append'
+framing_shape 3 'check_response_head(' \
+    'defined once, called by check_response_frame and check_chunked_frame'
+framing_shape 4 'check_headers(' \
+    'defined once, called by check_response_head, check_trailers and Client.request'
+framing_shape 2 'check_trailers(' \
+    'defined once, called by ChunkedResponseWriter.finish_trailers_append'
+framing_shape 5 'field_is_safe(' \
+    'defined once; the CR/LF/NUL refusal has no second implementation'
+
 echo "checking no C type escapes the std.http surface"
 if grep -nE '^\s*pub .*(RawPtr|CFunctionPtr)' stdlib/std/http/*.b; then
     echo "a C type appears in a public std.http signature" >&2

@@ -329,6 +329,10 @@ pub fn encode_chunked_head_append(target: Bytes,
 /// caller-owned `Bytes`, so the same writer serves a buffer, an output queue,
 /// or a vectored send, and a validation failure leaves `target` untouched.
 ///
+/// A response to a HEAD request is the head alone: write it and stop, with no
+/// chunk and no terminator. Nothing here forces a terminator, because a HEAD
+/// response that carried one would carry a body.
+///
 /// The CRLF that closes a chunk is written at the **front** of the next chunk's
 /// size line, or of the terminator, rather than after the payload. That is what
 /// lets `chunk_prefix_append` frame a chunk whose payload never enters `target`
@@ -699,6 +703,12 @@ pub unique class ServerConn implements Send {
     /// which is the honest report of a handler that failed after its status
     /// was already on the wire — the peer sees a truncated message rather than
     /// a complete one that lost part of its content.
+    ///
+    /// This frames a response that will carry a body. A response to a HEAD
+    /// request carries none, so it is answered with `respond`, not begun here:
+    /// a streamed HEAD response would either never be finished — leaving this
+    /// connection owned by a response that has ended — or be finished with a
+    /// terminating chunk, which is a body.
     pub fn begin_chunked(status: int,
                          reason: string,
                          headers: Headers,
