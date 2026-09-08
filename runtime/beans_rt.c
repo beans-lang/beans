@@ -5954,8 +5954,48 @@ static int reflect_base_equal(char* left, char* right) {
            memcmp(left, right, (size_t)left_len) == 0;
 }
 
+// One name stands for another in an assignability question.
+//
+// Rows are filed under the declaration's own name, and every *lookup* strips
+// the type arguments to reach them -- that is how `main.Grid<int>` finds the
+// members `main.Grid` declares. Assignability is not a lookup and must not
+// strip: an argument-free name denotes the declaration itself, so every
+// instantiation of it is one, but two different argument lists are two
+// different types and neither stands for the other. Comparing these with
+// reflect_base_equal answered that an `IntGrid` -- a `Grid<int>` -- is usable
+// where a `Grid<string>` is wanted; comparing them with beans_str_eq answered
+// that a `Grid<int>` is not usable where its own declaring type is wanted,
+// which is the type its members are filed under.
+static int reflect_name_assignable(char* wanted, char* actual) {
+    if (beans_str_eq(wanted, actual)) return 1;
+    long long wanted_len = beans_slen(wanted);
+    if (reflect_base_length(wanted) != wanted_len) return 0;
+    return reflect_base_length(actual) == wanted_len &&
+           memcmp(wanted, actual, (size_t)wanted_len) == 0;
+}
+
 static long long reflect_find_type(char* name) {
     return reflect_type_id_by_base(name);
+}
+
+// The declaring type of a member, in the form the queried type reaches it
+// through. Rows are filed under the declaration's open name, so a member of
+// `main.Grid<int>` reported `main.Grid` and a caller could not see from the
+// descriptor that its declaring type was generic at all -- the obvious guard
+// `member.declaring_type().type_arguments().len() != 0` was false for exactly
+// the members that are erased. The queried type's own chain is written the way
+// the source wrote it, so a closed base link reads `main.Grid<int>`; answer
+// with the link that carries the filed row.
+static char* reflect_declaring_name(char* queried, char* declared) {
+    if (!queried || !declared) return declared;
+    char* current = queried;
+    for (long long guard = 0; guard <= reflect_type_len; ++guard) {
+        if (reflect_base_equal(current, declared)) return current;
+        long long at = reflect_find_type(current);
+        if (at < 0 || !reflect_types[at].base) break;
+        current = reflect_types[at].base;
+    }
+    return declared;
 }
 
 long long beans_reflect_type_argument_count(char* name) {
@@ -6053,12 +6093,12 @@ char* beans_reflect_interface_at(char* name, long long wanted) {
 }
 
 long long beans_reflect_is_assignable_from(char* wanted, char* actual) {
-    if (beans_str_eq(wanted, actual)) return 1;
+    if (reflect_name_assignable(wanted, actual)) return 1;
     long long found = reflect_find_type(actual);
     long long guard = 0;
     while (found >= 0 && reflect_types[found].base && guard++ < reflect_type_len) {
         char* base = reflect_types[found].base;
-        if (reflect_base_equal(wanted, base)) return 1;
+        if (reflect_name_assignable(wanted, base)) return 1;
         found = reflect_find_type(base);
     }
     found = reflect_find_type(actual);
@@ -6069,13 +6109,13 @@ long long beans_reflect_is_assignable_from(char* wanted, char* actual) {
         if (reflect_interface_orphans) {
             for (long long i = 0; i < reflect_interface_len; ++i)
                 if (reflect_base_equal(reflect_interfaces[i].owner, current) &&
-                    reflect_base_equal(wanted,
-                                       reflect_interfaces[i].interface_name))
+                    reflect_name_assignable(
+                        wanted, reflect_interfaces[i].interface_name))
                     return 1;
         } else if (at >= 0) {
             BReflectIdListHead* ifaces = &reflect_types[at].ifaces;
             for (long long i = 0; i < ifaces->len; ++i)
-                if (reflect_base_equal(
+                if (reflect_name_assignable(
                         wanted,
                         reflect_interfaces[ifaces->ids[i]].interface_name))
                     return 1;
@@ -6216,7 +6256,9 @@ char* beans_reflect_field_type(char* owner, long long inherited, long long index
 
 char* beans_reflect_field_owner(char* owner, long long inherited, long long index) {
     long long id = reflect_field_id(owner, inherited, index, 0);
-    return id >= 0 ? reflect_fields[id].owner : str_make("", 0);
+    return id >= 0
+               ? reflect_declaring_name(owner, reflect_fields[id].owner)
+               : str_make("", 0);
 }
 
 long long beans_reflect_field_flags(char* owner, long long inherited,
@@ -6388,7 +6430,9 @@ long long beans_reflect_method_flags(char* owner, char* name) {
 
 char* beans_reflect_method_owner(char* owner, char* name) {
     long long id = reflect_method_id(owner, name);
-    return id >= 0 ? reflect_methods[id].owner : str_make("", 0);
+    return id >= 0
+               ? reflect_declaring_name(owner, reflect_methods[id].owner)
+               : str_make("", 0);
 }
 
 char* beans_reflect_method_result(char* owner, char* name) {
