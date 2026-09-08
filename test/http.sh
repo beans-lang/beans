@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # std.http end to end: the smuggling corpus is refused through the public
-# parser (never re-liberalized), client and server exchange real HTTP/1.1
-# over loopback (keep-alive, bodies, chunked, pipelining, close), the
-# chunking-invariance fuzzer holds at fixed seeds, and the parse-throughput
-# budget is measured against the same vendored llhttp compiled raw.
+# parser (never re-liberalized), chunked responses are framed and refused by
+# the rules the package owns and read back by its own parser, client and
+# server exchange real HTTP/1.1 over loopback (keep-alive, bodies, chunked,
+# pipelining, close), the chunking-invariance fuzzer holds at fixed seeds,
+# and the parse-throughput budget is measured against the same vendored
+# llhttp compiled raw.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/beans-http.XXXXXX")
@@ -25,6 +27,9 @@ run_both http_smuggling
 
 echo "checking the write side refuses splitting and bounds every head span"
 run_both http_write_rules
+
+echo "checking chunked responses are framed, refused and parsed back"
+run_both http_chunked_encode
 
 echo "checking client and server speak over loopback"
 run_both http_roundtrip
