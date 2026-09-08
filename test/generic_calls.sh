@@ -81,6 +81,23 @@ check_bad test/cases/generic_calls_pkg_bad/main.b \
 run_all_ways test/cases/generic_method_inherit.b \
     test/cases/generic_method_inherit.out
 
+# A type parameter inside a function-typed parameter, on every receiver form.
+# `fn(T)` and `fn(T) -> unit` are one type — the result is optional in the
+# syntax, not in the type — but only the spelled form carries the result in
+# the type's argument list, and a closure literal always carries it. Matching
+# the two by that list rather than by (parameters, result) made a free
+# function or a static refuse the call at build time, in the emitter's own
+# words, on a call whose type argument the programmer had written out; the
+# checker had already given up inferring the same T for the same reason,
+# which is why passing the identical closure through a `let` first was the
+# spelling that worked (#161).
+#
+# The case is built so a wrong instance is a wrong answer rather than a
+# build that merely succeeds: every closure is invoked, the counts differ
+# per section, and each shape appears at two type arguments at least.
+run_all_ways test/cases/issue161_fn_typed_parameter.b \
+    test/cases/issue161_fn_typed_parameter.out
+
 # And every form that exists only to be reached through a row is refused at
 # the declaration. Each of these checked clean before: the interface and
 # abstract ones jumped through a null row natively while the interpreter
