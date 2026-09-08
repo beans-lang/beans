@@ -2186,6 +2186,12 @@ class TreeInterpreter {
                     // The native emitter registers no thunk for either
                     // (llvm_emit_reflect.b `reflection_field_action`), and
                     // both backends read the one predicate in hir.b.
+                    //
+                    // Refused where the runtime refuses a missing thunk —
+                    // after the receiver check, and after the value check on
+                    // a write (beans_rt.c `beans_reflect_field_set`) — so a
+                    // caller that also passed the wrong value type is told
+                    // about that first on both backends rather than one.
                     var erased: bool = false
                     match self.declaration(item.owner) {
                         some(owner_declaration) => {
@@ -2195,14 +2201,6 @@ class TreeInterpreter {
                                     item.field)
                         }
                         none => {}
-                    }
-                    if erased {
-                        self.reflect_error_code = 5
-                        self.reflect_error_message =
-                            "reflected operation is unsupported"
-                        return if name == "field_set" {
-                            TreeValue.boolean(false)
-                        } else { TreeValue.integer(0) }
                     }
                     match self.reflect_values.get(
                               receiver_handle) {
@@ -2220,6 +2218,10 @@ class TreeInterpreter {
                                 self.reflect_error_code = 3
                                 self.reflect_error_message =
                                     "receiver type does not match"
+                            } else if name == "field_get" && erased {
+                                self.reflect_error_code = 5
+                                self.reflect_error_message =
+                                    "reflected operation is unsupported"
                             } else if name == "field_get" {
                                 match receiver.fields.value(field_name) {
                                     some(value) => {
@@ -2252,6 +2254,10 @@ class TreeInterpreter {
                                     self.reflect_error_code = 4
                                     self.reflect_error_message =
                                         "reflected value type does not match"
+                                } else if erased {
+                                    self.reflect_error_code = 5
+                                    self.reflect_error_message =
+                                        "reflected operation is unsupported"
                                 } else {
                                     match self.reflect_values.get(
                                               value_handle) {

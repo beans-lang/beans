@@ -145,8 +145,7 @@ fn main() {
     call("note narrow", type_of(Bumped), vnarrow, "note",
          [reflect.value("n")])
     call("note wide", type_of(Bumped), vwide, "note", [reflect.value("w")])
-    io.println("after calls: {narrow.tag} {wide.tag} {sub.tag} "
-               "{narrow.trail} {wide.trail}")
+    io.println("after calls: {narrow.tag} {wide.tag} {sub.tag} {narrow.trail} {wide.trail}")
 
     // reachable fields at two offsets
     read("read narrow tag", type_of(Cell<int>), vnarrow, "tag")
@@ -157,8 +156,7 @@ fn main() {
           reflect.value(40))
     read("reread narrow tag", type_of(Cell<int>), vnarrow, "tag")
     read("reread wide tag", type_of(Cell<Wide>), vwide, "tag")
-    io.println("after writes: {narrow.tag} {wide.tag} "
-               "{narrow.item} {wide.item.a},{wide.item.b},{wide.item.c}")
+    io.println("after writes: {narrow.tag} {wide.tag} {narrow.item} {wide.item.a},{wide.item.b},{wide.item.c}")
 
     // refused: the signature reaches a type parameter
     call("widen narrow", type_of(Cell<int>), vnarrow, "widen",
