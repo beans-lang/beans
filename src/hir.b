@@ -202,6 +202,46 @@ fn hir_call_dispatch_slot(function: HirFunction) -> string {
         function.is_public, function.is_private)
 }
 
+// Whether a declared type reaches one of an owner's type parameters, at any
+// depth: `T`, `List<T>` and `Map<string, Option<T>>` all do.
+//
+// Reflection describes a generic declaration once, under its open name, and
+// substitutes nothing — `Grid<int>` and `Grid<string>` reach the same rows.
+// So a member whose signature reaches a parameter has no type the registry
+// can state: its row says `T`, and no value carries that as its type, which
+// makes the member undescribable rather than merely unimplemented. Both
+// backends ask this one question so that neither can answer it differently.
+fn hir_type_mentions_generic(
+    type: HirType, generics: List<string>) -> bool {
+    if generics.len() == 0 { return false }
+    for generic: string in generics {
+        if type.name == generic { return true }
+    }
+    for argument: HirType in type.args {
+        if hir_type_mentions_generic(argument, generics) {
+            return true
+        }
+    }
+    return false
+}
+
+// The same question asked of a whole callable: its parameters and its
+// result. A callable that reaches a type parameter cannot be invoked
+// reflectively, because the argument a caller boxes can never match the
+// declared `T` and the result can never be boxed under one.
+fn hir_callable_mentions_generic(
+    function: HirFunction, generics: List<string>) -> bool {
+    if generics.len() == 0 { return false }
+    for parameter: HirParameter in function.parameters {
+        if hir_type_mentions_generic(
+               parameter.type, generics) {
+            return true
+        }
+    }
+    return hir_type_mentions_generic(
+        function.result, generics)
+}
+
 // A type's own string form: a `to_string(self) -> string` with a body and no
 // argument beyond the receiver. When present, `{obj}` renders through it
 // rather than through the derived Name { field: value } form, so a class that
