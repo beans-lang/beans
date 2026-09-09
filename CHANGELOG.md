@@ -2,6 +2,48 @@
 
 This file records user-facing changes in each Beans release.
 
+## [Unreleased]
+
+### Added
+
+- **`std.http` writes a chunked response, not only reads one.** The package
+  parsed chunked bodies in both directions and could encode none, so there was
+  no way to send a response whose length is not known when the head has to go
+  out: every encoder refused a caller-supplied `Transfer-Encoding` and wrote a
+  `Content-Length` instead. The refusal stays — it is what keeps a caller from
+  lying about the framing — and a second framing strategy arrives behind the
+  same validation.
+
+  ```beans
+  conn.begin_chunked(200, "OK", headers, request.keep_alive)?
+  conn.write_chunk(rendered_piece)?
+  conn.finish_chunked()?
+  ```
+
+  `ChunkedResponseWriter` is the same framing into caller-owned storage, for a
+  server with its own output queue: `head_append`, `chunk_append`,
+  `finish_append`, and `finish_trailers_append` for a trailer section. It is a
+  value that remembers where in the message it is, because the mistakes that
+  corrupt a streamed response are sequencing mistakes no single function can
+  see — a chunk before the head, a chunk after the terminator, and above all a
+  zero-length chunk, which is not an empty write but the terminator: writing
+  one mid-body ends the response there and everything after it is read as a
+  trailer section, silently, with a 200 already on the wire. Each is refused at
+  the call that makes it.
+
+  `chunk_prefix_append` frames a chunk whose payload never enters the buffer,
+  so a head and a megabyte of caller-owned bytes go out as one vectored send;
+  `ServerConn.write_chunk` uses it, and copies nothing. Trailer fields are held
+  to the head's CR/LF/NUL rule by the same check, and the field names whose
+  meaning is load-bearing after the body are refused by name. That denylist is
+  this package's policy, and the weaker of the two rules: RFC 9110 §6.5.1 states
+  the requirement as an allowlist and names no fields, so passing the check is
+  not a proof of conformance. Statuses that cannot carry a body
+  (`1xx`, `204`, `304`) are refused outright, since there is no zero-length
+  streamed response to fall back to, and `respond` is refused while a stream is
+  open, because a second response written into a chunked body is read by the
+  peer as that body's content.
+
 ## [0.1.40] - 2026-09-07
 
 A way to contain a panic without spawning a fiber, and a WebSocket that can
