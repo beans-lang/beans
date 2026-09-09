@@ -278,7 +278,7 @@ agree test/cases/parity/issue158_reflect_generic.b 8
 
 # Every case in the directory has to be listed above with its own expected
 # count; a file added and forgotten would otherwise be silently unchecked.
-listed=49
+listed=51
 # #163: a reflective box records the type the value IS, not the type of the
 # binding it came from. The two backends get there by different routes — the
 # native one reads the class descriptor at the object's first word, the
@@ -292,7 +292,7 @@ agree test/cases/parity/issue163_reflect_runtime_type.b 4
 
 # Every case in the directory has to be listed above with its own expected
 # count; a file added and forgotten would otherwise be silently unchecked.
-listed=49
+listed=51
 # A type parameter inside a function-typed parameter. The native backend
 # refused the call for a free function and for a static — `fn(T)` and
 # `fn(T) -> unit` are one type, and only the spelled form carries the result
@@ -317,7 +317,7 @@ agree test/cases/parity/issue162_static_factory.b 5
 
 # Every case in the directory has to be listed above with its own expected
 # count; a file added and forgotten would otherwise be silently unchecked.
-listed=49
+listed=51
 # #167: std.fs could name a file's bytes but not its life, so a program could
 # create a temp file it could never release. The shape that needed it is a
 # deinit that removes a spooled part — dropped on an ordinary scope exit and
@@ -345,7 +345,7 @@ agree test/cases/parity/issue155_move_drop_point.b 40
 
 # Every case in the directory has to be listed above with its own expected
 # count; a file added and forgotten would otherwise be silently unchecked.
-listed=43
+listed=51
 present=$(find test/cases/parity -name '*.b' | wc -l | tr -d ' ')
 if [ "$present" != "$listed" ]; then
     echo "test/cases/parity holds $present cases but $listed are run" >&2
