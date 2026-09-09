@@ -281,6 +281,10 @@ EOF
 upgrade failed: unsupported
 the server answered one message false
 the client got what it expected false
+narrowed upgrade failed: unsupported
+the server narrowed the extension to (none)
+the server echoed two compressed messages false
+the compressed exchange was clean false
 EOF
             else
                 expected="test/cases/websocket.out"
