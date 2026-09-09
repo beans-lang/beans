@@ -387,6 +387,15 @@ fn main() {
   9 characters, 12 columns) is already full and `"ok"` gets ten spaces. Byte
   padding lined up only ASCII; there is no caller that wanted it for anything
   else. `s.width()` is the same measure, spelled out.
+- **A `{}` piece is an ordinary expression, scoped to the file that wrote the
+  string.** Every name in it is bound by that file's own imports — a local, a
+  function, a constant, and a **type** — exactly as the same words are bound one
+  character outside the quotes. So `new T()`, `x as T`, `x as? T`, an explicit
+  type argument `f<T>(x)`, a closure parameter's `fn(x: T)`, `type_of(T)` and
+  `size_of(T)` inside a piece all reach the `T` that file's
+  `import {T} from p` selected, and a name that no import and no declaration
+  supplies is refused there in the same words it is refused anywhere else. A
+  piece never gets a second, looser scope of its own.
 - **There is no `+` for strings.** To render *one* string, use interpolation
   (`"hi {name}"`) or `std.fmt` (sprintf-style: padding, precision, alignment).
   To *accumulate* a string across a loop, use `fmt.StringBuilder` (push the

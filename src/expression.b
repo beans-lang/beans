@@ -16,6 +16,34 @@ fn unsafe_module_call(import_path: string, name: string) -> bool {
             name == "call_f32_1" || name == "call_f32_i32")
 }
 
+// The resolver's view of one file: the package that owns it, the parsed
+// file itself, and the two import tables a name written in it is looked up
+// through — module bindings (`import path as alias`) and selected bindings
+// (`import {A, B as C} from path`).
+//
+// A string's `{}` piece is lexed and parsed at check time, long after the
+// resolver walked the file, so nothing has ever bound the type names inside
+// it. Binding them means asking the resolver the same question it answers
+// for every other type name, and the resolver answers in terms of a package
+// and a file — so both are carried back here rather than reconstructed from
+// the checker's flattened, whole-program import maps.
+class InterpolationScope {
+    file: string
+    package: LoadedPackage
+    parsed: ParsedModuleFile
+    aliases: Map<string, string>
+    selected: Map<string, string>
+
+    fn init(resolver: Resolver, package: LoadedPackage,
+            parsed: ParsedModuleFile) {
+        self.file = parsed.path
+        self.package = package
+        self.parsed = parsed
+        self.aliases = resolver.aliases_for(parsed)
+        self.selected = resolver.selected_for(parsed)
+    }
+}
+
 class ExpressionChecker {
     signature: SignatureChecker
     program: HirProgram
@@ -114,6 +142,11 @@ class ExpressionChecker {
     ctor_requires_super: bool
     ctor_super_seen: bool
 
+    // The import scope of the file whose body is being checked, built the
+    // first time a string piece in it names a type. Checking walks a file's
+    // functions together, so one entry answers every piece in the file.
+    interpolation_scope: Option<InterpolationScope>
+
     fn init(signature: SignatureChecker) {
         self.signature = signature
         self.program = signature.hir
@@ -159,6 +192,7 @@ class ExpressionChecker {
         self.call_generics_syntax = none
         self.call_generics_taken = true
         self.try_expectations = []
+        self.interpolation_scope = none
         self.ctor_owner = ""
         self.ctor_self_binding = 0 - 1
         self.ctor_own_fields = {}
@@ -1483,64 +1517,121 @@ class ExpressionChecker {
         }
     }
 
+    // The import scope of the file being checked. Rebuilt whenever the file
+    // changes — checking walks one file's functions together, so the single
+    // entry answers every string piece in that file — and `none` only when
+    // the checker is standing on a file the loader never parsed, which no
+    // real program produces.
+    fn current_interpolation_scope() -> Option<InterpolationScope> {
+        match self.interpolation_scope {
+            some(cached) => {
+                if cached.file == self.current.file {
+                    return some(cached)
+                }
+            }
+            none => {}
+        }
+        for package: LoadedPackage in
+            self.signature.resolver.loader.packages {
+            for file: ParsedModuleFile in package.files {
+                if file.path != self.current.file { continue }
+                let scope: InterpolationScope =
+                    new InterpolationScope(
+                        self.signature.resolver, package, file)
+                self.interpolation_scope = some(scope)
+                return some(scope)
+            }
+        }
+        self.interpolation_scope = none
+        return none
+    }
+
+    // Bind one type name written inside a string's `{}` piece.
+    //
+    // The piece was lexed and parsed here, so the resolver has never seen
+    // this node, and the answer must be the one the resolver would have
+    // given had the same words been written outside the quotes: the file's
+    // module bindings, its `import {…} from` selections, its own package,
+    // the enclosing type parameters and `Self`, then the declaration's
+    // kind and its visibility. That is one rule, held in one place, and it
+    // is called here rather than restated — a second copy of it is exactly
+    // what made `type_of(T)` inside a string answer with a type that does
+    // not exist. A name nothing declares is refused, not composed: the
+    // resolver reports it against the program and returns poison, which
+    // stops every later stage from repeating itself about it.
+    fn bind_interpolated_type(node: AstNode) {
+        var generics: Map<string, bool> = {}
+        for constraint: HirGeneric in self.current_constraints {
+            generics[constraint.name] = true
+        }
+        match self.current_interpolation_scope() {
+            some(scope) => {
+                let before: int =
+                    self.signature.resolver.errors.len()
+                node.resolved =
+                    self.signature.resolver.resolve_type_name(
+                        node.value, scope.package, scope.parsed,
+                        scope.aliases, scope.selected, generics,
+                        self.current.owner, node, false)
+                // The resolver reports into its own list, and that list was
+                // already drained and printed before checking began. Move
+                // anything it just said onto this checker's diagnostics so
+                // it reaches the person who wrote the string.
+                for index: int in
+                    before..self.signature.resolver.errors.len() {
+                    self.errors.push(
+                        self.signature.resolver.errors[index])
+                }
+                for self.signature.resolver.errors.len() > before {
+                    self.signature.resolver.errors.pop()
+                }
+            }
+            none => {
+                // No file of the loaded program is the one being checked.
+                // Every body reached here belongs to a parsed file — a
+                // function, a field default, a C global's annotations — so
+                // this cannot happen for a program the loader accepted. It
+                // refuses rather than composing a name anyway, which is the
+                // whole point of the rule above.
+                self.fail(
+                    node,
+                    "can't look up the type '{node.value}' written inside this string: '{self.current.file}' is not a source file of this program")
+                node.resolved = "poison"
+            }
+        }
+    }
+
     // A re-parsed interpolation segment never went through the resolver, so
-    // its type names are still source spellings. Bind them the way the
-    // resolver would have: an import binding names its package, and a bare
-    // name means this file's own package.
+    // its type names are still source spellings and its array lengths are
+    // still constant names. Ask the resolver for each one, exactly as
+    // resolve_node does for a type written anywhere else.
     fn qualify_unresolved_types(node: AstNode) {
         if node.kind == "array_type" {
             self.qualify_interpolated_array_length(node)
         }
-        if (node.kind == "type" || node.kind == "array_type" ||
-            node.kind == "fn_type") && node.resolved == "" {
-            let name: string = node.value
-            var generic: bool = false
-            for constraint: HirGeneric in self.current_constraints {
-                if constraint.name == name { generic = true }
-            }
-            if name == "Self" {
-                node.resolved = self.current.owner
-            } else if !builtin_type(name) && !generic && name != "" {
-                if name.contains(".") {
-                    let parts: List<string> = name.split(".")
-                    let target: string =
-                        self.imported_path(parts[0])
-                    if target != "" && parts.len() == 2 {
-                        node.resolved =
-                            package_symbol(target, parts[1])
-                    }
-                } else {
-                    node.resolved = self.current_qualified(name)
-                }
-            }
+        // `new (args)` writes an empty type node the checker fills in from
+        // the target; there is no name in it to look up.
+        if node.kind == "type" && node.resolved == "" &&
+           node.note != "inferred" && node.value != "" {
+            self.bind_interpolated_type(node)
         }
         for child: AstNode in node.children {
             self.qualify_unresolved_types(child)
         }
     }
 
+    // The declaration a type names, by its canonical symbol and nothing
+    // else. It used to re-qualify a name that missed — a bare name against
+    // this file's package, a dotted one against an import binding — because
+    // a re-parsed string piece really did arrive here spelled the way source
+    // wrote it. It no longer does: every type node, inside a string or out,
+    // is bound by the resolver before any of this reads it. So a miss is a
+    // miss, which is what it has to be: composing a key out of the asking
+    // package is how `type_of` inside a string came to name a type that does
+    // not exist, and `poison` — the checker's word for a type it already
+    // refused — is a legal class name a package could really declare.
     fn declaration_for(type: HirType) -> Option<HirDeclaration> {
-        match self.declarations.get(type.name) {
-            some(declaration) => { return some(declaration) }
-            none => {}
-        }
-        // a re-parsed interpolation segment never went through the
-        // resolver, so a bare package-local name or an import alias can
-        // survive here; qualify it the way resolved code would be
-        if !type.name.contains(".") {
-            return self.declarations.get(
-                self.current_qualified(type.name))
-        }
-        let parts: List<string> = type.name.split(".")
-        if parts.len() == 2 {
-            let import_path: string =
-                self.imported_path(parts[0])
-            if import_path != "" {
-                return self.declarations.get(
-                    package_symbol(import_path, parts[1]))
-            }
-        }
-        return none
+        return self.declarations.get(type.name)
     }
 
     fn json_annotation(

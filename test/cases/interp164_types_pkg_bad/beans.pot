@@ -1,0 +1,2 @@
+module interp164bad
+kind application
