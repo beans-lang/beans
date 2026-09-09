@@ -7,6 +7,21 @@ partial class LlvmTextEmitter {
     // self-build hands to clang, and nothing downstream reads it. It is a
     // debugging aid, so it costs nothing until BEANS_IR_COMMENTS asks for it.
     mir_comments: bool
+    // What every definition in this module says about instrumentation — ""
+    // in a build that asked for none, " sanitize_address" or
+    // " sanitize_thread" (or both) in one that did. An LLVM sanitizer pass
+    // looks only inside the functions carrying its attribute, and IR handed
+    // to clang as text carries only what was written here, so this string is
+    // the whole difference between a sanitized build that checks the
+    // generated code and one that checks only the runtime C (issue #168).
+    // Read once, out of the one parser of BEANS_SANITIZE the clang command
+    // line also comes from (sanitizer_function_attribute, src/driver.b).
+    //
+    // It goes on the definition ahead of ` personality ` and ` !dbg `:
+    // llvm_declaration_for (src/llvm_names.b) cuts a chunk's re-declaration
+    // at those two markers and keeps everything before them, so an attribute
+    // written after either would be dropped from the declaration.
+    sanitize_attribute: string
     // qualified name -> encoding intrinsic id, filled once by
     // resolve_encoding_intrinsics after full validation
     encoding_intrinsics: Map<string, int>
@@ -191,10 +206,11 @@ partial class LlvmTextEmitter {
     debug_scope_line: int
 
     fn init(program: MirProgram, mir_comments: bool,
-            debug_info: bool) {
+            debug_info: bool, sanitize_attribute: string) {
         self.program = program
         self.mir_comments = mir_comments
         self.debug_info = debug_info
+        self.sanitize_attribute = sanitize_attribute
         self.debug_meta = []
         self.debug_meta_ids = {}
         self.debug_file_ids = {}
@@ -2147,13 +2163,34 @@ partial class LlvmTextEmitter {
             functions.push(text)
             origins.push("")
         }
+        // Everything the module is made of goes past the sanitizer pass,
+        // not only the bodies: a `define` reaches the output through one of
+        // these five strings or it does not reach it at all, so marking all
+        // of them is what makes "every function this module defines carries
+        // the attribute" true by construction instead of true because
+        // somebody kept a list of emission sites up to date. The pass hands
+        // back the same string when no sanitizer was asked for.
+        let head_declares: string =
+            self.sanitize_definitions(output)
+        let head_records: string =
+            self.sanitize_definitions(record_types)
+        let global_owned: string =
+            self.sanitize_definitions(owned)
+        let global_definitions: string =
+            self.sanitize_definitions(definitions)
+        let global_statics: string =
+            self.sanitize_definitions(static_fields)
+        for index: int in 0..functions.len() {
+            functions[index] =
+                self.sanitize_definitions(functions[index])
+        }
         // The pieces a chunked build reassembles. Record layouts join the
         // head because a type definition is not a symbol and every chunk
         // needs its own copy; the globals stay whole so one chunk can own
         // every address in the program.
-        self.module_head = "{output}{record_types}"
+        self.module_head = "{head_declares}{head_records}"
         self.module_globals =
-            "{owned}{definitions}\n{static_fields}"
+            "{global_owned}{global_definitions}\n{global_statics}"
         self.module_bodies = move functions
         self.module_origins = move origins
         // The metadata block closes the module. It is deliberately not part
@@ -2161,7 +2198,43 @@ partial class LlvmTextEmitter {
         // mint a second compile unit, and a chunk that lacked it would carry
         // `!dbg` references to nothing. chunk_modules refuses to split a
         // module that has one at all.
-        return "{output}{owned}{record_types}{definitions}\n{static_fields}{self.module_bodies.join("")}{self.debug_module_metadata()}"
+        return "{head_declares}{global_owned}{head_records}{global_definitions}\n{global_statics}{self.module_bodies.join("")}{self.debug_module_metadata()}"
+    }
+
+    // Every function this module defines, told that a sanitized build wants
+    // to look inside it.
+    //
+    // LLVM's AddressSanitizer and ThreadSanitizer passes instrument a
+    // function only when that function carries their attribute. Clang writes
+    // it for the C it compiles; this backend hands clang finished textual IR,
+    // which carries only what was written here — so before this pass existed
+    // a sanitized build checked beans_rt.c and the bridges and walked past
+    // every line the emitter produced (issue #168).
+    //
+    // One pass over the finished module, rather than an interpolation at each
+    // of the two dozen places a `define` is written, because that set grows:
+    // a definition added tomorrow — a new reflection thunk, a new derived
+    // body — is instrumented by this without anyone having to remember the
+    // rule exists. A build that asked for no sanitizer gets the same string
+    // back, so the ordinary compile is byte for byte what it always was.
+    fn sanitize_definitions(text: string) -> string {
+        if self.sanitize_attribute == "" { return text }
+        var pieces: List<string> = []
+        var start: int = 0
+        for start < text.len() {
+            let end: int = llvm_line_end(text, start)
+            if llvm_line_defines(text, start, end) {
+                pieces.push(
+                    llvm_sanitized_definition(
+                        text.slice(start, end),
+                        self.sanitize_attribute))
+            } else {
+                pieces.push(text.slice(start, end))
+            }
+            if end < text.len() { pieces.push("\n") }
+            start = end + 1
+        }
+        return pieces.join("")
     }
 
     // One entry per class id: the id of the class it extends, or -1 at a

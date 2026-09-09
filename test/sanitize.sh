@@ -19,6 +19,25 @@ fi
 # AddressSanitizer and UndefinedBehaviorSanitizer, so the generated code,
 # the reference counting and the cycle collector are all checked for real
 # memory errors rather than only for the right answer.
+#
+# That was half true until issue #168. An LLVM sanitizer pass instruments a
+# function only when the function carries its attribute, and the emitter wrote
+# none, so ASan and TSan checked beans_rt.c, beans_fiber.c and the bridges and
+# walked past every line beansc generated. Two things were needed and both are
+# here: the emitter marks what it defines (src/llvm.b), and every build below
+# asks for the sanitizer with BEANS_SANITIZE so that the IR it hands the link
+# carries the mark. A build that does not ask gets an unmarked module, and
+# then the hand link's -fsanitize= flag instruments the C beside it and
+# nothing else -- which is exactly how this file read for eight releases.
+#
+# UndefinedBehaviorSanitizer is the exception and stays one. UBSan is Clang
+# front-end instrumentation: it writes its checks into the IR the front end
+# generates, and LLVM has no `sanitize_undefined` function attribute for an
+# emitter of textual IR to ask for it with (clang rejects the spelling). So
+# every -fsanitize=undefined in this file covers beans_rt.c, beans_fiber.c and
+# the bridges, and cannot cover generated code. Closing that would mean this
+# emitter writing the UBSan checks itself -- a different piece of work from
+# marking a definition, and not one this gate can stand in for.
 
 # A program that imports std.net references the sockx networking bridge; a
 # hand link compiles the bridge source beside the runtime, the same road the
@@ -37,7 +56,11 @@ run_asan() {
     local file=$1 name=$2 expected=${3:-0}
     echo "ASan checking $file"
     rm -f "build/${name}_ffi.c"
-    ./build/beansc build "$file" -o "$out/${name}_source" >/dev/null
+    # Asked for on the build, not only on the link below: the attribute that
+    # lets ASan look inside a function is written by the emitter, so an IR
+    # module built without this is one the -fsanitize= flag cannot reach.
+    BEANS_SANITIZE=address,undefined \
+        ./build/beansc build "$file" -o "$out/${name}_source" >/dev/null
     local ffi_sources=()
     if [[ -f "build/${name}_ffi.c" ]]; then
         ffi_sources+=("build/${name}_ffi.c")
@@ -61,6 +84,94 @@ run_asan() {
     fi
     echo "ASan/UBSan ok $file"
 }
+
+# ---- does the instrumentation reach the code beansc emitted? ----------------
+#
+# Issue #168. Every lane below compiles a program with beansc and then checks
+# it for memory errors, and for eight releases that check covered the C beside
+# the program and none of the program. These probes are what says which half is
+# running, and they run before the sweep rather than after it, because a green
+# sweep whose instrumentation reached nothing reads as coverage that is not
+# there.
+#
+# One binary, five runs -- ASan stops the process at its first report, so the
+# shape is an argument rather than a program each:
+#
+#   clean       stays in bounds. An instrumented build still has to run the
+#               program correctly; a probe that only ever fails cannot tell a
+#               working sanitizer from a broken compiler.
+#   doublefree  caught by ASan's allocator with nothing instrumented at all,
+#               because the allocator replaced malloc and free the moment
+#               libclang_rt.asan was linked in. So this one answers the other
+#               question -- is the runtime under this build? -- and if it goes
+#               quiet, nothing else here means anything.
+#   read        one element past a live heap block: an instrumented LOAD.
+#   write       one element past it: an instrumented STORE, which the pass
+#               instruments separately from a load.
+#   uaf         a read through a pointer to a block that has been freed.
+#
+# The last three were silent before the emitter marked its functions -- they
+# printed "read past the end and lived" and exited 0 -- and they go silent
+# again the day it stops.
+echo "ASan checking that instrumentation reaches generated code"
+rm -f build/issue168_asan_reach_ffi.c
+BEANS_SANITIZE=address,undefined \
+    ./build/beansc build test/cases/issue168_asan_reach.b \
+    -o "$out/issue168_asan_reach" >/dev/null
+
+reach_asan() {   # <mode> <report the run must produce, "" for a clean run>
+    local mode=$1 want=$2 status=0
+    # A caught error aborts on purpose, and bash announces a signal-killed
+    # child on ITS OWN stderr ("line N: 1234 Abort trap: 6"). In an otherwise
+    # green run that line reads like something broke, and a gate that trains
+    # its reader to skip a line is a gate whose skip lines stop being read.
+    # The announcement comes from this shell, so a redirect on the child
+    # cannot catch it: the script's stderr is put aside for this one command
+    # and restored immediately. Nothing is lost -- the child's own output is
+    # in the two files below, and they are what the assertions read.
+    set +e
+    exec 3>&2 2>/dev/null
+    ASAN_OPTIONS="detect_leaks=$asan_detect_leaks:halt_on_error=1" \
+        BEANS_NO_POOL=1 "$out/issue168_asan_reach" "$mode" \
+        >"$out/reach_$mode.stdout" 2>"$out/reach_$mode.stderr"
+    status=$?
+    exec 2>&3 3>&-
+    set -e
+    if [[ -z "$want" ]]; then
+        if [[ "$status" -ne 0 ]] ||
+           grep -Eq 'AddressSanitizer|LeakSanitizer|UndefinedBehaviorSanitizer|runtime error:' \
+               "$out/reach_$mode.stderr"; then
+            echo "the in-bounds reach probe failed under ASan (status" \
+                 "$status): an instrumented build still has to run the" \
+                 "program" >&2
+            sed -n '1,80p' "$out/reach_$mode.stderr" >&2
+            sed -n '1,20p' "$out/reach_$mode.stdout" >&2
+            return 1
+        fi
+        echo "ASan/UBSan ok reach probe $mode: an instrumented build runs the" \
+             "program unchanged"
+        return 0
+    fi
+    # Deliberately not naming a sanitizer in this pattern: here the report IS
+    # the pass condition, so the text asked for is the specific fault
+    # ("heap-buffer-overflow"), not the tool that found it.
+    if ! grep -q "$want" "$out/reach_$mode.stderr"; then
+        echo "reach probe '$mode' did not produce '$want' (status $status)." >&2
+        echo "the sanitizer is not looking inside the code beansc emitted:" \
+             "check that the definitions in build/issue168_asan_reach.ll carry" \
+             "sanitize_address, and that this build asked for it (#168)" >&2
+        sed -n '1,20p' "$out/reach_$mode.stdout" >&2
+        sed -n '1,60p' "$out/reach_$mode.stderr" >&2
+        return 1
+    fi
+    echo "ASan ok reach probe $mode: $want in generated code"
+}
+
+reach_asan clean ""
+reach_asan doublefree "attempting double-free"
+reach_asan read "heap-buffer-overflow"
+reach_asan write "heap-buffer-overflow"
+reach_asan uaf "heap-use-after-free"
 
 run_asan bench/trees.b trees
 run_asan examples/cycles.b cycles
@@ -468,6 +579,65 @@ else
     echo "TSan unavailable for std.log; skipped" >&2
 fi
 
+# The same question for TSan, asked separately because `sanitize_thread` is a
+# separate attribute from `sanitize_address` and the answer could have
+# differed. It did not: before #168 landed, four hundred thousand
+# unsynchronised writes to one word from two OS threads were reported by
+# nothing at all. `clean` is the same program with the one change that makes it
+# correct, and it must stay silent -- a race detector that reports everything
+# says as little as one that reports nothing.
+echo "TSan checking that instrumentation reaches generated code"
+rm -f build/issue168_tsan_reach_ffi.c
+BEANS_SANITIZE=thread ./build/beansc build test/cases/issue168_tsan_reach.b \
+    -o "$out/issue168_tsan_reach" >/dev/null
+for mode in race clean; do
+    # Not under `set -e`: a TSan binary exits non-zero when it reports, and the
+    # report itself is what this reads.
+    set +e
+    exec 3>&2 2>/dev/null
+    TSAN_OPTIONS=halt_on_error=0 BEANS_NO_POOL=1 \
+        "$out/issue168_tsan_reach" "$mode" \
+        >"$out/reach_tsan_$mode.stdout" 2>"$out/reach_tsan_$mode.stderr"
+    status=$?
+    exec 2>&3 3>&-
+    set -e
+    # See the note in test/atomics.sh: TSan aborting during start-up is the
+    # emulator refusing personality(ADDR_NO_RANDOMIZE), not a fault in the
+    # program, and it means this host cannot answer the question either way.
+    if grep -q 'ThreadSanitizer: CHECK failed' \
+        "$out/reach_tsan_$mode.stderr"; then
+        echo "TSan cannot start here (emulated syscall); reach probe $mode" \
+             "not run, so nothing on this host checked that races in" \
+             "generated code are visible" >&2
+        continue
+    fi
+    raced=0
+    grep -q 'WARNING: ThreadSanitizer: data race' \
+        "$out/reach_tsan_$mode.stderr" && raced=1
+    if [[ "$mode" == race && "$raced" -ne 1 ]]; then
+        echo "two threads wrote one word 400000 times with nothing ordering" \
+             "them and ThreadSanitizer said nothing (status $status)." >&2
+        echo "the race detector is not looking inside the code beansc" \
+             "emitted: check that build/issue168_tsan_reach.ll carries" \
+             "sanitize_thread and that this build asked for it (#168)" >&2
+        sed -n '1,20p' "$out/reach_tsan_$mode.stdout" >&2
+        exit 1
+    fi
+    if [[ "$mode" == clean ]]; then
+        if [[ "$raced" -eq 1 ]]; then
+            echo "TSan reported a race in the synchronised reach probe" >&2
+            sed -n '1,200p' "$out/reach_tsan_$mode.stderr" >&2
+            exit 1
+        fi
+        if [[ "$status" -ne 0 ]]; then
+            echo "the synchronised reach probe exited $status under TSan" >&2
+            sed -n '1,60p' "$out/reach_tsan_$mode.stderr" >&2
+            exit 1
+        fi
+    fi
+    echo "TSan ok reach probe $mode"
+done
+
 for file in examples/threads.b examples/shared_weak.b examples/wide_sync.b \
             examples/wide_concurrency.b test/cases/thread_deinit.b \
             test/cases/thread_cycles.b \
@@ -478,7 +648,11 @@ for file in examples/threads.b examples/shared_weak.b examples/wide_sync.b \
     echo "TSan checking $file"
     name=$(basename "$file" .b)
     rm -f "build/${name}_ffi.c"
-    ./build/beansc build "$file" -o "$out/${name}_source" >/dev/null
+    # `sanitize_thread` is a separate attribute from `sanitize_address` and is
+    # asked for separately; without it the module linked below is invisible to
+    # the race detector.
+    BEANS_SANITIZE=thread \
+        ./build/beansc build "$file" -o "$out/${name}_source" >/dev/null
     tsan_extra=()
     if [[ -f "build/${name}_ffi.c" ]]; then
         tsan_extra+=("build/${name}_ffi.c")
@@ -523,8 +697,8 @@ done
 # workers are live, which is exactly the code plain rc arithmetic runs in.
 echo "TSan checking test/cases/thread_live_cycles.b"
 rm -f build/thread_live_cycles_ffi.c
-./build/beansc build --emit ir test/cases/thread_live_cycles.b \
-    >"$out/live-cycles-tsan.ir"
+BEANS_SANITIZE=thread ./build/beansc build --emit ir \
+    test/cases/thread_live_cycles.b >"$out/live-cycles-tsan.ir"
 if clang -O1 -g -pthread -fsanitize=thread -DBEANS_ARC_STATS \
     -Wno-override-module build/thread_live_cycles.ll \
     build/thread_live_cycles_ffi.c build/beans_rt.c \

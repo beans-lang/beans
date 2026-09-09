@@ -1341,7 +1341,8 @@ fn main() {
                                 new LlvmTextEmitter(
                                     mir,
                                     ir_comments_requested(),
-                                    debug_build)
+                                    debug_build,
+                                    sanitizer_function_attribute())
                             let emitted: string =
                                 emitter.emit(
                                     command == "build" &&
