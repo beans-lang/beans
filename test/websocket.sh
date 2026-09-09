@@ -148,6 +148,24 @@ grep -Fqx 'wss echoed true' "$tmp/wss_client.out"
 wait "$wss_pid"
 wss_pid=""
 
+# permessage-deflate over TLS. `websocket_tls.accept` is the one server entry
+# point whose whole body is a forward, and a forward that drops its last
+# argument still compiles — so the preference has to be watched arriving over
+# a real wss handshake, on both backends, rather than inferred from the plain
+# TCP legs above. The listener and the client are both in the one program, so
+# there is no second process and no port to guess: it binds on 0.
+echo "checking permessage-deflate over TLS"
+"$beansc" run test/cases/websocket_tls_deflate.b -- \
+    "$tmp/certs/ca.crt" "$tmp/certs/valid.crt" "$tmp/certs/valid.key" \
+    >"$tmp/wss_deflate.interp"
+"$beansc" build test/cases/websocket_tls_deflate.b -o "$tmp/wss_deflate" \
+    >"$tmp/wss_deflate.build" 2>&1
+"$tmp/wss_deflate" \
+    "$tmp/certs/ca.crt" "$tmp/certs/valid.crt" "$tmp/certs/valid.key" \
+    >"$tmp/wss_deflate.native"
+diff -u test/cases/websocket_tls_deflate.out "$tmp/wss_deflate.interp"
+diff -u test/cases/websocket_tls_deflate.out "$tmp/wss_deflate.native"
+
 echo "checking no C type escapes the std.websocket surface"
 if grep -nE '^\s*pub .*(RawPtr|CFunctionPtr)' stdlib/std/websocket/*.b; then
     echo "a C type appears in a public std.websocket signature" >&2

@@ -417,6 +417,22 @@ class TreeFrame {
         }
     }
 
+    // `move name` spends the binding: from here the value belongs to
+    // whoever took it, and this frame must stop holding it. A tree value's
+    // lifetime is the host's, so a slot left pointing at the value keeps it
+    // alive past its new owner's death and its `deinit` then runs at this
+    // frame's exit instead of the taker's (#155).
+    //
+    // The slot itself stays, holding `unset`. It is what `assign` looks for,
+    // and re-initialising a spent `var` is legal, so removing the key would
+    // send that write to an enclosing frame or drop it. `unset` is not a
+    // value: the checker rejects every read of a spent binding, and a
+    // debugger asking anyway is told `<unset>` rather than a stale answer.
+    fn spend(binding: int) -> bool {
+        return self.assign(
+            binding, TreeValue.unset())
+    }
+
     fn assign(binding: int,
               value: TreeValue) -> bool {
         if self.values.contains_key(binding) {

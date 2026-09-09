@@ -1,11 +1,12 @@
 package main
 
 partial class LlvmTextEmitter {
-    // A generic call binds its types two ways: explicit type arguments
-    // arrive as name/type pairs on the instruction and seed the bindings
-    // directly — the only way to bind a generic the signature never
-    // mentions — and whatever the source left unwritten is unified from
-    // the concrete operand and result types the checker already wrote.
+    // A free function's or a static's generic call. It binds its types
+    // through bind_generic_call, exactly as a method's does — the two routes
+    // used to differ, and a free call refused whatever the unifier failed to
+    // line up even when the call site had already written every type
+    // argument out. The only thing that stops an instance being raised is a
+    // type parameter left without a type.
     fn emit_generic_call(
         function: MirFunction,
         instruction: MirInstruction,
@@ -27,33 +28,14 @@ partial class LlvmTextEmitter {
             return ""
         }
         var bindings: Map<string, HirType> = {}
-        for index: int in
-            0..instruction.type_argument_names.len() {
-            bindings[instruction.type_argument_names[index]] =
-                instruction.type_arguments[index]
-        }
-        var bound: bool = true
-        for index: int in 0..parameters.len() {
-            let parameter: MirLocal =
-                template.locals[parameters[index]]
-            if !self.unify_open(
-                   parameter.type,
-                   self.value_type(
-                       function,
-                       instruction.operands[index]),
-                   bindings) {
-                bound = false
-            }
-        }
-        if !self.unify_open(
-               template.result, instruction.type,
-               bindings) {
-            bound = false
-        }
-        if !bound {
+        let unbound: string =
+            self.bind_generic_call(
+                function, instruction, template,
+                parameters, bindings)
+        if unbound != "" {
             self.fail(
                 instruction,
-                "LLVM emitter cannot infer this generic call's types")
+                "can't infer generic type '{unbound}' for '{display_symbol(instruction.resolved)}'")
             return ""
         }
         var instance_name: string =

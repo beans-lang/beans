@@ -1114,6 +1114,360 @@ fn part_handshake() {
     }
 }
 
+// ---- part 6: a server that narrows ----------------------------------------------
+//
+// RFC 7692 §7.1 lets a server answer an offer with *fewer* parameters than it
+// asked for, which is the only way to buy compression for less than a DEFLATE
+// context per direction. `prefer` is that answer, and it can only ever narrow,
+// so every check here is one of two questions: did the preference reach the
+// header, and did the streams underneath do what the header said. The second
+// is the one that matters — a header naming a 512-byte window over an encoder
+// still using 32 KiB is a peer's problem, not this end's, and nothing inside
+// the library can see it.
+
+// A preference is a `Deflate` read as a ceiling rather than as an agreement,
+// so it prints as its four knobs in wire order rather than as an extension
+// line it is not.
+fn prefer_text(prefer: Option<websocket.Deflate>) -> string {
+    match prefer {
+        some(want) => {
+            return "{want.server_no_context_takeover}/{want.client_no_context_takeover}/{want.server_max_window_bits}/{want.client_max_window_bits}"
+        }
+        none => { return "none" }
+    }
+}
+
+fn prefer_params(server_reset: bool, client_reset: bool, server_bits: int,
+                 client_bits: int) -> Option<websocket.Deflate> {
+    return some(deflate_params(server_reset, client_reset, server_bits,
+                               client_bits))
+}
+
+fn narrow_line(offer: string, prefer: Option<websocket.Deflate>) {
+    let headers: http.Headers = new http.Headers()
+    headers.add("Sec-WebSocket-Extensions", offer)
+    io.println("prefer {prefer_text(prefer)} on [{offer}] -> {agreement_text(websocket.negotiate_deflate(headers, prefer))}")
+}
+
+fn narrow_split_line(first: string, second: string,
+                     prefer: Option<websocket.Deflate>) {
+    let headers: http.Headers = new http.Headers()
+    headers.add("Sec-WebSocket-Extensions", first)
+    headers.add("Sec-WebSocket-Extensions", second)
+    io.println("prefer {prefer_text(prefer)} on [{first}][{second}] -> {agreement_text(websocket.negotiate_deflate(headers, prefer))}")
+}
+
+// No `Sec-WebSocket-Extensions` at all, which is not the same request as one
+// carrying an empty field: a preference must not conjure an extension out of
+// either.
+fn narrow_absent_line(prefer: Option<websocket.Deflate>) {
+    let headers: http.Headers = new http.Headers()
+    io.println("prefer {prefer_text(prefer)} on (no header) -> {agreement_text(websocket.negotiate_deflate(headers, prefer))}")
+}
+
+// The server's `Sec-WebSocket-Extensions` line, read off the socket rather
+// than asked of the library. Everything else here is a claim about that line.
+fn read_response_extension(stream: net.TcpStream) -> Result<string> {
+    var head: Bytes = new Bytes(0)
+    var end: int = -1
+    var rounds: int = 0
+    for end < 0 && rounds < 200 {
+        rounds += 1
+        let piece: Bytes = stream.read(4096)?
+        if piece.len() == 0 {
+            return err("the server closed during the upgrade", "eof")
+        }
+        head.append(piece)
+        for index: int in 0..head.len() {
+            if end < 0 && index + 4 <= head.len() && head.get(index) == 13 &&
+               head.get(index + 1) == 10 && head.get(index + 2) == 13 &&
+               head.get(index + 3) == 10 {
+                end = index + 4
+            }
+        }
+    }
+    if end < 0 {
+        return err("the server sent no complete response head", "protocol")
+    }
+    // The client has not sent a frame yet, so the server cannot have answered
+    // one. Anything past the blank line means the head was misread.
+    if end != head.len() {
+        return err("bytes followed the response head", "protocol")
+    }
+    var line: string = "(none)"
+    for row: string in head.to_string().split("\r\n") {
+        if row.starts_with("Sec-WebSocket-Extensions:") { line = row }
+    }
+    return ok(line)
+}
+
+fn extension_value(line: string) -> string {
+    match line.find(":") {
+        some(at) => { return line.slice(at + 1, line.len()).trim() }
+        none => { return "" }
+    }
+}
+
+// A real upgrade over a real socket on an ephemeral port, answered by the
+// library and watched by the hand-built peer. The response line comes back
+// byte for byte, and then the server's own encoder is measured through it.
+//
+// Single-threaded, like `server_probe`: the client's request fits in a socket
+// buffer and every frame the server sends is read before the next one goes
+// out, so neither side ever waits on the other.
+fn narrow_wire_probe(label: string, offer: string, compress: bool,
+                     prefer: Option<websocket.Deflate>) -> Result<bool> {
+    let listener: net.TcpListener = net.TcpListener.bind("127.0.0.1", 0)?
+    let port: int = listener.port()?
+    let client: net.TcpStream =
+        net.TcpStream.connect_timeout("127.0.0.1", port, 4000)?
+    let client_tuned: Result<bool> = client.set_timeouts(4000, 4000)
+    client.write_all(upgrade_request(offer))?
+    let stream: net.TcpStream = listener.accept_timeout(4000)?
+    let stream_tuned: Result<bool> = stream.set_timeouts(4000, 4000)
+    let request: http.Request = read_upgrade(stream)?
+    match websocket.Connection.accept(move stream, request, 1048576, compress,
+                                      prefer) {
+        ok(server) => {
+            let line: string = read_response_extension(client)?
+            let wire: Wire = new Wire(move client)
+            // Repeats 1 KiB apart: every window from 11 up finds all of them
+            // and a 512-byte window finds none, so the window the server
+            // really encodes with is visible from out here.
+            let far: Bytes = block_repeats(1024, 16)
+            server.send_binary(far)?
+            wire.read_frame()?
+            let compressed: bool = wire.rsv == 4
+            let reaches: bool = wire.size() * 4 < far.len()
+            // The same payload twice, cycling every 11 bytes so that every
+            // window finds its matches and only the context is measured:
+            // carried over the repeat is smaller, thrown away it is byte for
+            // byte the first.
+            let rep: Bytes = repetitive(16384)
+            server.send_binary(rep)?
+            wire.read_frame()?
+            let first: Bytes = wire.body()
+            server.send_binary(rep)?
+            wire.read_frame()?
+            let identical: bool = same_bytes(first, wire.body())
+            io.println("{label}: line=[{line}] agreed=[{agreement_text(server.deflate())}] rsv1={compressed} reaches_1k={reaches} repeat_identical={identical}")
+        }
+        err(problem) => {
+            // A refusal is only worth anything if it happened *before* the
+            // 101 went out — a preference is this end's own configuration, so
+            // `accept` checks it before it looks at the peer's request and
+            // long before it writes. The kind alone cannot see that: a check
+            // moved below `write_all` would still answer `invalid` here while
+            // a promise sat on the wire. So look from the peer's side. The
+            // server's stream was moved into `accept` and dropped on the error
+            // path, and the whole request head has already been read, so the
+            // close is a clean FIN and anything written would still arrive.
+            // `nothing` is the only right answer.
+            let leftover: Bytes = client.read(4096).or(new Bytes(0))
+            var saw: string = "nothing"
+            if leftover.len() > 0 { saw = "{leftover.len()} bytes" }
+            io.println("{label}: refused {problem.kind}, peer saw {saw}")
+        }
+    }
+    return ok(true)
+}
+
+// The other half: both ends are the library, with the client wrapped from the
+// parameters it read out of the server's own answer. Two messages each way,
+// because a thrown-away context only bites on the second one.
+fn narrow_trip_probe(label: string, offer: string,
+                     prefer: Option<websocket.Deflate>) -> Result<bool> {
+    let listener: net.TcpListener = net.TcpListener.bind("127.0.0.1", 0)?
+    let port: int = listener.port()?
+    let socket: net.TcpStream =
+        net.TcpStream.connect_timeout("127.0.0.1", port, 4000)?
+    let socket_tuned: Result<bool> = socket.set_timeouts(4000, 4000)
+    socket.write_all(upgrade_request(offer))?
+    let stream: net.TcpStream = listener.accept_timeout(4000)?
+    let stream_tuned: Result<bool> = stream.set_timeouts(4000, 4000)
+    let request: http.Request = read_upgrade(stream)?
+    let server: websocket.Connection =
+        websocket.Connection.accept(move stream, request, 1048576, true,
+                                    prefer)?
+    let line: string = read_response_extension(socket)?
+    var agreed: Option<websocket.Deflate> = none
+    if line != "(none)" {
+        let settled: websocket.Deflate =
+            websocket.accept_deflate_response(extension_value(line))?
+        agreed = some(settled)
+    }
+    let client: websocket.Connection =
+        websocket.Connection.wrap(move socket, false, 1048576, agreed)?
+    var up: int = 0
+    var down: int = 0
+    let payloads: List<Bytes> = [repetitive(16384), noise(4096, 913)]
+    for body: Bytes in payloads {
+        client.send_binary(body)?
+        match server.receive()? {
+            some(message) => {
+                match message {
+                    text(value) => {}
+                    binary(value) => { if same_bytes(value, body) { up += 1 } }
+                    ping(value) => {}
+                    pong(value) => {}
+                    closed(code, reason) => {}
+                }
+            }
+            none => {}
+        }
+        server.send_binary(body)?
+        match client.receive()? {
+            some(message) => {
+                match message {
+                    text(value) => {}
+                    binary(value) => { if same_bytes(value, body) { down += 1 } }
+                    ping(value) => {}
+                    pong(value) => {}
+                    closed(code, reason) => {}
+                }
+            }
+            none => {}
+        }
+    }
+    io.println("{label}: server=[{agreement_text(server.deflate())}] client=[{agreement_text(client.deflate())}] up={up} down={down}")
+    return ok(true)
+}
+
+// Every public path that runs a server handshake takes the preference, not
+// just the one on `Connection`. This is the generic one underneath it, over a
+// `WebSocketTransport` rather than a `Connection`.
+//
+// `WebSocketTransport.accept` itself is not reachable from another package —
+// a static call on a generic class infers no type argument from its arguments
+// and there is no spelling for an explicit one, which is true of `wrap` and
+// `upgrade` too and is why these free functions exist. Exercising
+// `accept_websocket` is exercising it: the free function is a one-line
+// forward, and it is the only way in.
+fn narrow_entry_probe(label: string, offer: string,
+                      prefer: Option<websocket.Deflate>) -> Result<bool> {
+    let listener: net.TcpListener = net.TcpListener.bind("127.0.0.1", 0)?
+    let port: int = listener.port()?
+    let socket: net.TcpStream =
+        net.TcpStream.connect_timeout("127.0.0.1", port, 4000)?
+    let socket_tuned: Result<bool> = socket.set_timeouts(4000, 4000)
+    socket.write_all(upgrade_request(offer))?
+    let stream: net.TcpStream = listener.accept_timeout(4000)?
+    let stream_tuned: Result<bool> = stream.set_timeouts(4000, 4000)
+    let request: http.Request = read_upgrade(stream)?
+    let core: websocket.WebSocketTransport<net.TcpStream> =
+        websocket.accept_websocket(move stream, request, 1048576, true,
+                                   prefer)?
+    let line: string = read_response_extension(socket)?
+    io.println("{label}: line=[{line}] agreed=[{agreement_text(core.deflate())}]")
+    return ok(true)
+}
+
+fn part_narrow() -> Result<bool> {
+    io.println("== a server that narrows ==")
+    let browser: string = "permessage-deflate; client_max_window_bits"
+
+    // The rule as a pure function, one preference at a time and then together.
+    narrow_line(browser, none)
+    narrow_line(browser, prefer_params(true, false, 15, 15))
+    narrow_line(browser, prefer_params(false, true, 15, 15))
+    narrow_line(browser, prefer_params(true, true, 15, 15))
+    narrow_line(browser, prefer_params(false, false, 9, 15))
+    narrow_line(browser, prefer_params(false, false, 15, 9))
+    narrow_line(browser, prefer_params(false, false, 11, 13))
+    narrow_line(browser, prefer_params(true, true, 9, 9))
+
+    // RFC 7692 §7.1.2.2: an offer that did not name `client_max_window_bits`
+    // forbids the answer naming it. The rest of the preference still applies.
+    narrow_line("permessage-deflate", prefer_params(false, false, 15, 9))
+    narrow_line("permessage-deflate", prefer_params(true, true, 9, 9))
+    narrow_line("permessage-deflate; server_max_window_bits=10",
+                prefer_params(false, false, 15, 9))
+
+    // Widening, every way there is to ask for it. Each has to come back at
+    // the offer's own value.
+    narrow_line("permessage-deflate; server_max_window_bits=10",
+                prefer_params(false, false, 13, 15))
+    narrow_line("permessage-deflate; client_max_window_bits=10",
+                prefer_params(false, false, 15, 13))
+    narrow_line("permessage-deflate; server_max_window_bits=9; client_max_window_bits=9",
+                prefer_params(false, false, 15, 15))
+    narrow_line("permessage-deflate; server_no_context_takeover; client_no_context_takeover; client_max_window_bits",
+                prefer_params(false, false, 15, 15))
+    // Equal is not widening.
+    narrow_line("permessage-deflate; server_max_window_bits=10",
+                prefer_params(false, false, 10, 15))
+
+    // A preference cannot turn compression on.
+    narrow_line("", prefer_params(true, true, 9, 9))
+    narrow_absent_line(prefer_params(true, true, 9, 9))
+    narrow_line("x-webkit-deflate-frame", prefer_params(true, true, 9, 9))
+
+    // A window this end cannot compress to declines rather than agreeing to
+    // something zlib will not produce.
+    narrow_line(browser, prefer_params(false, false, 8, 15))
+    narrow_line(browser, prefer_params(false, false, 15, 8))
+    narrow_line(browser, prefer_params(false, false, 16, 15))
+    narrow_line(browser, prefer_params(false, false, 15, 0))
+
+    // The offer stack still runs in order, and the preference narrows
+    // whichever offer is taken rather than the first one written.
+    narrow_line("permessage-deflate; server_max_window_bits=8, permessage-deflate; client_max_window_bits",
+                prefer_params(true, false, 12, 12))
+    narrow_split_line("x-nothing", "permessage-deflate; client_max_window_bits=14",
+                      prefer_params(false, true, 15, 12))
+
+    // What actually goes on the wire under each of those.
+    narrow_wire_probe("default", browser, true, none)?
+    narrow_wire_probe("server takeover off", browser, true,
+                      prefer_params(true, false, 15, 15))?
+    narrow_wire_probe("client takeover off", browser, true,
+                      prefer_params(false, true, 15, 15))?
+    narrow_wire_probe("server window 9", browser, true,
+                      prefer_params(false, false, 9, 15))?
+    narrow_wire_probe("client window 9", browser, true,
+                      prefer_params(false, false, 15, 9))?
+    narrow_wire_probe("all four narrowed", browser, true,
+                      prefer_params(true, true, 9, 9))?
+    narrow_wire_probe("no client window offered", "permessage-deflate", true,
+                      prefer_params(false, false, 9, 9))?
+    narrow_wire_probe("a preference cannot widen",
+                      "permessage-deflate; server_max_window_bits=9", true,
+                      prefer_params(false, false, 15, 15))?
+    narrow_wire_probe("no deflate offered", "", true,
+                      prefer_params(true, true, 9, 9))?
+    narrow_wire_probe("no preference, compression off", browser, false, none)?
+    narrow_wire_probe("a preference with compression off", browser, false,
+                      prefer_params(true, true, 9, 9))?
+    narrow_wire_probe("an 8-bit window preferred", browser, true,
+                      prefer_params(false, false, 8, 15))?
+    narrow_wire_probe("a 16-bit window preferred", browser, true,
+                      prefer_params(false, false, 15, 16))?
+
+    // And that messages still survive the parameters that were narrowed.
+    narrow_trip_probe("round trip default", browser, none)?
+    narrow_trip_probe("round trip server takeover off", browser,
+                      prefer_params(true, false, 15, 15))?
+    narrow_trip_probe("round trip client takeover off", browser,
+                      prefer_params(false, true, 15, 15))?
+    narrow_trip_probe("round trip server window 9", browser,
+                      prefer_params(false, false, 9, 15))?
+    narrow_trip_probe("round trip client window 9", browser,
+                      prefer_params(false, false, 15, 9))?
+    narrow_trip_probe("round trip all four narrowed", browser,
+                      prefer_params(true, true, 9, 9))?
+    narrow_trip_probe("round trip no client window offered",
+                      "permessage-deflate", prefer_params(true, true, 9, 9))?
+
+    // The same argument through the generic entry point, and through one
+    // whose offer names both windows so neither is left at its default.
+    narrow_entry_probe("accept_websocket", browser,
+                       prefer_params(true, false, 10, 11))?
+    narrow_entry_probe("accept_websocket, both windows offered",
+                       "permessage-deflate; server_max_window_bits=13; client_max_window_bits=13",
+                       prefer_params(false, true, 10, 15))?
+    return ok(true)
+}
+
 fn main() {
     part_negotiation()
     match part_wire() {
@@ -1126,4 +1480,8 @@ fn main() {
     }
     part_pairs()
     part_handshake()
+    match part_narrow() {
+        ok(_) => {}
+        err(problem) => { io.println("narrowing checks failed: {problem.kind}: {problem.msg}") }
+    }
 }

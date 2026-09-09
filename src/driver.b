@@ -686,26 +686,101 @@ fn native_chunk_publish(staging: string, object: string) {
     }
 }
 
-// Test-only native instrumentation. Keeping the accepted values closed
-// avoids turning an environment variable into arbitrary compiler flags.
-// These flags are part of every object cache key below, so a sanitized build
-// can never reuse a normal bridge or runtime object.
-fn sanitizer_flags() -> List<string> {
-    var flags: List<string> = []
+// Test-only native instrumentation. `BEANS_SANITIZE` names the sanitizers a
+// build asks for, comma-separated, out of a closed set — keeping the accepted
+// names closed avoids turning an environment variable into arbitrary compiler
+// flags, and a name that is not one of them is refused rather than ignored,
+// because a sanitizer that silently does nothing is the whole of issue #168.
+//
+// This is the one place the variable is read, and both halves of a sanitized
+// build come out of this one list: the flags the clang command line carries
+// (sanitizer_flags, below) and the attributes the emitter writes onto every
+// function it defines (sanitizer_function_attribute). It used to be only the
+// first half, and an LLVM sanitizer pass instruments only the functions that
+// carry its attribute — so `make test-sanitize` checked beans_rt.c and the
+// bridges and not one line of the code this compiler generated.
+fn sanitizers_requested() -> List<string> {
     var requested: string = ""
     match os.env("BEANS_SANITIZE") {
         some(value) => { requested = value }
         none => {}
     }
-    if requested == "address,undefined" {
-        flags.push("-fsanitize=address,undefined")
-        flags.push("-fno-sanitize-recover=undefined")
-        flags.push("-fno-omit-frame-pointer")
-    } else if requested == "thread" {
-        flags.push("-fsanitize=thread")
-        flags.push("-fno-omit-frame-pointer")
+    var asked: List<string> = []
+    if requested.trim() == "" { return move asked }
+    for entry: string in requested.split(",") {
+        let name: string = entry.trim()
+        if name == "" { continue }
+        if name != "address" && name != "thread" &&
+           name != "undefined" {
+            io.eprintln(
+                "error: BEANS_SANITIZE names '{name}', which is not a sanitizer this compiler knows; the names it accepts are address, thread and undefined, comma-separated")
+            os.exit(1)
+        }
+        if !asked.contains(name) {
+            asked.push(name)
+        }
     }
+    // AddressSanitizer and ThreadSanitizer cannot both be on: they each
+    // replace the allocator and the same shadow mapping, and clang refuses
+    // the pair outright ("invalid argument '-fsanitize=address' not allowed
+    // with '-fsanitize=thread'"). Saying so here rather than letting the
+    // clang driver say it keeps the complaint about what was asked for
+    // instead of about a flag the caller never wrote.
+    if asked.contains("address") && asked.contains("thread") {
+        io.eprintln(
+            "error: BEANS_SANITIZE asks for both address and thread; a program can carry one of those two at a time, so run the address lane and the thread lane as separate builds")
+        os.exit(1)
+    }
+    // One fixed order, so what a build carries does not depend on how the
+    // variable happened to be spelled.
+    var ordered: List<string> = []
+    if asked.contains("address") { ordered.push("address") }
+    if asked.contains("thread") { ordered.push("thread") }
+    if asked.contains("undefined") {
+        ordered.push("undefined")
+    }
+    return move ordered
+}
+
+// These flags are part of every object cache key below, so a sanitized build
+// can never reuse a normal bridge or runtime object.
+fn sanitizer_flags() -> List<string> {
+    var flags: List<string> = []
+    let asked: List<string> = sanitizers_requested()
+    if asked.len() == 0 { return move flags }
+    flags.push("-fsanitize={asked.join(",")}")
+    if asked.contains("undefined") {
+        flags.push("-fno-sanitize-recover=undefined")
+    }
+    flags.push("-fno-omit-frame-pointer")
     return move flags
+}
+
+// What every function the emitter defines has to say for a sanitizer pass to
+// look inside it. Clang writes these attributes for the C it compiles; this
+// backend hands clang finished textual IR, which carries only what the
+// emitter wrote, so a definition with no attribute is a function ASan and
+// TSan walk straight past (issue #168).
+//
+// `undefined` has no attribute here, and that is not an omission:
+// UndefinedBehaviorSanitizer is Clang front-end instrumentation — it writes
+// its checks into the IR it generates rather than running a pass over IR it is
+// given — and LLVM has no `sanitize_undefined` function attribute to ask for
+// it with (clang rejects the spelling outright). UBSan therefore covers
+// beans_rt.c, beans_fiber.c and the bridges only. Reaching the generated code
+// with it would mean this emitter writing the checks itself, which is a
+// different piece of work from marking a definition; test/sanitize.sh says so
+// where it runs the lanes.
+fn sanitizer_function_attribute() -> string {
+    var attribute: string = ""
+    for name: string in sanitizers_requested() {
+        if name == "address" {
+            attribute = "{attribute} sanitize_address"
+        } else if name == "thread" {
+            attribute = "{attribute} sanitize_thread"
+        }
+    }
+    return attribute
 }
 
 class NativeBuildDriver {

@@ -202,6 +202,88 @@ fn hir_call_dispatch_slot(function: HirFunction) -> string {
         function.is_public, function.is_private)
 }
 
+// The same question hir_type_mentions_generic asks, of a whole callable: its parameters and its
+// result. A callable that reaches a type parameter cannot be invoked
+// reflectively, because the argument a caller boxes can never match the
+// declared `T` and the result can never be boxed under one.
+fn hir_callable_mentions_generic(
+    function: HirFunction, generics: List<string>) -> bool {
+    if generics.len() == 0 { return false }
+    for parameter: HirParameter in function.parameters {
+        if hir_type_mentions_generic(
+               parameter.type, generics) {
+            return true
+        }
+    }
+    return hir_type_mentions_generic(
+        function.result, generics)
+}
+
+// Whether a callable an owner declares is out of reflection's reach because
+// the owner is generic. Three ways, and both backends read this one answer:
+//
+//   - its signature reaches a type parameter, so no value can be checked
+//     against the declared type in either direction;
+//   - it takes no receiver, and a receiver is the only thing in a reflective
+//     call that names an instantiation. One row is reached by
+//     `type_of(Grid<int>)` and `type_of(Grid<string>)` alike, and the bodies
+//     are raised one per instantiation, so a `static fn` has no body the row
+//     can name. Choosing one because the program happens to hold a single
+//     instantiation would make the answer depend on unrelated code;
+//   - its receiver carries no class descriptor. Only `class` and `interface`
+//     receivers do — a struct, union or enum arrives as bare bytes, so
+//     `Point<int>` and `Point<Wide>` are indistinguishable there and nothing
+//     says which instantiation's body to run.
+//
+// A free function has no owner and no owner's parameters to reach, so it is
+// never erased by this rule; its own type parameters are flag 8's business.
+fn hir_callable_reflection_erased(
+    function: HirFunction,
+    owner: Option<HirDeclaration>) -> bool {
+    match owner {
+        some(declaration) => {
+            if declaration.generics.len() == 0 {
+                return false
+            }
+            if declaration.kind != "class" &&
+               declaration.kind != "interface" {
+                return true
+            }
+            if function.is_static { return true }
+            return hir_callable_mentions_generic(
+                function, declaration.generics)
+        }
+        none => {}
+    }
+    return false
+}
+
+// Whether a field a generic owner declares is out of reflection's reach. The
+// same two questions, asked of a slot instead of a callable:
+//
+//   - a struct or union slot has no receiver that names an instantiation. A
+//     record arrives at a reflective read as bare bytes with no descriptor, so
+//     `Point<int>` and `Point<Wide>` are indistinguishable there while their
+//     slots sit at different offsets; only a class receiver carries the class
+//     id that says which instantiation it came from.
+//   - a declared type that reaches a type parameter is reported as written, so
+//     the row for `Slot<T>.item` says `T`. No value carries `T` as its type,
+//     which makes the slot undescribable rather than merely unimplemented —
+//     and reading it anyway would hand `Slot<int>`'s bits to a caller under a
+//     name that admits `Slot<string>`'s.
+//
+// A class slot whose declared type reaches no parameter stays reachable even
+// though its offset differs per instantiation: the receiver's class id names
+// the offset. That is what the emitted thunk switches on.
+fn hir_field_reflection_erased(
+    declaration: HirDeclaration,
+    field: HirField) -> bool {
+    if declaration.generics.len() == 0 { return false }
+    if declaration.kind != "class" { return true }
+    return hir_type_mentions_generic(
+        field.type, declaration.generics)
+}
+
 // A type's own string form: a `to_string(self) -> string` with a body and no
 // argument beyond the receiver. When present, `{obj}` renders through it
 // rather than through the derived Name { field: value } form, so a class that
@@ -1010,6 +1092,25 @@ class SignatureChecker {
         return result
     }
 
+    // Refuse a written signature or field type that would have to hold a
+    // unit value (hir_unit_misplacement, #154). It is asked once per
+    // declared type rather than inside lower_type, so a nested mistake is
+    // reported once, at the type the program wrote, and names the innermost
+    // type at fault. `result_slot` is true only for a function's declared
+    // result, which is the one place `unit` belongs.
+    fn refuse_misplaced_unit(node: AstNode, type: HirType,
+                             file: string,
+                             result_slot: bool) {
+        match hir_unit_misplacement(type, result_slot) {
+            some(offender) => {
+                self.fail(
+                    file, node,
+                    unit_misplacement_message(offender))
+            }
+            none => {}
+        }
+    }
+
     fn collect_generics(node: AstNode) -> List<string> {
         var names: List<string> = []
         for child: AstNode in node.children {
@@ -1423,7 +1524,8 @@ class SignatureChecker {
                       owner_is_public_interface: bool,
                       owner_is_interface: bool,
                       owner_kind: string,
-                      owner_generics: List<string>) {
+                      owner_generics: List<string>,
+                      owner_constraints: List<HirGeneric>) {
         let name: string = declaration_name(node.value)
         let qualified: string =
             if owner == "" { node.resolved } else { "{owner}.{name}" }
@@ -1518,6 +1620,9 @@ class SignatureChecker {
                                     self.lower_type(type_node, file.path),
                                     file.path, parameter.line,
                                     parameter.col)
+                            self.refuse_misplaced_unit(
+                                type_node, lowered.type,
+                                file.path, false)
                             lowered.annotations =
                                 self.lower_annotations(
                                     parameter.annotations,
@@ -1605,6 +1710,9 @@ class SignatureChecker {
                         } else {
                             function.result =
                                 self.lower_type(type_node, file.path)
+                            self.refuse_misplaced_unit(
+                                type_node, function.result,
+                                file.path, true)
                         }
                     }
                     none => {
@@ -1640,8 +1748,77 @@ class SignatureChecker {
         function.is_c_export =
             function.is_extern_c && function.has_body &&
             function.is_public
+        self.promote_owner_generics(
+            function, owner_generics, owner_constraints)
         function.body_result = function.result
         self.hir.functions.push(function)
+    }
+
+    // A static method has no receiver, so nothing at the call site binds its
+    // owner's type parameters: `Holder.wrap(3)` has no `Holder<int>` value for
+    // `T` to be read off, and there is no receiver position to write one in.
+    // The owner parameters the static's own signature names are therefore type
+    // parameters *of the static* — a static is a free function that happens to
+    // be filed under a type, and `T` in its signature is a free type variable
+    // like any other. Promoting them here is what makes them bind: the call
+    // site infers them from the arguments and the expected result through the
+    // same path a method's own parameters take, `Holder.wrap<int>(3)` binds
+    // them explicitly, the interpreter recovers them in `call_type_bindings`,
+    // and the native backend unifies them in `emit_generic_call`. Before this,
+    // the declaration was accepted and every call that needed `T` was refused,
+    // so the member could not be reached at all.
+    //
+    // They are prepended, so the explicit spelling reads in source order — the
+    // class's parameters, then the method's own. Only the ones the signature
+    // names are promoted: `static fn tag() -> string` on a generic class works
+    // today with `T` irrelevant, and must not start demanding one. An owner
+    // parameter the method's own list already shadows stays the method's.
+    fn promote_owner_generics(
+        function: HirFunction,
+        owner_generics: List<string>,
+        owner_constraints: List<HirGeneric>) {
+        if !function.is_static ||
+           owner_generics.len() == 0 {
+            return
+        }
+        var promoted: List<string> = []
+        for generic: string in owner_generics {
+            if generic_name_listed(
+                   function.generics, generic) {
+                continue
+            }
+            var named: bool =
+                hir_type_names_generic(
+                    function.result, generic)
+            for parameter: HirParameter in
+                function.parameters {
+                if hir_type_names_generic(
+                       parameter.type, generic) {
+                    named = true
+                }
+            }
+            if named { promoted.push(generic) }
+        }
+        if promoted.len() == 0 { return }
+        var combined: List<string> = []
+        for generic: string in promoted {
+            combined.push(generic)
+        }
+        for generic: string in function.generics {
+            combined.push(generic)
+        }
+        function.generics = move combined
+        // The owner's bounds travel with the parameters they constrain, or a
+        // call could bind `K` in `class Keyed<K implements Hash>` to a type
+        // with no `hash`, which the body was checked against the promise of
+        // and no backend could then run.
+        for constraint: HirGeneric in owner_constraints {
+            if generic_name_listed(
+                   promoted, constraint.name) {
+                function.generic_constraints.push(
+                    constraint)
+            }
+        }
     }
 
     fn lower_c_global(node: AstNode,
@@ -1654,6 +1831,8 @@ class SignatureChecker {
             some(type_node) => {
                 type = self.lower_type(
                     type_node, file.path)
+                self.refuse_misplaced_unit(
+                    type_node, type, file.path, false)
             }
             none => {
                 self.fail(
@@ -1932,6 +2111,9 @@ class SignatureChecker {
                             layout_modifier_align(child.value),
                             has_default,
                             file.path, child.line, child.col)
+                        self.refuse_misplaced_unit(
+                            type_node, field.type,
+                            file.path, false)
                         field.is_weak =
                             is_weak && node.kind == "class" &&
                             !is_static
@@ -1970,8 +2152,12 @@ class SignatureChecker {
                     if item.kind != "payload" { continue }
                     match type_child(item) {
                         some(type_node) => {
-                            payload.args.push(
-                                self.lower_type(type_node, file.path))
+                            let carried: HirType =
+                                self.lower_type(type_node, file.path)
+                            self.refuse_misplaced_unit(
+                                type_node, carried,
+                                file.path, false)
+                            payload.args.push(carried)
                         }
                         none => {}
                     }
@@ -2020,7 +2206,8 @@ class SignatureChecker {
                     node.kind == "interface" &&
                     declaration.is_public,
                     node.kind == "interface",
-                    node.kind, declaration.generics)
+                    node.kind, declaration.generics,
+                    declaration.generic_constraints)
             }
         }
     }
@@ -2641,7 +2828,8 @@ class SignatureChecker {
                 for declaration: AstNode in file.ast.children {
                     if declaration.kind == "fn" {
                         self.lower_function(
-                            declaration, file, "", false, false, "", [])
+                            declaration, file, "", false, false, "",
+                            [], [])
                     } else if declaration.kind == "c_global" {
                         self.lower_c_global(
                             declaration, file)

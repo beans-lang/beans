@@ -1,0 +1,6 @@
+wss default: agreed=[permessage-deflate] clean=true
+wss server takeover off: agreed=[permessage-deflate; server_no_context_takeover] clean=true
+wss client takeover off: agreed=[permessage-deflate; client_no_context_takeover] clean=true
+wss server window 9: agreed=[permessage-deflate; server_max_window_bits=9] clean=true
+wss client window 9: agreed=[permessage-deflate; client_max_window_bits=9] clean=true
+wss all four narrowed: agreed=[permessage-deflate; server_no_context_takeover; client_no_context_takeover; server_max_window_bits=9; client_max_window_bits=9] clean=true

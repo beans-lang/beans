@@ -26,6 +26,15 @@
 // non-pooled arm still tests the collector's per-thread pending flags on the
 // way in -- so both belong here.
 //
+// It also drives all four public typed-decode entries, not one standing in
+// for the other three. json.decode, json.decode_bytes,
+// json.decode_bytes_in_place and json.decode_with_options lower to the same
+// bridge call, which is why the diagnostic probe that call used to write to a
+// file-scope array was a data race on every one of them (issue #152). The
+// round number picks the entry, so each is decoded concurrently by four
+// threads over a quarter of the run, and the entry count is printed with the
+// other counts so dropping one is a diff.
+//
 // Typed decoding is native only (the tree interpreter answers kind
 // "unsupported"), so this case, like the other typed cases, is a native gate.
 package main
@@ -55,6 +64,38 @@ fn payload_sizes() -> List<int> {
     return [7, 991, 992, 4096]
 }
 
+fn decode_entry_count() -> int {
+    return 4
+}
+
+// Every public typed-decode entry, decoding the same document into the same
+// shape. Each arm binds its result before returning it, so the concrete T comes
+// from the binding exactly as a caller writes it.
+fn decode_entry(entry: int, text: string) -> Result<Row> {
+    if entry == 1 {
+        let data: Bytes = Bytes.from(text)
+        let decoded: Result<Row> = json.decode_bytes(data)
+        return decoded
+    }
+    if entry == 2 {
+        // The in-place entry rewrites the buffer it is handed, so it gets a
+        // fresh one; `text` is untouched.
+        var scratch: Bytes = Bytes.from(text)
+        let decoded: Result<Row> = json.decode_bytes_in_place(move scratch)
+        return decoded
+    }
+    if entry == 3 {
+        // Default options on purpose: what this arm is here for is the second
+        // lowering, which reads the options object into the request's flag
+        // word before making the same bridge call, not a different policy.
+        let options: json.DecodeOptions = new json.DecodeOptions()
+        let decoded: Result<Row> = json.decode_with_options(text, options)
+        return decoded
+    }
+    let decoded: Result<Row> = json.decode(text)
+    return decoded
+}
+
 // Decode every size `rounds` times and answer how many rows came back wrong.
 // A mismatch is counted, never printed: at 4 KiB the transcript would be the
 // test.
@@ -72,9 +113,10 @@ fn decode_worker(fill: int, rounds: int, workers: int,
     }
     for round: int in 0..rounds {
         var rows: List<Row> = []
+        let entry: int = round % decode_entry_count()
         for index: int in 0..bodies.len() {
             let body: string = bodies.get(index).expect("body")
-            let decoded: Result<Row> = json.decode(document(body))
+            let decoded: Result<Row> = decode_entry(entry, document(body))
             match decoded {
                 ok(row) => { rows.push(row) }
                 err(_) => { bad += 1 }
@@ -114,6 +156,6 @@ fn main() {
     }
     // The counts are printed so a run that quietly did less work than the
     // header claims is a diff, not a pass.
-    io.println("workers {workers} rounds {rounds} sizes {payload_sizes().len()}")
+    io.println("workers {workers} rounds {rounds} sizes {payload_sizes().len()} entries {decode_entry_count()}")
     io.println("decodes {decodes.load(MemoryOrder.acquire)} wrong {wrong}")
 }

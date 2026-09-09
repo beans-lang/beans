@@ -183,6 +183,40 @@ fn llvm_declaration_for(body: string,
     return "declare {header.slice(0, trimmed)}\n"
 }
 
+// One `define` header line with the attribute a sanitized build asks for
+// spliced into it.
+//
+// LLVM's grammar puts a definition's attribute list before its personality
+// routine and before the metadata attached to it, which is why
+// llvm_declaration_for cuts a declaration at exactly those two markers. The
+// attribute therefore goes in ahead of whichever of them appears first, and
+// with neither present just before the `{` that opens the body. Everything
+// else on the line — linkage, return type, parameters, `uwtable`, a
+// "target-features" string — is left where it was.
+fn llvm_sanitized_definition(line: string,
+                             attribute: string) -> string {
+    var cut: int = line.len()
+    for marker: string in [" personality ", " !dbg "] {
+        match line.find(marker) {
+            some(at) => {
+                if at < cut { cut = at }
+            }
+            none => {}
+        }
+    }
+    if cut == line.len() {
+        // Back over the opening brace and the space before it. The scan runs
+        // from the end, so a `{` inside an anonymous-struct return type is
+        // never what it stops on.
+        for cut > 0 &&
+            (line.byte_at(cut - 1) == 123 ||
+             line.byte_at(cut - 1) == 32) {
+            cut -= 1
+        }
+    }
+    return "{line.slice(0, cut)}{attribute}{line.slice(cut, line.len())}"
+}
+
 // Which chunk owns a group — a source file, or a lone symbol when the body
 // came from no file. Hashing the name rather than counting positions is what
 // makes the object cache worth having: a group keeps the chunk it had no

@@ -109,8 +109,18 @@ agree() {
         exit 1
     fi
     check_effects "$tmp/$name.interp" "$source" "$want"
+    # Everything above compares the two backends against each other, so a
+    # change that moves BOTH of them together passes all of it. A case that
+    # keeps a `.out` beside it pins the answers themselves as well; the file
+    # is optional because for most cases the claim really is only agreement.
+    local golden="${source%.b}.out"
+    if [ -f "$golden" ] && ! diff -u "$golden" "$tmp/$name.interp"; then
+        echo "$source: both backends agree, on the wrong answers" >&2
+        exit 1
+    fi
     local note=""
     [ -n "$want" ] && note=", $want built and released"
+    [ -f "$golden" ] && note="$note, pinned"
     echo "  agree: $source ($(wc -l <"$tmp/$name.interp" | tr -d ' ') lines$note)"
 }
 
@@ -219,6 +229,22 @@ agree test/cases/parity/error_conversion.b 6
 # std failing its own users — a std.reflect failure crossing into a plain
 # Result<T> through ReflectError.to_error, on both the ok and err paths.
 agree test/cases/parity/reflect_error_bridge.b
+# #169: whether one type name stands for another. The native runtime compared
+# base names in the chain, so an IntGrid — a Grid<int> — was assignable to
+# Grid<string>; it compared exact strings at the top, so a Grid<int> was not
+# assignable to Grid, the declaration its own members are filed under. The
+# interpreter compared exact strings in both positions. Both legs were wrong,
+# in opposite directions, which is why the case carries the answer each row
+# must have and panics on a miss rather than only diffing the two legs. Three
+# receivers built and released, so the reflect value boxes are held the same
+# number of times on both backends.
+agree test/cases/parity/issue169_generic_assignability.b 3
+# #159: which type declares a member. Rows are filed under the declaration's
+# open name, so a member of Grid<int> reported main.Grid with no type
+# arguments and the guard for detecting an erased member was false for exactly
+# the erased members. Two instantiations, a non-generic subclass of each, two
+# links up, an override, a generic subclass, and the plain controls.
+agree test/cases/parity/issue159_declaring_type.b
 # A call the emitter names outright has to do the same work as the call
 # through the table it replaces: the guarded path writes the receiver as a
 # bare pointer while the direct one runs every operand, receiver included,
@@ -231,10 +257,95 @@ agree test/cases/parity/settled_dispatch.b 10
 # name gave the interpreter one slot and the native backend two, which this
 # case would expose as a marker imbalance the moment the layouts diverged.
 agree test/cases/parity/inherited_field_slots.b 4
+# #160: the two backends cannot share a reflection error message — the
+# interpreter stores a literal at each failure site, a native build asks the
+# runtime's code-to-text table — and one entry of that table was built a byte
+# short, so the same failure printed 27 bytes natively and 28 under the
+# interpreter. Every reflection error a program can reach is provoked here,
+# through every shape that reaches it, and each one prints its kind, its
+# message and the message's byte length. Sixteen receivers are boxed into
+# reflect values, so the refusing paths are held to the lifetime rule too.
+agree test/cases/parity/issue160_reflect_error_messages.b 16
+# #158 — reflection over members a generic class declares. The registry files
+# one row per OPEN declaration, so the interpreter served these off the live
+# object while the native backend, with no instantiation to name in a
+# monomorphic pointer, answered `unsupported`. Two instantiations whose
+# layouts differ plus an override, so a thunk right for one layout is not
+# enough. Four cells built and four owned slots replaced by a reflective
+# write: eight built, eight released, and a write to the wrong offset drops
+# the wrong reference.
+agree test/cases/parity/issue158_reflect_generic.b 8
 
 # Every case in the directory has to be listed above with its own expected
 # count; a file added and forgotten would otherwise be silently unchecked.
-listed=42
+listed=51
+# #163: a reflective box records the type the value IS, not the type of the
+# binding it came from. The two backends get there by different routes — the
+# native one reads the class descriptor at the object's first word, the
+# interpreter reads the class name the object records for itself — so only a
+# parity case checks they agree. Four boxing routes (reflect.value, a field
+# read, a call result, a construction), a three-link chain plus an interface
+# binding, a middle instance that must refuse the leaf, closed generics that
+# must keep their arguments, and eleven non-class payloads that must not
+# change. Four marked objects, built and released once.
+agree test/cases/parity/issue163_reflect_runtime_type.b 4
+
+# Every case in the directory has to be listed above with its own expected
+# count; a file added and forgotten would otherwise be silently unchecked.
+listed=51
+# A type parameter inside a function-typed parameter. The native backend
+# refused the call for a free function and for a static — `fn(T)` and
+# `fn(T) -> unit` are one type, and only the spelled form carries the result
+# in the type's argument list — while an instance method with the identical
+# signature emitted and the interpreter ran all three, so this shape could
+# not be compared across the backends at all. Twenty-six values built and
+# released: what a closure handed to a generic does is build and release, so
+# a body invoked the wrong number of times shows up as a marker imbalance
+# rather than as an answer that happens to match.
+agree test/cases/parity/issue161_generic_fn_parameter.b 26
+
+# Every case in the directory has to be listed above with its own expected
+# count; a file added and forgotten would otherwise be silently unchecked.
+# #162: a static factory on a generic class, with the class's own type
+# parameter bound at the call. No call could bind it before, so the two
+# backends never got the chance to disagree; now a static is monomorphized per
+# instantiation natively and interpreted from one body with a type frame, which
+# is where they would. Five owned values build once and release once through
+# `wrap`, a static reaching another static, a `List<T>` result, a move-only
+# parameter, and a generic struct's factory.
+agree test/cases/parity/issue162_static_factory.b 5
+
+# Every case in the directory has to be listed above with its own expected
+# count; a file added and forgotten would otherwise be silently unchecked.
+listed=51
+# #167: std.fs could name a file's bytes but not its life, so a program could
+# create a temp file it could never release. The shape that needed it is a
+# deinit that removes a spooled part — dropped on an ordinary scope exit and
+# again on a contained panic, where the unwind runs the same hooks. Both
+# backends have to remove the same files at the same points: each release
+# reports whether the bytes were actually gone, so a hook that ran but removed
+# nothing still fails. Five parts built and released.
+agree test/cases/parity/issue167_fs_lifecycle.b 5
+
+# Every case in the directory has to be listed above with its own expected
+# count; a file added and forgotten would otherwise be silently unchecked.
+# #155: a `move` hands the value over where it is written, so a moved-in
+# parameter dies at the callee's frame exit. The interpreter left the spent
+# binding pointing at the value and released it at the caller's scope exit
+# instead. The markers balanced on both sides, so the count below saw nothing
+# — only the ordered diff catches it, which is why the case prints a line
+# between every call and what follows. Forty values: a plain class and a
+# `unique` one, the temporary and borrowed controls, forwarding, storing,
+# returning, an early return, three moved-in parameters (reverse declaration
+# order is invisible at n=1), two discards in one list, a full frame teardown
+# with block locals and two defers, a method, a static, an interface, a move
+# with no call in it, four composite landing places, a reinitialised `var`,
+# and a loop.
+agree test/cases/parity/issue155_move_drop_point.b 40
+
+# Every case in the directory has to be listed above with its own expected
+# count; a file added and forgotten would otherwise be silently unchecked.
+listed=51
 present=$(find test/cases/parity -name '*.b' | wc -l | tr -d ' ')
 if [ "$present" != "$listed" ]; then
     echo "test/cases/parity holds $present cases but $listed are run" >&2

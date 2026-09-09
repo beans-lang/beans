@@ -946,10 +946,11 @@ static void beans_json_typed_release_record(
 // sheet and to its own invariants: test/json_typed_decode.sh.
 //
 // req[0]=length, [1]=read flags | max depth << 8, [2]=schema,
-// [3]=scalar output/list output, [5]=error code, [6]=record count on success
-// and on a shape refusal / error byte offset on a syntax refusal,
+// [3]=scalar output/list output, [4]=diagnostic-probe callback (0 for none;
+// read by the entry below, not by this walk), [5]=error code, [6]=record count
+// on success and on a shape refusal / error byte offset on a syntax refusal,
 // [7]=field index, [8]=new-list callback, [9]=Beans bytes-allocator callback,
-// [10]=Beans allocator callback, [11]=release callback. Word 4 is unused.
+// [10]=Beans allocator callback, [11]=release callback.
 static long long beans_json_typed_decode_walk(
         unsigned char* src, uint64_t* req) {
     const BeansJsonTypedSchema* schema =
@@ -1068,33 +1069,53 @@ static long long beans_json_typed_decode_walk(
     return status;
 }
 
-// Test observability. The last decode's outcome, stashed where a test can read
+// Test observability. The last decode's outcome, handed where a test can read
 // it: none of these numbers reach a Beans program, because typed decoding
 // collapses every failure to one error of kind "invalid" at the language
 // boundary, so without this the gate could pin only accept-or-refuse and never
 // WHY or WHERE. test/json_typed_decode.sh records the code and the byte offset
 // of every refusal — over the JSONTestSuite corpus and over every truncation
 // and byte flip of a valid document — in goldens, and this is how it reads
-// them. Written on every decode: four stores against the thousands of
-// operations a decode already runs. Not thread-safe on purpose; the gate that
-// reads it is one thread.
-static uint64_t beans_json_decode_probe_data[4];
+// them.
+//
+// The four words used to be stored here, in a file-scope array, on the premise
+// that the gate reading them is one thread. That was true of the gate and false
+// of this entry, which is what json.decode, json.decode_bytes,
+// json.decode_bytes_in_place and json.decode_with_options all lower to — public
+// API, so two threads decoding at once raced the stores (issue #152). Nothing
+// about the data wants a global: three of the four words are already in the
+// caller's request buffer and the fourth is this function's return value. Only
+// the reader wanted one, because a Beans program calls it after the decode has
+// returned and cannot see the caller's buffer.
+//
+// So the words leave through the request buffer like every other output of this
+// ABI, and land in per-thread storage the runtime owns: req[4] carries
+// beans_json_decode_probe_publish, and beans_json_decode_probe (also in the
+// runtime) reads this thread's copy back. The storage cannot live here — this
+// bridge must resolve against libc alone (test/encoding_symbols.sh) and
+// _Thread_local puts __tlv_bootstrap in the object on Darwin — so it sits on
+// the runtime's side of the boundary and is reached only through this pointer,
+// exactly as the allocator callbacks in req[9..11] are.
+//
+// The parameter types are spelled the way the runtime spells them, not with
+// uint64_t: calling through a function pointer whose type differs from the
+// callee's declared type is undefined behaviour, and uint64_t is `unsigned
+// long` on LP64 — a different type from the same-width `unsigned long long`.
+typedef void (*BeansJsonProbeFn)(unsigned long long status,
+                                 unsigned long long code,
+                                 unsigned long long detail,
+                                 unsigned long long field);
 
 BEANS_ENC_API long long beans_enc_json_typed_decode_direct(
         unsigned char* src, uint64_t* req) {
     long long status = beans_json_typed_decode_walk(src, req);
-    beans_json_decode_probe_data[0] = (uint64_t)status;
-    beans_json_decode_probe_data[1] = req[5];
-    beans_json_decode_probe_data[2] = req[6];
-    beans_json_decode_probe_data[3] = req[7];
+    BeansJsonProbeFn publish = (BeansJsonProbeFn)(uintptr_t)req[4];
+    if (publish)
+        publish((unsigned long long)status,
+                (unsigned long long)req[5],
+                (unsigned long long)req[6],
+                (unsigned long long)req[7]);
     return status;
-}
-
-// out[0]=status, out[1]=error code, out[2]=byte offset for a syntax refusal or
-// the record count otherwise, out[3]=field index (UINT64_MAX if none).
-BEANS_ENC_API long long beans_enc_json_decode_probe(uint64_t* out) {
-    for (int i = 0; i < 4; i++) out[i] = beans_json_decode_probe_data[i];
-    return 0;
 }
 
 // req[0]=text length, req[1]=yyjson read flags, req[2]=schema pointer

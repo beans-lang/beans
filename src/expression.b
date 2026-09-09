@@ -16,6 +16,34 @@ fn unsafe_module_call(import_path: string, name: string) -> bool {
             name == "call_f32_1" || name == "call_f32_i32")
 }
 
+// The resolver's view of one file: the package that owns it, the parsed
+// file itself, and the two import tables a name written in it is looked up
+// through — module bindings (`import path as alias`) and selected bindings
+// (`import {A, B as C} from path`).
+//
+// A string's `{}` piece is lexed and parsed at check time, long after the
+// resolver walked the file, so nothing has ever bound the type names inside
+// it. Binding them means asking the resolver the same question it answers
+// for every other type name, and the resolver answers in terms of a package
+// and a file — so both are carried back here rather than reconstructed from
+// the checker's flattened, whole-program import maps.
+class InterpolationScope {
+    file: string
+    package: LoadedPackage
+    parsed: ParsedModuleFile
+    aliases: Map<string, string>
+    selected: Map<string, string>
+
+    fn init(resolver: Resolver, package: LoadedPackage,
+            parsed: ParsedModuleFile) {
+        self.file = parsed.path
+        self.package = package
+        self.parsed = parsed
+        self.aliases = resolver.aliases_for(parsed)
+        self.selected = resolver.selected_for(parsed)
+    }
+}
+
 class ExpressionChecker {
     signature: SignatureChecker
     program: HirProgram
@@ -114,6 +142,11 @@ class ExpressionChecker {
     ctor_requires_super: bool
     ctor_super_seen: bool
 
+    // The import scope of the file whose body is being checked, built the
+    // first time a string piece in it names a type. Checking walks a file's
+    // functions together, so one entry answers every piece in the file.
+    interpolation_scope: Option<InterpolationScope>
+
     fn init(signature: SignatureChecker) {
         self.signature = signature
         self.program = signature.hir
@@ -159,6 +192,7 @@ class ExpressionChecker {
         self.call_generics_syntax = none
         self.call_generics_taken = true
         self.try_expectations = []
+        self.interpolation_scope = none
         self.ctor_owner = ""
         self.ctor_self_binding = 0 - 1
         self.ctor_own_fields = {}
@@ -766,10 +800,7 @@ class ExpressionChecker {
 
     fn generic_name_in(name: string,
                        generics: List<string>) -> bool {
-        for generic: string in generics {
-            if generic == name { return true }
-        }
-        return false
+        return generic_name_listed(generics, name)
     }
 
     fn substitute_generic_type(
@@ -842,8 +873,35 @@ class ExpressionChecker {
             }
             return
         }
-        if pattern.name != actual.name ||
-           pattern.args.len() != actual.args.len() {
+        if pattern.name != actual.name {
+            return
+        }
+        // A function type is its parameters and its result. An unwritten
+        // result is `unit` and takes no slot in `args`, so `fn(T)` written
+        // as a parameter and the `fn(main.Hint) -> unit` a closure literal
+        // carries have different arg counts for the same shape: reading the
+        // raw list would infer nothing from either against the other, and
+        // the same closure would bind T through a variable but not written
+        // out at the call.
+        if pattern.name == "fn" {
+            if pattern.fn_parameter_count !=
+                   actual.fn_parameter_count {
+                return
+            }
+            for index: int in
+                0..pattern.fn_parameter_count {
+                self.infer_generic_type(
+                    pattern.args[index],
+                    actual.args[index],
+                    generics, inout inference, at)
+            }
+            self.infer_generic_type(
+                hir_fn_result(pattern),
+                hir_fn_result(actual),
+                generics, inout inference, at)
+            return
+        }
+        if pattern.args.len() != actual.args.len() {
             return
         }
         for index: int in 0..pattern.args.len() {
@@ -1459,64 +1517,121 @@ class ExpressionChecker {
         }
     }
 
+    // The import scope of the file being checked. Rebuilt whenever the file
+    // changes — checking walks one file's functions together, so the single
+    // entry answers every string piece in that file — and `none` only when
+    // the checker is standing on a file the loader never parsed, which no
+    // real program produces.
+    fn current_interpolation_scope() -> Option<InterpolationScope> {
+        match self.interpolation_scope {
+            some(cached) => {
+                if cached.file == self.current.file {
+                    return some(cached)
+                }
+            }
+            none => {}
+        }
+        for package: LoadedPackage in
+            self.signature.resolver.loader.packages {
+            for file: ParsedModuleFile in package.files {
+                if file.path != self.current.file { continue }
+                let scope: InterpolationScope =
+                    new InterpolationScope(
+                        self.signature.resolver, package, file)
+                self.interpolation_scope = some(scope)
+                return some(scope)
+            }
+        }
+        self.interpolation_scope = none
+        return none
+    }
+
+    // Bind one type name written inside a string's `{}` piece.
+    //
+    // The piece was lexed and parsed here, so the resolver has never seen
+    // this node, and the answer must be the one the resolver would have
+    // given had the same words been written outside the quotes: the file's
+    // module bindings, its `import {…} from` selections, its own package,
+    // the enclosing type parameters and `Self`, then the declaration's
+    // kind and its visibility. That is one rule, held in one place, and it
+    // is called here rather than restated — a second copy of it is exactly
+    // what made `type_of(T)` inside a string answer with a type that does
+    // not exist. A name nothing declares is refused, not composed: the
+    // resolver reports it against the program and returns poison, which
+    // stops every later stage from repeating itself about it.
+    fn bind_interpolated_type(node: AstNode) {
+        var generics: Map<string, bool> = {}
+        for constraint: HirGeneric in self.current_constraints {
+            generics[constraint.name] = true
+        }
+        match self.current_interpolation_scope() {
+            some(scope) => {
+                let before: int =
+                    self.signature.resolver.errors.len()
+                node.resolved =
+                    self.signature.resolver.resolve_type_name(
+                        node.value, scope.package, scope.parsed,
+                        scope.aliases, scope.selected, generics,
+                        self.current.owner, node, false)
+                // The resolver reports into its own list, and that list was
+                // already drained and printed before checking began. Move
+                // anything it just said onto this checker's diagnostics so
+                // it reaches the person who wrote the string.
+                for index: int in
+                    before..self.signature.resolver.errors.len() {
+                    self.errors.push(
+                        self.signature.resolver.errors[index])
+                }
+                for self.signature.resolver.errors.len() > before {
+                    self.signature.resolver.errors.pop()
+                }
+            }
+            none => {
+                // No file of the loaded program is the one being checked.
+                // Every body reached here belongs to a parsed file — a
+                // function, a field default, a C global's annotations — so
+                // this cannot happen for a program the loader accepted. It
+                // refuses rather than composing a name anyway, which is the
+                // whole point of the rule above.
+                self.fail(
+                    node,
+                    "can't look up the type '{node.value}' written inside this string: '{self.current.file}' is not a source file of this program")
+                node.resolved = "poison"
+            }
+        }
+    }
+
     // A re-parsed interpolation segment never went through the resolver, so
-    // its type names are still source spellings. Bind them the way the
-    // resolver would have: an import binding names its package, and a bare
-    // name means this file's own package.
+    // its type names are still source spellings and its array lengths are
+    // still constant names. Ask the resolver for each one, exactly as
+    // resolve_node does for a type written anywhere else.
     fn qualify_unresolved_types(node: AstNode) {
         if node.kind == "array_type" {
             self.qualify_interpolated_array_length(node)
         }
-        if (node.kind == "type" || node.kind == "array_type" ||
-            node.kind == "fn_type") && node.resolved == "" {
-            let name: string = node.value
-            var generic: bool = false
-            for constraint: HirGeneric in self.current_constraints {
-                if constraint.name == name { generic = true }
-            }
-            if name == "Self" {
-                node.resolved = self.current.owner
-            } else if !builtin_type(name) && !generic && name != "" {
-                if name.contains(".") {
-                    let parts: List<string> = name.split(".")
-                    let target: string =
-                        self.imported_path(parts[0])
-                    if target != "" && parts.len() == 2 {
-                        node.resolved =
-                            package_symbol(target, parts[1])
-                    }
-                } else {
-                    node.resolved = self.current_qualified(name)
-                }
-            }
+        // `new (args)` writes an empty type node the checker fills in from
+        // the target; there is no name in it to look up.
+        if node.kind == "type" && node.resolved == "" &&
+           node.note != "inferred" && node.value != "" {
+            self.bind_interpolated_type(node)
         }
         for child: AstNode in node.children {
             self.qualify_unresolved_types(child)
         }
     }
 
+    // The declaration a type names, by its canonical symbol and nothing
+    // else. It used to re-qualify a name that missed — a bare name against
+    // this file's package, a dotted one against an import binding — because
+    // a re-parsed string piece really did arrive here spelled the way source
+    // wrote it. It no longer does: every type node, inside a string or out,
+    // is bound by the resolver before any of this reads it. So a miss is a
+    // miss, which is what it has to be: composing a key out of the asking
+    // package is how `type_of` inside a string came to name a type that does
+    // not exist, and `poison` — the checker's word for a type it already
+    // refused — is a legal class name a package could really declare.
     fn declaration_for(type: HirType) -> Option<HirDeclaration> {
-        match self.declarations.get(type.name) {
-            some(declaration) => { return some(declaration) }
-            none => {}
-        }
-        // a re-parsed interpolation segment never went through the
-        // resolver, so a bare package-local name or an import alias can
-        // survive here; qualify it the way resolved code would be
-        if !type.name.contains(".") {
-            return self.declarations.get(
-                self.current_qualified(type.name))
-        }
-        let parts: List<string> = type.name.split(".")
-        if parts.len() == 2 {
-            let import_path: string =
-                self.imported_path(parts[0])
-            if import_path != "" {
-                return self.declarations.get(
-                    package_symbol(import_path, parts[1]))
-            }
-        }
-        return none
+        return self.declarations.get(type.name)
     }
 
     fn json_annotation(
@@ -5918,6 +6033,31 @@ class ExpressionChecker {
         return ok
     }
 
+    // `unit` is the absence of a value, and no backend has storage for one
+    // (hir_unit_misplacement). Signature and field types are refused where
+    // they are lowered; this is the same rule for everything the checker
+    // learns instead of reading — a statement's annotation, a builtin
+    // method's answer, a generic bound to `unit` by inference. Answers true
+    // when it refused, so a caller can poison rather than carry a type no
+    // backend can hold.
+    //
+    // `result_slot` is true when the type names what something *answers*
+    // rather than what it holds: a function's result, a builtin's result, a
+    // concurrent handle's payload. `unit` is legal exactly there.
+    fn refuse_misplaced_unit(node: AstNode, type: HirType,
+                             result_slot: bool) -> bool {
+        match hir_unit_misplacement(type, result_slot) {
+            some(offender) => {
+                self.fail(
+                    node,
+                    unit_misplacement_message(offender))
+                return true
+            }
+            none => {}
+        }
+        return false
+    }
+
     fn validate_target_type(node: AstNode, type: HirType) {
         if (type.name == "StoredCallback" ||
             type.name == "LocalStoredCallback") &&
@@ -7952,6 +8092,7 @@ class ExpressionChecker {
             none => {}
         }
         var inout_names: Map<string, bool> = {}
+        var unit_refused: bool = false
         for result.argument_passing.len() <
             result.children.len() {
             result.argument_passing.push("")
@@ -7992,6 +8133,17 @@ class ExpressionChecker {
                 self.substitute_generic_type(
                     pattern, function.generics,
                     inference)
+            // An argument is a value, so a generic that inference bound to
+            // `unit` has nothing to pass. `id(nothing())` reached the
+            // emitter as a temporary with no representation (#154); the
+            // declared-parameter half of the same rule is refused where the
+            // signature is lowered. The result is not reported after this:
+            // a `List<T>` answered for an argument already refused is the
+            // same mistake seen twice.
+            if self.refuse_misplaced_unit(
+                   node.children[index + first], wanted, false) {
+                unit_refused = true
+            }
             self.expect_type(
                 node.children[index + first],
                 actual.type, wanted)
@@ -8153,6 +8305,17 @@ class ExpressionChecker {
             self.substitute_generic_type(
                 result_pattern,
                 function.generics, inference)
+        // Inference is where `unit` arrives without anyone writing it: a
+        // generic bound to the result of a call that returns nothing turns
+        // `Result<T>` into `Result<unit>` and `List<T>` into `List<unit>`,
+        // types no backend has a value for. Refuse the substituted result
+        // here, at the call, so the message names the type this call would
+        // have answered with rather than the emitter that could not build
+        // it (#154). A generic bound to `unit` is fine on its own — the
+        // rule is about the slot it lands in, not the binding.
+        if !unit_refused {
+            self.refuse_misplaced_unit(node, result.type, true)
+        }
         // Explicit type arguments pin the full resolved binding onto the
         // call node, so both backends can instantiate a generic the
         // signature alone could never rebind.
@@ -8675,6 +8838,8 @@ class ExpressionChecker {
             some(signature) => {
                 self.validate_target_type(
                     node, signature.result)
+                self.refuse_misplaced_unit(
+                    node, signature.result, true)
                 let result: HirNode =
                     self.make_node(
                         node, "builtin_call",
@@ -8815,6 +8980,15 @@ class ExpressionChecker {
                 } else {
                     expected
                 }
+            // `some` and `ok` carry a value, and a call that returns
+            // nothing has none — the payload names where the mistake is,
+            // even when no annotation wrote the type (#154).
+            if self.refuse_misplaced_unit(
+                   node.children[1], type, false) {
+                return some(self.make_node(
+                    node, "error", "some",
+                    poison_hir_type()))
+            }
             let result: HirNode =
                 self.make_node(node, "some", "some", type)
             result.children.push(value)
@@ -8841,6 +9015,12 @@ class ExpressionChecker {
                 } else {
                     hir_result(value.type)
                 }
+            if self.refuse_misplaced_unit(
+                   node.children[1], type, false) {
+                return some(self.make_node(
+                    node, "error", "ok",
+                    poison_hir_type()))
+            }
             let result: HirNode =
                 self.make_node(node, "ok", "ok", type)
             result.children.push(value)
@@ -10154,6 +10334,21 @@ class ExpressionChecker {
                 some(signature) => {
                     self.validate_target_type(
                         node, signature.result)
+                    // The answer of a builtin over a handle is derived from
+                    // the handle's payload, so it can name `unit` with the
+                    // program having written no such type: `Brew<unit>.join`
+                    // answers `Result<unit>`, and a `TaskGroup<unit>`
+                    // delivers one through `next`, `try_next` and
+                    // `wait_all`. There is no Result<unit> — the refusal
+                    // belongs here, about the program, not in the emitter
+                    // that could not build one (#154).
+                    // Not poisoned: the arms of the `match` that reads a
+                    // join are checked against the Result the program
+                    // wrote, so one refusal is the whole story. Poison
+                    // would answer it with two more lines about a type
+                    // nobody wrote.
+                    self.refuse_misplaced_unit(
+                        node, signature.result, true)
                     if receiver.type.name == "MMap" &&
                        self.program.target.os == "wasi" {
                         self.fail(
@@ -12821,6 +13016,16 @@ class ExpressionChecker {
                 }
                 self.validate_target_type(
                     type_node, declared)
+                // A binding holds a value, so `unit` — the absence of one —
+                // cannot be its type, and neither can anything that would
+                // have to store one (#154). The annotation is left standing
+                // rather than poisoned: the initializer and every later
+                // read of the binding were already checked against this
+                // type before the refusal existed, and poisoning it answers
+                // one refusal with a second round of messages about a type
+                // nobody wrote.
+                self.refuse_misplaced_unit(
+                    type_node, declared, false)
             }
             none => {}
         }
@@ -14474,9 +14679,68 @@ class ExpressionChecker {
             }
         }
         self.pop_scope()
+        self.check_static_owner_generics(function)
         if function.name == "init" && function.owner != "" {
             self.check_init_construction(function)
         }
+    }
+
+    // The owner parameters a static's signature names become its own (see
+    // SignatureChecker.promote_owner_generics), and a call binds those. One
+    // that only the body names has nothing to bind it: a static has no
+    // receiver, no argument carries it, and the result does not mention it, so
+    // every instantiation of the method would still hold a bare `T`. The
+    // interpreter ran such a body anyway — a runtime type nothing needed — and
+    // the native backend reported `cannot form class layout 'main.Holder<T>'`
+    // at build time, an emitter's words for a program the checker had already
+    // accepted. Refuse it here, where the programmer wrote it, and say what to
+    // write instead.
+    fn check_static_owner_generics(function: HirFunction) {
+        if !function.is_static ||
+           function.owner == "" {
+            return
+        }
+        match self.declarations.get(function.owner) {
+            some(owner) => {
+                for generic: string in owner.generics {
+                    if self.generic_name_in(
+                           generic, function.generics) {
+                        continue
+                    }
+                    var used: bool = false
+                    for statement: HirNode in function.body {
+                        if self.node_names_generic(
+                               statement, generic) {
+                            used = true
+                            break
+                        }
+                    }
+                    if !used { continue }
+                    self.fail(
+                        function.syntax,
+                        "static method '{function.name}' uses '{generic}' from {self.diagnostic_symbol(owner.qualified)} in its body, but its own signature never names it — a static has no receiver, so nothing at a call site can bind '{generic}'; name it in a parameter or in the result, or give '{function.name}' a type parameter of its own")
+                }
+            }
+            none => {}
+        }
+    }
+
+    fn node_names_generic(node: HirNode,
+                          generic: string) -> bool {
+        if hir_type_names_generic(node.type, generic) {
+            return true
+        }
+        for argument: HirType in node.type_arguments {
+            if hir_type_names_generic(argument, generic) {
+                return true
+            }
+        }
+        for child: HirNode in node.children {
+            if self.node_names_generic(child, generic) {
+                return true
+            }
+        }
+        return false
     }
 
     // ---- module constants ---------------------------------------------------

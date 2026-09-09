@@ -60,6 +60,38 @@ extern, variadic, and `inout` calls are not reflective call targets.
 There is no `setAccessible`, proxy generation, stack inspection, class loader,
 or raw-memory escape.
 
+A name that carries type arguments and the same name without them denote one
+declaration. Descriptor rows are filed under the declaration, so
+`type_of(Grid<int>)` and `type_of(Grid<string>)` reach the same rows, and a
+name with no type arguments is assignable from every instantiation of it; two
+different argument lists are two different types and neither is assignable from
+the other.
+
+Reflection describes a closed generic without substituting its arguments. Every
+type such a descriptor reports is the one the source declared:
+`Grid<int>.field("items").type()` is `List<T>`, a method returning `T` reports
+`T`, and a generic base is reported as written, so `Sub<int>`'s base type is
+`Grid<T>`. Only `qualified_name()` and `type_arguments()` carry the arguments.
+`declaring_type()` names the link the queried type reaches the member through,
+so a member declared by a generic type reports one that carries type arguments
+and a member inherited from a plain base does not — which is how a program
+tests for the erasure from the descriptor alone.
+
+A reflective operation on a closed generic is a target when its signature
+mentions no type parameter of the declaring type **and** the call carries a
+receiver that names the instantiation. A class receiver names it — the object
+carries its class — while a struct or union receiver is bare bytes and names
+nothing, so a field of a generic struct is refused on the same ground as a
+receiver-less operation. A member whose declared type mentions a type parameter
+cannot be checked against a value, and a receiver-less operation on a generic
+declaration — an initializer, a `static fn`, an enum variant — cannot name
+which instantiation to run, because the row records none. All of these are
+refused. Lifting the limits means recording the declaration's type-parameter
+names in the registry, so arguments can be substituted, and carrying the
+caller's closed owner name into the call, so a receiver-less or bare-bytes
+body can be selected; both are runtime ABI changes and are deliberately not
+taken here.
+
 Reflection supplies the metadata and checked operations a serializer needs.
 JSON and XML naming, unknown-field, default, versioning, and numeric conversion
 policies remain in `std.encoding`. The complete API and limits are specified in
@@ -355,6 +387,15 @@ fn main() {
   9 characters, 12 columns) is already full and `"ok"` gets ten spaces. Byte
   padding lined up only ASCII; there is no caller that wanted it for anything
   else. `s.width()` is the same measure, spelled out.
+- **A `{}` piece is an ordinary expression, scoped to the file that wrote the
+  string.** Every name in it is bound by that file's own imports — a local, a
+  function, a constant, and a **type** — exactly as the same words are bound one
+  character outside the quotes. So `new T()`, `x as T`, `x as? T`, an explicit
+  type argument `f<T>(x)`, a closure parameter's `fn(x: T)`, `type_of(T)` and
+  `size_of(T)` inside a piece all reach the `T` that file's
+  `import {T} from p` selected, and a name that no import and no declaration
+  supplies is refused there in the same words it is refused anywhere else. A
+  piece never gets a second, looser scope of its own.
 - **There is no `+` for strings.** To render *one* string, use interpolation
   (`"hi {name}"`) or `std.fmt` (sprintf-style: padding, precision, alignment).
   To *accumulate* a string across a loop, use `fmt.StringBuilder` (push the
@@ -498,10 +539,20 @@ Class-first, like everything builtin. Errors are `Result<T>`; `Error.kind` carri
 - **File statics/intrinsics**: `exists`, `size`, `remove`, `rename`, and
   `open(path, mode)` → `Result<File>` with modes `"r"`, `"rw"`,
   `"create"`, `"append"`.
-- **std.fs**: Beans-written `read`, `read_bytes`, `write`/`append`, `write_bytes`/
-  `append_bytes`, and `copy`. These compose `File.open`, positional/cursor I/O,
-  truncate, close, and exact byte-to-string conversion; only that low-level layer
-  stays native. The old native `File.read(path)` helper is gone.
+- **std.fs**: the whole life of a file named by its path. Beans-written `read`,
+  `read_bytes`, `write`/`append`, `write_bytes`/`append_bytes`, and `copy` —
+  these compose `File.open`, positional/cursor I/O, truncate, close, and exact
+  byte-to-string conversion; only that low-level layer stays native. The old
+  native `File.read(path)` helper is gone. Beside them, `exists(path)`,
+  `size(path)`, `rename(from, to)`, `remove(path)` and `temp_dir()`: every
+  path-taking `File` static has an `fs` spelling, because a package that can
+  create a file it cannot release is worse than one that cannot create it.
+  `remove` answers `ok(true)` when the entry was there and is gone and
+  `ok(false)` when nothing was there — a `deinit` releasing a spooled temp file
+  cannot propagate a result, and "already gone" is the state it wanted; every
+  other failure is still `err` with its kind. It never asks `exists` first, so
+  there is no check-then-act window. Directories keep their own surface on
+  `Dir`.
 - **File methods**: positional I/O first — `read_at(pos, n)` → `Result<Bytes>` (short read at
   EOF returns what's there), `write_at(pos, b)`; cursor `read(n)`/`write(b)`; `seek`/`seek_from_end`
   (return the new position, panic on a closed file), `tell`, `size`, `truncate`, `sync` (fsync —
@@ -517,6 +568,10 @@ Class-first, like everything builtin. Errors are `Result<T>`; `Error.kind` carri
   (empty only), `remove_all` (recursive), `exists`, `temp_path`, `sync` — fsync a directory, the
   rename-commit pattern's second half; `walk(path)` → `Result<List<string>>` — recursive,
   files and symlinks only (never follows a link), paths relative to the argument, sorted.
+  `temp_path` (`fs.temp_dir()` is the same answer) reads `TMPDIR`, then `TMP`
+  and `TEMP` on Windows, then the platform default — `GetTempPath` there,
+  `/tmp` elsewhere. It never answers `/tmp` on Windows, where that names
+  nothing. No trailing separator, either kind.
 - **std.path** (pure Beans string math, no fs access): `join(a, b)` (absolute `b` wins),
   `parent`, `base`, `ext` (with the dot; a leading dot is a dotfile, not an extension),
   and `stem`. Import it with `import std.path`; the old native `Path.*` copy is gone.
@@ -1040,6 +1095,24 @@ local from a loop is also rejected because the next iteration would see an
 empty binding. For now `move` names a whole local; field and index moves need
 consuming accessors such as List `remove`.
 
+**A move hands the value over where it is written, not where the spent binding's
+scope ends.** From the `move` on, the value belongs to whatever took it — a
+`let` or `var`, a `move` parameter, a field, an element of a literal, a map
+entry — and it is released when *that* owner is released, wherever that is. The
+spent binding is not a second owner and adds nothing to the lifetime: it holds
+nothing at all until it is reinitialized. So the packet below is released where
+`taken` goes out of scope — the end of the `if` — and not at the end of the
+function where `held` was declared:
+
+```
+let held: Packet = open()
+if ready {
+    let taken: Packet = move held      // `taken` owns it from here
+    send(taken)
+}                                      // Packet's deinit runs here
+io.println("after")                    // ...so this prints after it
+```
+
 Parameters borrow by default. A `move` parameter owns its argument and drops it
 at function exit unless the body moves it onward:
 
@@ -1054,6 +1127,29 @@ A fresh result can be passed directly; an existing move-only local needs
 `move`. Move modes must match across interface methods and overrides. Function
 values and closures do not carry ownership modes yet, so a function with move
 or inout parameters cannot be stored as a closure value.
+
+Ownership arrives at the call, so how the caller produced the argument makes no
+difference to when the value dies: `enqueue(make_batch())` and
+`enqueue(move batch)` both release the batch when `enqueue` returns, and if
+`enqueue` hands it to a further call it dies with *that* callee instead. A
+borrowed parameter is the other half of the same rule — it owns nothing, so its
+argument outlives the call under whatever the caller's own scope says.
+
+A function's parameters are bound before its first local, and a frame releases
+what it owns in reverse order of binding, so the `move` parameters go last.
+Leaving a function releases, in this order:
+
+1. the locals of the nested blocks it is leaving, innermost first;
+2. the function's defers, newest first;
+3. the function's own locals, newest first;
+4. its `move` parameters, last-declared first.
+
+A plain return, an early `return`, a `?`, and a contained panic's unwind
+(spec/CONCURRENCY.md) all leave by that one order, on both backends. The single
+place a moved-in argument does not die with the callee is a `brew` or
+`contained` call: their arguments are hoisted into invisible locals of the
+enclosing scope before the call, so they die when that scope exits
+(spec/CONCURRENCY.md).
 
 An `inout` parameter aliases one mutable caller local for the duration of the
 call. It is not copy-in/copy-out:
@@ -1556,6 +1652,13 @@ let double: fn(int) -> int = fn(x: int) -> int { return x * 2 }
 xs.map(fn(x: int) -> int { return x * 2 })
 ```
 
+The result may be left off, and `fn(int)` is exactly `fn(int) -> unit` — one
+type, two spellings. Either stands wherever the other does: a closure written
+`fn(x: int) { ... }` is a `fn(int)`, a value annotated `fn(int)` is passed to a
+parameter written `fn(int) -> unit`, and a generic binds `T` from `fn(T)`
+against either. The same holds inside a composite: `List<fn(int)>` and
+`List<fn(int) -> unit>` are one type.
+
 A plain `fn(...) -> T` value is local, aliasable, and `Clone`. A
 `send fn(...) -> T` value is move-only and implements `Send`, not `Sync` or
 `Clone`. A closure gets the sendable form from its declared or parameter type;
@@ -1615,6 +1718,43 @@ let u: User = new("jul")
   it, as `User.guest()`, and `u.guest()` on a value is refused. See
   *Inheritance and interfaces* for the rule that follows from it — one name in
   a class family is a static or an instance method, never both.
+- A static on a **generic** type carries its owner's type parameters. Because a
+  static has no receiver, nothing at the call site holds the owner's arguments —
+  there is no `self` to read them off and no receiver position to write them in
+  — so the owner parameters a static's own signature names are type parameters
+  *of the static*, listed before the ones it declares itself. They are inferred
+  at the call from the arguments and from the expected result, exactly as a
+  method's own are, and may be written out in the same place:
+
+  ```beans
+  class Holder<T> {
+      value: Option<T> = none
+      fn init() {}
+
+      static fn wrap(value: T) -> Holder<T> {          // T from the argument
+          let held: Holder<T> = new Holder<T>()
+          held.value = some(value)
+          return held
+      }
+      static fn empty() -> Holder<T> { return new Holder<T>() }
+      static fn both<U>(value: T, note: U) -> Holder<T> { return Holder.wrap(value) }
+  }
+
+  let a: Holder<int> = Holder.wrap(3)          // T = int, from the argument
+  let b: Holder<string> = Holder.empty()       // T = string, from the binding
+  let c: Holder<int> = Holder.wrap<int>(4)     // T written out
+  let d: Holder<int> = Holder.both<int, string>(5, "note")   // T, then U
+  ```
+
+  Only the owner parameters the signature names are carried: a static that
+  names none — `static fn tag() -> string` on `Holder<T>` — needs none, and
+  asks for none. The owner's bounds travel with the parameters they constrain,
+  so `class Sorted<K implements Order>` refuses `Sorted.between(a, b)` for a
+  `K` with no order. An owner parameter that only the *body* names is refused
+  at the declaration: nothing can bind it, so every instantiation would still
+  hold an open type. Write it into a parameter or the result, or give the
+  method a type parameter of its own. The receiver-spelled form
+  `Holder<int>.wrap(3)` is not a call syntax; type arguments go on the call.
 - An unmarked method is package-visible, `pub fn` is visible from other
   packages, and `priv fn` is visible only inside its exact declaring class or
   struct. The same rule applies to `priv static fn`, `priv inout fn`, and
@@ -2188,6 +2328,24 @@ fn parse_age(s: string) -> Result<int> {
   location and message, then exits with status 3. It never returns and does not
   run defers.
 - `Result<T>` means `Result<T, Error>` — `Error` is a built-in class (msg, kind, cause). Custom error types via `Result<T, MyError>`.
+- **There is no `Result<unit>`, and no value of type `unit` at any depth.**
+  `unit` is what a function that returns nothing answers with — it *names* a
+  result, it is not a value. It is legal exactly where a result is named: a
+  function's or closure's declared result (`fn f()`, `-> unit`, `fn() -> unit`),
+  and the payload of `Thread<T>`, `Brew<T>` and `TaskGroup<T>`, which is the
+  result type of the call the handle runs. Everywhere else a value of the type
+  would have to exist and there is none, so it is refused at check time, about
+  the program: a local, a `var`, a parameter, a field, an enum payload, an
+  element of any container (`List<unit>`, `Map<K, unit>`, `Option<unit>`,
+  `Channel<unit>`, `Box<unit>`, …), and above all a `Result` payload, because
+  `ok` takes a value. The rule is on the **slot**, not the spelling: a generic
+  whose `T` binds to `unit` through a function result — `produce(fn() { })` —
+  is fine, and the same `T` reaching an argument or a `Result` payload is not.
+  `Thread<unit>.join()` answers `unit` and is legal; `Brew<unit>.join()` would
+  have to answer `Result<unit>` and is refused, as are `TaskGroup<unit>`'s
+  `next`, `try_next` and `wait_all`. The way through is to give the called
+  function a result to return, or to use the form that answers no `Result` —
+  a statement `brew`, a kept handle nobody joins, `cancel()`, `cancel_all()`.
 - **`err(message, kind)`** sets the `kind` slug as well as the message:
   `return err("closed after 3 of 8 bytes", "eof")`. Only for the built-in `Error` —
   a custom error type carries its own fields, so `err(value)` is the form there. Without
@@ -2367,6 +2525,11 @@ fn largest<T implements Order>(xs: List<T>) -> Option<T> { ... }
 fn index<K implements Eq & Hash, V>(key: K, value: V) -> Map<K, V> { ... }
 ```
 
+A `static fn` on a generic type has no receiver to read the owner's arguments
+off, so the owner parameters its signature names become type parameters of the
+static itself and are inferred — or written — at the call. See *Classes* for
+the rule and its refusals.
+
 The compiler-known interfaces are `Clone`, `Eq`, `Hash`, `Order`, `Send`, and `Sync`.
 Bounds are checked when a generic function or type is used, and generic bodies
 can only use operations promised by their bounds. `Order` also promises `Eq`.
@@ -2531,7 +2694,8 @@ fn shielded(request: Request) -> Response {
   as a fabricated closure over hoisted bindings. A value receiver would run on
   the hoisted copy; an interface value is an object, so it is not one.
 - The call must return something: `contained` answers `Result<T>`, and there
-  is no `Result<unit>` in Beans because `ok` takes a value.
+  is no `Result<unit>` in Beans because `ok` takes a value (see "Option and
+  Result" for the rule this is one case of).
 - It needs the controlled unwind, so `--runtime freestanding` and every
   target without it (Windows/COFF, wasm, 32-bit ARM) refuse `contained` at
   check time. `brew` + `join` is the way to contain a panic there.
@@ -3377,6 +3541,27 @@ match conn.read_request()? {
     none => {}   // the client finished cleanly
 }
 
+// A response whose length is not known when the head must go out is framed
+// chunked instead. std.http owns that framing too: a zero-length chunk is
+// refused (it is the terminator), a chunk before the head or after the
+// terminator is refused, and 1xx/204/304 are refused because they cannot
+// carry a body at all.
+conn.begin_chunked(200, "OK", new http.Headers(), request.keep_alive)?
+conn.write_chunk(Bytes.from("first"))?
+conn.write_chunk(Bytes.from("second"))?
+conn.finish_chunked()?
+
+// The same framing into caller-owned storage, for a server with its own
+// output queue. `chunk_prefix_append` frames a chunk whose payload never
+// enters the buffer, so head and payload go out as one vectored send.
+let writer: http.ChunkedResponseWriter = new http.ChunkedResponseWriter()
+writer.head_append(out, 200, "OK", new http.Headers(), true)?
+writer.chunk_append(out, piece)?
+writer.finish_trailers_append(out, trailers)?   // trailers may be empty
+
+// The head alone, for a relay that already holds framed chunk bytes.
+http.encode_chunked_head_append(out, 200, "OK", new http.Headers(), true)?
+
 // Or move each accepted connection to a worker. Plain capture is refused.
 let worker: Thread<Result<bool>> = thread.spawn(
     fn() move(conn) -> Result<bool> {
@@ -3494,6 +3679,18 @@ match served.deflate() {
     none => {}                   // the peer offered nothing this end took
 }
 
+// `prefer` narrows what a server agrees to, and can never widen an offer:
+// a `true` flag asks for a no-context-takeover the offer need not have named,
+// a window is a ceiling, and `false` and 15 mean "no opinion".
+let thrifty: websocket.Connection =
+    websocket.Connection.accept(move stream, request, 8388608, true,
+        some(websocket.Deflate {
+            server_no_context_takeover: true,
+            client_no_context_takeover: false,
+            server_max_window_bits: 11,
+            client_max_window_bits: 15,
+        }))?
+
 // WSS keeps the same framing and upgrade rules over a TLS byte stream.
 import std.websocket_tls
 let secure = websocket_tls.connect("example.test", 443, "/chat")?
@@ -3532,6 +3729,39 @@ let secure = websocket_tls.connect("example.test", 443, "/chat")?
   8 exactly, so a peer told "8" would reject the 512-byte matches the encoder
   actually produced. Declining is the only answer that does not lie about what
   went on the wire.
+- **A server may answer with fewer parameters than the offer asked for**, which
+  is how it buys compression for less than a third of a megabyte per direction.
+  `prefer` on `accept`, `accept_websocket` and `websocket_tls.accept` carries
+  those parameters as a `Deflate`, and it only ever narrows — RFC 7692 §7.1,
+  one rule per knob:
+  - `server_no_context_takeover` and `client_no_context_takeover` may be set by
+    a server the offer never asked them of (§7.1.1.1, §7.1.1.2), and the second
+    binds the client — "By including the `client_no_context_takeover` extension
+    parameter in an extension negotiation response, a server prevents the peer
+    client from using context takeover." Neither can be turned *off* by a
+    preference. For `server_no_context_takeover` that is §7.1.1.1's rule, which
+    defines accepting such an offer *as* including the parameter in the
+    response; for `client_no_context_takeover` §7.1.1.2 would permit it, and
+    this library still refuses, so that adding a preference can never take away
+    a parameter the offer alone already agreed to.
+  - `server_max_window_bits` answers the smaller of the preference and the
+    offer, and may be named even when the offer named no window: §7.1.2.1 has
+    the server accept such an offer "with the same or smaller value as the
+    offer", and separately "MAY include" the parameter in a response "even if
+    the extension negotiation offer being accepted by the response didn't
+    include" it.
+  - `client_max_window_bits` is the same, with one condition: §7.1.2.2 forbids
+    naming it in a response when the offer did not name it, so a preference for
+    the client's window applies only to an offer that mentioned the parameter —
+    bare, as every browser sends it, or with a value. Against an offer that did
+    not, the preference is ignored and the client keeps its 32 KiB window; the
+    offer is still honoured, just uncapped in that one direction.
+
+  A preference never turns compression *on*: an offer with no
+  permessage-deflate in it is answered with no extension whatever the
+  preference says. A preference naming a window outside 9..15, or passed with
+  `compress: false`, is refused as kind `invalid` before the 101 is written,
+  because it is this end's own configuration rather than something a peer sent.
 - Compressed-message failures carry the close code that says which: a payload
   that is not a DEFLATE stream, or text that is only invalid UTF-8 once it
   decompresses, is kind `protocol` and close 1007; a message that outgrows
@@ -3906,9 +4136,10 @@ beansc build --target riscv32imac-unknown-none-elf --runtime freestanding f.b --
 - `defer f.close()` — runs when the function exits normally, including through
   `return` and `?`, newest first. A return leaves every scope it sits in, innermost
   first: the locals of the nested blocks (`if`, loop bodies, match arms) drop as their
-  blocks exit, *then* the function's defers run, *then* the function's own locals drop —
-  so a defer sees the function-level locals still alive and the block-level ones already
-  gone. Must sit at the top level of the function body (not inside `if`/`for`/blocks — it
+  blocks exit, *then* the function's defers run, *then* the function's own locals drop,
+  *then* its `move` parameters drop, last-declared first (Variables, above) —
+  so a defer sees the function-level locals and the moved-in arguments still alive and
+  the block-level ones already gone. Must sit at the top level of the function body (not inside `if`/`for`/blocks — it
   is a function-exit hook, and nested registration would need runtime capture the native
   backend does not do); the checker refuses a nested one. Each defer runs at most once. An *uncontained* panic exits the
   process without running defers. A panic *contained* by `brew`/`join`, or by a `contained`

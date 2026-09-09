@@ -1,0 +1,74 @@
+exact wire: HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Type: text/plain\r\nX-Marker: one\r\n\r\n5\r\nfirst\r\nc\r\nsecond-piece\r\n1\r\n!\r\n0\r\n\r\n
+exact counts: chunks=3 bytes=18 started=true finished=true
+closing wire: HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n4\r\nbody\r\n0\r\nETag: "abc"\r\nX-Checksum: 9f2\r\n\r\n
+empty-body wire: HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n
+chunk prefixes: 1=1\r\n 9=\r\n9\r\n 10=\r\na\r\n 15=\r\nf\r\n 16=\r\n10\r\n 17=\r\n11\r\n 255=\r\nff\r\n 256=\r\n100\r\n 4095=\r\nfff\r\n 4096=\r\n1000\r\n 65535=\r\nffff\r\n 65536=\r\n10000\r\n 1048576=\r\n100000\r\n
+vectored form equals copying form: true over 10 widths
+round trip sent: chunks=6 bytes=4639 wire=4809
+round trip whole feed:  status=200 chunked=true body=4639 identical=true trailers=[X-Checksum=0x1234] done=true
+round trip 1-byte feed: status=200 chunked=true body=4639 identical=true trailers=[X-Checksum=0x1234] done=true
+round trip 7-byte feed: status=200 chunked=true body=4639 identical=true trailers=[X-Checksum=0x1234] done=true
+round trip 4096 feed:   status=200 chunked=true body=4639 identical=true trailers=[X-Checksum=0x1234] done=true
+no-trailer round trip:  status=200 chunked=true body=317 identical=true trailers=[] done=true
+caller Content-Length: err[invalid] respond owns HTTP framing; do not supply Content-Length or Transfer-Encoding
+caller content-length lowercase: err[invalid] respond owns HTTP framing; do not supply Content-Length or Transfer-Encoding
+caller Transfer-Encoding: err[invalid] respond owns HTTP framing; do not supply Content-Length or Transfer-Encoding
+caller transfer-encoding lowercase: err[invalid] respond owns HTTP framing; do not supply Content-Length or Transfer-Encoding
+caller Connection: err[invalid] respond owns the Connection header through keep_alive
+refused heads left the target untouched: true
+stream 100: err[invalid] status 100 cannot carry a response body, so it cannot be streamed
+stream 101: err[invalid] status 101 cannot carry a response body, so it cannot be streamed
+stream 199: err[invalid] status 199 cannot carry a response body, so it cannot be streamed
+stream 204: err[invalid] status 204 cannot carry a response body, so it cannot be streamed
+stream 304: err[invalid] status 304 cannot carry a response body, so it cannot be streamed
+streamable statuses accepted: 8 of 8
+stream 99: err[invalid] the HTTP status must be between 100 and 599
+stream 600: err[invalid] the HTTP status must be between 100 and 599
+head value CRLF: err[invalid] the value of Location carries CR, LF or NUL
+head value bare LF: err[invalid] the value of X-Note carries CR, LF or NUL
+head name with colon: err[invalid] the header name 0 is not a valid field name
+head name with space: err[invalid] the header name 0 is not a valid field name
+reason CRLF: err[invalid] the HTTP reason phrase carries a control byte
+refused heads left the target untouched: true
+trailer value CRLF: err[invalid] the value of X-Note carries CR, LF or NUL
+trailer name with colon: err[invalid] the header name 0 is not a valid field name
+refused trailers left the wire untouched: true finished=false
+recovered wire: HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1\r\nx\r\n0\r\n\r\n
+forbidden trailer fields refused: 33 of 33 wrongly accepted []
+trailer content-length lowercase: err[invalid] content-length cannot be sent as a trailer field; a recipient may drop the trailer section
+ordinary trailers: ok=true
+chunk before head: err[invalid] write the streamed response head before its first chunk
+prefix before head: err[invalid] write the streamed response head before its first chunk
+finish before head: err[invalid] write the streamed response head before finishing it
+nothing written before the head: true
+head twice: err[invalid] this streamed response has already written its head
+second head wrote nothing: true
+empty chunk: err[invalid] a streamed chunk cannot be empty: a zero-length chunk is the terminator, so writing one would end the response here
+zero-length prefix: err[invalid] a streamed chunk cannot be empty: a zero-length chunk is the terminator, so writing one would end the response here
+negative prefix: err[invalid] a streamed chunk cannot have a negative length
+no zero chunk written: true counted=0
+chunk after terminator: err[invalid] this streamed response is already finished; its terminating chunk is written
+prefix after terminator: err[invalid] this streamed response is already finished; its terminating chunk is written
+finish again: ok=false
+finish again with trailers: ok=false
+nothing written after the terminator: true
+sequenced wire: HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n7\r\npayload\r\n0\r\n\r\n
+streaming before begin: false
+write_chunk before begin: err[invalid] begin a streamed response before writing a chunk
+finish before begin: err[invalid] begin a streamed response before finishing it
+begin 204: err[invalid] status 204 cannot carry a response body, so it cannot be streamed
+begin with caller framing: err[invalid] respond owns HTTP framing; do not supply Content-Length or Transfer-Encoding
+begin with CRLF in a value: err[invalid] the value of Location carries CR, LF or NUL
+still not streaming after a refused begin: true
+streaming after begin: true
+begin twice: err[invalid] this connection is already streaming a response; finish it before beginning another
+respond while streaming: err[invalid] this connection is streaming a response; finish it before writing another
+server body equals the shared shape: true
+empty chunk on the wire: err[invalid] a streamed chunk cannot be empty: a zero-length chunk is the terminator, so writing one would end the response here
+streaming after finish: false alive=true
+chunk after finish: err[invalid] begin a streamed response before writing a chunk
+finish 2 with a forbidden trailer: err[invalid] Content-Length cannot be sent as a trailer field; a recipient may drop the trailer section
+still streaming after a refused finish: true
+closed after a non-keep-alive stream: true
+streamed body sent: 4639 bytes
+client saw: first=200:4639:identical=true:alive=true | second=200:reused | third=200:bye:keep_alive=false

@@ -1498,10 +1498,30 @@ class TreeInterpreter {
         return none
     }
 
+    // The declaration a callable is a member of, or none for a free
+    // function. Reflection files one row per open declaration, so this is
+    // what a member's declared types are measured against — the same
+    // question the native emitter asks through
+    // `callable_owner_declaration`.
+    fn reflect_owner_declaration(function: HirFunction) ->
+        Option<HirDeclaration> {
+        if function.owner == "" { return none }
+        return self.declaration(function.owner)
+    }
+
     fn reflect_callable_flags(function: HirFunction) -> int {
         var flags: int = 0
         if function.is_public { flags = flags | 1 }
         if function.is_static { flags = flags | 2 }
+        // Bit 4 is the registry's word for "a generic owner puts this out of
+        // reach". The native runtime refuses `flags & (4 | 8 | 16)` and this
+        // side refuses the same bit at the invoke paths below, so one
+        // program cannot get two answers about the same member.
+        if hir_callable_reflection_erased(
+               function,
+               self.reflect_owner_declaration(function)) {
+            flags = flags | 4
+        }
         if function.generics.len() != 0 { flags = flags | 8 }
         if function.is_extern_c { flags = flags | 16 }
         return flags
@@ -1657,16 +1677,40 @@ class TreeInterpreter {
         return ""
     }
 
+    // One name stands for another in an assignability question.
+    //
+    // Rows are found by base name -- that is how `main.Grid<int>` reaches
+    // what `main.Grid` declares -- but assignability is not a lookup and must
+    // not strip: an argument-free name denotes the declaration itself, so
+    // every instantiation of it is one, while two different argument lists
+    // are two different types and neither stands for the other. Comparing
+    // these by exact string alone answered that a `Grid<int>` is not usable
+    // where its own declaring type is wanted, which is the type its members
+    // are filed under; the native runtime compared them by base name alone
+    // and answered that an `IntGrid` -- a `Grid<int>` -- is usable where a
+    // `Grid<string>` is wanted (#169).
+    fn reflect_name_assignable(wanted: string,
+                               actual: string) -> bool {
+        if wanted == actual { return true }
+        if self.reflect_base_name(wanted) != wanted {
+            return false
+        }
+        return self.reflect_base_name(actual) == wanted
+    }
+
     fn reflect_assignable(wanted: string,
                           actual: string) -> bool {
-        if wanted == actual { return true }
+        if self.reflect_name_assignable(wanted, actual) {
+            return true
+        }
         match self.reflect_declaration(actual) {
             some(declaration) => {
                 for relation: HirType in
                     declaration.relations {
                     let name: string =
                         render_hir_type(relation)
-                    if wanted == name ||
+                    if self.reflect_name_assignable(
+                           wanted, name) ||
                        self.reflect_assignable(
                            wanted, name) {
                         return true
@@ -1676,6 +1720,46 @@ class TreeInterpreter {
             none => {}
         }
         return false
+    }
+
+    // The declaring type of a member, in the form the queried type reaches
+    // it through. Members are filed under the declaration's open name, so a
+    // member of `main.Grid<int>` reported `main.Grid` and a caller could not
+    // see from the descriptor that its declaring type was generic at all --
+    // `member.declaring_type().type_arguments().len() != 0` was false for
+    // exactly the members that are erased (#159). The queried type's own
+    // chain is written the way the source wrote it, so a closed base link
+    // reads `main.Grid<int>`; answer with the link that carries the member.
+    fn reflect_declaring_name(queried: string,
+                              declared: string) -> string {
+        var current: string = queried
+        let base: string = self.reflect_base_name(declared)
+        var guard: int = 0
+        for guard <= self.program.declarations.len() {
+            guard += 1
+            if self.reflect_base_name(current) == base {
+                return current
+            }
+            match self.reflect_declaration(current) {
+                some(declaration) => {
+                    var next: string = ""
+                    for index: int in
+                        0..declaration.relations.len() {
+                        if index <
+                               declaration.relation_kinds.len() &&
+                           declaration.relation_kinds[index] ==
+                               "extends" {
+                            next = render_hir_type(
+                                declaration.relations[index])
+                        }
+                    }
+                    if next == "" { return declared }
+                    current = next
+                }
+                none => { return declared }
+            }
+        }
+        return declared
     }
 
     fn reflection_builtin(
@@ -2159,6 +2243,29 @@ class TreeInterpreter {
                             TreeValue.boolean(false)
                         } else { TreeValue.integer(0) }
                     }
+                    // Out of reflection's reach because the owner is
+                    // generic: the declared type reaches a type parameter,
+                    // or the receiver is a record that carries no class
+                    // descriptor to say which instantiation it came from.
+                    // The native emitter registers no thunk for either
+                    // (llvm_emit_reflect.b `reflection_field_action`), and
+                    // both backends read the one predicate in hir.b.
+                    //
+                    // Refused where the runtime refuses a missing thunk —
+                    // after the receiver check, and after the value check on
+                    // a write (beans_rt.c `beans_reflect_field_set`) — so a
+                    // caller that also passed the wrong value type is told
+                    // about that first on both backends rather than one.
+                    var erased: bool = false
+                    match self.declaration(item.owner) {
+                        some(owner_declaration) => {
+                            erased =
+                                hir_field_reflection_erased(
+                                    owner_declaration,
+                                    item.field)
+                        }
+                        none => {}
+                    }
                     match self.reflect_values.get(
                               receiver_handle) {
                         none => {
@@ -2175,6 +2282,10 @@ class TreeInterpreter {
                                 self.reflect_error_code = 3
                                 self.reflect_error_message =
                                     "receiver type does not match"
+                            } else if name == "field_get" && erased {
+                                self.reflect_error_code = 5
+                                self.reflect_error_message =
+                                    "reflected operation is unsupported"
                             } else if name == "field_get" {
                                 match receiver.fields.value(field_name) {
                                     some(value) => {
@@ -2184,7 +2295,10 @@ class TreeInterpreter {
                                         self.reflect_values[handle] =
                                             tree_value_copy(value)
                                         self.reflect_value_types[handle] =
-                                            render_hir_type(item.field.type)
+                                            self.reflect_recorded_type(
+                                                value,
+                                                render_hir_type(
+                                                    item.field.type))
                                         return TreeValue.integer(handle)
                                     }
                                     none => {
@@ -2207,6 +2321,10 @@ class TreeInterpreter {
                                     self.reflect_error_code = 4
                                     self.reflect_error_message =
                                         "reflected value type does not match"
+                                } else if erased {
+                                    self.reflect_error_code = 5
+                                    self.reflect_error_message =
+                                        "reflected operation is unsupported"
                                 } else {
                                     match self.reflect_values.get(
                                               value_handle) {
@@ -2289,7 +2407,11 @@ class TreeInterpreter {
                                 }
                                 if item.callable.generics.len() != 0 ||
                                    item.callable.is_extern_c ||
-                                   !item.callable.has_body {
+                                   !item.callable.has_body ||
+                                   hir_callable_reflection_erased(
+                                       item.callable,
+                                       self.reflect_owner_declaration(
+                                           item.callable)) {
                                     self.reflect_error_code = 5
                                     self.reflect_error_message =
                                         "reflected operation is unsupported"
@@ -2513,7 +2635,11 @@ class TreeInterpreter {
                         return TreeValue.integer(0)
                     }
                     if function.generics.len() != 0 ||
-                       function.is_extern_c {
+                       function.is_extern_c ||
+                       hir_callable_reflection_erased(
+                           function,
+                           self.reflect_owner_declaration(
+                               function)) {
                         self.reflect_error_code = 5
                         self.reflect_error_message =
                             "reflected operation is unsupported"
@@ -2642,7 +2768,9 @@ class TreeInterpreter {
                     self.next_reflect_value += 1
                     self.reflect_values[handle] = result
                     self.reflect_value_types[handle] =
-                        render_hir_type(selected.result)
+                        self.reflect_recorded_type(
+                            result,
+                            render_hir_type(selected.result))
                     return TreeValue.integer(handle)
                 }
             }
@@ -2775,7 +2903,9 @@ class TreeInterpreter {
             }
             if name == "field_owner" {
                 return TreeValue.string(
-                    display_symbol(item.owner))
+                    self.reflect_declaring_name(
+                        type_name,
+                        display_symbol(item.owner)))
             }
             var flags: int = 0
             if item.field.is_public { flags = flags | 1 }
@@ -2807,7 +2937,9 @@ class TreeInterpreter {
                     }
                     if name == "method_owner" {
                         return TreeValue.string(
-                            display_symbol(item.owner))
+                            self.reflect_declaring_name(
+                                type_name,
+                                display_symbol(item.owner)))
                     }
                     if name == "method_result" {
                         return TreeValue.string(
@@ -3880,6 +4012,59 @@ class TreeInterpreter {
             none => {}
         }
         return false
+    }
+
+    // The type a reflective box records for an interpreted value: the class
+    // the object actually is, not the type of the binding it arrived
+    // through. A Value has to report the type it stores (#163), and a class
+    // binding may hold any subclass.
+    //
+    // "" when the value carries no class of its own -- a record, an enum, a
+    // builtin handle, a primitive, a closure -- because for all of those the
+    // static type already is the runtime type.
+    //
+    // A generic class comes back closed, because the native backend answers
+    // this from the class descriptor at the object's first word and a
+    // descriptor names one instantiation. When an argument the object never
+    // recorded is missing, this refuses rather than answering the open name:
+    // an open name would be a second, wrong answer, and the static type the
+    // caller already holds is at worst the old answer.
+    fn runtime_value_type(value: TreeValue) -> string {
+        if value.kind != "object" || value.text == "" {
+            return ""
+        }
+        match self.declaration(value.text) {
+            some(declaration) => {
+                if declaration.kind != "class" { return "" }
+                let base: string =
+                    display_symbol(declaration.qualified)
+                if declaration.generics.len() == 0 {
+                    return base
+                }
+                var parts: List<string> = []
+                for parameter: string in
+                    declaration.generics {
+                    match value.generic_types.get(parameter) {
+                        some(bound) => {
+                            parts.push(render_hir_type(bound))
+                        }
+                        none => { return "" }
+                    }
+                }
+                return "{base}<{parts.join(", ")}>"
+            }
+            none => { return "" }
+        }
+    }
+
+    // The recorded type of a boxed value: what the object says it is when it
+    // can say, and the static type of the expression it came from otherwise.
+    fn reflect_recorded_type(value: TreeValue,
+                             static_name: string) -> string {
+        let actual: string =
+            self.runtime_value_type(value)
+        if actual == "" { return static_name }
+        return actual
     }
 
     fn deinit_chain(name: string,
@@ -5045,7 +5230,27 @@ class TreeInterpreter {
         let value: TreeValue =
             self.expression(node.children[0], frame)
         if value.kind == "propagate" { return value }
-        if node.value == "move" || node.value == "+" ||
+        if node.value == "move" {
+            // A move transfers ownership here, at the `move`, not at the
+            // spent binding's scope exit: the value now belongs to whatever
+            // takes it — a parameter, a `let`, a field, an element — and
+            // dies with that owner. The frame slot has to let go, or the
+            // host keeps the value alive behind the new owner's back and the
+            // `deinit` runs at the wrong end of the program (#155).
+            //
+            // The checker has already proved this names a local
+            // (check_move in src/expression.b), so the operand is a `local`
+            // node with a binding id; a poisoned program can still get here
+            // with something else, which spends nothing.
+            if node.children.len() == 1 &&
+               node.children[0].kind == "local" &&
+               node.children[0].binding_id >= 0 {
+                frame.spend(
+                    node.children[0].binding_id)
+            }
+            return value
+        }
+        if node.value == "+" ||
            node.value == "inout" {
             return value
         }
@@ -11084,9 +11289,11 @@ class TreeInterpreter {
             self.next_reflect_value += 1
             self.reflect_values[handle] = arguments[0]
             self.reflect_value_types[handle] =
-                render_hir_type(self.runtime_type(
-                    node.children[0].type,
-                    self.current_type_bindings()))
+                self.reflect_recorded_type(
+                    arguments[0],
+                    render_hir_type(self.runtime_type(
+                        node.children[0].type,
+                        self.current_type_bindings())))
             let result: TreeValue =
                 self.object_value(node.type.name)
             result.text = node.type.name
@@ -15572,6 +15779,19 @@ class TreeInterpreter {
                 frame.set(
                     function.parameters[index].binding_id,
                     argument)
+                // A `move` parameter owns its argument from the call onward,
+                // so the list that carried it here has to let go. Leaving the
+                // entry in place makes the caller's argument vehicle a second
+                // owner that outlives the callee, and the value's `deinit`
+                // then runs when the *calling expression* finishes rather
+                // than when the callee returns — a whole frame late once the
+                // callee forwards it on (#155). An `inout` parameter is the
+                // opposite case and keeps its entry: it aliases the caller's
+                // storage on purpose and owns nothing.
+                if function.parameters[index].passing ==
+                       "move" {
+                    arguments[index] = TreeValue.unset()
+                }
             }
         }
         match self.debugger {

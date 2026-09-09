@@ -104,6 +104,7 @@ test-quick: $(BIN)
 	./test/differential.sh
 	bash ./test/ownership_fuzz.sh smoke
 	bash ./test/ci_coverage.sh
+	bash ./test/runtime_literal_lengths.sh
 	bash ./test/sanitizer_gates.sh
 	$(MAKE) fuzz-differential-smoke
 
@@ -121,6 +122,7 @@ test-frontend: $(BIN)
 	bash ./test/string_literals.sh
 	bash ./test/generic_calls.sh
 	bash ./test/named_imports.sh
+	bash ./test/interpolated_types.sh
 	bash ./test/private_fields.sh
 	bash ./test/private_methods.sh
 	bash ./test/abstract_classes.sh
@@ -133,6 +135,7 @@ test-frontend: $(BIN)
 	bash ./test/static_fields.sh
 	bash ./test/struct_methods.sh
 	bash ./test/oop_fuzz.sh smoke
+	bash ./test/reflection.sh
 	bash ./test/reflection_fuzz.sh
 	bash ./test/differential_fuzz.sh smoke
 	./test/parse_recovery.sh
@@ -189,6 +192,7 @@ test-semantics: $(BIN)
 	bash ./test/wide_maps.sh
 	bash ./test/wide_enums.sh
 	bash ./test/enum_repr.sh
+	bash ./test/reflect_generics.sh
 	bash ./test/wide_owners.sh
 	bash ./test/wide_sync.sh
 	bash ./test/wide_concurrency.sh
@@ -203,6 +207,7 @@ test-semantics: $(BIN)
 	./test/fixpoint.sh
 
 test-runtime: $(BIN)
+	bash ./test/runtime_literal_lengths.sh
 	bash ./test/fiber_core.sh
 	bash ./test/thread_cleanup.sh
 	./test/resources.sh
@@ -331,6 +336,7 @@ test-core: $(BIN)
 	bash ./test/string_literals.sh
 	bash ./test/generic_calls.sh
 	bash ./test/named_imports.sh
+	bash ./test/interpolated_types.sh
 	bash ./test/private_fields.sh
 	bash ./test/private_methods.sh
 	bash ./test/abstract_classes.sh
@@ -343,6 +349,7 @@ test-core: $(BIN)
 	bash ./test/static_fields.sh
 	bash ./test/struct_methods.sh
 	bash ./test/oop_fuzz.sh smoke
+	bash ./test/reflection.sh
 	bash ./test/reflection_fuzz.sh
 	bash ./test/differential_fuzz.sh smoke
 	bash ./test/ownership_fuzz.sh smoke
@@ -382,6 +389,7 @@ test-core: $(BIN)
 	bash ./test/json_direct.sh
 	bash ./test/json_typed_decode.sh
 	bash ./test/encoding_symbols.sh
+	bash ./test/runtime_literal_lengths.sh
 	bash ./test/encoding_outputs.sh
 	bash ./test/encoding_cache.sh
 	./test/parse_recovery.sh
@@ -405,6 +413,7 @@ test-core: $(BIN)
 	bash ./test/wide_maps.sh
 	bash ./test/wide_enums.sh
 	bash ./test/enum_repr.sh
+	bash ./test/reflect_generics.sh
 	bash ./test/wide_owners.sh
 	bash ./test/wide_sync.sh
 	bash ./test/wide_concurrency.sh

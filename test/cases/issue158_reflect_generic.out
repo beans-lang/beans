@@ -1,0 +1,24 @@
+touch narrow: ok
+touch wide: ok
+touch override: ok
+note narrow: ok
+note wide: ok
+after calls: 4 6 7 -n -w
+read narrow tag: ok 4
+read wide tag: ok 6
+write narrow tag: ok
+write wide tag: ok
+reread narrow tag: ok 30
+reread wide tag: ok 40
+after writes: 30 40 7 1,2,3
+widen narrow: unsupported reflected operation is unsupported (calling main.Cell<int>.widen)
+read narrow item: unsupported reflected operation is unsupported (reading main.Cell<int>.item)
+write narrow item: value_type reflected value type does not match (writing main.Cell<int>.item)
+static stamp int: unsupported reflected operation is unsupported (calling main.Cell<int>.stamp)
+static stamp wide: unsupported reflected operation is unsupported (calling main.Cell<main.Wide>.stamp)
+read spot moves: unsupported reflected operation is unsupported (reading main.Spot<int>.moves)
+variant first: unsupported reflected operation is unsupported (making main.Choice<int>.first)
+Cell<int> init: no initializer
+Base<int> init: no initializer
+Plain init: built main.Plain
+new Plain: 41 5

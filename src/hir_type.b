@@ -15,6 +15,22 @@ fn canonical_hir_name(name: string) -> string {
     return name
 }
 
+// A function type's result is optional in the *syntax*, never in the *type*.
+// `fn(T)` and `fn(T) -> unit` are one type — hir_type_key renders both as
+// `fn(T)->unit` — but only the second carries the result in `args`, because
+// the lowerings build `args` from the syntax's children and append a result
+// only when one was written. So a reader that walks `args` directly sees two
+// different arities for one type, and any rule it draws from that is wrong.
+// Every reader asks for the parts instead: fn_parameter_count parameters,
+// then this result.
+fn hir_fn_result(type: HirType) -> HirType {
+    if type.fn_parameter_count >= 0 &&
+       type.fn_parameter_count < type.args.len() {
+        return type.args[type.fn_parameter_count]
+    }
+    return new HirType("unit")
+}
+
 fn hir_type_key(type: HirType) -> string {
     if type.name == "array" {
         return "[{hir_type_key(type.args[0])};{type.array_length}]"
@@ -207,6 +223,118 @@ fn builtin_generic_arity(name: string) -> int {
     return -1
 }
 
+// Where `unit` may appear, in one place.
+//
+// `unit` is the absence of a value, not a value. It is meaningful exactly
+// where a *result* is named: a function's or closure's declared result, and
+// the payload of a concurrent handle, which is the result type of the call
+// the handle runs — `Thread<unit>`, `Brew<unit>` and `TaskGroup<unit>` all
+// name a child that computes nothing, and both backends run them. Anywhere
+// else a value of the type would have to exist and there is none: a local, a
+// field, a parameter, an element, and above all a `Result` payload, because
+// `ok` takes a value.
+//
+// The checker asks this instead of letting the program reach a backend. The
+// native emitter has no storage for a unit value and refused these in its own
+// vocabulary at build time while `check` and the tree interpreter said yes
+// (#154); an interpreter-only program is the bug, not the refusal.
+//
+// Answers the innermost type that misplaces a unit, so a diagnostic can name
+// the program's own type: `Result<unit>` for a joined unit brew, `List<unit>`
+// for a list of nothing, bare `unit` for a binding that holds nothing. None
+// when the type is fine.
+fn hir_unit_misplacement(type: HirType,
+                         result_slot: bool) -> Option<HirType> {
+    let name: string = canonical_hir_name(type.name)
+    if name == "unit" {
+        if result_slot { return none }
+        return some(type)
+    }
+    if name == "fn" {
+        for index: int in 0..type.fn_parameter_count {
+            match hir_unit_misplacement(
+                      type.args[index], false) {
+                some(found) => {
+                    return some(
+                        hir_unit_named(type, found))
+                }
+                none => {}
+            }
+        }
+        if type.fn_parameter_count < type.args.len() {
+            match hir_unit_misplacement(
+                      type.args[type.fn_parameter_count],
+                      true) {
+                some(found) => {
+                    return some(
+                        hir_unit_named(type, found))
+                }
+                none => {}
+            }
+        }
+        return none
+    }
+    // Four builtins already state what their element may be — a fixed array
+    // and a Slice want inline scalars, RawPtr, fixed arrays or extern "C"
+    // records, a RawPtr the same, an Atomic integers and bool — and each says
+    // so with its own sentence, naming `unit` outright, wherever such a type
+    // is validated. Walking into them here would answer one mistake twice.
+    // The three callback holders say the same thing about their argument —
+    // it has to be a C callback function type — so they are skipped for the
+    // same reason.
+    if name == "array" || name == "RawPtr" ||
+       name == "Slice" || name == "Atomic" ||
+       name == "StoredCallback" ||
+       name == "LocalStoredCallback" ||
+       name == "CFunctionPtr" {
+        return none
+    }
+    if (name == "Thread" || name == "Brew" ||
+        name == "TaskGroup") && type.args.len() == 1 {
+        match hir_unit_misplacement(type.args[0], true) {
+            some(found) => {
+                return some(hir_unit_named(type, found))
+            }
+            none => {}
+        }
+        return none
+    }
+    for argument: HirType in type.args {
+        match hir_unit_misplacement(argument, false) {
+            some(found) => {
+                return some(hir_unit_named(type, found))
+            }
+            none => {}
+        }
+    }
+    return none
+}
+
+// A bare `unit` names the type that would have had to hold it; anything
+// deeper already names itself. `List<Option<unit>>` reports `Option<unit>`,
+// not `List<...>`, because the inner one is the mistake.
+fn hir_unit_named(parent: HirType,
+                  found: HirType) -> HirType {
+    if canonical_hir_name(found.name) == "unit" {
+        return parent
+    }
+    return found
+}
+
+// The sentence for a misplaced unit. It names the program's own type and
+// says what to write instead — never the backend that could not emit it.
+fn unit_misplacement_message(
+        offender: HirType) -> string {
+    let name: string = canonical_hir_name(offender.name)
+    if name == "unit" {
+        return "unit is what a function that returns nothing answers with, not a value you can hold. give the function a result to return, or call it as a statement and keep nothing"
+    }
+    if name == "Result" {
+        return "there is no Result<unit> — `ok` takes a value, and a call that returns nothing has none to give it. give the called function a result to return, or use a form that answers no Result"
+    }
+    return "there is no value of type unit for {render_hir_type(offender)} to hold — unit is what a function that returns nothing answers with. give the function a result to return, or call it as a statement and keep nothing"
+}
+
 // Whether a type is or carries a Brew handle anywhere. Brew is scope-bound:
 // it may appear only as the outermost type of the let that brewed it, so
 // every stored position — fields, parameters, results, type arguments —
@@ -313,4 +441,60 @@ fn builtin_move_policy(type: HirType) -> string {
     if builtin_type(name) { return "copy_or_alias"
     }
     return "declared"
+}
+
+// Does `type` name the type parameter `generic` anywhere inside it? A
+// parameter or result written `T`, `List<T>`, `Option<Holder<T>>` or
+// `fn(T) -> int` all name it; the walk is over the whole tree because the
+// place a call can recover it from is any of them.
+fn hir_type_names_generic(type: HirType,
+                          generic: string) -> bool {
+    if type.name == generic { return true }
+    for argument: HirType in type.args {
+        if hir_type_names_generic(argument, generic) {
+            return true
+        }
+    }
+    return false
+}
+
+// Is `name` one of the type parameters in `generics`?
+fn generic_name_listed(generics: List<string>,
+                       name: string) -> bool {
+    for generic: string in generics {
+        if generic == name { return true }
+    }
+    return false
+}
+
+// Whether a declared type reaches one of an owner's type parameters, at any
+// depth: `T`, `List<T>` and `Map<string, Option<T>>` all do.
+//
+// Reflection describes a generic declaration once, under its open name, and
+// substitutes nothing — `Grid<int>` and `Grid<string>` reach the same rows. So
+// a member whose signature reaches a parameter has no type the registry can
+// state: its row says `T`, and no value carries that as its type, which makes
+// the member undescribable rather than merely unimplemented. The tree
+// interpreter and the native emitter ask this one question so that neither can
+// answer it differently.
+//
+// This walks INTO a `fn` type, and must: a parameter declared `fn() -> T` is
+// registered under that spelling, and no value carries it, so the callable is
+// as unreachable as one declared `T` outright. ExpressionChecker.
+// type_mentions_generic looks like this function and deliberately answers
+// `false` for `fn`, because a function value that returns T owns the recipe
+// rather than a T and may still be moved. Same shape, different questions —
+// do not unify them.
+fn hir_type_mentions_generic(
+    type: HirType, generics: List<string>) -> bool {
+    if generics.len() == 0 { return false }
+    if generic_name_listed(generics, type.name) {
+        return true
+    }
+    for argument: HirType in type.args {
+        if hir_type_mentions_generic(argument, generics) {
+            return true
+        }
+    }
+    return false
 }

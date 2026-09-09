@@ -95,3 +95,51 @@ permessage-deflate; server_no_context_takeover; client_no_context_takeover; serv
 == the handshake, end to end ==
 with compression: agreed=permessage-deflate refused=too_large clean=true
 without compression: agreed=(none) refused=too_large clean=true
+== a server that narrows ==
+prefer none on [permessage-deflate; client_max_window_bits] -> permessage-deflate
+prefer true/false/15/15 on [permessage-deflate; client_max_window_bits] -> permessage-deflate; server_no_context_takeover
+prefer false/true/15/15 on [permessage-deflate; client_max_window_bits] -> permessage-deflate; client_no_context_takeover
+prefer true/true/15/15 on [permessage-deflate; client_max_window_bits] -> permessage-deflate; server_no_context_takeover; client_no_context_takeover
+prefer false/false/9/15 on [permessage-deflate; client_max_window_bits] -> permessage-deflate; server_max_window_bits=9
+prefer false/false/15/9 on [permessage-deflate; client_max_window_bits] -> permessage-deflate; client_max_window_bits=9
+prefer false/false/11/13 on [permessage-deflate; client_max_window_bits] -> permessage-deflate; server_max_window_bits=11; client_max_window_bits=13
+prefer true/true/9/9 on [permessage-deflate; client_max_window_bits] -> permessage-deflate; server_no_context_takeover; client_no_context_takeover; server_max_window_bits=9; client_max_window_bits=9
+prefer false/false/15/9 on [permessage-deflate] -> permessage-deflate
+prefer true/true/9/9 on [permessage-deflate] -> permessage-deflate; server_no_context_takeover; client_no_context_takeover; server_max_window_bits=9
+prefer false/false/15/9 on [permessage-deflate; server_max_window_bits=10] -> permessage-deflate; server_max_window_bits=10
+prefer false/false/13/15 on [permessage-deflate; server_max_window_bits=10] -> permessage-deflate; server_max_window_bits=10
+prefer false/false/15/13 on [permessage-deflate; client_max_window_bits=10] -> permessage-deflate; client_max_window_bits=10
+prefer false/false/15/15 on [permessage-deflate; server_max_window_bits=9; client_max_window_bits=9] -> permessage-deflate; server_max_window_bits=9; client_max_window_bits=9
+prefer false/false/15/15 on [permessage-deflate; server_no_context_takeover; client_no_context_takeover; client_max_window_bits] -> permessage-deflate; server_no_context_takeover; client_no_context_takeover
+prefer false/false/10/15 on [permessage-deflate; server_max_window_bits=10] -> permessage-deflate; server_max_window_bits=10
+prefer true/true/9/9 on [] -> (declined)
+prefer true/true/9/9 on (no header) -> (declined)
+prefer true/true/9/9 on [x-webkit-deflate-frame] -> (declined)
+prefer false/false/8/15 on [permessage-deflate; client_max_window_bits] -> (declined)
+prefer false/false/15/8 on [permessage-deflate; client_max_window_bits] -> (declined)
+prefer false/false/16/15 on [permessage-deflate; client_max_window_bits] -> (declined)
+prefer false/false/15/0 on [permessage-deflate; client_max_window_bits] -> (declined)
+prefer true/false/12/12 on [permessage-deflate; server_max_window_bits=8, permessage-deflate; client_max_window_bits] -> permessage-deflate; server_no_context_takeover; server_max_window_bits=12; client_max_window_bits=12
+prefer false/true/15/12 on [x-nothing][permessage-deflate; client_max_window_bits=14] -> permessage-deflate; client_no_context_takeover; client_max_window_bits=12
+default: line=[Sec-WebSocket-Extensions: permessage-deflate] agreed=[permessage-deflate] rsv1=true reaches_1k=true repeat_identical=false
+server takeover off: line=[Sec-WebSocket-Extensions: permessage-deflate; server_no_context_takeover] agreed=[permessage-deflate; server_no_context_takeover] rsv1=true reaches_1k=true repeat_identical=true
+client takeover off: line=[Sec-WebSocket-Extensions: permessage-deflate; client_no_context_takeover] agreed=[permessage-deflate; client_no_context_takeover] rsv1=true reaches_1k=true repeat_identical=false
+server window 9: line=[Sec-WebSocket-Extensions: permessage-deflate; server_max_window_bits=9] agreed=[permessage-deflate; server_max_window_bits=9] rsv1=true reaches_1k=false repeat_identical=false
+client window 9: line=[Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits=9] agreed=[permessage-deflate; client_max_window_bits=9] rsv1=true reaches_1k=true repeat_identical=false
+all four narrowed: line=[Sec-WebSocket-Extensions: permessage-deflate; server_no_context_takeover; client_no_context_takeover; server_max_window_bits=9; client_max_window_bits=9] agreed=[permessage-deflate; server_no_context_takeover; client_no_context_takeover; server_max_window_bits=9; client_max_window_bits=9] rsv1=true reaches_1k=false repeat_identical=true
+no client window offered: line=[Sec-WebSocket-Extensions: permessage-deflate; server_max_window_bits=9] agreed=[permessage-deflate; server_max_window_bits=9] rsv1=true reaches_1k=false repeat_identical=false
+a preference cannot widen: line=[Sec-WebSocket-Extensions: permessage-deflate; server_max_window_bits=9] agreed=[permessage-deflate; server_max_window_bits=9] rsv1=true reaches_1k=false repeat_identical=false
+no deflate offered: line=[(none)] agreed=[(declined)] rsv1=false reaches_1k=false repeat_identical=true
+no preference, compression off: line=[(none)] agreed=[(declined)] rsv1=false reaches_1k=false repeat_identical=true
+a preference with compression off: refused invalid, peer saw nothing
+an 8-bit window preferred: refused invalid, peer saw nothing
+a 16-bit window preferred: refused invalid, peer saw nothing
+round trip default: server=[permessage-deflate] client=[permessage-deflate] up=2 down=2
+round trip server takeover off: server=[permessage-deflate; server_no_context_takeover] client=[permessage-deflate; server_no_context_takeover] up=2 down=2
+round trip client takeover off: server=[permessage-deflate; client_no_context_takeover] client=[permessage-deflate; client_no_context_takeover] up=2 down=2
+round trip server window 9: server=[permessage-deflate; server_max_window_bits=9] client=[permessage-deflate; server_max_window_bits=9] up=2 down=2
+round trip client window 9: server=[permessage-deflate; client_max_window_bits=9] client=[permessage-deflate; client_max_window_bits=9] up=2 down=2
+round trip all four narrowed: server=[permessage-deflate; server_no_context_takeover; client_no_context_takeover; server_max_window_bits=9; client_max_window_bits=9] client=[permessage-deflate; server_no_context_takeover; client_no_context_takeover; server_max_window_bits=9; client_max_window_bits=9] up=2 down=2
+round trip no client window offered: server=[permessage-deflate; server_no_context_takeover; client_no_context_takeover; server_max_window_bits=9] client=[permessage-deflate; server_no_context_takeover; client_no_context_takeover; server_max_window_bits=9] up=2 down=2
+accept_websocket: line=[Sec-WebSocket-Extensions: permessage-deflate; server_no_context_takeover; server_max_window_bits=10; client_max_window_bits=11] agreed=[permessage-deflate; server_no_context_takeover; server_max_window_bits=10; client_max_window_bits=11]
+accept_websocket, both windows offered: line=[Sec-WebSocket-Extensions: permessage-deflate; client_no_context_takeover; server_max_window_bits=10; client_max_window_bits=13] agreed=[permessage-deflate; client_no_context_takeover; server_max_window_bits=10; client_max_window_bits=13]

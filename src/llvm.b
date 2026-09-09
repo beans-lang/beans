@@ -7,6 +7,21 @@ partial class LlvmTextEmitter {
     // self-build hands to clang, and nothing downstream reads it. It is a
     // debugging aid, so it costs nothing until BEANS_IR_COMMENTS asks for it.
     mir_comments: bool
+    // What every definition in this module says about instrumentation — ""
+    // in a build that asked for none, " sanitize_address" or
+    // " sanitize_thread" (or both) in one that did. An LLVM sanitizer pass
+    // looks only inside the functions carrying its attribute, and IR handed
+    // to clang as text carries only what was written here, so this string is
+    // the whole difference between a sanitized build that checks the
+    // generated code and one that checks only the runtime C (issue #168).
+    // Read once, out of the one parser of BEANS_SANITIZE the clang command
+    // line also comes from (sanitizer_function_attribute, src/driver.b).
+    //
+    // It goes on the definition ahead of ` personality ` and ` !dbg `:
+    // llvm_declaration_for (src/llvm_names.b) cuts a chunk's re-declaration
+    // at those two markers and keeps everything before them, so an attribute
+    // written after either would be dropped from the declaration.
+    sanitize_attribute: string
     // qualified name -> encoding intrinsic id, filled once by
     // resolve_encoding_intrinsics after full validation
     encoding_intrinsics: Map<string, int>
@@ -43,6 +58,9 @@ partial class LlvmTextEmitter {
     value_eq_functions: List<string>
     reflection_value_actions: Map<string, string>
     reflection_field_actions: Map<string, string>
+    // Field thunks whose body cannot be written yet: see
+    // LlvmReflectFieldAction.
+    deferred_field_actions: List<LlvmReflectFieldAction>
     reflection_callable_actions: Map<string, string>
     singleton_symbols: Map<string, string>
     static_field_symbols: Map<string, string>
@@ -188,10 +206,11 @@ partial class LlvmTextEmitter {
     debug_scope_line: int
 
     fn init(program: MirProgram, mir_comments: bool,
-            debug_info: bool) {
+            debug_info: bool, sanitize_attribute: string) {
         self.program = program
         self.mir_comments = mir_comments
         self.debug_info = debug_info
+        self.sanitize_attribute = sanitize_attribute
         self.debug_meta = []
         self.debug_meta_ids = {}
         self.debug_file_ids = {}
@@ -247,6 +266,7 @@ partial class LlvmTextEmitter {
         self.value_eq_functions = []
         self.reflection_value_actions = {}
         self.reflection_field_actions = {}
+        self.deferred_field_actions = []
         self.reflection_callable_actions = {}
         self.singleton_symbols = {}
         self.static_field_symbols = {}
@@ -1832,6 +1852,24 @@ partial class LlvmTextEmitter {
                 none => {}
             }
         }
+        // A reflective field thunk on a generic class asks the receiver which
+        // instantiation it is, so its body needs the whole set of class
+        // layouts — and that set is only complete now, with every instance
+        // body raised. It is written here rather than later because a thunk
+        // still needs a string constant and a builtin declare, and both of
+        // those blobs are closed below. Draining again after it costs
+        // nothing and covers a body that reaches for an instance.
+        self.emit_deferred_field_actions()
+        for self.generic_queue.len() != 0 {
+            match self.generic_queue.pop() {
+                some(instance) => {
+                    functions.push(
+                        self.emit_function(instance))
+                    origins.push(instance.file)
+                }
+                none => {}
+            }
+        }
         if require_main && !found_main {
             self.errors.push(Diagnostic {
                 severity: Severity.error,
@@ -2096,6 +2134,12 @@ partial class LlvmTextEmitter {
         var owned: string =
             "@beans_deinit_sel = global i64 {deinit_selector}\n"
         let record_types: string = self.emit_record_types()
+        // The name of every class has to be a program string before the
+        // string block below is written, because the class-name table is
+        // built out of those literals. Every class id is minted by the time
+        // the last body is emitted, which is above, so this is the last
+        // moment both facts hold.
+        self.intern_class_names()
         let definitions: string =
             self.emit_global_definitions()
         // Build the static prologue here rather than while emitting main:
@@ -2108,6 +2152,9 @@ partial class LlvmTextEmitter {
         // it is sized by class_id_count, and an id minted after it was
         // written would index past the array beans_is_a reads.
         owned = "{owned}{self.class_parent_table()}"
+        // The class-name table is sized the same way and for the same
+        // reason, so it is written from the same place.
+        owned = "{owned}{self.class_name_table()}"
         for text: string in self.value_eq_functions {
             functions.push(text)
             origins.push("")
@@ -2116,13 +2163,34 @@ partial class LlvmTextEmitter {
             functions.push(text)
             origins.push("")
         }
+        // Everything the module is made of goes past the sanitizer pass,
+        // not only the bodies: a `define` reaches the output through one of
+        // these five strings or it does not reach it at all, so marking all
+        // of them is what makes "every function this module defines carries
+        // the attribute" true by construction instead of true because
+        // somebody kept a list of emission sites up to date. The pass hands
+        // back the same string when no sanitizer was asked for.
+        let head_declares: string =
+            self.sanitize_definitions(output)
+        let head_records: string =
+            self.sanitize_definitions(record_types)
+        let global_owned: string =
+            self.sanitize_definitions(owned)
+        let global_definitions: string =
+            self.sanitize_definitions(definitions)
+        let global_statics: string =
+            self.sanitize_definitions(static_fields)
+        for index: int in 0..functions.len() {
+            functions[index] =
+                self.sanitize_definitions(functions[index])
+        }
         // The pieces a chunked build reassembles. Record layouts join the
         // head because a type definition is not a symbol and every chunk
         // needs its own copy; the globals stay whole so one chunk can own
         // every address in the program.
-        self.module_head = "{output}{record_types}"
+        self.module_head = "{head_declares}{head_records}"
         self.module_globals =
-            "{owned}{definitions}\n{static_fields}"
+            "{global_owned}{global_definitions}\n{global_statics}"
         self.module_bodies = move functions
         self.module_origins = move origins
         // The metadata block closes the module. It is deliberately not part
@@ -2130,7 +2198,43 @@ partial class LlvmTextEmitter {
         // mint a second compile unit, and a chunk that lacked it would carry
         // `!dbg` references to nothing. chunk_modules refuses to split a
         // module that has one at all.
-        return "{output}{owned}{record_types}{definitions}\n{static_fields}{self.module_bodies.join("")}{self.debug_module_metadata()}"
+        return "{head_declares}{global_owned}{head_records}{global_definitions}\n{global_statics}{self.module_bodies.join("")}{self.debug_module_metadata()}"
+    }
+
+    // Every function this module defines, told that a sanitized build wants
+    // to look inside it.
+    //
+    // LLVM's AddressSanitizer and ThreadSanitizer passes instrument a
+    // function only when that function carries their attribute. Clang writes
+    // it for the C it compiles; this backend hands clang finished textual IR,
+    // which carries only what was written here — so before this pass existed
+    // a sanitized build checked beans_rt.c and the bridges and walked past
+    // every line the emitter produced (issue #168).
+    //
+    // One pass over the finished module, rather than an interpolation at each
+    // of the two dozen places a `define` is written, because that set grows:
+    // a definition added tomorrow — a new reflection thunk, a new derived
+    // body — is instrumented by this without anyone having to remember the
+    // rule exists. A build that asked for no sanitizer gets the same string
+    // back, so the ordinary compile is byte for byte what it always was.
+    fn sanitize_definitions(text: string) -> string {
+        if self.sanitize_attribute == "" { return text }
+        var pieces: List<string> = []
+        var start: int = 0
+        for start < text.len() {
+            let end: int = llvm_line_end(text, start)
+            if llvm_line_defines(text, start, end) {
+                pieces.push(
+                    llvm_sanitized_definition(
+                        text.slice(start, end),
+                        self.sanitize_attribute))
+            } else {
+                pieces.push(text.slice(start, end))
+            }
+            if end < text.len() { pieces.push("\n") }
+            start = end + 1
+        }
+        return pieces.join("")
     }
 
     // One entry per class id: the id of the class it extends, or -1 at a
@@ -2181,6 +2285,75 @@ partial class LlvmTextEmitter {
             parent_entries.push("i64 -1")
         }
         return "@beans_class_parents = global [{parent_entries.len()} x i64] [{parent_entries.join(", ")}]\n\n"
+    }
+
+    // Every class id in this program with the name a program spells that
+    // class by. class_ids is already keyed by exactly that name: a plain
+    // class is filed under its qualified symbol, an instantiation under its
+    // rendered form, and display_symbol turns the first into what
+    // render_hir_type answers and leaves the second alone.
+    fn class_name_by_id() -> Map<int, string> {
+        var names: Map<int, string> = {}
+        for key: string in self.class_ids.keys() {
+            names[self.class_ids[key]] =
+                display_symbol(key)
+        }
+        return move names
+    }
+
+    fn intern_class_names() {
+        let names: Map<int, string> =
+            self.class_name_by_id()
+        for id: int in names.keys() {
+            self.intern(names[id])
+        }
+    }
+
+    // One entry per class id: the name of the class that id names.
+    //
+    // An object's first word is its class descriptor and the descriptor's
+    // first word is its class id — that pair is what `as?` reads to walk
+    // beans_class_parents, and it is the only thing an object carries about
+    // what it actually is. Reflection has to answer the same question with a
+    // name, because std.reflect keys every registry row by name, so this
+    // turns the id back into one. Without it a reflective box could only
+    // report the type of the *binding* it was handed, which is a different
+    // type the moment a subclass is held at its base (#163).
+    fn class_name_table() -> string {
+        let names: Map<int, string> =
+            self.class_name_by_id()
+        var entries: List<string> = []
+        for id: int in 0..self.class_id_count {
+            var entry: string = "ptr null"
+            match names.get(id) {
+                some(name) => {
+                    // A name interned after the string block was written
+                    // has no literal to point at. A null row is not a
+                    // wrong answer: the lookup falls back to the static
+                    // name the caller already had.
+                    if self.string_ids.contains_key(name) {
+                        entry =
+                            "ptr {self.string_pointer(name)}"
+                    }
+                }
+                none => {}
+            }
+            entries.push(entry)
+        }
+        if entries.len() == 0 {
+            entries.push("ptr null")
+        }
+        self.value_eq_functions.push(
+            self.class_name_lookup(entries.len()))
+        return "@beans_class_names = internal constant [{entries.len()} x ptr] [{entries.join(", ")}]\n\n"
+    }
+
+    // The one place an object is asked what class it is by name. Every
+    // reflective box calls this rather than reading the descriptor itself,
+    // so there is a single answer to that question and a single place a
+    // value that cannot answer it falls back to the static type.
+    fn class_name_lookup(count: int) -> string {
+        return "define internal ptr @.next.reflect.runtime_type(ptr %object, ptr %static) \{\nentry:\n  %empty = icmp eq ptr %object, null\n  br i1 %empty, label %fallback, label %live\nlive:\n  %descriptor = load ptr, ptr %object\n  %missing = icmp eq ptr %descriptor, null\n  br i1 %missing, label %fallback, label %lookup\nlookup:\n  %id = load i64, ptr %descriptor\n  %low = icmp slt i64 %id, 0\n  %high = icmp sge i64 %id, {count}\n  %outside = or i1 %low, %high\n  br i1 %outside, label %fallback, label %named\nnamed:\n  %slot = getelementptr ptr, ptr @beans_class_names, i64 %id\n  %name = load ptr, ptr %slot\n  %unnamed = icmp eq ptr %name, null\n  br i1 %unnamed, label %fallback, label %found\nfound:\n  ret ptr %name\nfallback:\n  ret ptr %static\n\}\n\n"
     }
 
     // The module as `count` standalone chunks, or an empty list when the

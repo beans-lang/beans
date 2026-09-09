@@ -130,4 +130,84 @@ for command in check run build; do
     fi
 done
 
+# `unit` is what a function that returns nothing answers with, not a value.
+# Until issue #154 the checker treated it as an ordinary value type: every
+# generic instantiated at `unit` and every binding declared `unit` passed
+# `check`, ran under the tree interpreter, and failed only `beansc build` — in
+# the emitter's own words ("LLVM emitter does not support brewing 'unit' yet",
+# "does not support local type 'List<unit>' yet"). Same shape as string `+`
+# above, so it is held the same way: all three entry points refuse, none of
+# them mentions the emitter, and the counts are pinned per message so a shape
+# that quietly stops being refused fails here.
+#
+# The counts matter more than they look. Nine of these are `Result<unit>` and
+# only four of the nine spell the type: the rest are worked out by inference
+# — a `Brew<unit>` handle joined, a unit-returning method brewed and joined, a
+# `TaskGroup<unit>` delivering through `next`, and a generic whose `T` binds to
+# `unit` through a function result. A refusal written on the spelling would
+# pass the written four and leave the inferred five reaching the emitter.
+unit_result_shapes=9
+unit_bare_shapes=6
+unit_holder_shapes=7
+unit_all_shapes=22
+for command in check run build; do
+    if [ "$command" = build ]; then
+        set -- build test/cases/unit_value_bad.b -o "$tmp/unit_value"
+    else
+        set -- "$command" test/cases/unit_value_bad.b
+    fi
+    if ./build/beansc "$@" >"$tmp/unit_value.$command" 2>&1; then
+        echo "unit_value_bad.b unexpectedly passed 'beansc $command'" >&2
+        exit 1
+    fi
+    if grep -q "LLVM emitter" "$tmp/unit_value.$command"; then
+        echo "'beansc $command' answered a unit value with an emitter message" >&2
+        cat "$tmp/unit_value.$command" >&2
+        exit 1
+    fi
+    # `|| true` for the same reason the string `+` block above needs it: the
+    # zero-refusals case is exactly the regression being watched for.
+    unit_count() { grep -c "$1" "$tmp/unit_value.$command" || true; }
+    found=$(unit_count "error: there is no Result<unit> — .ok. takes a value")
+    if [ "$found" -ne "$unit_result_shapes" ]; then
+        echo "'beansc $command' refused $found Result<unit> shapes, wanted $unit_result_shapes" >&2
+        cat "$tmp/unit_value.$command" >&2
+        exit 1
+    fi
+    found=$(unit_count "error: unit is what a function that returns nothing answers with, not a value you can hold")
+    if [ "$found" -ne "$unit_bare_shapes" ]; then
+        echo "'beansc $command' refused $found bare-unit shapes, wanted $unit_bare_shapes" >&2
+        cat "$tmp/unit_value.$command" >&2
+        exit 1
+    fi
+    found=$(unit_count "error: there is no value of type unit for ")
+    if [ "$found" -ne "$unit_holder_shapes" ]; then
+        echo "'beansc $command' refused $found unit-holder shapes, wanted $unit_holder_shapes" >&2
+        cat "$tmp/unit_value.$command" >&2
+        exit 1
+    fi
+    # Nothing else is reported: the refusals stand on their own and do not
+    # cascade into a second round of messages about a type nobody wrote.
+    found=$(unit_count ": error: ")
+    if [ "$found" -ne "$unit_all_shapes" ]; then
+        echo "'beansc $command' printed $found errors, wanted $unit_all_shapes" >&2
+        cat "$tmp/unit_value.$command" >&2
+        exit 1
+    fi
+done
+# The message has to name the program's own type and say what to write
+# instead, or it is no better than the emitter's. These are the exact
+# sentences; a regression to emitter vocabulary changes them.
+grep -Fq "there is no Result<unit> — \`ok\` takes a value, and a call that returns nothing has none to give it. give the called function a result to return, or use a form that answers no Result"     "$tmp/unit_value.check"
+grep -Fq "unit is what a function that returns nothing answers with, not a value you can hold. give the function a result to return, or call it as a statement and keep nothing"     "$tmp/unit_value.check"
+grep -Fq "there is no value of type unit for List<unit> to hold — unit is what a function that returns nothing answers with."     "$tmp/unit_value.check"
+grep -Fq "there is no value of type unit for Map<string, unit> to hold"     "$tmp/unit_value.check"
+grep -Fq "there is no value of type unit for Option<unit> to hold"     "$tmp/unit_value.check"
+grep -Fq "there is no value of type unit for Channel<unit> to hold"     "$tmp/unit_value.check"
+# and no binary is left behind by the build that refused
+if [ -e "$tmp/unit_value" ]; then
+    echo "the refused unit program still produced a binary" >&2
+    exit 1
+fi
+
 echo "ok language gaps"

@@ -1,2 +1,5 @@
 the server answered one message true
 the client got what it expected true
+the server narrowed the extension to permessage-deflate; server_no_context_takeover; server_max_window_bits=11
+the server echoed two compressed messages true
+the compressed exchange was clean true
