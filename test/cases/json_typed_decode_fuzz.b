@@ -34,7 +34,7 @@ import std.encoding.json
 import std.io
 import std.os
 
-extern "C" fn beans_enc_json_decode_probe(out: RawPtr<u64>) -> int
+extern "C" fn beans_json_decode_probe(out: RawPtr<u64>) -> int
 
 struct ProbeInfo {
     pub status: int
@@ -50,7 +50,7 @@ fn read_probe() -> ProbeInfo {
     var field: int = 0
     unsafe {
         let buf: RawPtr<u64> = RawPtr.alloc(4)
-        beans_enc_json_decode_probe(buf)
+        beans_json_decode_probe(buf)
         status = buf.offset(0).read() as int
         code = buf.offset(1).read() as int
         pos = buf.offset(2).read() as int

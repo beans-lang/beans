@@ -16,6 +16,47 @@
 compiler=0.1.40
 language=1.0
 
+# 20: beans_json_decode_probe_publish and beans_json_decode_probe — the typed
+# JSON decoder's diagnostic probe, moved out of the encoding bridge and made
+# per thread. Typed decoding collapses every failure to one error of kind
+# "invalid" at the language boundary, so the gate that holds it to the
+# JSONTestSuite answer sheet can otherwise pin only accept-or-refuse and never
+# why or where; the probe is those four words — status, error code, byte offset
+# or record count, field index. The bridge kept them in a file-scope array and
+# wrote all four on every call to beans_enc_json_typed_decode_direct, which is
+# what json.decode, json.decode_bytes, json.decode_bytes_in_place and
+# json.decode_with_options all lower to. That is public API, so two threads
+# decoding at once raced the stores — a data race by the language's own memory
+# model on the hot path of the framework we benchmark, and the reason TSan
+# could not be pointed at any threaded program that decodes JSON (issue #152).
+#
+# The words leave through the request buffer instead, the way every other
+# output of that ABI already travels: req[4], documented "unused" until now,
+# carries beans_json_decode_probe_publish, and the bridge calls it once with
+# the status it is about to return and the three words it already wrote into
+# req[5..7]. That is a compiler-to-runtime contract like ABI 19's three
+# widened request layouts, not a call the compiler makes itself — the emitter
+# stores the entry's address beside the four callbacks it already stores at
+# req[8..11].
+#
+# The storage had to leave the bridge with it. runtime/encoding must resolve
+# against libc alone (test/encoding_symbols.sh), and _Thread_local puts
+# __tlv_bootstrap in the object on Darwin, so per-thread words cannot live
+# there at all; relaxed 64-bit atomics were the other way and they pull
+# __atomic_store_8 on arm32. In the runtime they are ordinary — a
+# _Thread_local array with the freestanding fallback reflect_error_code
+# already uses, one thread by contract and no TLS runtime service. The bridge
+# still names no runtime symbol: it reaches the slot only through the pointer
+# in req, exactly as it reaches beans_alloc_bytes through req[9] and the
+# encoder reaches beans_bytes_reserve_raw through req[6].
+#
+# beans_json_decode_probe reads this thread's copy back, and is a hosted row,
+# because a Beans program calls it by name and an executable exports no names
+# on Linux. It replaces beans_enc_json_decode_probe, which no longer exists:
+# the beans_enc_ prefix would be a lie for a function that is not in the
+# encoding bridge. Under `beansc run` it answers zeros — typed decoding is not
+# lowered in the tree interpreter, so nothing has been filed.
+#
 # 19: permessage-deflate (RFC 7692) reached std.websocket, and the framing
 # bridge grew the one entry the Beans half cannot do for itself.
 # beans_ws_valid_utf8 answers the RFC 6455 text check for bytes wslay never
@@ -188,4 +229,4 @@ language=1.0
 # caller-owned event buffer instead of returning a fresh one.
 # Version 7 added Bytes.filled, Bytes.append_int_text, and Thread.detach.
 # Version 6 added per-thread runtime-hook guard entry points.
-runtime_abi=19
+runtime_abi=20
