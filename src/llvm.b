@@ -2118,6 +2118,12 @@ partial class LlvmTextEmitter {
         var owned: string =
             "@beans_deinit_sel = global i64 {deinit_selector}\n"
         let record_types: string = self.emit_record_types()
+        // The name of every class has to be a program string before the
+        // string block below is written, because the class-name table is
+        // built out of those literals. Every class id is minted by the time
+        // the last body is emitted, which is above, so this is the last
+        // moment both facts hold.
+        self.intern_class_names()
         let definitions: string =
             self.emit_global_definitions()
         // Build the static prologue here rather than while emitting main:
@@ -2130,6 +2136,9 @@ partial class LlvmTextEmitter {
         // it is sized by class_id_count, and an id minted after it was
         // written would index past the array beans_is_a reads.
         owned = "{owned}{self.class_parent_table()}"
+        // The class-name table is sized the same way and for the same
+        // reason, so it is written from the same place.
+        owned = "{owned}{self.class_name_table()}"
         for text: string in self.value_eq_functions {
             functions.push(text)
             origins.push("")
@@ -2203,6 +2212,75 @@ partial class LlvmTextEmitter {
             parent_entries.push("i64 -1")
         }
         return "@beans_class_parents = global [{parent_entries.len()} x i64] [{parent_entries.join(", ")}]\n\n"
+    }
+
+    // Every class id in this program with the name a program spells that
+    // class by. class_ids is already keyed by exactly that name: a plain
+    // class is filed under its qualified symbol, an instantiation under its
+    // rendered form, and display_symbol turns the first into what
+    // render_hir_type answers and leaves the second alone.
+    fn class_name_by_id() -> Map<int, string> {
+        var names: Map<int, string> = {}
+        for key: string in self.class_ids.keys() {
+            names[self.class_ids[key]] =
+                display_symbol(key)
+        }
+        return move names
+    }
+
+    fn intern_class_names() {
+        let names: Map<int, string> =
+            self.class_name_by_id()
+        for id: int in names.keys() {
+            self.intern(names[id])
+        }
+    }
+
+    // One entry per class id: the name of the class that id names.
+    //
+    // An object's first word is its class descriptor and the descriptor's
+    // first word is its class id — that pair is what `as?` reads to walk
+    // beans_class_parents, and it is the only thing an object carries about
+    // what it actually is. Reflection has to answer the same question with a
+    // name, because std.reflect keys every registry row by name, so this
+    // turns the id back into one. Without it a reflective box could only
+    // report the type of the *binding* it was handed, which is a different
+    // type the moment a subclass is held at its base (#163).
+    fn class_name_table() -> string {
+        let names: Map<int, string> =
+            self.class_name_by_id()
+        var entries: List<string> = []
+        for id: int in 0..self.class_id_count {
+            var entry: string = "ptr null"
+            match names.get(id) {
+                some(name) => {
+                    // A name interned after the string block was written
+                    // has no literal to point at. A null row is not a
+                    // wrong answer: the lookup falls back to the static
+                    // name the caller already had.
+                    if self.string_ids.contains_key(name) {
+                        entry =
+                            "ptr {self.string_pointer(name)}"
+                    }
+                }
+                none => {}
+            }
+            entries.push(entry)
+        }
+        if entries.len() == 0 {
+            entries.push("ptr null")
+        }
+        self.value_eq_functions.push(
+            self.class_name_lookup(entries.len()))
+        return "@beans_class_names = internal constant [{entries.len()} x ptr] [{entries.join(", ")}]\n\n"
+    }
+
+    // The one place an object is asked what class it is by name. Every
+    // reflective box calls this rather than reading the descriptor itself,
+    // so there is a single answer to that question and a single place a
+    // value that cannot answer it falls back to the static type.
+    fn class_name_lookup(count: int) -> string {
+        return "define internal ptr @.next.reflect.runtime_type(ptr %object, ptr %static) \{\nentry:\n  %empty = icmp eq ptr %object, null\n  br i1 %empty, label %fallback, label %live\nlive:\n  %descriptor = load ptr, ptr %object\n  %missing = icmp eq ptr %descriptor, null\n  br i1 %missing, label %fallback, label %lookup\nlookup:\n  %id = load i64, ptr %descriptor\n  %low = icmp slt i64 %id, 0\n  %high = icmp sge i64 %id, {count}\n  %outside = or i1 %low, %high\n  br i1 %outside, label %fallback, label %named\nnamed:\n  %slot = getelementptr ptr, ptr @beans_class_names, i64 %id\n  %name = load ptr, ptr %slot\n  %unnamed = icmp eq ptr %name, null\n  br i1 %unnamed, label %fallback, label %found\nfound:\n  ret ptr %name\nfallback:\n  ret ptr %static\n\}\n\n"
     }
 
     // The module as `count` standalone chunks, or an empty list when the

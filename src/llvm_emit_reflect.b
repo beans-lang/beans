@@ -997,8 +997,24 @@ partial class LlvmTextEmitter {
             }
             body = "{body}  ret i64 1\n{refusal}\}\n"
         } else {
+            // The value read out of the field is what the box reports, so a
+            // field declared at a base class and holding a subclass boxes as
+            // the subclass (#163).
+            var field_name: string =
+                self.string_pointer(
+                    render_hir_type(field.type))
+            let field_named: string =
+                "%reflect.field.name{id}"
+            let field_name_setup: string =
+                self.reflect_runtime_name(
+                    field.type,
+                    "%reflect.field.value{id}",
+                    field_named, field_name)
+            if field_name_setup != "" {
+                field_name = field_named
+            }
             body =
-                "define internal i64 {symbol}(ptr %receiver) \{\nentry:\n{setup}  %reflect.field.value{id} = load {llvm}, ptr {address}{access}\n  %reflect.field.slot{id} = alloca {llvm}\n  store {llvm} %reflect.field.value{id}, ptr %reflect.field.slot{id}\n  %reflect.field.box{id} = call i64 @beans_reflect_value_new_copy(ptr {self.string_pointer(render_hir_type(field.type))}, ptr %reflect.field.slot{id}, i64 {size}, ptr {retain}, ptr {drop})\n  ret i64 %reflect.field.box{id}\n{refusal}\}\n"
+                "define internal i64 {symbol}(ptr %receiver) \{\nentry:\n{setup}  %reflect.field.value{id} = load {llvm}, ptr {address}{access}\n  %reflect.field.slot{id} = alloca {llvm}\n  store {llvm} %reflect.field.value{id}, ptr %reflect.field.slot{id}\n{field_name_setup}  %reflect.field.box{id} = call i64 @beans_reflect_value_new_copy(ptr {field_name}, ptr %reflect.field.slot{id}, i64 {size}, ptr {retain}, ptr {drop})\n  ret i64 %reflect.field.box{id}\n{refusal}\}\n"
         }
         return body
     }
@@ -1143,8 +1159,23 @@ partial class LlvmTextEmitter {
             let drop: string =
                 self.reflection_value_action(
                     function.result, false)
+            // The box records the returned object's own class, not the
+            // class the signature promised: a method declared to return a
+            // base and returning a subclass boxes as the subclass (#163).
+            var result_name: string =
+                self.string_pointer(
+                    render_hir_type(function.result))
+            let result_named: string =
+                "%reflect.call.result.name"
+            let result_name_setup: string =
+                self.reflect_runtime_name(
+                    function.result, "%reflect.call.result",
+                    result_named, result_name)
+            if result_name_setup != "" {
+                result_name = result_named
+            }
             body =
-                "{body}  %reflect.call.result = call {result_llvm} {target}({arguments.join(", ")})\n  %reflect.call.result.slot = alloca {result_llvm}\n  store {result_llvm} %reflect.call.result, ptr %reflect.call.result.slot\n  %reflect.call.box = call i64 @beans_reflect_value_new(ptr {self.string_pointer(render_hir_type(function.result))}, ptr %reflect.call.result.slot, i64 {result_size}, ptr {retain}, ptr {drop})\n  ret i64 %reflect.call.box\n{refusal}\}\n"
+                "{body}  %reflect.call.result = call {result_llvm} {target}({arguments.join(", ")})\n  %reflect.call.result.slot = alloca {result_llvm}\n  store {result_llvm} %reflect.call.result, ptr %reflect.call.result.slot\n{result_name_setup}  %reflect.call.box = call i64 @beans_reflect_value_new(ptr {result_name}, ptr %reflect.call.result.slot, i64 {result_size}, ptr {retain}, ptr {drop})\n  ret i64 %reflect.call.box\n{refusal}\}\n"
         }
         self.value_eq_functions.push(body)
         return symbol
@@ -1526,6 +1557,53 @@ partial class LlvmTextEmitter {
         }
     }
 
+    // True when a value of this type is one of the program's own objects,
+    // which carries its own class descriptor in its first word. A class or
+    // an interface binding may hold any subclass, so the binding's declared
+    // type is not what the value *is*.
+    //
+    // Everything else is: a builtin reference such as List, Map or a
+    // closure box carries no descriptor at all, and a struct, an enum or a
+    // primitive is exactly its declared type at runtime. The two guards
+    // ahead of the declaration lookup are the same precedence type_text
+    // uses, so a builtin never reaches the class branch even where a
+    // program declares a class under the builtin's name.
+    fn type_carries_a_class_pointer(
+        type: HirType) -> bool {
+        if llvm_type(type) != "" { return false }
+        if llvm_type_is_reference(type) { return false }
+        match self.declaration_for(type) {
+            some(declaration) => {
+                if declaration.kind == "interface" {
+                    return true
+                }
+                if declaration.kind != "class" {
+                    return false
+                }
+                return self.class_layout(type).is_some()
+            }
+            none => { return false }
+        }
+    }
+
+    // The line that reads a reflective payload's own type name, or "" when
+    // the static name the caller already holds is the answer. `object` is
+    // the payload itself, which for a class or an interface is the object
+    // pointer; `fallback` is the static name, returned unchanged for a
+    // value that cannot answer for itself.
+    //
+    // Every reflective box goes through this: `reflect.value`, a field
+    // read, and a method or function result. A Value has to report the type
+    // it stores, not the type of the expression it came from (#163).
+    fn reflect_runtime_name(
+        type: HirType, object: string,
+        register: string, fallback: string) -> string {
+        if !self.type_carries_a_class_pointer(type) {
+            return ""
+        }
+        return "  {register} = call ptr @.next.reflect.runtime_type(ptr {object}, ptr {fallback})\n"
+    }
+
     fn emit_reflect_box(
         function: MirFunction,
         instruction: MirInstruction,
@@ -1569,8 +1647,19 @@ partial class LlvmTextEmitter {
                 values[instruction.result] = result
                 let meta: int =
                     1 | (layout.pointer_mask << 3)
+                // The box records what the payload IS. Handed a subclass
+                // through a base-typed binding, the static type names the
+                // binding and the object names itself.
+                var type_name: string =
+                    self.string_pointer(
+                        render_hir_type(payload_type))
+                let named: string = "%reflect.value.name{id}"
+                let name_setup: string =
+                    self.reflect_runtime_name(
+                        payload_type, payload, named, type_name)
+                if name_setup != "" { type_name = named }
                 var output: string =
-                    "  store {llvm} {payload}, ptr {slot}\n  %reflect.value.handle{id} = call i64 @beans_reflect_value_new(ptr {self.string_pointer(render_hir_type(payload_type))}, ptr {slot}, i64 {size}, ptr {retain}, ptr {drop})\n  {result} = call ptr @beans_alloc(i64 {layout.size}, i64 {meta})\n  store ptr @.next.class{layout.id}, ptr {result}\n"
+                    "  store {llvm} {payload}, ptr {slot}\n{name_setup}  %reflect.value.handle{id} = call i64 @beans_reflect_value_new(ptr {type_name}, ptr {slot}, i64 {size}, ptr {retain}, ptr {drop})\n  {result} = call ptr @beans_alloc(i64 {layout.size}, i64 {meta})\n  store ptr @.next.class{layout.id}, ptr {result}\n"
                 if layout.deinit_owner != "" {
                     let fin: int = self.fresh()
                     output =

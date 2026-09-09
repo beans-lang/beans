@@ -2295,7 +2295,10 @@ class TreeInterpreter {
                                         self.reflect_values[handle] =
                                             tree_value_copy(value)
                                         self.reflect_value_types[handle] =
-                                            render_hir_type(item.field.type)
+                                            self.reflect_recorded_type(
+                                                value,
+                                                render_hir_type(
+                                                    item.field.type))
                                         return TreeValue.integer(handle)
                                     }
                                     none => {
@@ -2765,7 +2768,9 @@ class TreeInterpreter {
                     self.next_reflect_value += 1
                     self.reflect_values[handle] = result
                     self.reflect_value_types[handle] =
-                        render_hir_type(selected.result)
+                        self.reflect_recorded_type(
+                            result,
+                            render_hir_type(selected.result))
                     return TreeValue.integer(handle)
                 }
             }
@@ -4007,6 +4012,59 @@ class TreeInterpreter {
             none => {}
         }
         return false
+    }
+
+    // The type a reflective box records for an interpreted value: the class
+    // the object actually is, not the type of the binding it arrived
+    // through. A Value has to report the type it stores (#163), and a class
+    // binding may hold any subclass.
+    //
+    // "" when the value carries no class of its own -- a record, an enum, a
+    // builtin handle, a primitive, a closure -- because for all of those the
+    // static type already is the runtime type.
+    //
+    // A generic class comes back closed, because the native backend answers
+    // this from the class descriptor at the object's first word and a
+    // descriptor names one instantiation. When an argument the object never
+    // recorded is missing, this refuses rather than answering the open name:
+    // an open name would be a second, wrong answer, and the static type the
+    // caller already holds is at worst the old answer.
+    fn runtime_value_type(value: TreeValue) -> string {
+        if value.kind != "object" || value.text == "" {
+            return ""
+        }
+        match self.declaration(value.text) {
+            some(declaration) => {
+                if declaration.kind != "class" { return "" }
+                let base: string =
+                    display_symbol(declaration.qualified)
+                if declaration.generics.len() == 0 {
+                    return base
+                }
+                var parts: List<string> = []
+                for parameter: string in
+                    declaration.generics {
+                    match value.generic_types.get(parameter) {
+                        some(bound) => {
+                            parts.push(render_hir_type(bound))
+                        }
+                        none => { return "" }
+                    }
+                }
+                return "{base}<{parts.join(", ")}>"
+            }
+            none => { return "" }
+        }
+    }
+
+    // The recorded type of a boxed value: what the object says it is when it
+    // can say, and the static type of the expression it came from otherwise.
+    fn reflect_recorded_type(value: TreeValue,
+                             static_name: string) -> string {
+        let actual: string =
+            self.runtime_value_type(value)
+        if actual == "" { return static_name }
+        return actual
     }
 
     fn deinit_chain(name: string,
@@ -11211,9 +11269,11 @@ class TreeInterpreter {
             self.next_reflect_value += 1
             self.reflect_values[handle] = arguments[0]
             self.reflect_value_types[handle] =
-                render_hir_type(self.runtime_type(
-                    node.children[0].type,
-                    self.current_type_bindings()))
+                self.reflect_recorded_type(
+                    arguments[0],
+                    render_hir_type(self.runtime_type(
+                        node.children[0].type,
+                        self.current_type_bindings())))
             let result: TreeValue =
                 self.object_value(node.type.name)
             result.text = node.type.name

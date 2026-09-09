@@ -278,7 +278,21 @@ agree test/cases/parity/issue158_reflect_generic.b 8
 
 # Every case in the directory has to be listed above with its own expected
 # count; a file added and forgotten would otherwise be silently unchecked.
-listed=46
+listed=47
+# #163: a reflective box records the type the value IS, not the type of the
+# binding it came from. The two backends get there by different routes — the
+# native one reads the class descriptor at the object's first word, the
+# interpreter reads the class name the object records for itself — so only a
+# parity case checks they agree. Four boxing routes (reflect.value, a field
+# read, a call result, a construction), a three-link chain plus an interface
+# binding, a middle instance that must refuse the leaf, closed generics that
+# must keep their arguments, and eleven non-class payloads that must not
+# change. Four marked objects, built and released once.
+agree test/cases/parity/issue163_reflect_runtime_type.b 4
+
+# Every case in the directory has to be listed above with its own expected
+# count; a file added and forgotten would otherwise be silently unchecked.
+listed=47
 present=$(find test/cases/parity -name '*.b' | wc -l | tr -d ' ')
 if [ "$present" != "$listed" ]; then
     echo "test/cases/parity holds $present cases but $listed are run" >&2
