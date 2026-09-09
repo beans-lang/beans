@@ -608,6 +608,14 @@ class BindgenGenerator {
     }
 }
 
+// Clang's JSON AST runs roughly an order of magnitude larger than the
+// preprocessed source, so this has to clear a whole desktop UI header set
+// (LVGL's is 58 MB), not just a single-header library. It stays a cap: a
+// runaway Clang must not be able to exhaust memory here.
+fn bindgen_ast_capture_limit() -> int {
+    return 268435456
+}
+
 fn run_self_bindgen(
     args: List<string>) -> int {
     var headers: List<string> = []
@@ -766,6 +774,11 @@ fn run_self_bindgen(
     }
     let command: process.Command =
         new process.Command(clang)
+    // A JSON AST is as big as the header's whole transitive include graph:
+    // Impeller's is 3.7 MB, LVGL's is 58 MB. process.Command's default 8 MiB
+    // cap discards the rest in silence, so the parse below failed on a
+    // truncated document and the message blamed Clang for it.
+    command.capture_limit(bindgen_ast_capture_limit())
     command.arg("--target={target.llvm_triple()}")
     command.arg("-x")
     command.arg("c-header")
@@ -856,8 +869,14 @@ fn run_self_bindgen(
         new BindgenJsonParser(ast)
     let root: BindgenJson = parser.value()
     if !parser.ok || root.kind != "object" {
-        io.eprintln(
-            "bindgen: clang returned an invalid JSON AST")
+        if ast.len() >= bindgen_ast_capture_limit() {
+            let names: string = headers.join(", ")
+            io.eprintln(
+                "bindgen: the Clang JSON AST for {names} reached the {ast.len()} byte capture limit, so the document parsed here is truncated. Split the header set, or raise bindgen_ast_capture_limit().")
+        } else {
+            io.eprintln(
+                "bindgen: clang returned an invalid JSON AST ({ast.len()} bytes)")
+        }
         return 1
     }
     var type_nodes: List<BindgenJson> = []
