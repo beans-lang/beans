@@ -109,8 +109,18 @@ agree() {
         exit 1
     fi
     check_effects "$tmp/$name.interp" "$source" "$want"
+    # Everything above compares the two backends against each other, so a
+    # change that moves BOTH of them together passes all of it. A case that
+    # keeps a `.out` beside it pins the answers themselves as well; the file
+    # is optional because for most cases the claim really is only agreement.
+    local golden="${source%.b}.out"
+    if [ -f "$golden" ] && ! diff -u "$golden" "$tmp/$name.interp"; then
+        echo "$source: both backends agree, on the wrong answers" >&2
+        exit 1
+    fi
     local note=""
     [ -n "$want" ] && note=", $want built and released"
+    [ -f "$golden" ] && note="$note, pinned"
     echo "  agree: $source ($(wc -l <"$tmp/$name.interp" | tr -d ' ') lines$note)"
 }
 
@@ -219,6 +229,22 @@ agree test/cases/parity/error_conversion.b 6
 # std failing its own users — a std.reflect failure crossing into a plain
 # Result<T> through ReflectError.to_error, on both the ok and err paths.
 agree test/cases/parity/reflect_error_bridge.b
+# #169: whether one type name stands for another. The native runtime compared
+# base names in the chain, so an IntGrid — a Grid<int> — was assignable to
+# Grid<string>; it compared exact strings at the top, so a Grid<int> was not
+# assignable to Grid, the declaration its own members are filed under. The
+# interpreter compared exact strings in both positions. Both legs were wrong,
+# in opposite directions, which is why the case carries the answer each row
+# must have and panics on a miss rather than only diffing the two legs. Three
+# receivers built and released, so the reflect value boxes are held the same
+# number of times on both backends.
+agree test/cases/parity/issue169_generic_assignability.b 3
+# #159: which type declares a member. Rows are filed under the declaration's
+# open name, so a member of Grid<int> reported main.Grid with no type
+# arguments and the guard for detecting an erased member was false for exactly
+# the erased members. Two instantiations, a non-generic subclass of each, two
+# links up, an override, a generic subclass, and the plain controls.
+agree test/cases/parity/issue159_declaring_type.b
 # A call the emitter names outright has to do the same work as the call
 # through the table it replaces: the guarded path writes the receiver as a
 # bare pointer while the direct one runs every operand, receiver included,
@@ -252,7 +278,7 @@ agree test/cases/parity/issue158_reflect_generic.b 8
 
 # Every case in the directory has to be listed above with its own expected
 # count; a file added and forgotten would otherwise be silently unchecked.
-listed=44
+listed=46
 present=$(find test/cases/parity -name '*.b' | wc -l | tr -d ' ')
 if [ "$present" != "$listed" ]; then
     echo "test/cases/parity holds $present cases but $listed are run" >&2

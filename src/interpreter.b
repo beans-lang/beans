@@ -1677,16 +1677,40 @@ class TreeInterpreter {
         return ""
     }
 
+    // One name stands for another in an assignability question.
+    //
+    // Rows are found by base name -- that is how `main.Grid<int>` reaches
+    // what `main.Grid` declares -- but assignability is not a lookup and must
+    // not strip: an argument-free name denotes the declaration itself, so
+    // every instantiation of it is one, while two different argument lists
+    // are two different types and neither stands for the other. Comparing
+    // these by exact string alone answered that a `Grid<int>` is not usable
+    // where its own declaring type is wanted, which is the type its members
+    // are filed under; the native runtime compared them by base name alone
+    // and answered that an `IntGrid` -- a `Grid<int>` -- is usable where a
+    // `Grid<string>` is wanted (#169).
+    fn reflect_name_assignable(wanted: string,
+                               actual: string) -> bool {
+        if wanted == actual { return true }
+        if self.reflect_base_name(wanted) != wanted {
+            return false
+        }
+        return self.reflect_base_name(actual) == wanted
+    }
+
     fn reflect_assignable(wanted: string,
                           actual: string) -> bool {
-        if wanted == actual { return true }
+        if self.reflect_name_assignable(wanted, actual) {
+            return true
+        }
         match self.reflect_declaration(actual) {
             some(declaration) => {
                 for relation: HirType in
                     declaration.relations {
                     let name: string =
                         render_hir_type(relation)
-                    if wanted == name ||
+                    if self.reflect_name_assignable(
+                           wanted, name) ||
                        self.reflect_assignable(
                            wanted, name) {
                         return true
@@ -1696,6 +1720,46 @@ class TreeInterpreter {
             none => {}
         }
         return false
+    }
+
+    // The declaring type of a member, in the form the queried type reaches
+    // it through. Members are filed under the declaration's open name, so a
+    // member of `main.Grid<int>` reported `main.Grid` and a caller could not
+    // see from the descriptor that its declaring type was generic at all --
+    // `member.declaring_type().type_arguments().len() != 0` was false for
+    // exactly the members that are erased (#159). The queried type's own
+    // chain is written the way the source wrote it, so a closed base link
+    // reads `main.Grid<int>`; answer with the link that carries the member.
+    fn reflect_declaring_name(queried: string,
+                              declared: string) -> string {
+        var current: string = queried
+        let base: string = self.reflect_base_name(declared)
+        var guard: int = 0
+        for guard <= self.program.declarations.len() {
+            guard += 1
+            if self.reflect_base_name(current) == base {
+                return current
+            }
+            match self.reflect_declaration(current) {
+                some(declaration) => {
+                    var next: string = ""
+                    for index: int in
+                        0..declaration.relations.len() {
+                        if index <
+                               declaration.relation_kinds.len() &&
+                           declaration.relation_kinds[index] ==
+                               "extends" {
+                            next = render_hir_type(
+                                declaration.relations[index])
+                        }
+                    }
+                    if next == "" { return declared }
+                    current = next
+                }
+                none => { return declared }
+            }
+        }
+        return declared
     }
 
     fn reflection_builtin(
@@ -2834,7 +2898,9 @@ class TreeInterpreter {
             }
             if name == "field_owner" {
                 return TreeValue.string(
-                    display_symbol(item.owner))
+                    self.reflect_declaring_name(
+                        type_name,
+                        display_symbol(item.owner)))
             }
             var flags: int = 0
             if item.field.is_public { flags = flags | 1 }
@@ -2866,7 +2932,9 @@ class TreeInterpreter {
                     }
                     if name == "method_owner" {
                         return TreeValue.string(
-                            display_symbol(item.owner))
+                            self.reflect_declaring_name(
+                                type_name,
+                                display_symbol(item.owner)))
                     }
                     if name == "method_result" {
                         return TreeValue.string(
