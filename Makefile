@@ -189,6 +189,7 @@ test-semantics: $(BIN)
 	bash ./test/wide_maps.sh
 	bash ./test/wide_enums.sh
 	bash ./test/enum_repr.sh
+	bash ./test/reflect_generics.sh
 	bash ./test/wide_owners.sh
 	bash ./test/wide_sync.sh
 	bash ./test/wide_concurrency.sh
@@ -405,6 +406,7 @@ test-core: $(BIN)
 	bash ./test/wide_maps.sh
 	bash ./test/wide_enums.sh
 	bash ./test/enum_repr.sh
+	bash ./test/reflect_generics.sh
 	bash ./test/wide_owners.sh
 	bash ./test/wide_sync.sh
 	bash ./test/wide_concurrency.sh
