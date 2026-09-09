@@ -143,4 +143,29 @@ done
 diff -u test/cases/ownership_edges_ok.out "$tmp/ownership-interp"
 diff -u test/cases/ownership_edges_ok.out "$tmp/ownership-native.out"
 
+# #155: WHERE a move hands the value over, pinned against a recorded answer.
+#
+# test/backend_parity.sh runs the same program, but it compares the two
+# backends against each other and has no golden — so a change that moves both
+# of them together passes it. This lane picked a rule, so that is exactly the
+# hole worth closing: the ordering below is the decision, written down, and a
+# future change to the drop point has to argue with it rather than only with
+# the other backend. The construct/release count parity pins is no help
+# either — the markers balance whichever end of the program releases them,
+# which is why the bug survived both gates for as long as it did.
+#
+# The order this file records is the one spec/SYNTAX.md states: a nested
+# block's locals innermost first, then the defers newest first, then the
+# function's own locals newest first, then its `move` parameters
+# last-declared first.
+./build/beansc run test/cases/parity/issue155_move_drop_point.b \
+    >"$tmp/drop-interp"
+./build/beansc build test/cases/parity/issue155_move_drop_point.b \
+    -o "$tmp/drop-native" >"$tmp/drop-build" 2>&1
+"$tmp/drop-native" >"$tmp/drop-native.out"
+diff -u test/cases/parity/issue155_move_drop_point.out "$tmp/drop-interp"
+diff -u test/cases/parity/issue155_move_drop_point.out "$tmp/drop-native.out"
+
+echo "ok move drop points match the recorded order on both backends"
+
 echo "ok move, wrappers, generic ownership, branches, and use-after-move errors"

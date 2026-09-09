@@ -120,6 +120,11 @@ stage() { # <source> <stem>
             examples/zero_copy_json.b) fixture=test/cases/zero_copy_json.out ;;
             examples/zero_copy_xml.b) fixture=test/cases/zero_copy_xml.out ;;
             test/cases/encoding_*.b) fixture=${src%.b}.out ;;
+            # not a bridge case: it simply has a tracked golden of its own,
+            # so the MSVC lanes are held to the same recorded order as
+            # test/moves.sh rather than to a staging run
+            test/cases/parity/issue155_move_drop_point.b)
+                fixture=${src%.b}.out ;;
         esac
         if [[ "$TRIPLE" != x86_64-pc-windows-msvc ]]; then
             case "$src" in
@@ -203,6 +208,19 @@ for case_name in encoding_json encoding_xml encoding_base64 encoding_binary \
         exit 1
     fi
 done
+
+# Where a `move` hands its value over (#155). The staging loop above walks
+# examples/, so a rule that lives only under test/cases/ is never executed on
+# Windows at all — and this one is an ownership rule with a recorded order, so
+# a target that released a moved-in parameter at a different point would go
+# unnoticed. It carries its own tracked golden, which is what the MSVC lanes
+# are diffed against below.
+if buildable test/cases/parity/issue155_move_drop_point.b; then
+    stage test/cases/parity/issue155_move_drop_point.b move_drop_point
+else
+    echo "the move drop-point case is not buildable for $TRIPLE" >&2
+    exit 1
+fi
 
 # A package-owned C source must cross the Windows native compiler and linker,
 # not only the host interpreter's temporary shared-library path.

@@ -5230,7 +5230,27 @@ class TreeInterpreter {
         let value: TreeValue =
             self.expression(node.children[0], frame)
         if value.kind == "propagate" { return value }
-        if node.value == "move" || node.value == "+" ||
+        if node.value == "move" {
+            // A move transfers ownership here, at the `move`, not at the
+            // spent binding's scope exit: the value now belongs to whatever
+            // takes it — a parameter, a `let`, a field, an element — and
+            // dies with that owner. The frame slot has to let go, or the
+            // host keeps the value alive behind the new owner's back and the
+            // `deinit` runs at the wrong end of the program (#155).
+            //
+            // The checker has already proved this names a local
+            // (check_move in src/expression.b), so the operand is a `local`
+            // node with a binding id; a poisoned program can still get here
+            // with something else, which spends nothing.
+            if node.children.len() == 1 &&
+               node.children[0].kind == "local" &&
+               node.children[0].binding_id >= 0 {
+                frame.spend(
+                    node.children[0].binding_id)
+            }
+            return value
+        }
+        if node.value == "+" ||
            node.value == "inout" {
             return value
         }
@@ -15759,6 +15779,19 @@ class TreeInterpreter {
                 frame.set(
                     function.parameters[index].binding_id,
                     argument)
+                // A `move` parameter owns its argument from the call onward,
+                // so the list that carried it here has to let go. Leaving the
+                // entry in place makes the caller's argument vehicle a second
+                // owner that outlives the callee, and the value's `deinit`
+                // then runs when the *calling expression* finishes rather
+                // than when the callee returns — a whole frame late once the
+                // callee forwards it on (#155). An `inout` parameter is the
+                // opposite case and keeps its entry: it aliases the caller's
+                // storage on purpose and owns nothing.
+                if function.parameters[index].passing ==
+                       "move" {
+                    arguments[index] = TreeValue.unset()
+                }
             }
         }
         match self.debugger {
