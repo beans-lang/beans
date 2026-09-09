@@ -79,7 +79,20 @@ h.cancel()                          // request cancellation; returns nothing
 - `join()` parks the caller until the child finishes and returns
   `Result<T>`: `ok(value)` on normal completion, an `err` when the child
   panicked (kind `panic`, message and source position of the panic) or was
-  cancelled (kind `cancelled`). `join` **borrows** the handle and consumes
+  cancelled (kind `cancelled`). **`T` cannot be `unit`**: there is no
+  `Result<unit>` in Beans because `ok` takes a value, so a child that computes
+  nothing has nothing for `join` to answer with, and the call is refused at
+  check time about the program (spec/SYNTAX.md, "Option and Result"). The
+  handle itself is not refused — `Brew<unit>` is an ordinary handle and the
+  statement form, a kept handle nobody joins, and `cancel()` all run — because
+  a `Brew<T>` payload names what the child computes and "nothing" is a real
+  answer there. It is only answering a `Result` about it that has no value to
+  put inside. Give the brewed function a result to return, or let the
+  synthesized scope join handle the child. The same rule refuses
+  `TaskGroup<unit>`'s `next`, `try_next` and `wait_all` while leaving
+  `group.brew` and `cancel_all` alone, and `Thread<unit>.join()` stays legal
+  because it answers `unit` rather than `Result<unit>`. `join` **borrows** the
+  handle and consumes
   the outcome: the handle's joined flag is the single source of truth, and a
   second `join` answers an `err` of kind `closed`. (A change from the F0
   sketch, which had join move the handle — a moved handle fought the
@@ -334,8 +347,11 @@ immediately, whose only failure kind is `panic`. `brew` may only appear at a
 function body's own scope (the synthesized scope join rides function-exit
 defers); `contained` is an ordinary expression, legal wherever one is —
 inside a loop, an `if`, a match arm. `brew` runs a unit-returning call
-happily; `contained` cannot, because it has to *answer* a `Result` and there
-is no `Result<unit>` in Beans — `ok` takes a value.
+happily as long as nobody joins it — the statement form, a kept handle and
+`cancel()` are all fine, and only `join` is refused, because it has to answer
+a `Result`; `contained` cannot run one at all, because answering the `Result`
+is the whole of what it does, and there is no `Result<unit>` in Beans — `ok`
+takes a value.
 
 **Where it is refused**, at check time, about the program:
 
@@ -346,7 +362,8 @@ is no `Result<unit>` in Beans — `ok` takes a value.
   remain the way to contain a panic there, at the cost of the fiber;
   widening this needs SEH funclets for COFF, proven on that target.
 - `--runtime freestanding`, which has no fiber core to keep the count on.
-- a unit-returning call (no `Result<unit>` to answer with).
+- a unit-returning call (no `Result<unit>` to answer with). `brew` draws the
+  same line one step later, at `join` rather than at the call.
 - the walls the fabricated closure imposes, shared with `brew`: the operand
   must be a call to a user function or method, a method's receiver must be a
   reference (a class or an interface — a value receiver would run on the

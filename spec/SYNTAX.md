@@ -2328,6 +2328,24 @@ fn parse_age(s: string) -> Result<int> {
   location and message, then exits with status 3. It never returns and does not
   run defers.
 - `Result<T>` means `Result<T, Error>` — `Error` is a built-in class (msg, kind, cause). Custom error types via `Result<T, MyError>`.
+- **There is no `Result<unit>`, and no value of type `unit` at any depth.**
+  `unit` is what a function that returns nothing answers with — it *names* a
+  result, it is not a value. It is legal exactly where a result is named: a
+  function's or closure's declared result (`fn f()`, `-> unit`, `fn() -> unit`),
+  and the payload of `Thread<T>`, `Brew<T>` and `TaskGroup<T>`, which is the
+  result type of the call the handle runs. Everywhere else a value of the type
+  would have to exist and there is none, so it is refused at check time, about
+  the program: a local, a `var`, a parameter, a field, an enum payload, an
+  element of any container (`List<unit>`, `Map<K, unit>`, `Option<unit>`,
+  `Channel<unit>`, `Box<unit>`, …), and above all a `Result` payload, because
+  `ok` takes a value. The rule is on the **slot**, not the spelling: a generic
+  whose `T` binds to `unit` through a function result — `produce(fn() { })` —
+  is fine, and the same `T` reaching an argument or a `Result` payload is not.
+  `Thread<unit>.join()` answers `unit` and is legal; `Brew<unit>.join()` would
+  have to answer `Result<unit>` and is refused, as are `TaskGroup<unit>`'s
+  `next`, `try_next` and `wait_all`. The way through is to give the called
+  function a result to return, or to use the form that answers no `Result` —
+  a statement `brew`, a kept handle nobody joins, `cancel()`, `cancel_all()`.
 - **`err(message, kind)`** sets the `kind` slug as well as the message:
   `return err("closed after 3 of 8 bytes", "eof")`. Only for the built-in `Error` —
   a custom error type carries its own fields, so `err(value)` is the form there. Without
@@ -2676,7 +2694,8 @@ fn shielded(request: Request) -> Response {
   as a fabricated closure over hoisted bindings. A value receiver would run on
   the hoisted copy; an interface value is an object, so it is not one.
 - The call must return something: `contained` answers `Result<T>`, and there
-  is no `Result<unit>` in Beans because `ok` takes a value.
+  is no `Result<unit>` in Beans because `ok` takes a value (see "Option and
+  Result" for the rule this is one case of).
 - It needs the controlled unwind, so `--runtime freestanding` and every
   target without it (Windows/COFF, wasm, 32-bit ARM) refuse `contained` at
   check time. `brew` + `join` is the way to contain a panic there.

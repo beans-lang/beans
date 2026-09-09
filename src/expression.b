@@ -6033,6 +6033,31 @@ class ExpressionChecker {
         return ok
     }
 
+    // `unit` is the absence of a value, and no backend has storage for one
+    // (hir_unit_misplacement). Signature and field types are refused where
+    // they are lowered; this is the same rule for everything the checker
+    // learns instead of reading — a statement's annotation, a builtin
+    // method's answer, a generic bound to `unit` by inference. Answers true
+    // when it refused, so a caller can poison rather than carry a type no
+    // backend can hold.
+    //
+    // `result_slot` is true when the type names what something *answers*
+    // rather than what it holds: a function's result, a builtin's result, a
+    // concurrent handle's payload. `unit` is legal exactly there.
+    fn refuse_misplaced_unit(node: AstNode, type: HirType,
+                             result_slot: bool) -> bool {
+        match hir_unit_misplacement(type, result_slot) {
+            some(offender) => {
+                self.fail(
+                    node,
+                    unit_misplacement_message(offender))
+                return true
+            }
+            none => {}
+        }
+        return false
+    }
+
     fn validate_target_type(node: AstNode, type: HirType) {
         if (type.name == "StoredCallback" ||
             type.name == "LocalStoredCallback") &&
@@ -8067,6 +8092,7 @@ class ExpressionChecker {
             none => {}
         }
         var inout_names: Map<string, bool> = {}
+        var unit_refused: bool = false
         for result.argument_passing.len() <
             result.children.len() {
             result.argument_passing.push("")
@@ -8107,6 +8133,17 @@ class ExpressionChecker {
                 self.substitute_generic_type(
                     pattern, function.generics,
                     inference)
+            // An argument is a value, so a generic that inference bound to
+            // `unit` has nothing to pass. `id(nothing())` reached the
+            // emitter as a temporary with no representation (#154); the
+            // declared-parameter half of the same rule is refused where the
+            // signature is lowered. The result is not reported after this:
+            // a `List<T>` answered for an argument already refused is the
+            // same mistake seen twice.
+            if self.refuse_misplaced_unit(
+                   node.children[index + first], wanted, false) {
+                unit_refused = true
+            }
             self.expect_type(
                 node.children[index + first],
                 actual.type, wanted)
@@ -8268,6 +8305,17 @@ class ExpressionChecker {
             self.substitute_generic_type(
                 result_pattern,
                 function.generics, inference)
+        // Inference is where `unit` arrives without anyone writing it: a
+        // generic bound to the result of a call that returns nothing turns
+        // `Result<T>` into `Result<unit>` and `List<T>` into `List<unit>`,
+        // types no backend has a value for. Refuse the substituted result
+        // here, at the call, so the message names the type this call would
+        // have answered with rather than the emitter that could not build
+        // it (#154). A generic bound to `unit` is fine on its own — the
+        // rule is about the slot it lands in, not the binding.
+        if !unit_refused {
+            self.refuse_misplaced_unit(node, result.type, true)
+        }
         // Explicit type arguments pin the full resolved binding onto the
         // call node, so both backends can instantiate a generic the
         // signature alone could never rebind.
@@ -8790,6 +8838,8 @@ class ExpressionChecker {
             some(signature) => {
                 self.validate_target_type(
                     node, signature.result)
+                self.refuse_misplaced_unit(
+                    node, signature.result, true)
                 let result: HirNode =
                     self.make_node(
                         node, "builtin_call",
@@ -8930,6 +8980,15 @@ class ExpressionChecker {
                 } else {
                     expected
                 }
+            // `some` and `ok` carry a value, and a call that returns
+            // nothing has none — the payload names where the mistake is,
+            // even when no annotation wrote the type (#154).
+            if self.refuse_misplaced_unit(
+                   node.children[1], type, false) {
+                return some(self.make_node(
+                    node, "error", "some",
+                    poison_hir_type()))
+            }
             let result: HirNode =
                 self.make_node(node, "some", "some", type)
             result.children.push(value)
@@ -8956,6 +9015,12 @@ class ExpressionChecker {
                 } else {
                     hir_result(value.type)
                 }
+            if self.refuse_misplaced_unit(
+                   node.children[1], type, false) {
+                return some(self.make_node(
+                    node, "error", "ok",
+                    poison_hir_type()))
+            }
             let result: HirNode =
                 self.make_node(node, "ok", "ok", type)
             result.children.push(value)
@@ -10269,6 +10334,21 @@ class ExpressionChecker {
                 some(signature) => {
                     self.validate_target_type(
                         node, signature.result)
+                    // The answer of a builtin over a handle is derived from
+                    // the handle's payload, so it can name `unit` with the
+                    // program having written no such type: `Brew<unit>.join`
+                    // answers `Result<unit>`, and a `TaskGroup<unit>`
+                    // delivers one through `next`, `try_next` and
+                    // `wait_all`. There is no Result<unit> — the refusal
+                    // belongs here, about the program, not in the emitter
+                    // that could not build one (#154).
+                    // Not poisoned: the arms of the `match` that reads a
+                    // join are checked against the Result the program
+                    // wrote, so one refusal is the whole story. Poison
+                    // would answer it with two more lines about a type
+                    // nobody wrote.
+                    self.refuse_misplaced_unit(
+                        node, signature.result, true)
                     if receiver.type.name == "MMap" &&
                        self.program.target.os == "wasi" {
                         self.fail(
@@ -12936,6 +13016,16 @@ class ExpressionChecker {
                 }
                 self.validate_target_type(
                     type_node, declared)
+                // A binding holds a value, so `unit` — the absence of one —
+                // cannot be its type, and neither can anything that would
+                // have to store one (#154). The annotation is left standing
+                // rather than poisoned: the initializer and every later
+                // read of the binding were already checked against this
+                // type before the refusal existed, and poisoning it answers
+                // one refusal with a second round of messages about a type
+                // nobody wrote.
+                self.refuse_misplaced_unit(
+                    type_node, declared, false)
             }
             none => {}
         }

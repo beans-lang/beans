@@ -1230,6 +1230,123 @@ grep -q "contained needs the controlled unwind, which the freestanding runtime d
     exit 1
 }
 
+echo "checking a unit child is refused where it must answer a Result, not elsewhere"
+# issue #154. `Brew<unit>` itself is fine and both backends run it: the handle
+# names what the child computes, and "nothing" is a real answer. What has no
+# representation is the `Result<unit>` that join, next, try_next and wait_all
+# would have to answer with, because `ok` takes a value. Until this refusal
+# the checker accepted all of it, the tree interpreter ran it, and only
+# `beansc build` said no — about the emitter rather than about the program.
+#
+# The types in these four are all worked out by inference: nothing here writes
+# `Result<unit>`, so a refusal written on the spelling would miss every one.
+cat >"$tmp/unitjoin.b" <<'BEANS'
+import std.io
+
+fn work(step: int) {
+    io.println("work {step}")
+}
+
+class Worker {
+    pub fn run(step: int) {
+        io.println("run {step}")
+    }
+}
+
+fn joined() {
+    let handle: Brew<unit> = brew work(1)
+    match handle.join() {
+        ok(value) => { io.println("joined") }
+        err(problem) => { io.println("{problem.kind}") }
+    }
+}
+
+fn joined_method() {
+    let worker: Worker = new Worker()
+    let handle: Brew<unit> = brew worker.run(2)
+    match handle.join() {
+        ok(value) => { io.println("joined") }
+        err(problem) => { io.println("{problem.kind}") }
+    }
+}
+
+fn delivered() {
+    let fleet: TaskGroup<unit> = new TaskGroup<unit>()
+    fleet.brew(work(3))
+    match fleet.next() {
+        some(outcome) => { io.println("delivered") }
+        none => { io.println("empty") }
+    }
+}
+
+fn awaited() {
+    let fleet: TaskGroup<unit> = new TaskGroup<unit>()
+    fleet.brew(work(4))
+    match fleet.wait_all() {
+        ok(values) => { io.println("{values.len()}") }
+        err(problem) => { io.println("{problem.kind}") }
+    }
+}
+
+fn main() {
+    joined()
+    joined_method()
+    delivered()
+    awaited()
+}
+BEANS
+for command in check run build; do
+    if [ "$command" = build ]; then
+        set -- build "$tmp/unitjoin.b" -o "$tmp/unitjoin.bin"
+    else
+        set -- "$command" "$tmp/unitjoin.b"
+    fi
+    if ./build/beansc "$@" >"$tmp/unitjoin.$command" 2>&1; then
+        echo "a unit brew join passed 'beansc $command'" >&2
+        cat "$tmp/unitjoin.$command" >&2
+        exit 1
+    fi
+    if grep -q "LLVM emitter" "$tmp/unitjoin.$command"; then
+        echo "'beansc $command' answered a unit join with an emitter message" >&2
+        cat "$tmp/unitjoin.$command" >&2
+        exit 1
+    fi
+    # join, the method join and next answer Result<unit>; wait_all answers
+    # Result<List<unit>>, so the list is what it names.
+    joins=$(grep -c "there is no Result<unit>" "$tmp/unitjoin.$command" || true)
+    if [ "$joins" -ne 3 ]; then
+        echo "'beansc $command' refused $joins unit joins, wanted 3" >&2
+        cat "$tmp/unitjoin.$command" >&2
+        exit 1
+    fi
+    grep -Fq "there is no value of type unit for List<unit> to hold" \
+        "$tmp/unitjoin.$command" || {
+        echo "'beansc $command' did not refuse wait_all over a unit fleet" >&2
+        cat "$tmp/unitjoin.$command" >&2
+        exit 1
+    }
+    test "$(grep -c ': error:' "$tmp/unitjoin.$command")" -eq 4
+done
+if [ -e "$tmp/unitjoin.bin" ]; then
+    echo "the refused unit join still produced a binary" >&2
+    exit 1
+fi
+
+echo "checking every unit shape that only names a result still runs on both backends"
+# The other half of #154, and the guard on the refusal above: a statement
+# brew, a kept handle nobody joins, a cancelled handle, a brewed method, a
+# TaskGroup drained by cancel_all, a Thread<unit> joined (its join answers
+# unit, not Result<unit>), a declared `-> unit`, an fn-typed local and
+# parameter, a generic whose T binds to unit through a function result, and
+# Mutex.with_lock. Refuse the spelling instead of the slot and every one of
+# these goes with it.
+./build/beansc run test/cases/unit_value_ok.b >"$tmp/unitok.interp"
+./build/beansc build test/cases/unit_value_ok.b -o "$tmp/unitok.native" \
+    >"$tmp/unitok.build" 2>&1
+"$tmp/unitok.native" >"$tmp/unitok.native.out"
+diff -u test/cases/unit_value_ok.out "$tmp/unitok.interp"
+diff -u test/cases/unit_value_ok.out "$tmp/unitok.native.out"
+
 echo "checking contained stays an ordinary name without a callee"
 cat >"$tmp/ccname.b" <<'BEANS'
 import std.io
