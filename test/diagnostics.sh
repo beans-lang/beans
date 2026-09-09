@@ -275,6 +275,12 @@ fi
 # iterable", "unary '-' needs a number, got poison" — each a second line
 # about a value whose real problem was already reported, naming a type nobody
 # wrote. A rule that reads a type stops when the type is poison.
+#
+# The match arms below are here because this gate could not see them: the
+# fixture had no `match`, so the pattern checker went on printing "'ok' pattern
+# needs an enum subject, this is poison" through six releases with this gate
+# green (#194). A gate that cannot reach a path is indistinguishable from one
+# that passes, so the path is in the fixture now.
 check_bad diagnostics_already_refused_bad
 if grep -Eq ': error: .*poison' "$tmp/diagnostics_already_refused_bad"; then
     echo "a diagnostic leaked the poison marker" >&2
@@ -283,7 +289,14 @@ if grep -Eq ': error: .*poison' "$tmp/diagnostics_already_refused_bad"; then
 fi
 grep -Fq ":10:12: error: unknown type 'NoSuchType'" \
     "$tmp/diagnostics_already_refused_bad"
-# one for the declaration, one per array length that names no constant
-test "$(grep -c ': error:' "$tmp/diagnostics_already_refused_bad")" -eq 3
+grep -Fq ":26:11: error: unknown function 'nosuchfn'" \
+    "$tmp/diagnostics_already_refused_bad"
+# one for the declaration, one per array length that names no constant, and one
+# per match subject that names no function -- and nothing for the arms, whose
+# shapes cannot be judged against a type that does not exist. A binding in a
+# poisoned arm is declared as poison rather than skipped: skipping it left the
+# arm body naming something that resolved to nothing, which turned one unknown
+# function into five errors.
+test "$(grep -c ': error:' "$tmp/diagnostics_already_refused_bad")" -eq 5
 
 echo "ok diagnostics: locations, imports, suggestions, wording, and recovery"

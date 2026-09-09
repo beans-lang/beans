@@ -12325,6 +12325,29 @@ class ExpressionChecker {
             }
             return result
         }
+        // The subject was already refused where it went wrong, and with the
+        // reason. Judging an arm's shape against a type that does not exist can
+        // only produce a second sentence about the same mistake -- and every
+        // rule below names the subject, so it would print the checker's own
+        // word for "already reported" while doing it.
+        //
+        // The payload bindings are still declared, as poison. Returning without
+        // them is what made this cascade rather than merely leak: the arm body
+        // then had names that resolved to nothing, so one unknown function
+        // became five errors. A binding typed poison is a binding every rule in
+        // the body stops on, the same way this one does.
+        if hir_already_refused(subject) {
+            for child: AstNode in pattern.children {
+                if child.kind == "type" { continue }
+                let poisoned: int = self.declare(
+                    child, subject, false, true, false)
+                let bound: HirNode = self.make_node(
+                    child, "pattern_binding", child.value, subject)
+                bound.binding_id = poisoned
+                result.children.push(bound)
+            }
+            return result
+        }
         if pattern.kind == "pattern_literal" {
             var literal_type: HirType =
                 new HirType("int")

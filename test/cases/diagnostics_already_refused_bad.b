@@ -18,4 +18,20 @@ fn main() {
     let called: int = a()
     let measured: int = size_of([u8; nosuchconst])
     io.println("{size_of([u8; nosuchconst])}")
+    // A match on a value that was already refused. The arm shapes cannot be
+    // judged against a type that does not exist, and the payload bindings are
+    // declared as poison rather than skipped: skipping them left the body with
+    // names that resolved to nothing, so this one unknown function used to
+    // produce five errors.
+    match nosuchfn() {
+        ok(v) => { io.println("{v}") }
+        err(e) => { io.println("{e}") }
+    }
+    // The same subject with a literal arm, which reaches a different rule: it
+    // compares the pattern's type against the subject's rather than asking for
+    // an enum.
+    match nosuchother() {
+        0 => {}
+        _ => {}
+    }
 }
