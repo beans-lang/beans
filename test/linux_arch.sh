@@ -438,12 +438,20 @@ EOF
         fi
         ran=$((ran + 1)); continue
     fi
+    # Both exchanges refuse the same way and for the same reason: the accept
+    # key is a SHA-1 the target has no provider for, so the upgrade never
+    # reaches the extension negotiation. The narrowed exchange's three lines
+    # print anyway, which is what makes this a contract rather than a skip.
     if [ "$base" = "websocket" ] &&
        [ "$target_crypto_available" = "0" ]; then
         cat >"$tmp/$base.ref" <<'EOF'
 upgrade failed: unsupported
 the server answered one message false
 the client got what it expected false
+narrowed upgrade failed: unsupported
+the server narrowed the extension to (none)
+the server echoed two compressed messages false
+the compressed exchange was clean false
 EOF
         if [ "$q" != "0" ] ||
            ! diff -q "$tmp/$base.ref" "$tmp/$base.qemu" >/dev/null; then
