@@ -293,6 +293,20 @@ agree test/cases/parity/issue163_reflect_runtime_type.b 4
 # Every case in the directory has to be listed above with its own expected
 # count; a file added and forgotten would otherwise be silently unchecked.
 listed=47
+# A type parameter inside a function-typed parameter. The native backend
+# refused the call for a free function and for a static — `fn(T)` and
+# `fn(T) -> unit` are one type, and only the spelled form carries the result
+# in the type's argument list — while an instance method with the identical
+# signature emitted and the interpreter ran all three, so this shape could
+# not be compared across the backends at all. Twenty-six values built and
+# released: what a closure handed to a generic does is build and release, so
+# a body invoked the wrong number of times shows up as a marker imbalance
+# rather than as an answer that happens to match.
+agree test/cases/parity/issue161_generic_fn_parameter.b 26
+
+# Every case in the directory has to be listed above with its own expected
+# count; a file added and forgotten would otherwise be silently unchecked.
+listed=43
 present=$(find test/cases/parity -name '*.b' | wc -l | tr -d ' ')
 if [ "$present" != "$listed" ]; then
     echo "test/cases/parity holds $present cases but $listed are run" >&2

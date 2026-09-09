@@ -15,6 +15,22 @@ fn canonical_hir_name(name: string) -> string {
     return name
 }
 
+// A function type's result is optional in the *syntax*, never in the *type*.
+// `fn(T)` and `fn(T) -> unit` are one type — hir_type_key renders both as
+// `fn(T)->unit` — but only the second carries the result in `args`, because
+// the lowerings build `args` from the syntax's children and append a result
+// only when one was written. So a reader that walks `args` directly sees two
+// different arities for one type, and any rule it draws from that is wrong.
+// Every reader asks for the parts instead: fn_parameter_count parameters,
+// then this result.
+fn hir_fn_result(type: HirType) -> HirType {
+    if type.fn_parameter_count >= 0 &&
+       type.fn_parameter_count < type.args.len() {
+        return type.args[type.fn_parameter_count]
+    }
+    return new HirType("unit")
+}
+
 fn hir_type_key(type: HirType) -> string {
     if type.name == "array" {
         return "[{hir_type_key(type.args[0])};{type.array_length}]"

@@ -489,13 +489,84 @@ partial class LlvmTextEmitter {
         return result
     }
 
+    // Bind one generic call's type parameters. Every route that raises an
+    // instance asks this — a free function, a static and a method all bind
+    // the same way.
+    //
+    // Explicit type arguments come first: they are the only way to bind a
+    // generic the signature never mentions, and the checker has already
+    // agreed with them. Unification against the concrete operand and result
+    // types then fills whatever the source left unwritten.
+    //
+    // Unification is inference, not a check. A parameter's declared type may
+    // legitimately fail to line up with the argument's — passing a subclass
+    // to a plain class parameter matches nothing at all — and a walk that
+    // binds nothing is no reason to refuse a call. What the instantiation
+    // needs is only that every type parameter the template declares ends up
+    // with a type, so that is what this answers: "" when they all do, else
+    // the name of the first that does not.
+    fn bind_generic_call(
+        function: MirFunction,
+        instruction: MirInstruction,
+        template: MirFunction,
+        parameters: List<int>,
+        bindings: Map<string, HirType>) -> string {
+        for index: int in
+            0..instruction.type_argument_names.len() {
+            bindings[
+                instruction.type_argument_names[index]] =
+                instruction.type_arguments[index]
+        }
+        if parameters.len() ==
+               instruction.operands.len() {
+            for index: int in 0..parameters.len() {
+                self.unify_named_open(
+                    template.locals[
+                        parameters[index]].type,
+                    self.value_type(
+                        function,
+                        instruction.operands[index]),
+                    bindings, template.generics)
+            }
+        }
+        self.unify_named_open(
+            template.result, instruction.type,
+            bindings, template.generics)
+        for generic: string in template.generics {
+            if !bindings.contains_key(generic) {
+                return generic
+            }
+        }
+        return ""
+    }
+
     // bind type variables by walking a template type against the
     // concrete one the call site carries
     fn unify_open(
         open: HirType, concrete: HirType,
         bindings: Map<string, HirType>) -> bool {
+        var none_declared: List<string> = []
+        return self.unify_named_open(
+            open, concrete, bindings, none_declared)
+    }
+
+    // Which names are type variables is the template's own business. Asking
+    // whether the type system can resolve the name instead answers wrongly
+    // the moment a type parameter shadows a class: `fn wrap<Label>(v: Label)`
+    // beside a `class Label` resolves `Label` to the class, so the parameter
+    // reads as a concrete type, matches nothing, and the call is refused at
+    // build time on a program the checker took — the checker decides openness
+    // from the declared list (ExpressionChecker.generic_name_in) and never
+    // sees the shadow. `declared` is that list; a name the template never
+    // declared still falls back to type_is_open, which is how a class's own
+    // parameters stay open in a method template.
+    fn unify_named_open(
+        open: HirType, concrete: HirType,
+        bindings: Map<string, HirType>,
+        declared: List<string>) -> bool {
         if open.args.len() == 0 &&
-           self.type_is_open(open) {
+           (self.name_is_declared(open.name, declared) ||
+            self.type_is_open(open)) {
             match bindings.get(open.name) {
                 some(existing) => {
                     return render_hir_type(existing) ==
@@ -507,20 +578,54 @@ partial class LlvmTextEmitter {
             return true
         }
         if canonical_hir_name(open.name) !=
-               canonical_hir_name(concrete.name) ||
-           (open.name == "fn" &&
-            open.fn_sendable != concrete.fn_sendable) ||
-           open.args.len() != concrete.args.len() {
+               canonical_hir_name(concrete.name) {
+            return false
+        }
+        // A function type is its parameters and its result, never its raw
+        // arg list: an unwritten result is `unit` and takes no slot in
+        // `args`, so `fn(T)` and `fn(main.Hint) -> unit` — the shapes an
+        // annotation and a closure literal produce for the same type — line
+        // up only when both sides are read through hir_fn_result.
+        if open.name == "fn" {
+            if open.fn_sendable != concrete.fn_sendable ||
+               open.fn_parameter_count !=
+                   concrete.fn_parameter_count {
+                return false
+            }
+            for index: int in
+                0..open.fn_parameter_count {
+                if !self.unify_named_open(
+                       open.args[index],
+                       concrete.args[index], bindings,
+                       declared) {
+                    return false
+                }
+            }
+            return self.unify_named_open(
+                hir_fn_result(open),
+                hir_fn_result(concrete), bindings,
+                declared)
+        }
+        if open.args.len() != concrete.args.len() {
             return false
         }
         for index: int in 0..open.args.len() {
-            if !self.unify_open(
+            if !self.unify_named_open(
                    open.args[index],
-                   concrete.args[index], bindings) {
+                   concrete.args[index], bindings,
+                   declared) {
                 return false
             }
         }
         return true
+    }
+
+    fn name_is_declared(name: string,
+                        declared: List<string>) -> bool {
+        for candidate: string in declared {
+            if candidate == name { return true }
+        }
+        return false
     }
 
     // an interface may extend interfaces, and any of them may carry

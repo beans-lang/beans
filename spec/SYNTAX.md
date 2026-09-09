@@ -1588,6 +1588,13 @@ let double: fn(int) -> int = fn(x: int) -> int { return x * 2 }
 xs.map(fn(x: int) -> int { return x * 2 })
 ```
 
+The result may be left off, and `fn(int)` is exactly `fn(int) -> unit` — one
+type, two spellings. Either stands wherever the other does: a closure written
+`fn(x: int) { ... }` is a `fn(int)`, a value annotated `fn(int)` is passed to a
+parameter written `fn(int) -> unit`, and a generic binds `T` from `fn(T)`
+against either. The same holds inside a composite: `List<fn(int)>` and
+`List<fn(int) -> unit>` are one type.
+
 A plain `fn(...) -> T` value is local, aliasable, and `Clone`. A
 `send fn(...) -> T` value is move-only and implements `Send`, not `Sync` or
 `Clone`. A closure gets the sendable form from its declared or parameter type;

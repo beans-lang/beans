@@ -3508,13 +3508,13 @@ partial class LlvmTextEmitter {
     }
 
     // Raise one generic method instance and return its symbol, without
-    // emitting the call. Explicit type arguments seed the bindings — the only
-    // way to bind a generic the signature never mentions — and unification
-    // against the concrete operand and result types fills the rest, so the
-    // instance is keyed on the whole call shape and distinct bindings never
-    // share a body. Splitting the raise from the call lets a dispatch that
-    // must read the descriptor still raise the base's own body, which the base
-    // instantiation's row needs whether or not the call goes direct.
+    // emitting the call. The receiver's own type arguments are already in
+    // `bindings`; the method's own type parameters are bound by
+    // bind_generic_call, the same way a free function's or a static's are, so
+    // the instance is keyed on the whole call shape and distinct bindings
+    // never share a body. Splitting the raise from the call lets a dispatch
+    // that must read the descriptor still raise the base's own body, which
+    // the base instantiation's row needs whether or not the call goes direct.
     fn resolve_generic_method_symbol(
         function: MirFunction,
         instruction: MirInstruction,
@@ -3524,9 +3524,6 @@ partial class LlvmTextEmitter {
         var instance_name: string = base_name
         for index: int in
             0..instruction.type_argument_names.len() {
-            bindings[
-                instruction.type_argument_names[index]] =
-                instruction.type_arguments[index]
             instance_name =
                 "{instance_name}[{instruction.type_argument_names[index]}={render_hir_type(instruction.type_arguments[index])}]"
         }
@@ -3538,25 +3535,23 @@ partial class LlvmTextEmitter {
                         parameters.push(index)
                     }
                 }
+                let unbound: string =
+                    self.bind_generic_call(
+                        function, instruction, template,
+                        parameters, bindings)
+                if unbound != "" {
+                    self.fail(
+                        instruction,
+                        "can't infer generic type '{unbound}' for '{instruction.text}'")
+                    return ""
+                }
                 if parameters.len() ==
                        instruction.operands.len() {
                     for index: int in 0..parameters.len() {
-                        let operand_type: HirType =
-                            self.value_type(
-                                function,
-                                instruction.operands[index])
-                        self.unify_open(
-                            template.locals[
-                                parameters[index]].type,
-                            operand_type,
-                            bindings)
                         instance_name =
-                            "{instance_name}({render_hir_type(operand_type)})"
+                            "{instance_name}({render_hir_type(self.value_type(function, instruction.operands[index]))})"
                     }
                 }
-                self.unify_open(
-                    template.result,
-                    instruction.type, bindings)
                 instance_name =
                     "{instance_name}->({render_hir_type(instruction.type)})"
             }
