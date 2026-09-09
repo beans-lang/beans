@@ -26,6 +26,13 @@ pub class Holder<T> {
         return held
     }
 
+
+    // a `fn(T)` parameter on a static: T reached only through a function type
+    pub static fn each(f: fn(T), value: T) -> int {
+        f(value)
+        return 1
+    }
+
     // T in the result only: the declared type of the binding drives it
     pub static fn empty() -> Holder<T> { return new Holder<T>() }
 
@@ -201,6 +208,20 @@ fn count_strings(held: Holder<string>) -> int {
     return 0
 }
 
+// #161 and #162 together: a `fn(T)` parameter on a STATIC of a generic class,
+// beside the free function of the same shape. Neither lane could assert this
+// pair alone -- on #162's branch the checker refused the static
+// ("expected fn(T) -> unit, got fn(int) -> unit") because the fn-result-slot
+// fix is #161's, and on #161's branch the static could not bind the class's T
+// at all. It is assertable only where both changes stand, so it lives here.
+//
+// The two must print the same bytes: the receiver form is not allowed to
+// change what the call does, only whether it can be written.
+fn each_free<T>(f: fn(T), value: T) -> int {
+    f(value)
+    return 1
+}
+
 fn main() {
     // inferred from the argument, at two instantiations
     let a: Holder<int> = Holder.wrap(3)
@@ -322,4 +343,11 @@ fn main() {
     let inner: Holder<int> = nested.value.expect("nested")
     let innerv: int = inner.value.expect("inner")
     io.println("{label.text} {innerv}")
+
+    // the pair #161 and #162 could only assert together
+    var free_seen: string = ""
+    var static_seen: string = ""
+    let free_ran: int = each_free(fn(x: string) { free_seen = "[{x}]" }, "pair")
+    let static_ran: int = Holder.each(fn(x: string) { static_seen = "[{x}]" }, "pair")
+    io.println("{free_seen} {static_seen} {free_ran == static_ran} {free_seen == static_seen}")
 }
