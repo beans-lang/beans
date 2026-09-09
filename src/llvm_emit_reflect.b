@@ -206,6 +206,17 @@ partial class LlvmTextEmitter {
                         if function.is_static {
                             initializer_flags = initializer_flags | 2
                         }
+                        // A non-generic class can inherit a generic base's
+                        // `init`, and then the parameter rows say `T`: no
+                        // argument a caller boxes can ever match one. Same
+                        // bit, same refusal on both backends.
+                        if hir_callable_reflection_erased(
+                               function,
+                               self.callable_owner_declaration(
+                                   function)) {
+                            initializer_flags =
+                                initializer_flags | 4
+                        }
                         if function.generics.len() != 0 {
                             initializer_flags = initializer_flags | 8
                         }
@@ -287,6 +298,17 @@ partial class LlvmTextEmitter {
             var flags: int = 0
             if function.is_public { flags = flags | 1 }
             if function.is_static { flags = flags | 2 }
+            // Bit 4 is the registry's word for "a generic owner puts this out
+            // of reach": the runtime already refuses `flags & (4 | 8 | 16)`,
+            // and the tree interpreter reads the same bit, so a callable this
+            // names is refused identically by both backends instead of one
+            // answering off the live object what the other cannot emit.
+            if hir_callable_reflection_erased(
+                   function,
+                   self.callable_owner_declaration(
+                       function)) {
+                flags = flags | 4
+            }
             if function.generics.len() != 0 {
                 flags = flags | 8
             }
@@ -716,12 +738,63 @@ partial class LlvmTextEmitter {
         return symbol
     }
 
+    // The declaration a callable is a member of, or none for a free function.
+    // Reflection files one row per open declaration, so this is what a
+    // member's declared types are measured against on both backends.
+    fn callable_owner_declaration(
+        function: HirFunction) ->
+        Option<HirDeclaration> {
+        if function.owner == "" { return none }
+        return self.declarations.get(function.owner)
+    }
+
+    // Every class in the program whose objects carry this field, flattened as
+    // class id, offset, class id, offset. Beans has no pair and the list is
+    // read once.
+    //
+    // A generic class answers once per instantiation and the answers need not
+    // agree: `class Slot<T> { item: T; tail: int }` puts `tail` at 16 in
+    // `Slot<int>` and at 32 in `Slot<Wide>`, because the field before it is as
+    // wide as the argument. A subclass of one instantiation answers with the
+    // same offset its base does — base fields are laid out first, so a
+    // subclass pointer is usable wherever the base is — but it still needs its
+    // own row here, because the switch matches the receiver's own class id.
+    fn reflection_field_classes(
+        declaration: HirDeclaration,
+        field: HirField) -> List<int> {
+        var arms: List<int> = []
+        for layout: LlvmClassLayout in
+            self.ordered_class_layouts {
+            var reaches: bool = false
+            for link: HirDeclaration in
+                self.class_chain(layout.declaration) {
+                if link.qualified == declaration.qualified {
+                    reaches = true
+                }
+            }
+            if !reaches { continue }
+            match layout.field_offsets.get(field.name) {
+                some(offset) => {
+                    arms.push(layout.id)
+                    arms.push(offset)
+                }
+                none => {}
+            }
+        }
+        return move arms
+    }
+
     fn reflection_field_action(
         declaration: HirDeclaration,
         field: HirField,
         setter: bool) -> string {
-        if declaration.generics.len() != 0 ||
-           declaration.kind == "union" {
+        // A union's slots overlap: a reflected write to one leaves the others
+        // reading bytes they never stored.
+        if declaration.kind == "union" { return "null" }
+        // Out of reflection's reach because the owner is generic — the one
+        // question both backends ask, so neither can answer it differently.
+        if hir_field_reflection_erased(
+               declaration, field) {
             return "null"
         }
         let prefix: string = if setter { "set:" } else { "get:" }
@@ -731,32 +804,86 @@ partial class LlvmTextEmitter {
             some(symbol) => { return symbol }
             none => {}
         }
-        let owner: HirType =
-            new HirType(declaration.qualified)
-        var offset: int = -1
-        if declaration.kind == "class" {
-            match self.class_layout(owner) {
-                some(layout) => {
-                    offset = layout.field_offsets.get(field.name).or(-1)
-                }
-                none => {}
-            }
-        } else {
-            match self.record_layout(owner) {
-                some(layout) => {
-                    offset = layout.field_offsets.get(field.name).or(-1)
-                }
-                none => {}
-            }
-        }
         let llvm: string = self.type_text(field.type)
         let size: int = self.type_size(field.type)
-        if offset < 0 || llvm == "" || llvm == "void" || size < 0 {
+        if llvm == "" || llvm == "void" || size < 0 {
             return "null"
         }
+        if declaration.generics.len() == 0 {
+            let owner: HirType =
+                new HirType(declaration.qualified)
+            var offset: int = -1
+            if declaration.kind == "class" {
+                match self.class_layout(owner) {
+                    some(layout) => {
+                        offset = layout.field_offsets.get(field.name).or(-1)
+                    }
+                    none => {}
+                }
+            } else {
+                match self.record_layout(owner) {
+                    some(layout) => {
+                        offset = layout.field_offsets.get(field.name).or(-1)
+                    }
+                    none => {}
+                }
+            }
+            if offset < 0 { return "null" }
+            let symbol: string =
+                "@.next.reflect.field.action{self.reflection_field_actions.len()}"
+            self.reflection_field_actions[key] = symbol
+            self.value_eq_functions.push(
+                self.reflection_field_body(
+                    symbol, declaration, field, setter,
+                    [], offset))
+            return symbol
+        }
+        // A generic class: the offset is a question about the receiver, and
+        // which classes exist is not settled until every instance body has
+        // been raised. Name the symbol now, write the body then.
         let symbol: string =
             "@.next.reflect.field.action{self.reflection_field_actions.len()}"
         self.reflection_field_actions[key] = symbol
+        self.deferred_field_actions.push(
+            new LlvmReflectFieldAction(
+                symbol, declaration, field, setter))
+        return symbol
+    }
+
+    // The bodies held back until the layout set was complete. A generic class
+    // with no laid-out instance and no subclass answers with no arms at all,
+    // which is a thunk that refuses — and nothing can reach it, because a
+    // receiver of a class the program never lays out cannot exist.
+    fn emit_deferred_field_actions() {
+        for pending: LlvmReflectFieldAction in
+            self.deferred_field_actions {
+            let arms: List<int> =
+                self.reflection_field_classes(
+                    pending.declaration, pending.field)
+            self.value_eq_functions.push(
+                self.reflection_field_body(
+                    pending.symbol, pending.declaration,
+                    pending.field, pending.setter,
+                    arms, -1))
+        }
+        self.deferred_field_actions = []
+    }
+
+    // One thunk body. `arms` is empty and `fixed` is the offset for a
+    // declaration whose field is at one place in every object that carries it;
+    // otherwise `arms` holds class id / offset pairs and `fixed` is -1. With
+    // one distinct offset among the arms the emitted body is the same shape as
+    // the fixed one, so a program that has no generic reflected field emits
+    // exactly what it always did.
+    fn reflection_field_body(
+        symbol: string,
+        declaration: HirDeclaration,
+        field: HirField,
+        setter: bool,
+        arms: List<int>,
+        fixed: int) -> string {
+        let llvm: string = self.type_text(field.type)
+        let size: int = self.type_size(field.type)
         let id: int = self.fresh()
         var setup: string = ""
         var base: string = "%receiver"
@@ -766,6 +893,54 @@ partial class LlvmTextEmitter {
                 "  {base} = load ptr, ptr %receiver\n"
         }
         let address: string = "%reflect.field.address{id}"
+        // The block a receiver whose class carries no offset for this field
+        // lands in. Returning zero is the same answer to the runtime as a
+        // thunk that was never registered: the caller reads `unsupported`.
+        var refusal: string = ""
+        var offset: string = "{fixed}"
+        if fixed < 0 {
+            var offsets: List<int> = []
+            var cases: List<string> = []
+            var incoming: List<string> = []
+            var index: int = 0
+            for index < arms.len() {
+                let class_id: int = arms[index]
+                let at: int = arms[index + 1]
+                index += 2
+                var slot: int = offsets.len()
+                for probe: int in 0..offsets.len() {
+                    if offsets[probe] == at { slot = probe }
+                }
+                if slot == offsets.len() {
+                    offsets.push(at)
+                    incoming.push(
+                        "[ {at}, %reflect.field.at{id}.{slot} ]")
+                }
+                cases.push(
+                    "i64 {class_id}, label %reflect.field.at{id}.{slot}")
+            }
+            if offsets.len() == 0 {
+                let parameters: string =
+                    if setter {
+                        "ptr %receiver, ptr %incoming"
+                    } else { "ptr %receiver" }
+                return "define internal i64 {symbol}({parameters}) \{\nentry:\n  ret i64 0\n\}\n"
+            }
+            if offsets.len() == 1 {
+                offset = "{offsets[0]}"
+            } else {
+                offset = "%reflect.field.offset{id}"
+                var blocks: string = ""
+                for slot: int in 0..offsets.len() {
+                    blocks =
+                        "{blocks}reflect.field.at{id}.{slot}:\n  br label %reflect.field.read{id}\n"
+                }
+                setup =
+                    "{setup}  %reflect.field.class{id} = load ptr, ptr {base}\n  %reflect.field.id{id} = load i64, ptr %reflect.field.class{id}\n  switch i64 %reflect.field.id{id}, label %reflect.field.absent{id} [{cases.join(" ")}]\n{blocks}reflect.field.read{id}:\n  {offset} = phi i64 {incoming.join(", ")}\n"
+                refusal =
+                    "reflect.field.absent{id}:\n  ret i64 0\n"
+            }
+        }
         setup =
             "{setup}  {address} = getelementptr i8, ptr {base}, i64 {offset}\n"
         let retain: string =
@@ -820,13 +995,12 @@ partial class LlvmTextEmitter {
                 body =
                     "{body}  %reflect.field.old.slot{id} = alloca {llvm}\n  store {llvm} %reflect.field.old{id}, ptr %reflect.field.old.slot{id}\n  call void {drop}(ptr %reflect.field.old.slot{id})\n"
             }
-            body = "{body}  ret i64 1\n\}\n"
+            body = "{body}  ret i64 1\n{refusal}\}\n"
         } else {
             body =
-                "define internal i64 {symbol}(ptr %receiver) \{\nentry:\n{setup}  %reflect.field.value{id} = load {llvm}, ptr {address}{access}\n  %reflect.field.slot{id} = alloca {llvm}\n  store {llvm} %reflect.field.value{id}, ptr %reflect.field.slot{id}\n  %reflect.field.box{id} = call i64 @beans_reflect_value_new_copy(ptr {self.string_pointer(render_hir_type(field.type))}, ptr %reflect.field.slot{id}, i64 {size}, ptr {retain}, ptr {drop})\n  ret i64 %reflect.field.box{id}\n\}\n"
+                "define internal i64 {symbol}(ptr %receiver) \{\nentry:\n{setup}  %reflect.field.value{id} = load {llvm}, ptr {address}{access}\n  %reflect.field.slot{id} = alloca {llvm}\n  store {llvm} %reflect.field.value{id}, ptr %reflect.field.slot{id}\n  %reflect.field.box{id} = call i64 @beans_reflect_value_new_copy(ptr {self.string_pointer(render_hir_type(field.type))}, ptr %reflect.field.slot{id}, i64 {size}, ptr {retain}, ptr {drop})\n  ret i64 %reflect.field.box{id}\n{refusal}\}\n"
         }
-        self.value_eq_functions.push(body)
-        return symbol
+        return body
     }
 
     fn reflection_callable_action(
@@ -836,9 +1010,43 @@ partial class LlvmTextEmitter {
            function.is_inout ||
            function.generics.len() != 0 ||
            function.name == "init" ||
-           function.name == "deinit" ||
-           !self.function_symbols.contains_key(
-               function.qualified) {
+           function.name == "deinit" {
+            return "null"
+        }
+        // A generic owner raises one body per instantiation and files each
+        // under its instance name, so the open declaration this row was built
+        // from names no symbol and there is nothing for a direct call to name.
+        // The receiver names it: word 0 of an object is its class descriptor,
+        // and the method table sits behind the class id, so an ordinary
+        // virtual call through the receiver's own slot reaches the right
+        // instantiation — and the right override — with one row serving every
+        // one of them. `dispatch` is that selector index, or -1 for the direct
+        // call every non-generic owner keeps emitting unchanged.
+        let owner: Option<HirDeclaration> =
+            self.callable_owner_declaration(function)
+        var dispatch: int = -1
+        var generic_owner: bool = false
+        match owner {
+            some(declaration) => {
+                generic_owner =
+                    declaration.generics.len() != 0
+            }
+            none => {}
+        }
+        if generic_owner {
+            if hir_callable_reflection_erased(
+                   function, owner) {
+                return "null"
+            }
+            let slot: string =
+                hir_call_dispatch_slot(function)
+            if slot == "" { return "null" }
+            match self.selector_indices.get(slot) {
+                some(index) => { dispatch = index }
+                none => { return "null" }
+            }
+        } else if !self.function_symbols.contains_key(
+                      function.qualified) {
             return "null"
         }
         for parameter: HirParameter in
@@ -862,6 +1070,7 @@ partial class LlvmTextEmitter {
         self.reflection_callable_actions[key] = symbol
         var setup: string = ""
         var arguments: List<string> = []
+        var receiver_value: string = ""
         if function.owner != "" && !function.is_static {
             let receiver_type: HirType =
                 new HirType(function.owner)
@@ -872,6 +1081,7 @@ partial class LlvmTextEmitter {
             }
             let id: int = self.fresh()
             let loaded: string = "%reflect.self{id}"
+            receiver_value = loaded
             setup =
                 "{setup}  {loaded} = load {receiver_llvm}, ptr %receiver\n"
             setup =
@@ -892,13 +1102,37 @@ partial class LlvmTextEmitter {
             setup =
                 "{setup}{self.append_internal_argument(parameter.type, loaded, arguments)}"
         }
-        let target: string =
-            self.function_symbols[function.qualified]
+        // The dispatched form loads the body out of the receiver's own
+        // descriptor. A null row means no linked class publishes this
+        // selector, so no receiver can reach a body: returning zero is the
+        // same answer to the runtime as a thunk that was never registered,
+        // and the caller reads `unsupported` instead of jumping to address
+        // zero (#89). With `dispatch` at -1 nothing below changes, so a
+        // program with no generic reflected method emits what it always did.
+        var target: string = ""
+        var guard: string = ""
+        var refusal: string = ""
+        if dispatch >= 0 {
+            if receiver_value == "" { return "null" }
+            let id: int = self.fresh()
+            let stride: int =
+                self.program.target.pointer_size()
+            let offset: int =
+                8 + stride + dispatch * stride
+            target = "%reflect.dispatch.fn{id}"
+            guard =
+                "  %reflect.dispatch.desc{id} = load ptr, ptr {receiver_value}\n  %reflect.dispatch.slot{id} = getelementptr i8, ptr %reflect.dispatch.desc{id}, i64 {offset}\n  {target} = load ptr, ptr %reflect.dispatch.slot{id}\n  %reflect.dispatch.miss{id} = icmp eq ptr {target}, null\n  br i1 %reflect.dispatch.miss{id}, label %reflect.dispatch.absent{id}, label %reflect.dispatch.call{id}\nreflect.dispatch.call{id}:\n"
+            refusal =
+                "reflect.dispatch.absent{id}:\n  ret i64 0\n"
+        } else {
+            target =
+                self.function_symbols[function.qualified]
+        }
         var body: string =
-            "define internal i64 {symbol}(ptr %receiver, ptr %arguments) \{\nentry:\n{setup}"
+            "define internal i64 {symbol}(ptr %receiver, ptr %arguments) \{\nentry:\n{setup}{guard}"
         if result_llvm == "void" {
             body =
-                "{body}  call void {target}({arguments.join(", ")})\n  %reflect.call.box = call i64 @beans_reflect_value_new(ptr {self.string_pointer("unit")}, ptr null, i64 0, ptr null, ptr null)\n  ret i64 %reflect.call.box\n\}\n"
+                "{body}  call void {target}({arguments.join(", ")})\n  %reflect.call.box = call i64 @beans_reflect_value_new(ptr {self.string_pointer("unit")}, ptr null, i64 0, ptr null, ptr null)\n  ret i64 %reflect.call.box\n{refusal}\}\n"
         } else {
             let result_size: int =
                 self.type_size(function.result)
@@ -910,7 +1144,7 @@ partial class LlvmTextEmitter {
                 self.reflection_value_action(
                     function.result, false)
             body =
-                "{body}  %reflect.call.result = call {result_llvm} {target}({arguments.join(", ")})\n  %reflect.call.result.slot = alloca {result_llvm}\n  store {result_llvm} %reflect.call.result, ptr %reflect.call.result.slot\n  %reflect.call.box = call i64 @beans_reflect_value_new(ptr {self.string_pointer(render_hir_type(function.result))}, ptr %reflect.call.result.slot, i64 {result_size}, ptr {retain}, ptr {drop})\n  ret i64 %reflect.call.box\n\}\n"
+                "{body}  %reflect.call.result = call {result_llvm} {target}({arguments.join(", ")})\n  %reflect.call.result.slot = alloca {result_llvm}\n  store {result_llvm} %reflect.call.result, ptr %reflect.call.result.slot\n  %reflect.call.box = call i64 @beans_reflect_value_new(ptr {self.string_pointer(render_hir_type(function.result))}, ptr %reflect.call.result.slot, i64 {result_size}, ptr {retain}, ptr {drop})\n  ret i64 %reflect.call.box\n{refusal}\}\n"
         }
         self.value_eq_functions.push(body)
         return symbol
@@ -1057,13 +1291,16 @@ partial class LlvmTextEmitter {
         var parameters: List<HirParameter> = []
         var target: string = ""
         var target_name: string = ""
+        var wants_target: bool = false
         match initializer {
             some(function) => {
                 if !function.has_body ||
                    function.is_extern_c ||
                    function.generics.len() != 0 ||
-                   !self.function_symbols.contains_key(
-                       function.qualified) {
+                   hir_callable_reflection_erased(
+                       function,
+                       self.callable_owner_declaration(
+                           function)) {
                     return "null"
                 }
                 for parameter: HirParameter in
@@ -1075,13 +1312,36 @@ partial class LlvmTextEmitter {
                     }
                     parameters.push(parameter)
                 }
-                target = self.function_symbols[function.qualified]
+                wants_target = true
                 target_name = function.qualified
             }
             none => {}
         }
         match self.class_layout(owner_type) {
             some(layout) => {
+                // A class that writes no `init` of its own inherits the
+                // base's, and a generic base's is a template filed under no
+                // symbol. `class_initializer_symbol` raises it under this
+                // class's own instance name — the same body `new` calls —
+                // so the reflective constructor and the written one run the
+                // same code instead of one of them refusing.
+                // A stand-in for the `new` this thunk replaces: the raise
+                // helpers report a failed instantiation against a position,
+                // and the class's own declaration is the only one there is.
+                let anchor: MirInstruction =
+                    new MirInstruction(
+                        "reflect", -1,
+                        layout.instance_type, "",
+                        declaration.qualified,
+                        declaration.file,
+                        declaration.line,
+                        declaration.col)
+                if wants_target {
+                    target =
+                        self.class_initializer_symbol(
+                            anchor, layout, target_name)
+                    if target == "" { return "null" }
+                }
                 let key: string =
                     "initializer:{declaration.qualified}"
                 match self.reflection_callable_actions.get(key) {
@@ -1114,14 +1374,19 @@ partial class LlvmTextEmitter {
                         "{body}  {address} = getelementptr i8, ptr {object}, i64 {offset}\n"
                     match field.default_value {
                         some(value) => {
-                            let default_name: string =
-                                self.class_default_function(layout, field)
-                            if !self.function_symbols.contains_key(
-                                   default_name) {
+                            // Same question the written `new` asks, so a
+                            // default inherited from a closed generic base is
+                            // raised here too instead of turning the whole
+                            // class into a refusal.
+                            let default_symbol: string =
+                                self.class_default_symbol(
+                                    anchor, layout, field,
+                                    type)
+                            if default_symbol == "" {
                                 return "null"
                             }
                             body =
-                                "{body}  %reflect.initializer.default{field_id} = call {llvm} {self.function_symbols[default_name]}()\n  store {llvm} %reflect.initializer.default{field_id}, ptr {address}\n"
+                                "{body}  %reflect.initializer.default{field_id} = call {llvm} {default_symbol}()\n  store {llvm} %reflect.initializer.default{field_id}, ptr {address}\n"
                         }
                         none => {
                             body =

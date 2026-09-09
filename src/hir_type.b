@@ -314,3 +314,44 @@ fn builtin_move_policy(type: HirType) -> string {
     }
     return "declared"
 }
+
+// Whether a name is one of a list of type parameters.
+fn generic_name_listed(generics: List<string>,
+                       name: string) -> bool {
+    for generic: string in generics {
+        if generic == name { return true }
+    }
+    return false
+}
+
+// Whether a declared type reaches one of an owner's type parameters, at any
+// depth: `T`, `List<T>` and `Map<string, Option<T>>` all do.
+//
+// Reflection describes a generic declaration once, under its open name, and
+// substitutes nothing — `Grid<int>` and `Grid<string>` reach the same rows. So
+// a member whose signature reaches a parameter has no type the registry can
+// state: its row says `T`, and no value carries that as its type, which makes
+// the member undescribable rather than merely unimplemented. The tree
+// interpreter and the native emitter ask this one question so that neither can
+// answer it differently.
+//
+// This walks INTO a `fn` type, and must: a parameter declared `fn() -> T` is
+// registered under that spelling, and no value carries it, so the callable is
+// as unreachable as one declared `T` outright. ExpressionChecker.
+// type_mentions_generic looks like this function and deliberately answers
+// `false` for `fn`, because a function value that returns T owns the recipe
+// rather than a T and may still be moved. Same shape, different questions —
+// do not unify them.
+fn hir_type_mentions_generic(
+    type: HirType, generics: List<string>) -> bool {
+    if generics.len() == 0 { return false }
+    if generic_name_listed(generics, type.name) {
+        return true
+    }
+    for argument: HirType in type.args {
+        if hir_type_mentions_generic(argument, generics) {
+            return true
+        }
+    }
+    return false
+}

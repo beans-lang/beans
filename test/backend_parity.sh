@@ -240,10 +240,19 @@ agree test/cases/parity/inherited_field_slots.b 4
 # message and the message's byte length. Sixteen receivers are boxed into
 # reflect values, so the refusing paths are held to the lifetime rule too.
 agree test/cases/parity/issue160_reflect_error_messages.b 16
+# #158 — reflection over members a generic class declares. The registry files
+# one row per OPEN declaration, so the interpreter served these off the live
+# object while the native backend, with no instantiation to name in a
+# monomorphic pointer, answered `unsupported`. Two instantiations whose
+# layouts differ plus an override, so a thunk right for one layout is not
+# enough. Four cells built and four owned slots replaced by a reflective
+# write: eight built, eight released, and a write to the wrong offset drops
+# the wrong reference.
+agree test/cases/parity/issue158_reflect_generic.b 8
 
 # Every case in the directory has to be listed above with its own expected
 # count; a file added and forgotten would otherwise be silently unchecked.
-listed=43
+listed=44
 present=$(find test/cases/parity -name '*.b' | wc -l | tr -d ' ')
 if [ "$present" != "$listed" ]; then
     echo "test/cases/parity holds $present cases but $listed are run" >&2

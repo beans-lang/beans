@@ -177,3 +177,29 @@ class LlvmRecordLayout {
         self.llvm_fields = []
     }
 }
+
+// A reflective field thunk whose body waits for the whole layout set.
+//
+// A generic class's field is not at one offset: `class Slot<T> { item: T;
+// tail: int }` puts `tail` at 16 in `Slot<int>` and at 32 in `Slot<Wide>`,
+// because the field before it is as wide as the argument. So the thunk reads
+// the receiver's own class id out of its descriptor and picks the offset that
+// class was laid out with — and which classes exist is only settled once every
+// generic instance body has been raised, which is after the registration that
+// names this symbol has already been written into main. The symbol is minted
+// where it is named; the body is written when the answer is complete.
+class LlvmReflectFieldAction {
+    symbol: string
+    declaration: HirDeclaration
+    field: HirField
+    setter: bool
+
+    fn init(symbol: string,
+            declaration: HirDeclaration,
+            field: HirField, setter: bool) {
+        self.symbol = symbol
+        self.declaration = declaration
+        self.field = field
+        self.setter = setter
+    }
+}

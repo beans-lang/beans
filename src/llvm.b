@@ -43,6 +43,9 @@ partial class LlvmTextEmitter {
     value_eq_functions: List<string>
     reflection_value_actions: Map<string, string>
     reflection_field_actions: Map<string, string>
+    // Field thunks whose body cannot be written yet: see
+    // LlvmReflectFieldAction.
+    deferred_field_actions: List<LlvmReflectFieldAction>
     reflection_callable_actions: Map<string, string>
     singleton_symbols: Map<string, string>
     static_field_symbols: Map<string, string>
@@ -247,6 +250,7 @@ partial class LlvmTextEmitter {
         self.value_eq_functions = []
         self.reflection_value_actions = {}
         self.reflection_field_actions = {}
+        self.deferred_field_actions = []
         self.reflection_callable_actions = {}
         self.singleton_symbols = {}
         self.static_field_symbols = {}
@@ -1822,6 +1826,24 @@ partial class LlvmTextEmitter {
         }
         // instances discovered while emitting join the queue, and an
         // instance's body can discover more
+        for self.generic_queue.len() != 0 {
+            match self.generic_queue.pop() {
+                some(instance) => {
+                    functions.push(
+                        self.emit_function(instance))
+                    origins.push(instance.file)
+                }
+                none => {}
+            }
+        }
+        // A reflective field thunk on a generic class asks the receiver which
+        // instantiation it is, so its body needs the whole set of class
+        // layouts — and that set is only complete now, with every instance
+        // body raised. It is written here rather than later because a thunk
+        // still needs a string constant and a builtin declare, and both of
+        // those blobs are closed below. Draining again after it costs
+        // nothing and covers a body that reaches for an instance.
+        self.emit_deferred_field_actions()
         for self.generic_queue.len() != 0 {
             match self.generic_queue.pop() {
                 some(instance) => {

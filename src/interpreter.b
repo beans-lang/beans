@@ -1498,10 +1498,30 @@ class TreeInterpreter {
         return none
     }
 
+    // The declaration a callable is a member of, or none for a free
+    // function. Reflection files one row per open declaration, so this is
+    // what a member's declared types are measured against — the same
+    // question the native emitter asks through
+    // `callable_owner_declaration`.
+    fn reflect_owner_declaration(function: HirFunction) ->
+        Option<HirDeclaration> {
+        if function.owner == "" { return none }
+        return self.declaration(function.owner)
+    }
+
     fn reflect_callable_flags(function: HirFunction) -> int {
         var flags: int = 0
         if function.is_public { flags = flags | 1 }
         if function.is_static { flags = flags | 2 }
+        // Bit 4 is the registry's word for "a generic owner puts this out of
+        // reach". The native runtime refuses `flags & (4 | 8 | 16)` and this
+        // side refuses the same bit at the invoke paths below, so one
+        // program cannot get two answers about the same member.
+        if hir_callable_reflection_erased(
+               function,
+               self.reflect_owner_declaration(function)) {
+            flags = flags | 4
+        }
         if function.generics.len() != 0 { flags = flags | 8 }
         if function.is_extern_c { flags = flags | 16 }
         return flags
@@ -2159,6 +2179,29 @@ class TreeInterpreter {
                             TreeValue.boolean(false)
                         } else { TreeValue.integer(0) }
                     }
+                    // Out of reflection's reach because the owner is
+                    // generic: the declared type reaches a type parameter,
+                    // or the receiver is a record that carries no class
+                    // descriptor to say which instantiation it came from.
+                    // The native emitter registers no thunk for either
+                    // (llvm_emit_reflect.b `reflection_field_action`), and
+                    // both backends read the one predicate in hir.b.
+                    //
+                    // Refused where the runtime refuses a missing thunk —
+                    // after the receiver check, and after the value check on
+                    // a write (beans_rt.c `beans_reflect_field_set`) — so a
+                    // caller that also passed the wrong value type is told
+                    // about that first on both backends rather than one.
+                    var erased: bool = false
+                    match self.declaration(item.owner) {
+                        some(owner_declaration) => {
+                            erased =
+                                hir_field_reflection_erased(
+                                    owner_declaration,
+                                    item.field)
+                        }
+                        none => {}
+                    }
                     match self.reflect_values.get(
                               receiver_handle) {
                         none => {
@@ -2175,6 +2218,10 @@ class TreeInterpreter {
                                 self.reflect_error_code = 3
                                 self.reflect_error_message =
                                     "receiver type does not match"
+                            } else if name == "field_get" && erased {
+                                self.reflect_error_code = 5
+                                self.reflect_error_message =
+                                    "reflected operation is unsupported"
                             } else if name == "field_get" {
                                 match receiver.fields.value(field_name) {
                                     some(value) => {
@@ -2207,6 +2254,10 @@ class TreeInterpreter {
                                     self.reflect_error_code = 4
                                     self.reflect_error_message =
                                         "reflected value type does not match"
+                                } else if erased {
+                                    self.reflect_error_code = 5
+                                    self.reflect_error_message =
+                                        "reflected operation is unsupported"
                                 } else {
                                     match self.reflect_values.get(
                                               value_handle) {
@@ -2289,7 +2340,11 @@ class TreeInterpreter {
                                 }
                                 if item.callable.generics.len() != 0 ||
                                    item.callable.is_extern_c ||
-                                   !item.callable.has_body {
+                                   !item.callable.has_body ||
+                                   hir_callable_reflection_erased(
+                                       item.callable,
+                                       self.reflect_owner_declaration(
+                                           item.callable)) {
                                     self.reflect_error_code = 5
                                     self.reflect_error_message =
                                         "reflected operation is unsupported"
@@ -2513,7 +2568,11 @@ class TreeInterpreter {
                         return TreeValue.integer(0)
                     }
                     if function.generics.len() != 0 ||
-                       function.is_extern_c {
+                       function.is_extern_c ||
+                       hir_callable_reflection_erased(
+                           function,
+                           self.reflect_owner_declaration(
+                               function)) {
                         self.reflect_error_code = 5
                         self.reflect_error_message =
                             "reflected operation is unsupported"

@@ -1,6 +1,6 @@
 old
 new
-inaccessible:reflected member is not public
+inaccessible:reflected member is not public (reading main.Account.secret)
 value_type
 3
 8,4
