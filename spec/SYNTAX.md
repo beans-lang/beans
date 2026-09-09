@@ -3619,6 +3619,18 @@ match served.deflate() {
     none => {}                   // the peer offered nothing this end took
 }
 
+// `prefer` narrows what a server agrees to, and can never widen an offer:
+// a `true` flag asks for a no-context-takeover the offer need not have named,
+// a window is a ceiling, and `false` and 15 mean "no opinion".
+let thrifty: websocket.Connection =
+    websocket.Connection.accept(move stream, request, 8388608, true,
+        some(websocket.Deflate {
+            server_no_context_takeover: true,
+            client_no_context_takeover: false,
+            server_max_window_bits: 11,
+            client_max_window_bits: 15,
+        }))?
+
 // WSS keeps the same framing and upgrade rules over a TLS byte stream.
 import std.websocket_tls
 let secure = websocket_tls.connect("example.test", 443, "/chat")?
@@ -3657,6 +3669,39 @@ let secure = websocket_tls.connect("example.test", 443, "/chat")?
   8 exactly, so a peer told "8" would reject the 512-byte matches the encoder
   actually produced. Declining is the only answer that does not lie about what
   went on the wire.
+- **A server may answer with fewer parameters than the offer asked for**, which
+  is how it buys compression for less than a third of a megabyte per direction.
+  `prefer` on `accept`, `accept_websocket` and `websocket_tls.accept` carries
+  those parameters as a `Deflate`, and it only ever narrows — RFC 7692 §7.1,
+  one rule per knob:
+  - `server_no_context_takeover` and `client_no_context_takeover` may be set by
+    a server the offer never asked them of (§7.1.1.1, §7.1.1.2), and the second
+    binds the client — "By including the `client_no_context_takeover` extension
+    parameter in an extension negotiation response, a server prevents the peer
+    client from using context takeover." Neither can be turned *off* by a
+    preference. For `server_no_context_takeover` that is §7.1.1.1's rule, which
+    defines accepting such an offer *as* including the parameter in the
+    response; for `client_no_context_takeover` §7.1.1.2 would permit it, and
+    this library still refuses, so that adding a preference can never take away
+    a parameter the offer alone already agreed to.
+  - `server_max_window_bits` answers the smaller of the preference and the
+    offer, and may be named even when the offer named no window: §7.1.2.1 has
+    the server accept such an offer "with the same or smaller value as the
+    offer", and separately "MAY include" the parameter in a response "even if
+    the extension negotiation offer being accepted by the response didn't
+    include" it.
+  - `client_max_window_bits` is the same, with one condition: §7.1.2.2 forbids
+    naming it in a response when the offer did not name it, so a preference for
+    the client's window applies only to an offer that mentioned the parameter —
+    bare, as every browser sends it, or with a value. Against an offer that did
+    not, the preference is ignored and the client keeps its 32 KiB window; the
+    offer is still honoured, just uncapped in that one direction.
+
+  A preference never turns compression *on*: an offer with no
+  permessage-deflate in it is answered with no extension whatever the
+  preference says. A preference naming a window outside 9..15, or passed with
+  `compress: false`, is refused as kind `invalid` before the 101 is written,
+  because it is this end's own configuration rather than something a peer sent.
 - Compressed-message failures carry the close code that says which: a payload
   that is not a DEFLATE stream, or text that is only invalid UTF-8 once it
   decompresses, is kind `protocol` and close 1007; a message that outgrows

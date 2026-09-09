@@ -44,6 +44,39 @@ This file records user-facing changes in each Beans release.
   open, because a second response written into a chunked body is read by the
   peer as that body's content.
 
+- **A WebSocket server can answer permessage-deflate with fewer parameters
+  than the client offered.** `accept`, `accept_websocket` and
+  `websocket_tls.accept` take a `prefer: Option<Deflate>` that narrows what
+  this end will agree to — no server-side context takeover, a smaller LZ77
+  window, or both — where before a server could only agree to whatever the
+  client offered or turn compression off entirely. Since a DEFLATE context
+  costs about a third of a megabyte per direction, those were the only two
+  settings a server with many mostly idle connections had, and neither is the
+  right one.
+
+  ```beans
+  websocket.Connection.accept(move stream, request, 8388608, true,
+      some(websocket.Deflate {
+          server_no_context_takeover: true,
+          client_no_context_takeover: false,
+          server_max_window_bits: 11,
+          client_max_window_bits: 15,
+      }))?
+  ```
+
+  A preference only ever narrows, inside the envelope RFC 7692 §7.1 gives a
+  response: a `true` flag asks for a no-context-takeover the offer need not
+  have named and can never clear one it did, a window answers the smaller of
+  the two, and `false` and 15 are the neutral values.
+  `client_max_window_bits` carries §7.1.2.2's extra condition —
+  a server must not name it in a response unless the offer named it — so a
+  preference for the client's window applies to an offer that mentioned the
+  parameter and is ignored by one that did not. A preference never turns
+  compression on: an offer with no permessage-deflate in it is still answered
+  with no extension. A window outside 9..15, or a preference passed with
+  `compress: false`, is refused as kind `invalid` before the 101 response is
+  written. Existing callers pass nothing and get exactly what they got before.
+
 ## [0.1.40] - 2026-09-07
 
 A way to contain a panic without spawning a fiber, and a WebSocket that can
