@@ -12250,15 +12250,44 @@ char* beans_dir_current(void) {
     return str_lit(".");
 }
 char* beans_dir_temp(void) {
-#if BEANS_RT_WASI
-    const char* beans_wasi_env(const char* name);
-    const char* t = beans_wasi_env("TMPDIR");
-#elif defined(_WIN32)
+#if defined(_WIN32) && !BEANS_RT_WASI
     // TMP is what the CRT itself consults; TMPDIR is honored first so a test
     // can pin the location with one spelling on every platform.
+    //
+    // "/tmp" is not a place on Windows, so an environment that names none of
+    // the three cannot fall back to it — that answer looks like a directory
+    // and fails at the first open. Ask the OS instead: GetTempPath consults
+    // the same variables, then the user profile, then the Windows directory,
+    // so it effectively cannot fail and what it names really exists. This is
+    // the same call the shared-memory emulation already builds its paths from.
+    char* owned = NULL;
     const char* t = getenv("TMPDIR");
     if (!t || !*t) t = getenv("TMP");
     if (!t || !*t) t = getenv("TEMP");
+    if (!t || !*t) {
+        wchar_t wide[MAX_PATH + 1];
+        DWORD got = GetTempPathW((DWORD)(sizeof wide / sizeof wide[0]), wide);
+        if (got && got < sizeof wide / sizeof wide[0]) owned = win_narrow(wide);
+        t = owned;
+    }
+    const char* src = t && *t ? t : ".";
+    long long n = (long long)strlen(src);
+    // Both separators are legal here and GetTempPath always ends with one, so
+    // trimming only '/' would hand back a trailing backslash to a caller that
+    // joins with '/'. A drive root keeps its separator: "C:\" is the root of
+    // the drive and "C:" is the current directory on it, which is not the
+    // same place.
+    while (n > 1 && (src[n - 1] == '/' || src[n - 1] == '\\') &&
+           !(n == 3 && src[1] == ':')) {
+        n--;
+    }
+    char* result = str_make(src, n);
+    free(owned);
+    return result;
+#else
+#if BEANS_RT_WASI
+    const char* beans_wasi_env(const char* name);
+    const char* t = beans_wasi_env("TMPDIR");
 #else
     const char* t = getenv("TMPDIR");
 #endif
@@ -12266,6 +12295,7 @@ char* beans_dir_temp(void) {
     long long n = (long long)strlen(src);
     while (n > 1 && src[n - 1] == '/') n--; // trim trailing slashes
     return str_make(src, n);
+#endif
 }
 BRes beans_dir_sync(char* path) {
 #if defined(_WIN32)

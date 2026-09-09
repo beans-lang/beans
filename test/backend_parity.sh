@@ -318,6 +318,18 @@ agree test/cases/parity/issue162_static_factory.b 5
 # Every case in the directory has to be listed above with its own expected
 # count; a file added and forgotten would otherwise be silently unchecked.
 listed=49
+# #167: std.fs could name a file's bytes but not its life, so a program could
+# create a temp file it could never release. The shape that needed it is a
+# deinit that removes a spooled part — dropped on an ordinary scope exit and
+# again on a contained panic, where the unwind runs the same hooks. Both
+# backends have to remove the same files at the same points: each release
+# reports whether the bytes were actually gone, so a hook that ran but removed
+# nothing still fails. Five parts built and released.
+agree test/cases/parity/issue167_fs_lifecycle.b 5
+
+# Every case in the directory has to be listed above with its own expected
+# count; a file added and forgotten would otherwise be silently unchecked.
+listed=43
 present=$(find test/cases/parity -name '*.b' | wc -l | tr -d ' ')
 if [ "$present" != "$listed" ]; then
     echo "test/cases/parity holds $present cases but $listed are run" >&2
