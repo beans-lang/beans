@@ -331,7 +331,22 @@ fn builtin_move_policy(type: HirType) -> string {
     return "declared"
 }
 
-// Whether a name is one of a list of type parameters.
+// Does `type` name the type parameter `generic` anywhere inside it? A
+// parameter or result written `T`, `List<T>`, `Option<Holder<T>>` or
+// `fn(T) -> int` all name it; the walk is over the whole tree because the
+// place a call can recover it from is any of them.
+fn hir_type_names_generic(type: HirType,
+                          generic: string) -> bool {
+    if type.name == generic { return true }
+    for argument: HirType in type.args {
+        if hir_type_names_generic(argument, generic) {
+            return true
+        }
+    }
+    return false
+}
+
+// Is `name` one of the type parameters in `generics`?
 fn generic_name_listed(generics: List<string>,
                        name: string) -> bool {
     for generic: string in generics {

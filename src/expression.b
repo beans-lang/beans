@@ -766,10 +766,7 @@ class ExpressionChecker {
 
     fn generic_name_in(name: string,
                        generics: List<string>) -> bool {
-        for generic: string in generics {
-            if generic == name { return true }
-        }
-        return false
+        return generic_name_listed(generics, name)
     }
 
     fn substitute_generic_type(
@@ -14501,9 +14498,68 @@ class ExpressionChecker {
             }
         }
         self.pop_scope()
+        self.check_static_owner_generics(function)
         if function.name == "init" && function.owner != "" {
             self.check_init_construction(function)
         }
+    }
+
+    // The owner parameters a static's signature names become its own (see
+    // SignatureChecker.promote_owner_generics), and a call binds those. One
+    // that only the body names has nothing to bind it: a static has no
+    // receiver, no argument carries it, and the result does not mention it, so
+    // every instantiation of the method would still hold a bare `T`. The
+    // interpreter ran such a body anyway — a runtime type nothing needed — and
+    // the native backend reported `cannot form class layout 'main.Holder<T>'`
+    // at build time, an emitter's words for a program the checker had already
+    // accepted. Refuse it here, where the programmer wrote it, and say what to
+    // write instead.
+    fn check_static_owner_generics(function: HirFunction) {
+        if !function.is_static ||
+           function.owner == "" {
+            return
+        }
+        match self.declarations.get(function.owner) {
+            some(owner) => {
+                for generic: string in owner.generics {
+                    if self.generic_name_in(
+                           generic, function.generics) {
+                        continue
+                    }
+                    var used: bool = false
+                    for statement: HirNode in function.body {
+                        if self.node_names_generic(
+                               statement, generic) {
+                            used = true
+                            break
+                        }
+                    }
+                    if !used { continue }
+                    self.fail(
+                        function.syntax,
+                        "static method '{function.name}' uses '{generic}' from {self.diagnostic_symbol(owner.qualified)} in its body, but its own signature never names it — a static has no receiver, so nothing at a call site can bind '{generic}'; name it in a parameter or in the result, or give '{function.name}' a type parameter of its own")
+                }
+            }
+            none => {}
+        }
+    }
+
+    fn node_names_generic(node: HirNode,
+                          generic: string) -> bool {
+        if hir_type_names_generic(node.type, generic) {
+            return true
+        }
+        for argument: HirType in node.type_arguments {
+            if hir_type_names_generic(argument, generic) {
+                return true
+            }
+        }
+        for child: HirNode in node.children {
+            if self.node_names_generic(child, generic) {
+                return true
+            }
+        }
+        return false
     }
 
     // ---- module constants ---------------------------------------------------

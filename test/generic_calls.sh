@@ -98,6 +98,72 @@ run_all_ways test/cases/generic_method_inherit.b \
 run_all_ways test/cases/issue161_fn_typed_parameter.b \
     test/cases/issue161_fn_typed_parameter.out
 
+# #162: a static method has no receiver, so nothing at the call site used to
+# bind its owner's type parameters — the declaration was accepted and every
+# call that needed `T` was refused, which left the member reachable from
+# nowhere. The owner parameters a static's own signature names are its own type
+# parameters now: inferred from the arguments, inferred from the expected
+# result, and written out with `Holder.wrap<int>(3)`, which used to answer
+# "this call does not take explicit type arguments". The golden covers a class,
+# a struct, an enum and a partial class, T nested in List and Option, the
+# class's parameter beside the method's own, a static reaching another static,
+# recursion, an instance method calling its own class's static, reflection on a
+# promoted parameter, a `priv` static, a static whose own <T> shadows the
+# class's and must therefore still take one type argument rather than two, and
+# a static that names no parameter at all and must keep needing none.
+run_all_ways test/cases/issue162_static_generics_ok.b \
+    test/cases/issue162_static_generics_ok.out
+
+# The same rule with the class named through a package. A static call whose
+# receiver is `box.Holder` reaches the checker by a different route than the
+# bare `Holder` of a single file, and the declaration it lands on was lowered
+# while another file was being checked — plain, aliased, with the type
+# arguments written out, with `T` bound to a class the declaring package has
+# never seen, and with the owner's `implements Order` measured across the
+# boundary.
+run_all_ways test/cases/issue162_static_generics_pkg/main.b \
+    test/cases/issue162_static_generics_pkg/main.out
+
+# The other half. An owner parameter only the *body* names cannot be bound by
+# anything, so it is refused where it is written — that shape checked clean,
+# ran in the interpreter (printing the literal "T" for `type_of(T)`) and died
+# in a native build with "cannot form class layout 'main.Holder<T>'". The rest
+# are what a promoted parameter inherits from the generic machinery it now goes
+# through.
+check_bad test/cases/issue162_static_generics_bad.b \
+    "static method 'count' uses 'T' from Holder in its body, but its own signature never names it — a static has no receiver, so nothing at a call site can bind 'T'; name it in a parameter or in the result, or give 'count' a type parameter of its own"
+check_bad test/cases/issue162_static_generics_bad.b \
+    "static method 'size' uses 'T' from Holder in its body"
+check_bad test/cases/issue162_static_generics_bad.b \
+    "static method 'describe' uses 'T' from Holder in its body"
+check_bad test/cases/issue162_static_generics_bad.b \
+    "static method 'walk' uses 'T' from Holder in its body"
+check_bad test/cases/issue162_static_generics_bad.b \
+    "static method 'width' uses 'T' from Holder in its body"
+check_bad test/cases/issue162_static_generics_bad.b \
+    "can't infer generic type 'T' for 'empty'"
+check_bad test/cases/issue162_static_generics_bad.b \
+    "'between' needs K implements Order, got main.Bare"
+check_bad test/cases/issue162_static_generics_bad.b \
+    "'Holder.empty' takes 1 type argument(s), got 2"
+check_bad test/cases/issue162_static_generics_bad.b \
+    "generic T was string, then int"
+# Five statics name T only in their bodies and five are refused: once at each
+# declaration, with nothing cascading onto the calls. The five are the five
+# routes a body has to the name — a `let`'s declared type, a closure's type, a
+# reflection type argument, a loop binding's annotation, and an explicit type
+# argument handed to another call. (`var`, and an `as?` cast, land on the same
+# two nodes as the first and second.)
+./build/beansc check test/cases/issue162_static_generics_bad.b \
+    >"$tmp/static_generics" 2>&1 || true
+test "$(grep -c "in its body, but its own signature never names it" \
+    "$tmp/static_generics")" -eq 5
+if ./build/beansc build test/cases/issue162_static_generics_bad.b \
+       -o "$tmp/static_generics_bin" >/dev/null 2>&1; then
+    echo "a static naming an unbindable owner parameter still built" >&2
+    exit 1
+fi
+
 # And every form that exists only to be reached through a row is refused at
 # the declaration. Each of these checked clean before: the interface and
 # abstract ones jumped through a null row natively while the interpreter
