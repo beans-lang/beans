@@ -32,16 +32,33 @@ package main
 import std.io
 import std.reflect
 
+// Annotation rows are filed under the declaring declaration's name too, and
+// `Field.annotations()` / `Method.annotations()` key on `declaring_type()`.
+// The native runtime matched an annotation's owner by exact string, so a
+// closed generic's own annotations were unreachable -- `type_of(Grid<int>)
+// .annotations()` found none at all while the interpreter, which resolves the
+// owner to a declaration first, found them -- and once `declaring_type()`
+// began answering the closed form its members' annotations went the same way.
+// It matches by base name now, like every other row lookup.
+@target(value: ["type", "field", "method"])
+@retention(value: "runtime")
+annotation note { text: string }
+
+@note(text: "on-node")
 pub class Node {
+    @note(text: "on-label")
     pub label: string = ""
     pub fn init() {}
     pub fn touch() -> string { return "node" }
 }
 
+@note(text: "on-grid")
 pub class Grid<T> extends Node {
+    @note(text: "on-title")
     pub title: string = ""
     pub items: List<T> = []
     pub fn init() { super.init() }
+    @note(text: "on-touch")
     pub override fn touch() -> string { return "grid" }
 }
 
@@ -68,7 +85,9 @@ pub class Sub<T> extends Grid<T> {
 }
 
 // controls: same shape, no type parameter anywhere
+@note(text: "on-hint")
 pub class Hint extends Node {
+    @note(text: "on-hint-title")
     pub title: string = ""
     pub fn init() { super.init() }
     pub override fn touch() -> string { return "hint" }
@@ -83,6 +102,13 @@ class Checks {
     bad: int = 0
     fn init() {}
     fn text(label: string, got: string, want: string) {
+        io.println("{label} = {got}")
+        if got != want {
+            io.println("  WRONG: wanted {want}")
+            self.bad += 1
+        }
+    }
+    fn count(label: string, got: int, want: int) {
         io.println("{label} = {got}")
         if got != want {
             io.println("  WRONG: wanted {want}")
@@ -213,6 +239,38 @@ fn main() {
                 type_of(Hint).initializer().is_some(), true)
     checks.flag("Plain initializer",
                 type_of(Plain).initializer().is_some(), true)
+
+    io.println("-- annotations are filed under the declaration, found by base")
+    checks.count("Grid<int> type annotations",
+                 type_of(Grid<int>).annotations().len(), 1)
+    checks.count("Grid<string> type annotations",
+                 type_of(Grid<string>).annotations().len(), 1)
+    checks.count("Grid<int>.title annotations",
+                 type_of(Grid<int>).field("title")
+                     .expect("title").annotations().len(), 1)
+    checks.count("Grid<int>.touch annotations",
+                 type_of(Grid<int>).method("touch")
+                     .expect("touch").annotations().len(), 1)
+    checks.count("OrderGrid.title annotations",
+                 type_of(OrderGrid).field("title")
+                     .expect("title").annotations().len(), 1)
+    checks.count("OrderGrid.touch annotations",
+                 type_of(OrderGrid).method("touch")
+                     .expect("touch").annotations().len(), 1)
+    checks.count("DeepGrid.label annotations",
+                 type_of(DeepGrid).field("label")
+                     .expect("label").annotations().len(), 1)
+    // controls: a plain hierarchy answered these all along
+    checks.count("Hint type annotations",
+                 type_of(Hint).annotations().len(), 1)
+    checks.count("Hint.title annotations",
+                 type_of(Hint).field("title")
+                     .expect("title").annotations().len(), 1)
+    checks.count("Node.label annotations",
+                 type_of(Node).field("label")
+                     .expect("label").annotations().len(), 1)
+    checks.count("Plain type annotations",
+                 type_of(Plain).annotations().len(), 0)
 
     checks.done()
     io.println("all rows answered as declared")

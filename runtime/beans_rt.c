@@ -5846,6 +5846,13 @@ long long beans_reflect_annotation_type_field_default(char* owner,
     return id >= 0 ? reflect_annotation_fields[id].default_value : -1;
 }
 
+// Annotation rows are rows: they are filed under the declaring declaration's
+// own name and are found by base name, the way every other row lookup finds
+// one. Matching the owner exactly meant a closed generic's annotations were
+// reachable only by spelling the open name -- `type_of(Grid<int>).annotations()`
+// found none at all, and once `declaring_type()` started answering the closed
+// form a member's annotations went the same way, while the interpreter, which
+// resolves the owner to a declaration before reading it, kept answering.
 long long beans_reflect_annotation_count(long long target_kind,
                                          char* owner, char* member,
                                          long long position) {
@@ -5854,7 +5861,7 @@ long long beans_reflect_annotation_count(long long target_kind,
         BReflectAnnotation* annotation = &reflect_annotations[i];
         if (annotation->target_kind == target_kind &&
             annotation->position == position &&
-            beans_str_eq(annotation->owner, owner) &&
+            reflect_base_equal(annotation->owner, owner) &&
             beans_str_eq(annotation->member, member)) ++count;
     }
     return count;
@@ -5868,7 +5875,7 @@ long long beans_reflect_annotation_at(long long target_kind,
         BReflectAnnotation* annotation = &reflect_annotations[i];
         if (annotation->target_kind != target_kind ||
             annotation->position != position ||
-            !beans_str_eq(annotation->owner, owner) ||
+            !reflect_base_equal(annotation->owner, owner) ||
             !beans_str_eq(annotation->member, member)) continue;
         if (current++ == wanted) return i;
     }

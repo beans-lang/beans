@@ -64,4 +64,16 @@ Sub<int> initializer = false
 OrderGrid initializer = true
 Hint initializer = true
 Plain initializer = true
+-- annotations are filed under the declaration, found by base
+Grid<int> type annotations = 1
+Grid<string> type annotations = 1
+Grid<int>.title annotations = 1
+Grid<int>.touch annotations = 1
+OrderGrid.title annotations = 1
+OrderGrid.touch annotations = 1
+DeepGrid.label annotations = 1
+Hint type annotations = 1
+Hint.title annotations = 1
+Node.label annotations = 1
+Plain type annotations = 0
 all rows answered as declared
