@@ -2,7 +2,49 @@
 
 This file records user-facing changes in each Beans release.
 
-## [Unreleased]
+## [0.1.41] - 2026-09-09
+
+Reflection stops answering two different things depending on which backend is
+asked. Thirteen branches landed together (#192), and most of them are one
+shape: a program that worked under `beansc run` and behaved differently, or
+refused to build, as a native binary. That equality is what the whole project
+rests on, so the release is mostly repairs to it.
+
+Nothing here changes a program that was already correct. The runtime ABI moves
+from 19 to 20 for `std.fs`'s new entries, so a program built against 0.1.40's
+runtime must be rebuilt rather than relinked.
+
+The reflection half, in one sentence each: a field or method a **generic class**
+declares is now reachable natively instead of answering `unsupported`; a member
+reports the **closed** form it was reached through, so `declaring_type()` on
+`Grid<int>.title` says `Grid<int>` rather than `Grid`; `reflect.value` boxes
+what an object **is** rather than what its binding said, so a subclass survives
+a base-class binding; and a closed generic's **annotations** are found at all,
+which they were not natively in 0.1.40 — an annotation-driven framework scanned
+a generic component correctly in the edit loop and found nothing in the shipped
+binary.
+
+Two refusals the checker used to accept are gone: a free or static generic
+function taking `fn(T)` passed `check`, ran, and then failed the build talking
+about the emitter, and a `static fn` on a generic class could be declared but
+never called. A type named inside a string interpolation is now resolved with
+the file's imports, which is why `type_of(T)` inside `"{ }"` could name a type
+that does not exist.
+
+`BEANS_SANITIZE` now instruments the code the compiler emits. It never did:
+ASan, UBSan and TSan saw `beans_rt.c` and not one generated function, so an
+out-of-bounds access the emitter produced was invisible to `make test-sanitize`
+on every host. The gate carries positive controls now — a double free, a
+heap-buffer-overflow read and write, a use-after-free and a data race, each in
+generated code, each of which must be caught — because a sweep whose
+instrumentation reaches nothing is indistinguishable from a clean one.
+
+Thanks to **@Akimbo92i**, who independently found and fixed the truncated
+`receiver_type` reflect message (#160, #181): `runtime/beans_rt.c` passed 27 as
+the length of a 28-byte literal, so the native leg printed `receiver type does
+not matc`. The fix that shipped adds `test/runtime_literal_lengths.sh`, which
+checks every hand-written count in the runtime against its literal, because the
+bug shipped for want of anything watching the class.
 
 ### Added
 
@@ -76,6 +118,70 @@ This file records user-facing changes in each Beans release.
   with no extension. A window outside 9..15, or a preference passed with
   `compress: false`, is refused as kind `invalid` before the 101 response is
   written. Existing callers pass nothing and get exactly what they got before.
+
+- **`std.fs` names a file's whole life.** `remove`, `exists`, `size`, `rename`
+  and `temp_dir` join the seven read-and-write functions that were there. A
+  package could create a temp file and had no spelling for deleting it, so a
+  store that placed one could never release it and every refused, oversized or
+  panicking upload became permanent disk. The only workaround was
+  `std.process` spawning `rm` — a shell command built from a path, in the one
+  code path whose whole job is never to build a path out of anything a client
+  sent (runtime ABI 20).
+
+### Fixed
+
+- **Reflection over a member a generic class declares answered `unsupported`
+  natively and worked interpreted** (#158). The registry files one row per open
+  declaration, and the native backend had to hand the runtime a monomorphic
+  function pointer with no instantiation to name. A field thunk and a method
+  thunk now ask the receiver which instantiation it is. A non-generic subclass
+  of a closed generic could not be constructed reflectively at all natively.
+- **A member reported the open form as its `declaring_type()`** (#159), so
+  `Grid<int>.title` said it was declared by `Grid` with no type arguments —
+  which made the obvious guard, "this member is declared by a generic type",
+  answer false for exactly the members it was written to catch. It answers with
+  the link the queried type reaches the member through.
+- **`is_assignable_from` was wrong in both directions at once** (#169): too
+  strict at the top, so `Grid<int>` was not assignable to `Grid`, the
+  declaration its own rows are filed under; and too loose down the chain, so an
+  `IntGrid` was assignable to `Grid<string>`. The second is a wrong answer
+  about the type of a value, not a refusal.
+- **A closed generic's annotations were unreachable natively** (#191), so
+  `type_of(Grid<int>).annotations()` answered 0 where the interpreter answered
+  1. Annotation rows were matched by exact owner string while every other row
+  lookup matches by base name. This one was in 0.1.40 as shipped.
+- **`reflect.value` boxed the binding's static type** (#163), so an object held
+  through a base-class binding lost what it was and could not be downcast back.
+  It boxes the stored runtime type, which is what the spec already said.
+- **The `receiver_type` reflect message was a byte short natively** (#160,
+  found by @Akimbo92i), and every hand-written literal length in the runtime is
+  now checked against its literal.
+- **A free or static generic function taking `fn(T)` passed `check`, ran under
+  the interpreter, and failed the native build in the emitter's own words**
+  (#161) — the checker accepting what a backend cannot emit. A function type's
+  result is part of it whether or not the source wrote it.
+- **A `static fn` on a generic class could be declared and never called**
+  (#162): nothing at the call site bound the class's type parameter, by any
+  spelling. A static's type parameters now include its owner's.
+- **A type named inside a string interpolation was resolved without the file's
+  imports** (#164) and fell back to composing the asking package's name with
+  the simple name. `new T()` and `x as? T` were refused for naming a type that
+  does not exist, and `type_of(T)` silently returned a descriptor whose name
+  `find_type` cannot find — so a framework asking "is this type one of mine?"
+  answered no for every one of them.
+- **`BEANS_SANITIZE` instrumented the runtime and no generated code at all**
+  (#168), for ASan, UBSan and TSan alike. The emitter marks every function it
+  defines for the sanitizer that asked, and the gate now proves it reaches them.
+- **The two backends disagreed on when a moved-in unique argument's `deinit`
+  ran** (#155). A move spends its binding, so the value dies with its new owner.
+- **`Brew<unit>` was accepted by the checker and refused by the emitter**
+  (#154), which is the same shape as #161: the program was told about the
+  emitter rather than about itself.
+- **A poisoned match subject produced a diagnostic per arm** (#194), each
+  naming `poison`, the checker's own word for "already reported" — and up to
+  five errors for one unknown function, because a skipped binding left the arm
+  body naming something that resolved to nothing.
+- **The typed-JSON concurrency probe raced its own fixture** (#152).
 
 ## [0.1.40] - 2026-09-07
 
