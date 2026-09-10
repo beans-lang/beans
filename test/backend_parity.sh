@@ -354,6 +354,17 @@ agree test/cases/parity/issue167_fs_lifecycle.b 5
 # and a loop.
 agree test/cases/parity/issue155_move_drop_point.b 40
 
+# #172: a class extending a closed generic and writing no `init` of its own
+# passed check, ran under the interpreter, and failed the native build with a
+# message about the emitter's internals — a generic class's bodies are raised
+# under the rendered instance name while the lookup asked the declaration's
+# open one. The control that writes `fn init` is beside every shape, because
+# declaring one was the only difference between a program that built and one
+# that did not. The gate has to BUILD: a case that stops at `run` passes on
+# the broken tree, which is how this survived. Nine objects built and
+# released once.
+agree test/cases/parity/inherited_generic_init.b 9
+
 # #195: `as?` with an interface target. The checker accepted it, the native
 # emitter refused to build it — a message about the emitter for a program
 # check had passed — and the tree interpreter answered `none` for a downcast
@@ -379,7 +390,7 @@ agree_with_args test/cases/parity/args_across_threads.b "" \
 
 # Every case in the directory has to be listed above with its own expected
 # count; a file added and forgotten would otherwise be silently unchecked.
-listed=53
+listed=54
 present=$(find test/cases/parity -name '*.b' | wc -l | tr -d ' ')
 if [ "$present" != "$listed" ]; then
     echo "test/cases/parity holds $present cases but $listed are run" >&2
