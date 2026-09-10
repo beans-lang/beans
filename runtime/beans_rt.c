@@ -6370,7 +6370,17 @@ char* beans_reflect_error_message(void) {
         case 4: return str_lit("reflected value type does not match");
         case 5: return str_lit("reflected operation is unsupported");
         case 6: return str_lit("wrong reflected argument count");
-        default: return str_lit("reflection operation failed");
+        // No code was set, so nothing here failed and there is nothing to
+        // say about it. This used to answer "reflection operation failed",
+        // which the tree interpreter — whose stored message is "" in the
+        // same state — never said, so one program printed two different
+        // things depending on which backend ran it (#193). Any program can
+        // reach it: std.reflection is an importable module, and every entry
+        // clears the code on the way in, so a successful call leaves this
+        // state behind. The words for a refusal that did not say what it
+        // was belong to std.reflect's runtime_error(), which is one copy
+        // both backends read rather than two that can drift.
+        default: return str_lit("");
     }
 }
 

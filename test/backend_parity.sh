@@ -276,7 +276,7 @@ agree test/cases/parity/inherited_field_slots.b 4
 # through every shape that reaches it, and each one prints its kind, its
 # message and the message's byte length. Sixteen receivers are boxed into
 # reflect values, so the refusing paths are held to the lifetime rule too.
-agree test/cases/parity/issue160_reflect_error_messages.b 16
+agree test/cases/parity/issue160_reflect_error_messages.b 18
 # #158 — reflection over members a generic class declares. The registry files
 # one row per OPEN declaration, so the interpreter served these off the live
 # object while the native backend, with no instantiation to name in a
