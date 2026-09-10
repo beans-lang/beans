@@ -35,3 +35,45 @@ fn main() {
         _ => {}
     }
 }
+
+// A type is refused when any part of it is, so the rules below are reached
+// with the marker nested inside a type the reader really did write —
+// "unknown class 'List<poison>'", "expected Option<main.Real>, got
+// Option<poison>", "got fn(poison) -> int" (#175). One error for each
+// mention of the unknown name, and nothing after it.
+pub class Real {
+    pub fn init() {}
+}
+
+// Every extern "C" rule reads a written type and renders what it rejects.
+extern "C" struct CRec {
+    field: Nope
+}
+extern "C" var cglobal: Nope
+extern "C" fn ctakes(p: Nope) -> Nope
+
+// The annotation schema is a third reader of a written type.
+pub annotation tagged {
+    name: Nope
+}
+
+fn refused_types() {
+    let real: Real = new Real()
+    // new, with the marker as the whole type and nested inside one
+    let made: Real = new Nope()
+    let listed: List<Nope> = new List<Nope>()
+    let mapped: Map<string, Nope> = new Map<string, Nope>()
+    let nested: List<List<Nope>> = new List<List<Nope>>()
+    // as? and as, both sides rendered
+    let tested: Option<Real> = real as? Nope
+    let cast: List<Nope> = real as List<Nope>
+    // a mismatch that composes the marker into the type it reports
+    let taker: fn(Real) -> int = fn(v: Nope) -> int { return 1 }
+    let giver: fn() -> Real = fn() -> Nope { return 0 }
+    // the annotation validator, which renders the element it rejects
+    let fixed: [Nope; 3] = [0, 0, 0]
+    let sliced: Slice<Nope> = new Slice<Nope>()
+    // the interpolation rule, whose types are composites holding the marker
+    let shared: Shared<Nope> = new Shared<Nope>(0)
+    io.println("{shared}{listed}{mapped}{nested}{cast}{fixed}{sliced}")
+}

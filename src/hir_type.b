@@ -74,8 +74,27 @@ fn hir_types_equal(left: HirType, right: HirType) -> bool {
 // nothing they can act on, and "poison" is the checker's own word for
 // "already reported" — never a type anyone wrote, so it must never reach a
 // diagnostic. test/diagnostics.sh fails if one does.
+//
+// The walk goes into the arguments, because a type is refused when any part
+// of it is. `List<Nope>` is not itself the marker, but the only thing wrong
+// with it was already reported against `Nope`, and a rule that goes on to
+// render it composes the marker into a type the reader is told they wrote —
+// "unknown class 'List<poison>'", "expected Option<main.Real>, got
+// Option<poison>" (#175). One refused part refuses the whole.
 fn hir_already_refused(type: HirType) -> bool {
-    return type.name == "poison"
+    if type.name == "poison" { return true }
+    // Indexed, and skipped outright when there is nothing to walk. Almost
+    // every type asked is a bare name, and this is on the path of every
+    // expect_type: a `for x in xs` here parks a cycle-collection candidate
+    // per element per call, and a checker that parks more raises
+    // cc_threshold for whatever runs next in the same process — which under
+    // `beansc run` is the program itself.
+    let count: int = type.args.len()
+    if count == 0 { return false }
+    for index: int in 0..count {
+        if hir_already_refused(type.args[index]) { return true }
+    }
+    return false
 }
 
 fn hir_is_integer(type: HirType) -> bool {
