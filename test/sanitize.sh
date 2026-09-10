@@ -758,6 +758,12 @@ BEANS_SANITIZE_CALLBACKS=1 bash ./test/stored_callbacks.sh
 # other half -- a claim MOVES the value out of its row, and a move is where a
 # double release or a dropped one shows up.
 #
+# interface_downcast.b is here because `as?` retains what it wraps and the
+# interface arm is a new way in (#195): a missed retain is a use-after-free
+# the arc markers in the parity gate would see, and a missed release is a
+# leak they would not — the tags balance either way when the Option is
+# dropped by the same code that would have released it.
+#
 # list_inline_backing.b is here because a small list's element buffer lives
 # inside the list's own block (#150): the free path must skip that interior
 # pointer and free the buffer of every list that outgrew it, and the two
@@ -792,6 +798,7 @@ if [[ "$(uname -s)" == Darwin ]] && command -v leaks >/dev/null 2>&1; then
                 test/cases/reflect_value.b test/cases/reflect_fields.b \
                 test/cases/reflect_calls.b test/cases/reflect_construct.b \
                 test/cases/parity/discard_binding.b \
+                test/cases/parity/interface_downcast.b \
                 test/cases/parity/record_place.b \
                 test/cases/parity/static_place.b \
                 test/cases/parity/try_ownership.b; do

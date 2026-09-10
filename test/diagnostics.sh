@@ -291,12 +291,40 @@ grep -Fq ":10:12: error: unknown type 'NoSuchType'" \
     "$tmp/diagnostics_already_refused_bad"
 grep -Fq ":26:11: error: unknown function 'nosuchfn'" \
     "$tmp/diagnostics_already_refused_bad"
-# one for the declaration, one per array length that names no constant, and one
-# per match subject that names no function -- and nothing for the arms, whose
-# shapes cannot be judged against a type that does not exist. A binding in a
-# poisoned arm is declared as poison rather than skipped: skipping it left the
-# arm body naming something that resolved to nothing, which turned one unknown
-# function into five errors.
-test "$(grep -c ': error:' "$tmp/diagnostics_already_refused_bad")" -eq 5
+# The fixture also carries every rule that renders a *written* type, each with
+# the unknown name nested one and two levels down (#175): a type is refused
+# when any part of it is, so "List<Nope>" reached "unknown class
+# 'List<poison>'" and "fn(v: Nope)" reached "got fn(poison) -> int" while the
+# shallow marker test said the type was fine. One rule per line below, so a
+# rule that starts leaking again is named by the assertion that fails.
+grep -Fq ":63:22: error: unknown type 'Nope'" \
+    "$tmp/diagnostics_already_refused_bad"      # new Nope()
+grep -Fq ":64:22: error: unknown type 'Nope'" \
+    "$tmp/diagnostics_already_refused_bad"      # new List<Nope>()
+grep -Fq ":68:41: error: unknown type 'Nope'" \
+    "$tmp/diagnostics_already_refused_bad"      # as? Nope
+grep -Fq ":71:40: error: unknown type 'Nope'" \
+    "$tmp/diagnostics_already_refused_bad"      # fn(v: Nope) -> int
+grep -Fq ":74:17: error: unknown type 'Nope'" \
+    "$tmp/diagnostics_already_refused_bad"      # [Nope; 3]
+grep -Fq ":50:12: error: unknown type 'Nope'" \
+    "$tmp/diagnostics_already_refused_bad"      # extern "C" struct field
+grep -Fq ":52:25: error: unknown type 'Nope'" \
+    "$tmp/diagnostics_already_refused_bad"      # extern "C" var
+grep -Fq ":53:25: error: unknown type 'Nope'" \
+    "$tmp/diagnostics_already_refused_bad"      # extern "C" parameter
+grep -Fq ":57:11: error: unknown type 'Nope'" \
+    "$tmp/diagnostics_already_refused_bad"      # annotation schema field
+# one for the declaration, one per array length that names no constant, one
+# per match subject that names no function, and one per mention of the
+# unknown type name -- and nothing for the arms, whose shapes cannot be
+# judged against a type that does not exist. A binding in a poisoned arm is
+# declared as poison rather than skipped: skipping it left the arm body
+# naming something that resolved to nothing, which turned one unknown
+# function into five errors. The exact count is the half of this gate that
+# sees a *cascade*: the grep above only sees the marker, and a second message
+# that names the program instead is still a second message about a line whose
+# problem was already reported.
+test "$(grep -c ': error:' "$tmp/diagnostics_already_refused_bad")" -eq 27
 
 echo "ok diagnostics: locations, imports, suggestions, wording, and recovery"

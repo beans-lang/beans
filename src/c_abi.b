@@ -140,7 +140,8 @@ class CAbiChecker {
         for declaration: HirDeclaration in self.program.declarations {
             if !declaration.is_c_layout { continue }
             for field: HirField in declaration.fields {
-                if !self.is_inline_c_storage(field.type) {
+                if !hir_already_refused(field.type) &&
+                   !self.is_inline_c_storage(field.type) {
                     self.fail_field(
                         field,
                         "struct/union fields need inline scalar, RawPtr, fixed-array, or nested struct storage, got {render_hir_type(field.type)}")
@@ -194,7 +195,11 @@ class CAbiChecker {
                         parameter,
                         "extern parameters cannot use move or inout")
                 }
-                if !self.is_c_abi_type(parameter.type, false) &&
+                // A parameter whose type was already refused has nothing
+                // to say about the C ABI, and rendering it would name the
+                // checker's marker (#175).
+                if !hir_already_refused(parameter.type) &&
+                   !self.is_c_abi_type(parameter.type, false) &&
                    !self.is_c_callback(parameter.type) {
                     self.fail_parameter(
                         parameter,
@@ -207,7 +212,8 @@ class CAbiChecker {
                         "exported C functions cannot take callbacks yet; pass a RawPtr function address")
                 }
             }
-            if !self.is_c_abi_type(function.result, true) {
+            if !hir_already_refused(function.result) &&
+               !self.is_c_abi_type(function.result, true) {
                 self.fail_function(
                     function,
                     "extern return needs an integer, float, bool, RawPtr, extern \"C\" struct/union, or no value, got {render_hir_type(function.result)}")
@@ -218,7 +224,8 @@ class CAbiChecker {
     fn check_globals() {
         for global: HirCGlobal in
             self.program.c_globals {
-            if !self.is_c_abi_type(
+            if !hir_already_refused(global.type) &&
+               !self.is_c_abi_type(
                     global.type, false) {
                 self.fail_global(
                     global,

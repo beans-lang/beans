@@ -23,11 +23,14 @@
 // the lifetime rule: a reflective call that refuses still owns the receiver
 // it was handed, and must release it exactly once — including the wrong
 // receiver in a receiver_type refusal, which is the shape the issue reported.
-// Sixteen objects are boxed into reflect values across the run.
+// Eighteen objects are boxed into reflect values across the run.
 package main
 
 import std.io
 import std.reflect
+// The layer std.reflect is built on. A program may import it, which is what
+// makes the state below reachable rather than theoretical (#193).
+import std.reflection as rt
 
 class Loud {
     tag: string = ""
@@ -195,4 +198,23 @@ fn main() {
     value_result("initializer, too many",
         beta.initializer().expect("init")
             .call([reflect.value("x"), reflect.value(2)]))
+
+    // The state where no code was set. The native runtime answered
+    // "reflection operation failed" for it and the tree interpreter, whose
+    // stored message starts and is cleared to "", answered nothing — one
+    // state, two texts, and both internally consistent so a gate that
+    // compared each backend against itself could never see it (#193).
+    //
+    // Three routes, because every reflection entry clears the code on the
+    // way in: before anything reflective has run at all, after a call that
+    // succeeded, and after one that failed — where the code is set and the
+    // words must be the coded ones, so this cannot pass by answering ""
+    // to everything.
+    io.println("fresh: {rt.error_code()} | {rt.error_message()} | {rt.error_message().len()}")
+    value_result("ok field read again",
+        alpha.field("label").expect("label").get(alpha_value("fresh-ok")))
+    io.println("after ok: {rt.error_code()} | {rt.error_message()} | {rt.error_message().len()}")
+    value_result("private field get again",
+        alpha.field("hidden").expect("hidden").get(alpha_value("fresh-bad")))
+    io.println("after failure: {rt.error_code()} | {rt.error_message()} | {rt.error_message().len()}")
 }

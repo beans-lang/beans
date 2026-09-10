@@ -1364,7 +1364,11 @@ class SignatureChecker {
                 some(type_node) => {
                     let type: HirType =
                         self.lower_type(type_node, file.path)
-                    if !self.annotation_schema_type(type) {
+                    // A field whose type was already refused says nothing
+                    // about the annotation schema, and the rendering would
+                    // name the checker's marker (#175).
+                    if !hir_already_refused(type) &&
+                       !self.annotation_schema_type(type) {
                         self.fail(
                             file.path, child,
                             "annotation field '{child.value}' has unsupported type {render_hir_type(type)}")

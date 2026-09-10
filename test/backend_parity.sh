@@ -87,13 +87,23 @@ check_effects() {
 
 # agree <source> [expected-constructs]
 agree() {
-    local source=$1 want=${2:-} name
+    agree_with_args "$1" "${2:-}"
+}
+
+# agree_with_args <source> <expected-constructs> [argument...]
+# The same three legs with a command line handed to all of them. A case that
+# reads os.args() proves nothing run with none: both backends answer an empty
+# list and every diff passes (#186), which is why the arguments are the
+# runner's business and not the case's.
+agree_with_args() {
+    local source=$1 want=$2 name
+    shift 2
     name=$(basename "$source" .b)
-    ./build/beansc run "$source" >"$tmp/$name.interp"
+    ./build/beansc run "$source" -- "$@" >"$tmp/$name.interp"
     ./build/beansc build "$source" -o "$tmp/$name.debug" >/dev/null
-    "$tmp/$name.debug" >"$tmp/$name.debug.out"
+    "$tmp/$name.debug" "$@" >"$tmp/$name.debug.out"
     ./build/beansc build --release "$source" -o "$tmp/$name.release" >/dev/null
-    "$tmp/$name.release" >"$tmp/$name.release.out"
+    "$tmp/$name.release" "$@" >"$tmp/$name.release.out"
     if ! diff -u "$tmp/$name.interp" "$tmp/$name.debug.out"; then
         echo "$source: the interpreter and a debug build disagree" >&2
         exit 1
@@ -121,6 +131,7 @@ agree() {
     local note=""
     [ -n "$want" ] && note=", $want built and released"
     [ -f "$golden" ] && note="$note, pinned"
+    [ $# -gt 0 ] && note="$note, $# argument(s)"
     echo "  agree: $source ($(wc -l <"$tmp/$name.interp" | tr -d ' ') lines$note)"
 }
 
@@ -265,7 +276,7 @@ agree test/cases/parity/inherited_field_slots.b 4
 # through every shape that reaches it, and each one prints its kind, its
 # message and the message's byte length. Sixteen receivers are boxed into
 # reflect values, so the refusing paths are held to the lifetime rule too.
-agree test/cases/parity/issue160_reflect_error_messages.b 16
+agree test/cases/parity/issue160_reflect_error_messages.b 18
 # #158 — reflection over members a generic class declares. The registry files
 # one row per OPEN declaration, so the interpreter served these off the live
 # object while the native backend, with no instantiation to name in a
@@ -343,9 +354,43 @@ agree test/cases/parity/issue167_fs_lifecycle.b 5
 # and a loop.
 agree test/cases/parity/issue155_move_drop_point.b 40
 
+# #172: a class extending a closed generic and writing no `init` of its own
+# passed check, ran under the interpreter, and failed the native build with a
+# message about the emitter's internals — a generic class's bodies are raised
+# under the rendered instance name while the lookup asked the declaration's
+# open one. The control that writes `fn init` is beside every shape, because
+# declaring one was the only difference between a program that built and one
+# that did not. The gate has to BUILD: a case that stops at `run` passes on
+# the broken tree, which is how this survived. Nine objects built and
+# released once.
+agree test/cases/parity/inherited_generic_init.b 9
+
+# #195: `as?` with an interface target. The checker accepted it, the native
+# emitter refused to build it — a message about the emitter for a program
+# check had passed — and the tree interpreter answered `none` for a downcast
+# that holds, silently, because its instance test walked `extends` and never
+# `implements`. Each interface here is reached and missed by at least two
+# classes, through `implements` directly, through a base, through a
+# grandparent and through an interface's own extends chain; `Unused` is
+# implemented by nobody, so its table is all zeros — the row a wrong table
+# gets right by accident. Ten objects built and released once, because `as?`
+# retains what it wraps.
+agree test/cases/parity/interface_downcast.b 10
+
+# #186: os.args() is a fact about the process, and the tree interpreter gave a
+# spawned thread's interpreter an empty argument list — the real arguments
+# natively, nothing under `beansc run`, silently. Run WITH arguments, or both
+# backends answer an empty list and the case passes proving nothing; the
+# answers are pinned as well, so both being wrong together is caught too. The
+# arguments carry a space, an empty string and non-ASCII, and the case reads
+# them from one worker, three at once, a thread spawned by a thread, and a
+# brewed fiber.
+agree_with_args test/cases/parity/args_across_threads.b "" \
+    alpha "two words" "" "ünïcode"
+
 # Every case in the directory has to be listed above with its own expected
 # count; a file added and forgotten would otherwise be silently unchecked.
-listed=51
+listed=54
 present=$(find test/cases/parity -name '*.b' | wc -l | tr -d ' ')
 if [ "$present" != "$listed" ]; then
     echo "test/cases/parity holds $present cases but $listed are run" >&2
@@ -485,6 +530,33 @@ if echo "$vtable" | grep -q 'ptr null'; then
     exit 1
 fi
 echo "  agree: test/cases/$name (generic base's method row survives a cross-package name clash)"
+
+# #195: the interface an `as?` tests for declared in one package, and the
+# classes that reach it spread across two. The native test is a byte table
+# filled from the emitter's conformance walk, so a relation written across a
+# package boundary is what that walk could most easily miss. Written from
+# both sides — inside the package that owns the interface, and outside it,
+# where the declaration is reached by a different name — over a class that
+# implements it here, one that implements it there, one that reaches it
+# through a base declared in the other package, and one that does not reach
+# it at all.
+name=interface_downcast_pkg
+( cd "test/cases/$name" && "$root/build/beansc" run main.b ) \
+    >"$tmp/$name.interp"
+( cd "test/cases/$name" \
+  && "$root/build/beansc" build --release main.b \
+       -o "$tmp/$name.release" >/dev/null )
+"$tmp/$name.release" >"$tmp/$name.release.out"
+diff -u "$tmp/$name.interp" "$tmp/$name.release.out"
+# every line is an answer with its expectation beside it, so a run that
+# agrees on the wrong answers is still caught
+if grep -q '^BAD' "$tmp/$name.interp"; then
+    echo "$name: a cross-package interface downcast answered wrongly" >&2
+    grep '^BAD' "$tmp/$name.interp" >&2
+    exit 1
+fi
+test "$(grep -c '^ok ' "$tmp/$name.interp")" -eq 8
+echo "  agree: test/cases/$name (an interface downcast across packages)"
 
 # #123: a generic class extending a generic base in *another* package. The
 # override lives on a generic class, so the record of which slots a name

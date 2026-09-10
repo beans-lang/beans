@@ -104,6 +104,19 @@ fn runtime_error() -> ReflectError {
         6 => ErrorKind.argument_count,
         _ => ErrorKind.failed,
     }
+    // `failed` is the state where no code was set, and the runtime's own
+    // message for it is empty on both backends — "nothing failed" is what
+    // that state means to a runtime, and a runtime with no code cannot know
+    // any better. Here it means something else: this function is only
+    // called because a refusal happened, so an empty message would hand a
+    // caller a ReflectError that says nothing and a `reflect: ` with
+    // nothing after it. The words live here, in the one place both backends
+    // read, rather than in each backend's own table where they drifted
+    // (#193).
+    if kind == ErrorKind.failed {
+        return new ReflectError(
+            kind, "reflection operation failed")
+    }
     return new ReflectError(kind, rt.error_message())
 }
 

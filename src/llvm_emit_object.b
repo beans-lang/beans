@@ -1522,6 +1522,13 @@ partial class LlvmTextEmitter {
         let minted: int = self.class_id_count
         self.class_id_count += 1
         self.class_ids[key] = minted
+        match self.declaration_for(type) {
+            some(declaration) => {
+                self.class_declaration_by_id[minted] =
+                    declaration
+            }
+            none => {}
+        }
         return minted
     }
 
@@ -1641,6 +1648,8 @@ partial class LlvmTextEmitter {
                         self.class_id_count += 1
                         self.class_ids[key] = id
                     }
+                    self.class_declaration_by_id[id] =
+                        declaration
                 }
                 let chain: List<HirDeclaration> =
                     self.class_chain(declaration)

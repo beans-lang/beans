@@ -3,6 +3,14 @@ package main
 // std.asm/std.intrinsic and the raw dl call rows stay unsafe no matter
 // how the name reached the call — module-qualified or selected with
 // `import {…} from`.
+// `extends` for a class target, `implements` for an interface one: the way
+// out of a refused generic downcast is spelled differently depending on
+// which the target is, and naming the wrong one sends the reader to a
+// declaration the compiler would then refuse.
+fn generic_downcast_reach_word(is_interface: bool) -> string {
+    return if is_interface { "implements" } else { "extends" }
+}
+
 fn unsafe_module_call(import_path: string, name: string) -> bool {
     if import_path == "std.asm" || import_path == "std.intrinsic" {
         return true
@@ -2616,6 +2624,26 @@ class ExpressionChecker {
         match self.declaration_for(type) {
             some(declaration) => {
                 return declaration.kind == "class" &&
+                       declaration.generics.len() ==
+                           type.args.len()
+            }
+            none => { return false }
+        }
+    }
+
+    // The same shape with an interface in it. A downcast target may be an
+    // interface as well as a class (#195), and an instantiated interface is
+    // out of reach for exactly the reason an instantiated class is — the
+    // test reads the object's own class, and an object carries no type
+    // arguments. Kept apart from is_generic_instance_class because that one
+    // also decides what may be downcast *from*, and a source is a different
+    // question.
+    fn is_generic_instance_target(type: HirType) -> bool {
+        if type.args.len() == 0 { return false }
+        match self.declaration_for(type) {
+            some(declaration) => {
+                return (declaration.kind == "class" ||
+                        declaration.kind == "interface") &&
                        declaration.generics.len() ==
                            type.args.len()
             }
@@ -5968,6 +5996,14 @@ class ExpressionChecker {
 
     fn expect_type(node: AstNode, actual: HirType,
                    expected: HirType) {
+        // Either side already refused means the mismatch below is a second
+        // message about a part whose real problem is on the line above, and
+        // it would render the marker inside whatever composed it —
+        // "expected Option<main.Real>, got Option<poison>" (#175).
+        if hir_already_refused(actual) ||
+           hir_already_refused(expected) {
+            return
+        }
         // The expectation a `?` pushes into its operand is a hint about the
         // ok type, not a demand about the error. Whether the callee's error
         // reaches this function's is check_try's own decision, and it now
@@ -6059,6 +6095,10 @@ class ExpressionChecker {
     }
 
     fn validate_target_type(node: AstNode, type: HirType) {
+        // Every rule below reads the written type and renders it back. A
+        // type with a refused part carries the marker into that rendering,
+        // and the part's real problem was already reported (#175).
+        if hir_already_refused(type) { return }
         if (type.name == "StoredCallback" ||
             type.name == "LocalStoredCallback") &&
            type.args.len() == 1 &&
@@ -6393,7 +6433,13 @@ class ExpressionChecker {
                 // without this gate the tree interpreter printed a
                 // placeholder and the LLVM emitter refused late, so the
                 // two compilers disagreed on the same program.
-                if !self.printable_in_string(piece.type) {
+                //
+                // A piece whose type holds a refused part is not judged
+                // here: whether `Shared<Nope>` can be printed is not the
+                // reader's problem, and the rendering would name the
+                // marker (#175).
+                if !hir_already_refused(piece.type) &&
+                   !self.printable_in_string(piece.type) {
                     self.fail(
                         node,
                         "can't put a {render_hir_type(piece.type)} inside a string yet — give it a string form first")
@@ -11236,7 +11282,12 @@ class ExpressionChecker {
                 return result
             }
             none => {
-                if target_typed {
+                // `new Nope()` and `new List<Nope>()` both land here with the
+                // marker in the type; the name that is really unknown was
+                // reported where it was written (#175).
+                if hir_already_refused(type) {
+                    // nothing to add
+                } else if target_typed {
                     self.fail(
                         node,
                         "target-typed new needs a class type, got {render_hir_type(type)}")
@@ -11816,6 +11867,14 @@ class ExpressionChecker {
             self.check_expression(
                 node.children[0], demand)
         var result_type: HirType = target
+        // A cast whose target or whose operand was already refused has no
+        // shape to judge: every rule below renders both sides, so the marker
+        // would reach "main.Real as? poison doesn't" and "can't cast X as
+        // poison" (#175). The result is still Option<target>, so the reader
+        // gets the one message about the name that is really unknown.
+        let refused: bool =
+            hir_already_refused(target) ||
+            hir_already_refused(value.type)
         if node.value == "as?" {
             result_type = hir_option(target)
             let reflect_value: bool =
@@ -11823,13 +11882,23 @@ class ExpressionChecker {
                     "std.reflect.Value"
             let moving_reflect_value: bool =
                 value.kind == "unary" && value.value == "move"
-            if reflect_value && self.is_move_only(target) &&
+            if refused {
+                // reported where the refused part was written
+            } else if reflect_value && self.is_move_only(target) &&
                !moving_reflect_value {
                 self.fail(
                     node,
                     "cannot copy move-only {render_hir_type(target)} out of reflect.Value; move the Value to take it")
             } else if !reflect_value &&
-                      self.is_generic_instance_class(target) {
+                      self.is_generic_instance_target(target) {
+                var target_is_interface: bool = false
+                match self.declaration_for(target) {
+                    some(declaration) => {
+                        target_is_interface =
+                            declaration.kind == "interface"
+                    }
+                    none => {}
+                }
                 // Refused for a reason of its own, and saying so beats the
                 // parent/child message below, which would deny a relation that
                 // does hold: `Sub<int>` really is a child of `Base<int>`. The
@@ -11841,7 +11910,7 @@ class ExpressionChecker {
                 // Refusing is the only answer both backends can give.
                 self.fail(
                     node,
-                    "as? cannot test for {render_hir_type(target)}: a downcast is decided at run time from the object's own class, and an object does not carry its type arguments — every instantiation of '{display_symbol(target.name)}' is one class there. Downcast to a non-generic class that extends {render_hir_type(target)} instead")
+                    "as? cannot test for {render_hir_type(target)}: a downcast is decided at run time from the object's own class, and an object does not carry its type arguments — every instantiation of '{display_symbol(target.name)}' is one class there. Downcast to a non-generic class that {generic_downcast_reach_word(target_is_interface)} {render_hir_type(target)} instead")
             } else if !reflect_value &&
                       (!self.is_downcast_source(value.type) ||
                        !self.is_plain_class(target) ||
@@ -11851,6 +11920,8 @@ class ExpressionChecker {
                     node,
                     "as? goes from a parent to a child class — {render_hir_type(value.type)} as? {render_hir_type(target)} doesn't")
             }
+        } else if refused {
+            // reported where the refused part was written
         } else if !(hir_is_numeric(value.type) &&
                     hir_is_numeric(target)) &&
                   !self.is_subtype(value.type, target) {

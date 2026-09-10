@@ -47,8 +47,19 @@ partial class LlvmTextEmitter {
     function_parents: Map<string, string>
     generic_family_cache: Map<string, bool>
     class_ids: Map<string, int>
+    // The declaration every class id names. class_ids is keyed by the name
+    // a program spells a class by; this is the same set read the other way,
+    // which is what a table indexed BY class id needs (as? to an interface).
+    class_declaration_by_id: Map<int, HirDeclaration>
     class_layouts: Map<string, LlvmClassLayout>
     ordered_class_layouts: List<LlvmClassLayout>
+    // One row per interface an `as?` in this program tests for. The test is
+    // a byte table indexed by class id, so the emitted body needs nothing
+    // but the table's symbol and the id it already loads; the table itself
+    // is written with the class-parent table, once every id is minted.
+    interface_downcast_ids: Map<string, int>
+    interface_downcast_types: List<HirType>
+    interface_downcast_declarations: List<HirDeclaration>
     record_ids: Map<string, int>
     record_layouts: Map<string, LlvmRecordLayout>
     record_layout_building: Map<string, bool>
@@ -255,6 +266,10 @@ partial class LlvmTextEmitter {
         self.generic_family_cache = {}
         self.declarations = {}
         self.class_ids = {}
+        self.class_declaration_by_id = {}
+        self.interface_downcast_ids = {}
+        self.interface_downcast_types = []
+        self.interface_downcast_declarations = []
         self.class_layouts = {}
         self.ordered_class_layouts = []
         self.record_ids = {}
@@ -347,6 +362,8 @@ partial class LlvmTextEmitter {
             if declaration.kind == "class" {
                 self.class_ids[
                     declaration.qualified] = class_id
+                self.class_declaration_by_id[class_id] =
+                    declaration
                 class_id += 1
             }
             if declaration.kind == "struct" ||
@@ -2155,6 +2172,10 @@ partial class LlvmTextEmitter {
         // The class-name table is sized the same way and for the same
         // reason, so it is written from the same place.
         owned = "{owned}{self.class_name_table()}"
+        // Same again for every interface an `as?` tested for: the row is
+        // read at the object's class id, so the table has to cover every id
+        // that exists, and the last id is minted by the last body.
+        owned = "{owned}{self.interface_downcast_tables()}"
         for text: string in self.value_eq_functions {
             functions.push(text)
             origins.push("")
@@ -2319,6 +2340,98 @@ partial class LlvmTextEmitter {
     // turns the id back into one. Without it a reflective box could only
     // report the type of the *binding* it was handed, which is a different
     // type the moment a subclass is held at its base (#163).
+    // The symbol of the byte table that answers "does this class id
+    // implement this interface", minting one the first time an interface is
+    // asked for. None when the target is not an interface this program
+    // declares: `as?` to anything else is refused where it is emitted.
+    fn interface_downcast_symbol(
+        target: HirType) -> Option<string> {
+        if target.args.len() != 0 { return none }
+        match self.declaration_for(target) {
+            some(declaration) => {
+                if declaration.kind != "interface" {
+                    return none
+                }
+                let key: string = declaration.qualified
+                match self.interface_downcast_ids.get(key) {
+                    some(found) => {
+                        return some(
+                            "@.next.iface{found}")
+                    }
+                    none => {}
+                }
+                let minted: int =
+                    self.interface_downcast_types.len()
+                self.interface_downcast_ids[key] = minted
+                self.interface_downcast_types.push(target)
+                self.interface_downcast_declarations.push(
+                    declaration)
+                return some("@.next.iface{minted}")
+            }
+            none => { return none }
+        }
+    }
+
+    // One byte per class id per interface tested: 1 when an object of that
+    // class reaches the interface, 0 otherwise. A class id is dense and the
+    // object already carries it in its descriptor's first word, so the test
+    // is a load and a compare — the same shape beans_class_names is read
+    // with, and no new runtime entry (#195).
+    //
+    // The conformance question is answered where every other interface
+    // relation in this emitter is answered, by class_conforms, so an
+    // interface reached through a base class or through another interface's
+    // `extends` counts exactly as it does for dispatch.
+    fn interface_downcast_tables() -> string {
+        var output: string = ""
+        for index: int in
+            0..self.interface_downcast_types.len() {
+            let target: HirDeclaration =
+                self.interface_downcast_declarations[
+                    index]
+            var entries: List<string> = []
+            for id: int in 0..self.class_id_count {
+                var reaches: bool = false
+                match self.class_declaration_by_id.get(
+                          id) {
+                    some(candidate) => {
+                        reaches =
+                            self.class_conforms(
+                                candidate, target)
+                    }
+                    // A row with no declaration behind it would be a
+                    // silent `false` for a downcast that holds, which is
+                    // the exact shape of the bug this table exists to
+                    // close. Every site that mints a class id files the
+                    // declaration beside it; a new one that forgets is a
+                    // build failure here rather than a wrong answer at
+                    // run time.
+                    none => {
+                        self.errors.push(Diagnostic {
+                            severity: Severity.error,
+                            file: "",
+                            line: 0,
+                            col: 0,
+                            message: "LLVM emitter minted class id {id} without a declaration, so as? to '{display_symbol(target.qualified)}' cannot be answered for it",
+                        })
+                    }
+                }
+                entries.push(
+                    if reaches { "i8 1" } else { "i8 0" })
+            }
+            // A program with no classes still needs a row to point at: the
+            // load never runs, because there is no object to run it on, but
+            // a zero-length global is not something to hand the backend.
+            if entries.len() == 0 {
+                entries.push("i8 0")
+            }
+            output =
+                "{output}@.next.iface{index} = internal constant [{entries.len()} x i8] [{entries.join(", ")}]\n"
+        }
+        if output != "" { output = "{output}\n" }
+        return output
+    }
+
     fn class_name_table() -> string {
         let names: Map<int, string> =
             self.class_name_by_id()

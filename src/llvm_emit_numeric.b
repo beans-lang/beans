@@ -1284,15 +1284,34 @@ partial class LlvmTextEmitter {
                 }
                 none => {}
             }
+            // An interface target has no class id to compare against: what
+            // is being asked is whether the object's class is one of the
+            // classes that reach the interface, and that set is closed at
+            // compile time. It is a byte per class id in a table of the
+            // interface's own, read at the id the descriptor already
+            // carries — the same shape the class test has, one load wider
+            // (#195).
+            var interface_table: string = ""
             if target_id < 0 {
+                match self.interface_downcast_symbol(
+                          target_type.args[0]) {
+                    some(symbol) => {
+                        interface_table = symbol
+                    }
+                    none => {}
+                }
+            }
+            if target_id < 0 && interface_table == "" {
                 self.fail(
                     instruction,
                     "LLVM emitter does not support as? to '{render_hir_type(target_type.args[0])}' yet")
                 return ""
             }
-            self.require_declare(
-                "beans_is_a",
-                "i64 @beans_is_a(i64, i64)")
+            if target_id >= 0 {
+                self.require_declare(
+                    "beans_is_a",
+                    "i64 @beans_is_a(i64, i64)")
+            }
             let id: int = self.fresh()
             let result: string =
                 "%v{instruction.result}"
@@ -1306,7 +1325,13 @@ partial class LlvmTextEmitter {
                 } else {
                     "  call void @beans_retain(ptr {result})\n"
                 }
-            return "  %asq.desc{id} = load ptr, ptr {source}\n  %asq.id{id} = load i64, ptr %asq.desc{id}\n  %asq.raw{id} = call i64 @beans_is_a(i64 %asq.id{id}, i64 {target_id})\n  %asq.ok{id} = icmp ne i64 %asq.raw{id}, 0\n  {result} = select i1 %asq.ok{id}, ptr {source}, ptr null\n{retain}"
+            let test: string =
+                if target_id >= 0 {
+                    "  %asq.raw{id} = call i64 @beans_is_a(i64 %asq.id{id}, i64 {target_id})\n  %asq.ok{id} = icmp ne i64 %asq.raw{id}, 0\n"
+                } else {
+                    "  %asq.row{id} = getelementptr i8, ptr {interface_table}, i64 %asq.id{id}\n  %asq.raw{id} = load i8, ptr %asq.row{id}\n  %asq.ok{id} = icmp ne i8 %asq.raw{id}, 0\n"
+                }
+            return "  %asq.desc{id} = load ptr, ptr {source}\n  %asq.id{id} = load i64, ptr %asq.desc{id}\n{test}  {result} = select i1 %asq.ok{id}, ptr {source}, ptr null\n{retain}"
         }
         if source_llvm == target_llvm {
             values[instruction.result] = source

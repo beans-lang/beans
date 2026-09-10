@@ -1,0 +1,44 @@
+arc+deep
+arc+mid
+arc+only
+arc+sub
+arc+deeper
+arc+both
+arc+boxed-int
+arc+boxed-str
+arc+subboxed
+arc+deepboxed
+ok   Deep as? Leaf = true
+ok   MidOnly as? Leaf = false
+ok   OnlyRoot as? Leaf = false
+ok   SubOfDeep as? Leaf = true
+ok   DeeperStill as? Leaf = true
+ok   Both as? Leaf = false
+ok   Boxed<int> as? Leaf = false
+ok   Boxed<string> as? Leaf = false
+ok   SubBoxed<int> as? Leaf = false
+ok   DeepBoxed<int> as? Leaf = true
+ok   Deep as? Mid = true
+ok   MidOnly as? Mid = true
+ok   OnlyRoot as? Mid = false
+ok   SubOfDeep as? Mid = true
+ok   Both as? Mid = false
+ok   Deep as? Unused = false
+ok   Both as? Unused = false
+ok   DeepBoxed<int> as? Unused = false
+payload l=3 m=2 r=1
+mid payload m=5
+ok   SubOfDeep as? SubOfDeep (class target) = true
+ok   Deep as? SubOfDeep (class target) = false
+held true
+empty false
+arc-deepboxed
+arc-subboxed
+arc-boxed-str
+arc-boxed-int
+arc-both
+arc-deeper
+arc-sub
+arc-only
+arc-mid
+arc-deep
