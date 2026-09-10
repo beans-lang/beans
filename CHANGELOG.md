@@ -2,6 +2,49 @@
 
 This file records user-facing changes in each Beans release.
 
+## [0.1.42] - 2026-09-10
+
+A package is named by the module it declares, not by the path that reached it.
+
+Before this, the same package answered to two different names depending on how
+a consumer required it. `require path "../dep"` gave `dep`; `require
+github.com/acme/dep v1` gave `github.com/acme/dep`. Source spelled `dep.Thing`
+either way — only the name **reflection** reported moved. So a library that
+finds its own annotation by qualified name, which is how an annotation-driven
+framework discovers anything, worked from a path row and silently found
+nothing from a git row:
+
+```beans
+// in the library
+if annotation.qualified_name() == "barista.service" { … }
+
+// what the git-required copy actually reported
+github.com/beans-lang/barista.service
+```
+
+Nothing failed loudly. The scan returned zero services, and the first thing to
+ask for one got an error about a service that was never registered. The same
+went for `type_of(T).qualified_name()`.
+
+A package's identity is now the module name in its own `beans.pot`, dotted with
+any subpackage directories beneath it, whatever the importer wrote. `dep` and
+`dep.sub` — one name, one package, one spelling in every diagnostic and every
+reflective answer. `beans.lock` and the package cache still key on the git path,
+because that is the thing being fetched.
+
+Two consequences worth knowing:
+
+- **One module name is one package.** Requiring the same name from two
+  different roots — a path row and a git row, or two git paths — is refused
+  where it is written, naming both roots. It used to be accepted, and whichever
+  import ran first decided what the name meant.
+- `beansc load` prints the new identity. A script matching
+  `^package github.com/acme/dep ` now wants `^package dep `.
+
+This is the identity a program already believed it had; only the reported name
+changes, and no correct program's behaviour does. Runtime ABI stays at 20, so
+0.1.41 binaries relink.
+
 ## [0.1.41] - 2026-09-09
 
 Reflection stops answering two different things depending on which backend is
