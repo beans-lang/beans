@@ -3480,9 +3480,12 @@ cmp "$tmp/dependency/first.lock" "$tmp/dependency/app/beans.lock"
 BEANS_HOME="$tmp/dependency/home" \
     ./build/beansc-next load --locked --offline \
     "$tmp/dependency/app/main.b" >"$tmp/dependency/offline.graph"
-grep -q '^package example.test/acme/dep name=dep$' \
+# The lock and the package cache key on the git path, because that is what was
+# fetched. A loaded package is keyed by the module name its manifest declares,
+# because that is what the program means by `dep`.
+grep -q '^package dep name=dep$' \
     "$tmp/dependency/offline.graph"
-grep -q '^package example.test/acme/dep/sub name=sub$' \
+grep -q '^package dep.sub name=sub$' \
     "$tmp/dependency/offline.graph"
 dependency_cache="$tmp/dependency/home/pkg/example.test/acme/dep/$dependency_commit"
 printf '\n// changed\n' >>"$dependency_cache/dep.b"

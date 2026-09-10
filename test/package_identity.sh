@@ -528,6 +528,16 @@ package dep
 
 import dep.sub
 
+@target(value: ["type"])
+@retention(value: "runtime")
+pub annotation mark {
+    note: string = ""
+}
+
+pub class Thing {
+    pub fn init() {}
+}
+
 pub fn answer() -> int { return sub.value() }
 pub fn tag() -> sub.Tag { return sub.Tag { v: 7 } }
 EOF
@@ -536,6 +546,10 @@ package sub
 
 pub struct Tag {
     pub v: int
+}
+
+pub class Badge {
+    pub fn init() {}
 }
 
 pub fn value() -> int { return 42 }
@@ -556,16 +570,36 @@ cat >"$remote/app/main.b" <<'EOF'
 package main
 
 import std.io
+import std.reflect
 import example.test/acme/dep
 import example.test/acme/dep/sub
+
+@dep.mark(note: "here")
+pub class Marked {
+    pub fn init() {}
+}
 
 fn main() {
     io.println(dep.answer())
     io.println(sub.value())
     io.println(dep.tag().v)
+
+    // The names reflection reports. A library that discovers its own
+    // annotation compares one of these against a literal it wrote itself
+    // (barista's @service scan is exactly this), so a package fetched from
+    // git has to answer the same name a `require path` row would give it.
+    io.println(type_of(dep.Thing).qualified_name())
+    io.println(type_of(sub.Badge).qualified_name())
+    for candidate: reflect.Type in reflect.types() {
+        if candidate.qualified_name() != "app.Marked" { continue }
+        for note: reflect.Annotation in candidate.annotations() {
+            io.println(note.qualified_name())
+        }
+    }
 }
 EOF
-printf '42\n42\n7\n' >"$tmp/remote.expected"
+printf '42\n42\n7\ndep.Thing\ndep.sub.Badge\ndep.mark\n' \
+    >"$tmp/remote.expected"
 (
     export BEANS_HOME="$remote/home"
     export GIT_ALLOW_PROTOCOL=file
@@ -580,14 +614,75 @@ printf '42\n42\n7\n' >"$tmp/remote.expected"
     "$root/build/beansc" pot tidy >/dev/null
     accept "$remote/app/main.b" "$tmp/remote.expected" remote
     "$root/build/beansc" load --locked --offline main.b >"$tmp/remote.graph"
-    grep -q '^package example.test/acme/dep/sub name=sub$' "$tmp/remote.graph"
-    grep -q '^package example.test/acme/dep name=dep$' "$tmp/remote.graph"
-    loaded=$(grep -c '^package example.test/acme/dep/sub ' "$tmp/remote.graph")
+    grep -q '^package dep.sub name=sub$' "$tmp/remote.graph"
+    grep -q '^package dep name=dep$' "$tmp/remote.graph"
+    loaded=$(grep -c '^package dep.sub ' "$tmp/remote.graph")
     if test "$loaded" -ne 1; then
         echo "the shared subpackage loaded $loaded times, expected once" >&2
         cat "$tmp/remote.graph" >&2
         exit 1
     fi
+)
+
+# One module name is one package. Now that the name a package declares — and
+# not the path that reached it — is its identity, the same name arriving from
+# two different roots would give two packages one identity. Refuse it where it
+# is written, rather than letting whichever import ran first decide.
+clash="$tmp/name-clash"
+mkdir -p "$clash/app" "$clash/local_dep"
+printf 'module dep\nkind library\n' >"$clash/local_dep/beans.pot"
+printf 'package dep\n\npub fn answer() -> int { return 1 }\n' \
+    >"$clash/local_dep/dep.b"
+cat >"$clash/app/beans.pot" <<'EOF'
+module app
+require path "../local_dep"
+require example.test/acme/dep v1
+EOF
+cat >"$clash/app/main.b" <<'EOF'
+package main
+
+import std.io
+import example.test/acme/dep
+
+fn main() {
+    io.println(dep.answer())
+}
+EOF
+(
+    export BEANS_HOME="$remote/home"
+    export GIT_ALLOW_PROTOCOL=file
+    export GIT_CONFIG_COUNT=1
+    export GIT_CONFIG_KEY_0="url.file://$remote/remotes/.insteadOf"
+    export GIT_CONFIG_VALUE_0="https://example.test/"
+    export BEANS_STDLIB="$root/stdlib/std"
+    export BEANS_RUNTIME="$root/runtime/beans_rt.c"
+    cd "$clash/app"
+    reject "$clash/app/main.b" name-clash \
+        "module 'dep' is required from both" \
+        "one module name is one package"
+)
+
+# THE CONTROL: the same app with only the git row resolves, so the refusal
+# above is about the collision and not about either row on its own.
+control="$tmp/name-clash-control"
+mkdir -p "$control/app"
+cat >"$control/app/beans.pot" <<'EOF'
+module app
+require example.test/acme/dep v1
+EOF
+cp "$clash/app/main.b" "$control/app/main.b"
+printf '42\n' >"$tmp/name-clash-control.expected"
+(
+    export BEANS_HOME="$remote/home"
+    export GIT_ALLOW_PROTOCOL=file
+    export GIT_CONFIG_COUNT=1
+    export GIT_CONFIG_KEY_0="url.file://$remote/remotes/.insteadOf"
+    export GIT_CONFIG_VALUE_0="https://example.test/"
+    export BEANS_STDLIB="$root/stdlib/std"
+    export BEANS_RUNTIME="$root/runtime/beans_rt.c"
+    cd "$control/app"
+    "$root/build/beansc" pot tidy >/dev/null
+    accept "$control/app/main.b" "$tmp/name-clash-control.expected" name-clash-control
 )
 
 # An `extern "C"` name is written by hand and never carries the package, so two

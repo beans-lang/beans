@@ -9,11 +9,18 @@ import std.time
 
 // ---- canonical identity -----------------------------------------------
 //
-// A declaration's identity is its package's import path plus its declared
-// name, joined by "::". Neither an identifier nor an import path can hold a
+// A declaration's identity is its package's canonical ID plus its declared
+// name, joined by "::". Neither an identifier nor a package ID can hold a
 // colon, so the split is unambiguous and no phase has to guess where the
 // package ends. Builtins keep bare names, so they live in their own
 // namespace with no "::" at all.
+//
+// A package's canonical ID is the module name its own beans.pot declares,
+// dotted with any subpackage directories under it — never the path the
+// importer happened to write. `require path "../dep"` and
+// `require github.com/acme/dep v1` both give `dep`, so a program means the
+// same thing by `dep.Thing` however it obtained dep, and reflection reports
+// one name for it either way.
 fn package_symbol(package_id: string, name: string) -> string {
     return "{package_id}::{name}"
 }
@@ -180,10 +187,11 @@ struct ModuleLink {
 
 // One package = one directory of .b files sharing a namespace.
 //
-// `import_path` is the package's identity: the canonical path every importer
-// resolves to. `name` is only source-facing — the declared `package` clause,
-// used as the default import binding and in diagnostics. Two packages may
-// share a name; they can never share an import_path.
+// `import_path` is the package's identity: the canonical ID every importer
+// resolves to, built from the module name its manifest declares. `name` is
+// the declared `package` clause, used as the default import binding. One
+// module name is one package — a name required from two different roots is
+// refused, so an identity is never ambiguous.
 class LoadedPackage {
     import_path: string
     name: string
@@ -1511,7 +1519,6 @@ class ModuleLoader {
 
     fn resolve_package_imports(package: LoadedPackage, dir: string,
                                context_name: string, context_root: string,
-                               context_canon: string,
                                entry_app: bool) {
         for file: ParsedModuleFile in package.files {
             self.expand_named_imports(file, context_name, context_root)
@@ -1535,7 +1542,7 @@ class ModuleLoader {
                         entry.node.resolved = imported
                         package.imports.push(imported)
                         self.load_package(imported, standard_dir,
-                                          "std", standard_root, "",
+                                          "std", standard_root,
                                           file.path, entry.line, entry.col)
                     } else if !native_std_namespace(imported) {
                         self.fail(
@@ -1554,7 +1561,7 @@ class ModuleLoader {
                             package.imports.push(imported)
                             self.load_package(
                                 imported, context_root,
-                                context_name, context_root, context_canon,
+                                context_name, context_root,
                                 file.path, entry.line, entry.col)
                         } else {
                             self.fail(
@@ -1575,21 +1582,16 @@ class ModuleLoader {
                             "package directory {relative} doesn't exist")
                         continue
                     }
-                    // inside a git checkout, `dep.sub` and the app's
-                    // `github.com/x/dep/sub` are the same directory — one
-                    // canonical identity, or the program loads it twice
-                    let canonical: string =
-                        if context_canon == "" {
-                            imported
-                        } else {
-                            path.join(context_canon, relative)
-                        }
-                    entry.resolved = canonical
-                    entry.node.resolved = canonical
-                    package.imports.push(canonical)
-                    self.load_package(canonical, imported_dir,
+                    // `dep.sub` is already the identity: a package is named by
+                    // the module its manifest declares, never by the path that
+                    // reached it. The app spelling `github.com/x/dep/sub`
+                    // resolves to this same name, so the directory is loaded
+                    // once however it was reached.
+                    entry.resolved = imported
+                    entry.node.resolved = imported
+                    package.imports.push(imported)
+                    self.load_package(imported, imported_dir,
                                       context_name, context_root,
-                                      context_canon,
                                       file.path, entry.line, entry.col)
                     continue
                 }
@@ -1617,7 +1619,7 @@ class ModuleLoader {
                     package.imports.push(imported)
                     self.load_package(
                         imported, imported_dir,
-                        dependency_name, dependency_root, "",
+                        dependency_name, dependency_root,
                         file.path, entry.line, entry.col)
                     continue
                 }
@@ -1636,16 +1638,35 @@ class ModuleLoader {
                         if remote_name == "" { continue }
                         self.remote_names[checkout] = remote_name
                     }
+                    // The identity is the declared module name, not this git
+                    // path. Reflection reports that identity, and a library
+                    // that matches its own annotation by qualified name — as
+                    // barista's `@service` scan does — compares against the
+                    // name its source spells. A package reached from git and
+                    // the same package reached by a `require path` row must
+                    // therefore answer the same name, or the scan silently
+                    // finds nothing.
+                    let claimed_root: string =
+                        self.local_name_roots.get(remote_name).or("")
+                    if claimed_root != "" && claimed_root != checkout {
+                        self.fail(
+                            file.path, entry.line, entry.col,
+                            "module '{remote_name}' is required from both {claimed_root} and {remote_path} — one module name is one package")
+                        continue
+                    }
+                    self.local_name_roots[remote_name] = checkout
+                    var canonical: string = remote_name
                     var imported_dir: string = checkout
                     for index: int in 3..remote_parts.len() {
                         imported_dir =
                             path.join(imported_dir, remote_parts[index])
+                        canonical = "{canonical}.{remote_parts[index]}"
                     }
-                    entry.resolved = imported
-                    entry.node.resolved = imported
-                    package.imports.push(imported)
-                    self.load_package(imported, imported_dir,
-                                      remote_name, checkout, remote_path,
+                    entry.resolved = canonical
+                    entry.node.resolved = canonical
+                    package.imports.push(canonical)
+                    self.load_package(canonical, imported_dir,
+                                      remote_name, checkout,
                                       file.path, entry.line, entry.col)
                     continue
                 }
@@ -1682,8 +1703,7 @@ class ModuleLoader {
 
     fn load_package(import_path: string, dir: string,
                     context_name: string, context_root: string,
-                    context_canon: string, from_file: string,
-                    line: int, col: int) {
+                    from_file: string, line: int, col: int) {
         let status: int = self.state.get(import_path).or(0)
         // one instance per Package ID; same-name packages at different
         // paths are separate and never land here
@@ -1720,7 +1740,7 @@ class ModuleLoader {
         self.package_names[import_path] = package.name
 
         self.resolve_package_imports(package, dir, context_name,
-                                     context_root, context_canon, false)
+                                     context_root, false)
         self.packages.push(package)
         self.state[import_path] = 2
         self.pop_stack()
@@ -1748,7 +1768,7 @@ class ModuleLoader {
         self.check_package_clause(package, role)
         self.package_names[self.module_name] = package.name
         self.resolve_package_imports(package, self.root,
-                                     self.module_name, self.root, "", false)
+                                     self.module_name, self.root, false)
         self.pop_stack()
         self.packages.push(package)
         self.state[self.module_name] = 2
@@ -1821,7 +1841,7 @@ class ModuleLoader {
         let import_path: string =
             "{self.module_name}.{relative_dir.replace("/", ".")}"
         self.load_package(import_path, dir, self.module_name, self.root,
-                          "", self.editor_file, 1, 1)
+                          self.editor_file, 1, 1)
     }
 
     fn load_library_entry(entry: string) {
@@ -1849,7 +1869,7 @@ class ModuleLoader {
         self.check_package_clause(package, "root_application")
         self.package_names[entry_id] = package.name
         self.resolve_package_imports(
-            package, entry_dir, self.module_name, self.root, "", true)
+            package, entry_dir, self.module_name, self.root, true)
         self.pop_stack()
         self.packages.push(package)
         self.state[entry_id] = 2
@@ -1876,7 +1896,7 @@ class ModuleLoader {
                 if package_dir == "" { package_dir = "." }
                 self.load_package(
                     standard_package, package_dir,
-                    "std", self.root, "", entry, 1, 1)
+                    "std", self.root, entry, 1, 1)
                 self.bind_imports()
                 return self.errors.len() == 0
             }
@@ -1890,7 +1910,7 @@ class ModuleLoader {
             self.check_package_clause(package, "single_file")
             self.package_names["main"] = package.name
             self.resolve_package_imports(package, path.parent(entry),
-                                         "", "", "", false)
+                                         "", "", false)
             self.pop_stack()
             self.packages.push(package)
             self.state["main"] = 2
