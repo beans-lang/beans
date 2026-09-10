@@ -3,6 +3,14 @@ package main
 // std.asm/std.intrinsic and the raw dl call rows stay unsafe no matter
 // how the name reached the call — module-qualified or selected with
 // `import {…} from`.
+// `extends` for a class target, `implements` for an interface one: the way
+// out of a refused generic downcast is spelled differently depending on
+// which the target is, and naming the wrong one sends the reader to a
+// declaration the compiler would then refuse.
+fn generic_downcast_reach_word(is_interface: bool) -> string {
+    return if is_interface { "implements" } else { "extends" }
+}
+
 fn unsafe_module_call(import_path: string, name: string) -> bool {
     if import_path == "std.asm" || import_path == "std.intrinsic" {
         return true
@@ -2616,6 +2624,26 @@ class ExpressionChecker {
         match self.declaration_for(type) {
             some(declaration) => {
                 return declaration.kind == "class" &&
+                       declaration.generics.len() ==
+                           type.args.len()
+            }
+            none => { return false }
+        }
+    }
+
+    // The same shape with an interface in it. A downcast target may be an
+    // interface as well as a class (#195), and an instantiated interface is
+    // out of reach for exactly the reason an instantiated class is — the
+    // test reads the object's own class, and an object carries no type
+    // arguments. Kept apart from is_generic_instance_class because that one
+    // also decides what may be downcast *from*, and a source is a different
+    // question.
+    fn is_generic_instance_target(type: HirType) -> bool {
+        if type.args.len() == 0 { return false }
+        match self.declaration_for(type) {
+            some(declaration) => {
+                return (declaration.kind == "class" ||
+                        declaration.kind == "interface") &&
                        declaration.generics.len() ==
                            type.args.len()
             }
@@ -11862,7 +11890,15 @@ class ExpressionChecker {
                     node,
                     "cannot copy move-only {render_hir_type(target)} out of reflect.Value; move the Value to take it")
             } else if !reflect_value &&
-                      self.is_generic_instance_class(target) {
+                      self.is_generic_instance_target(target) {
+                var target_is_interface: bool = false
+                match self.declaration_for(target) {
+                    some(declaration) => {
+                        target_is_interface =
+                            declaration.kind == "interface"
+                    }
+                    none => {}
+                }
                 // Refused for a reason of its own, and saying so beats the
                 // parent/child message below, which would deny a relation that
                 // does hold: `Sub<int>` really is a child of `Base<int>`. The
@@ -11874,7 +11910,7 @@ class ExpressionChecker {
                 // Refusing is the only answer both backends can give.
                 self.fail(
                     node,
-                    "as? cannot test for {render_hir_type(target)}: a downcast is decided at run time from the object's own class, and an object does not carry its type arguments — every instantiation of '{display_symbol(target.name)}' is one class there. Downcast to a non-generic class that extends {render_hir_type(target)} instead")
+                    "as? cannot test for {render_hir_type(target)}: a downcast is decided at run time from the object's own class, and an object does not carry its type arguments — every instantiation of '{display_symbol(target.name)}' is one class there. Downcast to a non-generic class that {generic_downcast_reach_word(target_is_interface)} {render_hir_type(target)} instead")
             } else if !reflect_value &&
                       (!self.is_downcast_source(value.type) ||
                        !self.is_plain_class(target) ||

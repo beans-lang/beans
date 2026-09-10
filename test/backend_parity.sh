@@ -354,6 +354,18 @@ agree test/cases/parity/issue167_fs_lifecycle.b 5
 # and a loop.
 agree test/cases/parity/issue155_move_drop_point.b 40
 
+# #195: `as?` with an interface target. The checker accepted it, the native
+# emitter refused to build it — a message about the emitter for a program
+# check had passed — and the tree interpreter answered `none` for a downcast
+# that holds, silently, because its instance test walked `extends` and never
+# `implements`. Each interface here is reached and missed by at least two
+# classes, through `implements` directly, through a base, through a
+# grandparent and through an interface's own extends chain; `Unused` is
+# implemented by nobody, so its table is all zeros — the row a wrong table
+# gets right by accident. Ten objects built and released once, because `as?`
+# retains what it wraps.
+agree test/cases/parity/interface_downcast.b 10
+
 # #186: os.args() is a fact about the process, and the tree interpreter gave a
 # spawned thread's interpreter an empty argument list — the real arguments
 # natively, nothing under `beansc run`, silently. Run WITH arguments, or both
@@ -367,7 +379,7 @@ agree_with_args test/cases/parity/args_across_threads.b "" \
 
 # Every case in the directory has to be listed above with its own expected
 # count; a file added and forgotten would otherwise be silently unchecked.
-listed=52
+listed=53
 present=$(find test/cases/parity -name '*.b' | wc -l | tr -d ' ')
 if [ "$present" != "$listed" ]; then
     echo "test/cases/parity holds $present cases but $listed are run" >&2

@@ -3984,6 +3984,13 @@ class TreeInterpreter {
         return false
     }
 
+    // Does an object of `type_name` reach `target_name` — the test behind
+    // `as?`. Both relations count: a class reaches its base by `extends` and
+    // an interface it names by `implements`, and an interface reaches the
+    // interfaces it extends the same way. Walking `extends` alone answered
+    // `none` for `tile as? Named` where `Tile implements Named` — a downcast
+    // that holds, refused silently, while the native backend refused to
+    // build the program at all (#195).
     fn is_instance(type_name: string,
                    target_name: string) -> bool {
         if type_name == target_name {
@@ -3998,11 +4005,17 @@ class TreeInterpreter {
                 }
                 for index: int in
                     0..declaration.relations.len() {
-                    if index <
-                           declaration.relation_kinds.len() &&
-                       declaration.relation_kinds[index] ==
-                           "extends" &&
-                       self.is_instance(
+                    if index >=
+                           declaration.relation_kinds.len() {
+                        continue
+                    }
+                    let kind: string =
+                        declaration.relation_kinds[index]
+                    if kind != "extends" &&
+                       kind != "implements" {
+                        continue
+                    }
+                    if self.is_instance(
                            declaration.relations[index].name,
                            target_name) {
                         return true
