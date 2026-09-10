@@ -2138,9 +2138,11 @@ else caps its depth.
 because the relation is missing — `Sub<int>` really is a child of `Base<int>`.
 A downcast is decided at run time from the object's own class, and an object
 does not carry its type arguments, so `Sub<int>` and `Sub<string>` cannot be
-told apart there. The downcast that does work reads the other way round: the
+told apart there. The same holds for an instantiated *interface*: `x as?
+Producer<int>` is refused, and the way out is a non-generic class that
+implements it. The downcast that does work reads the other way round: the
 *source* may be written at an instantiation, and the target is a non-generic
-class that extends it.
+class that extends it, or a non-generic interface it reaches.
 
 ```
 class Crate<T> {
@@ -2225,6 +2227,25 @@ let s: Shape = pick_a_shape()
 match s as? Circle {
     some(c) => io.println("circle, r = {c.r}"),
     none    => io.println("something else"),
+}
+```
+
+The target may be a **class or an interface**, and must be narrower than the
+source — a downcast goes from a parent to a child, never sideways between two
+unrelated types and never up. Testing for an interface asks whether the
+object's own class reaches it: directly through `implements`, through a base
+class that implements it, or through an interface that `extends` it.
+
+```
+interface Shape { fn area() -> int }
+interface Named extends Shape { fn label() -> string }
+
+class Tile implements Named { ... }
+
+let s: Shape = new Tile()
+match s as? Named {                 // allowed: Named is narrower than Shape
+    some(n) => io.println(n.label()),
+    none    => io.println("not named"),
 }
 ```
 
