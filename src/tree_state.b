@@ -119,15 +119,24 @@ unique class TreeThreadWork implements Send {
     closure: TreeValue
     node: HirNode
     singletons: TreeSingletonState
+    // The command line is a fact about the process, not about the thread
+    // that asks: the native runtime keeps one argv and answers every
+    // thread from it. The worker's interpreter is a second interpreter
+    // over the same program, so it has to be handed the same arguments or
+    // os.args() answers an empty list on a spawned thread and the real
+    // ones natively (#186).
+    arguments: List<string>
     result: Option<TreeValue>
 
     fn init(program: HirProgram,
             closure: TreeValue, node: HirNode,
-            singletons: TreeSingletonState) {
+            singletons: TreeSingletonState,
+            move arguments: List<string>) {
         self.program = program
         self.closure = closure
         self.node = node
         self.singletons = singletons
+        self.arguments = move arguments
         self.result = none
     }
 
@@ -138,8 +147,13 @@ unique class TreeThreadWork implements Send {
     // its own and re-raised at join, which lost it entirely when the thread
     // was detached or never joined.
     fn run() {
+        var arguments: List<string> = []
+        for argument: string in self.arguments {
+            arguments.push(argument)
+        }
         let interpreter: TreeInterpreter =
-            new TreeInterpreter(self.program, [])
+            new TreeInterpreter(
+                self.program, move arguments)
         interpreter.singletons = self.singletons
         let answer: TreeValue =
             interpreter.invoke_closure(

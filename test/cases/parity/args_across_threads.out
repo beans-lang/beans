@@ -1,0 +1,7 @@
+main: 4 [0=alpha][1=two words][2=][3=ünïcode]
+worker: 4 [0=alpha][1=two words][2=][3=ünïcode]
+fanout 0: 4 [0=alpha][1=two words][2=][3=ünïcode]
+fanout 1: 4 [0=alpha][1=two words][2=][3=ünïcode]
+fanout 2: 4 [0=alpha][1=two words][2=][3=ünïcode]
+nested: outer 4 [0=alpha][1=two words][2=][3=ünïcode] inner 4 [0=alpha][1=two words][2=][3=ünïcode]
+brewed: ok(4 [0=alpha][1=two words][2=][3=ünïcode])

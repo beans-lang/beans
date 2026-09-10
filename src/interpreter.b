@@ -5361,6 +5361,10 @@ class TreeInterpreter {
         if node.resolved == "std.thread.spawn" &&
            arguments.len() == 1 &&
            arguments[0].kind == "closure" {
+            var spawn_arguments: List<string> = []
+            for argument: string in self.arguments {
+                spawn_arguments.push(argument)
+            }
             let work:
                 Mutex<TreeThreadWork> =
                 new Mutex(
@@ -5369,7 +5373,8 @@ class TreeInterpreter {
                         tree_spawn_closure(
                             arguments[0]),
                         node,
-                        self.singletons))
+                        self.singletons,
+                        move spawn_arguments))
             let handle: Thread<int> =
                 host_thread.spawn(fn() -> int {
                     work.with_lock(

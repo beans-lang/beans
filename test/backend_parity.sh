@@ -87,13 +87,23 @@ check_effects() {
 
 # agree <source> [expected-constructs]
 agree() {
-    local source=$1 want=${2:-} name
+    agree_with_args "$1" "${2:-}"
+}
+
+# agree_with_args <source> <expected-constructs> [argument...]
+# The same three legs with a command line handed to all of them. A case that
+# reads os.args() proves nothing run with none: both backends answer an empty
+# list and every diff passes (#186), which is why the arguments are the
+# runner's business and not the case's.
+agree_with_args() {
+    local source=$1 want=$2 name
+    shift 2
     name=$(basename "$source" .b)
-    ./build/beansc run "$source" >"$tmp/$name.interp"
+    ./build/beansc run "$source" -- "$@" >"$tmp/$name.interp"
     ./build/beansc build "$source" -o "$tmp/$name.debug" >/dev/null
-    "$tmp/$name.debug" >"$tmp/$name.debug.out"
+    "$tmp/$name.debug" "$@" >"$tmp/$name.debug.out"
     ./build/beansc build --release "$source" -o "$tmp/$name.release" >/dev/null
-    "$tmp/$name.release" >"$tmp/$name.release.out"
+    "$tmp/$name.release" "$@" >"$tmp/$name.release.out"
     if ! diff -u "$tmp/$name.interp" "$tmp/$name.debug.out"; then
         echo "$source: the interpreter and a debug build disagree" >&2
         exit 1
@@ -121,6 +131,7 @@ agree() {
     local note=""
     [ -n "$want" ] && note=", $want built and released"
     [ -f "$golden" ] && note="$note, pinned"
+    [ $# -gt 0 ] && note="$note, $# argument(s)"
     echo "  agree: $source ($(wc -l <"$tmp/$name.interp" | tr -d ' ') lines$note)"
 }
 
@@ -343,9 +354,20 @@ agree test/cases/parity/issue167_fs_lifecycle.b 5
 # and a loop.
 agree test/cases/parity/issue155_move_drop_point.b 40
 
+# #186: os.args() is a fact about the process, and the tree interpreter gave a
+# spawned thread's interpreter an empty argument list — the real arguments
+# natively, nothing under `beansc run`, silently. Run WITH arguments, or both
+# backends answer an empty list and the case passes proving nothing; the
+# answers are pinned as well, so both being wrong together is caught too. The
+# arguments carry a space, an empty string and non-ASCII, and the case reads
+# them from one worker, three at once, a thread spawned by a thread, and a
+# brewed fiber.
+agree_with_args test/cases/parity/args_across_threads.b "" \
+    alpha "two words" "" "ünïcode"
+
 # Every case in the directory has to be listed above with its own expected
 # count; a file added and forgotten would otherwise be silently unchecked.
-listed=51
+listed=52
 present=$(find test/cases/parity -name '*.b' | wc -l | tr -d ' ')
 if [ "$present" != "$listed" ]; then
     echo "test/cases/parity holds $present cases but $listed are run" >&2
