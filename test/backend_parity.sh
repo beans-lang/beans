@@ -531,6 +531,33 @@ if echo "$vtable" | grep -q 'ptr null'; then
 fi
 echo "  agree: test/cases/$name (generic base's method row survives a cross-package name clash)"
 
+# #195: the interface an `as?` tests for declared in one package, and the
+# classes that reach it spread across two. The native test is a byte table
+# filled from the emitter's conformance walk, so a relation written across a
+# package boundary is what that walk could most easily miss. Written from
+# both sides — inside the package that owns the interface, and outside it,
+# where the declaration is reached by a different name — over a class that
+# implements it here, one that implements it there, one that reaches it
+# through a base declared in the other package, and one that does not reach
+# it at all.
+name=interface_downcast_pkg
+( cd "test/cases/$name" && "$root/build/beansc" run main.b ) \
+    >"$tmp/$name.interp"
+( cd "test/cases/$name" \
+  && "$root/build/beansc" build --release main.b \
+       -o "$tmp/$name.release" >/dev/null )
+"$tmp/$name.release" >"$tmp/$name.release.out"
+diff -u "$tmp/$name.interp" "$tmp/$name.release.out"
+# every line is an answer with its expectation beside it, so a run that
+# agrees on the wrong answers is still caught
+if grep -q '^BAD' "$tmp/$name.interp"; then
+    echo "$name: a cross-package interface downcast answered wrongly" >&2
+    grep '^BAD' "$tmp/$name.interp" >&2
+    exit 1
+fi
+test "$(grep -c '^ok ' "$tmp/$name.interp")" -eq 8
+echo "  agree: test/cases/$name (an interface downcast across packages)"
+
 # #123: a generic class extending a generic base in *another* package. The
 # override lives on a generic class, so the record of which slots a name
 # declares had no entry for it — a template carries no symbol, and the record
