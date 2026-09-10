@@ -2,6 +2,66 @@
 
 This file records user-facing changes in each Beans release.
 
+## [0.1.43] - 2026-09-10
+
+`as?` can ask for an interface.
+
+```beans
+interface Shape { fn area() -> int }
+interface Named extends Shape { fn label() -> string }
+
+let s: Shape = pick_a_shape()
+match s as? Named {
+    some(n) => io.println(n.label()),
+    none    => io.println("not named"),
+}
+```
+
+That program passed `beansc check`, then the two backends disagreed in the two
+worst ways at once: `beansc build` refused it — *"LLVM emitter does not support
+as? to 'main.Named' yet"*, a message about the emitter for code the checker had
+accepted — and `beansc run` answered `none` for a downcast that holds, silently.
+A class target was always right, so the object, the interface table and the
+downcast machinery were sound and only the interface target was broken.
+
+Both backends answer it now. The target may be a class or an interface and must
+be narrower than the source; asking for an interface asks whether the object's
+own class reaches it, directly through `implements`, through a base class that
+implements it, or through an interface that `extends` it. Downcasting to an
+**instantiated** generic stays refused, interface or class — the test reads the
+object's own class and an object does not carry its type arguments — and that
+refusal now names `implements` for an interface where it used to say `extends`
+for everything.
+
+Runtime ABI stays at 20, so 0.1.42 binaries relink rather than needing a
+rebuild: the interface test is a table the compiler emits, not a new runtime
+entry.
+
+### Also fixed
+
+- **`os.args()` inside `thread.spawn` answered nothing under `beansc run`** and
+  the real arguments in a built binary. A CLI that parses its own flags on a
+  worker was a different program in the edit loop than as a shipped binary,
+  with no error on either side. The tree interpreter built the worker's
+  interpreter with an empty argument list; it is handed the command line now.
+- **Diagnostics no longer leak the checker's `poison` marker.** A type is
+  refused when any part of it is, so `let l: List<Nope>` reported `unknown type
+  'Nope'` and then, on the next line, `unknown class 'List<poison>'` — a type
+  nobody wrote, composed out of an internal marker. Nine rules stop on it:
+  type mismatches, annotation validation, `new`, both cast arms, string
+  interpolation, the three `extern "C"` ABI readers and the annotation schema.
+  One error per mention of the unknown name, and nothing after it.
+- **One reflect error state, one text.** `beans_reflect_error_message()`
+  answered *"reflection operation failed"* where no error code was set and the
+  tree interpreter answered nothing, so `rt.error_message()` printed two
+  different things depending on the backend — reachable from any program, since
+  every reflection entry clears the code on the way in and a call that
+  *succeeded* leaves that state behind. The runtime says `""` now; the words
+  for a refusal that did not say what it was live once, in `std.reflect`.
+- **A class extending a closed generic with no `init` of its own** built
+  correctly as of 0.1.41 but had no test; the gate is here, and it builds
+  rather than only checking and running.
+
 ## [0.1.42] - 2026-09-10
 
 A package is named by the module it declares, not by the path that reached it.
