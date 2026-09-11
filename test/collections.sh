@@ -103,4 +103,26 @@ fi
 grep -q "SortedMap needs K implements Order, got main.Key" "$tmp/order.bad"
 grep -q "PriorityQueue needs P implements Order, got main.Key" "$tmp/order.bad"
 
+# Bytes is the one builtin the checker let through to a backend that could not
+# emit it. `get` and `set` have always been the way to reach a byte, so this is
+# a spelling being refused rather than a capability being withdrawn — and the
+# message says which spelling to use instead of naming a stage of the compiler.
+echo "checking Bytes indexing is refused at the type"
+if ./build/beansc check test/cases/bytes_index_bad.b \
+    >"$tmp/bytes-index.bad" 2>&1; then
+    echo "the checker accepted Bytes indexing, which neither backend emits" >&2
+    exit 1
+fi
+grep -q "Bytes cannot be indexed — read one byte with get(index), which answers int" \
+    "$tmp/bytes-index.bad"
+grep -q "Bytes cannot be assigned by index — write one with set(index, value)" \
+    "$tmp/bytes-index.bad"
+# The refusal has to come from the checker, not from a backend leaking its own
+# vocabulary into a program's error.
+if grep -qi "emitter\|interpreter yet" "$tmp/bytes-index.bad"; then
+    echo "the refusal names a compiler stage instead of the program" >&2
+    cat "$tmp/bytes-index.bad" >&2
+    exit 1
+fi
+
 echo "ok std.collections models, both ASan lanes, and the element/key rules"

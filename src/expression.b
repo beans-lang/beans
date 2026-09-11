@@ -11630,7 +11630,22 @@ class ExpressionChecker {
                 result_type = poison_hir_type()
             }
         } else if receiver.type.name == "Bytes" {
-            result_type = new HirType("int")
+            // Neither backend can emit this. The checker used to accept it and
+            // type it `int`, so `bytes[i]` reached the interpreter as a panic
+            // saying indexing bytes "is not in the Beans interpreter yet" and
+            // reached the native build as an emitter error about the LLVM
+            // emitter — two messages about the compiler, for a program that
+            // was refused by neither. Bytes has had `get` and `set` all along.
+            if place {
+                self.fail(
+                    node,
+                    "Bytes cannot be assigned by index — write one with set(index, value)")
+            } else {
+                self.fail(
+                    node,
+                    "Bytes cannot be indexed — read one byte with get(index), which answers int")
+            }
+            result_type = poison_hir_type()
         } else if !hir_already_refused(receiver.type) {
             self.fail(
                 node,
