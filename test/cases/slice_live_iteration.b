@@ -7,9 +7,10 @@
 // the interpreter now does too instead of snapshotting the view when the loop
 // started. spec/SYNTAX.md, "Changing a collection while a loop reads it".
 //
-// (The write is through the owning `RawPtr`, not `view[i] = v`: writing through
-// a slice is a separate emitter gap the native backend refuses, unrelated to
-// how the loop reads.)
+// (The write is through the owning `RawPtr`, not `view[i] = v`. That was once
+// an emitter gap; #61 closed it, and test/cases/parity/slice_index_write.b is
+// where an indexed write through a slice is checked. Writing through the
+// pointer keeps this case about how the loop *reads*.)
 import std.io
 
 // Overwrite, through the owning pointer, an element the loop has not reached

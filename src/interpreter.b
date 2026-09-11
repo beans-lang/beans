@@ -1032,6 +1032,738 @@ class TreeInterpreter {
         return field.name
     }
 
+    // ---- typed JSON decoding ---------------------------------------------
+    //
+    // `json.decode<T>` and its three siblings are lowered by the native
+    // backend into a walk of the parsed document straight into the target
+    // struct. Nothing replaced the stdlib body here, so under `beansc run`
+    // the call answered that body's own
+    // `err("typed JSON decoding was not lowered", "unsupported")` — an
+    // ordinary Result failure, with no diagnostic and no panic. A program
+    // that branches on the result therefore took a *different branch* under
+    // the interpreter than in its own binary, silently, which is the worst
+    // shape a backend split can have.
+    //
+    // This is that walk. It reads the same parse tree: `json.parse` is an
+    // extern "C" call into the vendored yyjson on both backends, so only the
+    // mapping from document to struct is written twice. Those rules are
+    // beans_json_typed_object_direct and beans_json_typed_value_direct in
+    // runtime/encoding/beans_enc_json.c, and test/json_typed_decode.sh runs
+    // both legs over the JSONTestSuite corpus so the two stay together.
+    //
+    // The target shape is already narrow — validate_json_decode in
+    // src/expression.b proves it is a struct or List<struct> whose fields are
+    // scalars, an Option of one, a List of one, or a nested struct, with no
+    // generics, no recursion, no nested Option and no defaulted field (an
+    // `@json.ignore`d field must have one, and takes it).
+    //
+    // Every refusal is the one error the native decoder answers, whatever the
+    // reason: the emitter builds a single "cannot decode JSON into target
+    // struct" of kind "invalid" at every failure site, so matching it costs
+    // nothing and matching anything else would be a new disagreement. The
+    // per-field reason travels through beans_json_decode_probe natively and
+    // is documented as answering zeros here.
+
+    fn tree_json_decode_short_name(
+        resolved: string) -> string {
+        let shown: string = display_symbol(resolved)
+        if shown == "std.encoding.json.decode" {
+            return "decode"
+        }
+        if shown == "std.encoding.json.decode_bytes" {
+            return "decode_bytes"
+        }
+        if shown ==
+               "std.encoding.json.decode_bytes_in_place" {
+            return "decode_bytes_in_place"
+        }
+        if shown ==
+               "std.encoding.json.decode_with_options" {
+            return "decode_with_options"
+        }
+        return ""
+    }
+
+    // The XML half of the same gap, and it stays open — deliberately, and
+    // loudly rather than silently.
+    //
+    // `xml.decode<T>` is native only. Its stdlib body answered
+    // `err("typed XML decoding was not lowered", "unsupported")` here, which
+    // is an ordinary Result failure: a program that branches on the result
+    // took a different branch under `beansc run` than in its own binary, with
+    // nothing said. The JSON half could be closed because both backends parse
+    // through one vendored yyjson — `json.parse` is an extern "C" call on
+    // either side — so only the mapping from document to struct had to be
+    // written twice, and test/json_typed_decode.sh diffs the two over the
+    // JSONTestSuite corpus and the fuzz.
+    //
+    // XML has no such shared floor. pugixml hands back element text and
+    // beans_enc_xml.cpp converts it with parsers of its own —
+    // beans_xml_integer, beans_xml_double with its strtod fallback, and a
+    // bool that takes "true"/"1"/"false"/"0" after trimming — none of which
+    // any Beans code calls. A second set written here would be a second
+    // implementation of exactly the thing this project keeps one of, with no
+    // answer sheet to hold it to (there is no XML corpus beside the
+    // JSONTestSuite one). So the decode is not attempted, and the program is
+    // stopped where it asked for it instead of being handed a plausible
+    // failure it will branch on.
+    //
+    // Closing it needs, in order: a text-to-number contract the bridge and
+    // the language share (the bridge exporting its conversions, or the
+    // conversions moving into Beans), and an answer-sheet corpus for typed
+    // XML the way test/corpus/jsontestsuite is one for JSON.
+    fn tree_xml_decode_short_name(
+        resolved: string) -> string {
+        let shown: string = display_symbol(resolved)
+        if shown == "std.encoding.xml.decode" {
+            return "decode"
+        }
+        if shown == "std.encoding.xml.decode_bytes" {
+            return "decode_bytes"
+        }
+        if shown ==
+               "std.encoding.xml.decode_bytes_in_place" {
+            return "decode_bytes_in_place"
+        }
+        if shown ==
+               "std.encoding.xml.decode_with_options" {
+            return "decode_with_options"
+        }
+        return ""
+    }
+
+    fn tree_json_decode_failure() -> TreeValue {
+        return TreeValue.result_err(
+            TreeValue.error(
+                "cannot decode JSON into target struct",
+                "invalid"))
+    }
+
+    // Calls one stdlib function by its qualified name. The json Value
+    // accessors are ordinary Beans methods over extern "C" reads, so going
+    // through them is what makes this decoder and the native one read the
+    // same bytes of the same document.
+    fn tree_json_invoke(
+        qualified: string,
+        receiver: Option<TreeValue>,
+        arguments: List<TreeValue>) ->
+        Option<TreeValue> {
+        match self.find_function(qualified) {
+            some(function) => {
+                let answer: TreeValue =
+                    self.invoke_bound(
+                        function, arguments,
+                        receiver, {})
+                if self.failed { return none }
+                return some(answer)
+            }
+            none => { return none }
+        }
+    }
+
+    fn tree_json_value_call(
+        value: TreeValue, method: string) ->
+        Option<TreeValue> {
+        return self.tree_json_invoke(
+            package_symbol(
+                "std.encoding.json",
+                "Value.{method}"),
+            some(value), [])
+    }
+
+    // A float's JSON spelling, written by the very writer the native encoder
+    // uses. The interpolation this replaced was the language's own float
+    // formatting, and it disagrees with yyjson on the two shapes that matter
+    // most in a document: an integral value ("0" against yyjson's "0.0", so
+    // the number came back an integer on a re-parse) and a large magnitude
+    // ("-5.764607523034235e+17" against "-576460752303423500.0"). Typed
+    // encoding therefore answered different bytes on the two backends for any
+    // struct carrying a float — silently, for a value neither side refused.
+    //
+    // Two calls through the stdlib is a slow way to format one number, and it
+    // is the only way to get yyjson's own dtoa without writing a second one:
+    // a shortest-round-trip formatter re-derived here would be exactly the
+    // kind of second implementation that drifts. Only `beansc run` pays it.
+    fn tree_json_float_text(
+        number: float) -> Option<string> {
+        match self.tree_json_invoke(
+                  package_symbol(
+                      "std.encoding.json",
+                      "Value.from_float"),
+                  none, [TreeValue.floating(number)]) {
+            some(node) => {
+                match self.tree_json_ok(
+                          self.tree_json_invoke(
+                              package_symbol(
+                                  "std.encoding.json",
+                                  "stringify"),
+                              none, [node])) {
+                    some(text) => {
+                        return some(text.text)
+                    }
+                    none => { return none }
+                }
+            }
+            none => { return none }
+        }
+    }
+
+    // "null", "boolean", "integer", "unsigned_integer", "floating", "text",
+    // "array", "object" — json.Kind's own variant names, which are yyjson's
+    // eight value kinds. "" means the call could not be made at all.
+    fn tree_json_node_kind(value: TreeValue) -> string {
+        match self.tree_json_value_call(value, "kind") {
+            some(answer) => {
+                if answer.kind != "variant" { return "" }
+                return answer.text
+            }
+            none => { return "" }
+        }
+    }
+
+    // The payload of a Result the stdlib handed back, or none for its err
+    // arm — every json.Value accessor answers Result<T>.
+    fn tree_json_ok(
+        answer: Option<TreeValue>) -> Option<TreeValue> {
+        match answer {
+            some(value) => {
+                if value.kind == "ok" &&
+                   value.items.len() == 1 {
+                    return some(value.items[0])
+                }
+                return none
+            }
+            none => { return none }
+        }
+    }
+
+    fn tree_json_aliases(
+        field: HirField) -> List<string> {
+        var names: List<string> = []
+        match self.tree_json_annotation(
+                  field.annotations, "alias") {
+            some(annotation) => {
+                match self.tree_json_annotation_value(
+                          annotation) {
+                    some(syntax) => {
+                        for item: AstNode in syntax.children {
+                            names.push(
+                                string_literal_decode(
+                                    item.value))
+                        }
+                    }
+                    none => {}
+                }
+            }
+            none => {}
+        }
+        return move names
+    }
+
+    fn tree_json_ignored(field: HirField) -> bool {
+        return self.tree_json_annotation(
+                   field.annotations,
+                   "ignore").is_some()
+    }
+
+    fn tree_json_allow_unknown(
+        declaration: HirDeclaration) -> bool {
+        return self.tree_json_annotation(
+                   declaration.annotations,
+                   "allow_unknown").is_some()
+    }
+
+    // One JSON value into one field type. `none` is a refusal; the caller
+    // turns it into the decoder's single error.
+    //
+    // The depth is this value's own — the root object is 1 and a field value
+    // sits one below the object that names it — and it is checked here as the
+    // walk descends, exactly as beans_json_typed_value_direct checks it.
+    fn tree_json_typed_value(
+        value: TreeValue, type: HirType,
+        depth: int, max_depth: int) ->
+        Option<TreeValue> {
+        if depth > max_depth { return none }
+        if self.failed { return none }
+        let name: string = canonical_hir_name(type.name)
+        let kind: string = self.tree_json_node_kind(value)
+        if kind == "" { return none }
+        if name == "bool" {
+            if kind != "boolean" { return none }
+            match self.tree_json_ok(
+                      self.tree_json_value_call(
+                          value, "to_bool")) {
+                some(answer) => {
+                    return some(
+                        TreeValue.boolean(
+                            answer.bool_data))
+                }
+                none => { return none }
+            }
+        }
+        if hir_is_integer(type) {
+            // A number written with a fraction or an exponent is a real to
+            // yyjson and is refused for an integer field on both backends —
+            // `{"age": 7.0}` does not decode into an `int`.
+            if kind != "integer" &&
+               kind != "unsigned_integer" {
+                return none
+            }
+            let bits: int =
+                integer_literal_bits(name)
+            if bits == 0 { return none }
+            if integer_literal_signed(name) {
+                match self.tree_json_ok(
+                          self.tree_json_value_call(
+                              value, "to_int")) {
+                    some(answer) => {
+                        let number: int = answer.int_data
+                        if bits < 64 {
+                            let limit: int = 1 << (bits - 1)
+                            if number < -limit ||
+                               number > limit - 1 {
+                                return none
+                            }
+                        }
+                        return some(
+                            TreeValue.signed_integer(
+                                number, bits))
+                    }
+                    none => { return none }
+                }
+            }
+            match self.tree_json_ok(
+                      self.tree_json_value_call(
+                          value, "to_uint")) {
+                some(answer) => {
+                    let number: u64 = answer.uint_data
+                    if bits < 64 {
+                        let limit: u64 =
+                            ((1 as u64) << (bits as u64)) -
+                                (1 as u64)
+                        if number > limit { return none }
+                    }
+                    return some(
+                        TreeValue.unsigned_integer(
+                            number, bits))
+                }
+                none => { return none }
+            }
+        }
+        if hir_is_float(type) {
+            if kind != "integer" &&
+               kind != "unsigned_integer" &&
+               kind != "floating" {
+                return none
+            }
+            match self.tree_json_ok(
+                      self.tree_json_value_call(
+                          value, "number")) {
+                some(answer) => {
+                    let number: float = answer.float_data
+                    if name == "f32" {
+                        // the native decoder narrows and then refuses a
+                        // magnitude f32 cannot hold
+                        let narrowed: f32 = number as f32
+                        let widened: float = narrowed as float
+                        if widened != widened ||
+                           widened ==
+                               tree_float_infinity() ||
+                           widened ==
+                               -tree_float_infinity() {
+                            return none
+                        }
+                        return some(
+                            TreeValue.floating(widened))
+                    }
+                    return some(
+                        TreeValue.floating(number))
+                }
+                none => { return none }
+            }
+        }
+        if name == "string" {
+            if kind != "text" { return none }
+            match self.tree_json_ok(
+                      self.tree_json_value_call(
+                          value, "to_string")) {
+                some(answer) => {
+                    return some(
+                        TreeValue.string(answer.text))
+                }
+                none => { return none }
+            }
+        }
+        if name == "List" && type.args.len() == 1 {
+            if kind != "array" { return none }
+            match self.tree_json_ok(
+                      self.tree_json_value_call(
+                          value, "elements")) {
+                some(items) => {
+                    var decoded: List<TreeValue> = []
+                    for item: TreeValue in items.items {
+                        match self.tree_json_typed_value(
+                                  item, type.args[0],
+                                  depth + 1, max_depth) {
+                            some(element) => {
+                                decoded.push(element)
+                            }
+                            none => { return none }
+                        }
+                    }
+                    return some(
+                        TreeValue.sequence(
+                            "list", move decoded))
+                }
+                none => { return none }
+            }
+        }
+        match self.declaration(type.name) {
+            some(declaration) => {
+                if declaration.kind == "struct" {
+                    return self.tree_json_typed_record(
+                        value, declaration, depth,
+                        max_depth)
+                }
+            }
+            none => {}
+        }
+        return none
+    }
+
+    // One JSON object into one struct. Keys are walked in document order so
+    // an unknown key, a duplicate key and a bad value are reached in the
+    // order the native decoder reaches them; the missing pass runs after.
+    fn tree_json_typed_record(
+        value: TreeValue,
+        declaration: HirDeclaration,
+        depth: int, max_depth: int) ->
+        Option<TreeValue> {
+        if self.tree_json_node_kind(value) != "object" {
+            return none
+        }
+        var slot_of: Map<string, int> = {}
+        for index: int in 0..declaration.fields.len() {
+            let field: HirField =
+                declaration.fields[index]
+            // an ignored field is not in the key table at all, so its own
+            // name arrives as an unknown key
+            if self.tree_json_ignored(field) { continue }
+            let primary: string =
+                self.tree_json_field_name(
+                    declaration, field)
+            if !slot_of.contains_key(primary) {
+                slot_of[primary] = index
+            }
+            for alias: string in
+                self.tree_json_aliases(field) {
+                if !slot_of.contains_key(alias) {
+                    slot_of[alias] = index
+                }
+            }
+        }
+        let unknown_ok: bool =
+            self.tree_json_allow_unknown(declaration)
+        var decoded: Map<int, TreeValue> = {}
+        match self.tree_json_ok(
+                  self.tree_json_value_call(
+                      value, "entries")) {
+            some(entries) => {
+                for entry: TreeValue in entries.items {
+                    var key: string = ""
+                    match entry.fields.value("key") {
+                        some(text) => { key = text.text }
+                        none => { return none }
+                    }
+                    match slot_of.get(key) {
+                        some(index) => {
+                            if decoded.contains_key(index) {
+                                return none
+                            }
+                            match entry.fields.value(
+                                      "value") {
+                                some(child) => {
+                                    match self.tree_json_typed_field(
+                                              child,
+                                              declaration.fields[
+                                                  index].type,
+                                              depth + 1,
+                                              max_depth) {
+                                        some(stored) => {
+                                            decoded[index] =
+                                                stored
+                                        }
+                                        none => { return none }
+                                    }
+                                }
+                                none => { return none }
+                            }
+                        }
+                        none => {
+                            if !unknown_ok { return none }
+                            // a skipped subtree is still measured: the depth
+                            // limit is a whole-document policy (issue #142)
+                            match entry.fields.value(
+                                      "value") {
+                                some(child) => {
+                                    if !self.tree_json_within_depth(
+                                           child, depth + 1,
+                                           max_depth) {
+                                        return none
+                                    }
+                                }
+                                none => { return none }
+                            }
+                        }
+                    }
+                }
+            }
+            none => { return none }
+        }
+        let frame: TreeFrame = new TreeFrame()
+        let record: TreeValue = new TreeValue("record")
+        record.text = declaration.qualified
+        for index: int in 0..declaration.fields.len() {
+            let field: HirField =
+                declaration.fields[index]
+            match decoded.get(index) {
+                some(stored) => {
+                    record.fields.entries[field.name] =
+                        stored
+                    continue
+                }
+                none => {}
+            }
+            if self.tree_json_ignored(field) {
+                match field.default_value {
+                    some(expression) => {
+                        record.fields.entries[field.name] =
+                            tree_value_copy(
+                                self.expression(
+                                    expression, frame))
+                        if self.failed { return none }
+                    }
+                    none => { return none }
+                }
+                continue
+            }
+            if canonical_hir_name(field.type.name) ==
+                   "Option" {
+                record.fields.entries[field.name] =
+                    TreeValue.option_none()
+                continue
+            }
+            return none
+        }
+        return some(record)
+    }
+
+    // A field value, which is the one place a JSON null is a value rather
+    // than a type error: it is the absent arm of an Option field and
+    // nothing else.
+    fn tree_json_typed_field(
+        value: TreeValue, type: HirType,
+        depth: int, max_depth: int) ->
+        Option<TreeValue> {
+        let optional: bool =
+            canonical_hir_name(type.name) == "Option" &&
+            type.args.len() == 1
+        if self.tree_json_node_kind(value) == "null" {
+            if !optional { return none }
+            return some(TreeValue.option_none())
+        }
+        let payload: HirType =
+            if optional { type.args[0] } else { type }
+        match self.tree_json_typed_value(
+                  value, payload, depth, max_depth) {
+            some(decoded) => {
+                if optional {
+                    return some(
+                        TreeValue.option_some(decoded))
+                }
+                return some(decoded)
+            }
+            none => { return none }
+        }
+    }
+
+    // The measure an unknown key's skipped subtree is held to. Only
+    // containers count, matching beans_json_typed_within_depth.
+    fn tree_json_within_depth(
+        value: TreeValue, depth: int,
+        max_depth: int) -> bool {
+        let kind: string =
+            self.tree_json_node_kind(value)
+        if kind != "array" && kind != "object" {
+            return true
+        }
+        if kind == "array" {
+            match self.tree_json_ok(
+                      self.tree_json_value_call(
+                          value, "elements")) {
+                some(items) => {
+                    if items.items.len() == 0 { return true }
+                    if depth + 1 > max_depth { return false }
+                    for item: TreeValue in items.items {
+                        if !self.tree_json_within_depth(
+                               item, depth + 1, max_depth) {
+                            return false
+                        }
+                    }
+                    return true
+                }
+                none => { return false }
+            }
+        }
+        match self.tree_json_ok(
+                  self.tree_json_value_call(
+                      value, "entries")) {
+            some(entries) => {
+                if entries.items.len() == 0 { return true }
+                if depth + 1 > max_depth { return false }
+                for entry: TreeValue in entries.items {
+                    match entry.fields.value("value") {
+                        some(child) => {
+                            if !self.tree_json_within_depth(
+                                   child, depth + 1,
+                                   max_depth) {
+                                return false
+                            }
+                        }
+                        none => { return false }
+                    }
+                }
+                return true
+            }
+            none => { return false }
+        }
+    }
+
+    fn tree_json_typed_decode(
+        node: HirNode,
+        arguments: List<TreeValue>,
+        short_name: string) -> TreeValue {
+        if node.type.args.len() < 1 {
+            return self.tree_json_decode_failure()
+        }
+        let target: HirType =
+            self.runtime_type(
+                node.type.args[0],
+                self.current_type_bindings())
+        var max_depth: int = 128
+        var parser: string = ""
+        var parse_arguments: List<TreeValue> = []
+        if short_name == "decode" {
+            parser = "parse"
+            parse_arguments.push(arguments[0])
+        } else if short_name == "decode_bytes" ||
+                  short_name ==
+                      "decode_bytes_in_place" {
+            parser = "parse_bytes"
+            parse_arguments.push(arguments[0])
+        } else {
+            if arguments.len() < 2 {
+                return self.tree_json_decode_failure()
+            }
+            parser = "parse_with_options"
+            parse_arguments.push(arguments[0])
+            match arguments[1].fields.value("parse") {
+                some(options) => {
+                    parse_arguments.push(options)
+                }
+                none => {
+                    return self.tree_json_decode_failure()
+                }
+            }
+            match arguments[1].fields.value("max_depth") {
+                some(limit) => {
+                    max_depth = limit.int_data
+                }
+                none => {}
+            }
+        }
+        // a limit of zero refuses everything: the root itself is depth 1
+        if max_depth <= 0 {
+            return self.tree_json_decode_failure()
+        }
+        var parsed: TreeValue = TreeValue.unit()
+        match self.tree_json_invoke(
+                  package_symbol(
+                      "std.encoding.json", parser),
+                  none, move parse_arguments) {
+            some(answer) => { parsed = answer }
+            none => {
+                return self.tree_json_decode_failure()
+            }
+        }
+        if parsed.kind != "ok" ||
+           parsed.items.len() != 1 {
+            return self.tree_json_decode_failure()
+        }
+        let root: TreeValue = parsed.items[0]
+        if canonical_hir_name(target.name) == "List" &&
+           target.args.len() == 1 {
+            if self.tree_json_node_kind(root) != "array" {
+                return self.tree_json_decode_failure()
+            }
+            match self.declaration(target.args[0].name) {
+                some(declaration) => {
+                    match self.tree_json_ok(
+                              self.tree_json_value_call(
+                                  root, "elements")) {
+                        some(items) => {
+                            // the root array is depth 1, its records depth 2
+                            if items.items.len() != 0 &&
+                               2 > max_depth {
+                                return self.tree_json_decode_failure()
+                            }
+                            var records: List<TreeValue> = []
+                            for item: TreeValue in
+                                items.items {
+                                match self.tree_json_typed_record(
+                                          item, declaration,
+                                          2, max_depth) {
+                                    some(record) => {
+                                        records.push(record)
+                                    }
+                                    none => {
+                                        return self.tree_json_decode_failure()
+                                    }
+                                }
+                            }
+                            return TreeValue.result_ok(
+                                TreeValue.sequence(
+                                    "list", move records))
+                        }
+                        none => {
+                            return self.tree_json_decode_failure()
+                        }
+                    }
+                }
+                none => {
+                    return self.tree_json_decode_failure()
+                }
+            }
+        }
+        match self.declaration(target.name) {
+            some(declaration) => {
+                match self.tree_json_typed_record(
+                          root, declaration, 1,
+                          max_depth) {
+                    some(record) => {
+                        return TreeValue.result_ok(record)
+                    }
+                    none => {
+                        return self.tree_json_decode_failure()
+                    }
+                }
+            }
+            none => {
+                return self.tree_json_decode_failure()
+            }
+        }
+    }
+
     // Encodes a JSON string, or `none` when the bytes are not valid UTF-8.
     // Both native writers (the direct writer and yyjson) reject a string that
     // is not well-formed UTF-8 — overlong forms, surrogates, anything past
@@ -1157,7 +1889,7 @@ class TreeInterpreter {
                 self.json_write_nan = true
                 return none
             }
-            return some("{number}")
+            return self.tree_json_float_text(number)
         }
         if value.kind == "string" {
             return self.tree_json_string(value.text)
@@ -11333,6 +12065,22 @@ class TreeInterpreter {
            arguments.len() == 2 {
             return self.tree_json_encode(
                 arguments[0], some(arguments[1].text))
+        }
+        if node.kind == "call" &&
+           self.tree_xml_decode_short_name(
+               node.resolved) != "" {
+            return self.fail(
+                node,
+                "xml.{self.tree_xml_decode_short_name(node.resolved)} is not available under `beansc run` — typed XML decoding is lowered only by the native backend, so build the program (`beansc build`) to run this, or parse with xml.parse and read the nodes")
+        }
+        if node.kind == "call" &&
+           self.tree_json_decode_short_name(
+               node.resolved) != "" &&
+           arguments.len() >= 1 {
+            return self.tree_json_typed_decode(
+                node, arguments,
+                self.tree_json_decode_short_name(
+                    node.resolved))
         }
         if node.kind == "call" &&
            display_symbol(node.resolved) ==

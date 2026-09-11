@@ -7214,6 +7214,34 @@ class ExpressionChecker {
         return result
     }
 
+    // `%` on two decimals passed the checker and then failed twice over: the
+    // tree interpreter panicked at run time — so a program whose control
+    // flow never reached the line shipped fine — and the native build
+    // refused at compile time, talking about the LLVM emitter rather than
+    // about the program. Neither backend has ever had a decimal remainder:
+    // the runtime exposes add, sub, mul, div, cmp, round, abs and neg and no
+    // rem, and the compiler's own sources cannot grow one either, since the
+    // interpreter writes its decimal arithmetic in Beans and the bootstrap
+    // compiler would have to already have the operator it is being taught.
+    //
+    // So this is the language's own answer, in the caller's terms, at check
+    // time: the same shape `+` on a string has (spec/SYNTAX.md, "Strings").
+    // `hir_is_numeric` sweeping decimal into the `%` rule is what accepted it.
+    // Removing the refusal means a decimal remainder in the runtime, the
+    // runtime-ABI number that goes with a new entry, and a released
+    // bootstrap carrying it — in that order.
+    fn refuse_decimal_remainder(
+        node: AstNode, operation: string,
+        type: HirType) -> bool {
+        if canonical_hir_name(type.name) != "decimal" {
+            return false
+        }
+        self.fail(
+            node,
+            "'{operation}' is not defined for decimal — take the remainder in an integer type, or subtract the truncated quotient: a - (a / b).round(0, RoundingMode.toward_zero) * b")
+        return true
+    }
+
     fn check_binary(node: AstNode,
                     expected: HirType) -> HirNode {
         let operation: string = node.value
@@ -7323,6 +7351,9 @@ class ExpressionChecker {
                 self.fail(
                     node,
                     "'{operation}' needs matching numbers")
+            } else if operation == "%" {
+                self.refuse_decimal_remainder(
+                    node, operation, left.type)
             }
         } else if operation == "&" || operation == "|" ||
                   operation == "^" || operation == "<<" ||
@@ -13522,6 +13553,9 @@ class ExpressionChecker {
                 self.fail(
                     node,
                     "compound assignment needs a numeric field")
+            } else if node.value == "%=" {
+                self.refuse_decimal_remainder(
+                    node, "%=", place.type)
             }
             result.children.push(place)
             result.children.push(value)
@@ -13571,6 +13605,9 @@ class ExpressionChecker {
                     self.fail(
                         node,
                         "compound assignment needs a numeric local")
+                } else if node.value == "%=" {
+                    self.refuse_decimal_remainder(
+                        node, "%=", binding.type)
                 }
                 result.children.push(place)
                 result.children.push(value)

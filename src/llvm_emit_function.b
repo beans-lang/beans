@@ -996,6 +996,46 @@ partial class LlvmTextEmitter {
             }
             none => {}
         }
+        // A List is a reference, and the identity branch below would compare
+        // two of them by address — which is a different question from the
+        // one the interpreter answers. tree_value_total_equal walks a list
+        // element by element wherever it meets one, so `Outer { inner: Inner
+        // { tail: [1] } } == Outer { inner: Inner { tail: [1] } }` was true
+        // under `beansc run` and false in a built binary, at any depth, with
+        // no diagnostic on either side. The call is the one a bare
+        // `xs == ys` makes.
+        if name == "List" && type.args.len() == 1 {
+            let raw: string =
+                "%inline.list.raw{tag}{id}"
+            let call: string =
+                self.list_equal_call(
+                    type.args[0], left, right, raw)
+            if call == "" {
+                return new LlvmSlotConversion("", "")
+            }
+            return new LlvmSlotConversion(
+                "{call}  %inline.eq{tag}{id} = icmp ne i64 {raw}, 0\n",
+                "%inline.eq{tag}{id}")
+        }
+        // A Map has no equality (spec/SYNTAX.md; the checker refuses a bare
+        // `m == n` outright). One reached through a field is the same rule:
+        // the interpreter answers false for every pair, and request_value_eq
+        // answers 0 for the same reason, so the identity branch below —
+        // which called a struct equal to a copy of itself because both held
+        // the one map pointer — must not have it.
+        if name == "Map" || name == "OrderedMap" {
+            return new LlvmSlotConversion("", "false")
+        }
+        // A Result compares by tag and then by the live arm, at the top
+        // level and one level down alike. A boxed Result is a reference, so
+        // without this the identity branch below compared two of them by
+        // address — the same silent wrong answer a List field gave — and an
+        // inline one reached the record walk at the bottom, which has no
+        // layout for it and refused the whole struct.
+        if name == "Result" && type.args.len() >= 1 {
+            return self.emit_result_equal(
+                type, left, right)
+        }
         // Not Option. A niche-encoded `Option<T>` — one whose payload is a
         // reference — is a bare pointer, so type_is_reference answers true
         // for it and this branch used to swallow it and compare the two

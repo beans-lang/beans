@@ -32,7 +32,7 @@ src/llvm_emit_collections.b	LLVM emitter does not support indexing 'X' yet	2	unk
 src/llvm_emit_collections.b	LLVM emitter does not support joining List<X> yet	2	unknown
 src/llvm_emit_collections.b	LLVM emitter does not support list element 'X' yet	3	unknown
 src/llvm_emit_collections.b	LLVM emitter does not support list type 'X' yet	1	unknown
-src/llvm_emit_collections.b	LLVM emitter does not support map type 'X' yet	1	unknown
+src/llvm_emit_collections.b	LLVM emitter does not support map type 'X' yet	2	unknown
 src/llvm_emit_collections.b	LLVM emitter does not support map value 'X' yet	1	unknown
 src/llvm_emit_collections.b	LLVM emitter does not support range element X yet	1	unknown
 src/llvm_emit_collections.b	LLVM emitter does not support slice element 'X' yet	1	unknown
@@ -54,7 +54,7 @@ src/llvm_emit_concurrency.b	LLVM emitter does not support builtin method 'Atomic
 src/llvm_emit_concurrency.b	LLVM emitter does not support builtin method 'Gate.X' yet	1	unknown
 src/llvm_emit_concurrency.b	LLVM emitter does not support capturing 'X' yet	1	unknown
 src/llvm_emit_concurrency.b	LLVM emitter does not support collecting 'X' from a TaskGroup yet	1	unknown
-src/llvm_emit_concurrency.b	LLVM emitter does not support delivering 'X' from a TaskGroup yet	1	unknown
+src/llvm_emit_concurrency.b	LLVM emitter does not support delivering 'X' from a TaskGroup yet	2	unknown
 src/llvm_emit_concurrency.b	LLVM emitter does not support receiving 'X' yet	2	unknown
 src/llvm_emit_concurrency.b	LLVM emitter does not support this defer capture yet	1	unknown
 src/llvm_emit_enum.b	LLVM emitter does not support enum payload type 'X' yet	2	unknown

@@ -113,7 +113,25 @@ partial class LlvmTextEmitter {
 
     // Map helpers use the same key kinds as the production backend and
     // runtime: raw, f64, string, decimal, custom structural, and f32.
+    //
+    // The custom kind is only a kind when the two symbols that make it one
+    // can be built. map_key_eq and map_key_hash answer "" for a shape they
+    // have no comparator for, and every caller interpolates that answer
+    // straight into the runtime call — `ptr , ptr )`, output clang rejects,
+    // with the failure arriving at build time talking about a .ll file.
+    // Answering -1 here instead puts the refusal where every map emitter
+    // already looks for it, in the program's own terms.
     fn map_key_kind(type: HirType) -> int {
+        let kind: int = self.map_key_kind_raw(type)
+        if kind == 4 &&
+           (self.map_key_eq(type, kind) == "" ||
+            self.map_key_hash(type, kind) == "") {
+            return -1
+        }
+        return kind
+    }
+
+    fn map_key_kind_raw(type: HirType) -> int {
         let name: string =
             canonical_hir_name(type.name)
         if llvm_type_is_integer(type) { return 0 }
@@ -2196,11 +2214,8 @@ partial class LlvmTextEmitter {
         // false in a native build. Those now refuse instead.
         let chosen: LlvmEqualityKind =
             self.slot_equality_kind(element)
-        var kind: int = chosen.kind
-        var thunk: string = chosen.thunk
-        if thunk != "null" && thunk.starts_with("@") {
-            thunk = thunk.slice(1, thunk.len())
-        }
+        let kind: int = chosen.kind
+        let thunk: string = chosen.thunk
         if kind < 0 {
             self.fail(
                 instruction,
@@ -3304,9 +3319,14 @@ partial class LlvmTextEmitter {
             instruction.operands[0]
         let collection_type: HirType =
             self.value_type(function, collection_id)
-        if llvm_type_is_map(collection_type) &&
-           self.map_key_kind(
-               collection_type.args[0]) >= 0 {
+        if llvm_type_is_map(collection_type) {
+            if self.map_key_kind(
+                   collection_type.args[0]) < 0 {
+                self.fail(
+                    instruction,
+                    "LLVM emitter does not support map type '{render_hir_type(collection_type)}' yet")
+                return ""
+            }
             return self.emit_map_index(
                 function, instruction, values)
         }

@@ -1402,8 +1402,11 @@ partial class LlvmTextEmitter {
         return "{output}{self.emit_local_bind_store(instruction, local, self.type_text(payload), converted.value, live)}"
     }
 
+    // Structural equality for a Result, inline or boxed, as an i1 with its
+    // setup. Both `a == b` and a Result reached through a struct field ask
+    // this; nothing about the instruction is needed to answer it, which is
+    // what lets emit_inline_equal reuse it.
     fn emit_result_equal(
-        instruction: MirInstruction,
         type: HirType,
         left: string,
         right: string) -> LlvmSlotConversion {

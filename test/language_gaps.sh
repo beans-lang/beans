@@ -70,7 +70,7 @@ if ./build/beansc build test/cases/backend_poison_bad.b \
     echo "backend_poison_bad.b unexpectedly built" >&2
     exit 1
 fi
-grep -Fq "LLVM emitter does not support binary '==' for List<List<int>> yet" \
+grep -Fq "LLVM emitter does not support binary '==' for List<Map<string, int>> yet" \
     "$tmp/poison.log"
 test "$(grep -c ': error:' "$tmp/poison.log")" -eq 1
 if grep -q "cannot find v" "$tmp/poison.log"; then

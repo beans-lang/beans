@@ -1469,9 +1469,41 @@ partial class LlvmTextEmitter {
         }
         if name == "Option" && type.args.len() == 1 {
             let payload: HirType = type.args[0]
+            // A payload wider than one runtime slot cannot reach the show
+            // driver as a slot at all: to_slot would box a decimal and leak
+            // the box, and a struct, a nested Option or an inline Result has
+            // no slot form to convert to, so request_show answered "" and a
+            // plain `io.println("{v}")` on an Option<Point> refused the whole
+            // build — a debug print of an optional struct, which the
+            // interpreter has always printed.
+            //
+            // It crosses by address instead, the way every other wide value
+            // is shown: the Option is spilled whole and the wide show step —
+            // which already reads an inline Option's tag and pushes its
+            // payload — is run against that address. Same text either way,
+            // `some(x)` and `none`.
+            if self.wide_inline_value(type) &&
+               self.wide_inline_value(payload) {
+                let wide: string =
+                    self.request_show_wide_step(type)
+                if wide == "" {
+                    return new LlvmSlotConversion("", "")
+                }
+                self.require_declare(
+                    "beans_show_run",
+                    "ptr @beans_show_run(ptr, i64)")
+                let id: int = self.fresh()
+                let slot: string =
+                    self.spill_slot(
+                        self.type_text(type),
+                        "show.opt.wide")
+                return new LlvmSlotConversion(
+                    "  store {self.type_text(type)} {value}, ptr {slot}\n  %show.opt.raw{id} = ptrtoint ptr {slot} to i64\n  %show.{tag}{id} = call ptr @beans_show_run(ptr @{wide}, i64 %show.opt.raw{id})\n",
+                    "%show.{tag}{id}")
+            }
             if canonical_hir_name(payload.name) ==
                    "decimal" {
-                // to_slot would box the payload and leak the box
+                // an Option<decimal> is wide and took the branch above
                 return new LlvmSlotConversion("", "")
             }
             let shown: string =

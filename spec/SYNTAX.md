@@ -1444,7 +1444,7 @@ and a capacity the collection already has are no-ops.
 **Map and OrderedMap methods (v0.5, implemented):** `clone`, `get` → `Option<V>`,
 `set` (also `m[k] = v` sugar), `insert(k, v) -> bool` (false leaves the old value),
 `reserve(capacity)`,
-`len`, `contains`, `remove(k) -> bool`, `keys` → `List<K>`, `values` → `List<V>`, `clear`.
+`len`, `contains_key(k) -> bool`, `remove(k) -> bool`, `keys` → `List<K>`, `values` → `List<V>`, `clear`.
 `Map` makes no iteration-order promise. `OrderedMap` promises insertion order;
 updating a key keeps its place, while removing and reinserting it moves it to the
 end. Lookup is hash-indexed (O(1)) in both backends, and `remove` is amortized
@@ -4504,6 +4504,11 @@ if else for in match return break continue move inout
 import as defer unsafe extern new extends implements static
 self true false unique abstract singleton
 ```
+
+`take` is reserved and is not in the list above because it is not part of the
+language: it was the old spelling of `move`, and the lexer still knows it only
+so `take x` and `fn f(take p: T)` answer *"'take' was removed — use 'move'"*
+instead of a shapeless parse error. It cannot be used as a name.
 
 `some none ok err` are ordinary names. `super` is contextual. `spawn` is a
 library function, not a keyword. `async` and `await` are ordinary

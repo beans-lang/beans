@@ -253,6 +253,24 @@ run_asan test/cases/parity/try_ownership.b try_ownership
 # The arc markers count releases; only a sanitizer says whether the collector
 # followed a word that was never a pointer, or skipped one that was. The chain
 # case is the same question at depth, with a deinit twenty links up.
+# The backend-split batch's own lifetime claims. A wide map key is stored in
+# an ARC box the emitter mints a pointer mask for, and read back through a
+# stack spill; a TaskGroup row's wide payload is MOVED out of the row by
+# beans_brew_value_typed and the row released after; a wide Option is shown by
+# spilling it whole and running the show driver over that address; and the
+# comparator thunks a nested List reaches for are called by the runtime with
+# two element addresses. Each of those is a place where a wrong mask, a
+# double release or a read past the spill is a heap error and not a wrong
+# answer, so the arc-marker parity gate beside them cannot see it.
+run_asan test/cases/parity/map_wide_keys.b map_wide_keys
+run_asan test/cases/parity/taskgroup_wide.b taskgroup_wide
+run_asan test/cases/parity/show_wide_option.b show_wide_option
+run_asan test/cases/parity/nested_list_equality.b nested_list_equality
+run_asan test/cases/parity/sort_wide_elements.b sort_wide_elements
+# Typed JSON decoding writes decoded payloads into allocator blocks that are
+# deliberately not pre-zeroed, and the interpreter's own decoder holds a
+# yyjson document alive through the stdlib Doc while it walks it.
+run_asan test/cases/parity/json_typed_decode.b json_typed_decode
 run_asan test/cases/parity/generic_subclass.b generic_subclass
 run_asan test/cases/parity/deep_chain.b deep_chain
 run_asan examples/regress_mem.b regress_mem 3
@@ -764,6 +782,16 @@ BEANS_SANITIZE_CALLBACKS=1 bash ./test/stored_callbacks.sh
 # leak they would not — the tags balance either way when the Option is
 # dropped by the same code that would have released it.
 #
+# map_wide_keys.b, taskgroup_wide.b, show_wide_option.b and
+# json_typed_decode.b are here for the leak half of the backend-split batch. A
+# wide map key is a fresh ARC box per stored key and the emitter mints its
+# pointer mask; a TaskGroup row's wide payload is moved out of the row and the
+# row released after; a wide Option is shown through an owned string the
+# interpolation releases once; and typed decoding allocates one block per
+# decoded string and one list per decoded array. Each of those is a place where
+# a release that never happens is invisible to ASan on a Mac and to the arc
+# markers alike, and only the sweep sees it.
+#
 # list_inline_backing.b is here because a small list's element buffer lives
 # inside the list's own block (#150): the free path must skip that interior
 # pointer and free the buffer of every list that outgrew it, and the two
@@ -797,6 +825,10 @@ if [[ "$(uname -s)" == Darwin ]] && command -v leaks >/dev/null 2>&1; then
                 test/cases/decimal_precision.b \
                 test/cases/reflect_value.b test/cases/reflect_fields.b \
                 test/cases/reflect_calls.b test/cases/reflect_construct.b \
+                test/cases/parity/map_wide_keys.b \
+                test/cases/parity/taskgroup_wide.b \
+                test/cases/parity/show_wide_option.b \
+                test/cases/parity/json_typed_decode.b \
                 test/cases/parity/discard_binding.b \
                 test/cases/parity/interface_downcast.b \
                 test/cases/parity/record_place.b \
