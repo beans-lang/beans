@@ -91,6 +91,67 @@ grep -Fqx "fast 43" "$tmp/header.interp.out"
 "$tmp/app/app.header.bin" >"$tmp/header.native.out"
 grep -Fqx "fast 43" "$tmp/header.native.out"
 
+# The same, through `#import` rather than `#include`.
+#
+# Objective-C sources use `#import` and nothing else, so a scanner that knew
+# only `#include` left the headers of every `.m` file out of the cache key. It
+# was found in cortado, whose four platform hosts are .m and .c files sharing
+# one ABI header: changing that header kept reusing the object built before it,
+# and the program answered with the ABI version the header no longer had.
+#
+# Written in C rather than Objective-C on purpose — clang accepts `#import`
+# there with no warning, and this suite has to run where there is no
+# Objective-C runtime.
+cat > "$tmp/mathlib/native/fast_add.c" <<'CSRC'
+#import "fast_add.h"
+#ifdef __APPLE__
+#include <CoreFoundation/CoreFoundation.h>
+#endif
+#ifndef COMPILER_BIAS
+#define COMPILER_BIAS 0
+#endif
+long long beans_test_fast_add(long long a, long long b) {
+    long long platform_bias = 0;
+#ifdef __APPLE__
+    platform_bias = CFAbsoluteTimeGetCurrent() > 0.0 ? 0 : 1000;
+#endif
+    return a + b + FAST_BIAS + COMPILER_BIAS + platform_bias;
+}
+CSRC
+(cd "$tmp/app" && "$root/build/beansc" run main.b) >"$tmp/import.interp.out"
+grep -Fqx "fast 43" "$tmp/import.interp.out"
+cat > "$tmp/mathlib/native/fast_add.h" <<'HDR'
+#define FAST_BIAS 44
+long long beans_test_fast_add(long long a, long long b);
+HDR
+(cd "$tmp/app" && "$root/build/beansc" run main.b) >"$tmp/import.interp2.out"
+grep -Fqx "fast 46" "$tmp/import.interp2.out"
+(cd "$tmp/app" && "$root/build/beansc" build main.b -o app.import.bin) \
+    >"$tmp/import.build.out" 2>&1
+"$tmp/app/app.import.bin" >"$tmp/import.native.out"
+grep -Fqx "fast 46" "$tmp/import.native.out"
+# Put the source and the header back the way the rest of this file expects.
+cat > "$tmp/mathlib/native/fast_add.c" <<'CSRC'
+#include "fast_add.h"
+#ifdef __APPLE__
+#include <CoreFoundation/CoreFoundation.h>
+#endif
+#ifndef COMPILER_BIAS
+#define COMPILER_BIAS 0
+#endif
+long long beans_test_fast_add(long long a, long long b) {
+    long long platform_bias = 0;
+#ifdef __APPLE__
+    platform_bias = CFAbsoluteTimeGetCurrent() > 0.0 ? 0 : 1000;
+#endif
+    return a + b + FAST_BIAS + COMPILER_BIAS + platform_bias;
+}
+CSRC
+cat > "$tmp/mathlib/native/fast_add.h" <<'HDR'
+#define FAST_BIAS 41
+long long beans_test_fast_add(long long a, long long b);
+HDR
+
 # A compiler is part of the cache identity. Two compiler commands building
 # the same source must get separate interpreter libraries and native objects.
 real_cc=$(command -v clang)

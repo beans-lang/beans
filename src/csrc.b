@@ -126,8 +126,22 @@ fn csrc_quoted_include(line: string) -> string {
     var rest: string = line.trim()
     if !rest.starts_with("#") { return "" }
     rest = rest.slice(1, rest.len()).trim()
-    if !rest.starts_with("include") { return "" }
-    rest = rest.slice(7, rest.len()).trim()
+    // `#import` as well as `#include`. Every Objective-C source uses `#import`
+    // and nothing else, so a scanner that knew only `#include` left the
+    // headers of every `.m` file out of the cache key — the same bug this
+    // function was written to fix, still open for one language. It surfaced in
+    // cortado: a change to the header every host implements silently reused
+    // the object built before it, and the program reported an ABI version the
+    // header no longer had.
+    var directive: int = 0
+    if rest.starts_with("include") {
+        directive = 7
+    } else if rest.starts_with("import") {
+        directive = 6
+    } else {
+        return ""
+    }
+    rest = rest.slice(directive, rest.len()).trim()
     if rest.len() < 2 || rest.byte_at(0) != 34 { return "" }
     let tail: string = rest.slice(1, rest.len())
     match tail.find("\"") {
@@ -136,10 +150,11 @@ fn csrc_quoted_include(line: string) -> string {
     }
 }
 
-// Hash the source and every recursively quoted local header. The old cache
-// used only the .c text, so changing `fast_add.h` silently reused code built
-// from the old constant. Missing includes remain Clang errors; only files
-// that exist beside the source take part here.
+// Hash the source and every recursively quoted local header, reached by
+// `#include "..."` or `#import "..."`. The old cache used only the .c text, so
+// changing `fast_add.h` silently reused code built from the old constant.
+// Missing includes remain Clang errors; only files that exist beside the
+// source take part here.
 fn csrc_dependency_key(source: string,
                        seen: List<string>) -> Result<string> {
     let normalized: string = csrc_normalize_path(source)
