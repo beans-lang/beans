@@ -843,7 +843,7 @@ class SignatureChecker {
     }
 
     fn target_has_capability(capability: string) -> bool {
-        if self.hir.target.os == "macos" ||
+        if self.hir.target.is_apple() ||
            self.hir.target.os == "linux" {
             return true
         }

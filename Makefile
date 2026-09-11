@@ -290,6 +290,7 @@ test-platform: $(BIN)
 	./test/deterministic_build.sh
 	./test/asm.sh
 	./test/targets.sh
+	./test/ios_target.sh
 	./test/platform_manifest.sh
 	bash ./test/compiler_arch_objects.sh
 
@@ -457,6 +458,7 @@ test-core: $(BIN)
 # The gates that used to compare against the C++ stage 0. Each now checks the
 # shipped compiler and runtime on their own.
 	./test/targets.sh
+	./test/ios_target.sh
 	./test/platform_manifest.sh
 	./test/object_abi.sh
 	bash ./test/runtime_abi.sh

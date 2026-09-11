@@ -1,5 +1,6 @@
 package main
 
+import std.process
 import std.target as running_target
 
 class TargetDescription {
@@ -318,6 +319,16 @@ class TargetDescription {
     }
 
     fn c_driver_flags() -> List<string> {
+        // Apple's SDKs cannot be bundled and are not where a sysroot normally
+        // is, so they are asked for by name through xcrun. A missing one is a
+        // clear message from the driver rather than a wall of missing-header
+        // errors from clang.
+        if self.os == "ios" {
+            let sdk: string = apple_sdk_path(
+                if self.is_simulator() { "iphonesimulator" } else { "iphoneos" })
+            if sdk == "" { return [] }
+            return ["-isysroot", sdk, "-miphoneos-version-min=13.0"]
+        }
         if self.triple == "arm-unknown-linux-gnueabi" {
             return [
                 "-march=armv6", "-mfloat-abi=soft",
@@ -361,7 +372,38 @@ class TargetDescription {
         return ["-march={march}", "-mabi={abi}"]
     }
 
+    /// Whether this target is one of Apple's.
+    ///
+    /// macOS and iOS share almost everything that matters to a build: Mach-O,
+    /// `.dylib` and `-dynamiclib`, Apple's own Security and CoreFoundation
+    /// frameworks, an SDK that cannot be vendored and must be found on the
+    /// machine, and `-fblocks` for the TLS bridge. Every site that used to ask
+    /// `os == "macos"` for one of those reasons asks this instead — adding
+    /// `|| os == "ios"` at twenty call sites would work until the twenty-first
+    /// was written.
+    ///
+    /// The sites that genuinely mean macOS **and not iOS** still say so: a
+    /// `.app` on a Mac, `xcode-select`, and the Command Line Tools check.
+    pub fn is_apple() -> bool {
+        return self.os == "macos" || self.os == "ios"
+    }
+
+    /// Whether this target runs in the iOS Simulator rather than on a device.
+    ///
+    /// Same architecture, different SDK and a different LLVM triple — the
+    /// simulator's is `arm64-apple-ios-simulator`, and a binary built with the
+    /// device triple will not load in it.
+    pub fn is_simulator() -> bool {
+        return self.env == "simulator"
+    }
+
     fn llvm_triple() -> string {
+        // Apple spells the simulator as an environment on the triple, and the
+        // SDK will not accept anything else.
+        if self.os == "ios" {
+            if self.is_simulator() { return "arm64-apple-ios-simulator" }
+            return "arm64-apple-ios"
+        }
         if self.env != "gnullvm" { return self.triple }
         if self.arch == "arm64" { return "aarch64-pc-windows-gnu" }
         if self.arch == "x86_64" { return "x86_64-pc-windows-gnu" }
@@ -370,10 +412,58 @@ class TargetDescription {
     }
 }
 
+/// Whether an operating system name is one of Apple's.
+///
+/// The string form, for the places that carry an OS name rather than a whole
+/// target description — the `csrc` cache and the manifest selectors. Same rule
+/// as `TargetDescription.is_apple`, and the two must agree.
+fn apple_os(name: string) -> bool {
+    return name == "macos" || name == "ios"
+}
+
+/// Where an Apple SDK lives, asked of the toolchain rather than guessed.
+///
+/// `xcrun` is the only supported way to find one: the path carries the SDK
+/// version in it, so a hard-coded path is wrong after the next Xcode update,
+/// and the developer directory itself moves between Xcode and the Command Line
+/// Tools. An empty answer means the SDK is not installed, which the driver
+/// reports as such.
+fn apple_sdk_path(name: string) -> string {
+    let command: process.Command = new process.Command("xcrun")
+    command.arg("--sdk")
+    command.arg(name)
+    command.arg("--show-sdk-path")
+    match command.run() {
+        ok(done) => {
+            if !done.succeeded() { return "" }
+            for line: string in done.stdout_text().lines() {
+                let trimmed: string = line.trim()
+                if trimmed != "" { return trimmed }
+            }
+        }
+        err(problem) => {}
+    }
+    return ""
+}
+
 fn supported_targets() -> List<TargetDescription> {
     return [
         new TargetDescription(
             "arm64-apple-darwin", "arm64", "macos", "none",
+            "macho", 64, 16, [8, 16, 32, 64], true, ["neon"]),
+        // iOS, device and simulator. Same architecture and the same Mach-O as
+        // macOS; what differs is the SDK, the LLVM triple and the minimum
+        // version, all of which come from `c_driver_flags` below.
+        //
+        // The simulator is a separate triple rather than a flag because it is
+        // a separate SDK: a binary built against the device SDK does not load
+        // in the simulator, and the failure arrives as a dyld error rather
+        // than as anything a build would catch.
+        new TargetDescription(
+            "arm64-apple-ios", "arm64", "ios", "none",
+            "macho", 64, 16, [8, 16, 32, 64], true, ["neon"]),
+        new TargetDescription(
+            "arm64-apple-ios-sim", "arm64", "ios", "simulator",
             "macho", 64, 16, [8, 16, 32, 64], true, ["neon"]),
         new TargetDescription(
             "x86_64-unknown-linux-gnu", "x86_64", "linux", "gnu",

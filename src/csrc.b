@@ -261,7 +261,7 @@ fn csrc_run_library(units: List<CsrcUnit>,
     let extension: string =
         if os_name == "windows" {
             "dll"
-        } else if os_name == "macos" {
+        } else if apple_os(os_name) {
             "dylib"
         } else {
             "so"
@@ -331,7 +331,7 @@ fn csrc_run_library(units: List<CsrcUnit>,
     if os_name != "windows" {
         command.arg("-fPIC")
     }
-    if os_name == "macos" {
+    if apple_os(os_name) {
         command.arg("-dynamiclib")
     } else {
         command.arg("-shared")

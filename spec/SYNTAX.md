@@ -2144,6 +2144,13 @@ implements it. The downcast that does work reads the other way round: the
 *source* may be written at an instantiation, and the target is a non-generic
 class that extends it, or a non-generic interface it reaches.
 
+One source is exempt: **a `std.reflect.Value` may be downcast to an
+instantiation.** A boxed value carries its own full type, arguments included,
+so the ambiguity the rule exists to prevent does not arise, and the checker
+skips the refusal when the source is a reflect value. This is what makes
+`resolve<T>()`-shaped reflective APIs possible at all — a container that hands
+back a `Producer<int>` has no other way to spell the cast.
+
 ```
 class Crate<T> {
     v: T
@@ -2741,7 +2748,8 @@ beansc build --target x86_64-unknown-linux-gnu app.b  # somewhere else
 beansc build --target aarch64-unknown-linux-gnu --emit obj app.b -o app.o
 ```
 
-Supported targets: `arm64-apple-darwin`; Linux GNU
+Supported targets: Apple `arm64-apple-darwin`, `arm64-apple-ios`,
+`arm64-apple-ios-sim`; Linux GNU
 `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`,
 `riscv64-unknown-linux-gnu`, `i686-unknown-linux-gnu`,
 `armv7-unknown-linux-gnueabihf`, `arm-unknown-linux-gnueabi`,
@@ -2764,6 +2772,13 @@ Common spellings normalize to those, so `aarch64-apple-darwin`,
 `riscv32imac-unknown-none-elf` all
 work and still produce one canonical name in the IR and in every cache key. An
 unknown triple is a plain compile error listing what is supported.
+
+The two iOS targets need Xcode, not just the Command Line Tools: the SDK is
+found through `xcrun --sdk iphoneos --show-sdk-path`, and the path carries its
+version, so it is asked for rather than guessed. They differ only in which SDK
+and which LLVM triple — `arm64-apple-ios` versus `arm64-apple-ios-simulator` —
+and that is enough to matter: a binary built for the device does not load in
+the simulator, and the failure arrives from dyld rather than from the build.
 
 `riscv64-unknown-linux-gnu` (rv64gc/LP64D) and `powerpc64le-unknown-linux-gnu`
 (64-bit little-endian POWER) are **hosts**. Beans compiles for them, the binaries

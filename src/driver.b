@@ -536,7 +536,7 @@ fn net_bridge_platform_flags(
        target_env == "msvc" {
         flags.push("-Dssize_t=ptrdiff_t")
     }
-    if feature == "tls" && target_os == "macos" {
+    if feature == "tls" && apple_os(target_os) {
         flags.push("-fblocks")
     }
     return move flags
@@ -556,7 +556,7 @@ fn net_bridge_link_arguments(
         arguments.push("-lws2_32")
     }
     if features.contains("tls") {
-        if target_os == "macos" {
+        if apple_os(target_os) {
             arguments.push("-framework")
             arguments.push("Security")
             arguments.push("-framework")
@@ -928,7 +928,7 @@ class NativeBuildDriver {
         // Apple's SDK cannot be bundled, so a macOS package always links
         // against the one on the machine. Ask for it by name rather than let
         // the user meet a missing-header error.
-        if self.target.os == "macos" &&
+        if self.target.is_apple() &&
            host_target_name().contains("darwin") {
             let developer: string =
                 doctor_tool_line("xcode-select", "-p")
@@ -2165,7 +2165,7 @@ class NativeBuildDriver {
                             "{artifact_name}.dll")
                 } else {
                     let extension: string =
-                        if self.target.os == "macos" {
+                        if self.target.is_apple() {
                             "dylib"
                         } else {
                             "so"
@@ -2644,7 +2644,7 @@ class NativeBuildDriver {
         if emit == "shared" {
             command.arg("-fPIC")
             command.arg("-fvisibility=hidden")
-            if self.target.os == "macos" {
+            if self.target.is_apple() {
                 command.arg("-dynamiclib")
             } else {
                 command.arg("-shared")

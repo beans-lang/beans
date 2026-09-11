@@ -481,7 +481,7 @@ class TreeInterpreter {
             }
             var candidates: List<string> = []
             if link.kind == "framework" {
-                if self.program.target.os != "macos" {
+                if !self.program.target.is_apple() {
                     self.failed = true
                     self.panic_text =
                         "error: framework '{link.value}' cannot be loaded on {self.program.target.os}"
@@ -505,7 +505,7 @@ class TreeInterpreter {
                     names = [link.value,
                              "{link.value}.dll",
                              "lib{link.value}.dll"]
-                } else if self.program.target.os == "macos" {
+                } else if self.program.target.is_apple() {
                     names = ["lib{link.value}.dylib",
                              "lib{link.value}.so",
                              link.value]
@@ -15081,7 +15081,7 @@ class TreeInterpreter {
             "{Dir.temp_path()}/beans-ffi-{host_time.monotonic_nanos()}-{sequence}"
         let c_path: string = "{stem}.c"
         let library_path: string =
-            if self.program.target.os == "macos" {
+            if self.program.target.is_apple() {
                 "{stem}.dylib"
             } else if self.program.target.os == "windows" {
                 "{stem}.dll"
@@ -15101,7 +15101,7 @@ class TreeInterpreter {
         let argv: Bytes = new Bytes(0)
         self.ffi_pack_argument(argv, c_driver)
         self.ffi_pack_argument(argv, "-O2")
-        if self.program.target.os == "macos" {
+        if self.program.target.is_apple() {
             self.ffi_pack_argument(
                 argv, "-dynamiclib")
             self.ffi_pack_argument(
@@ -15466,7 +15466,7 @@ class TreeInterpreter {
                 2147483647
         }
         let extension: string =
-            if self.program.target.os == "macos" {
+            if self.program.target.is_apple() {
                 "dylib"
             } else if self.program.target.os == "windows" {
                 "dll"
@@ -15500,7 +15500,7 @@ class TreeInterpreter {
         }
         self.ffi_pack_argument(argv, "-O2")
         self.ffi_pack_argument(argv, "-fvisibility=hidden")
-        if self.program.target.os == "macos" {
+        if self.program.target.is_apple() {
             self.ffi_pack_argument(argv, "-dynamiclib")
         } else {
             self.ffi_pack_argument(argv, "-shared")
@@ -15599,7 +15599,7 @@ class TreeInterpreter {
             "-x", "c++", "-std=c++17", "-fexceptions", "-fno-rtti",
             "-O2", "-fvisibility=hidden", "-DBEANS_RT_PROFILE=3",
             "-I{root}", "-I{path.join(root, "vendor/quill/include")}"]
-        if self.program.target.os == "macos" {
+        if self.program.target.is_apple() {
             flags.push("-dynamiclib")
         } else {
             flags.push("-shared")
@@ -15697,7 +15697,7 @@ class TreeInterpreter {
                 2147483629
         }
         let extension: string =
-            if self.program.target.os == "macos" {
+            if self.program.target.is_apple() {
                 "dylib"
             } else if self.program.target.os == "windows" {
                 "dll"
@@ -15880,7 +15880,7 @@ class TreeInterpreter {
                 2147483647
         }
         let extension: string =
-            if self.program.target.os == "macos" {
+            if self.program.target.is_apple() {
                 "dylib"
             } else if self.program.target.os == "windows" {
                 "dll"
@@ -15973,7 +15973,7 @@ class TreeInterpreter {
             let staging: string = "{library}.{stamp}"
             let argv: Bytes = new Bytes(0)
             self.ffi_pack_argument(argv, c_driver)
-            if self.program.target.os == "macos" {
+            if self.program.target.is_apple() {
                 self.ffi_pack_argument(argv, "-dynamiclib")
             } else {
                 self.ffi_pack_argument(argv, "-shared")

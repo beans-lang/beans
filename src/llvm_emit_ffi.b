@@ -455,7 +455,7 @@ partial class LlvmTextEmitter {
                 llvm_name.slice(1, llvm_name.len())
         }
         var assembler_name: string = llvm_name
-        if self.program.target.os == "macos" {
+        if self.program.target.is_apple() {
             assembler_name = "_{assembler_name}"
         }
         let bridge: string =
