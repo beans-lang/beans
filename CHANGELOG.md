@@ -2,6 +2,103 @@
 
 This file records user-facing changes in each Beans release.
 
+## [0.1.44] - 2026-09-11
+
+Ten shapes where the two backends stopped agreeing, and three more the work
+turned up. Every one of them passed `beansc check`; what happened next depended
+on which compiler ran it.
+
+### Answered differently, with nothing said
+
+A `List` buried inside another value compared by **address** in a built binary
+and by its elements under `beansc run`.
+
+```beans
+struct Tail { tail: List<int> }
+struct Outer { inner: Tail }
+
+Outer { inner: Tail { tail: [1] } } == Outer { inner: Tail { tail: [1] } }
+```
+
+`true` interpreted, `false` built, at any depth, for two values equal in every
+field. A bare `xs == ys` never had it — that goes through the runtime's list
+comparison — but a struct field, an `Option` payload, a `Result` arm and a map
+key all took an identity compare instead. The interpreter walks a list element
+by element wherever it meets one, so the native answer was the wrong one. Both
+paths make the same call now.
+
+A `Map` reached through a struct field took that same branch, so a struct was
+equal to *itself* because both sides held the one map pointer. A map is equal to
+nothing — the checker refuses a bare `m == n` outright — and now answers so
+through a field as well.
+
+Typed JSON encoding disagreed on floats: `0` and `-5.764607523034235e+17` where
+the native writer produces `0.0` and `-576460752303423500.0`. The interpreter
+formats through the same writer now rather than a second one.
+
+### Ran interpreted, would not build
+
+- **`io.println("{v}")` on an `Option<Point>`** — a debug print of an optional
+  struct — refused the whole build. Fourteen shapes: `Option` of a struct, a
+  decimal, another `Option`, a `Result`, and `Result<Option<…>>`.
+- **`TaskGroup.next()` / `try_next()`** refused any payload wider than a slot:
+  a struct, an `Option`, a `Result`, a decimal. The group always accepted them;
+  only reading a row back did not.
+- **`sort_by` / `sort_by_key`** refused `List<Option<int>>` while `List<Point>`
+  sorted. The comparator arrives with the call, so nothing about the element
+  type is needed to run one; the by-address rule is the element's width, not its
+  spelling. `List<decimal> ==` came with it.
+- **`List<List<int>>` equality and `contains`** now answer instead of refusing.
+
+### Modules the linker rejected
+
+`Map<Result<T, E>, V>` wrote a call with two empty pointer operands and the
+build failed talking about a `.ll` file. So did `List<Bytes> ==` and equality
+over a list of payload-carrying enums. Those shapes work; a key shape with no
+comparator is refused in the program's own terms instead.
+
+### Refused at check time
+
+**`decimal %` is no longer accepted.** It passed `check` and then failed twice
+over: the tree interpreter panicked at run time — so a program that never
+reached the line shipped fine — and the native build refused at compile time
+talking about the emitter. Neither backend has ever had a decimal remainder.
+The refusal names the program and the way out:
+
+```
+'%' is not defined for decimal — take the remainder in an integer type, or
+subtract the truncated quotient: a - (a / b).round(0, RoundingMode.toward_zero) * b
+```
+
+This is the only breaking change in this release, and it breaks no working
+program: every `decimal %` in existence either panicked or would not build.
+
+### Typed decoding
+
+**`json.decode<T>`, `decode_bytes`, `decode_bytes_in_place` and
+`decode_with_options` work under `beansc run`.** They used to answer the stdlib
+body's own `err("typed JSON decoding was not lowered")` — an ordinary `Result`
+failure, no diagnostic and no panic — so a program that branches on the result
+took a different branch than in its own binary. Both backends parse through one
+vendored yyjson, so the two decoders read one document. The JSONTestSuite corpus
+and all four fuzz seeds now run through both and are diffed.
+
+**`xml.decode<T>` stays native only and says so.** Under `beansc run` it stops
+the program naming the boundary rather than handing back a plausible failure.
+
+### Also
+
+- Map's documented method list said `contains`; the checker only ever accepted
+  `contains_key`.
+- `take` is reserved — it is the removed spelling of `move`, kept so old code
+  gets a real message — and appeared in no keyword list, so `fn take()` read
+  *"expected function name"*. The spec records it, and a name spot holding any
+  keyword now names the word.
+
+Runtime ABI stays at 20, so 0.1.43 binaries relink rather than needing a
+rebuild: every fix here is in what the compiler emits, not in a new runtime
+entry.
+
 ## [0.1.43] - 2026-09-10
 
 `as?` can ask for an interface.
