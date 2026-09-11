@@ -6,7 +6,7 @@ beansc=${BEANSC:-"$PWD/build/beansc"}
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/beans-c-abi-layout.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 
-echo "checking C layouts, by-value records, pointer calls, and mixed floats"
+echo "checking C layouts, by-value records, pointer calls, mixed floats, and float-only aggregates"
 if [[ "$(uname -s)" == "Darwin" ]]; then
     clang -O2 -dynamiclib test/fixtures/c_layout_helper.c -o "$tmp/layout.dylib"
     DYLD_INSERT_LIBRARIES="$tmp/layout.dylib" \
@@ -52,4 +52,4 @@ diff -u test/cases/c_layout_c_abi.out "$tmp/interp"
 diff -u test/cases/c_layout_c_abi.out "$tmp/native.out"
 diff -u test/cases/c_layout_c_abi.out "$tmp/asan.out"
 
-echo "ok host C nested layout, by-value struct/union ABI, pointers, and mixed floats"
+echo "ok host C nested layout, by-value struct/union ABI, pointers, mixed floats, and HFAs"

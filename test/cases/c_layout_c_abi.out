@@ -8,3 +8,9 @@ C aligned union 16 8 0 0
 C nested 32 8 0 8 16 Beans 32 8 513 5 2000 72623859790382856
 C nested value 514 2003 72623859790382860
 C mixed float 11.5
+C hfa f64x2 3.75 3 4.5
+C hfa f32x4 12 3 9
+C hfa f64x4 10 0.5 2
+C indirect f64x5 15 2 10
+C mixed pair 4.5
+C hfa spilled 39.75
