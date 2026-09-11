@@ -131,9 +131,40 @@ for compiler in "${compilers[@]}"; do
     )
     grep -qx 'added system system-probe' "$tmp/$name.add"
     grep -qx '# beansc:system system-probe begin' "$tmp/project/beans.pot"
+    # The headers as well as the libraries. A library whose include paths are
+    # twenty machine-specific directories — GTK4 is the example — cannot be
+    # used from a csrc row at all unless they are written here, and writing
+    # them by hand would name one computer.
+    # One row carrying every flag pkg-config reported, include directory and
+    # define alike. The include path has a space in it on purpose, so the row
+    # also proves each flag is quoted separately rather than joined.
+    grep -q '^cflags all ' "$tmp/project/beans.pot"
+    grep -Fq -- '"-DSYSTEM_PROBE=1"' "$tmp/project/beans.pot"
+    grep -Fq -- "\"-I$test_include\"" "$tmp/project/beans.pot"
     grep -Fqx "link all search \"$test_lib\"" "$tmp/project/beans.pot"
     grep -qx 'link all library "system_probe"' "$tmp/project/beans.pot"
     grep -qx '# beansc:system system-probe end' "$tmp/project/beans.pot"
+
+    # A selector scopes the rows to one platform, which is what a library
+    # backing a single platform's host needs: cortado's GTK4 rows must not
+    # reach a macOS build, and `all` would.
+    printf 'module scoped\n' >"$tmp/scoped.pot"
+    mkdir -p "$tmp/scoped"
+    printf 'module scoped\n' >"$tmp/scoped/beans.pot"
+    printf 'package scoped\n' >"$tmp/scoped/scoped.b"
+    (
+        cd "$tmp/scoped"
+        "$compiler" pot add --system system-probe linux >"$tmp/$name.scoped"
+    )
+    grep -q '^cflags linux ' "$tmp/scoped/beans.pot"
+    grep -qx 'link linux library "system_probe"' "$tmp/scoped/beans.pot"
+    # A selector that is not a name is refused rather than written into a
+    # manifest line it would break.
+    if (cd "$tmp/scoped" && "$compiler" pot add --system system-probe 'bad sel' \
+            >"$tmp/$name.badsel" 2>&1); then
+        echo "a selector with a space was accepted" >&2
+        exit 1
+    fi
 
     (
         cd "$tmp/project"

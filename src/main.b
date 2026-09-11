@@ -16,10 +16,10 @@ fn print_usage() {
     io.eprintln("       beansc bindgen <header.h>... -o <bindings.b> [options] [-- clang-options]")
     io.eprintln("       beansc pot init <module-name>")
     io.eprintln("       beansc pot add <dependency> [ref]")
-    io.eprintln("       beansc pot add --system <pkg-config-name>")
+    io.eprintln("       beansc pot add --system <pkg-config-name> [<selector>]")
     io.eprintln("       beansc pot remove <dependency>")
     io.eprintln("       beansc pot remove --system <pkg-config-name>")
-    io.eprintln("       beansc pot update --system <pkg-config-name>")
+    io.eprintln("       beansc pot update --system <pkg-config-name> [<selector>]")
     io.eprintln("       beansc pot <tidy|update [dependency]>")
     io.eprintln("       beansc upgrade")
     io.eprintln("       beansc doctor")
@@ -240,6 +240,23 @@ fn ir_comments_requested() -> bool {
     return false
 }
 
+// A manifest selector is an OS name or a target triple, so it is letters,
+// digits, `-` and `_`. Checked because it is written into a manifest line and
+// a word with a quote or a newline in it would produce a file that does not
+// parse.
+fn safe_selector(value: string) -> bool {
+    if value.len() == 0 { return false }
+    var index: int = 0
+    for index < value.len() {
+        let byte: int = value.byte_at(index)
+        let letter: bool = (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122)
+        let digit: bool = byte >= 48 && byte <= 57
+        if !letter && !digit && byte != 45 && byte != 95 { return false }
+        index += 1
+    }
+    return true
+}
+
 fn pkg_config_program() -> string {
     match os.env("PKG_CONFIG") {
         some(value) => {
@@ -284,7 +301,7 @@ fn system_marker(package: string, end: bool) -> string {
     return "# beansc:system {package} {if end { "end" } else { "begin" }}"
 }
 
-fn system_link_block(package: string) -> Result<string, string> {
+fn system_link_block(package: string, selector: string) -> Result<string, string> {
     let search_flags: List<string> =
         pkg_config_flags(package, "--libs-only-L")?
     let library_flags: List<string> =
@@ -295,18 +312,33 @@ fn system_link_block(package: string) -> Result<string, string> {
         return err(
             "pkg-config package '{package}' needs unsupported linker flags: {other_flags.join(" ")}")
     }
+    // The headers, not only the libraries. A library like GTK4 needs twenty
+    // include directories, several carrying a version number or an
+    // architecture tuple, and a manifest that listed them by hand would name
+    // one computer — which is the whole reason this command exists. Writing
+    // link rows and leaving the caller to find the headers left the harder
+    // half undone.
+    let compile_flags: List<string> =
+        pkg_config_flags(package, "--cflags")?
 
     var output: string = "{system_marker(package, false)}\n"
+    if compile_flags.len() != 0 {
+        var row: string = "cflags {selector}"
+        for flag: string in compile_flags {
+            row = "{row} {pot_quote(flag)}"
+        }
+        output = "{output}{row}\n"
+    }
     var links: int = 0
     for flag: string in search_flags {
         if flag.starts_with("-L") && flag.len() > 2 {
-            output = "{output}link all search {pot_quote(flag.slice(2, flag.len()))}\n"
+            output = "{output}link {selector} search {pot_quote(flag.slice(2, flag.len()))}\n"
             links += 1
         }
     }
     for flag: string in library_flags {
         if flag.starts_with("-l") && flag.len() > 2 {
-            output = "{output}link all library {pot_quote(flag.slice(2, flag.len()))}\n"
+            output = "{output}link {selector} library {pot_quote(flag.slice(2, flag.len()))}\n"
             links += 1
         }
     }
@@ -318,14 +350,14 @@ fn system_link_block(package: string) -> Result<string, string> {
 }
 
 fn edit_pot_system(package: string, remove: bool,
-                   update_only: bool) -> int {
+                   update_only: bool, selector: string) -> int {
     if module_entry() == "" {
         io.eprintln("error: run this command in a beans.pot project with a root .b file")
         return 2
     }
     var replacement: string = ""
     if !remove {
-        match system_link_block(package) {
+        match system_link_block(package, selector) {
             ok(value) => { replacement = value }
             err(message) => {
                 io.eprintln("error: {message}")
@@ -767,26 +799,37 @@ fn main() {
             } else {
                 status = init_pot(args[2])
             }
-        } else if args.len() == 4 && args[1] == "add" &&
+        } else if (args.len() == 4 || args.len() == 5) && args[1] == "add" &&
            args[2] == "--system" {
+            // The optional fifth word is the selector the rows carry — an OS
+            // name or a triple, the same vocabulary every other manifest row
+            // uses. Without it the rows say `all`, which is right for a
+            // library a program needs everywhere and wrong for one that backs
+            // a single platform's host.
+            let selector: string = if args.len() == 5 { args[4] } else { "all" }
             if !safe_system_package(args[3]) {
                 io.eprintln("error: invalid pkg-config package name '{args[3]}'")
+            } else if !safe_selector(selector) {
+                io.eprintln("error: invalid selector '{selector}'")
             } else {
-                status = edit_pot_system(args[3], false, false)
+                status = edit_pot_system(args[3], false, false, selector)
             }
         } else if args.len() == 4 && args[1] == "remove" &&
                   args[2] == "--system" {
             if !safe_system_package(args[3]) {
                 io.eprintln("error: invalid pkg-config package name '{args[3]}'")
             } else {
-                status = edit_pot_system(args[3], true, false)
+                status = edit_pot_system(args[3], true, false, "all")
             }
-        } else if args.len() == 4 && args[1] == "update" &&
+        } else if (args.len() == 4 || args.len() == 5) && args[1] == "update" &&
                   args[2] == "--system" {
+            let selector: string = if args.len() == 5 { args[4] } else { "all" }
             if !safe_system_package(args[3]) {
                 io.eprintln("error: invalid pkg-config package name '{args[3]}'")
+            } else if !safe_selector(selector) {
+                io.eprintln("error: invalid selector '{selector}'")
             } else {
-                status = edit_pot_system(args[3], false, true)
+                status = edit_pot_system(args[3], false, true, selector)
             }
         } else if (args.len() == 3 || args.len() == 4) &&
            args[1] == "add" {
@@ -827,12 +870,12 @@ fn main() {
         } else {
             io.eprintln("usage: beansc pot init <module-name>")
             io.eprintln("       beansc pot add <dependency> [ref]")
-            io.eprintln("       beansc pot add --system <pkg-config-name>")
+            io.eprintln("       beansc pot add --system <pkg-config-name> [<selector>]")
             io.eprintln("       beansc pot tidy")
             io.eprintln("       beansc pot remove <dependency>")
             io.eprintln("       beansc pot remove --system <pkg-config-name>")
             io.eprintln("       beansc pot update [dependency]")
-            io.eprintln("       beansc pot update --system <pkg-config-name>")
+            io.eprintln("       beansc pot update --system <pkg-config-name> [<selector>]")
         }
         if status != 0 { os.exit(status) }
         return
