@@ -28,8 +28,16 @@ partial class LlvmTextEmitter {
                   self.type_is_reference(
                       type.args[0]) {
             kind = "niche"
-        } else if name == "List" {
-            kind = "identity"
+        } else if name == "List" &&
+                  type.args.len() == 1 {
+            // Not identity. The interpreter's tree_value_total_equal walks a
+            // list element by element wherever it meets one, so a List one
+            // level down — a struct field, an Option payload, a Result arm —
+            // compared by address here answered `false` for two values equal
+            // in every field, in a built binary, with no diagnostic anywhere.
+            // A bare `a == b` never had it because that goes through
+            // emit_list_equal; this is the same call, for the same reason.
+            kind = "list"
         } else if name == "Map" ||
                   name == "OrderedMap" {
             // value_eq's false arm: maps never compare equal
@@ -63,7 +71,17 @@ partial class LlvmTextEmitter {
             self.value_eq_functions.len() - 1
         var body: string =
             "define internal i64 {symbol}(i64 %a, i64 %b) \{\n"
-        if kind == "int" || kind == "identity" {
+        if kind == "list" {
+            let call: string =
+                self.list_equal_call(
+                    type.args[0], "%p", "%q", "%same")
+            if call == "" {
+                self.value_eq_symbols[key] = ""
+                return ""
+            }
+            body =
+                "{body}  %p = inttoptr i64 %a to ptr\n  %q = inttoptr i64 %b to ptr\n{call}  ret i64 %same\n"
+        } else if kind == "int" || kind == "identity" {
             body =
                 "{body}  %same = icmp eq i64 %a, %b\n  %bit = zext i1 %same to i64\n  ret i64 %bit\n"
         } else if kind == "never" {
@@ -265,6 +283,42 @@ partial class LlvmTextEmitter {
             let id: int = self.fresh()
             body =
                 "{body}  %at = load i1, ptr %a\n  %bt = load i1, ptr %b\n  %tags = icmp eq i1 %at, %bt\n  br i1 %tags, label %same.tag, label %no\nsame.tag:\n  br i1 %at, label %payload, label %yes\npayload:\n  %wide.eq.ap{id} = getelementptr i8, ptr %a, i64 {offset}\n  %wide.eq.bp{id} = getelementptr i8, ptr %b, i64 {offset}\n{self.wide_compare_at(type.args[0], "%wide.eq.ap{id}", "%wide.eq.bp{id}", "yes")}no:\n  ret i64 0\nyes:\n  ret i64 1\n"
+        } else if name == "Result" &&
+                  self.result_is_inline(type) {
+            // {i1 is_error, okay, failed}, the same aggregate emit_brew_join
+            // builds. Only the arm the tag selects is compared: the dead arm
+            // of an inline Result is zero-initialised, and comparing a zeroed
+            // reference slot dereferences null. The fields are named by index
+            // through the aggregate's own LLVM type rather than by a computed
+            // byte offset, so the two can never drift.
+            //
+            // Without this the type had no shape here at all and the answer
+            // was the empty string — which map_key_eq handed straight to the
+            // runtime call, writing `ptr , ptr )` into the module. That is not
+            // a refusal; it is output clang rejects, so `Map<Result<T, E>, V>`
+            // failed the build talking about a .ll file.
+            let llvm: string = self.type_text(type)
+            let failed: HirType =
+                self.result_error_type(type)
+            let id: int = self.fresh()
+            body =
+                "{body}  %at = load i1, ptr %a\n  %bt = load i1, ptr %b\n  %tags = icmp eq i1 %at, %bt\n  br i1 %tags, label %same.tag, label %no\nsame.tag:\n  br i1 %at, label %failed.arm, label %okay.arm\nokay.arm:\n  %wide.eq.aok{id} = getelementptr {llvm}, ptr %a, i64 0, i32 1\n  %wide.eq.bok{id} = getelementptr {llvm}, ptr %b, i64 0, i32 1\n"
+            let okay: string =
+                self.wide_compare_at(
+                    type.args[0],
+                    "%wide.eq.aok{id}",
+                    "%wide.eq.bok{id}", "yes")
+            let wrong: string =
+                self.wide_compare_at(
+                    failed,
+                    "%wide.eq.aerr{id}",
+                    "%wide.eq.berr{id}", "yes")
+            if okay == "" || wrong == "" {
+                self.value_eq_symbols[key] = ""
+                return ""
+            }
+            body =
+                "{body}{okay}failed.arm:\n  %wide.eq.aerr{id} = getelementptr {llvm}, ptr %a, i64 0, i32 2\n  %wide.eq.berr{id} = getelementptr {llvm}, ptr %b, i64 0, i32 2\n{wrong}no:\n  ret i64 0\nyes:\n  ret i64 1\n"
         } else {
             match self.record_layout(type) {
                 some(layout) => {
@@ -384,6 +438,39 @@ partial class LlvmTextEmitter {
             }
             body =
                 "{body}{field.setup}  ret i64 {field.value}\nnone:\n  ret i64 %seed\n"
+        } else if name == "Result" &&
+                  self.result_is_inline(type) {
+            // Hash the tag, then the live arm only — the dead arm is zeroed
+            // and hashing a zeroed reference slot dereferences null. Equality
+            // above reads the same two arms, so two keys that compare equal
+            // hash alike, which is the whole contract a map key owes.
+            let llvm: string = self.type_text(type)
+            let failed: HirType =
+                self.result_error_type(type)
+            let id: int = self.fresh()
+            body =
+                "{body}  %tag = load i1, ptr %value\n  %tag64 = zext i1 %tag to i64\n  %seed = call i64 @beans_slot_mix(i64 %tag64)\n  br i1 %tag, label %failed.arm, label %okay.arm\nokay.arm:\n  %wide.hash.ok{id} = getelementptr {llvm}, ptr %value, i64 0, i32 1\n"
+            let okay: LlvmSlotConversion =
+                self.wide_field_hash(
+                    type.args[0],
+                    "%wide.hash.ok{id}", "%seed",
+                    "resok{id}")
+            if okay.value == "" {
+                self.value_eq_symbols[key] = ""
+                return ""
+            }
+            body =
+                "{body}{okay.setup}  ret i64 {okay.value}\nfailed.arm:\n  %wide.hash.err{id} = getelementptr {llvm}, ptr %value, i64 0, i32 2\n"
+            let wrong: LlvmSlotConversion =
+                self.wide_field_hash(
+                    failed, "%wide.hash.err{id}",
+                    "%seed", "reserr{id}")
+            if wrong.value == "" {
+                self.value_eq_symbols[key] = ""
+                return ""
+            }
+            body =
+                "{body}{wrong.setup}  ret i64 {wrong.value}\n"
         } else {
             match self.record_layout(type) {
                 some(layout) => {
@@ -450,6 +537,32 @@ partial class LlvmTextEmitter {
         }
         let llvm: string = self.type_text(type)
         if llvm == "" { return "" }
+        // A decimal is already at an address here, which is the one thing
+        // emit_inline_equal cannot use: it spills both operands to compare
+        // them, and a standalone thunk has no alloca list to spill into, so
+        // the guard below refused it and `List<decimal> ==` had no answer at
+        // all natively while the interpreter compared the elements.
+        // beans_dec_cmp takes the two addresses as they stand.
+        if canonical_hir_name(type.name) == "decimal" {
+            // beans_dec_cmp is in the always-emitted declaration block
+            let symbol: string =
+                ".next.recordeq{self.fresh()}"
+            self.record_eq_thunks[key] = symbol
+            self.ffi_functions.push(
+                "define internal i64 @{symbol}(ptr %a, ptr %b) \{\n  %c = call i32 @beans_dec_cmp(ptr %a, ptr %b)\n  %same = icmp eq i32 %c, 0\n  %z = zext i1 %same to i64\n  ret i64 %z\n\}\n")
+            return symbol
+        }
+        // Unlike every other request_* here, the body is built before the
+        // symbol is memoized — emit_inline_equal may refuse, and a memoized
+        // symbol for a body that was never emitted is a dangling call. That
+        // leaves re-entry to guard: a record reaching itself through a List
+        // field would build its own comparator forever. An empty memo marks
+        // the build as in progress, and an empty memo is what every caller
+        // already reads as a refusal, so the re-entrant call refuses and the
+        // outer one refuses with it. (No such record can be laid out today —
+        // the emitter has no local type for one — so this is the guard and
+        // not the fix for that shape.)
+        self.record_eq_thunks[key] = ""
         // emit_inline_equal spills a decimal field through the enclosing
         // function's alloca list, which a standalone thunk cannot borrow.
         // Watch for that and leave those records refused rather than emit a
@@ -462,8 +575,13 @@ partial class LlvmTextEmitter {
            self.function_allocas.len() != before {
             return ""
         }
+        // Numbered from the emitter's own counter, not from this map's
+        // length: the in-progress marker above is already an entry, and a
+        // record whose field needs another record's thunk builds that one
+        // first — so two different types read the same length and minted the
+        // same name, and the module carried the definition twice.
         let symbol: string =
-            ".next.recordeq{self.record_eq_thunks.len()}"
+            ".next.recordeq{self.fresh()}"
         self.record_eq_thunks[key] = symbol
         let body: string =
             "  %ta = load {llvm}, ptr %a\n  %tb = load {llvm}, ptr %b\n{compared.setup}  %z = zext i1 {compared.value} to i64\n  ret i64 %z\n"
@@ -473,17 +591,23 @@ partial class LlvmTextEmitter {
     }
 
     // An element the runtime cannot fit in one eight-byte slot reaches a
-    // sort thunk by address instead of by value: decimal, and any inline
-    // record. The thunk loads it whole and hands it to the closure the way
-    // every other call passes a struct.
+    // thunk by address instead of by value. The thunk loads it whole and
+    // hands it to the closure the way every other call passes a struct.
+    //
+    // The rule is the element's width, not its spelling: every wide inline
+    // value is stored by the list's own stride, so an `Option<int>`, an
+    // inline `Result`, a fixed array and a decimal all arrive the same way a
+    // struct does. Naming only decimal and a struct here is what made
+    // `sort_by` refuse `List<Option<int>>` while `List<Point>` sorted — an
+    // arbitrary line from the program's side, since the comparator arrives
+    // with the call and nothing about the element type is needed to run it.
+    // A union is wider than a slot too and keeps its place, even though
+    // wide_inline_value answers only for a struct declaration.
     fn sort_element_by_address(element: HirType) -> bool {
-        if canonical_hir_name(element.name) == "decimal" {
-            return true
-        }
+        if self.wide_inline_value(element) { return true }
         match self.declaration_for(element) {
             some(declaration) => {
-                return declaration.kind == "struct" ||
-                       declaration.kind == "union"
+                return declaration.kind == "union"
             }
             none => { return false }
         }

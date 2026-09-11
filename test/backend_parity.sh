@@ -286,10 +286,6 @@ agree test/cases/parity/issue160_reflect_error_messages.b 18
 # write: eight built, eight released, and a write to the wrong offset drops
 # the wrong reference.
 agree test/cases/parity/issue158_reflect_generic.b 8
-
-# Every case in the directory has to be listed above with its own expected
-# count; a file added and forgotten would otherwise be silently unchecked.
-listed=51
 # #163: a reflective box records the type the value IS, not the type of the
 # binding it came from. The two backends get there by different routes — the
 # native one reads the class descriptor at the object's first word, the
@@ -300,10 +296,6 @@ listed=51
 # must keep their arguments, and eleven non-class payloads that must not
 # change. Four marked objects, built and released once.
 agree test/cases/parity/issue163_reflect_runtime_type.b 4
-
-# Every case in the directory has to be listed above with its own expected
-# count; a file added and forgotten would otherwise be silently unchecked.
-listed=51
 # A type parameter inside a function-typed parameter. The native backend
 # refused the call for a free function and for a static — `fn(T)` and
 # `fn(T) -> unit` are one type, and only the spelled form carries the result
@@ -325,10 +317,6 @@ agree test/cases/parity/issue161_generic_fn_parameter.b 26
 # `wrap`, a static reaching another static, a `List<T>` result, a move-only
 # parameter, and a generic struct's factory.
 agree test/cases/parity/issue162_static_factory.b 5
-
-# Every case in the directory has to be listed above with its own expected
-# count; a file added and forgotten would otherwise be silently unchecked.
-listed=51
 # #167: std.fs could name a file's bytes but not its life, so a program could
 # create a temp file it could never release. The shape that needed it is a
 # deinit that removes a spooled part — dropped on an ordinary scope exit and
@@ -388,9 +376,40 @@ agree test/cases/parity/interface_downcast.b 10
 agree_with_args test/cases/parity/args_across_threads.b "" \
     alpha "two words" "" "ünïcode"
 
+# A List buried inside another value compares by its elements, not by its
+# address. A bare `xs == ys` was always structural; one level down — a struct
+# field, an Option payload, a Result arm, a map key — the native backend
+# compared the two pointers while the interpreter walked the elements, so two
+# values equal in every field answered false in a built binary with no
+# diagnostic. Carries the Map and Result fields that took the same branch, and
+# the List<Bytes> / List<enum> comparisons that wrote `ptr @@.next.eq0` into the
+# module.
+agree test/cases/parity/nested_list_equality.b
+# A map key wider than one runtime slot. request_wide_eq and request_wide_hash
+# had no shape for a Result, both answered "", and every caller interpolated
+# that into the runtime call: `ptr , ptr )`, a module clang rejects. Every map
+# operation reaches those two symbols and every one of them is here.
+agree test/cases/parity/map_wide_keys.b
+# Printing an Option whose payload is wider than a slot — an optional struct,
+# decimal, nested Option or inline Result. The interpreter printed it; the
+# native build refused a debug print.
+agree test/cases/parity/show_wide_option.b
+# sort_by / sort_by_key over a wide element. The comparator arrives with the
+# call, so the element type is not needed to run one, and yet List<Option<int>>
+# was refused while List<Point> sorted.
+agree test/cases/parity/sort_wide_elements.b
+# A TaskGroup delivering a struct, an Option, a Result or a decimal. The group
+# always took wide payloads; reading one row back through next() / try_next()
+# did not, because Option<Result<T>> is two nested aggregates for a wide T.
+agree test/cases/parity/taskgroup_wide.b
+# Typed JSON decoding, rule by rule. Native only until now: the interpreter
+# answered the stdlib body's own `err(... "unsupported")`, so a program that
+# branches on the result took a different branch on each backend, silently.
+agree test/cases/parity/json_typed_decode.b
+
 # Every case in the directory has to be listed above with its own expected
 # count; a file added and forgotten would otherwise be silently unchecked.
-listed=54
+listed=60
 present=$(find test/cases/parity -name '*.b' | wc -l | tr -d ' ')
 if [ "$present" != "$listed" ]; then
     echo "test/cases/parity holds $present cases but $listed are run" >&2
@@ -716,5 +735,108 @@ grep -Fq "defer at the function's own scope" "$tmp/nesteddefer.out" || {
     exit 1
 }
 echo "  refused: a defer inside a nested block, both backends"
+
+# `%` between two decimals passed `check` and then failed twice over: the tree
+# interpreter panicked at run time, so a program whose control flow never
+# reached the line shipped fine, and the native build refused at compile time
+# talking about the LLVM emitter rather than about the program. Neither backend
+# has ever had a decimal remainder — the runtime exposes add, sub, mul, div,
+# cmp, round, abs and neg and no rem — so this is the language's own answer at
+# check time, the shape `+` on a string has. Every position that reaches a
+# decimal `%` is here: the operator, and `%=` against a local, a class field, a
+# static and a struct field.
+cat >"$tmp/decmod.b" <<'EOF'
+package main
+import std.io
+
+struct Money { amount: decimal }
+
+class Holder {
+    amount: decimal
+    static shared: decimal = 0.0 as decimal
+
+    fn init() { self.amount = 10.0 as decimal }
+}
+
+fn main() {
+    let a: decimal = 7.5 as decimal
+    let b: decimal = 2.0 as decimal
+    io.println("{a % b}")
+    var local: decimal = a
+    local %= b
+    let holder: Holder = new Holder()
+    holder.amount %= b
+    Holder.shared %= b
+    var money: Money = Money { amount: a }
+    money.amount %= b
+}
+EOF
+if ./build/beansc check "$tmp/decmod.b" >"$tmp/decmod.out" 2>&1; then
+    echo "'%' on two decimals was accepted" >&2
+    exit 1
+fi
+refusals=$(grep -c "is not defined for decimal" "$tmp/decmod.out" || true)
+if [ "$refusals" != "5" ]; then
+    echo "expected 5 decimal '%' refusals, got $refusals" >&2
+    cat "$tmp/decmod.out" >&2
+    exit 1
+fi
+echo "  refused: '%' on a decimal, at every position, in the program's terms"
+
+# Float and integer `%` must be untouched by that refusal: both backends have
+# them, and the interpreter grew its float row precisely because the two
+# disagreed once (test/cases/parity/float_remainder.b).
+cat >"$tmp/modok.b" <<'EOF'
+package main
+import std.io
+
+fn main() {
+    var whole: int = 7
+    whole %= 2
+    var real: float = 7.5
+    real %= 2.0
+    io.println("{7.5 % 2.0} {whole} {real} {7 % 2}")
+}
+EOF
+./build/beansc check "$tmp/modok.b" >/dev/null
+echo "  kept: '%' on integers and floats"
+
+# Typed XML decoding is lowered only by the native backend. Its stdlib body
+# answered a plain `err(... "unsupported")` under `beansc run`, so a program
+# that branches on the result took a different branch on each backend with
+# nothing said; the interpreter stops the program there now instead. The JSON
+# half is closed — test/cases/parity/json_typed_decode.b — because both
+# backends parse through one vendored yyjson; XML has no such shared floor.
+cat >"$tmp/xmldecode.b" <<'EOF'
+package main
+import std.io
+import std.encoding.xml
+
+struct User { name: string }
+
+fn main() {
+    match xml.decode<User>("<User><name>jul</name></User>") {
+        ok(user) => { io.println("ok {user.name}") }
+        err(problem) => { io.println("err {problem.msg}") }
+    }
+}
+EOF
+./build/beansc build "$tmp/xmldecode.b" -o "$tmp/xmldecode" >/dev/null
+if ./build/beansc run "$tmp/xmldecode.b" >"$tmp/xmldecode.out" 2>&1; then
+    echo "xml.decode answered under the interpreter" >&2
+    cat "$tmp/xmldecode.out" >&2
+    exit 1
+fi
+grep -Fq "typed XML decoding is lowered only by the native backend" \
+    "$tmp/xmldecode.out" || {
+    echo "the xml.decode boundary no longer names itself" >&2
+    cat "$tmp/xmldecode.out" >&2
+    exit 1
+}
+grep -Fq "was not lowered" "$tmp/xmldecode.out" && {
+    echo "xml.decode still answers the stdlib body's Result" >&2
+    exit 1
+}
+echo "  stopped: xml.decode under the interpreter, named as the boundary it is"
 
 echo "ok backend parity: answers, construct and release counts, refusals"

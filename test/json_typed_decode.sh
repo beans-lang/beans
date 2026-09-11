@@ -29,10 +29,15 @@
 # decodes from four threads at once; single-threaded coverage cannot tell a
 # per-thread pool from a shared one.
 #
-# Typed decoding is native only: the tree interpreter has no typed-decode entry
-# (json.decode<T> returns kind "unsupported" there), so this gate, like the
-# typed cases in encoding.sh, runs the native build. That gap is pre-existing
-# and is not closed here.
+# Typed decoding used to be native only — the tree interpreter had no
+# typed-decode entry and json.decode<T> answered the stdlib body's own
+# `err(..., "unsupported")`, so a program branching on the result took a
+# different branch under `beansc run` than in its own binary, silently. It
+# decodes for itself now, over the same parse tree (json.parse is an extern "C"
+# call into this same vendored yyjson on both backends), so step 6 below runs
+# the corpus and the fuzz through BOTH and diffs them. The probe words are
+# native-only diagnostics and are masked out of that diff; everything the
+# program can see — the verdict and the decoded value — is not.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/beans-json-typed.XXXXXX")
@@ -108,6 +113,72 @@ for class in y n i; do
         echo "answer sheet counted $counted ${class}_ files, $on_disk are on disk" >&2
         exit 1
     fi
+done
+
+# 3b. The two backends must reach the same verdicts over that corpus.
+#
+#     The answer sheet above is a claim about the decoder; this is the claim
+#     that there is only one decoder's worth of behaviour. It carries verdicts
+#     only, because the per-refusal error code and byte offset travel through
+#     beans_json_decode_probe, which is a native diagnostic and answers zeros
+#     under the interpreter — the runner above pins those, this one pins that
+#     both backends accept and reject the same documents in all three shapes.
+echo "checking both backends decode the corpus alike"
+"$beansc" build test/cases/json_typed_corpus_parity.b \
+    -o "$tmp/corpus_parity" >/dev/null
+"$tmp/corpus_parity" "$corpus_dir" >"$tmp/corpus_parity.native"
+"$beansc" run test/cases/json_typed_corpus_parity.b -- "$corpus_dir" \
+    >"$tmp/corpus_parity.interp"
+diff -u "$tmp/corpus_parity.native" "$tmp/corpus_parity.interp" || {
+    echo "the two backends disagree on the corpus" >&2
+    exit 1
+}
+# A run that decoded nothing would diff clean, so the tally is checked as well,
+# and against the files on disk rather than against itself.
+parity_trailer=$(grep '^PARITY ' "$tmp/corpus_parity.native")
+parity_files=$(sed -n 's/.*files=\([0-9]*\).*/\1/p' <<<"$parity_trailer")
+if [[ "$parity_files" -ne "$corpus_files" ]]; then
+    echo "parity runner saw $parity_files files, $corpus_files are on disk" >&2
+    exit 1
+fi
+grep -q ' read_failures=0$' "$tmp/corpus_parity.native" || {
+    echo "the parity runner could not read part of the corpus" >&2
+    exit 1
+}
+# The corpus is mostly syntax, so most verdicts are refusals on both sides; the
+# accepted ones are what prove the walk itself ran. Without this the diff would
+# pass on a decoder that refused everything.
+accepted=$(grep -c 'obj=OK' "$tmp/corpus_parity.native" || true)
+if [[ "$accepted" -lt 10 ]]; then
+    echo "only $accepted corpus documents decoded — the walk is not being run" >&2
+    exit 1
+fi
+
+# 3c. And the same verdicts AND the same decoded values over the fuzz.
+#
+#     This is the value half: each round's transcript carries the decoded
+#     record re-encoded, so a mapping that differs by one field, one integer
+#     bound or one float spelling shows up here. Both legs must also report
+#     violations=0 — the invariants are checked inside the program, so a leg
+#     that agreed with the other on wrong answers still fails.
+echo "checking both backends decode the fuzz alike"
+for seed in "${fuzz_seeds[@]}"; do
+    FUZZ_SEED=$seed FUZZ_ROUNDS=$fuzz_rounds "$beansc" run \
+        test/cases/json_typed_decode_fuzz.b >"$tmp/fuzz.interp.$seed"
+    grep -q ' violations=0$' "$tmp/fuzz.interp.$seed" || {
+        echo "the interpreted fuzz reported invariant violations for seed $seed" >&2
+        grep '^VIOLATION' "$tmp/fuzz.interp.$seed" >&2
+        exit 1
+    }
+    # the probe words are native-only; everything else must match byte for byte
+    strip_probe() {
+        sed -E 's/ code=[0-9]+ (pos|records)=[0-9-]+ field=[0-9-]+//' "$1"
+    }
+    diff -u <(strip_probe "$tmp/fuzz.$seed") \
+            <(strip_probe "$tmp/fuzz.interp.$seed") || {
+        echo "the two backends disagree on the fuzz for seed $seed" >&2
+        exit 1
+    }
 done
 
 # 4. A decoded string must still be a C string.

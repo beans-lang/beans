@@ -836,6 +836,56 @@ partial class LlvmTextEmitter {
         return "  call void @beans_taskgroup_brew(ptr {group}, ptr @{thunk}, ptr {closure}, i64 {self.slot_rc_flag(payload)}, ptr {name}, i64 0)\n"
     }
 
+    // next / try_next for a payload wider than a slot. Same row, same
+    // status, same error dress as the boxed arm; only the two results are
+    // aggregates rather than boxes, so they are built with insertvalue and
+    // the Option's own tag carries "a row arrived" where the pointer's
+    // nullness carried it before.
+    fn emit_taskgroup_next_wide(
+        instruction: MirInstruction,
+        values: Map<int, string>,
+        payload: HirType,
+        receiver: string,
+        entry: string) -> string {
+        let option: string =
+            self.type_text(instruction.type)
+        if instruction.type.args.len() != 1 {
+            self.fail(
+                instruction,
+                "LLVM emitter needs the delivered Result type")
+            return ""
+        }
+        let result_type: HirType =
+            instruction.type.args[0]
+        let rtype: string =
+            self.type_text(result_type)
+        let llvm: string = self.type_text(payload)
+        if option == "" || rtype == "" ||
+           llvm == "" || llvm == "void" ||
+           !self.result_is_inline(result_type) {
+            self.fail(
+                instruction,
+                "LLVM emitter does not support delivering '{render_hir_type(payload)}' from a TaskGroup yet")
+            return ""
+        }
+        let id: int = self.fresh()
+        let slot: string =
+            self.spill_slot(llvm, "tg.value")
+        self.require_declare(
+            "beans_brew_value_typed",
+            "void @beans_brew_value_typed(ptr, ptr, i64)")
+        var output: string =
+            "  %tg.row{id} = call ptr @{entry}(ptr {receiver})\n  %tg.has{id} = icmp ne ptr %tg.row{id}, null\n  br i1 %tg.has{id}, label %tg.some{id}, label %tg.none{id}\ntg.none{id}:\n  br label %tg.out{id}\ntg.some{id}:\n  %tg.status{id} = call i64 @beans_brew_status(ptr %tg.row{id})\n  %tg.isok{id} = icmp eq i64 %tg.status{id}, 0\n  br i1 %tg.isok{id}, label %tg.ok{id}, label %tg.err{id}\ntg.ok{id}:\n"
+        output =
+            "{output}  call void @beans_brew_value_typed(ptr %tg.row{id}, ptr {slot}, i64 {self.type_size(payload)})\n  %tg.okv{id} = load {llvm}, ptr {slot}\n  %tg.oktag{id} = insertvalue {rtype} zeroinitializer, i1 false, 0\n  %tg.okr{id} = insertvalue {rtype} %tg.oktag{id}, {llvm} %tg.okv{id}, 1\n  br label %tg.claimed{id}\ntg.err{id}:\n"
+        output =
+            "{output}{self.brew_error_build(instruction, "%tg.row{id}", "%tg.status{id}", id, "%tg.errobj{id}")}"
+        output =
+            "{output}  %tg.errtag{id} = insertvalue {rtype} zeroinitializer, i1 true, 0\n  %tg.errr{id} = insertvalue {rtype} %tg.errtag{id}, ptr %tg.errobj{id}, 2\n  br label %tg.claimed{id}\ntg.claimed{id}:\n  %tg.res{id} = phi {rtype} [ %tg.okr{id}, %tg.ok{id} ], [ %tg.errr{id}, %tg.err{id} ]\n  call void @beans_release(ptr %tg.row{id})\n  %tg.wrapped{id} = insertvalue {option} zeroinitializer, i1 true, 0\n  %tg.full{id} = insertvalue {option} %tg.wrapped{id}, {rtype} %tg.res{id}, 1\n  br label %tg.out{id}\ntg.out{id}:\n  %tg.opt{id} = phi {option} [ zeroinitializer, %tg.none{id} ], [ %tg.full{id}, %tg.claimed{id} ]\n"
+        values[instruction.result] = "%tg.opt{id}"
+        return output
+    }
+
     // next / try_next: a delivered row arrives already joined — NULL is
     // none, anything else becomes some(Result<T>) built exactly as the
     // boxed join arm builds it, and the row is released once read. The
@@ -854,13 +904,6 @@ partial class LlvmTextEmitter {
             return ""
         }
         let payload: HirType = receiver_type.args[0]
-        if self.type_text(instruction.type) != "ptr" ||
-           self.wide_inline_value(payload) {
-            self.fail(
-                instruction,
-                "LLVM emitter does not support delivering '{render_hir_type(payload)}' from a TaskGroup yet")
-            return ""
-        }
         let receiver: string =
             self.value(
                 function, values,
@@ -875,6 +918,27 @@ partial class LlvmTextEmitter {
         self.require_declare(
             "beans_brew_status",
             "i64 @beans_brew_status(ptr)")
+        // A payload wider than one runtime slot makes Result<T> the inline
+        // {i1, T, Error} aggregate, and Option<Result<T>> an aggregate in
+        // turn — so neither the nullable-pointer Option nor the boxed Result
+        // below can carry it, and a fleet returning a struct, an Option, a
+        // Result or a decimal ran interpreted and refused to build. The
+        // group itself has always taken wide payloads (brew goes through
+        // beans_taskgroup_brew_typed, and wait_all collects through
+        // beans_taskgroup_collect_typed); only reading one row back was
+        // missing. This builds both arms the way emit_brew_join builds them
+        // for a lone handle, which is the same row shape.
+        if self.wide_inline_value(payload) {
+            return self.emit_taskgroup_next_wide(
+                instruction, values, payload,
+                receiver, entry)
+        }
+        if self.type_text(instruction.type) != "ptr" {
+            self.fail(
+                instruction,
+                "LLVM emitter does not support delivering '{render_hir_type(payload)}' from a TaskGroup yet")
+            return ""
+        }
         let id: int = self.fresh()
         var output: string =
             "  %tg.row{id} = call ptr @{entry}(ptr {receiver})\n  %tg.has{id} = icmp ne ptr %tg.row{id}, null\n  br i1 %tg.has{id}, label %tg.some{id}, label %tg.none{id}\ntg.none{id}:\n  br label %tg.out{id}\ntg.some{id}:\n  %tg.status{id} = call i64 @beans_brew_status(ptr %tg.row{id})\n  %tg.isok{id} = icmp eq i64 %tg.status{id}, 0\n  br i1 %tg.isok{id}, label %tg.ok{id}, label %tg.err{id}\ntg.ok{id}:\n"

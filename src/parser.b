@@ -100,7 +100,21 @@ class Parser {
         if self.check(kind) {
             return self.advance()
         }
-        self.fail(token, message)
+        // A name spot holding a keyword is the one shape where the bare
+        // message points nowhere: `fn take()` read "expected function name"
+        // with the cursor on a word the writer can see is a name. Say which
+        // word is reserved and the reader is done in one line. `take` is the
+        // sharpest case — it is reserved only so an old program gets a real
+        // diagnostic (spec/SYNTAX.md, "Keywords and modifiers") — but every
+        // keyword lands here the same way.
+        if kind == "ident" &&
+           keyword_kind(token.text) == token.kind {
+            self.fail(
+                token,
+                "{message} — '{token.text}' is a reserved word")
+        } else {
+            self.fail(token, message)
+        }
         if !self.at_end() { self.advance() }
         return token
     }

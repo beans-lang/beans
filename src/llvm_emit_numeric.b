@@ -573,9 +573,7 @@ partial class LlvmTextEmitter {
                operand_type.args.len() >= 1 {
                 let compared: LlvmSlotConversion =
                     self.emit_result_equal(
-                        instruction,
-                        operand_type,
-                        left, right)
+                        operand_type, left, right)
                 if compared.value != "" {
                     if instruction.text == "!=" {
                         values[instruction.result] =
@@ -998,13 +996,32 @@ partial class LlvmTextEmitter {
 
     // The runtime's slot_eq kind for an element, with the comparator thunk
     // when the kind is a custom one. Only kinds whose meaning matches the
-    // interpreter are answered: a nested List compares structurally there, so
-    // handing the runtime an identity kind would quietly answer a different
-    // question, and refusing is the honest result.
+    // interpreter are answered: an identity kind where the interpreter
+    // compares structurally would quietly answer a different question, so a
+    // shape with no structural comparator refuses rather than guessing.
+    //
+    // A nested List is that shape no longer. request_value_eq answers a
+    // List with a structural comparator of its own, so a nested list takes
+    // the custom kind and the runtime calls it — which is what the
+    // interpreter has always done.
+    // The thunk it answers is already spelled the way LLVM wants it after
+    // `ptr ` — a global name carrying its own `@`, or the literal `null`.
+    // It used to carry a second one, which emit_list_contains stripped back
+    // off and emit_list_equal did not: `List<Bytes> ==` and
+    // `List<payload enum> ==` wrote `ptr @@.next.eq0` into the module and
+    // the build failed talking about a .ll file.
     fn slot_equality_kind(
         element: HirType) -> LlvmEqualityKind {
         let name: string =
             canonical_hir_name(element.name)
+        if name == "List" && element.args.len() == 1 {
+            let symbol: string =
+                self.request_value_eq(element)
+            if symbol == "" {
+                return new LlvmEqualityKind(-1, "null")
+            }
+            return new LlvmEqualityKind(4, symbol)
+        }
         if llvm_type_is_integer(element) ||
            self.type_is_raw_pointer(element) ||
            self.enum_has_fixed_repr(element) {
@@ -1025,7 +1042,7 @@ partial class LlvmTextEmitter {
             if symbol == "" {
                 return new LlvmEqualityKind(-1, "null")
             }
-            return new LlvmEqualityKind(4, "@{symbol}")
+            return new LlvmEqualityKind(4, symbol)
         }
         if self.type_is_reference(element) {
             match self.declaration_for(element) {
@@ -1039,7 +1056,7 @@ partial class LlvmTextEmitter {
                                 -1, "null")
                         }
                         return new LlvmEqualityKind(
-                            4, "@{symbol}")
+                            4, symbol)
                     }
                     if declaration.kind == "class" ||
                        declaration.kind ==
@@ -1059,8 +1076,38 @@ partial class LlvmTextEmitter {
     // Two lists are equal when they hold the same elements in the same order,
     // which is what the interpreter has always answered. Elements compare the
     // way `contains` scans for them — by identity for a class, by content for
-    // a string — with one extra route for an inline record, whose structural
-    // equality is captured into a thunk the runtime calls by address.
+    // a string — with one extra route for an element wider than a slot,
+    // whose structural equality is captured into a thunk the runtime calls
+    // by address.
+    //
+    // The call is its own function because `==` is not the only place two
+    // lists meet: a List sitting inside a struct, an Option or a Result is
+    // compared by request_value_eq's own List comparator, and that comparator
+    // must ask this same question or the two spellings of `==` answer
+    // differently in one program.
+    fn list_equal_call(
+        element: HirType,
+        left: string,
+        right: string,
+        result: string) -> string {
+        if self.sort_element_by_address(element) {
+            let thunk: string =
+                self.request_record_eq(element)
+            if thunk == "" { return "" }
+            self.require_declare(
+                "beans_list_val_equal",
+                "i64 @beans_list_val_equal(ptr, ptr, ptr)")
+            return "  {result} = call i64 @beans_list_val_equal(ptr {left}, ptr {right}, ptr @{thunk})\n"
+        }
+        let kind: LlvmEqualityKind =
+            self.slot_equality_kind(element)
+        if kind.kind < 0 { return "" }
+        self.require_declare(
+            "beans_list_equal",
+            "i64 @beans_list_equal(ptr, ptr, i64, ptr)")
+        return "  {result} = call i64 @beans_list_equal(ptr {left}, ptr {right}, i64 {kind.kind}, ptr {kind.thunk})\n"
+    }
+
     fn emit_list_equal(
         function: MirFunction,
         instruction: MirInstruction,
@@ -1072,28 +1119,10 @@ partial class LlvmTextEmitter {
         let element: HirType = operand_type.args[0]
         let id: int = self.fresh()
         let raw: string = "%list.eq.raw{id}"
-        var call: string = ""
-        if self.sort_element_by_address(element) &&
-           canonical_hir_name(element.name) !=
-               "decimal" {
-            let thunk: string =
-                self.request_record_eq(element)
-            if thunk == "" { return "" }
-            self.require_declare(
-                "beans_list_val_equal",
-                "i64 @beans_list_val_equal(ptr, ptr, ptr)")
-            call =
-                "  {raw} = call i64 @beans_list_val_equal(ptr {left}, ptr {right}, ptr @{thunk})\n"
-        } else {
-            let kind: LlvmEqualityKind =
-                self.slot_equality_kind(element)
-            if kind.kind < 0 { return "" }
-            self.require_declare(
-                "beans_list_equal",
-                "i64 @beans_list_equal(ptr, ptr, i64, ptr)")
-            call =
-                "  {raw} = call i64 @beans_list_equal(ptr {left}, ptr {right}, i64 {kind.kind}, ptr {kind.thunk})\n"
-        }
+        let call: string =
+            self.list_equal_call(
+                element, left, right, raw)
+        if call == "" { return "" }
         values[instruction.result] = result
         if instruction.text == "!=" {
             return "{call}  {result} = icmp eq i64 {raw}, 0\n"
