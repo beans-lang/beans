@@ -1,5 +1,6 @@
 package main
 
+import std.os
 import std.process
 import std.target as running_target
 
@@ -327,7 +328,16 @@ class TargetDescription {
             let sdk: string = apple_sdk_path(
                 if self.is_simulator() { "iphonesimulator" } else { "iphoneos" })
             if sdk == "" { return [] }
-            return ["-isysroot", sdk, "-miphoneos-version-min=13.0"]
+            // The two variants take *different* minimum-version flags, and
+            // clang silently ignores the wrong one rather than refusing it — so
+            // a simulator build given the device flag gets whatever the SDK
+            // defaults to, and every availability warning it produces is about
+            // a version nobody chose. 14 is the floor UIKit's own modern API
+            // needs and is five years old.
+            if self.is_simulator() {
+                return ["-isysroot", sdk, "-mios-simulator-version-min=14.0"]
+            }
+            return ["-isysroot", sdk, "-miphoneos-version-min=14.0"]
         }
         if self.triple == "arm-unknown-linux-gnueabi" {
             return [
@@ -397,7 +407,30 @@ class TargetDescription {
         return self.env == "simulator"
     }
 
+    /// Whether this target is Android.
+    ///
+    /// Android is Linux with a different libc (bionic), a different dynamic
+    /// linker and a toolchain that cannot be the host's: the NDK ships its own
+    /// clang with the right compiler-rt and libunwind, and a host clang given
+    /// the triple fails at link looking for builtins it does not have.
+    pub fn is_android() -> bool {
+        return self.os == "android"
+    }
+
+    /// The minimum API level. 24 is Android 7, which is where 64-bit-only
+    /// devices start and where the NDK's own defaults are comfortable.
+    pub fn android_api() -> int {
+        return 24
+    }
+
     fn llvm_triple() -> string {
+        // Android carries its API level *in the triple* — that is how the NDK
+        // selects which version of bionic's headers and stubs to link, and a
+        // triple without one links against the newest, which then refuses to
+        // load on an older phone.
+        if self.is_android() {
+            return "{self.triple}{self.android_api()}"
+        }
         // Apple spells the simulator as an environment on the triple, and the
         // SDK will not accept anything else.
         if self.os == "ios" {
@@ -410,6 +443,33 @@ class TargetDescription {
         if self.arch == "x86" { return "i686-pc-windows-gnu" }
         return self.triple
     }
+}
+
+/// The NDK's clang for the machine this is running on, or `""`.
+///
+/// Named by the environment, never searched for: several NDKs are usually
+/// installed side by side, and choosing one by guessing which is newest means
+/// a build whose minimum API level changes between machines.
+pub fn android_clang() -> string {
+    var ndk: string = ""
+    match os.env("ANDROID_NDK_HOME") {
+        some(value) => { ndk = value }
+        none => {}
+    }
+    if ndk == "" {
+        match os.env("ANDROID_NDK_ROOT") {
+            some(value) => { ndk = value }
+            none => {}
+        }
+    }
+    if ndk == "" { return "" }
+    let hosts: List<string> = ["darwin-x86_64", "linux-x86_64", "windows-x86_64"]
+    for host: string in hosts {
+        let candidate: string =
+            "{ndk}/toolchains/llvm/prebuilt/{host}/bin/clang"
+        if File.exists(candidate) { return candidate }
+    }
+    return ""
 }
 
 /// Whether an operating system name is one of Apple's.
@@ -465,6 +525,21 @@ fn supported_targets() -> List<TargetDescription> {
         new TargetDescription(
             "arm64-apple-ios-sim", "arm64", "ios", "simulator",
             "macho", 64, 16, [8, 16, 32, 64], true, ["neon"]),
+        // Android, device and emulator. Linux ELF with bionic rather than
+        // glibc, and a toolchain that has to be the NDK's: it ships the
+        // compiler-rt builtins and the libunwind for these triples, and a host
+        // clang given one fails at link looking for them.
+        //
+        // The NDK is named by ANDROID_NDK_HOME or ANDROID_NDK_ROOT and is not
+        // searched for. Several are usually installed side by side, and
+        // picking one by guessing which is newest is how a build silently
+        // changes its minimum API between machines.
+        new TargetDescription(
+            "aarch64-linux-android", "arm64", "android", "bionic",
+            "elf", 64, 16, [8, 16, 32, 64], true, ["neon"]),
+        new TargetDescription(
+            "x86_64-linux-android", "x86_64", "android", "bionic",
+            "elf", 64, 16, [8, 16, 32, 64], true, ["sse2"]),
         new TargetDescription(
             "x86_64-unknown-linux-gnu", "x86_64", "linux", "gnu",
             "elf", 64, 16, [8, 16, 32, 64], true, ["sse2"]),

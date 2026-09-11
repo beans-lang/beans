@@ -11418,6 +11418,25 @@ long long beans_proc_close_out(long long fd, void** e_out) { BRes r = beans_proc
 // The fd is closed as soon as the mapping exists: the mapping keeps the object alive,
 // and holding the descriptor open would leak one per map. The name outlives every
 // process until someone unlinks it, which is why unlink is a separate call.
+// Bionic has no shm_open at all. Android removed POSIX named shared memory
+// deliberately — ashmem and later memfd took its place, and neither offers a
+// name another process can open — so there is nothing to emulate it with: a
+// file under /data is not readable by a second application, and a memfd is
+// anonymous by construction.
+//
+// So it is refused by name rather than emulated into something with different
+// lifetime and visibility rules. A program that needs to share memory between
+// Android processes needs Android's own mechanism, which is a binder ashmem
+// region and not this API.
+#if defined(__ANDROID__)
+BRes beans_shm_open(char* name, long long size, long long create) {
+    (void)name; (void)size; (void)create;
+    return (BRes){0, mk_error(
+        "named shared memory does not exist on Android: bionic has no shm_open, "
+        "and neither ashmem nor memfd offers a name another process can open",
+        "unsupported")};
+}
+#else
 BRes beans_shm_open(char* name, long long size, long long create) {
     if (size <= 0) return (BRes){0, mk_error("shared memory size must be positive",
                                              "invalid")};
@@ -11492,12 +11511,17 @@ BRes beans_shm_open(char* name, long long size, long long create) {
     close(fd);
     return (BRes){(long long)m, NULL};
 }
+#endif
 long long beans_shm_open_out(char* name, long long size, long long create, void** e_out) { BRes r = beans_shm_open(name, size, create); *e_out = r.err; return r.val; }
 
 // Removes the name. Existing mappings keep working until their last user unmaps, the
 // same as unlinking an open file.
 BRes beans_shm_unlink(char* name) {
-#if defined(_WIN32)
+#if defined(__ANDROID__)
+    (void)name;
+    return (BRes){0, mk_error(
+        "named shared memory does not exist on Android", "unsupported")};
+#elif defined(_WIN32)
     // The file-backed emulation makes unlink a real unlink, with the same
     // observable behaviour as POSIX: a missing name reports not_found, and
     // existing mappings keep working because the view holds the file mapping

@@ -2326,9 +2326,22 @@ class NativeBuildDriver {
                     "BEANS_WASM_CC",
                     self.configured_program(
                         "BEANS_CC", "clang"))
+            } else if self.target.is_android() {
+                // The NDK's clang, not the host's. Android's compiler-rt
+                // builtins and libunwind ship with the NDK, and a host clang
+                // handed an Android triple fails at link looking for them —
+                // with an error about a missing `libclang_rt.builtins.a` that
+                // says nothing about the NDK.
+                self.configured_program("BEANS_ANDROID_CC", android_clang())
             } else {
                 self.configured_program("BEANS_CC", "clang")
             }
+        if self.target.is_android() && compiler == "" {
+            self.fail(
+                source,
+                "building for {self.target.triple} needs the Android NDK's clang, and nothing named it. To fix: set ANDROID_NDK_HOME to an NDK directory, or BEANS_ANDROID_CC to its clang. The host's clang cannot do it — Android's compiler-rt builtins ship with the NDK.")
+            return false
+        }
         if !self.check_toolchain(source, compiler) {
             return false
         }

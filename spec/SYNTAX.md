@@ -2749,7 +2749,8 @@ beansc build --target aarch64-unknown-linux-gnu --emit obj app.b -o app.o
 ```
 
 Supported targets: Apple `arm64-apple-darwin`, `arm64-apple-ios`,
-`arm64-apple-ios-sim`; Linux GNU
+`arm64-apple-ios-sim`; Android `aarch64-linux-android`,
+`x86_64-linux-android`; Linux GNU
 `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`,
 `riscv64-unknown-linux-gnu`, `i686-unknown-linux-gnu`,
 `armv7-unknown-linux-gnueabihf`, `arm-unknown-linux-gnueabi`,
@@ -2772,6 +2773,24 @@ Common spellings normalize to those, so `aarch64-apple-darwin`,
 `riscv32imac-unknown-none-elf` all
 work and still produce one canonical name in the IR and in every cache key. An
 unknown triple is a plain compile error listing what is supported.
+
+The two Android targets need the **NDK's own clang**, named by
+`ANDROID_NDK_HOME` or `ANDROID_NDK_ROOT` (or `BEANS_ANDROID_CC` pointing
+straight at it). The host's clang cannot build for Android: the compiler-rt
+builtins and the libunwind for those triples ship with the NDK, and without
+them the link fails looking for a `libclang_rt.builtins.a` that never existed.
+The NDK is named rather than searched for, because several are usually
+installed side by side and guessing which is newest is how a build's minimum
+API level changes between machines. The API level rides in the LLVM triple —
+`aarch64-linux-android24` — which is how the NDK picks which bionic headers and
+stubs to link.
+
+Android is Linux with a different libc, and one thing genuinely is not there:
+**bionic has no `shm_open`**, so `std.fs`'s named shared memory answers
+`unsupported` rather than being emulated. Android removed POSIX named shared
+memory on purpose, and neither ashmem nor `memfd` offers a name another process
+can open, so there is nothing to emulate it with that would have the same
+lifetime and visibility rules.
 
 The two iOS targets need Xcode, not just the Command Line Tools: the SDK is
 found through `xcrun --sdk iphoneos --show-sdk-path`, and the path carries its
