@@ -16032,15 +16032,33 @@ class TreeInterpreter {
     // inside the process, because an address alone is not enough to call one.
     fn extern_symbol_address(
         function: HirFunction) -> int {
+        // **The program's own C is asked first, and the order is the whole
+        // point.** A package that vendors a C library — `community-libs/sqlite`
+        // ships SQLite's amalgamation — compiles it into the csrc library this
+        // interpreter loads, and its symbols must be the ones that program
+        // gets. The global namespace holds whatever else the process happens
+        // to have dragged in, and on macOS that includes `/usr/lib/libsqlite3`
+        // the moment anything links AppKit.
+        //
+        // Asked the other way round it is a wrong answer that compiles, which
+        // is the worst kind: `beansc run` on a program using both cortado and
+        // sqlite prepared its statements with the system's SQLite 3.51 and
+        // bound them with the vendored 3.53, and SQLite answered
+        // SQLITE_MISUSE — from a call whose every argument was correct. The
+        // native backend never had it, because the linker binds the vendored
+        // copy at link time; so the two engines disagreed about a program
+        // neither had any reason to refuse.
+        let linked: int =
+            self.manifest_symbol_address(
+                function.extern_name)
+        if linked != 0 { return linked }
+        // Everything a package did not bring: libc, the platform's own
+        // frameworks, anything already in the process.
         match host_dl.global_symbol(
                   function.extern_name) {
             ok(address) => { return address }
             err(error) => {}
         }
-        let linked: int =
-            self.manifest_symbol_address(
-                function.extern_name)
-        if linked != 0 { return linked }
         // The std.encoding bridges live in RTLD_LOCAL shared libraries the
         // interpreter loads on demand, so their symbols are resolved through
         // the library handle rather than the global namespace.
