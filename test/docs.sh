@@ -105,15 +105,4 @@ while IFS=$'\t' read -r area points state slug test_path; do
 done < <(grep -v '^#' test/access_scorecard.tsv | grep -v '^$')
 [[ "$missing" -eq 0 ]] || exit 1
 
-echo "checking the roadmap does not claim something the scorecard calls planned"
-# The scorecard is the machine-checked record. A roadmap tick for a row still marked
-# planned would be the exact overclaim the whole scoring exercise exists to prevent.
-while IFS=$'\t' read -r area points state slug test_path; do
-    [[ "$state" == planned ]] || continue
-    if grep -q "^- \[x\].*$slug" ROADMAP.md; then
-        echo "ROADMAP.md ticks $slug, which the scorecard still calls planned" >&2
-        exit 1
-    fi
-done < <(grep -v '^#' test/access_scorecard.tsv | grep -v '^$')
-
 echo "ok docs: contributor guide, targets, commands, and tests are current"

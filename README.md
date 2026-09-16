@@ -39,7 +39,7 @@ The release workflow builds and install-tests all 26 required host packages and
 publishes checksums, an SPDX SBOM and GitHub attestations. That is release
 engineering evidence, not yet a general production-ready claim: clean
 performance floors, the long fuzz run and the public beta/RC soak are still
-open in [ROADMAP.md](ROADMAP.md).
+open.
 
 ## Install
 

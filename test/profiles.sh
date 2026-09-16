@@ -56,7 +56,7 @@ echo "checking minimal really has no filesystem, sockets or processes"
 # match, GNU nm then dies on EPIPE, and `set -o pipefail` turns the whole pipeline into
 # a failure even though the symbol was found. It is deterministic on Linux and
 # intermittent on macOS, which is what made it look for a long time like a flaky
-# compiler — see ROADMAP 8.4.
+# compiler. test/freestanding.sh carries the reproduction.
 for level in 1 2 3; do
     nm "$tmp/rt$level.o" >"$tmp/sym$level" || {
         echo "nm failed on the profile-$level object" >&2

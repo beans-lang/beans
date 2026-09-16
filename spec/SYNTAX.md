@@ -360,6 +360,11 @@ fn main() {
   object's cache key: changing one recompiles instead of reusing the object
   built with the old set. `-o` and `-c` are refused — the object path belongs
   to the build.
+  A flag that names a **directory** — `-I`, `-iquote`, `-isystem`,
+  `-idirafter`, `-F` — resolves a relative value against the declaring
+  package, exactly as a `csrc` path does; an absolute value passes through
+  untouched. `-include` and `-imacros` are not rewritten, because they name a
+  file the include search looks up rather than a directory to search.
 
 ## Lexical
 
@@ -4593,8 +4598,8 @@ everywhere else.
   machine expander, the hidden `std.async$rt` package, and the runtime's
   parked-readiness registry are gone, and reflection no longer reports an
   async flag. Threads, channels, and `std.poll` carry concurrency until the
-  planned fiber model (uncolored functions parking on a pinned worker) lands
-  through ROADMAP P4.
+  planned fiber model (uncolored functions parking on a pinned worker)
+  lands.
 - async/await v0.9 (first version implemented; since removed): contextual words, never
   keywords, so every existing use of the names keeps parsing; the declared
   type is the body's, a call gets `std.async.Task` of it, and the split never

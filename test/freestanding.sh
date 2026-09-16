@@ -263,8 +263,7 @@ echo "checking the hooks are weak in the hosted profiles"
 # now known, and it was the pipeline: `nm ... | grep -q` exits at the first match, the
 # producer dies on EPIPE, and `set -o pipefail` reports the *pipeline* as failed even
 # though the symbol was found. On Linux it is deterministic; on macOS it depends on
-# timing, which is what made it look like a flaky compiler for so long. ROADMAP 8.4 has
-# the reproduction.
+# timing, which is what made it look like a flaky compiler for so long.
 #
 # So: `nm` runs once into a file, its exit status and output length are checked before
 # anything is matched, and the hooks are grepped from that file. The loud retry stays —
@@ -320,7 +319,7 @@ if ! hooks_present; then
     }
     if hooks_present; then
         echo "the weak-hook check needed a second attempt to pass, so the first was" \
-             "transient — this is the evidence ROADMAP asks for" >&2
+             "transient — which is the evidence this check exists to collect" >&2
         exit 1
     fi
     echo "the hooks are genuinely absent from the full profile, twice over: a hosted" \
