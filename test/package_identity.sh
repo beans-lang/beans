@@ -518,7 +518,8 @@ accept "$shadow/main.b" "$tmp/shadow.expected" std-shadow
 # Everything here is local git — no network.
 echo "checking remote package identity"
 remote="$tmp/remote"
-mkdir -p "$remote/source/sub" "$remote/remotes/acme" "$remote/app"
+mkdir -p "$remote/source/sub" "$remote/source/kit/inner" \
+         "$remote/remotes/acme" "$remote/app"
 git -C "$remote/source" init -q
 git -C "$remote/source" config user.name "Beans Test"
 git -C "$remote/source" config user.email "beans@example.test"
@@ -554,6 +555,33 @@ pub class Badge {
 
 pub fn value() -> int { return 42 }
 EOF
+# A sibling module inside the same repository. `dep/kit` declares its own
+# module, so git must name it `depkit` exactly as a `require path` row would.
+cat >"$remote/source/kit/beans.pot" <<'EOF'
+module depkit
+kind library
+require path ".."
+EOF
+cat >"$remote/source/kit/kit.b" <<'EOF'
+package depkit
+
+import dep
+import depkit.inner
+
+pub class Tool {
+    pub fn init() {}
+}
+
+// A package of `dep` may not import `dep`; a separate module may. Reaching
+// this line at all is what proves the directory was loaded as a module.
+pub fn doubled() -> int { return dep.answer() * 2 }
+pub fn inner_value() -> int { return inner.three() }
+EOF
+cat >"$remote/source/kit/inner/inner.b" <<'EOF'
+package inner
+
+pub fn three() -> int { return 3 }
+EOF
 git -C "$remote/source" add -A
 git -C "$remote/source" commit -qm v1
 git -C "$remote/source" tag v1
@@ -573,6 +601,8 @@ import std.io
 import std.reflect
 import example.test/acme/dep
 import example.test/acme/dep/sub
+import example.test/acme/dep/kit
+import example.test/acme/dep/kit/inner
 
 @dep.mark(note: "here")
 pub class Marked {
@@ -583,6 +613,9 @@ fn main() {
     io.println(dep.answer())
     io.println(sub.value())
     io.println(dep.tag().v)
+    io.println(depkit.doubled())
+    io.println(depkit.inner_value())
+    io.println(inner.three())
 
     // The names reflection reports. A library that discovers its own
     // annotation compares one of these against a literal it wrote itself
@@ -590,6 +623,7 @@ fn main() {
     // git has to answer the same name a `require path` row would give it.
     io.println(type_of(dep.Thing).qualified_name())
     io.println(type_of(sub.Badge).qualified_name())
+    io.println(type_of(depkit.Tool).qualified_name())
     for candidate: reflect.Type in reflect.types() {
         if candidate.qualified_name() != "app.Marked" { continue }
         for note: reflect.Annotation in candidate.annotations() {
@@ -598,7 +632,7 @@ fn main() {
     }
 }
 EOF
-printf '42\n42\n7\ndep.Thing\ndep.sub.Badge\ndep.mark\n' \
+printf '42\n42\n7\n84\n3\n3\ndep.Thing\ndep.sub.Badge\ndepkit.Tool\ndep.mark\n' \
     >"$tmp/remote.expected"
 (
     export BEANS_HOME="$remote/home"
@@ -616,6 +650,14 @@ printf '42\n42\n7\ndep.Thing\ndep.sub.Badge\ndep.mark\n' \
     "$root/build/beansc" load --locked --offline main.b >"$tmp/remote.graph"
     grep -q '^package dep.sub name=sub$' "$tmp/remote.graph"
     grep -q '^package dep name=dep$' "$tmp/remote.graph"
+    # The nested manifest names it, so it is `depkit`, never `dep.kit`.
+    grep -q '^package depkit name=depkit$' "$tmp/remote.graph"
+    grep -q '^package depkit.inner name=inner$' "$tmp/remote.graph"
+    if grep -q '^package dep.kit ' "$tmp/remote.graph"; then
+        echo "a nested module was loaded as a package of its repository" >&2
+        cat "$tmp/remote.graph" >&2
+        exit 1
+    fi
     loaded=$(grep -c '^package dep.sub ' "$tmp/remote.graph")
     if test "$loaded" -ne 1; then
         echo "the shared subpackage loaded $loaded times, expected once" >&2

@@ -1301,8 +1301,10 @@ class ModuleLoader {
             return ""
         }
 
-        let base: string =
-            path.join(path.join(beans_home(), "pkg"), remote_path)
+        // One spelling for the cache root: a BEANS_HOME with a trailing
+        // slash would give one checkout two names and two module identities.
+        let base: string = normalize_local_path(
+            path.join(path.join(beans_home(), "pkg"), remote_path))
         if use_lock {
             let cached: string = path.join(base, resolved.commit)
             if Dir.exists(cached) {
@@ -1638,14 +1640,8 @@ class ModuleLoader {
                         if remote_name == "" { continue }
                         self.remote_names[checkout] = remote_name
                     }
-                    // The identity is the declared module name, not this git
-                    // path. Reflection reports that identity, and a library
-                    // that matches its own annotation by qualified name — as
-                    // barista's `@service` scan does — compares against the
-                    // name its source spells. A package reached from git and
-                    // the same package reached by a `require path` row must
-                    // therefore answer the same name, or the scan silently
-                    // finds nothing.
+                    // The identity is the declared name, not the git path:
+                    // an annotation scan matches by qualified name.
                     let claimed_root: string =
                         self.local_name_roots.get(remote_name).or("")
                     if claimed_root != "" && claimed_root != checkout {
@@ -1657,16 +1653,49 @@ class ModuleLoader {
                     self.local_name_roots[remote_name] = checkout
                     var canonical: string = remote_name
                     var imported_dir: string = checkout
+                    var context_module: string = remote_name
+                    var context_dir: string = checkout
+                    var unreadable: bool = false
                     for index: int in 3..remote_parts.len() {
                         imported_dir =
                             path.join(imported_dir, remote_parts[index])
-                        canonical = "{canonical}.{remote_parts[index]}"
+                        // A directory with its own beans.pot is a module
+                        // root, and git must name it what a path row would.
+                        if !File.exists(
+                               path.join(imported_dir, "beans.pot")) {
+                            canonical = "{canonical}.{remote_parts[index]}"
+                            continue
+                        }
+                        var nested: string =
+                            self.remote_names.get(imported_dir).or("")
+                        if nested == "" {
+                            nested = self.read_module_name(imported_dir)
+                            if nested == "" {
+                                unreadable = true
+                                break
+                            }
+                            self.remote_names[imported_dir] = nested
+                        }
+                        let nested_root: string =
+                            self.local_name_roots.get(nested).or("")
+                        if nested_root != "" && nested_root != imported_dir {
+                            self.fail(
+                                file.path, entry.line, entry.col,
+                                "module '{nested}' is required from both {nested_root} and {imported_dir} — one module name is one package")
+                            unreadable = true
+                            break
+                        }
+                        self.local_name_roots[nested] = imported_dir
+                        canonical = nested
+                        context_module = nested
+                        context_dir = imported_dir
                     }
+                    if unreadable { continue }
                     entry.resolved = canonical
                     entry.node.resolved = canonical
                     package.imports.push(canonical)
                     self.load_package(canonical, imported_dir,
-                                      remote_name, checkout,
+                                      context_module, context_dir,
                                       file.path, entry.line, entry.col)
                     continue
                 }

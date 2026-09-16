@@ -18719,10 +18719,22 @@ BBrew* beans_taskgroup_next(BTaskGroup* g) {
     }
 }
 
-// Never parks: a finished row right now, or NULL.
+// A finished row right now, or NULL. Never parks — but it does hand over
+// once when nothing is ready yet, because the children are on this fiber's
+// own scheduler: a caller spinning on try_next until every row has landed,
+// which is the documented way to drain a fleet without blocking, would
+// otherwise starve the very fibers it is waiting for and never finish.
+//
+// The yield's verdict is deliberately not read. try_next is not a park, so
+// it is not where a cancel is observed; the next real park still is.
 BBrew* beans_taskgroup_try_next(BTaskGroup* g) {
     long long index = taskgroup_pick_done(g);
-    if (index < 0) return NULL;
+    if (index < 0) {
+        if (!taskgroup_live(g)) return NULL;
+        beans_fiber_yield();
+        index = taskgroup_pick_done(g);
+        if (index < 0) return NULL;
+    }
     BBrew* row = taskgroup_detach(g, index);
     beans_brew_join(row);
     return row;

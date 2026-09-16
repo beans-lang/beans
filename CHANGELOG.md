@@ -2,7 +2,7 @@
 
 This file records user-facing changes in each Beans release.
 
-## [0.1.44] - 2026-09-11
+## [0.1.44] - 2026-09-16
 
 Ten shapes where the two backends stopped agreeing, and three more the work
 turned up. Every one of them passed `beansc check`; what happened next depended
@@ -94,6 +94,99 @@ the program naming the boundary rather than handing back a plausible failure.
   gets a real message — and appeared in no keyword list, so `fn take()` read
   *"expected function name"*. The spec records it, and a name spot holding any
   keyword now names the word.
+
+### Two new targets
+
+**`--target arm64-apple-ios` and `arm64-apple-ios-sim`.** Real iOS Mach-O
+against the iPhoneOS SDK, and the simulator binary runs under `xcrun simctl
+spawn`. Almost nothing about an Apple build was macOS-specific rather than
+Apple-specific, so the eighteen sites that asked `os == "macos"` for Mach-O,
+`.dylib`, the leading underscore, Security, CoreFoundation or `-fblocks` now
+ask `target.is_apple()`. The SDK path comes from `xcrun --show-sdk-path`, never
+a constant, because it carries its own version.
+
+**`--target aarch64-linux-android` and `x86_64-linux-android`.** An aarch64 ELF
+whose interpreter is `/system/bin/linker64`, pushed to an emulator with adb and
+run. The toolchain must be the NDK's clang — Android's compiler-rt builtins and
+libunwind ship with the NDK — so the driver takes `BEANS_ANDROID_CC`, else the
+clang under `ANDROID_NDK_HOME` or `ANDROID_NDK_ROOT`, and refuses naming both
+when neither is set. The API level rides in the triple.
+
+And one thing bionic genuinely lacks: **there is no `shm_open`**. `std.fs`'s
+shared memory answers `unsupported` on Android rather than being emulated into
+something with different lifetime rules.
+
+### A repository may hold more than one module
+
+**A subdirectory of a git dependency that has its own `beans.pot` is its own
+module.** It used to be loaded as a package of the repository above it, under
+the name the *path* spelled, so its files' own `package` clause mismatched, its
+`require` rows were never read, and importing its own module root — legal for a
+module, refused for a package — failed:
+
+    import github.com/acme/http/app
+    → app/app.b:3:1: error: a package cannot import its own module root
+
+The same directory reached by `require path "../http/app"` answered correctly,
+which is the disagreement: a package is named by the manifest that declares it,
+never by the path that reached it. One `require` row still reaches both, and a
+nested module's own dependencies come along with it.
+
+`community-libs/espresso`, `latte` and `cortado` are the programs that found
+this; every one of them is required from git now rather than by path, which is
+what a consumer outside this workspace can actually write.
+
+### A fleet drained without blocking
+
+**`TaskGroup.try_next()` hands over to the scheduler when it has nothing
+ready.** It did not, and brewed children run on the caller's own scheduler, so
+the drain loop the concurrency spec describes — poll `try_next` until every row
+has been seen — starved the very fibers it was waiting for and never finished.
+Two million polls answered `none` for a group of three children that were all
+ready to run:
+
+```beans
+for seen < 3 {
+    match group.try_next() {
+        some(row) => { seen = seen + 1 }
+        none => {}
+    }
+}
+```
+
+`next()` was unaffected, because it parks. The yield is one hand-over, to the
+tail of the run queue, so every ready fiber runs before the poller looks again;
+`try_next` still never parks, and is still not where a cancel is observed. Both
+engines carry it — the tree interpreter runs its own delivery loop, and a fix
+in only one of them would have been the split this repository exists to catch.
+
+`test/backend_parity.sh` bounds every run now. `taskgroup_wide.b` had been
+hanging rather than failing since it was written, and a suite that waits
+forever cannot go red — it reads as still running, which is how this survived
+several CI runs.
+
+### Also
+
+- **`bytes[i]` is refused by the checker.** It type-checked and neither backend
+  could emit it, so the program failed later in two different vocabularies, one
+  naming the interpreter and one naming the LLVM emitter. `get(index)` and
+  `set(index, value)` have always been the spelling, and the message says so.
+- **`beansc run` asks a program's own C before the process's.** Extern symbols
+  resolved against `dlsym(RTLD_DEFAULT, …)` first, so a package that vendors a
+  C library got whatever else was loaded: cortado links AppKit, AppKit drags in
+  the system libsqlite3, and the vendored SQLite 3.53's shims were answered by
+  macOS's 3.51 — one statement prepared by one library and bound by another.
+  The native backend never had it, because the linker binds the vendored copy.
+- **`#import` counts as a header when hashing a `csrc` source.** The cache key
+  followed `#include` only, so every Objective-C file's headers were missing
+  from it and a bumped ABI header silently reused the old objects.
+- **`pot add --system` writes `cflags` too, scoped to a platform.** It wrote
+  `link` rows and nothing else, so a library whose headers are off the default
+  include path linked but would not compile. `beansc pot update --system gtk4
+  linux` is the shape.
+- The C ABI suite covers float-only aggregates — a struct of up to four floats
+  or doubles travels in the vector registers on arm64, and every `extern "C"
+  struct` in the corpus had been a mixed one.
 
 Runtime ABI stays at 20, so 0.1.43 binaries relink rather than needing a
 rebuild: every fix here is in what the compiler emits, not in a new runtime

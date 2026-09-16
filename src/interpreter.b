@@ -70,6 +70,9 @@ extern "C" fn beans_fiber_current() -> RawPtr<u8>
 // agree about which panics run cleanup on the way out.
 extern "C" fn beans_fiber_is_root(fiber: RawPtr<u8>) -> i32
 extern "C" fn beans_fiber_park() -> i32
+// try_next hands over with this rather than parking: the children it polls
+// for run on the same scheduler, so a drain loop would starve them.
+extern "C" fn beans_fiber_yield() -> i32
 extern "C" fn beans_fiber_resume(fiber: RawPtr<u8>)
 extern "C" fn beans_stored_callback_close(
     value: RawPtr<u8>)
@@ -10983,8 +10986,9 @@ class TreeInterpreter {
                             state.children {
                             if !work.joined { live = true }
                         }
-                        if !live || node.value == "try_next" {
-                            return TreeValue.option_none()
+                        if !live { return TreeValue.option_none() }
+                        if node.value == "try_next" {
+                            return self.tree_group_poll(state)
                         }
                         self.tree_group_park(state)
                     }
@@ -11761,6 +11765,17 @@ class TreeInterpreter {
     // Parks the walker's own fiber as the group's one waiter. Wakes can
     // be spurious, and cancellation stays interim-invisible — the caller
     // loops on its condition, the contract every std park holds to.
+    // try_next, and the reason it is not just one pick: the children are on
+    // this fiber's own scheduler, so a drain loop has to hand over or starve
+    // them. Mirrors beans_taskgroup_try_next, which yields exactly once.
+    fn tree_group_poll(state: TreeTaskGroupState) -> TreeValue {
+        unsafe { beans_fiber_yield() }
+        let found: int = self.tree_group_pick(state)
+        if found < 0 { return TreeValue.option_none() }
+        return TreeValue.option_some(
+            self.tree_group_claim(state, found))
+    }
+
     fn tree_group_park(state: TreeTaskGroupState) {
         unsafe {
             state.waiter =

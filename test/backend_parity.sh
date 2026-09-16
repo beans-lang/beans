@@ -86,6 +86,15 @@ check_effects() {
 }
 
 # agree <source> [expected-constructs]
+# A parity case that never returns is worse than one that answers wrongly: the
+# harness waits forever and the run reads as "still going" rather than red.
+# taskgroup_wide.b did exactly that — a try_next drain loop starved the fibers
+# it was polling for — and nothing here could say so. `alarm` is the portable
+# bound this tree already uses; GNU timeout is not on every host.
+bounded() {
+    perl -e 'alarm 120; exec @ARGV or die "exec: $!"' "$@"
+}
+
 agree() {
     agree_with_args "$1" "${2:-}"
 }
@@ -99,11 +108,20 @@ agree_with_args() {
     local source=$1 want=$2 name
     shift 2
     name=$(basename "$source" .b)
-    ./build/beansc run "$source" -- "$@" >"$tmp/$name.interp"
+    bounded ./build/beansc run "$source" -- "$@" >"$tmp/$name.interp" || {
+        echo "$source: the interpreter did not finish" >&2
+        exit 1
+    }
     ./build/beansc build "$source" -o "$tmp/$name.debug" >/dev/null
-    "$tmp/$name.debug" "$@" >"$tmp/$name.debug.out"
+    bounded "$tmp/$name.debug" "$@" >"$tmp/$name.debug.out" || {
+        echo "$source: the debug build did not finish" >&2
+        exit 1
+    }
     ./build/beansc build --release "$source" -o "$tmp/$name.release" >/dev/null
-    "$tmp/$name.release" "$@" >"$tmp/$name.release.out"
+    bounded "$tmp/$name.release" "$@" >"$tmp/$name.release.out" || {
+        echo "$source: the release build did not finish" >&2
+        exit 1
+    }
     if ! diff -u "$tmp/$name.interp" "$tmp/$name.debug.out"; then
         echo "$source: the interpreter and a debug build disagree" >&2
         exit 1
