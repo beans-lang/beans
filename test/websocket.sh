@@ -259,6 +259,14 @@ done
     crossbario/autobahn-testsuite \
     wstest -m fuzzingclient -s /config/fuzzingclient.json) >"$tmp/autobahn.log" 2>&1 || {
     tail -20 "$tmp/autobahn.log" >&2
+    # Which side died is the whole question, and wstest's tail never says: it
+    # prints the case it reached, not why its peer stopped answering.
+    if kill -0 "$server_pid" 2>/dev/null; then
+        echo "the echo server was still running when wstest stopped" >&2
+    else
+        echo "the echo server had already exited when wstest stopped" >&2
+    fi
+    tail -20 "$tmp/echo.log" >&2
     echo "the Autobahn run did not complete" >&2
     exit 1
 }

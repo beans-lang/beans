@@ -52,6 +52,10 @@ net_bridge_sources() {
     fi
 }
 
+# What src/driver.b gives the runtime unit for a program that brews. Without
+# them a panicking fiber abandons its frames and everything it owned leaks.
+rt_unwind=(-DBEANS_FIBER_UNWIND=1 -fexceptions -funwind-tables)
+
 run_asan() {
     local file=$1 name=$2 expected=${3:-0}
     echo "ASan checking $file"
@@ -68,6 +72,7 @@ run_asan() {
     ffi_sources+=($(net_bridge_sources "$name"))
     clang -O1 -g -pthread -fsanitize=address,undefined \
         -fno-sanitize-recover=undefined -Wno-override-module \
+        "${rt_unwind[@]}" \
         "build/$name.ll" build/beans_rt.c "${ffi_sources[@]}" \
         -lm -o "$out/${name}_asan"
     set +e
@@ -172,6 +177,24 @@ reach_asan doublefree "attempting double-free"
 reach_asan read "heap-buffer-overflow"
 reach_asan write "heap-buffer-overflow"
 reach_asan uaf "heap-use-after-free"
+
+# The same question for rt_unwind: drop a flag and the runtime abandons a
+# panicking fiber's frames, which on macOS leaks with nothing to report it.
+run_asan test/cases/brew_unwind_probe.b brew_unwind_probe
+while read -r line; do
+    grep -qF "$line" "$out/brew_unwind_probe.stdout" || {
+        echo "the hand-linked runtime has no controlled unwind: a panicking" \
+             "fiber abandoned its frames, so '$line' never printed." \
+             "check rt_unwind reaches every clang line in this file" >&2
+        sed -n '1,20p' "$out/brew_unwind_probe.stdout" >&2
+        exit 1
+    }
+done <<'LINES'
+the frame ran its defer
+the frame dropped what it held
+the join caught it
+LINES
+echo "ASan ok unwind probe: the hand link unwinds a panicking fiber's frames"
 
 run_asan bench/trees.b trees
 run_asan examples/cycles.b cycles
@@ -478,7 +501,8 @@ if [[ -n "$function_cc" ]]; then
         ./build/beansc build "$file" -o "$fnsan/${name}_plain" >/dev/null
         local sidecar=()
         [[ -f "build/${name}_ffi.c" ]] && sidecar=("build/${name}_ffi.c")
-        "$function_cc" "${fn_flags[@]}" "build/$name.ll" "${sidecar[@]}" \
+        "$function_cc" "${fn_flags[@]}" "${rt_unwind[@]}" \
+            "build/$name.ll" "${sidecar[@]}" \
             build/beans_rt.c "$bridge" -lm -o "$fnsan/$name"
         local status=0
         env "$@" BEANS_NO_POOL=1 "$fnsan/$name" \
@@ -678,6 +702,7 @@ for file in examples/threads.b examples/shared_weak.b examples/wide_sync.b \
     fi
     tsan_extra+=($(net_bridge_sources "$name"))
     if clang -O1 -g -pthread -fsanitize=thread -Wno-override-module \
+        "${rt_unwind[@]}" \
         "build/$name.ll" build/beans_rt.c ${tsan_extra+"${tsan_extra[@]}"} \
         -lm -o "$out/${name}_tsan"; then
         # Not under `set -e`: a TSan binary can exit non-zero for reasons worth
@@ -719,7 +744,7 @@ rm -f build/thread_live_cycles_ffi.c
 BEANS_SANITIZE=thread ./build/beansc build --emit ir \
     test/cases/thread_live_cycles.b >"$out/live-cycles-tsan.ir"
 if clang -O1 -g -pthread -fsanitize=thread -DBEANS_ARC_STATS \
-    -Wno-override-module build/thread_live_cycles.ll \
+    -Wno-override-module "${rt_unwind[@]}" build/thread_live_cycles.ll \
     build/thread_live_cycles_ffi.c build/beans_rt.c \
     -lm -o "$out/thread_live_cycles_tsan"; then
     set +e
