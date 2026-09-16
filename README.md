@@ -1,8 +1,6 @@
 # beans
 
-A small OOP language: Java-style objects, Go-sized grammar, predictable
-ownership, native systems access, and C++-class performance as a goal. Files
-end in `.b`.
+A small OOP language designed for predictable ownership, native systems access, and low level performance. A grammar that fits in your head in a single lazy afternoon.
 
 - [spec/SYNTAX.md](spec/SYNTAX.md) — the 1.0 candidate language contract
 - [examples/](examples/) — real `.b` programs
