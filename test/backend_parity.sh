@@ -92,7 +92,9 @@ check_effects() {
 # it was polling for — and nothing here could say so. `alarm` is the portable
 # bound this tree already uses; GNU timeout is not on every host.
 bounded() {
-    perl -e 'alarm 120; exec @ARGV or die "exec: $!"' "$@"
+    # 600s, not the 120s that failed bind_release.b on both runners: its three
+    # legs together take 99-110s there, and a real hang runs to the 6h job cap.
+    perl -e 'alarm 600; exec @ARGV or die "exec: $!"' "$@"
 }
 
 agree() {
