@@ -257,6 +257,19 @@ agree test/cases/parity/enum_order_containers.b
 # for a call operand, a local operand, a bare statement `f()?`, and each hop
 # of a nested `f()??`. The six source errors are the pinned construct count.
 agree test/cases/parity/error_conversion.b 6
+# A type's identity is not its spelling. `f64`/`float`, `i64`/`int` and
+# `byte`/`u8` are one type each, and HIR carries both names — an annotation
+# keeps what was written, a MIR local carries the canonical one. Six places in
+# the LLVM emitter asked whether two *renderings* matched, so the checker
+# accepted these and the native backend refused them at build time. Two source
+# errors are the pinned construct count.
+agree test/cases/parity/result_payload_spelling.b 2
+# The same rule on the reflection side, and the reason it is here rather than
+# in a golden: TWO tables answered Kind for a builtin scalar — the runtime's
+# beans_reflect_type_kind and the tree interpreter's own copy — and both were
+# missing i64, f64 and byte. Fixing one and not the other turns a wrong answer
+# into a backend disagreement, which only this gate can see.
+agree test/cases/parity/reflect_scalar_spelling.b 1
 # std failing its own users — a std.reflect failure crossing into a plain
 # Result<T> through ReflectError.to_error, on both the ok and err paths.
 agree test/cases/parity/reflect_error_bridge.b
@@ -429,7 +442,7 @@ agree test/cases/parity/json_typed_decode.b
 
 # Every case in the directory has to be listed above with its own expected
 # count; a file added and forgotten would otherwise be silently unchecked.
-listed=60
+listed=62
 present=$(find test/cases/parity -name '*.b' | wc -l | tr -d ' ')
 if [ "$present" != "$listed" ]; then
     echo "test/cases/parity holds $present cases but $listed are run" >&2

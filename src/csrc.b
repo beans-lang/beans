@@ -7,17 +7,8 @@ import std.process
 import std.random
 import std.time
 
-// `csrc` manifest rows: C sources a package declares so the toolchain can
-// build them itself — no vendored per-target binaries, no external make
-// step. The native driver compiles each file to a cached object with the
-// build's own flags; `beansc run` compiles the whole set once into a host
-// shared library and resolves extern symbols through it, the same way it
-// treats a manifest `link` library.
-
-// One C source and the flags that belong to it. The flags travel with the
-// path because they are part of the object's identity: the same file compiled
-// with a different -D is a different object, and a cache that keyed only on
-// the path would hand back the other one.
+// One C source and the flags that belong to it. The flags are part of the
+// object's identity: the same file under a different -D is a different object.
 class CsrcUnit {
     path: string
     flags: List<string>
@@ -35,9 +26,63 @@ fn csrc_row_matches(selector: string,
            selector == target.triple
 }
 
+fn csrc_path_is_relative(value: string) -> bool {
+    if value == "" { return false }
+    if value.starts_with("/") || value.starts_with("\\") { return false }
+    // A Windows drive letter: C:\x or C:/x.
+    if value.len() >= 3 && value.byte_at(1) == 58 {
+        let third: string = value.slice(2, 3)
+        if third == "/" || third == "\\" { return false }
+    }
+    return true
+}
+
+// Flags that name a directory, longest first so `-I` does not claim
+// `-isystem`. `-include`/`-imacros` are absent: they name a looked-up file.
+fn csrc_path_flags() -> List<string> {
+    return ["-idirafter", "-isystem", "-iquote", "-I", "-F"]
+}
+
+fn csrc_rewrite_flags(flags: List<string>,
+                      root: string) -> List<string> {
+    var out: List<string> = []
+    var expect_path: bool = false
+    for flag: string in flags {
+        if expect_path {
+            expect_path = false
+            if csrc_path_is_relative(flag) {
+                out.push(path.join(root, flag))
+                continue
+            }
+            out.push(flag)
+            continue
+        }
+        var handled: bool = false
+        for name: string in csrc_path_flags() {
+            if handled { continue }
+            if flag == name {
+                // The path is the next word.
+                out.push(flag)
+                expect_path = true
+                handled = true
+            } else if flag.starts_with(name) {
+                let value: string =
+                    flag.slice(name.len(), flag.len())
+                if csrc_path_is_relative(value) {
+                    out.push("{name}{path.join(root, value)}")
+                } else {
+                    out.push(flag)
+                }
+                handled = true
+            }
+        }
+        if !handled { out.push(flag) }
+    }
+    return move out
+}
+
 // Flags apply only to csrc rows from the package that declared them. A
-// dependency's -DFT2_BUILD_LIBRARY reaching another package's C would be a
-// silent miscompile of code its author never saw the flag for.
+// dependency's -D reaching another package's C is a silent miscompile.
 fn csrc_selected(rows: List<ModuleLink>,
                  cflag_rows: List<ModuleCflags>,
                  target: TargetDescription) -> List<CsrcUnit> {
@@ -53,7 +98,8 @@ fn csrc_selected(rows: List<ModuleLink>,
                    cflags.selector, target) {
                 continue
             }
-            for flag: string in cflags.flags {
+            for flag: string in
+                    csrc_rewrite_flags(cflags.flags, cflags.root) {
                 flags.push(flag)
             }
         }

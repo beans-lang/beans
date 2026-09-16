@@ -287,6 +287,70 @@ kind application
 require path "../mathlib"
 POT
 
+# A path flag written relative to the package resolves against *that package*,
+# not against whatever directory the build was started in. Every run below
+# starts from $tmp/app, so a -I that resolved against the working directory
+# would look in app/ and never find the header — which is how a vendored C
+# library with its own include tree gets a build that works on exactly one
+# machine. The header is reachable ONLY through the -I, so the flag either
+# resolves or the compile fails.
+mkdir -p "$tmp/mathlib/extra"
+cat > "$tmp/mathlib/extra/bias_extra.h" <<'HDR'
+#define COMPILER_BIAS 7
+HDR
+# fast_add.c reaches it by name; only the -I can find it.
+sed -i.bak '1i\
+#include "bias_extra.h"
+' "$tmp/mathlib/native/fast_add.c"
+cat > "$tmp/mathlib/beans.pot" <<'POT'
+module mathlib
+kind library
+csrc all "native/fast_add.c"
+cflags all -I extra
+link macos framework "CoreFoundation"
+POT
+(cd "$tmp/app" && "$root/build/beansc" run main.b) >"$tmp/cflags.rel.interp"
+grep -Fqx "fast 49" "$tmp/cflags.rel.interp"
+(cd "$tmp/app" && "$root/build/beansc" build main.b -o app.rel.bin) \
+    >"$tmp/cflags.rel.build" 2>&1
+"$tmp/app/app.rel.bin" >"$tmp/cflags.rel.native"
+grep -Fqx "fast 49" "$tmp/cflags.rel.native"
+
+# The joined spelling too — -Iextra, not -I extra — because a reader writes
+# both and clang accepts both.
+cat > "$tmp/mathlib/beans.pot" <<'POT'
+module mathlib
+kind library
+csrc all "native/fast_add.c"
+cflags all -Iextra
+link macos framework "CoreFoundation"
+POT
+(cd "$tmp/app" && "$root/build/beansc" run main.b) >"$tmp/cflags.rel2.interp"
+grep -Fqx "fast 49" "$tmp/cflags.rel2.interp"
+
+# An absolute path is left exactly as written. `//` is collapsed first
+# because a pot value ends at one — mktemp under a TMPDIR with a trailing
+# slash hands back exactly that shape.
+abs_extra=$(cd "$tmp/mathlib/extra" && pwd)
+cat > "$tmp/mathlib/beans.pot" <<POT
+module mathlib
+kind library
+csrc all "native/fast_add.c"
+cflags all -I $abs_extra
+link macos framework "CoreFoundation"
+POT
+(cd "$tmp/app" && "$root/build/beansc" run main.b) >"$tmp/cflags.abs.interp"
+grep -Fqx "fast 49" "$tmp/cflags.abs.interp"
+
+mv "$tmp/mathlib/native/fast_add.c.bak" "$tmp/mathlib/native/fast_add.c"
+cat > "$tmp/mathlib/beans.pot" <<'POT'
+module mathlib
+kind library
+csrc all "native/fast_add.c"
+cflags all -DCOMPILER_BIAS=6
+link macos framework "CoreFoundation"
+POT
+
 # A selector that does not match this host contributes nothing.
 cat > "$tmp/mathlib/beans.pot" <<'POT'
 module mathlib

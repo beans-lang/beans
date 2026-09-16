@@ -12,8 +12,8 @@
 # its own VERSION in.
 #
 # The project is still in the public 1.0 bake, so do not call it 1.0.0 until
-# every release gate in ROADMAP.md has passed.
-compiler=0.1.44
+# every release gate has passed.
+compiler=0.1.45
 language=1.0
 
 # 20: beans_json_decode_probe_publish and beans_json_decode_probe — the typed

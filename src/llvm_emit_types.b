@@ -569,8 +569,7 @@ partial class LlvmTextEmitter {
             self.type_is_open(open)) {
             match bindings.get(open.name) {
                 some(existing) => {
-                    return render_hir_type(existing) ==
-                           render_hir_type(concrete)
+                    return hir_types_equal(existing, concrete)
                 }
                 none => {}
             }

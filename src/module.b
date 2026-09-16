@@ -484,6 +484,11 @@ fn manifest_link_arguments(links: List<ModuleLink>,
 // Flags arrive as separate words rather than one quoted string so that a path
 // with a space stays one argument: manifest_words already handles the quoting,
 // and re-splitting a joined string is how that bug gets written.
+//
+// A flag that names a **directory** — -I, -iquote, -isystem, -idirafter, -F —
+// resolves a relative value against the declaring package, exactly as a `csrc`
+// path does. An absolute value passes through untouched, and -include and
+// -imacros are left alone because they name a file the include search looks up.
 class ModuleCflags {
     selector: string
     flags: List<string>

@@ -6046,8 +6046,36 @@ static int reflect_base_equal(char* left, char* right) {
 // where a `Grid<string>` is wanted; comparing them with beans_str_eq answered
 // that a `Grid<int>` is not usable where its own declaring type is wanted,
 // which is the type its members are filed under.
+/* beans_str_eq reads a length header before the pointer, so a C literal is
+   never one of its arguments; compare with memcmp against beans_slen. */
+static int reflect_is(char* s, long long n, const char* text, size_t len) {
+    return n == (long long)len && memcmp(s, text, len) == 0;
+}
+
+/* `f64`/`float`, `i64`/`int`, `byte`/`u8` are one type each, and a program
+   writes whichever it likes. The interpreter's copy answers identically. */
+static int reflect_scalar_alias(char* a, char* b) {
+    static const char* pairs[3][2] = {
+        {"f64", "float"}, {"i64", "int"}, {"byte", "u8"}
+    };
+    long long na = beans_slen(a);
+    long long nb = beans_slen(b);
+    for (int i = 0; i < 3; ++i) {
+        size_t l0 = strlen(pairs[i][0]);
+        size_t l1 = strlen(pairs[i][1]);
+        if ((reflect_is(a, na, pairs[i][0], l0) &&
+             reflect_is(b, nb, pairs[i][1], l1)) ||
+            (reflect_is(a, na, pairs[i][1], l1) &&
+             reflect_is(b, nb, pairs[i][0], l0))) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int reflect_name_assignable(char* wanted, char* actual) {
     if (beans_str_eq(wanted, actual)) return 1;
+    if (reflect_scalar_alias(wanted, actual)) return 1;
     long long wanted_len = beans_slen(wanted);
     if (reflect_base_length(wanted) != wanted_len) return 0;
     return reflect_base_length(actual) == wanted_len &&
@@ -6133,11 +6161,11 @@ long long beans_reflect_type_kind(char* name) {
     REFLECT_NAME("unit", 0);
     REFLECT_NAME("(nothing)", 0);
     REFLECT_NAME("bool", 1);
-    REFLECT_NAME("int", 2); REFLECT_NAME("i8", 2);
+    REFLECT_NAME("int", 2); REFLECT_NAME("i64", 2); REFLECT_NAME("i8", 2);
     REFLECT_NAME("i16", 2); REFLECT_NAME("i32", 2);
-    REFLECT_NAME("u8", 3); REFLECT_NAME("u16", 3);
+    REFLECT_NAME("u8", 3); REFLECT_NAME("byte", 3); REFLECT_NAME("u16", 3);
     REFLECT_NAME("u32", 3); REFLECT_NAME("u64", 3);
-    REFLECT_NAME("float", 4); REFLECT_NAME("f32", 4);
+    REFLECT_NAME("float", 4); REFLECT_NAME("f64", 4); REFLECT_NAME("f32", 4);
     REFLECT_NAME("decimal", 5); REFLECT_NAME("string", 6);
     REFLECT_NAME("List", 12); REFLECT_NAME("Map", 13);
     REFLECT_NAME("OrderedMap", 13); REFLECT_NAME("Option", 14);

@@ -818,8 +818,7 @@ partial class LlvmTextEmitter {
                         consumed, kind,
                         kind_consumed, stored)
             } else if
-                render_hir_type(operand_type) !=
-                    render_hir_type(payload) &&
+                !hir_types_equal(operand_type, payload) &&
                 !(!is_ok &&
                   self.error_payload_fits(
                       operand_type, payload)) {
@@ -930,8 +929,7 @@ partial class LlvmTextEmitter {
                 output =
                     "{output}  call void @beans_retain(ptr {operand})\n"
             }
-        } else if render_hir_type(operand_type) ==
-                      render_hir_type(error_type) &&
+        } else if hir_types_equal(operand_type, error_type) &&
                   self.result_wide_boxable(
                       error_type) {
             return self.emit_result_box(
@@ -972,8 +970,7 @@ partial class LlvmTextEmitter {
     // not spelling, and only refuses a shape it genuinely cannot store.
     fn error_payload_fits(operand_type: HirType,
                           error_type: HirType) -> bool {
-        if render_hir_type(operand_type) ==
-               render_hir_type(error_type) {
+        if hir_types_equal(operand_type, error_type) {
             return true
         }
         return self.type_is_reference(operand_type) &&
@@ -1132,31 +1129,16 @@ partial class LlvmTextEmitter {
         let consumed: bool =
             instruction.consumes.len() == 1 &&
             instruction.consumes[0]
-        if render_hir_type(source_type) ==
-               render_hir_type(instruction.type) {
-            // The same representation flows straight out. A consumed
-            // operand hands its count over with it and nothing more is
-            // owed. A borrowed one keeps its own, and the value this
-            // function returns is owned — without a count of its own the
-            // caller releases a box this frame only borrowed, which for
-            // `let x = borrowed_result?` on the error path is a double
-            // free the moment the caller lets go.
+        if hir_types_equal(source_type, instruction.type) {
+            // One representation flows straight out. A borrowed operand keeps
+            // its count, or the caller releases a box this frame only borrowed.
             values[instruction.result] = subject
             if consumed { return "" }
             return self.emit_arc_value(
                 source_type, subject, true)
         }
-        // A propagating Option carries nothing. `none` is `none` whatever
-        // the two payload types are, so the answer is the *target's* none
-        // and the operand is simply dropped. The Result path below reads an
-        // error payload out of the operand and rewraps it — over an Option
-        // that reads the bytes of a value that has none, which for an
-        // Option<T> whose T is a reference meant loading at offset 8 of a
-        // bare pointer and returning a fresh heap box where a tagged pair
-        // belonged. The module did not verify, so the failure arrived as a
-        // clang error naming a .ll file. The checker never lets an Option
-        // propagate into a Result or the other way, so this is the whole
-        // Option case.
+        // A propagating Option carries nothing: `none` is the target's none
+        // and the operand is dropped. Reading a payload here reads absent bytes.
         if canonical_hir_name(
                instruction.type.name) == "Option" &&
            instruction.type.args.len() == 1 {
@@ -1183,10 +1165,9 @@ partial class LlvmTextEmitter {
         }
         let error_type: HirType =
             self.result_error_type(source_type)
-        if render_hir_type(error_type) !=
-               render_hir_type(
-                   self.result_error_type(
-                       instruction.type)) {
+        if !hir_types_equal(
+               error_type,
+               self.result_error_type(instruction.type)) {
             self.fail(
                 instruction,
                 "LLVM emitter cannot propagate between different Result error types")
@@ -1220,11 +1201,6 @@ partial class LlvmTextEmitter {
         return output
     }
 
-    // A closure value is a box {code ptr, capture cells...}: slot 0 is
-    // the lifted function, cells follow at pointer strides, and the
-    // mask marks every cell so releasing the box releases its shares.
-    // ---- extern "C" calls ----
-
     fn emit_result_or(
         function: MirFunction,
         instruction: MirInstruction,
@@ -1239,10 +1215,8 @@ partial class LlvmTextEmitter {
             instruction.operands[0]
         let result_type: HirType =
             self.value_type(function, result_id)
-        // the error arm is discarded whole — the box's scheduled
-        // release frees whichever error the slot holds — so Error
-        // and string errors share one shape here, and Result<T>
-        // (the defaulted error) is the same box as Result<T, Error>
+        // The error arm is discarded whole, so Error and string errors share
+        // one shape and Result<T> is the same box as Result<T, Error>.
         var error_name: string = "Error"
         if result_type.args.len() == 2 {
             error_name =

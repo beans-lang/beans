@@ -121,6 +121,13 @@ fn tree_display_width(text: string) -> int {
     }
 }
 
+// One type spelled two ways. Kept beside the reflection rules that need it,
+// and mirrored by reflect_scalar_alias in the runtime.
+fn alias_pair(a: string, b: string,
+              one: string, other: string) -> bool {
+    return (a == one && b == other) || (a == other && b == one)
+}
+
 class TreeInterpreter {
     program: HirProgram
     arguments: List<string>
@@ -2424,9 +2431,18 @@ class TreeInterpreter {
     // are filed under; the native runtime compared them by base name alone
     // and answered that an `IntGrid` -- a `Grid<int>` -- is usable where a
     // `Grid<string>` is wanted (#169).
+    // `f64`/`float`, `i64`/`int`, `byte`/`u8` are one type each. The runtime's
+    // own reflect_scalar_alias has to answer identically.
+    fn reflect_scalar_alias(a: string, b: string) -> bool {
+        return alias_pair(a, b, "f64", "float") ||
+               alias_pair(a, b, "i64", "int") ||
+               alias_pair(a, b, "byte", "u8")
+    }
+
     fn reflect_name_assignable(wanted: string,
                                actual: string) -> bool {
         if wanted == actual { return true }
+        if self.reflect_scalar_alias(wanted, actual) { return true }
         if self.reflect_base_name(wanted) != wanted {
             return false
         }
@@ -3528,15 +3544,17 @@ class TreeInterpreter {
                 self.reflect_base_name(type_name)
             if base == "unit" { return TreeValue.integer(0) }
             if base == "bool" { return TreeValue.integer(1) }
-            if base == "int" || base == "i8" ||
+            // Both spellings of the three aliased scalars; the runtime's
+            // beans_reflect_type_kind has to answer identically.
+            if base == "int" || base == "i64" || base == "i8" ||
                base == "i16" || base == "i32" {
                 return TreeValue.integer(2)
             }
-            if base == "u8" || base == "u16" ||
+            if base == "u8" || base == "byte" || base == "u16" ||
                base == "u32" || base == "u64" {
                 return TreeValue.integer(3)
             }
-            if base == "float" || base == "f32" {
+            if base == "float" || base == "f64" || base == "f32" {
                 return TreeValue.integer(4)
             }
             if base == "decimal" { return TreeValue.integer(5) }

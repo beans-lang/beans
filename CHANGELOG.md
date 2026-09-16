@@ -2,6 +2,83 @@
 
 This file records user-facing changes in each Beans release.
 
+## [0.1.45] - 2026-09-16
+
+Two rules the compiler stated one way and enforced another. Both were found
+building real packages against it — the four database drivers in
+`community-libs` — and neither shows up in a program small enough to write by
+hand.
+
+### A type's identity is not how it was spelled
+
+`f64` and `float` are one type. So are `i64` and `int`, and `byte` and `u8`.
+Four separate places compared the two spellings as **text** and answered that
+they were different types.
+
+Six of them are in the LLVM emitter, which compared `render_hir_type(a)` with
+`render_hir_type(b)`. That function is the *diagnostic* renderer: it prints a
+type for a human and keeps whichever spelling it is given. A type annotation
+keeps what the program wrote, a MIR local carries the canonical name, so the
+two sides of one type reached that comparison spelled differently.
+
+```beans
+fn pi() -> f64 { return 3.5 }
+
+fn value() -> Result<f64, Boom> {
+    let v: f64 = pi()
+    return ok(v)          // checks clean; would not build
+}
+```
+
+The build refused with `LLVM emitter does not support ok payload '...' yet` —
+a message about the emitter, naming a spelling the program never wrote, for a
+program `beansc check` had already accepted. Rule 4 of this project's bar
+broken in both directions at once.
+
+The other two are the reflection type-kind table, in the runtime
+(`beans_reflect_type_kind`) and in the tree interpreter's own copy of it. Both
+listed `int` but not `i64`, `u8` but not `byte`, `float` but not `f64`, so a
+field declared `f64` answered kind `0` — unknown — where the identical field
+declared `float` answered `4`. Reflection's value-against-parameter check had
+the same hole on both sides, which is what stopped
+`reflect.Initializer.call` constructing **any** class with an `f64` field.
+That is how the whole set was found.
+
+`test/cases/parity/result_payload_spelling.b` and
+`reflect_scalar_spelling.b` guard them; reverting any one site turns the suite
+red.
+
+### A `cflags` row can name a directory inside its own package
+
+Manifest flags pass through verbatim, so a relative `-I` resolved against the
+build's working directory rather than against the package that wrote it. A
+package vendoring a C library with its own include tree had no way to name it:
+an absolute path is correct on exactly one machine, and that is what
+`beansc pot add --system` exists for.
+
+A flag that names a **directory** — `-I`, `-iquote`, `-isystem`, `-idirafter`,
+`-F` — now resolves a relative value against the declaring package, exactly as
+that package's `csrc` paths already do. Joined and separated spellings both
+work:
+
+```beans-pot
+cflags all "-Ivendor/postgresql/src/include"
+cflags all "-I" "vendor/postgresql/src/include"
+```
+
+An absolute value passes through untouched, and the rewrite applies only to the
+package that declared the row — a dependency's include path never reaches
+another package's C.
+
+`-include` and `-imacros` are deliberately **not** rewritten. They name a file
+the include machinery looks up, exactly as `#include "name"` in the source
+would, so rewriting one would override the search clang documents. A package
+that wants its own prelude writes the directory as `-I` and the file as
+`-include name.h`.
+
+`test/csrc_build.sh` builds a package whose only include path is relative;
+reverting the rewrite turns it red.
+
 ## [0.1.44] - 2026-09-16
 
 Ten shapes where the two backends stopped agreeing, and three more the work
