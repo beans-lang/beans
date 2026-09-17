@@ -184,6 +184,7 @@ test-semantics: $(BIN)
 	bash ./test/send_functions.sh
 	bash ./test/mir.sh
 	bash ./test/devirtualize.sh
+	bash ./test/result_representation.sh
 	bash ./test/default_eval_order.sh
 	bash ./test/release_order.sh
 	./test/inline_options.sh
@@ -397,6 +398,7 @@ test-core: $(BIN)
 	./test/parse_recovery.sh
 	bash ./test/mir.sh
 	bash ./test/devirtualize.sh
+	bash ./test/result_representation.sh
 	bash ./test/default_eval_order.sh
 	bash ./test/release_order.sh
 	./test/lsp_probe.sh

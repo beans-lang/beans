@@ -818,7 +818,7 @@ partial class LlvmTextEmitter {
                         consumed, kind,
                         kind_consumed, stored)
             } else if
-                !hir_types_equal(operand_type, payload) &&
+                !hir_types_identical(operand_type, payload) &&
                 !(!is_ok &&
                   self.error_payload_fits(
                       operand_type, payload)) {
@@ -929,7 +929,7 @@ partial class LlvmTextEmitter {
                 output =
                     "{output}  call void @beans_retain(ptr {operand})\n"
             }
-        } else if hir_types_equal(operand_type, error_type) &&
+        } else if hir_types_identical(operand_type, error_type) &&
                   self.result_wide_boxable(
                       error_type) {
             return self.emit_result_box(
@@ -970,7 +970,7 @@ partial class LlvmTextEmitter {
     // not spelling, and only refuses a shape it genuinely cannot store.
     fn error_payload_fits(operand_type: HirType,
                           error_type: HirType) -> bool {
-        if hir_types_equal(operand_type, error_type) {
+        if hir_types_identical(operand_type, error_type) {
             return true
         }
         return self.type_is_reference(operand_type) &&
@@ -1129,7 +1129,7 @@ partial class LlvmTextEmitter {
         let consumed: bool =
             instruction.consumes.len() == 1 &&
             instruction.consumes[0]
-        if hir_types_equal(source_type, instruction.type) {
+        if hir_types_identical(source_type, instruction.type) {
             // One representation flows straight out. A borrowed operand keeps
             // its count, or the caller releases a box this frame only borrowed.
             values[instruction.result] = subject
@@ -1165,7 +1165,7 @@ partial class LlvmTextEmitter {
         }
         let error_type: HirType =
             self.result_error_type(source_type)
-        if !hir_types_equal(
+        if !hir_types_identical(
                error_type,
                self.result_error_type(instruction.type)) {
             self.fail(

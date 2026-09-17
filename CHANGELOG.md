@@ -2,6 +2,51 @@
 
 This file records user-facing changes in each Beans release.
 
+## [0.1.46] - 2026-09-17
+
+One fix, for a regression 0.1.45 shipped.
+
+### The emitter was using the checker's rule to answer a layout question
+
+0.1.45 replaced six `render_hir_type(a) == render_hir_type(b)` comparisons in
+the LLVM emitter with `hir_types_equal`. That removed the real bug — a type's
+identity is not how it was spelled — and introduced another, because
+`hir_types_equal` is the **checker's** rule and says two more things:
+
+- `poison` compares equal to everything. That means "already reported, do not
+  cascade a second message", not "same representation".
+- `hir_type_key` folds `Result<T>` into `Result<T, Error>`. True of the type —
+  the defaulted error *is* `Error` — but the `?` lowering rebuilds the error
+  box for one and not the other, so they are not one representation.
+
+`std.process::Stream.write_all` and `Stream.write_text` are exactly that
+shape:
+
+```beans
+pub fn write_all(data: Bytes) -> Result<int> {
+    for done < data.len() {
+        let wrote: int = proc.write(self.fd, data, done)?
+        ...
+    }
+}
+```
+
+`proc.write` answers `Result<int, Error>`, the function is declared
+`Result<int>`, and 0.1.45 turned that `?`'s error arm from "build a fresh box"
+into "return the source box". The compiler cross-built for Windows then failed
+to interpret `examples/inline_results.b`, which the Wine differential gate
+caught and no other gate did.
+
+The emitter now uses `hir_types_identical`: structural identity with the
+canonical scalar spellings — `f64`/`float`, `i64`/`int`, `byte`/`u8` — and
+nothing else. The Windows IR of the whole compiler is byte-identical to what
+the emitter produced before 0.1.45, so the regression is gone by construction,
+and 0.1.45's own fix is unchanged.
+
+`test/result_representation.sh` reads the emitted IR from both sides: the
+aliased pair must pass its box through, the defaulted pair must rebuild it.
+Reverting either half turns it red.
+
 ## [0.1.45] - 2026-09-16
 
 Two rules the compiler stated one way and enforced another. Both were found

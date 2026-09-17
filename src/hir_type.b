@@ -61,6 +61,29 @@ fn hir_type_key(type: HirType) -> string {
     return "{name}<{arguments.join(",")}>"
 }
 
+// Same *representation*, which is the emitter's question. hir_types_equal
+// answers the checker's: poison equals anything, and Result<T> folds into
+// Result<T, Error>. Neither is a statement about a value's layout.
+fn hir_types_identical(left: HirType, right: HirType) -> bool {
+    if canonical_hir_name(left.name) !=
+           canonical_hir_name(right.name) {
+        return false
+    }
+    if left.args.len() != right.args.len() { return false }
+    if left.array_length != right.array_length { return false }
+    if left.fn_parameter_count != right.fn_parameter_count {
+        return false
+    }
+    if left.fn_sendable != right.fn_sendable { return false }
+    for index: int in 0..left.args.len() {
+        if !hir_types_identical(left.args[index],
+                                right.args[index]) {
+            return false
+        }
+    }
+    return true
+}
+
 fn hir_types_equal(left: HirType, right: HirType) -> bool {
     if left.name == "poison" || right.name == "poison" {
         return true
