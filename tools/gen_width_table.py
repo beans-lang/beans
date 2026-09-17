@@ -37,7 +37,10 @@ import urllib.request
 BEGIN = "/* BEGIN GENERATED display-width tables"
 END = "/* END GENERATED display-width tables */"
 
-UCD_BASE = "https://www.unicode.org/Public/UCD/latest/ucd/"
+# The UCD release these tables are generated from, pinned. `latest` moved to
+# 18.0.0 and every build in the tree went stale at once, on every machine.
+UCD_VERSION = "17.0.0"
+UCD_BASE = "https://www.unicode.org/Public/{}/ucd/".format(UCD_VERSION)
 FILES = {
     "EastAsianWidth.txt": "EastAsianWidth.txt",
     "DerivedGeneralCategory.txt": "extracted/DerivedGeneralCategory.txt",
@@ -140,6 +143,10 @@ def build(ucd_dir):
     gcb_text = read_ucd("GraphemeBreakProperty.txt", ucd_dir)
 
     version = unicode_version(eaw_text)
+    if not ucd_dir and version != UCD_VERSION:
+        raise SystemExit(
+            "UCD at {} answered Unicode {}, not the pinned {}".format(
+                UCD_BASE, version, UCD_VERSION))
 
     wide = parse(eaw_text, {"W", "F"}) | eaw_defaults()
     marks = parse(gc_text, {"Mn", "Me", "Cf"})

@@ -47,6 +47,21 @@ and 0.1.45's own fix is unchanged.
 aliased pair must pass its box through, the defaulted pair must rebuild it.
 Reverting either half turns it red.
 
+### The display-width tables were checked against a moving target
+
+`tools/gen_width_table.py` read the UCD from
+`unicode.org/Public/UCD/latest/`. Unicode 18.0.0 was published, `latest`
+moved, and `test/display_width.sh` began reporting this tree's Unicode 17.0.0
+tables as stale — on every machine, for every commit, including ones that had
+passed the day before. An external party's release date is not a property of
+this repository.
+
+The UCD release is pinned now, and the pin is verified rather than trusted:
+the generator refuses a download whose own version header disagrees with
+`UCD_VERSION`. Moving to a new Unicode is a deliberate edit that regenerates
+the tables, which is what it always should have been. The check keeps its
+teeth — a single altered entry in the generated block still fails it.
+
 ## [0.1.45] - 2026-09-16
 
 Two rules the compiler stated one way and enforced another. Both were found
