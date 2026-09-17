@@ -24,6 +24,9 @@ tmp=$(mktemp -d "${TMPDIR:-/tmp}/beans-websocket.XXXXXX")
 server_pid=""
 wss_pid=""
 cleanup() {
+    if [ -s "$tmp/autobahn.cid" ]; then
+        docker rm -f "$(cat "$tmp/autobahn.cid")" >/dev/null 2>&1 || true
+    fi
     [ -n "$server_pid" ] && kill "$server_pid" 2>/dev/null || true
     [ -n "$wss_pid" ] && kill "$wss_pid" 2>/dev/null || true
     rm -rf "$tmp"
@@ -224,16 +227,6 @@ fi
 # 8 and 11 do not exist, and 9.2 through 9.6 are throughput measurements
 # rather than conformance.
 autobahn_sections=(1 2 3 4 5 6 7 9.1 9.7 10 12 13)
-case_list=$(printf '"%s.*", ' "${autobahn_sections[@]}")
-cat >"$tmp/autobahn/config/fuzzingclient.json" <<EOF
-{
-   "outdir": "./reports/servers",
-   "servers": [{"agent": "beans-std-websocket", "url": "ws://${server_host}:${port}"}],
-   "cases": [${case_list%, }],
-   "exclude-cases": [],
-   "exclude-agent-cases": {}
-}
-EOF
 "$tmp/echo" "$port" >"$tmp/echo.log" 2>&1 &
 server_pid=$!
 # Wait for the server's own "listening" line rather than sleeping blind.
@@ -253,14 +246,35 @@ while ! grep -q "^listening" "$tmp/echo.log" 2>/dev/null; do
     sleep 0.05
 done
 
-(cd "$tmp/autobahn" && docker run --rm \
+# Autobahn retains all case results (including wire logs) until it writes its
+# report. Start a fresh process per section so earlier sections cannot keep
+# their memory alive through the compression cases. Every section still runs.
+for section in "${autobahn_sections[@]}"; do
+    echo "  Autobahn section $section"
+    mkdir -p "$tmp/autobahn/reports/$section"
+    cat >"$tmp/autobahn/config/fuzzingclient.json" <<EOF
+{
+   "outdir": "/reports/$section/servers",
+   "servers": [{"agent": "beans-std-websocket", "url": "ws://${server_host}:${port}"}],
+   "cases": ["$section.*"],
+   "exclude-cases": [],
+   "exclude-agent-cases": {}
+}
+EOF
+
+(cd "$tmp/autobahn" && docker run --cidfile "$tmp/autobahn.cid" \
+    -e PYTHONUNBUFFERED=1 \
     --user "$(id -u):$(id -g)" ${docker_network_args+"${docker_network_args[@]}"} \
     -v "$PWD/config:/config" -v "$PWD/reports:/reports" \
     crossbario/autobahn-testsuite \
     wstest -m fuzzingclient -s /config/fuzzingclient.json) >"$tmp/autobahn.log" 2>&1 || {
     wstest_status=$?
-    # The status is the whole question. 137 is SIGKILL, which on a runner means
-    # the kernel took the container, not that anything answered wrongly.
+    if [ -s "$tmp/autobahn.cid" ]; then
+        docker inspect --format 'Autobahn: OOMKilled={{.State.OOMKilled}} exit={{.State.ExitCode}}' \
+            "$(cat "$tmp/autobahn.cid")" >&2 || true
+    fi
+    # Keep the status and unbuffered case ID: an interrupted run must never
+    # be mistaken for a complete report.
     echo "wstest exited $wstest_status after $(grep -ac "Running test case" \
         "$tmp/autobahn.log") cases; last was" \
         "$(grep -a "Running test case" "$tmp/autobahn.log" | tail -1 |
@@ -272,12 +286,12 @@ done
         echo "the echo server had already exited when wstest stopped" >&2
     fi
     tail -40 "$tmp/echo.log" >&2
-    if [ -s "$tmp/autobahn/reports/servers/index.json" ]; then
+    if [ -s "$tmp/autobahn/reports/$section/servers/index.json" ]; then
         echo "a partial report exists; cases it did record:" >&2
         python3 -c 'import json,sys
 r=json.load(open(sys.argv[1]))
 for a in r: print(" ", a, len(r[a]), "cases", file=sys.stderr)' \
-            "$tmp/autobahn/reports/servers/index.json" >&2 || true
+            "$tmp/autobahn/reports/$section/servers/index.json" >&2 || true
     else
         echo "no report was written at all" >&2
     fi
@@ -285,11 +299,12 @@ for a in r: print(" ", a, len(r[a]), "cases", file=sys.stderr)' \
     exit 1
 }
 
-if ! python3 - "$tmp/autobahn/reports/servers/index.json" \
-        "${autobahn_sections[@]}" <<'PYEOF'
-import json, sys, collections
+if ! python3 - "$tmp/autobahn/reports/$section/servers/index.json" \
+        "$tmp/autobahn.log" "$section" <<'PYEOF'
+import json, sys, collections, re
 report = json.load(open(sys.argv[1]))
-sections = sys.argv[2:]
+log = open(sys.argv[2]).read()
+sections = sys.argv[3:]
 if not report:
     print("Autobahn produced no server results", file=sys.stderr)
     sys.exit(1)
@@ -297,6 +312,12 @@ agent = next(iter(report))
 cases = report[agent]
 if not cases:
     print(f"Autobahn produced no cases for {agent}", file=sys.stderr)
+    sys.exit(1)
+expected = re.search(r"Ok, will run ([0-9]+) test cases against 1 servers", log)
+if expected is None or len(cases) != int(expected.group(1)):
+    print(f"Autobahn report has {len(cases)} cases; expected "
+          f"{expected.group(1) if expected else 'count missing from log'}",
+          file=sys.stderr)
     sys.exit(1)
 # A section that was asked for and produced nothing is the failure this
 # gate is worst at noticing: the counters below only speak for the cases the
@@ -329,5 +350,9 @@ then
     tail -20 "$tmp/autobahn.log" >&2
     exit 1
 fi
+
+docker rm "$(cat "$tmp/autobahn.cid")" >/dev/null
+rm "$tmp/autobahn.cid"
+done
 
 echo "ok websocket: RFC vectors, loopback exchange, fuzz, Autobahn clean"
