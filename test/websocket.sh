@@ -249,7 +249,17 @@ done
 # default GC thresholds depend on host RAM, so set them explicitly as well:
 # the runner must not reach the kernel's OOM killer before PyPy collects.
 autobahn_image=$(docker image inspect --format '{{.Id}}' crossbario/autobahn-testsuite)
-docker run --rm --entrypoint /opt/pypy/bin/pypy "$autobahn_image" -c '
+# Keep networking stable across batches, including Docker Desktop's forwarding.
+# Only the PyPy process needs to restart to release its memory.
+(cd "$tmp/autobahn" && docker run -d --cidfile "$tmp/autobahn.cid" \
+    --memory 2g --memory-swap 2g \
+    -e PYTHONUNBUFFERED=1 -e PYPY_GC_NURSERY=4MB \
+    -e PYPY_GC_MAX=1GB -e PYPY_GC_MAX_DELTA=200MB \
+    --user "$(id -u):$(id -g)" ${docker_network_args+"${docker_network_args[@]}"} \
+    -v "$PWD/config:/config" -v "$PWD/reports:/reports" \
+    --entrypoint /bin/sleep "$autobahn_image" infinity) >/dev/null
+
+docker exec "$(cat "$tmp/autobahn.cid")" /opt/pypy/bin/pypy -c '
 import json, sys
 from autobahntestsuite.caseset import CaseSet
 from autobahntestsuite.case import (Cases, CaseCategories, CaseSubCategories,
@@ -291,18 +301,17 @@ while IFS= read -r batch; do
     echo "  Autobahn $batch"
     mkdir -p "$tmp/autobahn/reports/$batch"
 
-(cd "$tmp/autobahn" && docker run --cidfile "$tmp/autobahn.cid" \
-    --memory 2g --memory-swap 2g \
-    -e PYTHONUNBUFFERED=1 -e PYPY_GC_NURSERY=4MB \
-    -e PYPY_GC_MAX=1GB -e PYPY_GC_MAX_DELTA=200MB \
-    --user "$(id -u):$(id -g)" ${docker_network_args+"${docker_network_args[@]}"} \
-    -v "$PWD/config:/config" -v "$PWD/reports:/reports" \
-    "$autobahn_image" \
-    wstest -m fuzzingclient -s "/config/$batch.json") >"$tmp/autobahn.log" 2>&1 || {
+docker exec "$(cat "$tmp/autobahn.cid")" \
+    /opt/pypy/bin/wstest -m fuzzingclient -s "/config/$batch.json" \
+    >"$tmp/autobahn.log" 2>&1 || {
     wstest_status=$?
     if [ -s "$tmp/autobahn.cid" ]; then
-        docker inspect --format 'Autobahn: OOMKilled={{.State.OOMKilled}} exit={{.State.ExitCode}}' \
+        docker inspect --format 'Autobahn container: OOMKilled={{.State.OOMKilled}} running={{.State.Running}}' \
             "$(cat "$tmp/autobahn.cid")" >&2 || true
+        if [ "$wstest_status" -eq 137 ]; then
+            docker exec "$(cat "$tmp/autobahn.cid")" /bin/sh -c \
+                'cat /sys/fs/cgroup/memory.events 2>/dev/null || true' >&2 || true
+        fi
     fi
     echo "wstest exited $wstest_status after $(grep -ac "Running test case" \
         "$tmp/autobahn.log") cases; last was" \
@@ -361,8 +370,6 @@ then
     exit 1
 fi
 
-docker rm "$(cat "$tmp/autobahn.cid")" >/dev/null
-rm "$tmp/autobahn.cid"
 done <"$tmp/autobahn/batches.txt"
 
 echo "ok websocket: RFC vectors, loopback exchange, fuzz, Autobahn clean"
