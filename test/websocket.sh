@@ -14,10 +14,8 @@
 # thing that decides what runs: the server negotiating permessage-deflate
 # cannot make the client open a case it was not told to. Sections 12 and 13
 # are the compression sections, and they run only because they are named
-# there. The checker at the bottom counts whatever the report contains, so
-# it is also handed that list and fails when any section in it produced no
-# cases at all — otherwise a section left out, or a run cut short, is not a
-# skip anyone sees but a green run that measured nothing.
+# there. The image resolves that allowlist to an exact case list. Every case
+# runs in a bounded batch, and each report must contain exactly that batch.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/beans-websocket.XXXXXX")
@@ -246,35 +244,66 @@ while ! grep -q "^listening" "$tmp/echo.log" 2>/dev/null; do
     sleep 0.05
 done
 
-# Autobahn retains all case results (including wire logs) until it writes its
-# report. Start a fresh process per section so earlier sections cannot keep
-# their memory alive through the compression cases. Every section still runs.
-for section in "${autobahn_sections[@]}"; do
-    echo "  Autobahn section $section"
-    mkdir -p "$tmp/autobahn/reports/$section"
-    cat >"$tmp/autobahn/config/fuzzingclient.json" <<EOF
-{
-   "outdir": "/reports/$section/servers",
-   "servers": [{"agent": "beans-std-websocket", "url": "ws://${server_host}:${port}"}],
-   "cases": ["$section.*"],
-   "exclude-cases": [],
-   "exclude-agent-cases": {}
-}
-EOF
+# Ask the same image that will run the tests for the exact allowlisted cases.
+# A fixed-size batch bounds retained results even when a section grows. PyPy's
+# default GC thresholds depend on host RAM, so set them explicitly as well:
+# the runner must not reach the kernel's OOM killer before PyPy collects.
+autobahn_image=$(docker image inspect --format '{{.Id}}' crossbario/autobahn-testsuite)
+docker run --rm --entrypoint /opt/pypy/bin/pypy "$autobahn_image" -c '
+import json, sys
+from autobahntestsuite.caseset import CaseSet
+from autobahntestsuite.case import (Cases, CaseCategories, CaseSubCategories,
+                                   CaseSetname, CaseBasename)
+cs = CaseSet(CaseSetname, CaseBasename, Cases, CaseCategories, CaseSubCategories)
+print(json.dumps(cs.parseSpecCases({"cases": [s + ".*" for s in sys.argv[1:]],
+                                   "exclude-cases": []})))
+' "${autobahn_sections[@]}" >"$tmp/autobahn/cases.json"
+
+python3 - "$tmp/autobahn" "$server_host" "$port" "${autobahn_sections[@]}" <<'PYEOF'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+cases = json.loads((root / "cases.json").read_text())
+sections = sys.argv[4:]
+if not cases or len(cases) != len(set(cases)):
+    sys.exit("Autobahn returned an empty or duplicate case list")
+missing = [s for s in sections
+           if not any(c.startswith(s + ".") for c in cases)]
+if missing:
+    sys.exit("Autobahn has no cases for sections: " + ", ".join(missing))
+batches = []
+for start in range(0, len(cases), 16):
+    batch = f"batch-{start // 16:03d}"
+    batches.append(batch)
+    spec = {
+        "outdir": f"/reports/{batch}/servers",
+        "servers": [{"agent": "beans-std-websocket",
+                     "url": f"ws://{sys.argv[2]}:{sys.argv[3]}"}],
+        "cases": cases[start:start + 16],
+        "exclude-cases": [],
+        "exclude-agent-cases": {},
+    }
+    (root / "config" / f"{batch}.json").write_text(json.dumps(spec))
+(root / "batches.txt").write_text("\n".join(batches) + "\n")
+print(f"  Autobahn: {len(cases)} cases in {len(batches)} batches")
+PYEOF
+
+while IFS= read -r batch; do
+    echo "  Autobahn $batch"
+    mkdir -p "$tmp/autobahn/reports/$batch"
 
 (cd "$tmp/autobahn" && docker run --cidfile "$tmp/autobahn.cid" \
-    -e PYTHONUNBUFFERED=1 \
+    --memory 2g --memory-swap 2g \
+    -e PYTHONUNBUFFERED=1 -e PYPY_GC_NURSERY=4MB \
+    -e PYPY_GC_MAX=1GB -e PYPY_GC_MAX_DELTA=200MB \
     --user "$(id -u):$(id -g)" ${docker_network_args+"${docker_network_args[@]}"} \
     -v "$PWD/config:/config" -v "$PWD/reports:/reports" \
-    crossbario/autobahn-testsuite \
-    wstest -m fuzzingclient -s /config/fuzzingclient.json) >"$tmp/autobahn.log" 2>&1 || {
+    "$autobahn_image" \
+    wstest -m fuzzingclient -s "/config/$batch.json") >"$tmp/autobahn.log" 2>&1 || {
     wstest_status=$?
     if [ -s "$tmp/autobahn.cid" ]; then
         docker inspect --format 'Autobahn: OOMKilled={{.State.OOMKilled}} exit={{.State.ExitCode}}' \
             "$(cat "$tmp/autobahn.cid")" >&2 || true
     fi
-    # Keep the status and unbuffered case ID: an interrupted run must never
-    # be mistaken for a complete report.
     echo "wstest exited $wstest_status after $(grep -ac "Running test case" \
         "$tmp/autobahn.log") cases; last was" \
         "$(grep -a "Running test case" "$tmp/autobahn.log" | tail -1 |
@@ -286,60 +315,35 @@ EOF
         echo "the echo server had already exited when wstest stopped" >&2
     fi
     tail -40 "$tmp/echo.log" >&2
-    if [ -s "$tmp/autobahn/reports/$section/servers/index.json" ]; then
-        echo "a partial report exists; cases it did record:" >&2
-        python3 -c 'import json,sys
-r=json.load(open(sys.argv[1]))
-for a in r: print(" ", a, len(r[a]), "cases", file=sys.stderr)' \
-            "$tmp/autobahn/reports/$section/servers/index.json" >&2 || true
-    else
-        echo "no report was written at all" >&2
-    fi
     echo "the Autobahn run did not complete" >&2
     exit 1
 }
 
-if ! python3 - "$tmp/autobahn/reports/$section/servers/index.json" \
-        "$tmp/autobahn.log" "$section" <<'PYEOF'
-import json, sys, collections, re
+if ! python3 - "$tmp/autobahn/reports/$batch/servers/index.json" \
+        "$tmp/autobahn/config/$batch.json" <<'PYEOF'
+import json, sys, collections
 report = json.load(open(sys.argv[1]))
-log = open(sys.argv[2]).read()
-sections = sys.argv[3:]
-if not report:
-    print("Autobahn produced no server results", file=sys.stderr)
-    sys.exit(1)
-agent = next(iter(report))
-cases = report[agent]
-if not cases:
-    print(f"Autobahn produced no cases for {agent}", file=sys.stderr)
-    sys.exit(1)
-expected = re.search(r"Ok, will run ([0-9]+) test cases against 1 servers", log)
-if expected is None or len(cases) != int(expected.group(1)):
-    print(f"Autobahn report has {len(cases)} cases; expected "
-          f"{expected.group(1) if expected else 'count missing from log'}",
+expected = set(json.load(open(sys.argv[2]))["cases"])
+if set(report) != {"beans-std-websocket"}:
+    sys.exit("Autobahn did not report exactly the requested server")
+cases = report["beans-std-websocket"]
+def key(name): return [int(part) for part in name.split(".")]
+missing = sorted(expected - set(cases), key=key)
+unexpected = sorted(set(cases) - expected, key=key)
+incomplete = not expected or bool(missing or unexpected)
+if incomplete:
+    print(f"Incomplete Autobahn report: missing {missing}; unexpected {unexpected}",
           file=sys.stderr)
-    sys.exit(1)
-# A section that was asked for and produced nothing is the failure this
-# gate is worst at noticing: the counters below only speak for the cases the
-# report happens to contain, so a run cut short — a server that died, a
-# fuzzing client that reached somebody else's — reads as a clean pass over a
-# smaller suite. Name every section, and require each one to have run.
-missing = [s for s in sections
-           if not any(name == s or name.startswith(s + ".") for name in cases)]
-if missing:
-    print(f"  Autobahn ran {len(cases)} cases but sections "
-          f"{', '.join(missing)} produced none", file=sys.stderr)
-    sys.exit(1)
 behavior = collections.Counter(v["behavior"] for v in cases.values())
 closing = collections.Counter(v["behaviorClose"] for v in cases.values())
-def key(name): return [int(part) for part in name.split(".")]
 bad = sorted([k for k, v in cases.items()
               if v["behavior"] not in ("OK", "NON-STRICT", "INFORMATIONAL")], key=key)
 bad_close = sorted([k for k, v in cases.items()
                     if v["behaviorClose"] not in ("OK", "INFORMATIONAL")], key=key)
-print(f"  {len(cases)} cases over sections {' '.join(sections)}"
+span = f"{min(cases, key=key)} to {max(cases, key=key)}" if cases else "none"
+print(f"  {len(cases)} cases ({span})"
       f" | behavior {dict(behavior)} | close {dict(closing)}")
-if bad or bad_close:
+if incomplete or bad or bad_close:
     if bad:
         print("  failed behavior:", ", ".join(bad))
     if bad_close:
@@ -347,12 +351,18 @@ if bad or bad_close:
     sys.exit(1)
 PYEOF
 then
-    tail -20 "$tmp/autobahn.log" >&2
+    tail -40 "$tmp/autobahn.log" >&2
+    if kill -0 "$server_pid" 2>/dev/null; then
+        echo "the echo server is still running" >&2
+    else
+        echo "the echo server has exited" >&2
+    fi
+    tail -40 "$tmp/echo.log" >&2
     exit 1
 fi
 
 docker rm "$(cat "$tmp/autobahn.cid")" >/dev/null
 rm "$tmp/autobahn.cid"
-done
+done <"$tmp/autobahn/batches.txt"
 
 echo "ok websocket: RFC vectors, loopback exchange, fuzz, Autobahn clean"
