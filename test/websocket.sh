@@ -258,15 +258,29 @@ done
     -v "$PWD/config:/config" -v "$PWD/reports:/reports" \
     crossbario/autobahn-testsuite \
     wstest -m fuzzingclient -s /config/fuzzingclient.json) >"$tmp/autobahn.log" 2>&1 || {
-    tail -20 "$tmp/autobahn.log" >&2
-    # Which side died is the whole question, and wstest's tail never says: it
-    # prints the case it reached, not why its peer stopped answering.
+    wstest_status=$?
+    # The status is the whole question. 137 is SIGKILL, which on a runner means
+    # the kernel took the container, not that anything answered wrongly.
+    echo "wstest exited $wstest_status after $(grep -ac "Running test case" \
+        "$tmp/autobahn.log") cases; last was" \
+        "$(grep -a "Running test case" "$tmp/autobahn.log" | tail -1 |
+           sed -n 's/.*case ID \([0-9.]*\).*/\1/p')" >&2
+    tail -40 "$tmp/autobahn.log" >&2
     if kill -0 "$server_pid" 2>/dev/null; then
         echo "the echo server was still running when wstest stopped" >&2
     else
         echo "the echo server had already exited when wstest stopped" >&2
     fi
-    tail -20 "$tmp/echo.log" >&2
+    tail -40 "$tmp/echo.log" >&2
+    if [ -s "$tmp/autobahn/reports/servers/index.json" ]; then
+        echo "a partial report exists; cases it did record:" >&2
+        python3 -c 'import json,sys
+r=json.load(open(sys.argv[1]))
+for a in r: print(" ", a, len(r[a]), "cases", file=sys.stderr)' \
+            "$tmp/autobahn/reports/servers/index.json" >&2 || true
+    else
+        echo "no report was written at all" >&2
+    fi
     echo "the Autobahn run did not complete" >&2
     exit 1
 }
