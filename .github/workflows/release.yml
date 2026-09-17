@@ -16,6 +16,10 @@ on:
         description: "Create a GitHub Release (off = build and test a candidate)"
         type: boolean
         default: false
+      skip_autobahn:
+        description: "Skip Autobahn in the release gate; keep the other WebSocket tests"
+        type: boolean
+        default: false
 
 # Least privilege by default. Only `publish` widens this, and only for itself.
 permissions:
@@ -92,6 +96,8 @@ jobs:
         run: make -j2
 
       - name: Run release gate
+        env:
+          BEANS_AUTOBAHN_SKIP: ${{ inputs.skip_autobahn && '1' || '0' }}
         run: make test
 
       - name: Build pinned Linux sysroot
