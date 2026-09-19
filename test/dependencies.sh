@@ -2,6 +2,7 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+repo=$PWD
 compiler=${BEANSC:-"$PWD/build/beansc"}
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/beans-deps.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
@@ -242,5 +243,68 @@ EOF
     fi
     grep -F 'unterminated quoted string' "$tmp/local/quote.out" >/dev/null
 done
+
+# ---- one manifest, one ingestion ------------------------------------------
+# A package reached by two edges — imported directly and required by a nested
+# module inside it — must contribute its csrc row once, or the link sees it twice.
+mkdir -p "$tmp/kitsrc/native" "$tmp/kitsrc/shell" "$tmp/kitapp"
+git -C "$tmp/kitsrc" init -q
+git -C "$tmp/kitsrc" config user.name "Beans Test"
+git -C "$tmp/kitsrc" config user.email "beans@example.test"
+cat >"$tmp/kitsrc/beans.pot" <<'EOF'
+module kit
+kind library
+csrc all "native/kit.c"
+EOF
+cat >"$tmp/kitsrc/native/kit.c" <<'EOF'
+long long beans_test_kit_value(void) { return 7; }
+EOF
+cat >"$tmp/kitsrc/api.b" <<'EOF'
+package kit
+
+extern "C" fn beans_test_kit_value() -> int
+
+pub fn value() -> int {
+    var out: int = 0
+    unsafe { out = beans_test_kit_value() }
+    return out
+}
+EOF
+cat >"$tmp/kitsrc/shell/beans.pot" <<'EOF'
+module kit_shell
+kind library
+require path ".."
+EOF
+cat >"$tmp/kitsrc/shell/shell.b" <<'EOF'
+package kit_shell
+
+import kit
+
+pub fn doubled() -> int { return kit.value() * 2 }
+EOF
+git -C "$tmp/kitsrc" add -A
+git -C "$tmp/kitsrc" commit -qm v1
+git -C "$tmp/kitsrc" tag v1
+git init -q --bare "$tmp/remotes/acme/kit.git"
+git -C "$tmp/remotes/acme/kit.git" symbolic-ref HEAD refs/heads/main
+git -C "$tmp/kitsrc" remote add origin "$tmp/remotes/acme/kit.git"
+git -C "$tmp/kitsrc" push -q origin HEAD:refs/heads/main --tags
+
+printf 'module kitapp\n' >"$tmp/kitapp/beans.pot"
+cat >"$tmp/kitapp/main.b" <<'EOF'
+package main
+
+import std.io
+import example.test/acme/kit
+import example.test/acme/kit/shell
+
+fn main() { io.println("{kit.value()} {kit_shell.doubled()}") }
+EOF
+cd "$tmp/kitapp"
+export BEANS_RUNTIME="$repo/runtime/beans_rt.c"
+"$compiler" pot add https://example.test/acme/kit.git v1 >"$tmp/kit-add.out"
+test "$("$compiler" run --locked --offline main.b)" = "7 14"
+"$compiler" build --locked --offline main.b -o kitapp.bin >"$tmp/kit.build" 2>&1 || { cat "$tmp/kit.build" >&2; exit 1; }
+test "$("$tmp/kitapp/kitapp.bin")" = "7 14"
 
 echo "ok locked git and local path dependencies"

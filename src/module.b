@@ -528,6 +528,9 @@ class ModuleLoader {
     links: List<ModuleLink>
     csrc_rows: List<ModuleLink>
     cflag_rows: List<ModuleCflags>
+    // The declared name of every manifest already ingested, by package root.
+    // A package reached by a second edge must not push its rows a second time.
+    manifest_names: Map<string, string>
     overlays: Map<string, string>
     has_local_dependencies: bool
     // Editors only: the one file the question is about. An entry can load a
@@ -565,6 +568,7 @@ class ModuleLoader {
         self.links = []
         self.csrc_rows = []
         self.cflag_rows = []
+        self.manifest_names = {}
         self.overlays = {}
         self.has_local_dependencies = false
         self.editor_file = ""
@@ -653,6 +657,11 @@ class ModuleLoader {
     }
 
     fn read_module_name(root: string) -> string {
+        let key: string = normalize_local_path(root)
+        match self.manifest_names.get(key) {
+            some(cached) => { return cached }
+            none => {}
+        }
         let mod_path: string = path.join(root, "beans.pot")
         let text: string = fs.read(mod_path).expect("read beans.pot")
         var name: string = ""
@@ -831,6 +840,7 @@ class ModuleLoader {
         if root == self.root {
             self.kind = manifest_kind
         }
+        self.manifest_names[key] = name
         return name
     }
 
