@@ -243,12 +243,16 @@ if [ -x "$root/toolchain/bin/clang" ]; then
     export BEANS_CC BEANS_AR
 fi
 if [ "${1-}" = upgrade ]; then
-    if [ "$#" -ne 1 ]; then
-        echo "usage: beansc upgrade" >&2
+    # --force reaches the installer, which otherwise stops when the version it
+    # would install is the one already here.
+    force=
+    if [ "$#" -eq 2 ] && [ "$2" = --force ]; then force=--force; fi
+    if [ "$#" -gt 2 ] || { [ "$#" -eq 2 ] && [ -z "$force" ]; }; then
+        echo "usage: beansc upgrade [--force]" >&2
         exit 2
     fi
     exec sh "$root/libexec/beans-install.sh" \
-        --prefix "$root" --no-modify-path
+        --prefix "$root" --no-modify-path $force
 fi
 exec "$bin/beansc.real" "$@"
 EOF

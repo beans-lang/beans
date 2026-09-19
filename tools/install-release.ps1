@@ -2,10 +2,14 @@
 #
 #   irm https://github.com/beans-lang/beans/releases/latest/download/beans-install.ps1 | iex
 #
-# Only built-in PowerShell is used — Invoke-WebRequest to download,
-# Get-FileHash to verify, Expand-Archive to unpack. No jq, no Python, no Node,
-# no Git, and no administrator rights: everything lands under the user's
-# LOCALAPPDATA by default.
+# Only built-in PowerShell is used — Invoke-WebRequest to download, and .NET
+# for the checksum and the unpacking. No jq, no Python, no Node, no Git, and no
+# administrator rights: everything lands under the user's LOCALAPPDATA by
+# default.
+#
+# Get-FileHash is PowerShell 4 and Expand-Archive is PowerShell 5, so neither
+# is used: an engine that has Invoke-WebRequest must be able to finish the
+# install, not fail halfway through with a missing cmdlet.
 #
 # Nothing is installed until the download has been checksummed, unpacked into a
 # staging directory, and the compiler in it has answered `--version`. A failure
@@ -37,6 +41,31 @@ $ManifestName = 'beans-release-manifest.tsv'
 
 function Write-Note([string] $Message) { Write-Host "beans: $Message" }
 function Die([string] $Message) { Write-Error "beans: error: $Message"; exit 1 }
+
+# SHA-256 through .NET rather than Get-FileHash, which PowerShell 3 does not
+# have. The stream is disposed either way, or the file cannot be moved later.
+function Get-Sha256([string] $Path) {
+    $stream = [System.IO.File]::OpenRead($Path)
+    try {
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            $digest = $sha.ComputeHash($stream)
+        } finally { $sha.Dispose() }
+    } finally { $stream.Dispose() }
+    $text = New-Object System.Text.StringBuilder
+    foreach ($byte in $digest) { [void]$text.Append($byte.ToString('x2')) }
+    return $text.ToString()
+}
+
+# Expand-Archive is PowerShell 5, so ZipFile does the work on every engine —
+# one path, which is the one every run exercises. PowerShell 7 already has the
+# type; Windows PowerShell needs the assembly loaded first.
+function Expand-Zip([string] $Archive, [string] $Destination) {
+    if (-not ('System.IO.Compression.ZipFile' -as [type])) {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+    }
+    [System.IO.Compression.ZipFile]::ExtractToDirectory($Archive, $Destination)
+}
 
 # `irm ... | iex` gives the script no parameters, so the environment variables
 # are the only way to configure that entry point.
@@ -202,7 +231,7 @@ try {
         Die "cannot download $base/$($row.Asset)"
     }
 
-    $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+    $actual = Get-Sha256 $archive
     if ($actual -ne $row.Sha256.ToLowerInvariant()) {
         Die "checksum mismatch for $($row.Asset)`n  expected $($row.Sha256)`n  actual   $actual`nNothing was installed."
     }
@@ -212,7 +241,7 @@ try {
     $stage = Join-Path $work 'stage'
     New-Item -ItemType Directory -Path $stage -Force | Out-Null
     try {
-        Expand-Archive -LiteralPath $archive -DestinationPath $stage -Force
+        Expand-Zip $archive $stage
     } catch {
         Die "cannot unpack $($row.Asset); nothing was installed"
     }

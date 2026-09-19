@@ -6,7 +6,8 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [string] $Prefix
+    [string] $Prefix,
+    [switch] $Force
 )
 
 $ErrorActionPreference = 'Stop'
@@ -39,7 +40,9 @@ $arguments = @(
     '-Prefix', (Quote-ProcessArgument $Prefix),
     '-NoModifyPath',
     '-WaitForPid', "$parent"
-) -join ' '
+)
+if ($Force) { $arguments += '-Force' }
+$arguments = $arguments -join ' '
 
 Start-Process -FilePath $engine -ArgumentList $arguments -NoNewWindow | Out-Null
 Write-Host 'beans: upgrade started; it will continue after beansc exits'

@@ -21,7 +21,7 @@ fn print_usage() {
     io.eprintln("       beansc pot remove --system <pkg-config-name>")
     io.eprintln("       beansc pot update --system <pkg-config-name> [<selector>]")
     io.eprintln("       beansc pot <tidy|update [dependency]>")
-    io.eprintln("       beansc upgrade")
+    io.eprintln("       beansc upgrade [--force]")
     io.eprintln("       beansc doctor")
     io.eprintln("       beansc lsp-probe <file.b>:<line>:<col>")
     io.eprintln("       beansc lsp   (language server on stdio)")
@@ -616,7 +616,9 @@ fn module_artifact_name(name: string, source: string) -> string {
     return dotted
 }
 
-fn run_upgrade() -> int {
+/// `--force` is handed to the installer, which otherwise stops when the
+/// version it would install is the one already here.
+fn run_upgrade(force: bool) -> int {
     var root: string = ""
     match os.env("BEANS_HOME") {
         some(value) => { root = value }
@@ -657,6 +659,7 @@ fn run_upgrade() -> int {
     command.arg("--prefix")
     command.arg(root)
     command.arg("--no-modify-path")
+    if force { command.arg("--force") }
     match command.run() {
         ok(done) => {
             let output: string = done.stdout_text()
@@ -720,11 +723,12 @@ fn main() {
         return
     }
     if command == "upgrade" {
-        if args.len() != 1 {
-            io.eprintln("usage: beansc upgrade")
+        let force: bool = args.len() == 2 && args[1] == "--force"
+        if args.len() > 2 || (args.len() == 2 && !force) {
+            io.eprintln("usage: beansc upgrade [--force]")
             os.exit(2)
         }
-        let status: int = run_upgrade()
+        let status: int = run_upgrade(force)
         if status != 0 { os.exit(status) }
         return
     }

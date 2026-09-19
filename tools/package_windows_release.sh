@@ -153,12 +153,18 @@ if /I "%~1"=="upgrade" goto upgrade
 exit /b %ERRORLEVEL%
 
 :upgrade
-if not "%~2"=="" (
-    echo usage: beansc upgrade 1>&2
-    exit /b 2
-)
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%BEANS_ROOT%\libexec\beans-upgrade.ps1" -Prefix "%BEANS_ROOT%"
+rem --force reaches the installer, which otherwise stops when the version it
+rem would install is the one already here.
+set "BEANS_UPGRADE_FORCE="
+if /I "%~2"=="--force" set "BEANS_UPGRADE_FORCE=-Force"
+if not "%~2"=="" if not defined BEANS_UPGRADE_FORCE goto upgrade_usage
+if not "%~3"=="" goto upgrade_usage
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%BEANS_ROOT%\libexec\beans-upgrade.ps1" -Prefix "%BEANS_ROOT%" %BEANS_UPGRADE_FORCE%
 exit /b %ERRORLEVEL%
+
+:upgrade_usage
+echo usage: beansc upgrade [--force] 1>&2
+exit /b 2
 EOF
 
 {

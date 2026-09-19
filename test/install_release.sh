@@ -19,6 +19,20 @@ test -n "$language"
 test -n "$runtime_abi"
 test -n "$target"
 
+# The Windows installer runs on whatever PowerShell the machine has, and these
+# cmdlets all arrived after Invoke-WebRequest. Naming one strands an upgrade
+# halfway through on an older engine, which is exactly how it shipped broken.
+for windows_script in tools/install-release.ps1 tools/upgrade-windows.ps1; do
+    if grep -vE '^[[:space:]]*#' "$repo/$windows_script" |
+        grep -qE 'Get-FileHash|Expand-Archive|Compress-Archive'; then
+        echo "$windows_script uses a PowerShell 4+ cmdlet; use .NET instead" >&2
+        grep -nvE '^[[:space:]]*#' "$repo/$windows_script" |
+            grep -E 'Get-FileHash|Expand-Archive|Compress-Archive' >&2
+        exit 1
+    fi
+done
+echo "  the Windows installer names no cmdlet newer than Invoke-WebRequest"
+
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/beans-install-release.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 dist="$tmp/dist"
@@ -209,6 +223,38 @@ grep -q "installed beans $version into " "$tmp/upgrade.out" || {
 }
 test "$("$prefix/bin/beansc" --version)" = "$version_text"
 echo "  beansc upgrade uses the checked release installer"
+
+# Upgrading onto the version already installed stops, and --force goes through.
+# Without the flag reaching the installer there is no way to reinstall at all.
+BEANS_INSTALL_BASE_URL="$dist" "$prefix/bin/beansc" upgrade \
+    >"$tmp/upgrade-again.out" 2>&1
+grep -q "beans $version is already installed in " "$tmp/upgrade-again.out" || {
+    cat "$tmp/upgrade-again.out" >&2
+    exit 1
+}
+BEANS_INSTALL_BASE_URL="$dist" "$prefix/bin/beansc" upgrade --force \
+    >"$tmp/upgrade-force.out" 2>&1 || {
+    cat "$tmp/upgrade-force.out" >&2
+    exit 1
+}
+grep -q 'checksum verified' "$tmp/upgrade-force.out" || {
+    cat "$tmp/upgrade-force.out" >&2
+    exit 1
+}
+grep -q "installed beans $version into " "$tmp/upgrade-force.out" || {
+    cat "$tmp/upgrade-force.out" >&2
+    exit 1
+}
+test "$("$prefix/bin/beansc" --version)" = "$version_text"
+if "$prefix/bin/beansc" upgrade --bogus >"$tmp/upgrade-bogus.out" 2>&1; then
+    echo "beansc upgrade accepted an unknown option" >&2
+    exit 1
+fi
+grep -q 'usage: beansc upgrade \[--force\]' "$tmp/upgrade-bogus.out" || {
+    cat "$tmp/upgrade-bogus.out" >&2
+    exit 1
+}
+echo "  beansc upgrade --force reinstalls, and an unknown option is refused"
 
 # A bad checksum must leave the working installation alone.
 sed 's/\t[0-9a-f]\{64\}\t/\t0000000000000000000000000000000000000000000000000000000000000000\t/' \
