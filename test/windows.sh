@@ -475,6 +475,18 @@ if "$BEANSC" build --target $TRIPLE --linker lld src/main.b \
     # compile native C/C++ helpers. Wine has no Windows clang.exe to run, so
     # those paths are unreachable here. The real-Windows hosted gate has a
     # native toolchain and keeps every one of these cases with no exemption.
+    # Both sides, never a truncated diff. `diff | head` spends its whole budget
+    # on whichever side is longer, so a one-line Wine failure next to a
+    # forty-line host run printed forty host lines and none of the one that
+    # said why.
+    show_both() {
+        local stem=$1
+        echo "  beansc.exe under wine said:" >&2
+        sed -n '1,6p' "build/windows_gate/$stem.wineinterp" >&2
+        echo "  the host interpreter said:" >&2
+        sed -n '1,6p' "build/windows_gate/$stem.hostinterp" >&2
+    }
+
     interp_skip="target_info.b cpu_dispatch.b intrinsics.b poller.b processes.b \
 child_process.b signals.b net.b threads.b ffi.b zero_copy_json.b \
 zero_copy_xml.b compress.b crypto.b http.b http2.b websocket.b logging.b"
@@ -494,11 +506,11 @@ zero_copy_xml.b compress.b crypto.b http.b http2.b websocket.b logging.b"
         hosted_ran=$((hosted_ran + 1))
         if [[ $host_code -ne $wine_code ]]; then
             fail "beansc.exe interpreting $name exits $wine_code, the host beansc exits $host_code"
+            show_both "$stem"
         fi
         if ! cmp -s "build/windows_gate/$stem.hostinterp" "build/windows_gate/$stem.wineinterp"; then
             fail "beansc.exe interpreting $name differs from the host interpreter:"
-            diff "build/windows_gate/$stem.hostinterp" "build/windows_gate/$stem.wineinterp" \
-                | head -8 >&2
+            show_both "$stem"
         fi
     done
     if [[ $hosted_ran -lt 30 ]]; then
