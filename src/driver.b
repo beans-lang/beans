@@ -2598,6 +2598,12 @@ class NativeBuildDriver {
                 wasm.arg("-Wl,--export-memory")
                 wasm.arg("-Wl,--allow-undefined")
                 wasm.arg("-Wl,--import-undefined")
+                // The module's own startup. A library has no `main`, so the
+                // host has to run this once after instantiating it or the
+                // reflection registry is empty, every annotation is absent
+                // and every singleton is zeroed memory — with nothing
+                // reporting a failure, because nothing failed.
+                wasm.arg("-Wl,--export=beans_module_start")
                 for symbol: string in self.export_symbols {
                     wasm.arg("-Wl,--export={symbol}")
                 }

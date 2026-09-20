@@ -185,8 +185,20 @@ wasmtime run --invoke beans_wasm_add "$tmp/library.wasm" 20 1 \
 grep -q '^42$' "$tmp/library.out"
 "$wasm_nm" "$tmp/library.wasm" >"$tmp/library.symbols"
 grep -q 'beans_wasm_add.command_export$' "$tmp/library.symbols"
-[[ "$(grep -c 'command_export$' "$tmp/library.symbols")" -eq 1 ]] || {
+# Two exports, and the second is deliberate: `beans_module_start` is the
+# module's own startup, which a library has no `main` to run. Everything else
+# — the runtime's entry points, the Beans functions the program did not mark
+# `pub extern "C"` — must stay inside. A third name here is a leak.
+grep -q 'beans_module_start.command_export$' "$tmp/library.symbols" || {
+    echo "the WASM library does not export its own startup" >&2
+    echo "  without beans_module_start a host cannot register the reflection" >&2
+    echo "  tables, run the static field initializers or build the singletons," >&2
+    echo "  and none of that fails — it is simply absent." >&2
+    exit 1
+}
+[[ "$(grep -c 'command_export$' "$tmp/library.symbols")" -eq 2 ]] || {
     echo "the WASM library exported runtime or private Beans functions" >&2
+    echo "  expected exactly two: beans_wasm_add and beans_module_start" >&2
     cat "$tmp/library.symbols" >&2
     exit 1
 }
@@ -356,6 +368,30 @@ else
         >"$tmp/browser.out" 2>"$tmp/browser.err"
     grep -q '^42$' "$tmp/browser.out"
 fi
+echo "checking a library runs its own startup"
+# A library has no `main`, and the reflection registry, the static field
+# initializers and the singleton constructors used to be emitted into main's
+# entry block. A `--emit shared` module therefore carried all three and ran
+# none: every reflective lookup answered "no such type", and nothing reported
+# a failure because nothing had failed. They live in `beans_module_start` now.
+./build/beansc build --target wasm32-unknown-unknown --runtime freestanding \
+    --emit shared --cc "$wasm_cc" test/cases/wasm_library_reflect.b \
+    -o "$tmp/reflect.wasm" >>"$tmp/build.log" 2>&1
+if command -v node >/dev/null 2>&1; then
+    node test/fixtures/wasm_library_reflect_test.js "$tmp/reflect.wasm"
+    echo "  (registry, initializer, annotation, singleton and static field all present)"
+else
+    # No node. The IR still says whether the prologue left `main`, which is the
+    # half of the claim that does not need a host to check.
+    ./build/beansc build --target wasm32-unknown-unknown --runtime freestanding \
+        --emit ir test/cases/wasm_library_reflect.b >/dev/null
+    grep -q "define void @beans_module_start" build/wasm_library_reflect.ll || {
+        echo "a library module has no beans_module_start" >&2
+        exit 1
+    }
+    echo "  (no node: checked the IR only)"
+fi
+
 if ./build/beansc build --target wasm32-unknown-unknown \
         --runtime freestanding --cc "$wasm_cc" examples/freestanding.b \
         -o "$tmp/bare-app.wasm" >"$tmp/bare-app.out" 2>&1; then
