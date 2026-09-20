@@ -1714,3 +1714,60 @@ partial class LlvmTextEmitter {
         return ""
     }
 }
+
+// ---- the module's own startup ---------------------------------------------
+
+partial class LlvmTextEmitter {
+    /// `@beans_module_start` — everything a module has to do before any of its
+    /// code runs.
+    ///
+    /// Three things, and they were `main`'s prologue until now: register the
+    /// reflection tables, run the static field initializers, and build the
+    /// singletons. A program still reaches them through `main`, in the same
+    /// order, and nothing about its startup moves.
+    ///
+    /// **A library had no way to reach them.** `--emit shared` produces a
+    /// module with no `main`, so the prologue was emitted, linked, and never
+    /// called.
+    ///
+    /// Two of the three survived that anyway: a static field and a singleton
+    /// each carry a guard, and the first read of either runs its initializer.
+    /// Reflection has none and cannot have one — nothing reads "the registry",
+    /// it is read by name, and a name that was never registered looks exactly
+    /// like a name that does not exist. So the whole registry was silently
+    /// empty, and the symptom was a component tree that could not activate a
+    /// class it could see.
+    ///
+    /// It is idempotent. A host calls it once after instantiating a module,
+    /// and calling it twice must not register every type a second time.
+    fn emit_module_start() -> string {
+        let reflection: string = self.reflection_initializers()
+        let statics: string = self.static_field_initializers()
+        let singletons: string = self.singleton_initializers()
+        // The guard lives in `module_globals` beside `@beans_deinit_sel`, not
+        // in this body. A chunked build hoists a global that leads a body into
+        // the definitions and then declares it `external global i8` in every
+        // other chunk — so an `internal` one here is defined in one chunk and
+        // declared, with a different type, in the rest.
+        let lines: List<string> = [
+            "define void @beans_module_start() \{",
+            "entry:",
+            "  %beans.started.byte = load i8, ptr @beans.module.started",
+            "  %beans.started = icmp ne i8 %beans.started.byte, 0",
+            "  br i1 %beans.started, label %beans.start.done, label %beans.start.run",
+            "beans.start.run:",
+            "  store i8 1, ptr @beans.module.started",
+            "",
+        ]
+        let head: string = lines.join("\n")
+        let tail: List<string> = [
+            "  br label %beans.start.done",
+            "beans.start.done:",
+            "  ret void",
+            "\}",
+            "",
+            "",
+        ]
+        return "{head}{reflection}{statics}{singletons}{tail.join("\n")}"
+    }
+}

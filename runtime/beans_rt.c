@@ -18945,3 +18945,157 @@ void beans_taskgroup_scope_join(BTaskGroup* g, long long line,
 #if BEANS_RT_FIBERS
 #include "beans_fiber.c"
 #endif
+
+// ---- concurrency at the freestanding profile --------------------------------
+//
+// The freestanding profile has one thread by construction: no pthreads, no
+// futex, no fibers, and the checker refuses `brew`, `thread.spawn` and
+// everything else that would need them, **by name, against the program**.
+//
+// So why are these here at all? Because a program that never writes a channel
+// can still be *linked* against one. Reflection's registry is by name — a
+// lookup asks for a type that may or may not exist, so the registry has to
+// carry every declaration in the program, `std.sync`'s included. Registering
+// `Channel.send` means emitting the thunk that would call it, and that thunk
+// names `beans_chan_send` whether or not any line of the program does.
+//
+// Before these existed, the symptom was a link failure naming seven runtime
+// symbols, for a browser module that had never mentioned concurrency — and the
+// only way past it was to give up reflection, which is what an annotation-
+// driven framework is built on.
+//
+// Each one panics. They are unreachable from source, because the checker got
+// there first; a reflective call by name is the one way in, and that deserves
+// an answer rather than a crash. Weak, so a program that supplies its own
+// still wins — the same discipline `beans_host_format_f64` follows.
+#if BEANS_RT_PROFILE < BEANS_RT_MINIMAL
+
+static void beans_rt_no_threads(const char* what) {
+    char message[96];
+    long long at = 0;
+    const char* head = "";
+    for (head = "this build has one thread, so "; *head; head++)
+        message[at++] = *head;
+    for (; *what && at < 90; what++) message[at++] = *what;
+    message[at] = 0;
+    beans_panic(message, 0, 0);
+}
+
+void* beans_chan_new(long long cap, long long elem_ptr) {
+    (void)cap; (void)elem_ptr;
+    beans_rt_no_threads("a channel cannot be made");
+    return 0;
+}
+void* beans_chan_new_typed(long long cap, long long stride, long long ptr_mask) {
+    (void)cap; (void)stride; (void)ptr_mask;
+    beans_rt_no_threads("a channel cannot be made");
+    return 0;
+}
+long long beans_chan_send(void* c, long long v) {
+    (void)c; (void)v;
+    beans_rt_no_threads("a channel cannot be sent to");
+    return 0;
+}
+long long beans_chan_send_typed(void* c, void* value) {
+    (void)c; (void)value;
+    beans_rt_no_threads("a channel cannot be sent to");
+    return 0;
+}
+long long beans_chan_try_send(void* c, long long v) {
+    (void)c; (void)v;
+    beans_rt_no_threads("a channel cannot be sent to");
+    return 0;
+}
+long long beans_chan_try_send_typed(void* c, void* value) {
+    (void)c; (void)value;
+    beans_rt_no_threads("a channel cannot be sent to");
+    return 0;
+}
+long long beans_chan_recv(void* c, long long* ok) {
+    (void)c; (void)ok;
+    beans_rt_no_threads("a channel cannot be received from");
+    return 0;
+}
+long long beans_chan_recv_typed(void* c, void* out) {
+    (void)c; (void)out;
+    beans_rt_no_threads("a channel cannot be received from");
+    return 0;
+}
+long long beans_chan_try_recv(void* c, long long* ok) {
+    (void)c; (void)ok;
+    beans_rt_no_threads("a channel cannot be received from");
+    return 0;
+}
+long long beans_chan_try_recv_typed(void* c, void* out) {
+    (void)c; (void)out;
+    beans_rt_no_threads("a channel cannot be received from");
+    return 0;
+}
+void beans_chan_close(void* c) {
+    (void)c;
+    beans_rt_no_threads("a channel cannot be closed");
+}
+
+void* beans_atomic_new(long long init) {
+    (void)init;
+    beans_rt_no_threads("an atomic cannot be made");
+    return 0;
+}
+long long beans_atomic_add(void* a, long long d) {
+    (void)a; (void)d;
+    beans_rt_no_threads("an atomic cannot be added to");
+    return 0;
+}
+long long beans_atomic_get(void* a) {
+    (void)a;
+    beans_rt_no_threads("an atomic cannot be read");
+    return 0;
+}
+void beans_atomic_set(void* a, long long v) {
+    (void)a; (void)v;
+    beans_rt_no_threads("an atomic cannot be written");
+}
+
+void* beans_mutex_new(long long inner, long long owns) {
+    (void)inner; (void)owns;
+    beans_rt_no_threads("a mutex cannot be made");
+    return 0;
+}
+void* beans_mutex_new_typed(void* value, long long size, long long ptr_mask) {
+    (void)value; (void)size; (void)ptr_mask;
+    beans_rt_no_threads("a mutex cannot be made");
+    return 0;
+}
+long long beans_mutex_lock(void* mu) {
+    (void)mu;
+    beans_rt_no_threads("a mutex cannot be locked");
+    return 0;
+}
+void beans_mutex_lock_typed(void* mu, void* out, long long size) {
+    (void)mu; (void)out; (void)size;
+    beans_rt_no_threads("a mutex cannot be locked");
+}
+void beans_mutex_unlock(void* mu) {
+    (void)mu;
+    beans_rt_no_threads("a mutex cannot be unlocked");
+}
+
+void* beans_gate_new(void) {
+    beans_rt_no_threads("a gate cannot be made");
+    return 0;
+}
+void beans_gate_open(void* g) {
+    (void)g;
+    beans_rt_no_threads("a gate cannot be opened");
+}
+void beans_gate_wait(void* g) {
+    (void)g;
+    beans_rt_no_threads("a gate cannot be waited on");
+}
+long long beans_gate_is_open(void* g) {
+    (void)g;
+    beans_rt_no_threads("a gate cannot be asked");
+    return 0;
+}
+
+#endif // BEANS_RT_PROFILE < BEANS_RT_MINIMAL — concurrency refusals

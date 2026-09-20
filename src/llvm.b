@@ -1869,6 +1869,28 @@ partial class LlvmTextEmitter {
                 none => {}
             }
         }
+        // The module's own startup, as a function rather than as `main`'s
+        // prologue.
+        //
+        // A **library** has no `main`. Before this, the reflection registry,
+        // the static field initializers and the singleton constructors were
+        // emitted into `main`'s entry block, and a module built with
+        // `--emit shared` ran none of them. A static field and a singleton
+        // survived that on their own guards — the first read of either runs
+        // its initializer — but reflection has no such guard and cannot have
+        // one, because a name that was never registered is indistinguishable
+        // from a name that does not exist. The registry was therefore
+        // silently empty, with no diagnostic anywhere, and the first thing
+        // that noticed was a component tree refusing to activate a class it
+        // could see.
+        //
+        // **Above the drain below, not after it.** Registering a field on a
+        // generic class mints a thunk and defers its body, and a body minted
+        // after the last drain is a symbol every call site names and nothing
+        // defines.
+        functions.push(self.emit_module_start())
+        origins.push("")
+
         // A reflective field thunk on a generic class asks the receiver which
         // instantiation it is, so its body needs the whole set of class
         // layouts — and that set is only complete now, with every instance
@@ -2150,6 +2172,12 @@ partial class LlvmTextEmitter {
         }
         var owned: string =
             "@beans_deinit_sel = global i64 {deinit_selector}\n"
+        // The guard `@beans_module_start` reads, so calling it twice registers
+        // nothing twice. Here rather than beside the function, because a
+        // chunked build hoists a leading global out of a body and then
+        // declares it `external global i8` in every other chunk — which an
+        // `internal` definition in one of them does not match.
+        owned = "{owned}@beans.module.started = global i8 0\n"
         let record_types: string = self.emit_record_types()
         // The name of every class has to be a program string before the
         // string block below is written, because the class-name table is
@@ -2159,10 +2187,9 @@ partial class LlvmTextEmitter {
         self.intern_class_names()
         let definitions: string =
             self.emit_global_definitions()
-        // Build the static prologue here rather than while emitting main:
-        // a module built with `--emit shared` has no main, and the guard on
-        // every static read calls this when nothing else has run it.
-        self.static_field_initializers()
+        // The static prologue is built by `emit_module_start` above; the
+        // guard on every static read calls the same function when nothing
+        // else has run it.
         let static_fields: string =
             self.static_field_definitions.join("")
         // The class-parent table comes last, after every id has been minted:

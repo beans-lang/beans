@@ -2067,8 +2067,18 @@ partial class LlvmTextEmitter {
         var output: string =
             "; {display_symbol(function.name)}\ndefine {result_type} {symbol}({parameters.join(", ")}){unwind_attribute}{feature_attribute}{self.debug_function_attribute()}{personality}{self.debug_function_metadata(subprogram)} \{\nentry:\n"
         if is_main {
+            // `beans_module_start` rather than the initializers inline. A
+            // program reaches them here and nothing about its startup moves;
+            // a **library** has no `main` at all, and before this its
+            // reflection registry, its static fields and its singletons were
+            // emitted into a function nothing ever called. That is not a
+            // missing feature but a silent one: every reflective lookup
+            // answered "no such type", so `--emit shared` on
+            // wasm32-unknown-unknown produced a module whose annotations,
+            // activators and singletons were all absent with no diagnostic
+            // anywhere. See `emit_module_start`.
             output =
-                "{output}  call void @beans_os_init(i32 %beans.argc, ptr %beans.argv)\n{self.reflection_initializers()}{self.static_field_initializers()}{self.singleton_initializers()}"
+                "{output}  call void @beans_os_init(i32 %beans.argc, ptr %beans.argv)\n  call void @beans_module_start()\n"
         }
         // Source position among the parameters, counted before any of the
         // skips below so an `inout` still takes the slot the source wrote it
