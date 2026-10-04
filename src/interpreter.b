@@ -17,6 +17,9 @@ import std.sock as host_sock
 import std.thread as host_thread
 import std.time as host_time
 
+extern "C" fn beans_with_collection_deferred(
+    body: fn(RawPtr<u8>), context: RawPtr<u8>)
+
 extern "C" fn beans_tree_ffi_invoke_bridge(
     bridge: RawPtr<u8>,
     symbol: RawPtr<u8>,
@@ -6874,6 +6877,13 @@ class TreeInterpreter {
         if node.resolved.starts_with(
                "std.intrinsic.") {
             unsafe {
+                if node.value == "with_collection_deferred" {
+                    beans_with_collection_deferred(
+                        fn(unused: RawPtr<u8>) {
+                            self.invoke_closure(node, arguments[0], [])
+                        }, RawPtr.null())
+                    return TreeValue.unit()
+                }
                 if node.value == "popcount" {
                     return TreeValue.integer(
                         host_intrinsic.popcount(
@@ -15681,9 +15691,16 @@ class TreeInterpreter {
         for flag: string in self.program.target.c_driver_flags() {
             flags.push(flag)
         }
+        var emulated_tls: bool = false
+        match log_bridge_emulated_tls(
+            c_driver, root, self.program.target.os,
+            self.program.target.env, flags) {
+            ok(emulated) => { emulated_tls = emulated }
+            err(error) => { self.log_error = error.msg; return [] }
+        }
         for flag: string in log_bridge_link_arguments(
-                true, self.program.target.os,
-                self.program.target.env) {
+            true, self.program.target.os,
+            self.program.target.env, emulated_tls) {
             flags.push(flag)
         }
         return move flags
@@ -15700,6 +15717,7 @@ class TreeInterpreter {
         let c_driver: string = self.ffi_c_driver()
         let compile_arguments: List<string> =
             self.log_bridge_compile_arguments(root, c_driver)
+        if compile_arguments.is_empty() { return "" }
         var blob: string =
             "{self.program.target.triple}|interp|{log_bridge_abi()}"
         blob = "{blob}|{encoding_compiler_identity(c_driver)}"

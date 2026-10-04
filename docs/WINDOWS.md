@@ -152,6 +152,14 @@ for its own architecture — the per-architecture fixed point.
 
 ## Known gaps
 
+The logging bridge selects TLS from the C++ runtime, not the Windows target
+name. GCC/libstdc++ requires emulated TLS; LLVM-MinGW/libc++ uses native TLS.
+Forcing emulation on libc++ caused #71: the retained crash dump from
+[run 36557623160](https://github.com/beans-lang/beans/actions/runs/36557623160)
+shows `ScopedThreadContext::~ScopedThreadContext` accessing reclaimed emulated
+TLS during `tls_atexit_callback`. Both Windows execution gates repeat successful
+logging exits 32 times; a failing exit remains a failure and leaves its dump.
+
 - **Signals are refusing stubs on every Windows target.** The language's
   contract is that a watched signal is blocked and read from a descriptor;
   Windows has neither `signalfd` nor `kqueue` and cannot express it. Every

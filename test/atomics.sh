@@ -112,8 +112,10 @@ if [[ "$(grep -c 'monotonic' build/atomics.ll)" -lt 8 ]]; then
 fi
 
 echo "checking atomics under ThreadSanitizer"
+BEANS_SANITIZE=thread ./build/beansc llvm "examples/atomics.b" \
+    >"$tmp/atomics.sanitize-thread.ll"
 clang -O1 -g -pthread -fsanitize=thread -Wno-override-module \
-    build/atomics.ll build/beans_rt.c -lm -o "$tmp/tsan" 2>"$tmp/tsan.build"
+    "$tmp/atomics.sanitize-thread.ll" build/beans_rt.c -lm -o "$tmp/tsan" 2>"$tmp/tsan.build"
 set +e
 BEANS_NO_POOL=1 "$tmp/tsan" >"$tmp/tsan.out" 2>"$tmp/tsan.err"
 tsan_status=$?

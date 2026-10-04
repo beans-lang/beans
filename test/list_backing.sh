@@ -105,8 +105,10 @@ expect_headers twenty
 expect_headers slab
 
 echo "checking the inline backing under ASan, UBSan and LeakSanitizer"
+BEANS_SANITIZE=address,undefined ./build/beansc llvm "test/cases/list_inline_backing.b" \
+    >"$tmp/list_inline_backing.sanitize-address-undefined.ll"
 clang -O1 -g -pthread -fsanitize=address,undefined -fno-sanitize-recover=undefined \
-    -Wno-override-module build/list_inline_backing.ll build/beans_rt.c -lm \
+    -Wno-override-module "$tmp/list_inline_backing.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/asan"
 # Twice, because the two arms of beans_alloc place the block differently and
 # only one of them is a plain malloc ASan can see the bounds of:

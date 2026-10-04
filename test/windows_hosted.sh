@@ -230,6 +230,21 @@ for src in examples/*.b; do
         diff "build/windows_hosted/$name.interp.out" "build/windows_hosted/$name.native.out" | head -12 >&2
         fails=$((fails + 1))
     fi
+    # #71 faults in TLS teardown after printing the correct result. One green
+    # exit is insufficient; repeat successful logging exits and fail on the
+    # first fault, preserving its dump and output without retrying it away.
+    if [[ "$name" == logging && $interp_code -eq 0 && $native_code -eq 0 ]]; then
+        for attempt in $(seq 1 31); do
+            "./build/windows_hosted/$name.exe" >"build/windows_hosted/$name.native.out" 2>&1
+            code=$?
+            if [[ $code -ne 0 ]] || ! cmp -s "build/windows_hosted/$name.interp.out" "build/windows_hosted/$name.native.out"; then
+                echo "FAIL: logging repeat $attempt exited $code or changed output" >&2
+                windows_status "build/windows_hosted/$name.exe" >&2
+                fails=$((fails + 1))
+                break
+            fi
+        done
+    fi
 done
 
 # The multi-package program, same treatment.

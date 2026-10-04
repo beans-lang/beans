@@ -1331,6 +1331,27 @@ static int beans_in_deinit;
 static _Thread_local int beans_local_in_deinit;
 #endif
 
+// The same exclusion window is available to a short, non-parking mutation
+// (#122). The callback scope, rather than a pause/resume pair, makes nesting
+// and forced-unwind cleanup unavoidable. Only cycle collection is deferred:
+// a last ARC release still runs its deinit immediately.
+static void rt_collection_deferred_leave(int* armed) {
+    if (!*armed) return;
+    *armed = 0;
+#if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
+    beans_local_in_deinit -= 1;
+#endif
+    __atomic_sub_fetch(&beans_in_deinit, 1, __ATOMIC_RELAXED);
+}
+void beans_with_collection_deferred(void (*body)(void*), void* context) {
+    __atomic_add_fetch(&beans_in_deinit, 1, __ATOMIC_RELAXED);
+#if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
+    beans_local_in_deinit += 1;
+#endif
+    __attribute__((cleanup(rt_collection_deferred_leave))) int armed = 1;
+    body(context);
+}
+
 // Profile builds recompile the emitted runtime with -DBEANS_ARC_STATS.
 // Normal benchmark binaries do not contain these counters, so measuring
 // ownership traffic cannot change the timed result.
@@ -14362,7 +14383,15 @@ static long long host_call_json_decode_probe(const unsigned long long* w) {
     return beans_json_decode_probe((unsigned long long*)(uintptr_t)w[0]);
 }
 
+static long long host_call_with_collection_deferred(const unsigned long long* w) {
+    beans_with_collection_deferred((void (*)(void*))(uintptr_t)w[0],
+                                    (void*)(uintptr_t)w[1]);
+    return 0;
+}
+
 static const BHostEntry rt_host_table[] = {
+    {"beans_with_collection_deferred", (void*)&beans_with_collection_deferred,
+     2, host_call_with_collection_deferred},
     {"beans_net_recv_into_wait", (void*)&beans_net_recv_into_wait, 3,
      host_call_net_recv_into_wait},
     {"beans_net_send_from_wait", (void*)&beans_net_send_from_wait, 4,

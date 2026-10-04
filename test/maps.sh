@@ -20,8 +20,10 @@ fi
 grep -q "list index assignment only supports '='" "$tmp/compound.bad"
 grep -q "map index assignment only supports '='" "$tmp/compound.bad"
 
+BEANS_SANITIZE=address ./build/beansc llvm "test/cases/map_models.b" \
+    >"$tmp/map_models.sanitize-address.ll"
 clang -O1 -g -pthread -fsanitize=address -Wno-override-module \
-    build/map_models.ll build/beans_rt.c -lm -o "$tmp/asan"
+    "$tmp/map_models.sanitize-address.ll" build/beans_rt.c -lm -o "$tmp/asan"
 # A leak is a sanitizer failure like any other: LeakSanitizer rides inside
 # ASan on Linux and reports at exit, which makes the run exit non-zero. Hold
 # the status before reading the report, or this dies under `set -e` with the
@@ -72,8 +74,10 @@ if "$tmp/mutation.native" >"$tmp/mutation.out" 2>&1; then
 fi
 grep -q "map changed during iteration" "$tmp/mutation.out"
 
+BEANS_SANITIZE=address ./build/beansc llvm "test/cases/map_iteration.b" \
+    >"$tmp/map_iteration.sanitize-address.ll"
 clang -O1 -g -pthread -fsanitize=address -Wno-override-module \
-    build/map_iteration.ll build/beans_rt.c -lm -o "$tmp/iteration.asan"
+    "$tmp/map_iteration.sanitize-address.ll" build/beans_rt.c -lm -o "$tmp/iteration.asan"
 # A leak is a sanitizer failure like any other: LeakSanitizer rides inside
 # ASan on Linux and reports at exit, which makes the run exit non-zero. Hold
 # the status before reading the report, or this dies under `set -e` with the

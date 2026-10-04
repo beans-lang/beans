@@ -32,8 +32,10 @@ echo "checking the leak-clean collections under ASan, UBSan and LeakSanitizer"
     >"$tmp/leak.build"
 "$tmp/leak.native" >"$tmp/leak.native.out"
 diff -u "$tmp/leak.interp" "$tmp/leak.native.out"
+BEANS_SANITIZE=address,undefined ./build/beansc llvm "test/cases/collections_leakcheck.b" \
+    >"$tmp/collections_leakcheck.sanitize-address-undefined.ll"
 clang -O1 -g -pthread -fsanitize=address,undefined -fno-sanitize-recover=undefined \
-    -Wno-override-module build/collections_leakcheck.ll build/beans_rt.c -lm \
+    -Wno-override-module "$tmp/collections_leakcheck.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/leak.asan"
 # This program frees everything it drops, so LeakSanitizer (default on Linux)
 # must stay silent; a leak here is a real regression in Set, Deque,
@@ -52,8 +54,10 @@ fi
 diff -u "$tmp/leak.interp" "$tmp/leak.asan.out"
 
 echo "checking the full model, incl. SortedMap.remove, under ASan, UBSan and LeakSanitizer"
+BEANS_SANITIZE=address,undefined ./build/beansc llvm "test/cases/collections_models.b" \
+    >"$tmp/collections_models.sanitize-address-undefined.ll"
 clang -O1 -g -pthread -fsanitize=address,undefined -fno-sanitize-recover=undefined \
-    -Wno-override-module build/collections_models.ll build/beans_rt.c -lm \
+    -Wno-override-module "$tmp/collections_models.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/model.asan"
 # This lane used to run with detect_leaks=0 because SortedMap.remove leaked in
 # the native ARC codegen (#60). #60 has landed, so the structural remove path
@@ -77,8 +81,17 @@ echo "checking what a container does while it drops what it owns"
 ./build/beansc build test/cases/collections_teardown.b -o "$tmp/teardown.native" \
     >"$tmp/teardown.build"
 "$tmp/teardown.native" >"$tmp/teardown.native.out"
-diff -u test/cases/collections_teardown.out "$tmp/teardown.interp"
-diff -u "$tmp/teardown.interp" "$tmp/teardown.native.out"
+# Under `run`, the checker and this case share a collector. Its parked live
+# objects determine whether the probes cross an adaptive threshold (#197).
+# Require observation on the isolated native leg, and compare every other
+# assertion against the golden on both legs. Never re-pin a false observation
+# into the golden: disabling collection must still fail the native check.
+diff -u test/cases/collections_teardown.out "$tmp/teardown.native.out"
+sed '/^\(crossover\|priorityqueue\|sortedmap\) observed under collection: /d' \
+    test/cases/collections_teardown.out >"$tmp/teardown.expected"
+sed '/^\(crossover\|priorityqueue\|sortedmap\) observed under collection: /d' \
+    "$tmp/teardown.interp" >"$tmp/teardown.checked"
+diff -u "$tmp/teardown.expected" "$tmp/teardown.checked"
 # A tear is a container answering its old shape over storage it has already
 # released; an inconsistent answer is `remove` reporting what it did not do.
 grep -q '^total tears 0$' "$tmp/teardown.interp"

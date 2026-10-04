@@ -142,4 +142,39 @@ expect_error "argument 1 is float, got string" test/cases/intrinsic_wrong_type.b
 expect_error "takes 3 arguments but got 2" test/cases/intrinsic_arity.b
 expect_error "so the call has to be guarded" test/cases/intrinsic_unguarded.b
 
+echo "checking scoped collection deferral, nesting, ARC and contained unwind"
+./build/beansc run test/cases/collection_deferred.b >"$tmp/deferred.interp"
+diff -u test/cases/collection_deferred.out "$tmp/deferred.interp"
+./build/beansc build test/cases/collection_deferred.b -o "$tmp/deferred" >"$tmp/build.log" 2>&1
+"$tmp/deferred" >"$tmp/deferred.native"
+diff -u test/cases/collection_deferred.out "$tmp/deferred.native"
+BEANS_SANITIZE=address,undefined ./build/beansc llvm test/cases/collection_deferred.b >"$tmp/deferred.sanitize.ll"
+clang -O1 -g -fexceptions -funwind-tables -DBEANS_FIBER_UNWIND=1 \
+    -fsanitize=address,undefined -fno-sanitize-recover=all \
+    "$tmp/deferred.sanitize.ll" runtime/beans_rt.c \
+    -lm -lpthread -o "$tmp/deferred.sanitize"
+code=0
+leaks=1
+if [[ $(uname -s) == Darwin ]]; then leaks=0; fi # Apple ASan has no LeakSanitizer.
+# Controlled unwind is checked on both ordinary backends. Apple's ASan also
+# fails to munmap in the unchanged contained_threads case, so do not claim
+# sanitizer coverage of that path; exercise normal nesting and ARC here.
+ASAN_OPTIONS=detect_leaks=$leaks "$tmp/deferred.sanitize" --normal-only >"$tmp/deferred.sanitize.out" 2>"$tmp/deferred.sanitize.err" || code=$?
+if [[ $code -ne 0 ]] || grep -qE 'AddressSanitizer|LeakSanitizer|UndefinedBehaviorSanitizer|runtime error:' "$tmp/deferred.sanitize.err"; then
+    cat "$tmp/deferred.sanitize.err" >&2
+    exit 1
+fi
+head -n 4 test/cases/collection_deferred.out >"$tmp/deferred.sanitize.expected"
+diff -u "$tmp/deferred.sanitize.expected" "$tmp/deferred.sanitize.out"
+cat >"$tmp/deferred-unsafe.b" <<'BEANS'
+import std.intrinsic
+fn main() { intrinsic.with_collection_deferred(fn() {}) }
+BEANS
+expect_error "requires unsafe { }" "$tmp/deferred-unsafe.b"
+cat >"$tmp/deferred-type.b" <<'BEANS'
+import std.intrinsic
+fn main() { unsafe { intrinsic.with_collection_deferred(fn() -> int { return 1 }) } }
+BEANS
+expect_error "argument 1 is fn() -> unit, got fn() -> int" "$tmp/deferred-type.b"
+
 echo "ok intrinsics: exact signatures, the instructions' own edge cases, and the guard"

@@ -28,9 +28,11 @@ clang -O2 -pthread -Wno-override-module build/c_wide_args.ll \
     test/fixtures/c_wide_args_helper.c -lm -o "$tmp/native"
 "$tmp/native" >"$tmp/native.out"
 
+BEANS_SANITIZE=address,undefined "$beansc" llvm "test/cases/c_wide_args.b" \
+    >"$tmp/c_wide_args.sanitize-address-undefined.ll"
 clang -O1 -g -pthread -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -Wno-override-module \
-    build/c_wide_args.ll build/beans_rt.c build/c_wide_args_ffi.c \
+    "$tmp/c_wide_args.sanitize-address-undefined.ll" build/beans_rt.c build/c_wide_args_ffi.c \
     test/fixtures/c_wide_args_helper.c -lm -o "$tmp/asan"
 if ! BEANS_NO_POOL=1 "$tmp/asan" >"$tmp/asan.out" 2>"$tmp/asan.err"; then
     cat "$tmp/asan.err" >&2

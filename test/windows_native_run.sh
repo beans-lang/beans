@@ -77,6 +77,17 @@ while IFS=$'\t' read -r stem expected_code; do
         diff "$BUNDLE/$stem.expected" "$BUNDLE/$stem.actual" | head -15 >&2
         fails=$((fails + 1))
     fi
+    if [[ "$stem" == logging && "$code" == 0 && "$expected_code" == 0 ]]; then
+        for attempt in $(seq 1 31); do
+            "$BUNDLE/$stem.exe" >"$BUNDLE/$stem.actual" 2>&1
+            repeat_code=$?
+            if [[ $repeat_code -ne 0 ]] || ! cmp -s "$BUNDLE/$stem.expected" "$BUNDLE/$stem.actual"; then
+                echo "FAIL: logging repeat $attempt exited $repeat_code or changed output" >&2
+                fails=$((fails + 1))
+                break
+            fi
+        done
+    fi
 done < "$BUNDLE/manifest.tsv"
 
 # target_info must report the Windows target from a genuinely running binary.

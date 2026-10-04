@@ -376,21 +376,10 @@ echo "ok every function beansc defines carries the sanitizer attribute:" \
      "thread asked for on its own, and a sanitized module that differs from an" \
      "ordinary one by the attribute alone"
 
-# ---- 4. which suites hand a sanitizer an unmarked module --------------------
-#
-# The other half of #168, and the half that outlives the emitter fix. A suite
-# that builds a program with a plain `beansc build` and then hand-links
-# build/<name>.ll under -fsanitize= gets an IR module with no attribute on any
-# definition, so the flag instruments beans_rt.c beside the program and none of
-# the program. test/sanitize.sh and test/stored_callbacks.sh now ask for the
-# sanitizer on the build; the suites below still do not.
-#
-# Their ASan lanes are not worthless -- they still catch a double free, an
-# invalid free and the bounds of every intercepted memcpy, and the whole of the
-# runtime C -- but they do not check the generated code, and nothing in a green
-# run says so. So the set is written down: it may not grow, and when a suite is
-# fixed its name comes out and the list shrinks. Both directions fail, because
-# a list nobody has to maintain is a list that stops describing anything.
+# ---- 4. every sanitized hand-link has a matching marked IR producer ---------
+# Check each link, not whether a file mentions BEANS_SANITIZE somewhere (#177).
+# ASan and TSan require distinct modules; one marked build cannot bless another
+# unmarked or differently marked IR file in the same suite.
 python3 - <<'REACH'
 import glob, os, re, sys
 
@@ -399,66 +388,70 @@ def logical_lines(path):
     for i, raw in enumerate(open(path).read().splitlines(), 1):
         if start is None:
             start = i
+        buf += raw.rstrip().removesuffix("\\") + " "
         if raw.rstrip().endswith("\\"):
-            buf += raw.rstrip()[:-1] + " "
             continue
-        buf += raw
         out.append((start, buf))
         buf, start = "", None
     if start is not None:
         out.append((start, buf))
     return out
 
-# Written down rather than discovered, so that fixing one is a visible edit
-# with a name on it. The check itself discovers, so a suite that grows a
-# sanitized hand link lands here rather than nowhere.
-EXPECTED = {
-    "atomics.sh", "c_callbacks.sh", "c_layout_c_abi.sh", "c_variadic.sh",
-    "c_wide_args.sh", "calendar.sh", "child.sh", "collections.sh", "dylib.sh",
-    "float_total_order.sh", "fs_source.sh", "list_backing.sh", "map_inline.sh",
-    "maps.sh", "net.sh", "packed_layout.sh", "poll.sh", "process.sh",
-    "reader_source.sh", "resources.sh", "self_host.sh", "shm.sh", "signals.sh",
-    "term.sh",
-}
-
-IR = re.compile(r"""[\w/${}."']+\.ll\b""")
-blind, asking, sites = set(), set(), 0
+IR = re.compile(r"[\w/${}.\-]+\.ll\b")
+MARK = re.compile(r"BEANS_SANITIZE=([\w,]+)")
+SAN = re.compile(r"-fsanitize=([\w,]+)")
+ARRAY = re.compile(r"\$\{(\w+)\[@\]\}")
+errors, sites, suites = [], 0, set()
 for path in sorted(glob.glob("test/*.sh")):
     name = os.path.basename(path)
     if name == "sanitizer_gates.sh":
         continue
-    lines = logical_lines(path)
-    links = [t for _, t in lines if "-fsanitize=" in t and IR.search(t)]
-    if not links:
-        continue
-    sites += len(links)
-    if "BEANS_SANITIZE=" in "\n".join(t for _, t in lines):
-        asking.add(name)
-    else:
-        blind.add(name)
-
-if not blind and not asking:
-    print("this check found no suite that links generated IR under a "
-          "sanitizer at all, so it has stopped matching the scripts and "
-          "would now pass on anything", file=sys.stderr)
+    text = open(path).read()
+    arrays = {m[1]: IR.findall(m[2]) for m in re.finditer(
+        r"(?m)^\s*(\w+)=\(\s*([\s\S]*?)^\s*\)", text)}
+    producers = {}
+    for line, command in logical_lines(path):
+        if command.lstrip().startswith("#"):
+            continue
+        mark = MARK.search(command)
+        if "beansc" in command:
+            requested = set(mark[1].split(",")) if mark else set()
+            if re.search(r"\bllvm\b", command):
+                for ir in IR.findall(command):
+                    producers[ir] = requested
+            elif re.search(r"\bbuild\b", command):
+                # Existing sanitizer harnesses name the build after their case.
+                output = re.search(r'-o\s+"\$\w+/([^"/]+)"', command)
+                if output:
+                    stem = output[1].removesuffix("_source").replace("${", "$").replace("}", "")
+                    producers["build/" + stem + ".ll"] = requested
+                source = re.search(r"[\w/${}.\-]+\.b\b", command)
+                if source:
+                    producers["build/" + source[0].split("/")[-1][:-2] + ".ll"] = requested
+        sanitizer = SAN.search(command)
+        if not sanitizer:
+            continue
+        inputs = IR.findall(command)
+        for array in ARRAY.findall(command):
+            inputs.extend(arrays.get(array, []))
+        if not inputs:
+            continue  # C-only sanitizer probes have no Beans IR to mark.
+        wanted = set(sanitizer[1].split(","))
+        sites += 1
+        suites.add(name)
+        for ir in inputs:
+            actual = producers.get(ir, set())
+            if actual != wanted:
+                errors.append("%s:%d: %s links %s but its IR producer asks for %s"
+                              % (path, line, ir, ",".join(sorted(wanted)),
+                                 ",".join(sorted(actual)) or "no sanitizer"))
+if not sites:
+    errors.append("sanitizer reach found no generated IR links; the check stopped matching")
+if errors:
+    print("\n".join(errors), file=sys.stderr)
     sys.exit(1)
-if blind != EXPECTED:
-    print("the set of suites that hand a sanitizer an unmarked module "
-          "changed:", file=sys.stderr)
-    for extra in sorted(blind - EXPECTED):
-        print("  NEW: %s links generated IR under -fsanitize= and never sets "
-              "BEANS_SANITIZE, so the flag instruments the runtime C and none "
-              "of the program (#168). Ask for the sanitizer on the `beansc "
-              "build` that writes the .ll." % extra, file=sys.stderr)
-    for gone in sorted(EXPECTED - blind):
-        print("  FIXED: %s now asks for the sanitizer on its build. Take it "
-              "out of EXPECTED in this file." % gone, file=sys.stderr)
-    sys.exit(1)
-print("sanitizer reach: %d suites link generated IR under a sanitizer over %d "
-      "link sites; %d ask the build to mark it (%s), %d still do not and are "
-      "checking the runtime C beside their program rather than the program"
-      % (len(blind) + len(asking), sites, len(asking),
-         ", ".join(sorted(asking)), len(blind)))
+print("sanitizer reach: %d links in %d suites have matching marked IR producers"
+      % (sites, len(suites)))
 REACH
 
 # ---- 2. the same shape, run against real sanitizer failures -----------------
