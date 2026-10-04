@@ -269,8 +269,9 @@ fn crossover_under_release() {
         round += 1
     }
     io.println("crossover churn done: len {d.len()}")
-    // A probe that never runs proves nothing, so say so rather than reporting
-    // a silent zero.
+    // A probe that never runs proves nothing. collections.sh requires this
+    // observation on the native leg: `run` shares the checker's collector,
+    // whose adaptive thresholds can suppress program probes (#197).
     io.println("crossover observed under collection: {Seen.crossover_probes > 1000}")
 }
 

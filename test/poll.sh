@@ -272,8 +272,10 @@ EXPECTED
 # the wake writes to the descriptor while holding the same lock close() clears the slot
 # under, and getting that wrong is a use-after-close rather than a wrong answer.
 ./build/beansc build "$tmp/wake.b" --emit ir >/dev/null
+BEANS_SANITIZE=thread ./build/beansc llvm "$tmp/wake.b" \
+    >"$tmp/wake.sanitize-thread.ll"
 clang -O1 -g -pthread -fsanitize=thread -Wno-override-module \
-    build/wake.ll build/beans_rt.c -lm -o "$tmp/wake_tsan" 2>"$tmp/tsan.build"
+    "$tmp/wake.sanitize-thread.ll" build/beans_rt.c -lm -o "$tmp/wake_tsan" 2>"$tmp/tsan.build"
 BEANS_NO_POOL=1 "$tmp/wake_tsan" >"$tmp/tsan.out" 2>"$tmp/tsan.err" || true
 if grep -q 'WARNING: ThreadSanitizer' "$tmp/tsan.err"; then
     cat "$tmp/tsan.err" >&2
@@ -563,8 +565,10 @@ rm -f build/poller_ffi.c
 # runtime, the same set the driver links from its caches.
 extra_sources=(runtime/net/beans_net_sockx.c)
 if [[ -f build/poller_ffi.c ]]; then extra_sources+=(build/poller_ffi.c); fi
+BEANS_SANITIZE=address ./build/beansc llvm "examples/poller.b" \
+    >"$tmp/poller.sanitize-address.ll"
 clang -O1 -g -pthread -fsanitize=address -Wno-override-module \
-    build/poller.ll build/beans_rt.c "${extra_sources[@]}" \
+    "$tmp/poller.sanitize-address.ll" build/beans_rt.c "${extra_sources[@]}" \
     -lm -o "$tmp/asan" 2>"$tmp/asan.build"
 # A leak is a sanitizer failure like any other: LeakSanitizer rides inside
 # ASan on Linux and reports at exit, which makes the run exit non-zero. Hold

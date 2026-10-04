@@ -92,8 +92,10 @@ clang -O2 -pthread -Wno-override-module build/packed_c_abi.ll \
     test/fixtures/packed_helper.c -lm -o "$tmp/abi_native"
 "$tmp/abi_native" >"$tmp/abi.native"
 
+BEANS_SANITIZE=address ./build/beansc llvm "test/cases/packed_c_abi.b" \
+    >"$tmp/packed_c_abi.sanitize-address.ll"
 clang -O1 -g -pthread -fsanitize=address -Wno-override-module \
-    build/packed_c_abi.ll build/beans_rt.c build/packed_c_abi_ffi.c \
+    "$tmp/packed_c_abi.sanitize-address.ll" build/beans_rt.c build/packed_c_abi_ffi.c \
     test/fixtures/packed_helper.c -lm -o "$tmp/abi_asan"
 # A leak is a sanitizer failure like any other: LeakSanitizer rides inside
 # ASan on Linux and reports at exit, which makes the run exit non-zero. Hold

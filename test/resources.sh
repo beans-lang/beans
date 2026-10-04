@@ -44,8 +44,10 @@ fi
 
 echo "checking no resource leaks under ASan"
 ./build/beansc build examples/resources.b --emit ir >/dev/null
+BEANS_SANITIZE=address ./build/beansc llvm "examples/resources.b" \
+    >"$tmp/resources.sanitize-address.ll"
 clang -O1 -g -pthread -fsanitize=address -Wno-override-module \
-    build/resources.ll build/beans_rt.c -lm -o "$tmp/asan" 2>"$tmp/asan.build"
+    "$tmp/resources.sanitize-address.ll" build/beans_rt.c -lm -o "$tmp/asan" 2>"$tmp/asan.build"
 # A leak is a sanitizer failure like any other: LeakSanitizer rides inside
 # ASan on Linux and reports at exit, which makes the run exit non-zero. Hold
 # the status before reading the report, or this dies under `set -e` with the

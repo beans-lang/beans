@@ -20,6 +20,14 @@ partial class LlvmTextEmitter {
                     operand_id, instruction))
         }
         let result: string = "%v{instruction.result}"
+        if name == "with_collection_deferred" {
+            self.require_declare(
+                "beans_with_collection_deferred",
+                "void @beans_with_collection_deferred(ptr, ptr)")
+            let id: int = self.fresh()
+            values[instruction.result] = "0"
+            return "  %cc.body{id} = load ptr, ptr {arguments[0]}\n  call void @beans_with_collection_deferred(ptr %cc.body{id}, ptr {arguments[0]})\n"
+        }
         if name == "popcount" ||
            name == "leading_zeros" ||
            name == "trailing_zeros" ||

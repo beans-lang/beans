@@ -198,9 +198,34 @@ fn log_bridge_required(packages: List<LoadedPackage>) -> bool {
     return false
 }
 
+// One capability decision for the native object and the interpreter's shared
+// bridge. Windows-gnu can mean either GCC/libstdc++ or LLVM-MinGW/libc++.
+fn log_bridge_emulated_tls(compiler: string, root: string,
+                          target_os: string, target_env: string,
+                          flags: List<string>) -> Result<bool> {
+    if target_os != "windows" || target_env == "msvc" { return ok(false) }
+    let probe: process.Command = new process.Command(compiler)
+    for flag: string in flags { probe.arg(flag) }
+    probe.arg("-E").arg("-dM").arg("-include").arg("mutex")
+    probe.arg(path.join(root, "beans_log.h"))
+    match probe.run() {
+        ok(done) => {
+            if done.succeeded() {
+                let macros: string = done.stdout_text()
+                if macros.find("#define __GLIBCXX__ ").is_some() { return ok(true) }
+                if macros.find("#define _LIBCPP_VERSION ").is_some() { return ok(false) }
+            }
+            return err("cannot identify the Windows C++ runtime for std.log: {done.stderr_text().trim()}", "toolchain")
+        }
+        err(error) => {
+            return err("cannot inspect the Windows C++ runtime for std.log: {error.msg}", "toolchain")
+        }
+    }
+}
+
 fn log_bridge_link_arguments(
     enabled: bool, target_os: string,
-    target_env: string) -> List<string> {
+    target_env: string, emulated_tls: bool) -> List<string> {
     var arguments: List<string> = []
     if !enabled { return move arguments }
     // The final link otherwise has only IR and object inputs, so plain clang
@@ -210,10 +235,10 @@ fn log_bridge_link_arguments(
     if target_os != "windows" || target_env != "msvc" {
         arguments.push("-pthread")
     }
-    // Distro MinGW libstdc++ is built by GCC with emulated TLS. Clang's
-    // native-TLS default gives std::call_once different symbol names, so the
-    // C++ bridge and final support-runtime selection must use GCC's TLS ABI.
-    if target_os == "windows" && target_env != "msvc" {
+    // Only a GCC/libstdc++ toolchain needs its emulated TLS ABI. Forcing it
+    // on LLVM-MinGW/libc++ frees Quill's TLS storage before its C++ destructor
+    // on process exit (#71). Compilation and linking use the same decision.
+    if emulated_tls {
         arguments.push("-femulated-tls")
     }
     arguments.push("--driver-mode=g++")
@@ -801,6 +826,7 @@ class NativeBuildDriver {
     export_symbols: List<string>
     encoding_features: List<string>
     log_enabled: bool
+    log_emulated_tls: bool = false
     net_features: List<string>
     csrc_sources: List<CsrcUnit>
     // Does the emitted module carry the controlled unwind (src/llvm_unwind.b)?
@@ -1371,6 +1397,22 @@ class NativeBuildDriver {
 
     // ---- std.log bridge object ----
 
+    fn configure_log_tls(compiler: string, root: string) -> bool {
+        self.log_emulated_tls = false
+        // The target triple does not identify the C++ runtime: both distro
+        // MinGW and LLVM-MinGW accept windows-gnu. Ask the selected compiler
+        // with this build's target/sysroot flags, once before cache lookup.
+        match log_bridge_emulated_tls(
+            compiler, root, self.target.os, self.target.env,
+            self.log_compile_flags(root, false)) {
+            ok(emulated) => { self.log_emulated_tls = emulated; return true }
+            err(error) => {
+                self.fail(root, error.msg)
+            }
+        }
+        return false
+    }
+
     fn log_optimization_flag() -> string {
         let flag: string = self.optimization_flag()
         // Clang 18 miscompiles libstdc++'s std::call_once cleanup for
@@ -1402,8 +1444,7 @@ class NativeBuildDriver {
            self.target.env != "msvc" {
             flags.push("-pthread")
         }
-        if self.target.os == "windows" &&
-           self.target.env != "msvc" {
+        if self.log_emulated_tls {
             flags.push("-femulated-tls")
         }
         flags.push("-fvisibility=hidden")
@@ -1481,6 +1522,7 @@ class NativeBuildDriver {
                 "cannot find the std.log bridge sources; set BEANS_LOG to the directory holding runtime/log")
             return ""
         }
+        if !self.configure_log_tls(compiler, root) { return "" }
         let object: string =
             self.log_cache_path(compiler, root, pic)
         if File.exists(object) { return object }
@@ -2730,7 +2772,7 @@ class NativeBuildDriver {
         for argument: string in
             log_bridge_link_arguments(
                 self.log_enabled, self.target.os,
-                self.target.env) {
+                self.target.env, self.log_emulated_tls) {
             command.arg(argument)
         }
         if self.target.os != "windows" { command.arg("-lm") }

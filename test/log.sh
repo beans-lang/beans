@@ -120,6 +120,54 @@ if [[ "$vendor_cache" == "$bridge_cache" ]]; then
 fi
 echo "ok content-addressed bridge cache invalidation"
 
+# The same Windows-gnu target accepts libc++ and libstdc++. Exercise the real
+# driver/cache/link paths with a compiler stub: the macro probe chooses the
+# ABI, and only the libstdc++ bridge and final link may ask for emulated TLS.
+cat >"$tmp/tls-clang" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$BEANS_TEST_LOG_TLS_ARGS"
+case " $* " in
+    *' --version '*) echo 'clang version 22 test TLS driver'; exit 0 ;;
+    *' -dumpmachine '*) echo 'x86_64-w64-windows-gnu'; exit 0 ;;
+    *' -dM '*) echo "#define $BEANS_TEST_LOG_TLS_MACRO 1"; exit 0 ;;
+esac
+while (( $# )); do
+    if [[ $1 == -o ]]; then : > "$2"; exit 0; fi
+    shift
+done
+SH
+chmod +x "$tmp/tls-clang"
+for runtime in _LIBCPP_VERSION __GLIBCXX__ UNKNOWN_RUNTIME; do
+    : >"$tmp/$runtime.args"
+    if BEANS_CC="$tmp/tls-clang" \
+        BEANS_TEST_LOG_TLS_MACRO="$runtime" \
+        BEANS_TEST_LOG_TLS_ARGS="$tmp/$runtime.args" \
+        ./build/beansc build --target x86_64-pc-windows-gnu \
+            test/cases/profile_log.b -o "$tmp/$runtime.exe" \
+            >"$tmp/$runtime.build" 2>&1; then
+        if [[ $runtime == UNKNOWN_RUNTIME ]]; then
+            echo "std.log guessed a TLS ABI for an unknown C++ runtime" >&2
+            exit 1
+        fi
+    else
+        if [[ $runtime != UNKNOWN_RUNTIME ]]; then
+            cat "$tmp/$runtime.build" >&2
+            exit 1
+        fi
+        grep -q 'cannot identify the Windows C++ runtime' "$tmp/$runtime.build"
+        continue
+    fi
+    test "$(grep -c ' -dM ' "$tmp/$runtime.args")" -eq 1
+    if [[ $runtime == __GLIBCXX__ ]]; then
+        grep -- '-c .*beans_log.cpp' "$tmp/$runtime.args" | grep -q -- '-femulated-tls'
+        grep -- '--driver-mode=g++' "$tmp/$runtime.args" | grep -q -- '-femulated-tls'
+    elif grep -q -- '-femulated-tls' "$tmp/$runtime.args"; then
+        echo "libc++ was forced onto emulated TLS (#71)" >&2
+        exit 1
+    fi
+done
+echo "ok Windows C++ runtime selects one TLS ABI for bridge, cache and link"
+
 # Lock the C/Beans contract as a set. Adding one side without the other must
 # fail here instead of surfacing as a platform-only missing symbol later.
 perl -0777 -ne '

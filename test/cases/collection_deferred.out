@@ -1,0 +1,9 @@
+nested deferred: true
+immediate ARC: true
+collection resumed: true
+normal tears: 0
+panic caught: true
+panic deferred: true
+panic collection resumed: true
+panic tears: 0
+worker region: true

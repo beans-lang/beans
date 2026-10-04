@@ -230,8 +230,10 @@ echo "checking no memory errors under ASan"
 # would live, and the pool would hide it from `leaks`.
 BEANS_DYLIB_EXAMPLE="$tmp/libplug.$ext" ./build/beansc build examples/dynamic_library.b \
     --emit ir >/dev/null
+BEANS_SANITIZE=address ./build/beansc llvm "examples/dynamic_library.b" \
+    >"$tmp/dynamic_library.sanitize-address.ll"
 clang -O1 -g -pthread -fsanitize=address -Wno-override-module \
-    build/dynamic_library.ll build/beans_rt.c -lm -o "$tmp/asan" 2>"$tmp/asan.build"
+    "$tmp/dynamic_library.sanitize-address.ll" build/beans_rt.c -lm -o "$tmp/asan" 2>"$tmp/asan.build"
 # A leak is a sanitizer failure like any other: LeakSanitizer rides inside
 # ASan on Linux and reports at exit, which makes the run exit non-zero. Hold
 # the status before reading the report, or this dies under `set -e` with the

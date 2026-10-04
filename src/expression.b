@@ -5673,6 +5673,10 @@ class ExpressionChecker {
             }
         }
         if import_path == "std.intrinsic" {
+            if name == "with_collection_deferred" {
+                return some(new BuiltinSignature(
+                    [hir_function([], unit)], unit))
+            }
             if name == "popcount" ||
                name == "leading_zeros" ||
                name == "trailing_zeros" ||
@@ -8768,6 +8772,7 @@ class ExpressionChecker {
                 "rotate_right", "sqrt", "sqrt32",
                 "fma", "fma32", "prefetch",
                 "spin_hint", "crc32c",
+                "with_collection_deferred",
             ]
             if !names.contains(callee.value) {
                 self.fail(

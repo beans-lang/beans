@@ -3216,7 +3216,7 @@ unsafe {
   on it is a compile error that lists what is. `unsafe` is required.
 - Available: `popcount`, `leading_zeros`, `trailing_zeros`, `bswap16`, `bswap32`,
   `bswap64`, `rotate_left`, `rotate_right`, `sqrt`, `sqrt32`, `fma`, `fma32`,
-  `prefetch`, `spin_hint`, and `crc32c`.
+  `prefetch`, `spin_hint`, `crc32c`, and `with_collection_deferred`.
 - **Zero is defined**: `leading_zeros(0)` and `trailing_zeros(0)` are 64, matching
   what the instructions report. The narrow byte swaps work on the low bytes and
   leave the rest zero.
@@ -3233,6 +3233,22 @@ unsafe {
   instruction quietly run a loop.
 - Every entry has an exact software definition in the interpreter, so intrinsics are
   differential-tested like everything else.
+
+`intrinsic.with_collection_deferred(body: fn() -> unit)` runs a **short,
+non-parking** closure with cycle collection deferred on both backends. Use it
+inside `unsafe` to settle a multi-write invariant before an allocation can run
+a cyclic object's `deinit`. Nested regions remain deferred until the outermost
+region leaves; pending collection resumes at a later allocation, not necessarily
+at region exit. Both normal return and contained panic restore the gate.
+
+This is not a lock or rollback: concurrent readers still need synchronization,
+and a panic still leaves the writes already made. Keep replaced values alive
+until the invariant is settled: synchronous ARC destruction and explicit calls
+can still run user code inside the region. The body must not yield, park, block
+on another fiber/thread, or perform unbounded work. The checker does not prove
+this unsafe obligation. Other workers' owner-local collection is unaffected;
+the global collector uses its existing process-wide exclusion gate. The region
+adds no allocation or scheduling operation of its own beyond the closure.
 
 ### std.time and std.random (v0.8, implemented)
 

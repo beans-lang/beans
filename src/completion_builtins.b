@@ -187,7 +187,7 @@ fn semantic_builtin_module_names(package_path: string) -> List<string> {
         return ["popcount", "leading_zeros", "trailing_zeros", "bswap16",
                 "bswap32", "bswap64", "rotate_left", "rotate_right",
                 "crc32c", "sqrt", "sqrt32", "fma", "fma32", "prefetch",
-                "spin_hint"]
+                "spin_hint", "with_collection_deferred"]
     }
     if package_path == "std.cpu" { return ["has", "has_name"] }
     if package_path == "std.proc" {

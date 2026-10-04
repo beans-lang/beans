@@ -65,8 +65,10 @@ grep -q '^with -nan and both zeros: len=7 keys=\[-nan, -0.0, +0.0, 1, 2, 3, +nan
     "$tmp/interp"
 
 echo "checking the runtime key path under AddressSanitizer"
+BEANS_SANITIZE=address ./build/beansc llvm "test/cases/float_total_order.b" \
+    >"$tmp/float_total_order.sanitize-address.ll"
 clang -O1 -g -pthread -fsanitize=address -Wno-override-module \
-    build/float_total_order.ll build/beans_rt.c -lm -o "$tmp/asan"
+    "$tmp/float_total_order.sanitize-address.ll" build/beans_rt.c -lm -o "$tmp/asan"
 # A leak is a sanitizer failure like any other: LeakSanitizer rides inside
 # ASan on Linux and reports at exit, which makes the run exit non-zero. Hold
 # the status before reading the report, or this dies under `set -e` with the

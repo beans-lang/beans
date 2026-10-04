@@ -433,9 +433,11 @@ grep -q 'call i64 @.next.fn3()' \
     "$tmp/class.first.ll"
 grep -q 'getelementptr i8, ptr .* i64 24' \
     "$tmp/class.first.ll"
+BEANS_SANITIZE=address ./build/beansc-next llvm test/cases/self_host_llvm_class.b \
+    >"$tmp/class.first.sanitize-address.ll"
 clang -O1 -g -fsanitize=address -pthread \
     -Wno-override-module \
-    "$tmp/class.first.ll" build/beans_rt.c -lm \
+    "$tmp/class.first.sanitize-address.ll" build/beans_rt.c -lm \
     -o "$tmp/class-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_class.b \
@@ -460,10 +462,12 @@ grep -q 'call void @beans_retain(ptr %arc.field' \
     "$tmp/struct.first.ll"
 grep -q 'call void @beans_release(ptr %arc.field' \
     "$tmp/struct.first.ll"
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_struct.b \
+    >"$tmp/struct.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/struct.first.ll" build/beans_rt.c -lm \
+    "$tmp/struct.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/struct-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_struct.b \
@@ -486,10 +490,12 @@ grep -q 'switch i64 %enum.match' \
     "$tmp/enum.first.ll"
 grep -q 'load i64, ptr getelementptr (i8, ptr @.next.enumtag' \
     "$tmp/enum.first.ll"
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_enum.b \
+    >"$tmp/enum.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/enum.first.ll" build/beans_rt.c -lm \
+    "$tmp/enum.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/enum-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_enum.b \
@@ -518,10 +524,12 @@ grep -q '^define internal i64 @.next.eq0(i64 %a, i64 %b) {' \
     "$tmp/enum-payload.first.ll"
 grep -q 'store %bs[.]main[$]Point %pattern.value' \
     "$tmp/enum-payload.first.ll"
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_enum_payload.b \
+    >"$tmp/enum-payload.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/enum-payload.first.ll" build/beans_rt.c -lm \
+    "$tmp/enum-payload.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/enum-payload-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_enum_payload.b \
@@ -540,10 +548,12 @@ cmp "$tmp/stores.first.ll" "$tmp/stores.second.ll"
 grep -q '%field.compound.result' \
     "$tmp/stores.first.ll"
 grep -q '%list.store.slot' "$tmp/stores.first.ll"
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_stores.b \
+    >"$tmp/stores.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/stores.first.ll" build/beans_rt.c -lm \
+    "$tmp/stores.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/stores-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_stores.b \
@@ -566,10 +576,12 @@ grep -q 'call void @beans_list_push_typed' \
     "$tmp/typed-list.first.ll"
 # spill slots are entry allocas, never per-iteration
 grep -q '%spill.list' "$tmp/typed-list.first.ll"
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_typed_list.b \
+    >"$tmp/typed-list.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/typed-list.first.ll" build/beans_rt.c -lm \
+    "$tmp/typed-list.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/typed-list-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_typed_list.b \
@@ -593,10 +605,12 @@ grep -q 'call void @beans_map_set_typed' \
     "$tmp/typed-map.first.ll"
 grep -q 'call i64 @beans_map_get_typed' \
     "$tmp/typed-map.first.ll"
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_typed_map.b \
+    >"$tmp/typed-map.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/typed-map.first.ll" build/beans_rt.c -lm \
+    "$tmp/typed-map.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/typed-map-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_typed_map.b \
@@ -618,10 +632,12 @@ grep -q 'call ptr @beans_map_keys' \
 grep -q 'call void @beans_list_sort(ptr %v[0-9]*, i64 2)' \
     "$tmp/builtins.first.ll"
 grep -q 'expect.bad' "$tmp/builtins.first.ll"
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_builtins.b \
+    >"$tmp/builtins.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/builtins.first.ll" build/beans_rt.c -lm \
+    "$tmp/builtins.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/builtins-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_builtins.b \
@@ -658,10 +674,12 @@ for result_case in self_host_llvm_result \
         >"$tmp/$result_case.second.ll"
     cmp "$tmp/$result_case.first.ll" \
         "$tmp/$result_case.second.ll"
+    BEANS_SANITIZE=address,undefined ./build/beansc-next llvm "test/cases/$result_case.b" \
+        >"$tmp/$result_case.first.sanitize-address-undefined.ll"
     clang -O1 -g -fsanitize=address,undefined \
         -fno-sanitize-recover=undefined -pthread \
         -Wno-override-module \
-        "$tmp/$result_case.first.ll" \
+        "$tmp/$result_case.first.sanitize-address-undefined.ll" \
         build/beans_rt.c -lm \
         -o "$tmp/$result_case-native"
     "$reference_compiler" run "test/cases/$result_case.b" \
@@ -691,10 +709,12 @@ grep -q 'call i64 @beans_str_find_out(' \
     "$tmp/registry.first.ll"
 grep -q 'call ptr @beans_bytes_new(i64 ' \
     "$tmp/registry.first.ll"
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_registry.b \
+    >"$tmp/registry.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/registry.first.ll" build/beans_rt.c -lm \
+    "$tmp/registry.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/registry-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_registry.b \
@@ -715,10 +735,12 @@ grep -q 'call ptr @beans_raw_alloc(i64 ' \
 grep -q 'raw.bad' "$tmp/rawptr.first.ll"
 grep -q 'call void @beans_raw_free(ptr ' \
     "$tmp/rawptr.first.ll"
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_rawptr.b \
+    >"$tmp/rawptr.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/rawptr.first.ll" build/beans_rt.c -lm \
+    "$tmp/rawptr.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/rawptr-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_rawptr.b \
@@ -743,10 +765,12 @@ grep -q '^declare ptr @beans_map_clone(ptr, i64, ptr)$' \
     "$tmp/ordered-map.first.ll"
 grep -q 'call ptr @beans_map_values(ptr ' \
     "$tmp/ordered-map.first.ll"
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_ordered_map.b \
+    >"$tmp/ordered-map.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/ordered-map.first.ll" build/beans_rt.c -lm \
+    "$tmp/ordered-map.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/ordered-map-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_ordered_map.b \
@@ -773,10 +797,12 @@ grep -q 'sext <4 x i1> .* to <4 x i32>' \
     "$tmp/simd-slice.first.ll"
 grep -q 'store <4 x i32> .* align 16' \
     "$tmp/simd-slice.first.ll"
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_simd_slice.b \
+    >"$tmp/simd-slice.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/simd-slice.first.ll" build/beans_rt.c -lm \
+    "$tmp/simd-slice.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/simd-slice-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_simd_slice.b \
@@ -797,10 +823,12 @@ grep -q 'define void @.next.fn[0-9]*(ptr %l0' \
     "$tmp/inout.first.ll"
 grep -q 'call i64 @beans_list_contains' \
     "$tmp/inout.first.ll"
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_inout.b \
+    >"$tmp/inout.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/inout.first.ll" build/beans_rt.c -lm \
+    "$tmp/inout.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/inout-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_inout.b \
@@ -823,10 +851,12 @@ grep -q ' x ptr\] \[ptr ' "$tmp/deinit.first.ll"
 # FIN is rc-word bit 61, set on every construction of a deinit class
 grep -q 'or i64 %fin.word[0-9]*, 2305843009213693952' \
     "$tmp/deinit.first.ll"
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_deinit.b \
+    >"$tmp/deinit.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/deinit.first.ll" build/beans_rt.c -lm \
+    "$tmp/deinit.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/deinit-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_deinit.b \
@@ -858,10 +888,12 @@ grep -q '^@.next.class[0-9]* = internal constant .*ptr @.next.gen[0-9]*' \
     "$tmp/inheritance-layouts.first.ll"
 grep -q '^@beans_class_parents = global .*i64 [0-9]' \
     "$tmp/inheritance-layouts.first.ll"
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_inheritance_layouts.b \
+    >"$tmp/inheritance-layouts.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/inheritance-layouts.first.ll" build/beans_rt.c -lm \
+    "$tmp/inheritance-layouts.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/inheritance-layouts-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_inheritance_layouts.b \
@@ -890,10 +922,12 @@ grep -q 'getelementptr { i1, i64 }, ptr %show.data' \
     "$tmp/show-enum.first.ll"
 grep -q 'ptr @.next.showwide' \
     "$tmp/show-enum.first.ll"
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_show_enum.b \
+    >"$tmp/show-enum.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/show-enum.first.ll" build/beans_rt.c -lm \
+    "$tmp/show-enum.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/show-enum-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_show_enum.b \
@@ -960,10 +994,12 @@ else
         test/cases/self_host_llvm_c_records.b \
         >"$tmp/c-records.expected"
 fi
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_c_records.b \
+    >"$tmp/c-records.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/c-records.first.ll" build/beans_rt.c \
+    "$tmp/c-records.first.sanitize-address-undefined.ll" build/beans_rt.c \
     build/self_host_llvm_c_records_ffi.c \
     test/fixtures/c_layout_helper.c -lm \
     -o "$tmp/c-records-native"
@@ -995,10 +1031,12 @@ fi
 # RoundingMode names fold to their documented numbers
 grep -q 'call void @beans_decv_round(ptr %spill.dec.method.out[0-9]*, ptr %spill.dec.method.value[0-9]*, i64 2, i64 1, i64' \
     "$tmp/decimal.first.ll"
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_decimal.b \
+    >"$tmp/decimal.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/decimal.first.ll" build/beans_rt.c -lm \
+    "$tmp/decimal.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/decimal-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_decimal.b \
@@ -1039,10 +1077,12 @@ grep -q '%clo.cell[0-9]* = load ptr, ptr %l' \
     "$tmp/closures.first.ll"
 grep -q '%cell.new[0-9]* = call ptr @beans_alloc' \
     "$tmp/closures.first.ll"
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_closures.b \
+    >"$tmp/closures.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/closures.first.ll" build/beans_rt.c -lm \
+    "$tmp/closures.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/closures-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_closures.b \
@@ -1063,10 +1103,12 @@ grep -q '^@beans_class_parents = global \[3 x i64\] \[i64 -1, i64 0, i64 0\]$' \
 # super.init runs the parent initializer on the same object
 grep -q '%super.self[0-9]* = load ptr' \
     "$tmp/extends.first.ll"
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_extends.b \
+    >"$tmp/extends.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/extends.first.ll" build/beans_rt.c -lm \
+    "$tmp/extends.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/extends-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_extends.b \
@@ -1094,10 +1136,12 @@ grep -q 'call ptr @beans_bytes_new(i64 3, i64 7, i64 19)' \
     "$tmp/defaults.first.ll"
 grep -q '%default.value[0-9]* = call ptr @.next.fn[0-9]*()' \
     "$tmp/defaults.first.ll"
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_defaults.b \
+    >"$tmp/defaults.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/defaults.first.ll" build/beans_rt.c -lm \
+    "$tmp/defaults.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/defaults-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_defaults.b \
@@ -1122,10 +1166,12 @@ grep -q '%defer.armed[0-9]* = load i1, ptr %defer.flag[0-9]*' \
 # value the variable holds at exit, not at registration
 grep -q '%defer.cell[0-9]* = load ptr, ptr %l[0-9]*' \
     "$tmp/defers.first.ll"
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_defers.b \
+    >"$tmp/defers.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/defers.first.ll" build/beans_rt.c -lm \
+    "$tmp/defers.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/defers-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_defers.b \
@@ -1153,10 +1199,12 @@ grep -q '%recv.raw[0-9]* = call i64 @beans_chan_recv(ptr ' \
     "$tmp/threads.first.ll"
 grep -q 'send on a closed channel' \
     "$tmp/threads.first.ll"
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_threads.b \
+    >"$tmp/threads.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/threads.first.ll" build/beans_rt.c -lm \
+    "$tmp/threads.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/threads-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_threads.b \
@@ -1166,9 +1214,11 @@ BEANS_NO_POOL=1 "$tmp/threads-native" \
 diff -u "$tmp/threads.expected" "$tmp/threads.actual"
 # the same program under the race detector: handle ops cross real
 # threads, so a discipline slip shows up here first
+BEANS_SANITIZE=thread ./build/beansc-next llvm test/cases/self_host_llvm_threads.b \
+    >"$tmp/threads.first.sanitize-thread.ll"
 clang -O1 -g -fsanitize=thread -pthread \
     -Wno-override-module \
-    "$tmp/threads.first.ll" build/beans_rt.c -lm \
+    "$tmp/threads.first.sanitize-thread.ll" build/beans_rt.c -lm \
     -o "$tmp/threads-tsan"
 BEANS_NO_POOL=1 "$tmp/threads-tsan" \
     >"$tmp/threads.tsan.actual"
@@ -1188,10 +1238,12 @@ grep -q 'call i64 @llvm.ctpop.i64(i64 255)' \
     "$tmp/scalars.first.ll"
 grep -q 'getelementptr %bs[.][^,]*, ptr %l' \
     "$tmp/scalars.first.ll"
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_scalars.b \
+    >"$tmp/scalars.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/scalars.first.ll" build/beans_rt.c -lm \
+    "$tmp/scalars.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/scalars-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_scalars.b \
@@ -1240,10 +1292,12 @@ if grep -q '@beans_target_' \
     echo "target fact escaped into a runtime query" >&2
     exit 1
 fi
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_target_facts.b \
+    >"$tmp/target-facts.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/target-facts.first.ll" build/beans_rt.c -lm \
+    "$tmp/target-facts.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/target-facts-native"
 BEANS_NO_POOL=1 "$tmp/target-facts-native" \
     >"$tmp/target-facts.actual"
@@ -1261,10 +1315,12 @@ grep -q 'call void @llvm.prefetch.p0(ptr ' \
     "$tmp/intrinsic-hints.first.ll"
 grep -q 'call void @beans_spin_hint()' \
     "$tmp/intrinsic-hints.first.ll"
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_intrinsic_hints.b \
+    >"$tmp/intrinsic-hints.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/intrinsic-hints.first.ll" build/beans_rt.c -lm \
+    "$tmp/intrinsic-hints.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/intrinsic-hints-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_intrinsic_hints.b \
@@ -1286,10 +1342,12 @@ cmp "$tmp/asm.first.ll" "$tmp/asm.second.ll"
 # host with no output at all, because `grep -q` says nothing.
 grep -qE 'call i64 asm (inteldialect )?"mov \$0, \$1", "=r,r"' \
     "$tmp/asm.first.ll"
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_asm.b \
+    >"$tmp/asm.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/asm.first.ll" build/beans_rt.c -lm \
+    "$tmp/asm.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/asm-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_asm.b \
@@ -1312,10 +1370,12 @@ grep -q 'alloca %bs[.][^,]*, align 64' \
     "$tmp/layouts.first.ll"
 grep -q 'load i32, ptr %field.assign.ptr[0-9]*, align 1' \
     "$tmp/layouts.first.ll"
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_layouts.b \
+    >"$tmp/layouts.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/layouts.first.ll" build/beans_rt.c -lm \
+    "$tmp/layouts.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/layouts-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_layouts.b \
@@ -1357,10 +1417,12 @@ if grep -qE '%result[.]eq[0-9]* = and i1' "$tmp/inline-sum.first.ll"; then
     echo "inline Result equality combines both arms again (issue #93)" >&2
     exit 1
 fi
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_inline_sum.b \
+    >"$tmp/inline-sum.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/inline-sum.first.ll" build/beans_rt.c -lm \
+    "$tmp/inline-sum.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/inline-sum-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_inline_sum.b \
@@ -1383,10 +1445,12 @@ grep -q 'store atomic' "$tmp/raw-atomic.first.ll"
 grep -q 'load atomic' "$tmp/raw-atomic.first.ll"
 grep -q 'atomicrmw add' "$tmp/raw-atomic.first.ll"
 grep -q 'cmpxchg' "$tmp/raw-atomic.first.ll"
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_raw_atomic.b \
+    >"$tmp/raw-atomic.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/raw-atomic.first.ll" build/beans_rt.c -lm \
+    "$tmp/raw-atomic.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/raw-atomic-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_raw_atomic.b \
@@ -1415,10 +1479,12 @@ grep -q 'call void @beans_list_decv_max' \
     "$tmp/wide-lists.first.ll"
 grep -q 'call i64 @beans_list_decv_contains' \
     "$tmp/wide-lists.first.ll"
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_wide_lists.b \
+    >"$tmp/wide-lists.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/wide-lists.first.ll" build/beans_rt.c -lm \
+    "$tmp/wide-lists.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/wide-lists-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_wide_lists.b \
@@ -1447,10 +1513,12 @@ grep -q 'call ptr @beans_map_keys_typed' \
     "$tmp/wide-maps.first.ll"
 grep -q 'call ptr @beans_map_new_typed_value' \
     "$tmp/wide-maps.first.ll"
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_wide_maps.b \
+    >"$tmp/wide-maps.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/wide-maps.first.ll" build/beans_rt.c -lm \
+    "$tmp/wide-maps.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/wide-maps-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_wide_maps.b \
@@ -1475,10 +1543,12 @@ grep -q 'call i64 @beans_bytes_eq' \
     "$tmp/value-equality.first.ll"
 grep -q 'define internal i64 @.next.eq' \
     "$tmp/value-equality.first.ll"
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_value_equality.b \
+    >"$tmp/value-equality.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/value-equality.first.ll" build/beans_rt.c -lm \
+    "$tmp/value-equality.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/value-equality-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_value_equality.b \
@@ -1505,10 +1575,12 @@ for typed_symbol in box_new box_get box_set \
 done
 grep -q 'define void @spawn.thunk.' \
     "$tmp/wide-handles.first.ll"
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_wide_handles.b \
+    >"$tmp/wide-handles.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/wide-handles.first.ll" build/beans_rt.c -lm \
+    "$tmp/wide-handles.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/wide-handles-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_wide_handles.b \
@@ -1517,9 +1589,11 @@ BEANS_NO_POOL=1 "$tmp/wide-handles-native" \
     >"$tmp/wide-handles.actual"
 diff -u "$tmp/wide-handles.expected" \
     "$tmp/wide-handles.actual"
+BEANS_SANITIZE=thread ./build/beansc-next llvm test/cases/self_host_llvm_wide_handles.b \
+    >"$tmp/wide-handles.first.sanitize-thread.ll"
 clang -O1 -g -fsanitize=thread -pthread \
     -Wno-override-module \
-    "$tmp/wide-handles.first.ll" build/beans_rt.c -lm \
+    "$tmp/wide-handles.first.sanitize-thread.ll" build/beans_rt.c -lm \
     -o "$tmp/wide-handles-tsan"
 BEANS_NO_POOL=1 "$tmp/wide-handles-tsan" \
     >"$tmp/wide-handles.tsan.actual"
@@ -1544,10 +1618,12 @@ grep -q '%list.pop.slot[0-9]* = getelementptr %bs[.]' \
     "$tmp/wide-collections.first.ll"
 grep -q '= call ptr @beans_list_join(.*, i64 0)$' \
     "$tmp/wide-collections.first.ll"
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_wide_collections.b \
+    >"$tmp/wide-collections.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/wide-collections.first.ll" build/beans_rt.c -lm \
+    "$tmp/wide-collections.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/wide-collections-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_wide_collections.b \
@@ -1569,10 +1645,12 @@ grep -q '%phi.slot[0-9]* = alloca ' \
     "$tmp/phis.first.ll"
 grep -q '%v[0-9]* = load i1, ptr %phi.slot[0-9]*' \
     "$tmp/phis.first.ll"
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_phis.b \
+    >"$tmp/phis.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/phis.first.ll" build/beans_rt.c -lm \
+    "$tmp/phis.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/phis-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_phis.b \
@@ -1590,10 +1668,12 @@ cmp "$tmp/ownership.first.ll" "$tmp/ownership.second.ll"
 # a captured reference parameter is retained into its owning cell
 grep -q 'store ptr %arg.cell[0-9]*, ptr %l[0-9]*' \
     "$tmp/ownership.first.ll"
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_ownership.b \
+    >"$tmp/ownership.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/ownership.first.ll" build/beans_rt.c -lm \
+    "$tmp/ownership.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/ownership-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_ownership.b \
@@ -1613,10 +1693,12 @@ cmp "$tmp/generics.first.ll" "$tmp/generics.second.ll"
 grep -q 'define .* @.next.gen0(' "$tmp/generics.first.ll"
 grep -q '@.next.class1 = internal constant' \
     "$tmp/generics.first.ll"
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_generics.b \
+    >"$tmp/generics.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/generics.first.ll" build/beans_rt.c -lm \
+    "$tmp/generics.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/generics-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_generics.b \
@@ -1640,10 +1722,12 @@ grep -q ' = bitcast double %spawn.ret to i64' \
     "$tmp/thread-float.first.ll"
 grep -q ' = sext i8 %spawn.ret to i64' \
     "$tmp/thread-float.first.ll"
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_thread_float.b \
+    >"$tmp/thread-float.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/thread-float.first.ll" build/beans_rt.c -lm \
+    "$tmp/thread-float.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/thread-float-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_thread_float.b \
@@ -1652,9 +1736,11 @@ BEANS_NO_POOL=1 "$tmp/thread-float-native" \
     >"$tmp/thread-float.actual"
 diff -u "$tmp/thread-float.expected" \
     "$tmp/thread-float.actual"
+BEANS_SANITIZE=thread ./build/beansc-next llvm test/cases/self_host_llvm_thread_float.b \
+    >"$tmp/thread-float.first.sanitize-thread.ll"
 clang -O1 -g -fsanitize=thread -pthread \
     -Wno-override-module \
-    "$tmp/thread-float.first.ll" build/beans_rt.c -lm \
+    "$tmp/thread-float.first.sanitize-thread.ll" build/beans_rt.c -lm \
     -o "$tmp/thread-float-tsan"
 BEANS_NO_POOL=1 "$tmp/thread-float-tsan" \
     >"$tmp/thread-float.tsan.actual"
@@ -1679,10 +1765,12 @@ grep -q ' = icmp ult i16 ' \
     "$tmp/unsigned-range.first.ll"
 grep -q ' = icmp sge i8 ' \
     "$tmp/unsigned-range.first.ll"
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_unsigned_range.b \
+    >"$tmp/unsigned-range.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/unsigned-range.first.ll" build/beans_rt.c -lm \
+    "$tmp/unsigned-range.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/unsigned-range-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_unsigned_range.b \
@@ -1708,10 +1796,12 @@ grep -q ' = sext i16 ' \
     "$tmp/signed-sort.first.ll"
 grep -q ' = zext i8 ' \
     "$tmp/signed-sort.first.ll"
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_signed_sort.b \
+    >"$tmp/signed-sort.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/signed-sort.first.ll" build/beans_rt.c -lm \
+    "$tmp/signed-sort.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/signed-sort-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_signed_sort.b \
@@ -1745,10 +1835,12 @@ if grep -q 'call ptr @beans_alloc(i64 16, i64 17)' \
     echo "riscv32 emission kept the 64-bit Result meta" >&2
     exit 1
 fi
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_result_meta.b \
+    >"$tmp/result-meta.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/result-meta.first.ll" build/beans_rt.c -lm \
+    "$tmp/result-meta.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/result-meta-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_result_meta.b \
@@ -1771,10 +1863,12 @@ cmp "$tmp/option-drop.first.ll" \
     "$tmp/option-drop.second.ll"
 grep -q '%arc.option[0-9]* = extractvalue ' \
     "$tmp/option-drop.first.ll"
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_option_drop.b \
+    >"$tmp/option-drop.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/option-drop.first.ll" build/beans_rt.c -lm \
+    "$tmp/option-drop.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/option-drop-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_option_drop.b \
@@ -1807,10 +1901,12 @@ if grep -q 'call void @beans_release(ptr %v' \
     echo "sink init call still releases its consumed argument" >&2
     exit 1
 fi
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_ctor_ownership.b \
+    >"$tmp/ctor-ownership.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/ctor-ownership.first.ll" build/beans_rt.c -lm \
+    "$tmp/ctor-ownership.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/ctor-ownership-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_ctor_ownership.b \
@@ -1845,10 +1941,12 @@ if grep -q 'call ptr @beans_alloc(i64 24, i64 1)' \
     echo "wide Option Result was boxed" >&2
     exit 1
 fi
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_show.b \
+    >"$tmp/show.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/show.first.ll" build/beans_rt.c -lm \
+    "$tmp/show.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/show-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_show.b \
@@ -1890,10 +1988,12 @@ grep -q 'call i64 @beans_arena_get(ptr ' \
     "$tmp/arena-box.first.ll"
 grep -q 'call ptr @beans_box_new(i64 ' \
     "$tmp/arena-box.first.ll"
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_arena_box.b \
+    >"$tmp/arena-box.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/arena-box.first.ll" build/beans_rt.c -lm \
+    "$tmp/arena-box.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/arena-box-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_arena_box.b \
@@ -1922,10 +2022,12 @@ grep -q '  fence seq_cst' "$tmp/atomics-case.first.ll"
 grep -q 'store atomic i8 ' "$tmp/atomics-case.first.ll"
 grep -q 'call i64 @beans_atomic_wait(ptr ' \
     "$tmp/atomics-case.first.ll"
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_atomics.b \
+    >"$tmp/atomics-case.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/atomics-case.first.ll" build/beans_rt.c -lm \
+    "$tmp/atomics-case.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/atomics-case-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_atomics.b \
@@ -1934,9 +2036,11 @@ BEANS_NO_POOL=1 "$tmp/atomics-case-native" \
     >"$tmp/atomics-case.actual"
 diff -u "$tmp/atomics-case.expected" \
     "$tmp/atomics-case.actual"
+BEANS_SANITIZE=thread ./build/beansc-next llvm test/cases/self_host_llvm_atomics.b \
+    >"$tmp/atomics-case.first.sanitize-thread.ll"
 clang -O1 -g -fsanitize=thread -pthread \
     -Wno-override-module \
-    "$tmp/atomics-case.first.ll" build/beans_rt.c -lm \
+    "$tmp/atomics-case.first.sanitize-thread.ll" build/beans_rt.c -lm \
     -o "$tmp/atomics-case-tsan"
 BEANS_NO_POOL=1 "$tmp/atomics-case-tsan" \
     >"$tmp/atomics-case.tsan.actual"
@@ -1957,10 +2061,12 @@ cmp "$tmp/fixed-arrays.first.ll" \
 grep -q '\[4 x i32\]' "$tmp/fixed-arrays.first.ll"
 grep -q 'call void @beans_panic_array_index(i64 ' \
     "$tmp/fixed-arrays.first.ll"
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_fixed_arrays.b \
+    >"$tmp/fixed-arrays.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/fixed-arrays.first.ll" build/beans_rt.c -lm \
+    "$tmp/fixed-arrays.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/fixed-arrays-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_fixed_arrays.b \
@@ -1998,10 +2104,12 @@ grep -q 'trunc i64 %a to i8' \
     "$tmp/container-ops.first.ll"
 grep -q 'call i64 @beans_list_index(ptr ' \
     "$tmp/container-ops.first.ll"
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_container_ops.b \
+    >"$tmp/container-ops.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/container-ops.first.ll" build/beans_rt.c -lm \
+    "$tmp/container-ops.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/container-ops-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_container_ops.b \
@@ -2022,7 +2130,7 @@ refused_examples=""
 for example_path in examples/*.b; do
     example=$(basename "$example_path" .b)
     set +e
-    ./build/beansc-next llvm "$example_path" \
+    BEANS_SANITIZE=address,undefined ./build/beansc-next llvm "$example_path" \
         >"$tmp/$example.next.ll" \
         2>"$tmp/$example.next.emit-err"
     emit_status=$?
@@ -2064,7 +2172,7 @@ for example_path in examples/*.b; do
     if grep -q '@beans_ffi_wrap_' \
         "$tmp/$example.next.ll"; then
         driver_object="$tmp/$example-driver.o"
-        ./build/beansc-next build --emit obj "$example_path" \
+        BEANS_SANITIZE=address,undefined ./build/beansc-next build --emit obj "$example_path" \
             -o "$driver_object" \
             >"$tmp/$example.next.build"
         if ! grep -q '^built ' \
@@ -2157,9 +2265,11 @@ for anchor in tour threads; do
     fi
 done
 echo "self-host examples: $(echo "$compiled_examples" | wc -w | tr -d ' ') compiled and matched, $(echo "$refused_examples" | wc -w | tr -d ' ') refused cleanly"
+BEANS_SANITIZE=thread ./build/beansc-next llvm examples/threads.b \
+    >"$tmp/threads.next.sanitize-thread.ll"
 clang -O1 -g -fsanitize=thread -pthread \
     -Wno-override-module \
-    "$tmp/threads.next.ll" build/beans_rt.c -lm \
+    "$tmp/threads.next.sanitize-thread.ll" build/beans_rt.c -lm \
     -o "$tmp/threads-next-tsan"
 set +e
 BEANS_NO_POOL=1 "$tmp/threads-next-tsan" \
@@ -2193,10 +2303,12 @@ diff -u "$tmp/shop.next.expected" "$tmp/shop.next.actual"
     >"$tmp/decimal-audit.second.ll"
 cmp "$tmp/decimal-audit.first.ll" \
     "$tmp/decimal-audit.second.ll"
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/decimal_audit.b \
+    >"$tmp/decimal-audit.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/decimal-audit.first.ll" build/beans_rt.c -lm \
+    "$tmp/decimal-audit.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/decimal-audit-native"
 "$reference_compiler" run \
     test/cases/decimal_audit.b \
@@ -2247,10 +2359,12 @@ grep -qE '%(dispatch|devirt)\.desc[0-9]* = load ptr, ptr ' \
     "$tmp/dispatch.first.ll"
 grep -qE '%(dispatch|devirt)\.slot[0-9]* = getelementptr i8, ptr %(dispatch|devirt)\.desc' \
     "$tmp/dispatch.first.ll"
+BEANS_SANITIZE=address,undefined ./build/beansc-next llvm test/cases/self_host_llvm_dispatch.b \
+    >"$tmp/dispatch.first.sanitize-address-undefined.ll"
 clang -O1 -g -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -pthread \
     -Wno-override-module \
-    "$tmp/dispatch.first.ll" build/beans_rt.c -lm \
+    "$tmp/dispatch.first.sanitize-address-undefined.ll" build/beans_rt.c -lm \
     -o "$tmp/dispatch-native"
 "$reference_compiler" run \
     test/cases/self_host_llvm_dispatch.b \

@@ -30,9 +30,11 @@ echo "checking the CSI decoder and ANSI frame on both backends"
 "$tmp/native" >"$tmp/native.out"
 test -f build/term_keys.ll
 test -f build/term_keys_ffi.c
+BEANS_SANITIZE=address,undefined "$beansc" llvm "test/cases/term_keys.b" \
+    >"$tmp/term_keys.sanitize-address-undefined.ll"
 clang -O1 -g -pthread -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -Wno-override-module \
-    build/term_keys.ll build/beans_rt.c build/term_keys_ffi.c \
+    "$tmp/term_keys.sanitize-address-undefined.ll" build/beans_rt.c build/term_keys_ffi.c \
     -lm -o "$tmp/asan"
 if ! BEANS_NO_POOL=1 "$tmp/asan" >"$tmp/asan.out" 2>"$tmp/asan.err"; then
     cat "$tmp/asan.err" >&2

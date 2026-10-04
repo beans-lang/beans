@@ -60,9 +60,11 @@ clang -O2 -pthread -Wno-override-module build/c_variadic.ll \
     test/fixtures/c_variadic_helper.c -lm -o "$tmp/native"
 "$tmp/native" >"$tmp/native.out"
 
+BEANS_SANITIZE=address,undefined "$beansc" llvm "test/cases/c_variadic.b" \
+    >"$tmp/c_variadic.sanitize-address-undefined.ll"
 clang -O1 -g -pthread -fsanitize=address,undefined \
     -fno-sanitize-recover=undefined -Wno-override-module \
-    build/c_variadic.ll build/beans_rt.c build/c_variadic_ffi.c \
+    "$tmp/c_variadic.sanitize-address-undefined.ll" build/beans_rt.c build/c_variadic_ffi.c \
     test/fixtures/c_variadic_helper.c -lm -o "$tmp/asan"
 if ! BEANS_NO_POOL=1 "$tmp/asan" >"$tmp/asan.out" 2>"$tmp/asan.err"; then
     cat "$tmp/asan.err" >&2

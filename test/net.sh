@@ -498,8 +498,10 @@ rm -f build/net_ffi.c
 # the same set the driver links from its caches.
 extra_sources=(runtime/net/beans_net_sockx.c)
 if [[ -f build/net_ffi.c ]]; then extra_sources+=(build/net_ffi.c); fi
+BEANS_SANITIZE=address ./build/beansc llvm "examples/net.b" \
+    >"$tmp/net.sanitize-address.ll"
 clang -O1 -g -pthread -fsanitize=address -Wno-override-module \
-    build/net.ll build/beans_rt.c "${extra_sources[@]}" \
+    "$tmp/net.sanitize-address.ll" build/beans_rt.c "${extra_sources[@]}" \
     -lm -o "$tmp/asan" 2>"$tmp/asan.build"
 # A leak is a sanitizer failure like any other: LeakSanitizer rides inside
 # ASan on Linux and reports at exit, which makes the run exit non-zero. Hold

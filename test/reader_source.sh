@@ -24,8 +24,10 @@ if grep -q 'beans_bufr_' build/beans_rt.c; then
     exit 1
 fi
 
+BEANS_SANITIZE=address ./build/beansc llvm "test/cases/reader_source.b" \
+    >"$tmp/reader_source.sanitize-address.ll"
 clang -O1 -g -pthread -fsanitize=address -Wno-override-module \
-    build/reader_source.ll build/beans_rt.c -lm -o "$tmp/reader-asan"
+    "$tmp/reader_source.sanitize-address.ll" build/beans_rt.c -lm -o "$tmp/reader-asan"
 # A leak is a sanitizer failure like any other: LeakSanitizer rides inside
 # ASan on Linux and reports at exit, which makes the run exit non-zero. Hold
 # the status before reading the report, or this dies under `set -e` with the
