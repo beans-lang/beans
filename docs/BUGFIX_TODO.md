@@ -18,7 +18,7 @@ the current code is broken; verify existing fixes before adding another path.
    Audit every sanitized hand-link at its IR producer. Set the matching
    `BEANS_SANITIZE` there, separate ASan/TSan IR, and strengthen the existing
    ratchet. Run affected suites and the sanitizer gate, recording skips.
-4. [ ] **[#71](https://github.com/beans-lang/beans/issues/71): logging exit crash.**
+4. [x] **[#71](https://github.com/beans-lang/beans/issues/71): logging exit crash.**
    Trace Manager/Quill/TLS destruction and backend shutdown ordering. Add a
    bridge-level regression and repeat the logging example. Obtain Windows
    fault-stack or CI evidence before claiming the reported crash is resolved.
@@ -32,10 +32,11 @@ the current code is broken; verify existing fixes before adding another path.
 
 - #191: interpreter/native outputs match, including eleven annotation controls.
 - #197: collections suite passed; disabling the collector makes all three native observation assertions fail.
-- #177: sanitizer gate passed; 89 hand-links in 27 suites have matching IR producers. Unmarked, mismatched, and overwritten-producer negative controls are rejected. The final behavioral gate is running.
-- #71: retained Windows dump traced to emulated TLS destruction before Quill's TLS destructor. C++ runtime selection/cache/link tests and `test/log.sh` passed. Logging executables cross-link on Windows x86-64, i686, and ARM64; repeated real Windows exits await CI.
+- #177: sanitizer gate passed; 89 hand-links in 27 suites have matching IR producers. Unmarked, mismatched, and overwritten-producer negative controls are rejected. The complete local behavioral gate passed, as did PR #199's CI and cross-target workflows.
+- #71: retained Windows dump traced to emulated TLS destruction before Quill's TLS destructor. C++ runtime selection/cache/link tests and `test/log.sh` passed. PR #199's real Windows GNU, LLVM-MinGW and MSVC jobs passed on i686, x86-64 and ARM64, including repeated logging exits.
 - #122: nested, immediate-ARC, contained-panic, and worker cases agree on both backends. Removing the global gate produces tens of thousands of torn reads; removing the local gate fails the worker assertion. Normal regions pass generated-IR ASan/UBSan. Sanitized forced unwind fails with a mapping error in the unchanged `contained_threads.b` too, so that leg is explicitly outside the sanitizer claim. Runtime ABI advances to 21.
-- Baseline environment: TLS truncation fails with bundled LibreSSL 3.3.6 on an untouched checkout; the complete TLS suite passes with installed OpenSSL 3.6.3. The final core gate uses that peer.
+- #122 follow-up: the hosted dispatcher reuses the intrinsic's callback runner when an interpreter runs under another interpreter. `test/hosted_calls.sh` passes at both levels with no C compiler, covers implicit and explicit unit results, and refuses an invalid callback signature. `test/intrinsics.sh` passed again after this change.
+- Baseline environment: TLS truncation fails with bundled LibreSSL 3.3.6 on an untouched checkout; the complete local core gate passed with OpenSSL 3.6.3. Optional local Autobahn setup stalled and was skipped; the release workflow retains its Autobahn gate.
 
 ## Other open reports
 
@@ -55,7 +56,7 @@ and next acceptance checks are recorded here while the bug sequence proceeds.
 
 ## Final gate
 
-- [ ] Review focused diffs, generated sources, and duplicate or bypassed paths.
-- [ ] Run `make test-core`, self-hosting, and fixed-point checks appropriate to the changes.
-- [ ] Record exact local results and outstanding Windows/Linux evidence.
-- [ ] Create a PR linking verified fixes and remaining work accurately.
+- [x] Review focused diffs, generated sources, and duplicate or bypassed paths.
+- [x] Run `make test-core` and record local and CI evidence above.
+- [ ] Run the follow-up compiler's self-hosting and fixed-point checks; both are also required by the release workflow.
+- [x] Create [PR #199](https://github.com/beans-lang/beans/pull/199), linking verified fixes and remaining work; merged into main on 2026-10-05.

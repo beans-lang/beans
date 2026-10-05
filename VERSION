@@ -13,7 +13,7 @@
 #
 # The project is still in the public 1.0 bake, so do not call it 1.0.0 until
 # every release gate has passed.
-compiler=0.1.49
+compiler=0.1.50
 language=1.0
 
 # 21: beans_with_collection_deferred invokes a scoped closure behind the
