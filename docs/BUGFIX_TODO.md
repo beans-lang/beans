@@ -36,6 +36,10 @@ the current code is broken; verify existing fixes before adding another path.
 - #71: retained Windows dump traced to emulated TLS destruction before Quill's TLS destructor. C++ runtime selection/cache/link tests and `test/log.sh` passed. PR #199's real Windows GNU, LLVM-MinGW and MSVC jobs passed on i686, x86-64 and ARM64, including repeated logging exits.
 - #122: nested, immediate-ARC, contained-panic, and worker cases agree on both backends. Removing the global gate produces tens of thousands of torn reads; removing the local gate fails the worker assertion. Normal regions pass generated-IR ASan/UBSan. Sanitized forced unwind fails with a mapping error in the unchanged `contained_threads.b` too, so that leg is explicitly outside the sanitizer claim. Runtime ABI advances to 21.
 - #122 follow-up: the hosted dispatcher reuses the intrinsic's callback runner when an interpreter runs under another interpreter. `test/hosted_calls.sh` passes at both levels with no C compiler, covers implicit and explicit unit results, and refuses an invalid callback signature. `test/intrinsics.sh` passed again after this change.
+- Release follow-up: local `make test-self-host` passed all 80 examples and deterministic frontend checks (911 parsed, 20 rejected, 706 body-checked/MIR-lowered sources). `make test-fixpoint` passed: the built compiler reproduces itself and stages 2/3 are byte-identical.
+- Wine CI: the release commit's gate passed on an unchanged rerun after an intermittent Wine startup `recvmsg: Connection reset by peer` failure. An older-main control passed too; the real Windows package gates all passed. Wine startup reliability remains a harness concern.
+- Release 0.1.50: [the release workflow](https://github.com/beans-lang/beans/actions/runs/37248462741) passed all 26 target package/install gates from main commit `755909e`, including the complete Unix gates and all 475 x86-64 Autobahn cases. The release carries language 1.0 and runtime ABI 21.
+- Public downloads: verified all 26 manifest target/class rows, all 30 checksum entries, and the signed SPDX attestation's 31 asset digests against the release workflow, main ref, and exact source commit. The published macOS ARM64 installer passed in an isolated prefix; named and nested deferral callbacks produced matching interpreter/native outputs.
 - Baseline environment: TLS truncation fails with bundled LibreSSL 3.3.6 on an untouched checkout; the complete local core gate passed with OpenSSL 3.6.3. Optional local Autobahn setup stalled and was skipped; the release workflow retains its Autobahn gate.
 
 ## Other open reports
@@ -58,5 +62,6 @@ and next acceptance checks are recorded here while the bug sequence proceeds.
 
 - [x] Review focused diffs, generated sources, and duplicate or bypassed paths.
 - [x] Run `make test-core` and record local and CI evidence above.
-- [ ] Run the follow-up compiler's self-hosting and fixed-point checks; both are also required by the release workflow.
+- [x] Run the follow-up compiler's self-hosting and fixed-point checks; both are also required by the release workflow.
 - [x] Create [PR #199](https://github.com/beans-lang/beans/pull/199), linking verified fixes and remaining work; merged into main on 2026-10-05.
+- [x] Publish [v0.1.50](https://github.com/beans-lang/beans/releases/tag/v0.1.50) from main and verify the public artifacts and installer on 2026-10-05.
