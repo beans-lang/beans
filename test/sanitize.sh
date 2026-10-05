@@ -196,6 +196,11 @@ the join caught it
 LINES
 echo "ASan ok unwind probe: the hand link unwinds a panicking fiber's frames"
 
+run_asan test/cases/brew_cancel.b brew_cancel
+diff -u test/cases/brew_cancel.out "$out/brew_cancel.stdout"
+run_asan test/cases/fiber_net_cancel.b fiber_net_cancel
+diff -u test/cases/fiber_net_cancel.out "$out/fiber_net_cancel.stdout"
+
 run_asan bench/trees.b trees
 run_asan examples/cycles.b cycles
 run_asan examples/deep.b deep
@@ -826,6 +831,8 @@ BEANS_SANITIZE_CALLBACKS=1 bash ./test/stored_callbacks.sh
 if [[ "$(uname -s)" == Darwin ]] && command -v leaks >/dev/null 2>&1; then
     for file in bench/trees.b examples/box.b examples/arena.b examples/fmt.b \
                 test/cases/brew_unwind_leak.b \
+                test/cases/brew_cancel.b \
+                test/cases/fiber_net_cancel.b \
                 test/cases/contained_unwind_leak.b \
                 test/cases/contained.b \
                 test/cases/sort_unwind_leak.b \

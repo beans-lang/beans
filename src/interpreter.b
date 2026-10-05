@@ -62,6 +62,10 @@ extern "C" fn beans_fiber_join(
     message_out: RawPtr<u8>,
     message_cap: int) -> i32
 extern "C" fn beans_fiber_cancel(fiber: RawPtr<u8>)
+extern "C" fn beans_fiber_set_cancel_handler(
+    handler: fn(RawPtr<u8>), argument: RawPtr<u8>)
+extern "C" fn beans_fiber_mask_cancel(masked: i32)
+extern "C" fn beans_fiber_exit_cancelled()
 // TaskGroup delivery: next()/wait_all park the walker's fiber directly,
 // and each finishing child's entry tail wakes it — the tree mirror of
 // the native group's done hook and waiter field.
@@ -683,6 +687,20 @@ class TreeInterpreter {
     // Arm the tree-level unwind for the fiber running the walker.
     fn begin_unwind(text: string) {
         self.unwinds[self.current_fiber_address()] = text
+        unsafe { beans_fiber_mask_cancel(1) }
+    }
+
+    // Panic reports always start with "runtime panic at"; this distinguished
+    // ending shares the existing per-fiber unwind owner, without a second map.
+    fn fiber_cancelling() -> bool {
+        return self.fiber_unwinding() &&
+               self.unwinding_message() == "cancelled"
+    }
+
+    fn begin_cancel_unwind() {
+        self.failed = true
+        self.panic_text = ""
+        self.begin_unwind("cancelled")
     }
 
     // The fiber's body has unwound to its entry: it is no longer unwinding.
@@ -690,6 +708,7 @@ class TreeInterpreter {
     // not outlive the fiber it describes.
     fn end_unwind() {
         self.unwinds.remove(self.current_fiber_address())
+        unsafe { beans_fiber_mask_cancel(0) }
         // The unwind is over, so a construction that failed inside it has
         // had its release: either the object died there (and deinit_object
         // consumed the id) or a reference escaped the initializer and the
@@ -9546,9 +9565,10 @@ class TreeInterpreter {
         node: HirNode, receiver: TreeValue,
         value: TreeValue, blocking: bool) -> bool {
         for {
+            if self.failed { return false }
             var sent: bool = false
             var closed: bool = false
-            var signal: Option<Channel<int>> = none
+            var signal: Option<TreeChannelWaiter> = none
             match receiver.channel_cell {
                 some(cell) => {
                     cell.with_lock(fn(state: TreeChannelState) {
@@ -9559,13 +9579,13 @@ class TreeInterpreter {
                                 tree_value_copy(value))
                             sent = true
                             if state.receive_waiters.len() != 0 {
-                                let waiter: Channel<int> =
+                                let waiter: TreeChannelWaiter =
                                     state.receive_waiters.remove(0)
-                                waiter.send(1)
+                                waiter.signal.send(1)
                             }
                         } else if !closed && blocking {
-                            let waiter: Channel<int> =
-                                new Channel<int>(1)
+                            let waiter: TreeChannelWaiter =
+                                new TreeChannelWaiter()
                             state.send_waiters.push(waiter)
                             signal = some(waiter)
                         }
@@ -9580,7 +9600,24 @@ class TreeInterpreter {
             if closed { return false }
             if !blocking { return false }
             match signal {
-                some(waiter) => { waiter.receive() }
+                some(waiter) => {
+                    waiter.signal.receive()
+                    if self.failed {
+                        match receiver.channel_cell {
+                            some(cell) => {
+                                cell.with_lock(fn(state: TreeChannelState) {
+                                    for index: int in 0..state.send_waiters.len() {
+                                        if state.send_waiters[index] == waiter {
+                                            state.send_waiters.remove(index)
+                                            break
+                                        }
+                                    }
+                                })
+                            }
+                            none => {}
+                        }
+                    }
+                }
                 none => {}
             }
         }
@@ -9596,9 +9633,10 @@ class TreeInterpreter {
         node: HirNode, receiver: TreeValue,
         blocking: bool) -> Option<TreeValue> {
         for {
+            if self.failed { return none }
             var value: Option<TreeValue> = none
             var done: bool = false
-            var signal: Option<Channel<int>> = none
+            var signal: Option<TreeChannelWaiter> = none
             match receiver.channel_cell {
                 some(cell) => {
                     cell.with_lock(fn(state: TreeChannelState) {
@@ -9606,15 +9644,15 @@ class TreeInterpreter {
                             value = some(state.values.remove(0))
                             done = true
                             if state.send_waiters.len() != 0 {
-                                let waiter: Channel<int> =
+                                let waiter: TreeChannelWaiter =
                                     state.send_waiters.remove(0)
-                                waiter.send(1)
+                                waiter.signal.send(1)
                             }
                         } else if state.closed {
                             done = true
                         } else if blocking {
-                            let waiter: Channel<int> =
-                                new Channel<int>(1)
+                            let waiter: TreeChannelWaiter =
+                                new TreeChannelWaiter()
                             state.receive_waiters.push(waiter)
                             signal = some(waiter)
                         }
@@ -9628,7 +9666,24 @@ class TreeInterpreter {
             if done { return value }
             if !blocking { return none }
             match signal {
-                some(waiter) => { waiter.receive() }
+                some(waiter) => {
+                    waiter.signal.receive()
+                    if self.failed {
+                        match receiver.channel_cell {
+                            some(cell) => {
+                                cell.with_lock(fn(state: TreeChannelState) {
+                                    for index: int in 0..state.receive_waiters.len() {
+                                        if state.receive_waiters[index] == waiter {
+                                            state.receive_waiters.remove(index)
+                                            break
+                                        }
+                                    }
+                                })
+                            }
+                            none => {}
+                        }
+                    }
+                }
                 none => {}
             }
         }
@@ -9639,11 +9694,11 @@ class TreeInterpreter {
             some(cell) => {
                 cell.with_lock(fn(state: TreeChannelState) {
                     state.closed = true
-                    for waiter: Channel<int> in state.send_waiters {
-                        waiter.send(1)
+                    for waiter: TreeChannelWaiter in state.send_waiters {
+                        waiter.signal.send(1)
                     }
-                    for waiter: Channel<int> in state.receive_waiters {
-                        waiter.send(1)
+                    for waiter: TreeChannelWaiter in state.receive_waiters {
+                        waiter.signal.send(1)
                     }
                     state.send_waiters = []
                     state.receive_waiters = []
@@ -10861,7 +10916,15 @@ class TreeInterpreter {
             // detach already sets.
             match receiver.thread_handle {
                 some(handle) => {
+                    // The shared handle marker also reserves an active join,
+                    // matching BThread.joined before its waiter parks. Reject
+                    // aliases through the tree panic owner, not a host unwind.
+                    receiver.thread_handle = none
                     handle.join()
+                    if self.failed {
+                        receiver.thread_handle = some(handle)
+                        return TreeValue.unit()
+                    }
                 }
                 none => {
                     return self.fail(
@@ -10947,6 +11010,7 @@ class TreeInterpreter {
                                 "closed"))
                     }
                     self.tree_brew_reap(work)
+                    if self.failed { return TreeValue.unit() }
                     work.joined = true
                     if work.panicked {
                         return TreeValue.result_err(
@@ -10972,6 +11036,7 @@ class TreeInterpreter {
                 some(work) => {
                     if work.joined { return TreeValue.unit() }
                     self.tree_brew_reap(work)
+                    if self.failed { return TreeValue.unit() }
                     work.joined = true
                     if work.panicked {
                         return self.fail(
@@ -11016,6 +11081,7 @@ class TreeInterpreter {
                             return self.tree_group_poll(state)
                         }
                         self.tree_group_park(state)
+                        if self.failed { return TreeValue.unit() }
                     }
                     return TreeValue.option_none()
                 }
@@ -11040,6 +11106,7 @@ class TreeInterpreter {
                         }
                         if !pending { break }
                         self.tree_group_park(state)
+                        if self.failed { return TreeValue.unit() }
                     }
                     // Join in spawn order: the first failure is the
                     // fleet's answer, and every other outcome is
@@ -11050,6 +11117,7 @@ class TreeInterpreter {
                         state.children {
                         if !work.joined {
                             self.tree_brew_reap(work)
+                            if self.failed { return TreeValue.unit() }
                             work.joined = true
                             if work.panicked {
                                 if failure.is_none() {
@@ -11118,6 +11186,7 @@ class TreeInterpreter {
                         state.children {
                         if !work.joined {
                             self.tree_brew_reap(work)
+                            if self.failed { return TreeValue.unit() }
                             work.joined = true
                         }
                     }
@@ -11139,6 +11208,7 @@ class TreeInterpreter {
                         state.children {
                         if !work.joined {
                             self.tree_brew_reap(work)
+                            if self.failed { return TreeValue.unit() }
                             work.joined = true
                             if work.panicked {
                                 return self.fail(
@@ -11587,6 +11657,7 @@ class TreeInterpreter {
                 node, closure_value, [])
         self.contained_leave()
         if self.failed {
+            if self.fiber_cancelling() { return TreeValue.unit() }
             let message: string = self.panic_text
             self.failed = false
             self.panic_text = ""
@@ -11606,11 +11677,11 @@ class TreeInterpreter {
                 beans_fiber_join(
                     RawPtr.from_address(work.fiber),
                     RawPtr.null(), 0)
-            // 2 is BEANS_FIBER_CANCELLED. A cancelled child left through its
-            // park, not through its entry, so the stored callback hosting its
-            // body is still marked active and closing it would wait for a
-            // return that never comes. It leaks with the rest of the
-            // abandoned frame until the cancellation unwind lands.
+            // An interrupted wait consumed no outcome. The scope unwind
+            // cancels and joins this child after the user's defers. On targets
+            // without unwind support, ending 2 still abandons the active entry
+            // callback, whose close would wait for a return that cannot arrive.
+            if ending < 0 { return }
             if work.entry_context != 0 && ending != 2 {
                 beans_stored_callback_close(
                     RawPtr.from_address(work.entry_context))
@@ -11802,12 +11873,14 @@ class TreeInterpreter {
     }
 
     fn tree_group_park(state: TreeTaskGroupState) {
+        var outcome: i32 = 0
         unsafe {
             state.waiter =
                 beans_fiber_current().address()
-            beans_fiber_park()
+            outcome = beans_fiber_park()
             state.waiter = 0
         }
+        if outcome != 0 { unsafe { beans_fiber_exit_cancelled() } }
     }
 
     // One host gate for a user intrinsic and for the same entry reached by
@@ -14519,9 +14592,63 @@ class TreeInterpreter {
         return TreeExec.next()
     }
 
+    fn cancel_frame_children(frame: TreeFrame) {
+        // The existing synthetic joins name exactly the children this
+        // frame owns. Cancel newest-first before any user defer can park.
+        var pending: int = frame.defers.len()
+        for pending > 0 {
+            pending -= 1
+            let armed: TreeDeferred = frame.defers[pending]
+            let call: HirNode = armed.expression
+            if call.kind != "builtin_method" ||
+               (call.value != "brew_scope_join" &&
+                call.value != "taskgroup_scope_join") ||
+               call.children.len() == 0 {
+                continue
+            }
+            match armed.frame.get(call.children[0].binding_id) {
+                some(handle) => {
+                    match handle.brew_work {
+                        some(work) => {
+                            if !work.reaped {
+                                unsafe {
+                                    beans_fiber_cancel(
+                                        RawPtr.from_address(work.fiber))
+                                }
+                            }
+                        }
+                        none => {}
+                    }
+                    match handle.group_work {
+                        some(group) => {
+                            var index: int = group.children.len()
+                            for index > 0 {
+                                index -= 1
+                                let work: TreeBrewState = group.children[index]
+                                if !work.reaped {
+                                    unsafe {
+                                        beans_fiber_cancel(
+                                            RawPtr.from_address(work.fiber))
+                                    }
+                                }
+                            }
+                        }
+                        none => {}
+                    }
+                }
+                none => {}
+            }
+        }
+    }
+
     fn run_defers(frame: TreeFrame) {
+        var requested: bool = false
         var index: int = frame.defers.len()
         for index > 0 {
+            if !requested && self.fiber_cancelling() {
+                self.cancel_frame_children(frame)
+                requested = true
+            }
             index -= 1
             let armed: TreeDeferred = frame.defers[index]
             if self.failed {
@@ -14548,6 +14675,14 @@ class TreeInterpreter {
                 // must still see that block's bindings, as native slots do
                 self.expression(
                     armed.expression, armed.frame)
+                if self.failed && self.fiber_cancelling() &&
+                   armed.expression.kind == "builtin_method" &&
+                   (armed.expression.value == "brew_scope_join" ||
+                    armed.expression.value == "taskgroup_scope_join") {
+                    // This synthetic join consumed no outcome. Retry after
+                    // the cancellation prepass with cleanup parks masked.
+                    index += 1
+                }
             }
         }
         // Drop the records now: each holds its registration frame, and
@@ -16330,6 +16465,10 @@ class TreeInterpreter {
             raw = slot.read() as int
             slot.free()
             packed.free()
+        }
+        if self.failed {
+            self.ffi_sync_and_free(bridges)
+            return TreeValue.unit()
         }
         if status != 1 {
             // 0 cannot arrive here: the caller only takes this path after the

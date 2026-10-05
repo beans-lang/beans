@@ -117,14 +117,21 @@ int beans_fiber_is_root(BeansFiber* fiber);
 // abandoned, which is what F1 did.
 void beans_fiber_panic(const char* message) __attribute__((noreturn));
 
-// Ends the running fiber as cancelled. Unlike the panic above, this does NOT
-// unwind: a cancel is delivered from inside a park primitive, and the tree
-// interpreter cannot run its tree-level cleanup from there, so the two
-// backends would disagree if native unwound a cancel. Both abandon the
-// frames; the cancellation unwind (spec/CONCURRENCY.md) waits until a cancel
-// can be handed back to the interpreter's walker. Park sites call this after
-// seeing a cancelled park verdict.
-void beans_fiber_exit_cancelled(void) __attribute__((noreturn));
+// Begins cancellation cleanup. Native callers never return: the existing
+// controlled unwind runs the frames' cleanup. The tree interpreter installs
+// a per-fiber handoff instead; it poisons the walk and returns from the host
+// primitive so the walker can run its own cleanup. A park primitive must
+// unregister its wait and return immediately if the handoff returns.
+void beans_fiber_exit_cancelled(void);
+
+// Internal interpreter bridge, set on the running fiber only. The callback
+// must not park; it marks the tree walk failed. A NULL argument removes it.
+void beans_fiber_set_cancel_handler(void (*handler)(void*), void* argument);
+// Cleanup may park to join children; cancellation must not interrupt it.
+void beans_fiber_mask_cancel(int masked);
+// True while the native controlled unwind carries cancellation. Contained
+// catch pads use this to pass cancellation to their frame's cleanup.
+int beans_fiber_cancelling(void);
 
 // Starts the controlled unwind directly with the ending it should carry
 // (BEANS_FIBER_PANICKED or BEANS_FIBER_CANCELLED). The two calls above are
@@ -199,7 +206,9 @@ void beans_fiber_set_done_hook(BeansFiber* fiber, void (*hook)(void*),
 // writing (write != 0), or until timeout_ms passes; timeout_ms < 0 waits
 // forever. Answers 0 for ready, 1 for the timeout, and -2 when there is no
 // current fiber or no kernel poller on this platform (Windows, wasm) — the
-// caller then waits the thread-blocking way it always has. Readiness is a
+// caller then waits the thread-blocking way it always has. A cancellation
+// handoff to an installed interpreter handler returns -1 after unregistering
+// the wait; native cancellation unwinds instead of returning. Readiness is a
 // hint exactly as poll's is: retry the syscall and come back on EAGAIN.
 long long beans_fiber_wait_io(long long fd, long long write,
                               long long timeout_ms);

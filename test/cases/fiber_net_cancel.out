@@ -1,0 +1,20 @@
+accept defer
+drop accept
+accept joined cancelled
+accept reused 7
+read defer 0
+drop read-0
+read joined 0: cancelled
+peer closed 0: true
+read defer 1
+drop read-1
+read joined 1: cancelled
+peer closed 1: true
+read defer 2
+drop read-2
+read joined 2: cancelled
+peer closed 2: true
+datagram defer
+drop datagram
+datagram joined cancelled
+datagram reused after

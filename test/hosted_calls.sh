@@ -37,6 +37,23 @@ tmp=$(mktemp -d "${TMPDIR:-/tmp}/beans-hosted-calls.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 nocc="$tmp/no-such-cc"
 
+echo "checking database readiness externs use the hosted fiber owner"
+cat >"$tmp/fiber_readiness.b" <<'BEANS'
+import std.io
+extern "C" fn beans_fiber_wait_io(fd: int, write: int, timeout_ms: int) -> int
+extern "C" fn beans_fiber_netpoll() -> int
+fn main() {
+    unsafe {
+        // Outside a worker the wait is unavailable, without touching fd -1.
+        io.println("wait {beans_fiber_wait_io(-1, 0, 0)}")
+        // Poller availability is target-specific; it is still callable.
+        io.println("poller {beans_fiber_netpoll() >= 0}")
+    }
+}
+BEANS
+BEANS_CC="$nocc" "$beansc" run "$tmp/fiber_readiness.b" >"$tmp/fiber_readiness.out"
+printf 'wait -2\npoller true\n' | diff -u - "$tmp/fiber_readiness.out"
+
 echo "checking BEANS_CC still reaches the run-time C shim"
 # pow(double, double) is not a runtime entry and is not a shape the word ABI
 # can call, so the interpreter has to build a shim for it. With the driver

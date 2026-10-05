@@ -13,9 +13,14 @@
 #
 # The project is still in the public 1.0 bake, so do not call it 1.0.0 until
 # every release gate has passed.
-compiler=0.1.50
+compiler=0.1.51
 language=1.0
 
+# 22 (unreleased): on the existing ELF/Mach-O x86_64/arm64 unwind targets,
+# parked cancellation uses native cleanup while interpreted host calls hand
+# cancellation back to the tree walker. Per-fiber handler, cancellation-state,
+# and cleanup-mask entries keep both executors on the same cleanup contract.
+#
 # 21: beans_with_collection_deferred invokes a scoped closure behind the
 # existing collector/deinit exclusion counters. Both backends use this entry;
 # nesting and contained unwind restore the counters, while immediate ARC
@@ -234,4 +239,4 @@ language=1.0
 # caller-owned event buffer instead of returning a fresh one.
 # Version 7 added Bytes.filled, Bytes.append_int_text, and Thread.detach.
 # Version 6 added per-thread runtime-hook guard entry points.
-runtime_abi=21
+runtime_abi=22

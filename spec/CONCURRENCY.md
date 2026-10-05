@@ -5,8 +5,8 @@ Status: **F1 and the F2 core are implemented.** The fiber runtime
 parse, check, both lowerings, `Brew<T>` with join/cancel, the synthesized
 scope join, panic containment and escalation — are in the tree; see the
 "where the implementation stands" section at the end for what deliberately
-remains (the cancelled-park unwind, may-park inference, std park sites) — the
-contained-panic unwind now lands on both backends, and `contained f(args)`
+remains (may-park inference and nested-scope brews) — panic and cancellation
+unwind now land on both backends on the DWARF-EH targets, and `contained f(args)`
 puts its boundary at a call instead of at a fiber. The async v2
 state-machine branch is archived, unmerged, at the tag
 `archive/async-v2-statemachine`; its measured failure is the reason this
@@ -294,10 +294,12 @@ match contained handle(request) {
   a contained call dies when that scope exits rather than when the callee
   returns — again exactly as a `brew`'s arguments do. Inside a loop body that
   is the iteration; at a function's own scope it is the function.
-- **Cancellation is not contained.** A cancel is delivered inside a park
-  primitive and does not unwind on either backend, so it never reaches a catch
-  frame: the fiber ends and its join reports `cancelled`. A `contained` call
-  that a cancel interrupts simply does not return.
+- **Cancellation is not contained.** On the supported unwind targets, a cancelled park starts cleanup and
+  passes through `contained` catch frames to the fiber entry; the join reports
+  `cancelled`. A `contained` call that cancellation interrupts does not return
+  a result. Cleanup parks ignore later cancellation requests so every armed
+  defer, owned value, and child join can finish; the original failure retains
+  priority. A panic raised during cancellation cleanup is a fatal double panic.
 - **A double panic is still fatal.** A panic raised while the fiber is already
   unwinding — from a defer or a deinit that the unwind itself is running — is
   the one unrecoverable case, and a catch frame does not change it: both
@@ -743,7 +745,7 @@ Deliberately not yet here, in dependency order:
 0. **Native unwinding off elf/macho x86_64/arm64.** The native pads ride the
    platform unwinder, and only those four target pairs carry it today
    (src/target.b names them; VERSION's ABI note says the same). Everywhere
-   else — Windows native builds included — a contained panic still abandons
+   else — Windows native builds included — panic still abandons
    the fiber's frames in a native build while the interpreter unwinds, so
    defer/deinit output under a contained panic differs between the legs on
    those targets. Differential tests that run there must not pin
@@ -751,22 +753,28 @@ Deliberately not yet here, in dependency order:
    refused outright on those targets rather than allowed to differ: there the
    native backend has no pad at all, so a panic would end the process where
    the interpreter caught it. Widening it needs SEH funclets for COFF.
+   Cancellation on these targets retains frame abandonment on both executors,
+   as described below; the new cancellation cleanup does not add a divergence.
 
-1. **The cancelled-park unwind.** A cancelled park still abandons the fiber's
-   frames on *both* backends: unlike a panic, a cancel is delivered from inside
-   a runtime park primitive (Gate/channel/join), and the tree interpreter
-   cannot run its tree-level cleanup from there — the primitive is hosting a
-   walk whose defers and deinits are tree data, not pads an unwinder could run.
-   The native runtime could unwind a cancel (the mechanism is the panic's), but
-   doing so while the interpreter abandons it would make the two backends
-   disagree on the same program, which this project holds above the feature —
-   so both abandon until the interpreter's park sites can hand a cancel back to
-   the walker for a tree-level unwind, the way a contained panic already is.
-2. **Cancellation observation.** Cancelled parks exist in the fiber core,
-   but compiled code's only park site today is join, and a join waits for
-   the child by contract. Until std park sites land (F3), a cancelled child
-   that never parks simply completes — which is the cooperative contract,
-   just with few places to observe a cancel.
+1. **The cancelled-park unwind is implemented on the unwind targets.** Gate,
+   channel send/receive, sleep, readiness, thread join, Brew join and TaskGroup
+   next/wait_all hand cancellation to the existing cleanup owners. Native uses
+   the same controlled unwind as panic. The tree interpreter's per-fiber host
+   handoff returns poison to the walker after removing the runtime wait, so
+   tree defers and deinits run and the fiber's stored entry callback can be
+   closed normally. `contained` catches panic alone. Cancelled scope cleanup
+   requests cancellation of all owned children newest-first before joining
+   any; an interrupted explicit join leaves its child available to that scope.
+   Cleanup parks are masked, so a later cancel cannot abandon an unwind already
+   running. `test/cases/brew_cancel.b` pins both backends. Native targets without
+   `supports_unwind()` still abandon cancellation frames on both executors.
+   The interpreter installs its handoff only on targets with that capability;
+   no cleanup guarantee is claimed for the others.
+2. **Cancellation remains cooperative.** Gate/channel waits, timers, readiness,
+   thread/Brew joins and TaskGroup waits observe it when they actually park.
+   Already-completed operations and work that never parks can complete normally.
+   A channel/gate signal or child completion already delivered wins over a
+   simultaneous cancellation; the next real park can observe the request.
 3. **Error-exit cancels-then-joins.** Scope exits currently join on every
    path; the error path does not yet cancel first.
 4. **May-park inference and its walls.** `deinit` refuses `brew` directly;

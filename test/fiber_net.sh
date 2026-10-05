@@ -38,6 +38,23 @@ timeout 60 "$tmp/native" >"$tmp/native.out"
 diff -u test/cases/fiber_net.out "$tmp/interp"
 diff -u test/cases/fiber_net.out "$tmp/native.out"
 
+echo "checking cancelled readiness waits clean up and leave sockets usable"
+timeout 20 ./build/beansc run test/cases/fiber_net_cancel.b >"$tmp/cancel.interp"
+./build/beansc build test/cases/fiber_net_cancel.b -o "$tmp/cancel.native" \
+    >"$tmp/cancel.build" 2>&1
+timeout 20 "$tmp/cancel.native" >"$tmp/cancel.native.out"
+diff -u test/cases/fiber_net_cancel.out "$tmp/cancel.interp"
+diff -u test/cases/fiber_net_cancel.out "$tmp/cancel.native.out"
+
+echo "checking C resolver and partial-buffer owners on cancellation"
+clang -O1 -g -pthread -DBEANS_ARC_STATS -DBEANS_FIBER_UNWIND=1 \
+    -fexceptions -funwind-tables test/net_cancel_handoff.c -lm \
+    -o "$tmp/cancel.handoff"
+BEANS_NO_POOL=1 timeout 20 "$tmp/cancel.handoff" >"$tmp/handoff.out" \
+    2>"$tmp/handoff.err"
+grep -q '^net cancellation: one resolver attempt, resolver freed, fd ownership, partial buffer freed$' \
+    "$tmp/handoff.out"
+
 echo "checking a parked fiber still honours the accept deadline"
 cat >"$tmp/deadline.b" <<'BEANS'
 import std.io

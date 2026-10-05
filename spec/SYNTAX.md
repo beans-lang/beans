@@ -1977,9 +1977,10 @@ can still read them. Deterministic, like C++/Swift: no GC pause, no "sometime la
   *while the program runs*. Leaving the program is not a death: a value a
   static or a singleton still holds at exit has no `deinit` call, and neither
   does anything alive when `os.exit` or a panic ends the process.
-- An object that dies **inside a reference cycle** does not get its `deinit` — a cycle never
-  drops to zero on its own, so if it owns a resource, break the cycle with a
-  `weak` field instead of building it.
+- When cycle collection determines that a reference cycle is unreachable, it runs
+  each member's `deinit` once, then releases the cycle. Collection timing is not
+  deterministic; use a `weak` field to break a resource-owning cycle when prompt
+  cleanup matters.
 
 ### weak fields (zeroing references)
 

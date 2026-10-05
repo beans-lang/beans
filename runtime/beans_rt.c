@@ -13572,7 +13572,8 @@ static void net_fiber_prepare(long long fd) {
 // Waits for one readiness event with a deadline that survives EINTR: the budget is
 // recomputed from the monotonic clock, so a stream of signals cannot extend a 100ms
 // wait indefinitely. timeout_ms < 0 waits forever. Returns 1 ready, 0 timed out,
-// -1 error (errno set).
+// -1 error (errno set), -2 the interpreter's delivered cancellation handoff.
+// The latter must stop resolver retries: cleanup masking is already active.
 static int net_wait(net_fd_t fd, short events, long long timeout_ms) {
 #if BEANS_RT_FIBERS
     // On a fiber the wait parks instead of blocking the worker; every
@@ -13583,6 +13584,7 @@ static int net_wait(net_fd_t fd, short events, long long timeout_ms) {
             (long long)fd, (events & POLLOUT) ? 1 : 0, timeout_ms);
         if (parked == 0) return 1;
         if (parked == 1) return 0;
+        if (parked == -1) { errno = EINTR; return -2; }
     }
 #endif
     long long deadline = timeout_ms < 0 ? 0 : net_millis() + timeout_ms;
@@ -13662,10 +13664,21 @@ BRes beans_net_listen(char* host, long long port, long long backlog) {
 }
 long long beans_net_listen_out(char* host, long long port, long long backlog, void** e_out) { BRes r = beans_net_listen(host, port, backlog); *e_out = r.err; return r.val; }
 
+// These resources are owned by C frames that may park before transferring
+// their result to Beans. Use the same scope cleanup as runtime ARC guards:
+// cancellation must release them even when net_wait never returns.
+static void net_addrinfo_release(struct addrinfo** slot) {
+    if (*slot) freeaddrinfo(*slot);
+}
+static void net_connect_unwound(net_fd_t* slot) {
+    if (net_fd_ok(*slot)) net_close(*slot);
+}
+
 static net_fd_t net_connect_one(struct addrinfo* ai, long long timeout_ms,
-                                int* err_out) {
+                                int* err_out, int* cancelled_out) {
     net_fd_t fd = net_socket(ai);
     if (!net_fd_ok(fd)) { *err_out = net_errno(); return NET_FD_NONE; }
+    __attribute__((cleanup(net_connect_unwound))) net_fd_t pending = fd;
 #if defined(_WIN32)
     u_long nb = 1;
     ioctlsocket(fd, FIONBIO, &nb);
@@ -13689,7 +13702,6 @@ static net_fd_t net_connect_one(struct addrinfo* ai, long long timeout_ms,
 #endif
         if (!in_flight) {
             *err_out = started;
-            net_close(fd);
             return NET_FD_NONE;
         }
         // The handshake is in flight. Waiting on the descriptor is the only correct
@@ -13699,8 +13711,8 @@ static net_fd_t net_connect_one(struct addrinfo* ai, long long timeout_ms,
         // refusal there is seen at the deadline rather than at once.)
         int ready = net_wait(fd, POLLOUT, timeout_ms);
         if (ready <= 0) {
+            if (ready == -2) *cancelled_out = 1;
             *err_out = ready == 0 ? ETIMEDOUT : net_errno();
-            net_close(fd);
             return NET_FD_NONE;
         }
         int soerr = 0;
@@ -13713,7 +13725,6 @@ static net_fd_t net_connect_one(struct addrinfo* ai, long long timeout_ms,
 #endif
         if (soerr != 0) {
             *err_out = soerr;
-            net_close(fd);
             return NET_FD_NONE;
         }
     }
@@ -13724,6 +13735,7 @@ static net_fd_t net_connect_one(struct addrinfo* ai, long long timeout_ms,
 #else
     if (flags >= 0) fcntl(fd, F_SETFL, flags);
 #endif
+    pending = NET_FD_NONE; // ownership moves to the returned stream
     return fd;
 }
 
@@ -13734,17 +13746,18 @@ BRes beans_net_connect(char* host, long long port, long long timeout_ms) {
     if (!net_check_port(port))
         return (BRes){0, mk_error("port must be 0..65535", "invalid")};
     int rc = 0;
+    __attribute__((cleanup(net_addrinfo_release)))
     struct addrinfo* list = net_lookup(host, port, SOCK_STREAM, 0, &rc);
     if (!list) return (BRes){0, net_gai_err(host, rc)};
     int last = 0;
     for (struct addrinfo* ai = list; ai; ai = ai->ai_next) {
-        net_fd_t fd = net_connect_one(ai, timeout_ms, &last);
+        int cancelled = 0;
+        net_fd_t fd = net_connect_one(ai, timeout_ms, &last, &cancelled);
+        if (cancelled) return (BRes){0, NULL}; // the walker owns the outcome
         if (net_fd_ok(fd)) {
-            freeaddrinfo(list);
             return (BRes){net_fd_word(fd), NULL};
         }
     }
-    freeaddrinfo(list);
     return (BRes){0, net_err_at("connect", host, port,
                                 last ? last : ECONNREFUSED)};
 }
@@ -14146,6 +14159,8 @@ BRes beans_net_recv(long long fd, long long max) {
 #endif
     net_fiber_prepare(fd);
     BList* buf = bytes_mk(max);
+    __attribute__((cleanup(rt_owed_pair_unwound)))
+    RtOwedPair owed = {buf, NULL, 1};
     rt_ssize_t got;
     for (;;) {
         do {
@@ -14170,10 +14185,11 @@ BRes beans_net_recv(long long fd, long long max) {
 #endif
     if (got < 0) {
         int e = net_errno();
-        beans_release(buf);
+        rt_owed_pair_release(&owed);
         return (BRes){0, net_err_op("recv", e)};
     }
     buf->len = got; // 0 = the peer closed; capacity stays, len is the truth
+    owed.armed = 0;
     return (BRes){(long long)buf, NULL};
 }
 long long beans_net_recv_out(long long fd, long long max, void** e_out) { BRes r = beans_net_recv(fd, max); *e_out = r.err; return r.val; }
@@ -14318,6 +14334,19 @@ typedef struct {
     BHostCall call;
 } BHostEntry;
 
+#if BEANS_RT_FIBERS
+// Database packages use the same readiness owner as std.net. These entries
+// must be hosted explicitly: an ELF compiler executable exports no symbols.
+static long long host_call_fiber_wait_io(const unsigned long long* w) {
+    return beans_fiber_wait_io((long long)w[0], (long long)w[1],
+                               (long long)w[2]);
+}
+static long long host_call_fiber_netpoll(const unsigned long long* w) {
+    (void)w;
+    return beans_fiber_netpoll();
+}
+#endif
+
 static long long host_call_net_recv_into_wait(const unsigned long long* w) {
     return beans_net_recv_into_wait((long long)w[0],
                                     (void*)(uintptr_t)w[1],
@@ -14429,6 +14458,12 @@ static const BHostEntry rt_host_table[] = {
      host_call_rt_host_symbol},
     {"beans_rt_host_invoke", (void*)&beans_rt_host_invoke, 4,
      host_call_rt_host_invoke},
+#if BEANS_RT_FIBERS
+    {"beans_fiber_wait_io", (void*)&beans_fiber_wait_io, 3,
+     host_call_fiber_wait_io},
+    {"beans_fiber_netpoll", (void*)&beans_fiber_netpoll, 0,
+     host_call_fiber_netpoll},
+#endif
 };
 
 static const BHostEntry* rt_host_entry(const char* name) {
@@ -14475,6 +14510,8 @@ static BRes net_recv_many(long long fd, long long limit, int exact) {
         return (BRes){0, mk_error("recv: the byte count must be positive", "invalid")};
     net_fiber_prepare(fd);
     BList* out = bytes_mk(0);
+    __attribute__((cleanup(rt_owed_pair_unwound)))
+    RtOwedPair owed = {out, NULL, 1};
     while (out->len < limit) {
         long long room = limit - out->len;
         long long chunk = room < 8192 ? room : 8192;
@@ -14498,7 +14535,7 @@ static BRes net_recv_many(long long fd, long long limit, int exact) {
         }
         if (got < 0) {
             int e = net_errno();
-            beans_release(out);
+            rt_owed_pair_release(&owed);
             return (BRes){0, net_err_op("recv", e)};
         }
         if (got == 0) {
@@ -14507,13 +14544,14 @@ static BRes net_recv_many(long long fd, long long limit, int exact) {
                 snprintf(message, sizeof message,
                          "recv: the connection closed after %lld of %lld bytes",
                          out->len, limit);
-                beans_release(out);
+                rt_owed_pair_release(&owed);
                 return (BRes){0, mk_error(message, "eof")};
             }
             break;
         }
         out->len += got;
     }
+    owed.armed = 0;
     return (BRes){(long long)out, NULL};
 }
 
@@ -14570,6 +14608,7 @@ BRes beans_net_send_to(long long fd, BList* data, char* host, long long port) {
     if (!net_check_port(port))
         return (BRes){0, mk_error("port must be 0..65535", "invalid")};
     int rc = 0;
+    __attribute__((cleanup(net_addrinfo_release)))
     struct addrinfo* list = net_lookup(host, port, SOCK_DGRAM, 0, &rc);
     if (!list) return (BRes){0, net_gai_err(host, rc)};
     // Only an address of the socket's own family can be sent to, so a resolver that
@@ -14591,17 +14630,16 @@ BRes beans_net_send_to(long long fd, BList* data, char* host, long long port) {
             if (!net_on_fiber()) break;
             int ready =
                 net_wait(net_fd_of(fd), POLLOUT, net_op_timeout_ms(fd, 1));
+            if (ready == -2) return (BRes){0, NULL};
             if (ready > 0) continue;
             if (ready == 0) net_errno_set(blocked);
             break;
         }
         if (wrote >= 0) {
-            freeaddrinfo(list);
             return (BRes){(long long)wrote, NULL};
         }
         last = net_errno();
     }
-    freeaddrinfo(list);
     return (BRes){0, net_err_at("send_to", host, port, last ? last : EINVAL)};
 }
 long long beans_net_send_to_out(long long fd, BList* data, char* host, long long port, void** e_out) { BRes r = beans_net_send_to(fd, data, host, port); *e_out = r.err; return r.val; }
@@ -14617,6 +14655,8 @@ BRes beans_net_recv_from(long long fd, long long max) {
 #endif
     net_fiber_prepare(fd);
     BList* payload = bytes_mk(max);
+    __attribute__((cleanup(rt_owed_pair_unwound)))
+    RtOwedPair owed = {payload, NULL, 1};
     struct sockaddr_storage sa;
     socklen_t len = sizeof sa;
     rt_ssize_t got;
@@ -14641,14 +14681,14 @@ BRes beans_net_recv_from(long long fd, long long max) {
 #endif
     if (got < 0) {
         int e = net_errno();
-        beans_release(payload);
+        rt_owed_pair_release(&owed);
         return (BRes){0, net_err_op("recv_from", e)};
     }
     char host[NI_MAXHOST];
     long long port = 0;
     int gai = net_name_of((struct sockaddr*)&sa, len, host, sizeof host, &port);
     if (gai != 0) {
-        beans_release(payload);
+        rt_owed_pair_release(&owed);
         return (BRes){0, net_gai_err("", gai)};
     }
     payload->len = got;
@@ -14657,6 +14697,7 @@ BRes beans_net_recv_from(long long fd, long long max) {
     long long host_len = (long long)strlen(host);
     BList* host_bytes = bytes_mk(host_len);
     if (host_len) memcpy(host_bytes->data, host, (size_t)host_len);
+    owed.armed = 0;
     return (BRes){(long long)bytes_parts3(metadata, host_bytes, payload), NULL};
 }
 long long beans_net_recv_from_out(long long fd, long long max, void** e_out) { BRes r = beans_net_recv_from(fd, max); *e_out = r.err; return r.val; }
@@ -16430,9 +16471,9 @@ BThread* beans_thread_spawn_typed(void* thunk, void* env, long long size,
 // A joiner on a fiber parks instead of blocking its worker — other fibers
 // keep running while the thread works. The finishing thread resumes it,
 // and the pthread_join that follows reaps an already-finished thread.
-static void thread_join_park(BThread* t) {
+static int thread_join_park(BThread* t) {
 #if BEANS_RT_FIBERS
-    if (!beans_fiber_current()) return;
+    if (!beans_fiber_current()) return 1;
     __atomic_store_n(&t->join_waiter, (void*)beans_fiber_current(),
                      __ATOMIC_SEQ_CST);
     while (!__atomic_load_n(&t->done, __ATOMIC_SEQ_CST)) {
@@ -16441,19 +16482,22 @@ static void thread_join_park(BThread* t) {
             // The OS thread keeps running and stays unreaped: a cancel cannot
             // stop a thread, only stop waiting on one.
             __atomic_store_n(&t->join_waiter, (void*)0, __ATOMIC_SEQ_CST);
+            t->joined = 0; // release this waiter's reservation before unwind
             beans_fiber_exit_cancelled();
+            return 0;
         }
     }
     __atomic_store_n(&t->join_waiter, (void*)0, __ATOMIC_SEQ_CST);
 #else
     (void)t;
 #endif
+    return 1;
 }
 
 long long beans_thread_join(BThread* t) {
     if (t->joined) beans_panic("thread already joined", 0, 0);
     t->joined = 1;
-    thread_join_park(t);
+    if (!thread_join_park(t)) return 0;
     pthread_join(t->th, NULL);
     long long result = t->result;
     t->result = 0; // ownership of a pointer result moves to the caller
@@ -16462,7 +16506,7 @@ long long beans_thread_join(BThread* t) {
 void beans_thread_join_typed(BThread* t, void* out, long long size) {
     if (t->joined) beans_panic("thread already joined", 0, 0);
     t->joined = 1;
-    thread_join_park(t);
+    if (!thread_join_park(t)) return;
     pthread_join(t->th, NULL);
     if (size != t->result_size) beans_panic("thread result size mismatch", 0, 0);
     void* payload = t->payload;
@@ -16585,7 +16629,7 @@ static void fiber_line_remove(BFiberWaiter** head, BFiberWaiter** tail,
 // the line, drop the lock this wait owns (nothing will return to unlock it),
 // and end the fiber with the cancelled outcome. A signal that already landed
 // wins over the cancel — the value is ours and dropping it would lose it.
-static void fiber_line_wait(pthread_mutex_t* m, BFiberWaiter** head,
+static int fiber_line_wait(pthread_mutex_t* m, BFiberWaiter** head,
                             BFiberWaiter** tail) {
     BFiberWaiter waiter = { beans_fiber_current(), NULL, 0 };
     fiber_line_push(head, tail, &waiter);
@@ -16597,8 +16641,10 @@ static void fiber_line_wait(pthread_mutex_t* m, BFiberWaiter** head,
             fiber_line_remove(head, tail, &waiter);
             pthread_mutex_unlock(m);
             beans_fiber_exit_cancelled();
+            return 0; // interpreter handoff; the lock was released above
         }
     }
+    return 1;
 }
 #endif // BEANS_RT_FIBERS — fiber wait lines
 
@@ -16627,24 +16673,26 @@ static void chan_wake_sender(BChan* c) {
 
 // Waits until the channel can accept a send (or is closed), fiber-aware.
 // Called with the lock held; returns with it held.
-static void chan_send_wait(BChan* c) {
+static int chan_send_wait(BChan* c) {
     for (;;) {
-        if (c->count < c->cap || c->closed) return;
+        if (c->count < c->cap || c->closed) return 1;
 #if BEANS_RT_FIBERS
         if (beans_fiber_current()) {
-            fiber_line_wait(&c->m, &c->send_head, &c->send_tail);
+            if (!fiber_line_wait(&c->m, &c->send_head, &c->send_tail))
+                return 0;
             continue;
         }
 #endif
         pthread_cond_wait(&c->can_send, &c->m);
     }
 }
-static void chan_recv_wait(BChan* c) {
+static int chan_recv_wait(BChan* c) {
     for (;;) {
-        if (c->count != 0 || c->closed) return;
+        if (c->count != 0 || c->closed) return 1;
 #if BEANS_RT_FIBERS
         if (beans_fiber_current()) {
-            fiber_line_wait(&c->m, &c->recv_head, &c->recv_tail);
+            if (!fiber_line_wait(&c->m, &c->recv_head, &c->recv_tail))
+                return 0;
             continue;
         }
 #endif
@@ -16654,7 +16702,7 @@ static void chan_recv_wait(BChan* c) {
 
 long long beans_chan_send(BChan* c, long long v) {
     pthread_mutex_lock(&c->m);
-    chan_send_wait(c);
+    if (!chan_send_wait(c)) return 0;
     if (c->closed) {
         pthread_mutex_unlock(&c->m);
         return 0; // caller panics; caller also still owns v
@@ -16673,7 +16721,7 @@ long long beans_chan_send(BChan* c, long long v) {
 }
 long long beans_chan_send_typed(BChan* c, void* value) {
     pthread_mutex_lock(&c->m);
-    chan_send_wait(c);
+    if (!chan_send_wait(c)) return 0;
     if (c->closed) {
         pthread_mutex_unlock(&c->m);
         return 0;
@@ -16691,7 +16739,7 @@ long long beans_chan_send_typed(BChan* c, void* value) {
 }
 long long beans_chan_recv(BChan* c, long long* ok) {
     pthread_mutex_lock(&c->m);
-    chan_recv_wait(c);
+    if (!chan_recv_wait(c)) { *ok = 0; return 0; }
     if (c->count == 0) {
         *ok = 0;
         pthread_mutex_unlock(&c->m);
@@ -16707,7 +16755,7 @@ long long beans_chan_recv(BChan* c, long long* ok) {
 }
 long long beans_chan_recv_typed(BChan* c, void* out) {
     pthread_mutex_lock(&c->m);
-    chan_recv_wait(c);
+    if (!chan_recv_wait(c)) return 0;
     if (c->count == 0) {
         pthread_mutex_unlock(&c->m);
         return 0;
@@ -16822,7 +16870,8 @@ void beans_gate_wait(BChan* c) {
     while (!c->closed) {
 #if BEANS_RT_FIBERS
         if (beans_fiber_current()) {
-            fiber_line_wait(&c->m, &c->recv_head, &c->recv_tail);
+            if (!fiber_line_wait(&c->m, &c->recv_head, &c->recv_tail))
+                return;
             continue;
         }
 #endif
@@ -18463,7 +18512,7 @@ char* beans_decv_fmt(BDec* value, long long p) {
 // every brew before its handle can drop, so the handle always outlives the
 // fiber writing into it.
 //
-// Interim, closed by the F2 unwind work: a contained panic (and a cancelled
+// Interim on targets without the controlled unwind: a contained panic (and a cancelled
 // park) abandons the fiber's frames — defers do not run yet and the child's
 // unclaimed closure box is not released on that path.
 #if BEANS_RT_FIBERS
@@ -18534,18 +18583,18 @@ BBrew* beans_brew_typed(void* thunk, void* env, long long size,
     return brew_start(h, name, stack_reserve);
 }
 
-// Parks until the child finishes; answers how it ended. The joiner's own
-// cancellation is not consumed here — the scope contract says a join waits
-// for the child to actually finish, and the joiner observes its cancel at
-// its next park.
+// Parks until the child finishes; answers how it ended. Cancellation of a
+// parked joiner starts its cleanup without consuming the child's outcome;
+// the scope join can then cancel and reap that child during cleanup.
 long long beans_brew_join(BBrew* h) {
     if (h->joined) {
         strncpy(h->message, "brew handle already joined",
                 sizeof h->message - 1);
         return BEANS_BREW_JOINED_ALREADY;
     }
-    h->joined = 1;
     h->status = beans_fiber_join(h->fiber, h->message, sizeof h->message);
+    if (h->status < 0) return h->status; // interpreter's interrupted join
+    h->joined = 1;
     h->fiber = NULL; // the join retired the record
     return h->status;
 }
@@ -18771,8 +18820,10 @@ BBrew* beans_taskgroup_next(BTaskGroup* g) {
         g->waiter = beans_fiber_current();
         int outcome = beans_fiber_park();
         g->waiter = NULL;
-        if (outcome == BEANS_FIBER_PARK_CANCELLED)
+        if (outcome == BEANS_FIBER_PARK_CANCELLED) {
             beans_fiber_exit_cancelled();
+            return NULL;
+        }
     }
 }
 
@@ -18821,8 +18872,10 @@ BBrew* beans_taskgroup_wait_all_join(BTaskGroup* g) {
         g->waiter = beans_fiber_current();
         int outcome = beans_fiber_park();
         g->waiter = NULL;
-        if (outcome == BEANS_FIBER_PARK_CANCELLED)
+        if (outcome == BEANS_FIBER_PARK_CANCELLED) {
             beans_fiber_exit_cancelled();
+            return NULL;
+        }
     }
     long long bad = -1;
     for (long long i = 0; i < g->children->len; i++) {
@@ -18892,14 +18945,16 @@ BList* beans_taskgroup_collect_typed(BTaskGroup* g, long long stride,
 // joins everyone and drops every outcome: cancel_all is handling by
 // discard, recorded in the spec. A child that finished before the cancel
 // reached it is dropped the same way.
-void beans_taskgroup_cancel_all(BTaskGroup* g) {
+void beans_taskgroup_request_cancel(BTaskGroup* g) {
     long long n = g->children->len;
-    // Cancel newest-first (the spec's contract), then join everyone in spawn
-    // order without dropping the outcome yet.
     for (long long i = n; i > 0; i--) {
         BBrew* row = (BBrew*)(uintptr_t)g->children->data[i - 1];
         if (row) beans_brew_cancel(row);
     }
+}
+void beans_taskgroup_cancel_all(BTaskGroup* g) {
+    long long n = g->children->len;
+    beans_taskgroup_request_cancel(g);
     for (long long i = 0; i < n; i++) {
         BBrew* row = (BBrew*)(uintptr_t)g->children->data[i];
         if (row) beans_brew_join(row);

@@ -193,6 +193,116 @@ echo "checking an unwind parked in its cleanup survives other fibers finishing"
 diff -u test/cases/brew_unwind_park.out "$tmp/park.interp"
 diff -u test/cases/brew_unwind_park.out "$tmp/park.native.out"
 
+echo "checking cancelled parks unwind every owned frame and child"
+./build/beansc run test/cases/brew_cancel.b >"$tmp/cancel.interp"
+./build/beansc build test/cases/brew_cancel.b -o "$tmp/cancel.native" \
+    >"$tmp/cancel.build" 2>&1
+"$tmp/cancel.native" >"$tmp/cancel.native.out"
+diff -u test/cases/brew_cancel.out "$tmp/cancel.interp"
+diff -u test/cases/brew_cancel.out "$tmp/cancel.native.out"
+
+echo "checking cancelled frames return every owned allocation"
+cancel_arc_rounds() { # <rounds>
+    local rounds=$1
+    sed "s/ROUNDS/$rounds/g" >"$tmp/cancelarc_$rounds.b" <<'BEANS'
+import std.io
+class Held {
+    pub text: string
+    pub fn init(n: int) { self.text = "held {n}" }
+    fn deinit() { }
+}
+fn worker(ready: Gate, stop: Gate, n: int) -> int {
+    let held: Held = new Held(n)
+    ready.open()
+    stop.wait()
+    return n
+}
+fn round(n: int) {
+    let ready: Gate = new Gate()
+    let stop: Gate = new Gate()
+    let h: Brew<int> = brew worker(ready, stop, n)
+    ready.wait()
+    h.cancel()
+    match h.join() {
+        ok(value) => { panic("cancel completed") }
+        err(problem) => {}
+    }
+}
+fn main() {
+    var n: int = 0
+    for n < ROUNDS { round(n); n += 1 }
+    io.println("rounds=ROUNDS")
+}
+BEANS
+    ./build/beansc build --emit ir "$tmp/cancelarc_$rounds.b" >/dev/null 2>&1
+    clang -O1 -pthread -DBEANS_ARC_STATS -DBEANS_FIBER_UNWIND=1 \
+        -fexceptions -funwind-tables -Wno-override-module \
+        "build/cancelarc_$rounds.ll" build/beans_rt.c -lm -o "$tmp/cancelarc_$rounds"
+    "$tmp/cancelarc_$rounds" >"$tmp/cancelarc_$rounds.out" \
+        2>"$tmp/cancelarc_$rounds.stats"
+    grep -q "^rounds=$rounds\$" "$tmp/cancelarc_$rounds.out"
+    local allocations frees
+    allocations=$(sed -n 's/.*allocations=\([0-9][0-9]*\).*/\1/p' \
+        "$tmp/cancelarc_$rounds.stats")
+    frees=$(sed -n 's/.* frees=\([0-9][0-9]*\).*/\1/p' \
+        "$tmp/cancelarc_$rounds.stats")
+    if [ -z "$allocations" ] || [ -z "$frees" ] ||
+       [ "$allocations" -ne "$frees" ]; then
+        echo "a cancelled frame leaked its owned allocations" >&2
+        cat "$tmp/cancelarc_$rounds.stats" >&2
+        exit 1
+    fi
+}
+cancel_arc_rounds 5
+cancel_arc_rounds 50
+
+echo "checking a panic in cancellation cleanup remains fatal"
+for cleanup in defer deinit; do
+    cat >"$tmp/cancelpanic_$cleanup.b" <<'BEANS'
+class Bomb {
+    pub fn init() { }
+    fn deinit() { panic("cleanup bomb") }
+}
+fn worker(ready: Gate, stop: Gate) -> int {
+    let held: Bomb = new Bomb()
+    ready.open()
+    stop.wait()
+    return 1
+}
+fn main() {
+    let ready: Gate = new Gate()
+    let stop: Gate = new Gate()
+    let h: Brew<int> = brew worker(ready, stop)
+    ready.wait()
+    h.cancel()
+    match h.join() { ok(value) => {} err(problem) => {} }
+}
+BEANS
+    if [ "$cleanup" = defer ]; then
+        sed 's/let held: Bomb = new Bomb()/defer panic("cleanup bomb")/' \
+            "$tmp/cancelpanic_$cleanup.b" >"$tmp/cancelpanic_defer.tmp"
+        mv "$tmp/cancelpanic_defer.tmp" "$tmp/cancelpanic_$cleanup.b"
+    fi
+    expect_cancel_panic() { # <command...>
+        set +e
+        "$@" >"$tmp/cancelpanic.out" 2>"$tmp/cancelpanic.err"
+        local status=$?
+        set -e
+        if [ "$status" -ne 134 ]; then
+            echo "a cancellation cleanup panic should abort (134), got $status" >&2
+            cat "$tmp/cancelpanic.err" >&2
+            exit 1
+        fi
+        grep -Eq '^double panic during unwind: runtime panic at [0-9]+:[0-9]+: cleanup bomb$' \
+            "$tmp/cancelpanic.err"
+        grep -q '^  while unwinding: cancelled$' "$tmp/cancelpanic.err"
+    }
+    expect_cancel_panic ./build/beansc run "$tmp/cancelpanic_$cleanup.b"
+    ./build/beansc build "$tmp/cancelpanic_$cleanup.b" \
+        -o "$tmp/cancelpanic_$cleanup" >"$tmp/cancelpanic.build" 2>&1
+    expect_cancel_panic "$tmp/cancelpanic_$cleanup"
+done
+
 echo "checking a contained panic leaves every container empty and usable"
 # issue #79: `clear` and `Box.set` release what the container owns, and for a
 # class value that runs user deinit code. The container has to be showing the

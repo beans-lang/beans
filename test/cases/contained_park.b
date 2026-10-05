@@ -91,8 +91,8 @@ fn overlapping_frames() {
 
 // ---- 3. a cancel is not contained ----------------------------------------
 //
-// A cancel is delivered at a park and does NOT unwind on either backend, so it
-// never reaches a catch frame: the fiber ends and the join reports `cancelled`.
+// A cancel runs cleanup and passes through the catch frame on both unwind
+// backends: the fiber ends and the join reports `cancelled`.
 // The contained call inside it simply never returns.
 
 fn sleeps_forever() -> int {
@@ -128,8 +128,8 @@ fn cancel_is_not_caught() {
 
 // ---- 4. a fiber record reused after a cancel -----------------------------
 //
-// The cancelled fiber above left its catch frame standing on a record the
-// scheduler pools. The next fiber at that address must start with none: it
+// The cancelled fiber above unwound its catch frame on a record the scheduler
+// pools. The next fiber at that address must start with none: it
 // panics with no frame of its own, and its join has to say `panic`, not
 // deliver a failure to a frame that died with someone else.
 

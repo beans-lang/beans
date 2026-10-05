@@ -15,9 +15,13 @@ A small OOP language designed for predictable ownership, native systems access, 
 
 ## Status
 
-The latest release is **v0.1.29**. It carries language contract `1.0` and runtime
-ABI `9` while the project finishes the evidence needed for a production 1.0
+The latest release is **v0.1.50**. It carries language contract `1.0` and runtime
+ABI `21` while the project finishes the evidence needed for a production 1.0
 claim.
+
+This checkout reports compiler `0.1.51` and runtime ABI `22`; it is unreleased.
+The installers below select the published release. Working-tree fixes need their
+own test and release evidence before the release claims above apply to them.
 
 | piece | current state |
 |---|---|
@@ -25,7 +29,7 @@ claim.
 | compiler | self-hosted `beansc`; stage 2 and stage 3 build a byte-identical compiler |
 | frontend | whole-program loader, resolver, generic type checker, typed annotations, runtime hooks and reflection, typed JSON/XML lowering, HIR, checked MIR and ownership verification |
 | native backend | MIR-to-textual-LLVM emitter, debug/release/LTO builds, ARC plus cycle collection |
-| interpreter | reference executor with the same checked program and runtime behaviour as native builds |
+| interpreter | reference executor over the checked program; behavioral gates compare supported paths with native execution |
 | concurrency | native threads, typed atomics, mutexes, channels and readiness waits |
 | modules | canonical package identity, hashed `beans.lock`, locked/offline builds and a content-addressed Git cache |
 | C interop | imports and exports, C headers, bindgen, C layouts, globals/TLS/errno, typed and stored callbacks |
@@ -40,6 +44,16 @@ publishes checksums, an SPDX SBOM and GitHub attestations. That is release
 engineering evidence, not yet a general production-ready claim: clean
 performance floors, the long fuzz run and the public beta/RC soak are still
 open.
+
+The first dependability pilot is a small file-to-SQLite command-line tool on
+macOS ARM64 or Linux x86_64 (GNU), where local SQLite checks have passed on both
+backends. This starting scope remains subject to prospective users' needs.
+Compiler target support does not imply that a
+separate database, UI, or network package supports the same target: consult that
+package's README and tests. The [pilot and contributor
+checklist](CONTRIBUTING.md#dependability-pilot) defines the workload, failure
+checks, and evidence needed from independent users. No pilot-user acceptance or
+production service readiness is claimed by a compiler release.
 
 ## Install
 
@@ -83,7 +97,7 @@ The layout inside is stable: `bin/`, `lib/`, `toolchain/` and `VERSION`.
 Pick a version, a location, or a target:
 
 ```bash
-curl -fsSL .../beans-install.sh | sh -s -- --version 0.1.29 --prefix /opt/beans
+curl -fsSL .../beans-install.sh | sh -s -- --version 0.1.50 --prefix /opt/beans
 BEANS_TARGET=x86_64-unknown-linux-musl curl -fsSL .../beans-install.sh | sh
 ```
 
