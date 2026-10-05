@@ -3211,7 +3211,7 @@ unsafe {
 }
 ```
 
-- An intrinsic is a **named machine operation with a fixed signature**, not a way to
+- An intrinsic is a **named machine or runtime operation with a fixed signature**, not a way to
   write assembly or LLVM. `std.intrinsic` is a closed allowlist; a name that is not
   on it is a compile error that lists what is. `unsafe` is required.
 - Available: `popcount`, `leading_zeros`, `trailing_zeros`, `bswap16`, `bswap32`,

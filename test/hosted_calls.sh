@@ -181,6 +181,14 @@ check_refusal "$tmp/wrong_result.b" "every one of those returns an integer"
 check_refusal "$tmp/narrow_result.b" "every one of those returns an integer"
 check_refusal "$tmp/wrong_variadic.b" "is variadic, but that name is a Beans runtime entry"
 
+cat >"$tmp/wrong_deferred_callback.b" <<'CALLBACK'
+extern "C" fn beans_with_collection_deferred(body: fn(int), context: RawPtr<u8>)
+fn main() {
+    unsafe { beans_with_collection_deferred(fn(value: int) {}, RawPtr.null()) }
+}
+CALLBACK
+check_refusal "$tmp/wrong_deferred_callback.b" "needs a void pointer callback and a pointer context"
+
 echo "checking an interpreter running under an interpreter reaches the same entries"
 # beans_rt_host_symbol and beans_rt_host_invoke are rows in the table they
 # implement, and nothing else can exercise that: it only matters when the
@@ -195,7 +203,11 @@ echo "checking an interpreter running under an interpreter reaches the same entr
 cat >"$tmp/nested.b" <<'NESTED'
 import std.io
 import std.term
+import std.intrinsic
 extern "C" fn beans_width_utf8(text: RawPtr<u8>, length: int) -> int
+extern "C" fn beans_with_collection_deferred(body: fn(RawPtr<u8>) -> unit, context: RawPtr<u8>)
+class DeferredSeen { pub static count: int = 0 }
+fn deferred_body() { DeferredSeen.count += 1 }
 fn main() {
     var buffer: Bytes = new Bytes(0)
     buffer.append_string("a\u{65e5}b")
@@ -203,6 +215,16 @@ fn main() {
     var direct: int = 0
     unsafe { direct = beans_width_utf8(buffer.as_ptr(), buffer.len()) }
     io.println("nested width extern {direct} method {text.width()} tty {term.is_tty(0)}")
+    unsafe {
+        intrinsic.with_collection_deferred(deferred_body)
+        intrinsic.with_collection_deferred(fn() {
+            intrinsic.with_collection_deferred(deferred_body)
+        })
+        beans_with_collection_deferred(fn(context: RawPtr<u8>) -> unit {
+            if context.is_null() { DeferredSeen.count += 1 }
+        }, RawPtr.null())
+    }
+    io.println("nested deferred bodies {DeferredSeen.count}")
 }
 NESTED
 BEANS_CC="$nocc" "$beansc" run "$tmp/nested.b" \
@@ -211,6 +233,7 @@ BEANS_CC="$nocc" "$beansc" run src/main.b -- run "$tmp/nested.b" \
     </dev/null >"$tmp/nested.two" 2>&1
 diff -u - "$tmp/nested.one" <<'EXPECTED'
 nested width extern 4 method 4 tty false
+nested deferred bodies 3
 EXPECTED
 diff -u "$tmp/nested.one" "$tmp/nested.two"
 

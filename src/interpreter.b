@@ -6878,11 +6878,8 @@ class TreeInterpreter {
                "std.intrinsic.") {
             unsafe {
                 if node.value == "with_collection_deferred" {
-                    beans_with_collection_deferred(
-                        fn(unused: RawPtr<u8>) {
-                            self.invoke_closure(node, arguments[0], [])
-                        }, RawPtr.null())
-                    return TreeValue.unit()
+                    return self.run_collection_deferred(
+                        node, arguments[0], [])
                 }
                 if node.value == "popcount" {
                     return TreeValue.integer(
@@ -11813,6 +11810,21 @@ class TreeInterpreter {
         }
     }
 
+    // One host gate for a user intrinsic and for the same entry reached by
+    // an interpreter running under this interpreter. Never build a C shim
+    // just to call back into the walker that already owns the closure.
+    fn run_collection_deferred(
+        node: HirNode, body: TreeValue,
+        arguments: List<TreeValue>) -> TreeValue {
+        unsafe {
+            beans_with_collection_deferred(
+                fn(unused: RawPtr<u8>) {
+                    self.invoke_closure(node, body, arguments)
+                }, RawPtr.null())
+        }
+        return TreeValue.unit()
+    }
+
     fn invoke_closure(node: HirNode,
                       closure: TreeValue,
                       arguments: List<TreeValue>) -> TreeValue {
@@ -16217,6 +16229,27 @@ class TreeInterpreter {
             return self.fail_extern(
                 function,
                 "the extern C declaration of {function.extern_name} is variadic, but that name is a Beans runtime entry with a fixed signature")
+        }
+        if function.extern_name == "beans_with_collection_deferred" {
+            if function.parameters.len() != 2 || arguments.len() != 2 ||
+               canonical_hir_name(function.result.name) != "unit" {
+                return self.fail_extern(function,
+                    "the extern C declaration does not match the Beans runtime entry beans_with_collection_deferred")
+            }
+            let callback: HirType = function.parameters[0].type
+            if callback.name != "fn" || callback.fn_parameter_count != 1 ||
+               canonical_hir_name(callback.args[0].name) != "RawPtr" ||
+               canonical_hir_name(hir_fn_result(callback).name) != "unit" ||
+               canonical_hir_name(function.parameters[1].type.name) != "RawPtr" ||
+               (arguments[0].kind != "closure" && arguments[0].kind != "function") {
+                return self.fail_extern(function,
+                    "beans_with_collection_deferred needs a void pointer callback and a pointer context")
+            }
+            let node: HirNode = new HirNode(
+                "ffi", function.name, function.result,
+                function.file, function.line, function.col)
+            return self.run_collection_deferred(
+                node, arguments[0], [arguments[1]])
         }
         // `bool` is refused along with `float`, and for a sharper reason than
         // "the invoker cannot carry it". It can: the word comes back whole.
